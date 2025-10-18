@@ -1,0 +1,96 @@
+.
+├── db.sqlite3
+├── manage.py
+├── pool_service
+│   ├── admin.py
+│   ├── apps.py
+│   ├── forms.py
+│   ├── __init__.py
+│   ├── middleware.py
+│   ├── migrations
+│   │   ├── 0001_initial.py
+│   │   ├── 0002_profile.py
+│   │   ├── 0003_waterreading_added_by.py
+│   │   ├── 0004_waterreading_cltotal_waterreading_comment_and_more.py
+│   │   ├── 0005_organization_remove_pool_client_pool_clients_and_more.py
+│   │   ├── 0006_remove_pool_clients_remove_pool_description_and_more.py
+│   │   ├── 0007_alter_pool_organization.py
+│   │   ├── 0008_alter_waterreading_chlorine_alter_waterreading_ph_and_more.py
+│   │   ├── 0009_alter_poolaccess_role.py
+│   │   ├── __init__.py
+│   │   └── __pycache__
+│   │       ├── 0001_initial.cpython-313.pyc
+│   │       ├── 0002_profile.cpython-313.pyc
+│   │       ├── 0003_waterreading_added_by.cpython-313.pyc
+│   │       ├── 0004_waterreading_cltotal_waterreading_comment_and_more.cpython-313.pyc
+│   │       ├── 0005_organization_remove_pool_client_pool_clients_and_more.cpython-313.pyc
+│   │       ├── 0006_remove_pool_clients_remove_pool_description_and_more.cpython-313.pyc
+│   │       ├── 0007_alter_pool_organization.cpython-313.pyc
+│   │       ├── 0008_alter_waterreading_chlorine_alter_waterreading_ph_and_more.cpython-313.pyc
+│   │       ├── 0009_alter_poolaccess_role.cpython-313.pyc
+│   │       └── __init__.cpython-313.pyc
+│   ├── models.py
+│   ├── __pycache__
+│   │   ├── admin.cpython-313.pyc
+│   │   ├── apps.cpython-313.pyc
+│   │   ├── forms.cpython-313.pyc
+│   │   ├── __init__.cpython-313.pyc
+│   │   ├── middleware.cpython-313.pyc
+│   │   ├── models.cpython-313.pyc
+│   │   ├── signals.cpython-313.pyc
+│   │   ├── urls.cpython-313.pyc
+│   │   └── views.cpython-313.pyc
+│   ├── signals.py
+│   ├── static
+│   │   ├── admin -> /home/b/borovidz/service2.aqualine22.ru/venv/lib/python3.13/site-packages/django/contrib/admin/static/admin
+│   │   ├── assets
+│   │   │   ├── css
+│   │   │   ├── favicon.ico
+│   │   │   ├── images
+│   │   │   └── js
+│   │   └── pool_service
+│   │       ├── css
+│   │       └── style.css
+│   ├── templates
+│   │   └── pool_service
+│   │       ├── base.html
+│   │       ├── home.html
+│   │       ├── index.html
+│   │       ├── login.html
+│   │       ├── pool_detail.html
+│   │       ├── pool_list.html
+│   │       └── water_reading_form.html
+│   ├── tests.py
+│   ├── urls.py
+│   └── views.py
+├── project_structure.txt
+├── service
+│   ├── admin.py
+│   ├── apps.py
+│   ├── __init__.py
+│   ├── migrations
+│   │   └── __init__.py
+│   ├── models.py
+│   ├── templates
+│   │   └── registration
+│   │       └── login.html
+│   ├── tests.py
+│   └── views.py
+├── service_site
+│   ├── asgi.py
+│   ├── __init__.py
+│   ├── __pycache__
+│   │   ├── __init__.cpython-313.pyc
+│   │   ├── settings.cpython-313.pyc
+│   │   ├── urls.cpython-313.pyc
+│   │   └── wsgi.cpython-313.pyc
+│   ├── settings.py
+│   ├── urls.py
+│   └── wsgi.py
+├── templates
+│   ├── 403.html
+│   └── registration
+│       └── login.html
+└── urls.py
+
+22 directories, 71 files

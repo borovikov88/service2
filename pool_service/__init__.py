@@ -1,0 +1,1 @@
+default_app_config = 'pool_service.apps.PoolServiceConfig'

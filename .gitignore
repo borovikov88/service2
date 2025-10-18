@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Виртуальные окружения
+.venv/
+venv/
+
+# Базы данных
+db.sqlite3
+*.sqlite3
+
+# Медиа-файлы
+media/
+
+# IDE
+.vscode/
+.idea/
+
+# Node (если появится фронтенд)
+node_modules/

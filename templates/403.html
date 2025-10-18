@@ -1,0 +1,9 @@
+{% extends "pool_service/base.html" %}
+
+{% block title %}Доступ запрещен{% endblock %}
+
+{% block content %}
+    <h1>Ошибка 403</h1>
+    <p>У вас нет доступа к этому ресурсу.</p>
+    <a href="{% url 'home' %}">Вернуться на главную</a>
+{% endblock %}

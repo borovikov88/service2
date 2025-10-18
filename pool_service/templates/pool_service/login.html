@@ -1,0 +1,24 @@
+{% extends 'pool_service/base.html' %}
+
+{% block title %}Список бассейнов{% endblock %}
+
+{% block content %}
+<div class="py-5">
+            <div class="container px-lg-5">
+                <div class="p-4 p-lg-5 bg-light rounded-3 text-center">
+                    <div class="m-4 m-lg-5">
+    <h1>Вход на сайт</h1>
+    {% if form.errors %}
+        <p style="color: red;">Неверное имя пользователя или пароль.</p>
+    {% endif %}
+    <form method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">Войти</button>
+    </form>
+    {% endif %}
+    </div>
+                </div>
+            </div>
+            </div>
+{% endblock %}

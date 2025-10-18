@@ -1,0 +1,51 @@
+{% extends 'pool_service/base.html' %}
+{% load static %}
+{% block title %}Новое показание{% endblock %}
+
+{% block content %}
+<div class="py-5">
+    <div class="container px-lg-5">
+        <a align="left" href="{% url 'pool_list' %}" class="btn btn-primary btn-lg">← Назад</a>
+    </div>
+</div>
+<div class="py-5">
+            <div class="container px-lg-5">
+                <div class="p-4 p-lg-5 bg-light rounded-3 text-center">
+                    <div class="m-4 m-lg-5">
+  <h1>Добавить новое показание для бассейна: <br>{{ pool.client.name }}</h1>
+  <form method="post">
+      {% csrf_token %}
+      {% for field in form %}
+          <p>
+              {{ field.label_tag }}<br>
+              {{ field }}
+              {% if field.help_text %}
+                  <br><small>{{ field.help_text }}</small>
+              {% endif %}
+              {% for error in field.errors %}
+                  <br><span style="color: red;">{{ error }}</span>
+              {% endfor %}
+          </p>
+      {% endfor %}
+      <button class="btn btn-primary btn-lg" type="submit">Сохранить</button>
+  </form>
+
+  <script>
+    // Функция для форматирования даты в ISO формат, который понимает Python
+    function getLocalISOTime() {
+      var tzoffset = (new Date()).getTimezoneOffset() * 60000; // смещение в миллисекундах
+      var localISOTime = (new Date(Date.now() - tzoffset)).toISOString().slice(0, -1);
+      return localISOTime;
+    }
+
+    // Найдем скрытое поле для даты и заполним его
+    var dateField = document.querySelector('input[name="date"]');
+    if(dateField) {
+      dateField.value = getLocalISOTime();
+    }
+  </script>
+                      </div>
+                </div>
+            </div>
+            </div>
+{% endblock %}
