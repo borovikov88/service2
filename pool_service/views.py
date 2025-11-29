@@ -1,118 +1,123 @@
-from django.shortcuts import render, redirect, get_object_or_404
-from django.contrib.auth.decorators import login_required
-from .models import Pool, WaterReading, PoolAccess, OrganizationAccess
-from .forms import WaterReadingForm
-from django.core.paginator import Paginator
-from django.contrib.auth.forms import AuthenticationForm
+from django.contrib import messages
 from django.contrib.auth import login
+from django.contrib.auth.decorators import login_required
+from django.contrib.auth.forms import AuthenticationForm
+from django.contrib.auth.views import LoginView
+from django.core.paginator import Paginator
+from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.csrf import csrf_protect
-from django.shortcuts import render
+from django.urls import reverse
+from django.db.models import Count
+
+from .forms import WaterReadingForm
+from .models import OrganizationAccess, Pool, PoolAccess, WaterReading
+
 
 def index(request):
-    return render(request, 'pool_service/index.html')
+    return render(request, "pool_service/index.html")
+
 
 @login_required
 def pool_list(request):
-    """Список бассейнов для пользователя"""
+    """Список бассейнов доступных пользователю."""
     if request.user.is_superuser:
-        pools = Pool.objects.all()  # Администратор видит всё
+        pools = Pool.objects.all()
     elif OrganizationAccess.objects.filter(user=request.user).exists():
-        # Если пользователь сотрудник организации, показываем бассейны организации
         org_access = OrganizationAccess.objects.get(user=request.user)
         pools = Pool.objects.filter(organization=org_access.organization)
     else:
-        # Иначе, пользователь должен быть клиентом бассейна
         pools = Pool.objects.filter(accesses__user=request.user)
 
-    return render(request, "pool_service/pool_list.html", {
-    "pools": pools,
-    "page_title": "Список бассейнов",
-    "show_search": True,
-    "show_add_button": False,
-    "add_url": None,
-    "active_tab": "pools",
-})
+    pools = pools.annotate(num_readings=Count("waterreading")).select_related("client")
 
-    
+    return render(
+        request,
+        "pool_service/pool_list.html",
+        {
+            "pools": pools,
+            "page_title": "Бассейны",
+            "page_subtitle": "Управление объектами обслуживания",
+            "show_search": False,
+            "show_add_button": False,
+            "add_url": None,
+            "active_tab": "pools",
+        },
+    )
+
+
 def home(request):
     """
-    Главная страница: общая информация о сайте и форма входа.
-    Если форма отправлена и данные валидны, выполняется вход и перенаправление.
+    Домашняя страница с формой авторизации и кратким описанием сервиса.
     """
-    if request.method == 'POST':
+    if request.method == "POST":
         form = AuthenticationForm(data=request.POST)
         if form.is_valid():
             user = form.get_user()
             login(request, user)
-            # После входа перенаправляем на страницу со списком бассейнов
-            return redirect('pool_list')
+            messages.success(request, "Вход выполнен успешно")
+            return redirect("pool_list")
+        else:
+            messages.error(request, "Неверные учетные данные. Попробуйте ещё раз.")
     else:
         form = AuthenticationForm()
-        
+
     context = {
-        'form': form,
-        'info': "Добро пожаловать на наш сервис обслуживания бассейнов и водоочистки. Здесь вы можете узнать об услугах и войти в личный кабинет.",
+        "form": form,
+        "info": "Добро пожаловать на наш сервис обслуживания бассейнов и водоочистки. Здесь вы можете узнать об услугах и войти в личный кабинет.",
     }
-    return render(request, 'pool_service/home.html', context)
+    return render(request, "pool_service/home.html", context)
+
 
 @login_required
 def pool_detail(request, pool_id):
-    """Детальная страница бассейна"""
+    """Детальная страница бассейна с показателями и доступами."""
     pool = get_object_or_404(Pool, id=pool_id)
 
-    # Если суперпользователь, даем полный доступ
     if request.user.is_superuser:
         role = "admin"
     else:
         role = None
-
-        # Если пользователь клиент бассейна
-        # Проверяем доступы
         pool_access = PoolAccess.objects.filter(user=request.user, pool=pool).first()
         if pool_access:
-            role = pool_access.role  # "client_read", "editor" и т. д.
-        
+            role = pool_access.role
+
         org_access = OrganizationAccess.objects.filter(user=request.user, organization=pool.organization).first()
         if org_access:
-            role = org_access.role  # "manager", "service" и т. д.
+            role = org_access.role
 
-    # Если роль не определена — доступ запрещен
     if not role:
         return render(request, "403.html")
 
-    # Показания воды
-    readings_list = WaterReading.objects.filter(pool=pool).order_by('-date')
+    readings_list = WaterReading.objects.filter(pool=pool).order_by("-date")
 
-    # Пагинация
-    per_page = request.GET.get('per_page', 20)
+    per_page = request.GET.get("per_page", 20)
     try:
         per_page = int(per_page)
     except ValueError:
         per_page = 20
 
     paginator = Paginator(readings_list, per_page)
-    page_number = request.GET.get('page')
+    page_number = request.GET.get("page")
     readings = paginator.get_page(page_number)
 
     context = {
-        'pool': pool,
-        'readings': readings,
-        'per_page': per_page,
-        'role': role,  # Передаем роль пользователя
-        # 🔥 Мобильная верхняя панель
-        'page_title': pool.client.name,
-        'show_search': False,
-        'show_add_button': True if role in ["editor", "service", "admin"] else False,
-        'add_url': f"/readings/add/{pool.id}/",
-
+        "pool": pool,
+        "readings": readings,
+        "per_page": per_page,
+        "role": role,
+        "page_title": pool.client.name,
+        "page_subtitle": pool.address,
+        "show_search": False,
+        "show_add_button": True if role in ["editor", "service", "admin"] else False,
+        "add_url": reverse("water_reading_create", args=[pool.id]),
+        "active_tab": "pools",
     }
     return render(request, "pool_service/pool_detail.html", context)
 
+
 @login_required
 def readings_all(request):
-    """История показаний по всем бассейнам, доступным пользователю"""
-
-    # Определяем список бассейнов, которые пользователь может видеть
+    """Все показания для доступных бассейнов."""
     if request.user.is_superuser:
         pools = Pool.objects.all()
 
@@ -123,48 +128,53 @@ def readings_all(request):
     else:
         pools = Pool.objects.filter(accesses__user=request.user)
 
-    # Получаем показания по всем этим бассейнам
     readings_list = (
-        WaterReading.objects
-        .filter(pool__in=pools)
+        WaterReading.objects.filter(pool__in=pools)
         .select_related("pool", "added_by")
         .order_by("-date")
     )
 
-    # Пагинация
     per_page = request.GET.get("per_page", 50)
     paginator = Paginator(readings_list, per_page)
     page_number = request.GET.get("page")
     readings = paginator.get_page(page_number)
 
-    return render(request, "pool_service/readings_all.html", {
-        "readings": readings,
-        "page_title": "История показаний",
-        "show_search": False,
-        "show_add_button": False,
-        "add_url": None,
-        "active_tab": "readings",
-    })
+    return render(
+        request,
+        "pool_service/readings_all.html",
+        {
+            "readings": readings,
+            "page_title": "История посещений",
+            "page_subtitle": "Записывайте показания",
+            "show_search": False,
+            "show_add_button": False,
+            "add_url": None,
+            "active_tab": "readings",
+        },
+    )
 
 
 @csrf_protect
 def water_reading_create(request, pool_id):
-    """Форма добавления новых показаний воды"""
+    """Создание нового замера для выбранного бассейна."""
     pool = get_object_or_404(Pool, pk=pool_id)
 
-    if request.method == 'POST':
+    if request.method == "POST":
         form = WaterReadingForm(request.POST)
         if form.is_valid():
             reading = form.save(commit=False)
-            reading.date = reading.date.replace(tzinfo=None)  # Убираем временную зону
+            reading.date = reading.date.replace(tzinfo=None)
             reading.pool = pool
             reading.added_by = request.user
             reading.save()
-            return redirect('pool_detail', pool_id=pool.id)
+            messages.success(request, "Показания добавлены")
+            return redirect("pool_detail", pool_id=pool.id)
+        else:
+            messages.error(request, "Не удалось сохранить показания, проверьте данные")
     else:
         form = WaterReadingForm()
 
-    return render(request, 'pool_service/water_reading_form.html', {'form': form, 'pool': pool})
+    return render(request, "pool_service/water_reading_form.html", {"form": form, "pool": pool, "active_tab": "pools"})
 
 
 @login_required
@@ -174,14 +184,12 @@ def profile_view(request):
     org_accesses = OrganizationAccess.objects.filter(user=request.user).select_related("organization")
     pool_accesses = PoolAccess.objects.filter(user=request.user).select_related("pool", "pool__client")
 
-    # Попытка взять номер телефона из профиля (если поле добавят позже) или из логина, если он похож на номер.
     phone = None
     if profile and hasattr(profile, "phone"):
         phone = profile.phone
     if not phone and request.user.username and request.user.username.isdigit():
         phone = request.user.username
 
-    # Определяем основной уровень прав.
     if request.user.is_superuser:
         role_level = "Администратор системы"
     elif org_accesses.exists():
@@ -195,6 +203,7 @@ def profile_view(request):
 
     context = {
         "page_title": "Профиль",
+        "page_subtitle": "Данные аккаунта и уровни доступа",
         "active_tab": "profile",
         "show_search": False,
         "show_add_button": False,
@@ -211,3 +220,15 @@ def profile_view(request):
         "pool_accesses": pool_accesses,
     }
     return render(request, "pool_service/profile.html", context)
+
+
+class CustomLoginView(LoginView):
+    template_name = "registration/login.html"
+
+    def form_valid(self, form):
+        messages.success(self.request, "Вход выполнен успешно")
+        return super().form_valid(form)
+
+    def form_invalid(self, form):
+        messages.error(self.request, "Неверные учетные данные. Попробуйте ещё раз.")
+        return super().form_invalid(form)

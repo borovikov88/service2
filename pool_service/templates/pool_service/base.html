@@ -3,195 +3,283 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
-  <meta name="description" content="" />
-  <meta name="author" content="" />
-  <title>{% block title %}Сервис обслуживания бассейнов{% endblock %}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}Pool Service{% endblock %}</title>
 
-  <!-- Favicon -->
   <link rel="icon" type="image/x-icon" href="{% static 'assets/images/favicon.ico' %}" />
-
-  <!-- Bootstrap icons -->
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.4.1/font/bootstrap-icons.css" rel="stylesheet" />
-
-  <!-- Main CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" />
   <link href="{% static 'assets/css/style.css' %}" rel="stylesheet" />
+
+  <style>
+    :root {
+      --app-bg-start: #f4f9fd;
+      --app-bg-end: #e6f1fa;
+    }
+
+    body {
+      background: linear-gradient(180deg, var(--app-bg-start) 0%, var(--app-bg-end) 100%);
+      min-height: 100vh;
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      color: #1f2d3d;
+    }
+
+    .app-header {
+      background: #fff;
+      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+      position: sticky;
+      top: 0;
+      z-index: 1000;
+    }
+
+    .app-logo {
+      width: 44px;
+      height: 44px;
+    }
+
+    .page-shell {
+      min-height: calc(100vh - 120px);
+      padding: 32px 0 104px;
+    }
+
+    .card-soft {
+      border: 1px solid #e6eef5;
+      border-radius: 16px;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.07);
+      background: #fff;
+    }
+
+    .mobile-bottom-nav {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: flex;
+      justify-content: space-around;
+      align-items: center;
+      background: #fff;
+      border-top: 1px solid #e6eef5;
+      padding: 10px 6px 12px;
+      z-index: 900;
+    }
+
+    .mobile-bottom-nav .bottom-item {
+      text-decoration: none;
+      color: #7b8a9c;
+      font-size: 14px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      flex: 1;
+    }
+
+    .mobile-bottom-nav .bottom-item .bottom-icon {
+      font-size: 18px;
+    }
+
+    .mobile-bottom-nav .bottom-item.active {
+      color: #0d6efd;
+      font-weight: 600;
+    }
+
+    @media (min-width: 992px) {
+      .mobile-bottom-nav {
+        display: none;
+      }
+    }
+
+    .toast-container {
+      z-index: 1100;
+    }
+
+    .menu-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.4);
+      opacity: 0;
+      visibility: hidden;
+      transition: 0.2s ease;
+      z-index: 1050;
+    }
+    .menu-overlay.show {
+      opacity: 1;
+      visibility: visible;
+    }
+    .mobile-menu {
+      position: fixed;
+      top: 0;
+      left: -280px;
+      width: 260px;
+      height: 100vh;
+      background: #fff;
+      box-shadow: 6px 0 24px rgba(15, 23, 42, 0.08);
+      padding: 16px;
+      transition: 0.25s ease;
+      z-index: 1060;
+    }
+    .mobile-menu.open {
+      left: 0;
+    }
+
+    .hover-shadow {
+      transition: box-shadow 0.2s ease, transform 0.2s ease, background 0.2s;
+    }
+    .hover-shadow:hover {
+      box-shadow: 0 8px 22px rgba(15, 23, 42, 0.08);
+      background: #f8fbff;
+      transform: translateY(-1px);
+    }
+
+    .dosing-head,
+    .dosing-cell {
+      background: #eef5ff !important;
+    }
+    .dosing-group {
+      background: #eef5ff !important;
+    }
+  </style>
 </head>
 
 <body>
-
-<!-- ======== MOBILE TOP PANEL ======== -->
-<div class="mobile-app-bar">
-
-    <!-- Меню -->
-    <button class="appbar-btn menu-btn" onclick="openMenu()">☰</button>
-
-    <!-- Логотип -->
-    <img src="{% static 'pool_service/img/logo.png' %}" class="app-logo">
-
-    <!-- Название -->
-    <div class="app-title">
-        {{ page_title|default:"Панель" }}
-    </div>
-
-    <!-- Поиск -->
-    {% if show_search %}
-        <button class="appbar-btn search-btn">🔍</button>
-    {% endif %}
-
-    <!-- Добавить -->
-    {% if show_add_button and add_url %}
-        <a href="{{ add_url }}" class="appbar-btn add-btn">＋</a>
-    {% endif %}
-
-</div>
-<!-- ======== END MOBILE TOP PANEL ======== -->
-
-
-<!-- ======== DESKTOP NAVBAR ======== -->
-<nav class="navbar navbar-expand-lg navbar-dark bg-dark desktop-navbar">
-    <div class="container px-lg-5">
-        <a class="navbar-brand" href="/">Сервис обслуживания бассейнов</a>
-
-        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" 
-                data-bs-target="#navbarSupportedContent">
-            <span class="navbar-toggler-icon"></span>
-        </button>
-
-        <div class="collapse navbar-collapse" id="navbarSupportedContent">
-            <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
-
-                <li class="nav-item"><a class="nav-link active" href="/">Главная</a></li>
-                <li class="nav-item"><a class="nav-link" href="/pools">Список бассейнов</a></li>
-
-                {% if user.is_authenticated %}
-                    <li class="nav-item">
-                        <p class="nav-link">
-                            {% if user.first_name or user.last_name %}
-                                {{ user.first_name }} {{ user.last_name }}
-                            {% else %}
-                                {{ user.username }}
-                            {% endif %}
-                        </p>
-                    </li>
-
-                    <li class="nav-item">
-                        <form method="post" action="{% url 'logout' %}">
-                            {% csrf_token %}
-                            <button class="btn btn-outline-primary btn-lg" type="submit">Выйти</button>
-                        </form>
-                    </li>
-
-                {% else %}
-                    <li class="nav-item">
-                        <a class="btn btn-primary btn-lg" href="{% url 'login' %}">Войти</a>
-                    </li>
-                {% endif %}
-
-            </ul>
-        </div>
-    </div>
-</nav>
-<!-- ======== END DESKTOP NAVBAR ======== -->
-
-
-<main>
-    {% block content %}{% endblock %}
-</main>
-
-<footer class="py-5 bg-dark desktop-navbar">
+  <header class="app-header py-3">
     <div class="container">
-        <p class="m-0 text-center text-white">
-            Copyright © Сервис обслуживания бассейнов 2025
-        </p>
-    </div>
-</footer>
+      <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
+        <div class="d-flex align-items-center gap-3">
+          <button class="btn btn-light d-lg-none border-0 shadow-sm" style="width:44px;height:44px;" onclick="openMenu()" aria-label="Меню">
+            <i class="bi bi-list fs-4"></i>
+          </button>
+          <img src="{% static 'pool_service/img/logo.png' %}" class="app-logo" alt="Pool Service">
+          <div>
+            <div class="fw-bold text-dark">Pool Service</div>
+            <div class="text-muted small">Система обслуживания бассейнов</div>
+          </div>
+        </div>
 
+        <div class="d-flex align-items-center gap-3">
+          <nav class="d-none d-lg-flex align-items-center gap-3">
+            <a class="text-decoration-none {% if active_tab == 'readings' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="/readings/all">Показания</a>
+            <a class="text-decoration-none {% if active_tab == 'pools' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="/pools">Мои бассейны</a>
+            <a class="text-decoration-none {% if active_tab == 'profile' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'profile' %}">Профиль</a>
+          </nav>
 
-<!-- ======== MOBILE SIDEBAR MENU (DRAWER) ======== -->
-<div id="menu-overlay" class="menu-overlay" onclick="closeMenu()"></div>
+          {% if show_add_button and add_url %}
+            <a href="{{ add_url }}" class="btn btn-primary btn-lg rounded-3 shadow-sm d-flex align-items-center justify-content-center" style="width: 46px; height: 46px;">
+              <i class="bi bi-plus-lg"></i>
+            </a>
+          {% endif %}
 
-<div id="mobile-menu" class="mobile-menu">
-    
-    <div class="menu-header">
-    <button class="close-btn" onclick="closeMenu()">✕</button>
-
-    <img src="{% static 'pool_service/img/logo.png' %}" class="drawer-logo">
-    <span class="drawer-title">Сервис бассейнов</span>
-</div>
-
-
-    <div class="menu-content">
-        <a href="/">Главная</a>
-        <a href="{% url 'profile' %}">Личный кабинет</a>
-        <a href="/pools">Список бассейнов</a>
-        <a href="/readings/all">История показаний</a>
-
-
-        {% if user.is_authenticated %}
+          {% if user.is_authenticated %}
             <form method="post" action="{% url 'logout' %}">
-                {% csrf_token %}
-                <button class="logout-btn">Выйти</button>
+              {% csrf_token %}
+              <button class="btn btn-outline-dark rounded-3 px-3 d-flex align-items-center gap-2" type="submit">
+                <i class="bi bi-box-arrow-right"></i>
+                <span>Выйти</span>
+              </button>
             </form>
-        {% endif %}
+          {% else %}
+            <a class="btn btn-primary rounded-3 px-4" href="{% url 'login' %}">Войти</a>
+          {% endif %}
+        </div>
+      </div>
     </div>
+  </header>
 
-</div>
+  <main class="page-shell">
+    <div class="container">
+      {% if page_title %}
+        <div class="mb-4">
+          <h1 class="fw-bold h3 mb-1">{{ page_title }}</h1>
+          {% if page_subtitle %}
+            <div class="text-muted">{{ page_subtitle }}</div>
+          {% endif %}
+        </div>
+      {% endif %}
 
+      {% block content %}{% endblock %}
+    </div>
+  </main>
 
-<!-- Working Drawer JS -->
-<script>
-function openMenu() {
-    document.getElementById("mobile-menu").classList.add("open");
-    document.getElementById("menu-overlay").classList.add("show");
-}
+  <!-- Mobile drawer -->
+  <div id="menu-overlay" class="menu-overlay" onclick="closeMenu()"></div>
+  <div id="mobile-menu" class="mobile-menu">
+      <div class="menu-header d-flex align-items-center justify-content-between mb-3">
+          <div class="d-flex align-items-center gap-2">
+              <img src="{% static 'pool_service/img/logo.png' %}" class="app-logo" alt="Pool Service" style="width:38px;height:38px;">
+              <div>
+                  <div class="fw-bold text-dark">Pool Service</div>
+                  <div class="text-muted small">Меню</div>
+              </div>
+          </div>
+          <button class="btn btn-light border-0" onclick="closeMenu()" aria-label="Закрыть">
+              <i class="bi bi-x-lg"></i>
+          </button>
+      </div>
+      <div class="list-group list-group-flush">
+          <a href="/" class="list-group-item list-group-item-action">Главная</a>
+          <a href="{% url 'profile' %}" class="list-group-item list-group-item-action">Личный кабинет</a>
+          <a href="/pools" class="list-group-item list-group-item-action">Мои бассейны</a>
+          <a href="/readings/all" class="list-group-item list-group-item-action">История показаний</a>
+          {% if user.is_authenticated %}
+          <form method="post" action="{% url 'logout' %}" class="list-group-item list-group-item-action p-0 border-0">
+              {% csrf_token %}
+              <button class="btn w-100 text-start">Выйти</button>
+          </form>
+          {% endif %}
+      </div>
+  </div>
 
-function closeMenu() {
-    document.getElementById("mobile-menu").classList.remove("open");
-    document.getElementById("menu-overlay").classList.remove("show");
-}
-</script>
-<script>
-// === Swipe to close ===
-let touchStartX = 0;
+  <div class="toast-container position-fixed bottom-0 end-0 p-3">
+    {% if messages %}
+      {% for message in messages %}
+        <div class="toast align-items-center text-bg-light border-0 shadow-sm mb-2 show" role="alert">
+          <div class="d-flex">
+            <div class="toast-body">
+              {% if message.tags %}
+                <span class="badge bg-light text-dark border me-2 text-uppercase">{{ message.tags }}</span>
+              {% endif %}
+              {{ message }}
+            </div>
+            <button type="button" class="btn-close me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+          </div>
+        </div>
+      {% endfor %}
+    {% endif %}
+  </div>
 
-document.addEventListener('touchstart', function(e) {
-    touchStartX = e.changedTouches[0].clientX;
-}, false);
-
-document.addEventListener('touchend', function(e) {
-    let touchEndX = e.changedTouches[0].clientX;
-
-    // Если провели пальцем влево на > 50px
-    if (document.getElementById("mobile-menu").classList.contains("open")) {
-        if (touchStartX - touchEndX > 50) {
-            closeMenu();
-        }
-    }
-}, false);
-</script>
-
-
-
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js"></script>
-<script src="{% static 'assets/js/scripts.js' %}"></script>
-<!-- ======== MOBILE BOTTOM NAVIGATION ======== -->
-<div class="mobile-bottom-nav">
-    <a href="/pools" class="bottom-item {% if active_tab == 'pools' %}active{% endif %}">
-        <i class="bi bi-list-ul bottom-icon"></i>
-        <span>Бассейны</span>
-    </a>
-
-    <a href="/readings/all" class="bottom-item {% if active_tab == 'readings' %}active{% endif %}">
-        <i class="bi bi-droplet bottom-icon"></i>
+  {% if not hide_bottom_nav %}
+    <div class="mobile-bottom-nav">
+      <a href="/pools" class="bottom-item {% if active_tab == 'pools' %}active{% endif %}">
+        <i class="bi bi-stack bottom-icon"></i>
+        <span>Мои бассейны</span>
+      </a>
+      <a href="/readings/all" class="bottom-item {% if active_tab == 'readings' %}active{% endif %}">
+        <i class="bi bi-journal-text bottom-icon"></i>
         <span>Показания</span>
-    </a>
-
-    <a href="{% url 'profile' %}" class="bottom-item {% if active_tab == 'profile' %}active{% endif %}">
+      </a>
+      <a href="{% url 'profile' %}" class="bottom-item {% if active_tab == 'profile' %}active{% endif %}">
         <i class="bi bi-person-circle bottom-icon"></i>
         <span>Профиль</span>
-    </a>
-</div>
+      </a>
+    </div>
+  {% endif %}
 
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+      document.querySelectorAll(".toast").forEach(function (el) {
+        const toast = new bootstrap.Toast(el, { delay: 4000 });
+        toast.show();
+      });
+    });
+
+    function openMenu() {
+      document.getElementById("mobile-menu").classList.add("open");
+      document.getElementById("menu-overlay").classList.add("show");
+    }
+    function closeMenu() {
+      document.getElementById("mobile-menu").classList.remove("open");
+      document.getElementById("menu-overlay").classList.remove("show");
+    }
+  </script>
 </body>
 </html>
