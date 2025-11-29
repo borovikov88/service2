@@ -11,10 +11,12 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 
 from pathlib import Path
+from dotenv import load_dotenv
 import os
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")
 
 
 # Quick-start development settings - unsuitable for production
@@ -26,10 +28,9 @@ SECRET_KEY = 'django-insecure-n#p_@2+6a_@4bk$j7np)$y3um#1gb362r5-mgm*_moio)gx&8=
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = [
-    "service2.aqualine22.ru",   # прод-домен
-    "127.0.0.1", "localhost", "[::1]",  # локальный запуск
-]
+allowed_hosts_env = os.getenv('ALLOWED_HOSTS', '')
+ALLOWED_HOSTS = [host.strip() for host in allowed_hosts_env.split(',') if host.strip()]
+
 
 # Application definition
 
@@ -87,10 +88,16 @@ WSGI_APPLICATION = 'service_site.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'ENGINE': os.getenv('DB_ENGINE', 'django.db.backends.mysql'),
+        'NAME': os.getenv('DB_NAME'),
+        'USER': os.getenv('DB_USER'),
+        'PASSWORD': os.getenv('DB_PASSWORD'),
+        'HOST': os.getenv('DB_HOST'),
+        'PORT': os.getenv('DB_PORT'),
     }
 }
+
+
 
 
 # Password validation
@@ -141,10 +148,3 @@ CKEDITOR_5_CONFIGS = {
         'toolbar': ['heading', '|', 'bold', 'italic', 'link', 'bulletedList', 'numberedList', 'blockQuote'],
     },
 }
-
-from pathlib import Path
-BASE_DIR = Path(__file__).resolve().parent.parent
-
-MEDIA_ROOT = BASE_DIR / "media"
-MEDIA_URL = "/media/"
-

@@ -33,8 +33,7 @@
             </div>
             <section class="pt-4">
                 <div class="container px-lg-5">
-<!-- Форма для выбора количества записей на странице -->
-  <form method="get" id="per-page-form">
+<form method="get" id="per-page-form">
       <label for="per_page">Показывать записей на странице:</label>
       <select name="per_page" id="per_page" onchange="document.getElementById('per-page-form').submit();">
           <option value="20" {% if per_page == 20 %}selected{% endif %}>20</option>
@@ -54,16 +53,26 @@
     <table class="table">
       <thead>
         <tr>
-          <th>Дата</th>
-          <th>Добавил</th>
-          <th>Температура</th>
+          <th rowspan="2">Дата</th>
+          <th rowspan="2">Добавил</th>
+          <th rowspan="2">Температура</th>
+          <th colspan="3">Ручной/Фотометр</th>
+          
+          <th colspan="4" class="dosing-header-cell">Станция Дозирования</th>
+          
+          <th rowspan="2">Комментарий</th>
+          <th rowspan="2">Необходимые материалы</th>
+          <th rowspan="2">Произведеные работы</th>
+        </tr>
+        <tr>
           <th>pH</th>
           <th>CL свободный</th>
           <th>CL общий</th>
-          <th>Redox</th>
-          <th>Комментарий</th>
-          <th>Необходимые материалы</th>
-          <th>Произведеные работы</th>
+          
+          <th class="dosing-column-cell">pH</th>
+          <th class="dosing-column-cell">CL свободный</th>
+          <th class="dosing-column-cell">CL общий</th>
+          <th class="dosing-column-cell">Redox</th>
         </tr>
       </thead>
       <tbody>
@@ -83,9 +92,14 @@
             </td>
             <td>{{ reading.temperature|default:"" }}</td>
             <td>{{ reading.ph|default:"" }}</td>
-            <td>{{ reading.chlorine|default:"" }}</td>
-            <td>{{ reading.cltotal|default:"" }}</td>
-            <td>{{ reading.redox|default:"" }}</td>
+            <td>{{ reading.cl_free|default:"" }}</td>
+            <td>{{ reading.cl_total|default:"" }}</td>
+            
+            <td class="dosing-data">{{ reading.ph_dosing_station|default:"" }}</td>
+            <td class="dosing-data">{{ reading.cl_free_dosing_station|default:"" }}</td>
+            <td class="dosing-data">{{ reading.cl_total_dosing_station|default:"" }}</td>
+            <td class="dosing-data">{{ reading.redox_dosing_station|default:"" }}</td>
+            
             <td>{{ reading.comment|default:"" }}</td>
             <td>{{ reading.required_materials|default:"" }}</td>
             <td>{{ reading.performed_works|default:"" }}</td>
@@ -118,6 +132,6 @@
   {% else %}
     <p>Нет данных о показаниях.</p>
   {% endif %}
-  </div
+  </div>
 
 {% endblock %}

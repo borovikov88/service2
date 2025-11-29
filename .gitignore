@@ -2,21 +2,26 @@
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
 
-# Виртуальные окружения
-.venv/
+# Virtual environment
 venv/
 
-# Базы данных
-db.sqlite3
-*.sqlite3
-
-# Медиа-файлы
+# Django
+staticfiles/
 media/
 
-# IDE
+# VS Code
 .vscode/
-.idea/
 
-# Node (если появится фронтенд)
-node_modules/
+# Env files
+.env
+.env.prod
+*.env
+
+# MySQL dumps
+*.sql
+
+# System
+.DS_Store
+Thumbs.db

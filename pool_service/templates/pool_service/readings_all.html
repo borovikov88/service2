@@ -1,0 +1,74 @@
+{% extends "pool_service/base.html" %}
+{% load static %}
+
+{% block title %}История показаний{% endblock %}
+
+{% block content %}
+
+<div class="container py-4">
+
+    <h2 class="mb-4">История показаний</h2>
+
+    {% if readings %}
+        <div class="table-responsive">
+            <table class="table table-striped">
+                <thead>
+                    <tr>
+                        <th>Дата</th>
+                        <th>Добавил</th>
+                        <th>Бассейн</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for r in readings %}
+                    <tr>
+                        <td>{{ r.date|date:"d.m.Y H:i" }}</td>
+                        <td>
+                            {% if r.added_by %}
+                                {% if r.added_by.first_name or r.added_by.last_name %}
+                                    {{ r.added_by.first_name }} {{ r.added_by.last_name }}
+                                {% else %}
+                                    {{ r.added_by.username }}
+                                {% endif %}
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                        <td>
+                            <a href="{% url 'pool_detail' r.pool.id %}">
+                                {{ r.pool.client.name }} — {{ r.pool.address }}
+                            </a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination -->
+        <div class="pagination mt-3">
+            <span class="step-links">
+
+                {% if readings.has_previous %}
+                    <a href="?page=1">&laquo; первая</a>
+                    <a href="?page={{ readings.previous_page_number }}">предыдущая</a>
+                {% endif %}
+
+                <span class="current">
+                    Страница {{ readings.number }} из {{ readings.paginator.num_pages }}
+                </span>
+
+                {% if readings.has_next %}
+                    <a href="?page={{ readings.next_page_number }}">следующая</a>
+                    <a href="?page={{ readings.paginator.num_pages }}">последняя &raquo;</a>
+                {% endif %}
+
+            </span>
+        </div>
+
+    {% else %}
+        <p>Нет данных.</p>
+    {% endif %}
+</div>
+
+{% endblock %}

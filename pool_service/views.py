@@ -24,7 +24,15 @@ def pool_list(request):
         # Иначе, пользователь должен быть клиентом бассейна
         pools = Pool.objects.filter(accesses__user=request.user)
 
-    return render(request, "pool_service/pool_list.html", {"pools": pools})
+    return render(request, "pool_service/pool_list.html", {
+    "pools": pools,
+    "page_title": "Список бассейнов",
+    "show_search": True,
+    "show_add_button": False,
+    "add_url": None,
+    "active_tab": "pools",
+})
+
     
 def home(request):
     """
@@ -91,8 +99,52 @@ def pool_detail(request, pool_id):
         'readings': readings,
         'per_page': per_page,
         'role': role,  # Передаем роль пользователя
+        # 🔥 Мобильная верхняя панель
+        'page_title': pool.client.name,
+        'show_search': False,
+        'show_add_button': True if role in ["editor", "service", "admin"] else False,
+        'add_url': f"/readings/add/{pool.id}/",
+
     }
     return render(request, "pool_service/pool_detail.html", context)
+
+@login_required
+def readings_all(request):
+    """История показаний по всем бассейнам, доступным пользователю"""
+
+    # Определяем список бассейнов, которые пользователь может видеть
+    if request.user.is_superuser:
+        pools = Pool.objects.all()
+
+    elif OrganizationAccess.objects.filter(user=request.user).exists():
+        org_access = OrganizationAccess.objects.get(user=request.user)
+        pools = Pool.objects.filter(organization=org_access.organization)
+
+    else:
+        pools = Pool.objects.filter(accesses__user=request.user)
+
+    # Получаем показания по всем этим бассейнам
+    readings_list = (
+        WaterReading.objects
+        .filter(pool__in=pools)
+        .select_related("pool", "added_by")
+        .order_by("-date")
+    )
+
+    # Пагинация
+    per_page = request.GET.get("per_page", 50)
+    paginator = Paginator(readings_list, per_page)
+    page_number = request.GET.get("page")
+    readings = paginator.get_page(page_number)
+
+    return render(request, "pool_service/readings_all.html", {
+        "readings": readings,
+        "page_title": "История показаний",
+        "show_search": False,
+        "show_add_button": False,
+        "add_url": None,
+        "active_tab": "readings",
+    })
 
 
 @csrf_protect

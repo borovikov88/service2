@@ -10,3 +10,19 @@
     padding: 5px;
     text-align: left;
 }
+/* Стили для объединенного заголовка "Станция Дозирования" */
+.dosing-header-cell {
+    background-color: #add8e6 !important; /* Светло-голубой цвет */
+    font-weight: bold;
+    text-align: center;
+}
+
+/* Стили для заголовков отдельных столбцов станции дозирования */
+.dosing-column-cell {
+    background-color: #e0f2f7 !important; /* Более светлый оттенок */
+}
+
+/* Стили для ячеек с данными в теле таблицы */
+.dosing-data {
+    background-color: #f0faff !important; /* Самый светлый оттенок */
+}
