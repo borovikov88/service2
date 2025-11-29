@@ -165,3 +165,49 @@ def water_reading_create(request, pool_id):
         form = WaterReadingForm()
 
     return render(request, 'pool_service/water_reading_form.html', {'form': form, 'pool': pool})
+
+
+@login_required
+def profile_view(request):
+    """Профиль текущего пользователя с основными контактами и правами доступа."""
+    profile = getattr(request.user, "profile", None)
+    org_accesses = OrganizationAccess.objects.filter(user=request.user).select_related("organization")
+    pool_accesses = PoolAccess.objects.filter(user=request.user).select_related("pool", "pool__client")
+
+    # Попытка взять номер телефона из профиля (если поле добавят позже) или из логина, если он похож на номер.
+    phone = None
+    if profile and hasattr(profile, "phone"):
+        phone = profile.phone
+    if not phone and request.user.username and request.user.username.isdigit():
+        phone = request.user.username
+
+    # Определяем основной уровень прав.
+    if request.user.is_superuser:
+        role_level = "Администратор системы"
+    elif org_accesses.exists():
+        unique_roles = sorted({access.get_role_display() for access in org_accesses})
+        role_level = ", ".join(unique_roles)
+    elif pool_accesses.exists():
+        unique_roles = sorted({access.get_role_display() for access in pool_accesses})
+        role_level = ", ".join(unique_roles)
+    else:
+        role_level = "Пользователь"
+
+    context = {
+        "page_title": "Профиль",
+        "active_tab": "profile",
+        "show_search": False,
+        "show_add_button": False,
+        "add_url": None,
+        "user_full_name": request.user.get_full_name() or request.user.username,
+        "username": request.user.username,
+        "email": request.user.email,
+        "phone": phone,
+        "timezone": getattr(profile, "timezone", "Не указан"),
+        "last_login": request.user.last_login,
+        "date_joined": request.user.date_joined,
+        "role_level": role_level,
+        "org_accesses": org_accesses,
+        "pool_accesses": pool_accesses,
+    }
+    return render(request, "pool_service/profile.html", context)

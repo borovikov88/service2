@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import home, pool_list, pool_detail, water_reading_create, readings_all
+from .views import home, pool_list, pool_detail, water_reading_create, readings_all, profile_view
 from . import views
 
 urlpatterns = [
@@ -9,4 +9,5 @@ urlpatterns = [
     path('pools/<int:pool_id>/', pool_detail, name='pool_detail'),
     path('pools/<int:pool_id>/new-reading/', water_reading_create, name='water_reading_create'),
     path("readings/all", readings_all, name="readings_all"),
+    path("profile/", profile_view, name="profile"),
 ]

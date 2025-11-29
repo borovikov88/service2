@@ -1,0 +1,102 @@
+{% extends 'pool_service/base.html' %}
+
+{% block title %}Профиль{% endblock %}
+
+{% block content %}
+<section class="pt-4">
+    <div class="container px-lg-5">
+        <div class="row g-4">
+
+            <div class="col-lg-4">
+                <div class="card shadow-sm border-0 h-100">
+                    <div class="card-body">
+                        <p class="text-muted mb-1">Имя пользователя</p>
+                        <h3 class="card-title mb-3">{{ user_full_name }}</h3>
+
+                        <div class="list-group list-group-flush">
+                            <div class="list-group-item px-0 d-flex justify-content-between">
+                                <span class="text-muted">Логин</span>
+                                <span class="fw-semibold">{{ username }}</span>
+                            </div>
+                            <div class="list-group-item px-0 d-flex justify-content-between">
+                                <span class="text-muted">Телефон</span>
+                                <span class="fw-semibold">{{ phone|default:"Не указан" }}</span>
+                            </div>
+                            <div class="list-group-item px-0 d-flex justify-content-between">
+                                <span class="text-muted">Почта</span>
+                                <span class="fw-semibold">{{ email|default:"Не указана" }}</span>
+                            </div>
+                            <div class="list-group-item px-0 d-flex justify-content-between">
+                                <span class="text-muted">Часовой пояс</span>
+                                <span class="fw-semibold">{{ timezone|default:"Не указан" }}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card-footer bg-white border-0 pt-0">
+                        <div class="small text-muted">В системе с</div>
+                        <div class="fw-semibold">
+                            {% if date_joined %}{{ date_joined|date:"d.m.Y H:i" }}{% else %}—{% endif %}
+                        </div>
+                        <div class="small text-muted mt-2">Последний вход</div>
+                        <div class="fw-semibold">
+                            {% if last_login %}{{ last_login|date:"d.m.Y H:i" }}{% else %}—{% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-lg-8">
+                <div class="card shadow-sm border-0 mb-4">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <h4 class="card-title mb-0">Права доступа</h4>
+                            <span class="badge bg-primary fs-6">{{ role_level }}</span>
+                        </div>
+                        <p class="text-muted mb-0">Роли определяются доступами к организациям и объектам обслуживания.</p>
+                    </div>
+                </div>
+
+                <div class="card shadow-sm border-0 mb-4">
+                    <div class="card-body pb-0">
+                        <h5 class="card-title">Доступ к организациям</h5>
+                        <p class="text-muted">Организации, в которых у вас есть роль.</p>
+                    </div>
+                    <div class="list-group list-group-flush">
+                        {% for access in org_accesses %}
+                            <div class="list-group-item d-flex justify-content-between align-items-start">
+                                <div>
+                                    <div class="fw-semibold">{{ access.organization.name }}</div>
+                                    <div class="small text-muted">Роль: {{ access.get_role_display }}</div>
+                                </div>
+                            </div>
+                        {% empty %}
+                            <div class="list-group-item text-muted">Нет закрепленных организаций.</div>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <div class="card shadow-sm border-0">
+                    <div class="card-body pb-0">
+                        <h5 class="card-title">Доступ к объектам</h5>
+                        <p class="text-muted">Бассейны, к которым предоставлен доступ.</p>
+                    </div>
+                    <div class="list-group list-group-flush">
+                        {% for access in pool_accesses %}
+                            <div class="list-group-item d-flex justify-content-between align-items-start">
+                                <div>
+                                    <div class="fw-semibold">{{ access.pool.client.name }}</div>
+                                    <div class="small text-muted">{{ access.pool.address }}</div>
+                                </div>
+                                <span class="badge bg-light text-dark border">{{ access.get_role_display }}</span>
+                            </div>
+                        {% empty %}
+                            <div class="list-group-item text-muted">Доступные объекты отсутствуют.</div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+</section>
+{% endblock %}
