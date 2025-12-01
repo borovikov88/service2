@@ -41,6 +41,12 @@
                             {% if last_login %}{{ last_login|date:"d.m.Y H:i" }}{% else %}—{% endif %}
                         </div>
                     </div>
+                    <div class="card-footer bg-white border-0 pt-0">
+                        <form method="post" action="{% url 'logout' %}">
+                            {% csrf_token %}
+                            <button class="btn btn-outline-danger w-100 rounded-3">Выйти из аккаунта</button>
+                        </form>
+                    </div>
                 </div>
             </div>
 

@@ -1,30 +1,81 @@
 {% extends 'pool_service/base.html' %}
 
-{% block title %}Главная страница{% endblock %}
+{% block title %}Главная{% endblock %}
 
 {% block content %}
-   <header class="py-5">
-            <div class="container px-lg-5">
-                <div class="p-4 p-lg-5 bg-light rounded-3 text-center">
-                    <div class="m-4 m-lg-5">
-                        <h1 class="display-5 fw-bold">Добро пожаловать!</h1>
-                        <p class="fs-4">{{ info }}</p>
-                        
-                        {% if not user.is_authenticated %}
-                        <h2 class="display-5 fw-bold">Вход</h2>
-                         <form method="post">
-                           {% csrf_token %}
-                        {{ form.as_p }}
-                         <button class="btn btn-primary btn-lg" type="submit">Войти</button>
-                        </form>
-                        {% else %}
-                        <p><a class="btn btn-primary btn-lg" href="{% url 'profile' %}">Перейти к личному кабинету</a></p>
-                        {% endif %}
-                        <p class="fs-4">Если у вас нет аккаунта, обратитесь к администратору.</p>
+<div class="card card-soft p-4 mb-4">
+    <div class="row g-3 align-items-center">
+        <div class="col-lg-7">
+            <h1 class="fw-bold h3 mb-2">Добро пожаловать в Pool Service</h1>
+            <p class="text-muted mb-3">Управляйте бассейнами, фиксируйте показания и контролируйте сотрудников в одном месте.</p>
+            <div class="d-flex flex-wrap gap-2">
+                {% if user.is_authenticated %}
+                    <a href="{% url 'pool_list' %}" class="btn btn-primary">Перейти к бассейнам</a>
+                    <a href="{% url 'readings_all' %}" class="btn btn-outline-primary">История показаний</a>
+                    {% if user.is_superuser or user.organizationaccess_set.all|length %}
+                        <a href="{% url 'users' %}" class="btn btn-outline-secondary">Пользователи</a>
+                    {% endif %}
+                {% else %}
+                    <a href="{% url 'login' %}" class="btn btn-primary">Войти</a>
+                    <a href="{% url 'register' %}" class="btn btn-outline-primary">Зарегистрироваться</a>
+                {% endif %}
+            </div>
+        </div>
+        <div class="col-lg-5">
+            <div class="bg-light rounded-3 p-3 h-100">
+                <div class="text-muted small mb-2">Быстрые действия</div>
+                <div class="d-flex flex-column gap-2">
+                    <div class="d-flex align-items-center gap-2">
+                        <div class="bg-primary bg-gradient text-white rounded-3 d-flex align-items-center justify-content-center" style="width:38px;height:38px;">
+                            <i class="bi bi-building"></i>
+                        </div>
+                        <div>
+                            <div class="fw-semibold">Добавить бассейн</div>
+                            <a class="small text-decoration-none" href="{% url 'pool_create' %}">Открыть форму</a>
+                        </div>
+                    </div>
+                    <div class="d-flex align-items-center gap-2">
+                        <div class="bg-primary bg-gradient text-white rounded-3 d-flex align-items-center justify-content-center" style="width:38px;height:38px;">
+                            <i class="bi bi-clipboard-data"></i>
+                        </div>
+                        <div>
+                            <div class="fw-semibold">История показаний</div>
+                            <a class="small text-decoration-none" href="{% url 'readings_all' %}">Перейти к списку</a>
+                        </div>
+                    </div>
+                    <div class="d-flex align-items-center gap-2">
+                        <div class="bg-primary bg-gradient text-white rounded-3 d-flex align-items-center justify-content-center" style="width:38px;height:38px;">
+                            <i class="bi bi-person-circle"></i>
+                        </div>
+                        <div>
+                            <div class="fw-semibold">Профиль</div>
+                            <a class="small text-decoration-none" href="{% url 'profile' %}">Настроить аккаунт</a>
+                        </div>
                     </div>
                 </div>
             </div>
-    </header>
-  
-    
+        </div>
+    </div>
+</div>
+
+<div class="row g-3">
+    <div class="col-lg-4">
+        <div class="card card-soft p-3 h-100">
+            <div class="fw-bold mb-1">Мониторинг</div>
+            <div class="text-muted small">Следите за показателями воды и добавляйте новые замеры в пару кликов.</div>
+        </div>
+    </div>
+    <div class="col-lg-4">
+        <div class="card card-soft p-3 h-100">
+            <div class="fw-bold mb-1">Команда</div>
+            <div class="text-muted small">Управляйте доступами сервисников и инструкторов, контролируйте роли.</div>
+        </div>
+    </div>
+    <div class="col-lg-4">
+        <div class="card card-soft p-3 h-100">
+            <div class="fw-bold mb-1">Объекты</div>
+            <div class="text-muted small">Храните данные клиентов и бассейнов, подключайте новых за пару минут.</div>
+        </div>
+    </div>
+</div>
 {% endblock %}

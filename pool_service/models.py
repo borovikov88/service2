@@ -5,6 +5,11 @@ from django_ckeditor_5.fields import CKEditor5Field
 # Организация (Обслуживающая компания или владелец бассейна)
 class Organization(models.Model):
     name = models.CharField(max_length=255, unique=True)
+    inn = models.CharField(max_length=20, blank=True, null=True)
+    city = models.CharField(max_length=100, blank=True, null=True)
+    address = models.CharField(max_length=255, blank=True, null=True)
+    phone = models.CharField(max_length=20, blank=True, null=True)
+    email = models.EmailField(blank=True, null=True)
 
     def __str__(self):
         return self.name
@@ -22,6 +27,7 @@ class Profile(models.Model):
 
 # Клиенты (владельцы бассейнов)
 class Client(models.Model):
+    user = models.OneToOneField(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="client_profile")
     name = models.CharField(max_length=100, verbose_name="Имя")
     phone = models.CharField(max_length=20, blank=True, null=True)  # Телефон
     email = models.EmailField(blank=True, null=True)  # Почта

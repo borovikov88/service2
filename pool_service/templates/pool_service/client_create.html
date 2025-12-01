@@ -1,0 +1,52 @@
+{% extends 'pool_service/base.html' %}
+
+{% block title %}Создание клиента{% endblock %}
+
+{% block content %}
+<div class="card card-soft p-4">
+    <h3 class="fw-bold h5 mb-3">Создание клиента</h3>
+    <form method="post">
+        {% csrf_token %}
+        <div class="row g-3">
+            <div class="col-md-6">
+                <label class="form-label">Имя</label>
+                {{ form.first_name }}
+                {% if form.first_name.errors %}<div class="text-danger small">{{ form.first_name.errors.0 }}</div>{% endif %}
+            </div>
+            <div class="col-md-6">
+                <label class="form-label">Фамилия</label>
+                {{ form.last_name }}
+                {% if form.last_name.errors %}<div class="text-danger small">{{ form.last_name.errors.0 }}</div>{% endif %}
+            </div>
+            <div class="col-md-6">
+                <label class="form-label">Телефон (логин, без +7/8)</label>
+                {{ form.phone }}
+                {% if form.phone.errors %}<div class="text-danger small">{{ form.phone.errors.0 }}</div>{% endif %}
+            </div>
+            <div class="col-md-6">
+                <label class="form-label">Email</label>
+                {{ form.email }}
+                {% if form.email.errors %}<div class="text-danger small">{{ form.email.errors.0 }}</div>{% endif %}
+            </div>
+            <div class="col-12">
+                <label class="form-label">Имя/название клиента</label>
+                {{ form.client_name }}
+                {% if form.client_name.errors %}<div class="text-danger small">{{ form.client_name.errors.0 }}</div>{% endif %}
+            </div>
+            <div class="col-md-6">
+                <label class="form-label">Телефон клиента</label>
+                {{ form.client_phone }}
+                {% if form.client_phone.errors %}<div class="text-danger small">{{ form.client_phone.errors.0 }}</div>{% endif %}
+            </div>
+            <div class="col-md-6">
+                <label class="form-label">Email клиента</label>
+                {{ form.client_email }}
+                {% if form.client_email.errors %}<div class="text-danger small">{{ form.client_email.errors.0 }}</div>{% endif %}
+            </div>
+        </div>
+        <div class="d-flex gap-2 mt-3">
+            <button type="submit" class="btn btn-primary">Создать</button>
+            <a href="{% url 'pool_list' %}" class="btn btn-outline-secondary">Отмена</a>
+        </div>
+    </form>
+{% endblock %}

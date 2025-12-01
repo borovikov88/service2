@@ -1,0 +1,143 @@
+{% extends 'pool_service/base.html' %}
+{% block title %}Регистрация{% endblock %}
+
+{% block content %}
+{% comment %}Шапка скрыта через hide_header во view{% endcomment %}
+<div class="card card-soft p-4">
+    <h3 class="fw-bold h5 mb-3">Регистрация</h3>
+    <p class="text-muted mb-3">Выберите тип и заполните данные</p>
+
+    {% if form.non_field_errors %}
+        <div class="alert alert-danger">{{ form.non_field_errors|join:", " }}</div>
+    {% endif %}
+
+    <form method="post" novalidate id="register-form">
+        {% csrf_token %}
+
+        <div class="row g-3">
+            <div class="col-12">
+                        <label class="form-label d-block mb-1">Тип регистрации</label>
+                        <div class="d-flex flex-column gap-2">
+                            {% for choice in form.user_type %}
+                                <label class="border rounded-4 p-3 w-100 bg-light">
+                                    {{ choice.tag }}
+                                    <span class="fw-semibold ms-2">{{ choice.choice_label }}</span><br>
+                                    {% if choice.choice_value == "organization" %}
+                                <span class="text-muted small ms-4">Создание неограниченного числа бассейнов, клиентов и сотрудников</span>
+                                    {% else %}
+                                <span class="text-muted small ms-4">Создание не более 1 бассейна и 2 сотрудников</span>
+                                    {% endif %}
+                                </label>
+                    {% endfor %}
+                </div>
+                {% if form.user_type.errors %}<div class="text-danger small mt-1">{{ form.user_type.errors.0 }}</div>{% endif %}
+            </div>
+
+            <div class="col-12">
+                <h5 class="fw-bold h6 mb-2">Данные пользователя</h5>
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Имя</label>
+                        {{ form.first_name }}
+                        {% if form.first_name.errors %}<div class="text-danger small mt-1">{{ form.first_name.errors.0 }}</div>{% endif %}
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Фамилия</label>
+                        {{ form.last_name }}
+                        {% if form.last_name.errors %}<div class="text-danger small mt-1">{{ form.last_name.errors.0 }}</div>{% endif %}
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Телефон (логин, без +7/8)</label>
+                        {{ form.user_phone }}
+                        {% if form.user_phone.errors %}<div class="text-danger small mt-1">{{ form.user_phone.errors.0 }}</div>{% endif %}
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Email</label>
+                        {{ form.email }}
+                        {% if form.email.errors %}<div class="text-danger small mt-1">{{ form.email.errors.0 }}</div>{% endif %}
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Пароль</label>
+                        {{ form.password1 }}
+                        {% if form.password1.errors %}<div class="text-danger small mt-1">{{ form.password1.errors.0 }}</div>{% endif %}
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Повторите пароль</label>
+                        {{ form.password2 }}
+                        {% if form.password2.errors %}<div class="text-danger small mt-1">{{ form.password2.errors.0 }}</div>{% endif %}
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-12" id="org-block">
+                <h5 class="fw-bold h6 mb-2">Данные организации</h5>
+                <div class="row g-3">
+                    <div class="col-12">
+                        <label class="form-label">Наименование организации</label>
+                        {{ form.org_name }}
+                        {% if form.org_name.errors %}<div class="text-danger small mt-1">{{ form.org_name.errors.0 }}</div>{% endif %}
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">ИНН</label>
+                        {{ form.org_inn }}
+                        {% if form.org_inn.errors %}<div class="text-danger small mt-1">{{ form.org_inn.errors.0 }}</div>{% endif %}
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Город</label>
+                        {{ form.org_city }}
+                        {% if form.org_city.errors %}<div class="text-danger small mt-1">{{ form.org_city.errors.0 }}</div>{% endif %}
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">Адрес</label>
+                        {{ form.org_address }}
+                        {% if form.org_address.errors %}<div class="text-danger small mt-1">{{ form.org_address.errors.0 }}</div>{% endif %}
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Телефон</label>
+                        {{ form.org_phone }}
+                        {% if form.org_phone.errors %}<div class="text-danger small mt-1">{{ form.org_phone.errors.0 }}</div>{% endif %}
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Email организации</label>
+                        {{ form.org_email }}
+                        {% if form.org_email.errors %}<div class="text-danger small mt-1">{{ form.org_email.errors.0 }}</div>{% endif %}
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <div class="mt-4">
+            <div class="form-check mb-3">
+                {{ form.consent }} <label class="form-check-label">Я соглашаюсь с <a href="{% url 'consent' %}" target="_blank">обработкой персональных данных</a></label>
+                {% if form.consent.errors %}<div class="text-danger small mt-1">{{ form.consent.errors.0 }}</div>{% endif %}
+            </div>
+            <div class="d-flex gap-2">
+                <button type="submit" class="btn btn-primary btn-lg">Зарегистрироваться</button>
+                <a href="{% url 'login' %}" class="btn btn-outline-secondary btn-lg">Войти</a>
+            </div>
+        </div>
+    </form>
+</div>
+
+<script>
+    function toggleBlocks() {
+        const type = document.querySelector('input[name="user_type"]:checked')?.value;
+        const orgBlock = document.getElementById("org-block");
+        const clientBlock = document.getElementById("client-block");
+        if (type === "organization") {
+            orgBlock.style.display = "";
+            clientBlock.style.display = "none";
+        } else {
+            orgBlock.style.display = "none";
+            clientBlock.style.display = "";
+        }
+    }
+    document.addEventListener("DOMContentLoaded", function() {
+        document.querySelectorAll('input[name="user_type"]').forEach(el => {
+            el.addEventListener("change", toggleBlocks);
+        });
+        toggleBlocks();
+    });
+</script>
+{% endblock %}

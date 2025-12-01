@@ -1,0 +1,77 @@
+{% extends 'pool_service/base.html' %}
+
+{% block title %}Пользователи{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+    <div class="col-12">
+        <div class="card card-soft p-4">
+            <h4 class="fw-bold mb-3">Сотрудники сервисной компании</h4>
+            <div class="table-responsive">
+                <table class="table align-middle">
+                    <thead class="small text-muted">
+                        <tr>
+                            <th>Компания</th>
+                            <th>ФИО</th>
+                            <th>Роль</th>
+                            {% if user.is_superuser %}<th>Последний вход</th>{% endif %}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for item in org_staff %}
+                            <tr>
+                                <td>{{ item.organization.name }}</td>
+                                <td>
+                                    {% if item.user.get_full_name %}{{ item.user.get_full_name }}{% else %}{{ item.user.username }}{% endif %}
+                                </td>
+                                <td>{{ item.get_role_display }}</td>
+                                {% if user.is_superuser %}
+                                    <td>{% if item.user.last_login %}{{ item.user.last_login|date:"d.m.Y H:i" }}{% else %}—{% endif %}</td>
+                                {% endif %}
+                            </tr>
+                        {% empty %}
+                            <tr><td colspan="3" class="text-center text-muted py-3">Нет данных</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-12">
+        <div class="card card-soft p-4">
+            <h4 class="fw-bold mb-3">Представители бассейнов</h4>
+            <div class="table-responsive">
+                <table class="table align-middle">
+                    <thead class="small text-muted">
+                        <tr>
+                            <th>Бассейн</th>
+                            <th>Адрес</th>
+                            <th>Пользователь</th>
+                            <th>Роль</th>
+                            {% if user.is_superuser %}<th>Последний вход</th>{% endif %}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for item in pool_staff %}
+                            <tr>
+                                <td>{{ item.pool.client.name }}</td>
+                                <td>{{ item.pool.address }}</td>
+                                <td>
+                                    {% if item.user.get_full_name %}{{ item.user.get_full_name }}{% else %}{{ item.user.username }}{% endif %}
+                                </td>
+                                <td>{{ item.get_role_display }}</td>
+                                {% if user.is_superuser %}
+                                    <td>{% if item.user.last_login %}{{ item.user.last_login|date:"d.m.Y H:i" }}{% else %}—{% endif %}</td>
+                                {% endif %}
+                            </tr>
+                        {% empty %}
+                            <tr><td colspan="4" class="text-center text-muted py-3">Нет данных</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

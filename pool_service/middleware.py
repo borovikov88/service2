@@ -1,20 +1,39 @@
 from django.utils import timezone
-from .models import Profile  # убедитесь, что импортируете модель Profile
+from django.shortcuts import redirect
+from .models import Profile
+
 
 class TimezoneMiddleware:
-    """
-    Middleware, который активирует часовой пояс пользователя, если он авторизован.
-    Если профиль отсутствует, создаёт его с часовым поясом по умолчанию.
-    """
     def __init__(self, get_response):
         self.get_response = get_response
 
     def __call__(self, request):
         if request.user.is_authenticated:
-            # Попытка получить профиль, или создать его, если отсутствует
-            profile, created = Profile.objects.get_or_create(user=request.user, defaults={'timezone': 'Europe/Moscow'})
+            profile, _ = Profile.objects.get_or_create(user=request.user, defaults={"timezone": "Europe/Moscow"})
             timezone.activate(profile.timezone)
         else:
             timezone.deactivate()
-        response = self.get_response(request)
-        return response
+        return self.get_response(request)
+
+
+class AuthRedirectMiddleware:
+    """
+    Redirect unauthenticated users to login page except for allowed paths.
+    """
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        allowed_paths = [
+            "/accounts/login/",
+            "/accounts/logout/",
+            "/register/",
+            "/static/",
+            "/consent/",
+        ]
+        if not request.user.is_authenticated:
+            path = request.path
+            if not any(path.startswith(p) for p in allowed_paths):
+                return redirect("/accounts/login/")
+        return self.get_response(request)

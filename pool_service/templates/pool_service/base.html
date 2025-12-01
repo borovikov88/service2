@@ -11,6 +11,10 @@
   <link href="{% static 'assets/css/style.css' %}" rel="stylesheet" />
 
   <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+    }
     :root {
       --app-bg-start: #f4f9fd;
       --app-bg-end: #e6f1fa;
@@ -21,6 +25,7 @@
       min-height: 100vh;
       font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
       color: #1f2d3d;
+      margin: 0;
     }
 
     .app-header {
@@ -28,6 +33,8 @@
       box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
       position: sticky;
       top: 0;
+      left: 0;
+      right: 0;
       z-index: 1000;
     }
 
@@ -38,7 +45,7 @@
 
     .page-shell {
       min-height: calc(100vh - 120px);
-      padding: 32px 0 104px;
+      padding: 16px 0 104px;
     }
 
     .card-soft {
@@ -98,12 +105,16 @@
       background: rgba(0, 0, 0, 0.4);
       opacity: 0;
       visibility: hidden;
+      pointer-events: none;
       transition: 0.2s ease;
       z-index: 1050;
+      display: none;
     }
     .menu-overlay.show {
       opacity: 1;
       visibility: visible;
+      display: block;
+      pointer-events: auto;
     }
     .mobile-menu {
       position: fixed;
@@ -116,9 +127,11 @@
       padding: 16px;
       transition: 0.25s ease;
       z-index: 1060;
+      pointer-events: none;
     }
     .mobile-menu.open {
       left: 0;
+      pointer-events: auto;
     }
 
     .hover-shadow {
@@ -141,7 +154,7 @@
 </head>
 
 <body>
-  <header class="app-header py-3">
+  <header class="app-header py-3" {% if hide_header %}style="display:none"{% endif %}>
     <div class="container">
       <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
         <div class="d-flex align-items-center gap-3">
@@ -157,9 +170,17 @@
 
         <div class="d-flex align-items-center gap-3">
           <nav class="d-none d-lg-flex align-items-center gap-3">
-            <a class="text-decoration-none {% if active_tab == 'readings' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="/readings/all">Показания</a>
-            <a class="text-decoration-none {% if active_tab == 'pools' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="/pools">Мои бассейны</a>
-            <a class="text-decoration-none {% if active_tab == 'profile' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'profile' %}">Профиль</a>
+          <a class="text-decoration-none {% if active_tab == 'home' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="/">Главная</a>
+          <a class="text-decoration-none {% if active_tab == 'readings' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="/readings/all">Показания</a>
+          <a class="text-decoration-none {% if active_tab == 'pools' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="/pools">Мои бассейны</a>
+          <a class="text-decoration-none {% if active_tab == 'profile' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'profile' %}">Профиль</a>
+          {% if user.is_authenticated %}
+            {% with org_admins=user.organizationaccess_set.all %}
+              {% if user.is_superuser or org_admins|length %}
+                <a class="text-decoration-none {% if active_tab == 'users' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'users' %}">Пользователи</a>
+              {% endif %}
+            {% endwith %}
+          {% endif %}
           </nav>
 
           {% if show_add_button and add_url %}
@@ -168,15 +189,7 @@
             </a>
           {% endif %}
 
-          {% if user.is_authenticated %}
-            <form method="post" action="{% url 'logout' %}">
-              {% csrf_token %}
-              <button class="btn btn-outline-dark rounded-3 px-3 d-flex align-items-center gap-2" type="submit">
-                <i class="bi bi-box-arrow-right"></i>
-                <span>Выйти</span>
-              </button>
-            </form>
-          {% else %}
+          {% if not user.is_authenticated %}
             <a class="btn btn-primary rounded-3 px-4" href="{% url 'login' %}">Войти</a>
           {% endif %}
         </div>
@@ -220,6 +233,13 @@
           <a href="/pools" class="list-group-item list-group-item-action">Мои бассейны</a>
           <a href="/readings/all" class="list-group-item list-group-item-action">История показаний</a>
           {% if user.is_authenticated %}
+            {% with org_admins=user.organizationaccess_set.all %}
+              {% if user.is_superuser or org_admins|length %}
+                <a href="{% url 'users' %}" class="list-group-item list-group-item-action">Пользователи</a>
+              {% endif %}
+            {% endwith %}
+          {% endif %}
+          {% if user.is_authenticated %}
           <form method="post" action="{% url 'logout' %}" class="list-group-item list-group-item-action p-0 border-0">
               {% csrf_token %}
               <button class="btn w-100 text-start">Выйти</button>
@@ -228,7 +248,7 @@
       </div>
   </div>
 
-  <div class="toast-container position-fixed bottom-0 end-0 p-3">
+    <div class="toast-container position-fixed bottom-0 end-0 p-3">
     {% if messages %}
       {% for message in messages %}
         <div class="toast align-items-center text-bg-light border-0 shadow-sm mb-2 show" role="alert">
@@ -270,6 +290,9 @@
         const toast = new bootstrap.Toast(el, { delay: 4000 });
         toast.show();
       });
+
+      // сбрасываем состояние мобильного меню при загрузке
+      closeMenu();
     });
 
     function openMenu() {

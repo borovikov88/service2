@@ -10,7 +10,7 @@
         <span class="fw-semibold">Назад к списку</span>
     </a>
 
-{% if role == 'editor' or role == 'service' or role == 'admin' or user.is_superuser %}
+    {% if role == 'editor' or role == 'service' or role == 'admin' or user.is_superuser %}
         <a class="btn btn-primary rounded-3 d-flex align-items-center justify-content-center" style="width:46px;height:46px;" href="{% url 'water_reading_create' pool.pk %}">
             <i class="bi bi-plus-lg"></i>
         </a>
@@ -43,6 +43,7 @@
             <thead class="small text-muted">
                 <tr>
                     <th rowspan="2" scope="col">Дата/Время</th>
+                    <th rowspan="2" scope="col">Внёс</th>
                     <th rowspan="2" scope="col">Температура</th>
                     <th colspan="3" class="text-center" scope="colgroup">Фотометр/ручной тестер</th>
                     <th colspan="4" class="text-center dosing-group" scope="colgroup">Станция дозирования</th>
@@ -63,7 +64,12 @@
             <tbody>
                 {% for reading in readings %}
                     <tr class="border-top">
-                        <td class="fw-semibold">{{ reading.date|date:"d.m.Y H:i" }}</td>
+                        <td class="fw-semibold">{{ reading.date|date:"d.m.Y H:i" }} ({{ reading.date|date:"D" }})</td>
+                        <td>
+                            {% if reading.added_by %}
+                                {% if reading.added_by.get_full_name %}{{ reading.added_by.get_full_name }}{% else %}{{ reading.added_by.username }}{% endif %}
+                            {% else %}—{% endif %}
+                        </td>
                         <td>
                             {% if reading.temperature is not None %}
                                 {{ reading.temperature|floatformat:"1" }}°C
