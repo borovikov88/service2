@@ -137,6 +137,7 @@ USE_TZ = False
 
 STATIC_URL = 'static/'
 STATICFILES_DIRS = [os.path.join(BASE_DIR, 'pool_service/static')]  # Указываем папку static
+STATIC_ROOT = os.path.join(BASE_DIR, "public_static")
 DEBUG = True
 
 # Default primary key field type
