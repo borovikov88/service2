@@ -7,12 +7,11 @@ from django.core.paginator import Paginator
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.csrf import csrf_protect
 from django.urls import reverse, reverse_lazy
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.http import HttpResponseForbidden
 
-from .forms import WaterReadingForm, RegistrationForm, ClientCreateForm
-from .models import OrganizationAccess, Pool, PoolAccess, WaterReading, Client
-from .models import Client
+from .forms import WaterReadingForm, RegistrationForm, ClientCreateForm, PoolForm
+from .models import OrganizationAccess, Pool, PoolAccess, WaterReading, Client, Organization
 from django import forms
 
 
@@ -26,8 +25,13 @@ def pool_list(request):
     if request.user.is_superuser:
         pools = Pool.objects.all()
     elif OrganizationAccess.objects.filter(user=request.user).exists():
-        org_access = OrganizationAccess.objects.get(user=request.user)
-        pools = Pool.objects.filter(organization=org_access.organization)
+        org_access = OrganizationAccess.objects.filter(user=request.user).first()
+        if org_access:
+            pools = Pool.objects.filter(
+                Q(organization=org_access.organization) | Q(client__organization=org_access.organization)
+            ).distinct()
+        else:
+            pools = Pool.objects.none()
     else:
         pools = Pool.objects.filter(accesses__user=request.user)
 
@@ -109,20 +113,37 @@ class PoolForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         user = kwargs.pop("user", None)
+        selected_client_id = kwargs.pop("selected_client_id", None)
         super().__init__(*args, **kwargs)
         if user:
-            client_qs = Client.objects.all()
+            client_qs = Client.objects.none()
             client_self = Client.objects.filter(user=user)
-            if client_self.exists():
+
+            if user.is_superuser:
+                client_qs = Client.objects.all()
+            elif client_self.exists():
                 client_qs = client_self
                 self.fields["client"].empty_label = None
                 self.fields["client"].initial = client_self.first()
+                self.fields["client"].widget = forms.HiddenInput()
+            else:
+                org_ids = OrganizationAccess.objects.filter(user=user).values_list("organization_id", flat=True)
+                if org_ids:
+                    client_qs = Client.objects.filter(organization_id__in=org_ids).distinct()
+
             self.fields["client"].queryset = client_qs
+            if selected_client_id:
+                try:
+                    selected_client = client_qs.get(pk=selected_client_id)
+                    self.fields["client"].initial = selected_client
+                except Client.DoesNotExist:
+                    pass
 
 
 @login_required
 def pool_create(request):
     user_client = Client.objects.filter(user=request.user).first()
+    selected_client_id = request.GET.get("client_id")
 
     if request.method == "POST":
         form = PoolForm(request.POST, user=request.user)
@@ -130,13 +151,27 @@ def pool_create(request):
             pool = form.save(commit=False)
             if user_client:
                 pool.client = user_client
+            # если есть организация клиента или организация создателя — проставляем org_id
+            if not pool.organization:
+                if pool.client and getattr(pool.client, "organization_id", None):
+                    pool.organization_id = pool.client.organization_id
+                else:
+                    org_access = (
+                        OrganizationAccess.objects.filter(user=request.user, role__in=["admin", "service", "manager"])
+                        .first()
+                    )
+                    if org_access:
+                        pool.organization_id = org_access.organization_id
             pool.save()
             # дать доступ создателю
             PoolAccess.objects.get_or_create(user=request.user, pool=pool, defaults={"role": "viewer"})
+            # дать доступ клиенту, к которому привязан бассейн
+            if pool.client and pool.client.user:
+                PoolAccess.objects.get_or_create(user=pool.client.user, pool=pool, defaults={"role": "viewer"})
             messages.success(request, "Бассейн создан")
             return redirect("pool_detail", pool_id=pool.id)
     else:
-        form = PoolForm(user=request.user)
+        form = PoolForm(user=request.user, selected_client_id=selected_client_id)
 
     return render(
         request,
@@ -152,7 +187,7 @@ def pool_create(request):
 
 
 @login_required
-def client_create(request):
+def client_create_inline(request):
     roles = list(OrganizationAccess.objects.filter(user=request.user).values_list("role", flat=True))
     if not request.user.is_superuser and not any(r in ["admin", "service", "manager"] for r in roles):
         return HttpResponseForbidden()
@@ -162,6 +197,34 @@ def client_create(request):
         if form.is_valid():
             form.save()
             messages.success(request, "Клиент создан")
+    return redirect("pool_create")
+
+
+@login_required
+def client_create(request):
+    roles = list(OrganizationAccess.objects.filter(user=request.user).values_list("role", flat=True))
+    if not request.user.is_superuser and not any(r in ["admin", "service", "manager"] for r in roles):
+        return HttpResponseForbidden()
+
+    next_url = request.GET.get("next") or request.POST.get("next")
+    if next_url and not next_url.startswith("/"):
+        next_url = None
+
+    if request.method == "POST":
+        form = ClientCreateForm(request.POST)
+        if form.is_valid():
+            user, client = form.save()
+            org_access = (
+                OrganizationAccess.objects.filter(user=request.user, role__in=["admin", "service", "manager"])
+                .select_related("organization")
+                .first()
+            )
+            if org_access and org_access.organization_id:
+                client.organization = org_access.organization
+                client.save(update_fields=["organization"])
+            messages.success(request, "Клиент создан")
+            if next_url:
+                return redirect(f"{next_url}?client_id={client.id}")
             return redirect("pool_list")
     else:
         form = ClientCreateForm()
@@ -173,6 +236,7 @@ def client_create(request):
             "form": form,
             "page_title": "Создание клиента",
             "active_tab": "pools",
+            "next_url": next_url,
         },
     )
 

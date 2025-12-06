@@ -13,5 +13,6 @@ urlpatterns = [
     path('accounts/login/', CustomLoginView.as_view(), name='login'),
     path('accounts/logout/', auth_views.LogoutView.as_view(next_page='/'), name='logout'),
     path('consent/', TemplateView.as_view(template_name='registration/consent.html'), name='consent'),
+    path('sw.js', TemplateView.as_view(template_name='sw.js', content_type='application/javascript'), name='service_worker'),
     path('ckeditor5/', include('django_ckeditor_5.urls')),
 ]

@@ -7,41 +7,56 @@
     <h3 class="fw-bold h5 mb-3">Создание клиента</h3>
     <form method="post">
         {% csrf_token %}
+        {% if next_url %}<input type="hidden" name="next" value="{{ next_url }}">{% endif %}
         <div class="row g-3">
-            <div class="col-md-6">
-                <label class="form-label">Имя</label>
-                {{ form.first_name }}
-                {% if form.first_name.errors %}<div class="text-danger small">{{ form.first_name.errors.0 }}</div>{% endif %}
-            </div>
-            <div class="col-md-6">
-                <label class="form-label">Фамилия</label>
-                {{ form.last_name }}
-                {% if form.last_name.errors %}<div class="text-danger small">{{ form.last_name.errors.0 }}</div>{% endif %}
-            </div>
-            <div class="col-md-6">
-                <label class="form-label">Телефон (логин, без +7/8)</label>
-                {{ form.phone }}
-                {% if form.phone.errors %}<div class="text-danger small">{{ form.phone.errors.0 }}</div>{% endif %}
-            </div>
-            <div class="col-md-6">
-                <label class="form-label">Email</label>
-                {{ form.email }}
-                {% if form.email.errors %}<div class="text-danger small">{{ form.email.errors.0 }}</div>{% endif %}
-            </div>
             <div class="col-12">
-                <label class="form-label">Имя/название клиента</label>
-                {{ form.client_name }}
-                {% if form.client_name.errors %}<div class="text-danger small">{{ form.client_name.errors.0 }}</div>{% endif %}
+                <label class="form-label d-block mb-1">Тип клиента</label>
+                <div class="d-flex flex-column gap-2">
+                    {% for choice in form.client_type %}
+                        <label class="border rounded-3 p-2">
+                            {{ choice.tag }} <span class="ms-2">{{ choice.choice_label }}</span>
+                        </label>
+                    {% endfor %}
+                </div>
+                {% if form.client_type.errors %}<div class="text-danger small">{{ form.client_type.errors.0 }}</div>{% endif %}
             </div>
-            <div class="col-md-6">
-                <label class="form-label">Телефон клиента</label>
-                {{ form.client_phone }}
-                {% if form.client_phone.errors %}<div class="text-danger small">{{ form.client_phone.errors.0 }}</div>{% endif %}
+            <div id="private-fields" class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label">Имя</label>
+                    {{ form.first_name }}
+                    {% if form.first_name.errors %}<div class="text-danger small">{{ form.first_name.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Фамилия</label>
+                    {{ form.last_name }}
+                    {% if form.last_name.errors %}<div class="text-danger small">{{ form.last_name.errors.0 }}</div>{% endif %}
+                </div>
             </div>
-            <div class="col-md-6">
-                <label class="form-label">Email клиента</label>
-                {{ form.client_email }}
-                {% if form.client_email.errors %}<div class="text-danger small">{{ form.client_email.errors.0 }}</div>{% endif %}
+
+            <div id="legal-fields" class="row g-3">
+                <div class="col-12">
+                    <label class="form-label">Наименование юр. лица</label>
+                    {{ form.company_name }}
+                    {% if form.company_name.errors %}<div class="text-danger small">{{ form.company_name.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">ИНН</label>
+                    {{ form.inn }}
+                    {% if form.inn.errors %}<div class="text-danger small">{{ form.inn.errors.0 }}</div>{% endif %}
+                </div>
+            </div>
+
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label">Телефон (логин, без +7/8)</label>
+                    {{ form.phone }}
+                    {% if form.phone.errors %}<div class="text-danger small">{{ form.phone.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Email</label>
+                    {{ form.email }}
+                    {% if form.email.errors %}<div class="text-danger small">{{ form.email.errors.0 }}</div>{% endif %}
+                </div>
             </div>
         </div>
         <div class="d-flex gap-2 mt-3">
@@ -49,4 +64,47 @@
             <a href="{% url 'pool_list' %}" class="btn btn-outline-secondary">Отмена</a>
         </div>
     </form>
+</div>
+<script>
+    function toggleClientFields() {
+        const type = document.querySelector('input[name="client_type"]:checked')?.value;
+        const privateBlock = document.getElementById("private-fields");
+        const legalBlock = document.getElementById("legal-fields");
+        if (type === "legal") {
+            privateBlock.style.display = "none";
+            legalBlock.style.display = "";
+        } else {
+            privateBlock.style.display = "";
+            legalBlock.style.display = "none";
+        }
+    }
+    document.addEventListener("DOMContentLoaded", function() {
+        document.querySelectorAll('input[name="client_type"]').forEach(el => {
+            el.addEventListener("change", toggleClientFields);
+        });
+        toggleClientFields();
+
+        function formatPhone(value) {
+            let digits = value.replace(/\D/g, "");
+            if (digits.startsWith("8")) digits = digits.slice(1);
+            if (digits.startsWith("7")) digits = digits.slice(1);
+            digits = digits.slice(0, 10);
+            let res = "+7";
+            if (digits.length > 0) res += " " + digits.substring(0, Math.min(3, digits.length));
+            if (digits.length > 3) res += " " + digits.substring(3, Math.min(6, digits.length));
+            if (digits.length > 6) res += " " + digits.substring(6, Math.min(10, digits.length));
+            return res.trimEnd();
+        }
+        document.querySelectorAll(".phone-mask").forEach(inp => {
+            inp.value = formatPhone(inp.value || "+7");
+            inp.addEventListener("input", () => {
+                inp.value = formatPhone(inp.value);
+                inp.setSelectionRange(inp.value.length, inp.value.length);
+            });
+            inp.addEventListener("focus", () => {
+                if (!inp.value.trim()) inp.value = "+7 ";
+            });
+        });
+    });
+</script>
 {% endblock %}
