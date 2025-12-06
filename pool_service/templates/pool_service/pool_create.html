@@ -12,7 +12,7 @@
             <div class="row g-2 align-items-center">
                 <div class="col position-relative">
                     <label class="form-label">Клиент</label>
-                    <input type="text" id="client-input" class="form-control mb-2" placeholder="Начните вводить имя/название">
+                    <input type="text" id="client-input" class="form-control mb-2" autocomplete="off" placeholder="Начните вводить имя/название">
                     <select id="id_client" name="{{ form.client.html_name }}" class="form-select d-none">
                         {% for opt in form.client.field.choices %}
                             {% if opt.0 %}
@@ -20,7 +20,7 @@
                             {% endif %}
                         {% endfor %}
                     </select>
-                    <div id="client-dropdown" class="list-group position-absolute w-100" style="z-index:1050; max-height:240px; overflow-y:auto; display:none;"></div>
+                    <div id="client-dropdown" class="list-group position-absolute w-100 shadow-sm" style="z-index:1050; max-height:240px; overflow-y:auto; display:none;"></div>
                     {% if form.client.errors %}<div class="text-danger small mt-1">{{ form.client.errors.0 }}</div>{% endif %}
                 </div>
                 <div class="col-auto d-flex align-items-center">
@@ -51,24 +51,23 @@
         const select = document.getElementById("id_client");
         const input = document.getElementById("client-input");
         const dropdown = document.getElementById("client-dropdown");
+        const options = select ? Array.from(select.options).filter(opt => opt.value) : [];
 
-        if (select && input && dropdown) {
-            const options = Array.from(select.options).filter(opt => opt.value);
-
+        if (select && input) {
             function render(list) {
+                if (!dropdown) return;
                 dropdown.innerHTML = "";
                 list.slice(0, 10).forEach(opt => {
-                    const item = document.createElement("button");
-                    item.type = "button";
-                    item.className = "list-group-item list-group-item-action";
-                    item.textContent = opt.text;
-                    item.dataset.value = opt.value;
-                    item.addEventListener("click", () => {
+                    const btn = document.createElement("button");
+                    btn.type = "button";
+                    btn.className = "list-group-item list-group-item-action";
+                    btn.textContent = opt.text;
+                    btn.addEventListener("click", () => {
                         select.value = opt.value;
                         input.value = opt.text;
                         dropdown.style.display = "none";
                     });
-                    dropdown.appendChild(item);
+                    dropdown.appendChild(btn);
                 });
                 dropdown.style.display = list.length ? "block" : "none";
             }
@@ -82,15 +81,26 @@
             input.addEventListener("input", filter);
             input.addEventListener("focus", filter);
             document.addEventListener("click", (e) => {
-                if (!dropdown.contains(e.target) && e.target !== input) {
+                if (dropdown && !dropdown.contains(e.target) && e.target !== input) {
                     dropdown.style.display = "none";
                 }
             });
 
-            // Инициализация выбранного значения
+            function syncToInput() {
+                const val = input.value.toLowerCase().trim();
+                const match = options.find(o => o.text.toLowerCase() === val);
+                select.value = match ? match.value : "";
+            }
+
+            input.addEventListener("input", syncToInput);
+            input.addEventListener("change", syncToInput);
+
             const current = options.find(o => o.value === select.value);
             if (current) {
                 input.value = current.text;
+            } else if (options.length === 1) {
+                select.value = options[0].value;
+                input.value = options[0].text;
             }
         }
     });
