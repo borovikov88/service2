@@ -60,19 +60,10 @@
         const dropdown = document.getElementById("client-dropdown");
         const datalist = document.getElementById("client-datalist");
         const options = select ? Array.from(select.options).filter(opt => opt.value) : [];
-        const isTouch = "ontouchstart" in window || (navigator.maxTouchPoints || 0) > 0;
 
         if (select && input) {
-            if (isTouch) {
-                // мобильная версия: используем нативный datalist, отключаем кастомный дропдаун
-                input.setAttribute("list", "client-datalist");
-                if (dropdown) dropdown.remove();
-                return;
-            } else {
-                // десктоп: убираем datalist, оставляем кастомный список
-                input.removeAttribute("list");
-                if (datalist) datalist.innerHTML = "";
-            }
+            input.removeAttribute("list");
+            if (datalist) datalist.innerHTML = "";
 
             function render(list) {
                 if (!dropdown) return;
@@ -126,3 +117,4 @@
     });
 </script>
 {% endblock %}
+
