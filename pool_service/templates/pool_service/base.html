@@ -155,6 +155,19 @@
     .dosing-group {
       background: #eef5ff !important;
     }
+
+    .offline-toast {
+      position: fixed;
+      bottom: 90px;
+      right: 16px;
+      z-index: 1200;
+      background: #0d6efd;
+      color: #fff;
+      padding: 12px 16px;
+      border-radius: 12px;
+      box-shadow: 0 10px 30px rgba(13, 110, 253, 0.25);
+      display: none;
+    }
   </style>
 </head>
 
@@ -268,11 +281,11 @@
       </div>
     </div>
 
-    <div class="toast-container position-fixed bottom-0 end-0 p-3">
-    {% if messages %}
-      {% for message in messages %}
-        <div class="toast align-items-center text-bg-light border-0 shadow-sm mb-2 show" role="alert">
-          <div class="d-flex">
+  <div class="toast-container position-fixed bottom-0 end-0 p-3">
+  {% if messages %}
+    {% for message in messages %}
+      <div class="toast align-items-center text-bg-light border-0 shadow-sm mb-2 show" role="alert">
+        <div class="d-flex">
             <div class="toast-body">
               {% if message.tags %}
                 <span class="badge bg-light text-dark border me-2 text-uppercase">{{ message.tags }}</span>
@@ -285,6 +298,7 @@
       {% endfor %}
     {% endif %}
   </div>
+  <div id="offline-toast" class="offline-toast"></div>
 
   {% if not hide_bottom_nav %}
     <div class="mobile-bottom-nav">
@@ -322,6 +336,79 @@
     function closeMenu() {
       document.getElementById("mobile-menu").classList.remove("open");
       document.getElementById("menu-overlay").classList.remove("show");
+    }
+
+    // simple offline form queue
+    const offlineToast = document.getElementById("offline-toast");
+    function showOfflineToast(text) {
+      if (!offlineToast) return;
+      offlineToast.textContent = text;
+      offlineToast.style.display = "block";
+      setTimeout(() => (offlineToast.style.display = "none"), 4000);
+    }
+
+    function loadQueue() {
+      try {
+        return JSON.parse(localStorage.getItem("offlineQueue") || "[]");
+      } catch (e) {
+        return [];
+      }
+    }
+    function saveQueue(queue) {
+      localStorage.setItem("offlineQueue", JSON.stringify(queue));
+    }
+
+    async function processQueue() {
+      const queue = loadQueue();
+      if (!queue.length || !navigator.onLine) return;
+      while (queue.length) {
+        const item = queue[0];
+        try {
+          const resp = await fetch(item.action, {
+            method: item.method,
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+              "X-CSRFToken": item.csrf || "",
+            },
+            body: item.body,
+            credentials: "include",
+          });
+          if (!resp.ok) throw new Error("Network error");
+          queue.shift();
+          saveQueue(queue);
+        } catch (e) {
+          break;
+        }
+      }
+      if (queue.length === 0) {
+        showOfflineToast("Отложенные формы отправлены");
+      }
+    }
+
+    window.addEventListener("online", processQueue);
+
+    document.addEventListener("submit", function (e) {
+      const form = e.target;
+      if (!form.classList.contains("offline-queue-form")) return;
+      if (navigator.onLine) return;
+
+      e.preventDefault();
+      const fd = new FormData(form);
+      const params = new URLSearchParams(fd);
+      const csrf = fd.get("csrfmiddlewaretoken") || "";
+      const queue = loadQueue();
+      queue.push({
+        action: form.action,
+        method: form.method || "POST",
+        body: params.toString(),
+        csrf,
+      });
+      saveQueue(queue);
+      showOfflineToast("Нет сети. Данные сохранены и будут отправлены при подключении");
+    });
+
+    if (navigator.onLine) {
+      processQueue();
     }
 
     // PWA: регистрация service worker

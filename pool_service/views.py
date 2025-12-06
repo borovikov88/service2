@@ -213,7 +213,7 @@ def client_create(request):
     if request.method == "POST":
         form = ClientCreateForm(request.POST)
         if form.is_valid():
-            user, client = form.save()
+            client = form.save()
             org_access = (
                 OrganizationAccess.objects.filter(user=request.user, role__in=["admin", "service", "manager"])
                 .select_related("organization")

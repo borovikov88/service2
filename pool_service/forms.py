@@ -1,5 +1,6 @@
 from django import forms
 from django.contrib.auth.models import User
+from django.utils.crypto import get_random_string
 from .models import WaterReading, Organization, Client, OrganizationAccess, Pool
 
 
@@ -82,7 +83,7 @@ class RegistrationForm(forms.Form):
                 self.add_error("user_phone", "Телефон должен быть 10 цифр (без +7/8)")
             else:
                 username = digits
-                cleaned["username_normalized"] = digits
+                
         if username and User.objects.filter(username=username).exists():
             self.add_error("user_phone", "Пользователь с таким логином уже существует")
 
@@ -111,7 +112,7 @@ class RegistrationForm(forms.Form):
 
     def save(self):
         data = self.cleaned_data
-        username = data.get("username_normalized") or data.get("user_phone")
+        username = data.get("user_phone")
         user = User.objects.create_user(
             username=username,
             password=data["password1"],
@@ -128,10 +129,10 @@ class RegistrationForm(forms.Form):
                 phone=data.get("org_phone"),
                 email=data.get("org_email") or data.get("email"),
             )
-            OrganizationAccess.objects.create(user=user, organization=org, role="admin")
+            OrganizationAccess.objects.create( organization=org, role="admin")
         else:
             Client.objects.create(
-                user=user,
+                
                 client_type="private",
                 first_name=data.get("first_name"),
                 last_name=data.get("last_name"),
@@ -143,17 +144,13 @@ class RegistrationForm(forms.Form):
 
 
 class ClientCreateForm(forms.Form):
-    CLIENT_TYPE_CHOICES = [
-        ("private", "Частный клиент"),
-        ("legal", "Юридическое лицо"),
-    ]
-
+    CLIENT_TYPE_CHOICES = [("private", "Частный клиент"), ("legal", "Юрлицо")]
     client_type = forms.ChoiceField(choices=CLIENT_TYPE_CHOICES, widget=forms.RadioSelect, initial="private", label="Тип клиента")
     first_name = forms.CharField(label="Имя", required=False)
     last_name = forms.CharField(label="Фамилия", required=False)
     phone = forms.CharField(label="Телефон (логин, без +7/8)", required=False)
     email = forms.EmailField(label="Email", required=False)
-    company_name = forms.CharField(label="Наименование организации", required=False)
+    company_name = forms.CharField(label="Название компании", required=False)
     inn = forms.CharField(label="ИНН", required=False)
 
     def __init__(self, *args, **kwargs):
@@ -162,14 +159,13 @@ class ClientCreateForm(forms.Form):
             if isinstance(field.widget, forms.RadioSelect):
                 continue
             field.widget.attrs.update({"class": "form-control rounded-3", "placeholder": field.label})
-        if "phone" in self.fields:
-            self.fields["phone"].widget.attrs.update({"class": "form-control rounded-3 phone-mask", "placeholder": self.fields["phone"].label})
-            self.fields["phone"].initial = "+7 "
+        self.fields["phone"].widget.attrs.update({"class": "form-control rounded-3 phone-mask", "placeholder": self.fields["phone"].label})
+        self.fields["phone"].initial = "+7 "
 
     def clean(self):
         cleaned = super().clean()
         phone_raw = cleaned.get("phone")
-        client_type = cleaned.get("client_type") or "private"
+        ctype = cleaned.get("client_type") or "private"
         if phone_raw:
             digits = "".join(filter(str.isdigit, phone_raw))
             if digits.startswith("7") and len(digits) == 11:
@@ -177,39 +173,26 @@ class ClientCreateForm(forms.Form):
             if digits.startswith("8") and len(digits) == 11:
                 digits = digits[1:]
             if len(digits) != 10:
-                self.add_error("phone", "Телефон должен быть 10 цифр (без +7/8)")
-            cleaned["username_normalized"] = digits
-            if User.objects.filter(username=digits).exists():
-                self.add_error("phone", "Пользователь с таким телефоном уже существует")
+                self.add_error("phone", "Номер телефона должен состоять из 10 цифр (без +7/8)")
         else:
-            self.add_error("phone", "Укажите телефон")
+            self.add_error("phone", "Обязательное поле")
 
-        if client_type == "private":
+        if ctype == "private":
             if not cleaned.get("first_name"):
-                self.add_error("first_name", "Укажите имя")
+                self.add_error("first_name", "Обязательное поле")
             if not cleaned.get("last_name"):
-                self.add_error("last_name", "Укажите фамилию")
+                self.add_error("last_name", "Обязательное поле")
         else:
             if not cleaned.get("company_name"):
-                self.add_error("company_name", "Укажите наименование организации")
-            # очистить поля ФИО, чтобы не мешали
+                self.add_error("company_name", "Обязательное поле")
             cleaned["first_name"] = ""
             cleaned["last_name"] = ""
         return cleaned
 
     def save(self):
         data = self.cleaned_data
-        username = data.get("username_normalized")
-        user = User.objects.create_user(
-            username=username,
-            password=User.objects.make_random_password(),
-            email=data.get("email"),
-            first_name=data.get("first_name", ""),
-            last_name=data.get("last_name", ""),
-        )
         name_val = data.get("company_name") or f"{data.get('first_name','')} {data.get('last_name','')}".strip()
-        client = Client.objects.create(
-            user=user,
+        return Client.objects.create(
             client_type=data.get("client_type"),
             first_name=data.get("first_name"),
             last_name=data.get("last_name"),
@@ -219,7 +202,7 @@ class ClientCreateForm(forms.Form):
             phone=data.get("phone"),
             email=data.get("email"),
         )
-        return user, client
+
 
 
 class PoolForm(forms.ModelForm):

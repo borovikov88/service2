@@ -27,7 +27,7 @@
         <h3 class="fw-bold h5 mb-1">Новое показание</h3>
         <p class="text-muted mb-3">Заполните данные замеров для {{ pool.client.name }}</p>
 
-        <form method="post" novalidate>
+        <form method="post" class="offline-queue-form" novalidate>
             {% csrf_token %}
             {{ form.date }}
 

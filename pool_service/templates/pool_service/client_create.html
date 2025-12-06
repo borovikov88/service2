@@ -5,7 +5,7 @@
 {% block content %}
 <div class="card card-soft p-4">
     <h3 class="fw-bold h5 mb-3">Создание клиента</h3>
-    <form method="post">
+    <form method="post" class="offline-queue-form">
         {% csrf_token %}
         {% if next_url %}<input type="hidden" name="next" value="{{ next_url }}">{% endif %}
         <div class="row g-3">

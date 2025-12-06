@@ -5,7 +5,7 @@
 {% block content %}
 <div class="card card-soft p-4">
     <h3 class="fw-bold h5 mb-3">Создание бассейна</h3>
-    <form method="post">
+    <form method="post" class="offline-queue-form" action="{% url 'pool_create' %}">
         {% csrf_token %}
         {% if not request.user.client_profile %}
         <div class="mb-3">
@@ -13,6 +13,13 @@
                 <div class="col position-relative">
                     <label class="form-label">Клиент</label>
                     <input type="text" id="client-input" class="form-control mb-2" autocomplete="off" placeholder="Начните вводить имя/название">
+                    <datalist id="client-datalist">
+                        {% for opt in form.client.field.choices %}
+                            {% if opt.0 %}
+                                <option value="{{ opt.1 }}" data-id="{{ opt.0 }}"></option>
+                            {% endif %}
+                        {% endfor %}
+                    </datalist>
                     <select id="id_client" name="{{ form.client.html_name }}" class="form-select d-none">
                         {% for opt in form.client.field.choices %}
                             {% if opt.0 %}
@@ -51,9 +58,22 @@
         const select = document.getElementById("id_client");
         const input = document.getElementById("client-input");
         const dropdown = document.getElementById("client-dropdown");
+        const datalist = document.getElementById("client-datalist");
         const options = select ? Array.from(select.options).filter(opt => opt.value) : [];
+        const isTouch = "ontouchstart" in window || (navigator.maxTouchPoints || 0) > 0;
 
         if (select && input) {
+            if (isTouch) {
+                // мобильная версия: используем нативный datalist, отключаем кастомный дропдаун
+                input.setAttribute("list", "client-datalist");
+                if (dropdown) dropdown.remove();
+                return;
+            } else {
+                // десктоп: убираем datalist, оставляем кастомный список
+                input.removeAttribute("list");
+                if (datalist) datalist.innerHTML = "";
+            }
+
             function render(list) {
                 if (!dropdown) return;
                 dropdown.innerHTML = "";
