@@ -119,6 +119,24 @@
             dateField.value = new Date(Date.now() - tzoffset).toISOString().slice(0, -1);
         }
         {% endif %}
+
+        const form = document.querySelector("form");
+        if (form) {
+            let dirty = false;
+            const markDirty = () => {
+                dirty = true;
+            };
+            form.addEventListener("input", markDirty);
+            form.addEventListener("change", markDirty);
+            form.addEventListener("submit", () => {
+                dirty = false;
+            });
+            window.addEventListener("beforeunload", (event) => {
+                if (!dirty) return;
+                event.preventDefault();
+                event.returnValue = "";
+            });
+        }
     });
 </script>
 {% endblock %}

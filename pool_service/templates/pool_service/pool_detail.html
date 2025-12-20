@@ -35,7 +35,7 @@
             <div class="row g-2 mt-3">
                 <div class="col-12 col-md-6 col-lg-4">
                     <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
-                        <i class="bi bi-shapes text-primary"></i>
+                        <i class="bi bi-bounding-box text-primary"></i>
                         <div class="small text-muted">Форма</div>
                         <div class="ms-auto fw-semibold">{{ pool.get_shape_display }}</div>
                     </div>
@@ -60,7 +60,7 @@
                     <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
                         <i class="bi bi-arrows-expand text-primary"></i>
                         <div class="small text-muted">Размеры</div>
-                        <div class="ms-auto fw-semibold">{{ pool.length|default:"-" }}×{{ pool.width|default:"-" }} м</div>
+                        <div class="ms-auto fw-semibold">{{ pool.length|default:"-" }}x{{ pool.width|default:"-" }} м</div>
                     </div>
                 </div>
                 {% endif %}
@@ -82,22 +82,22 @@
                     <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
                         <i class="bi bi-bezier text-primary"></i>
                         <div class="small text-muted">Переливные емкости</div>
-                        <div class="ms-auto fw-semibold">{{ pool.overflow_volume|default:"-" }} м³</div>
+                        <div class="ms-auto fw-semibold">{{ pool.overflow_volume|default:"-" }} м3</div>
                     </div>
                 </div>
                 {% endif %}
                 <div class="col-12 col-md-6 col-lg-4">
                     <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
                         <i class="bi bi-water text-primary"></i>
-                        <div class="small text-muted">Площадь воды</div>
-                        <div class="ms-auto fw-semibold">{{ pool.surface_area|default:"-" }} м²</div>
+                        <div class="small text-muted">Площадь зеркала воды</div>
+                        <div class="ms-auto fw-semibold">{{ pool.surface_area|default:"-" }} м2</div>
                     </div>
                 </div>
                 <div class="col-12 col-md-6 col-lg-4">
                     <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
                         <i class="bi bi-box text-primary"></i>
                         <div class="small text-muted">Объем воды</div>
-                        <div class="ms-auto fw-semibold">{{ pool.volume|default:"-" }} м³</div>
+                        <div class="ms-auto fw-semibold">{{ pool.volume|default:"-" }} м3</div>
                     </div>
                     {% if pool.pool_type == "overflow" and pool.overflow_volume %}
                         <div class="small text-muted mt-1">С учетом 1/3 переливной емкости</div>
@@ -125,7 +125,9 @@
                     <th rowspan="2" scope="col">Внёс</th>
                     <th rowspan="2" scope="col">Температура</th>
                     <th colspan="3" class="text-center" scope="colgroup">Фотометр/ручной тестер</th>
+                    {% if pool.dosing_station %}
                     <th colspan="4" class="text-center dosing-group" scope="colgroup">Станция дозирования</th>
+                    {% endif %}
                     <th rowspan="2" scope="col">Комментарий</th>
                     <th rowspan="2" scope="col">Необходимые материалы</th>
                     <th rowspan="2" scope="col">Произведенные работы</th>
@@ -135,10 +137,12 @@
                     <th scope="col" class="manual-head">pH</th>
                     <th scope="col" class="manual-head">Своб. хлор</th>
                     <th scope="col" class="manual-head">Связ. хлор</th>
+                    {% if pool.dosing_station %}
                     <th scope="col" class="dosing-head">pH</th>
                     <th scope="col" class="dosing-head">Своб. хлор</th>
-                    <th scope="col" class="dosing-head">Общий хлор</th>
+                    <th scope="col" class="dosing-head">Связ. хлор</th>
                     <th scope="col" class="dosing-head">Redox</th>
+                    {% endif %}
                 </tr>
             </thead>
             <tbody>
@@ -155,14 +159,16 @@
                                 {{ reading.temperature|floatformat:"1" }}°C
                             {% else %}—{% endif %}
                         </td>
-                        <td class="manual-cell">{% if reading.ph is not None %}{{ reading.ph|floatformat:"1" }}{% else %}—{% endif %}</td>
-                        <td class="manual-cell">{% if reading.cl_free is not None %}{{ reading.cl_free|floatformat:"1" }}{% else %}—{% endif %}</td>
-                        <td class="manual-cell">{% if reading.cl_total is not None %}{{ reading.cl_total|floatformat:"1" }}{% else %}—{% endif %}</td>
-                        <td class="dosing-cell">{% if reading.ph_dosing_station is not None %}{{ reading.ph_dosing_station|floatformat:"1" }}{% else %}—{% endif %}</td>
-                        <td class="dosing-cell">{% if reading.cl_free_dosing_station is not None %}{{ reading.cl_free_dosing_station|floatformat:"1" }}{% else %}—{% endif %}</td>
-                        <td class="dosing-cell">{% if reading.cl_total_dosing_station is not None %}{{ reading.cl_total_dosing_station|floatformat:"1" }}{% else %}—{% endif %}</td>
-                        <td class="dosing-cell">{% if reading.redox_dosing_station is not None %}{{ reading.redox_dosing_station|floatformat:"1" }}{% else %}—{% endif %}</td>
-                        <td>{{ reading.comment|default:"—" }}</td>
+                        <td class="manual-cell">{% if reading.ph is not None %}{{ reading.ph|floatformat:"2" }}{% else %}—{% endif %}</td>
+                        <td class="manual-cell">{% if reading.cl_free is not None %}{{ reading.cl_free|floatformat:"2" }}{% else %}—{% endif %}</td>
+                        <td class="manual-cell">{% if reading.cl_total is not None %}{{ reading.cl_total|floatformat:"2" }}{% else %}—{% endif %}</td>
+                        {% if pool.dosing_station %}
+                        <td class="dosing-cell">{% if reading.ph_dosing_station is not None %}{{ reading.ph_dosing_station|floatformat:"2" }}{% else %}-{% endif %}</td>
+                        <td class="dosing-cell">{% if reading.cl_free_dosing_station is not None %}{{ reading.cl_free_dosing_station|floatformat:"2" }}{% else %}-{% endif %}</td>
+                        <td class="dosing-cell">{% if reading.cl_total_dosing_station is not None %}{{ reading.cl_total_dosing_station|floatformat:"2" }}{% else %}-{% endif %}</td>
+                        <td class="dosing-cell">{% if reading.redox_dosing_station is not None %}{{ reading.redox_dosing_station|floatformat:"0" }}{% else %}-{% endif %}</td>
+                        {% endif %}
+                        <td>{{ reading.comment|default:"-" }}</td>
                         <td>{{ reading.required_materials|default:"—" }}</td>
                         <td>{{ reading.performed_works|default:"-" }}</td>
                         <td class="text-end">

@@ -6,6 +6,7 @@ from django.contrib.auth.views import LoginView
 from django.core.paginator import Paginator
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.csrf import csrf_protect
+from django.views.decorators.cache import never_cache
 from django.urls import reverse, reverse_lazy
 from django.db.models import Count, Q
 from django.http import HttpResponseForbidden, JsonResponse
@@ -200,6 +201,7 @@ class PoolForm(forms.ModelForm):
 
 
 @login_required
+@never_cache
 def pool_create(request):
     user_client = Client.objects.filter(user=request.user).first()
     selected_client_id = request.GET.get("client_id")
@@ -248,6 +250,7 @@ def pool_create(request):
 
 
 @login_required
+@never_cache
 def pool_edit(request, pool_id):
     pool = get_object_or_404(Pool, id=pool_id)
 
@@ -312,6 +315,7 @@ def client_create_inline(request):
 
 
 @login_required
+@never_cache
 def client_create(request):
     roles = list(OrganizationAccess.objects.filter(user=request.user).values_list("role", flat=True))
     if not request.user.is_superuser and not any(r in ["admin", "service", "manager"] for r in roles):
@@ -527,6 +531,7 @@ def readings_all(request):
 
 
 @csrf_protect
+@never_cache
 def water_reading_create(request, pool_id):
     """Создание нового замера для выбранного бассейна."""
     pool = get_object_or_404(Pool, pk=pool_id)
