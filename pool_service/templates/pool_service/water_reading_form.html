@@ -1,6 +1,6 @@
 {% extends 'pool_service/base.html' %}
 {% load static %}
-{% block title %}Новое показание{% endblock %}
+{% block title %}{% if is_edit %}Редактирование показания{% else %}Новое показание{% endif %}{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -8,11 +8,13 @@
         <i class="bi bi-arrow-left"></i>
         <span class="fw-semibold">Назад к списку</span>
     </a>
-    <div class="d-flex align-items-center gap-2">
-        <a href="{% url 'water_reading_create' pool.pk %}" class="btn btn-primary rounded-3 d-flex align-items-center justify-content-center" style="width:46px;height:46px;">
-            <i class="bi bi-plus-lg"></i>
-        </a>
-    </div>
+    {% if not is_edit %}
+        <div class="d-flex align-items-center gap-2">
+            <a href="{% url 'water_reading_create' pool.pk %}" class="btn btn-primary rounded-3 d-flex align-items-center justify-content-center" style="width:46px;height:46px;">
+                <i class="bi bi-plus-lg"></i>
+            </a>
+        </div>
+    {% endif %}
 </div>
 
 <div class="card card-soft p-4 mb-4">
@@ -24,8 +26,10 @@
     </div>
 
     <div class="card card-soft p-4">
-        <h3 class="fw-bold h5 mb-1">Новое показание</h3>
-        <p class="text-muted mb-3">Заполните данные замеров для {{ pool.client.name }}</p>
+        <h3 class="fw-bold h5 mb-1">{% if is_edit %}Редактирование показания{% else %}Новое показание{% endif %}</h3>
+        <p class="text-muted mb-3">
+            {% if is_edit %}Обновите данные замеров для {{ pool.client.name }}{% else %}Заполните данные замеров для {{ pool.client.name }}{% endif %}
+        </p>
 
         <form method="post" class="offline-queue-form" novalidate>
             {% csrf_token %}
@@ -107,12 +111,14 @@
             dosing.classList.toggle("d-none");
         });
 
+        {% if not is_edit %}
         // заполнение даты локальным ISO
         const dateField = document.querySelector('input[name="date"]');
         if (dateField) {
             const tzoffset = (new Date()).getTimezoneOffset() * 60000;
             dateField.value = new Date(Date.now() - tzoffset).toISOString().slice(0, -1);
         }
+        {% endif %}
     });
 </script>
 {% endblock %}

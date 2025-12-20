@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import home, pool_list, pool_detail, water_reading_create, readings_all, profile_view, users_view, register, pool_create, client_create
+from .views import home, pool_list, pool_detail, water_reading_create, water_reading_edit, readings_all, profile_view, users_view, register, pool_create, pool_edit, client_create, yandex_suggest
 from . import views
 
 urlpatterns = [
@@ -8,7 +8,10 @@ urlpatterns = [
     path('pools/', pool_list, name='pool_list'),
     path('pools/<int:pool_id>/', pool_detail, name='pool_detail'),
     path('pools/create/', pool_create, name='pool_create'),
+    path("pools/<int:pool_id>/edit/", pool_edit, name="pool_edit"),
+    path("api/yandex/suggest/", yandex_suggest, name="yandex_suggest"),
     path('pools/<int:pool_id>/new-reading/', water_reading_create, name='water_reading_create'),
+    path("readings/<int:reading_id>/edit/", water_reading_edit, name="water_reading_edit"),
     path("readings/all", readings_all, name="readings_all"),
     path("profile/", profile_view, name="profile"),
     path("users/", users_view, name="users"),

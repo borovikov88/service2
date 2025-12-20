@@ -11,9 +11,16 @@
     </a>
 
     {% if role == 'editor' or role == 'service' or role == 'admin' or user.is_superuser %}
-        <a class="btn btn-primary rounded-3 d-flex align-items-center justify-content-center" style="width:46px;height:46px;" href="{% url 'water_reading_create' pool.pk %}">
-            <i class="bi bi-plus-lg"></i>
-        </a>
+        <div class="d-flex align-items-center gap-2">
+            {% if role == 'admin' or user.is_superuser %}
+                <a class="btn btn-outline-primary rounded-3 d-flex align-items-center gap-2" href="{% url 'pool_edit' pool.pk %}" aria-label="Редактировать бассейн" title="Редактировать бассейн">
+                    <i class="bi bi-pencil"></i><span class="d-none d-sm-inline">Редактировать бассейн</span>
+                </a>
+            {% endif %}
+            <a class="btn btn-primary rounded-3 d-flex align-items-center gap-2" href="{% url 'water_reading_create' pool.pk %}" aria-label="Добавить показания" title="Добавить показания">
+                <i class="bi bi-plus-lg"></i><span class="d-none d-sm-inline">Добавить показания</span>
+            </a>
+        </div>
     {% endif %}
 </div>
 
@@ -25,6 +32,78 @@
             {% if pool.description %}
                 <div class="text-muted small">{{ pool.description|safe }}</div>
             {% endif %}
+            <div class="row g-2 mt-3">
+                <div class="col-12 col-md-6 col-lg-4">
+                    <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
+                        <i class="bi bi-shapes text-primary"></i>
+                        <div class="small text-muted">Форма</div>
+                        <div class="ms-auto fw-semibold">{{ pool.get_shape_display }}</div>
+                    </div>
+                </div>
+                <div class="col-12 col-md-6 col-lg-4">
+                    <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
+                        <i class="bi bi-droplet-half text-primary"></i>
+                        <div class="small text-muted">Тип</div>
+                        <div class="ms-auto fw-semibold">{{ pool.get_pool_type_display }}</div>
+                    </div>
+                </div>
+                {% if pool.shape == "round" %}
+                <div class="col-12 col-md-6 col-lg-4">
+                    <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
+                        <i class="bi bi-circle text-primary"></i>
+                        <div class="small text-muted">Диаметр</div>
+                        <div class="ms-auto fw-semibold">{{ pool.diameter|default:"-" }} м</div>
+                    </div>
+                </div>
+                {% else %}
+                <div class="col-12 col-md-6 col-lg-4">
+                    <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
+                        <i class="bi bi-arrows-expand text-primary"></i>
+                        <div class="small text-muted">Размеры</div>
+                        <div class="ms-auto fw-semibold">{{ pool.length|default:"-" }}×{{ pool.width|default:"-" }} м</div>
+                    </div>
+                </div>
+                {% endif %}
+                <div class="col-12 col-md-6 col-lg-4">
+                    <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
+                        <i class="bi bi-arrow-down-up text-primary"></i>
+                        <div class="small text-muted">Глубина</div>
+                        <div class="ms-auto fw-semibold">
+                            {% if pool.variable_depth %}
+                                {{ pool.depth_min|default:"-" }}–{{ pool.depth_max|default:"-" }} м
+                            {% else %}
+                                {{ pool.depth|default:"-" }} м
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+                {% if pool.pool_type == "overflow" %}
+                <div class="col-12 col-md-6 col-lg-4">
+                    <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
+                        <i class="bi bi-bezier text-primary"></i>
+                        <div class="small text-muted">Переливные емкости</div>
+                        <div class="ms-auto fw-semibold">{{ pool.overflow_volume|default:"-" }} м³</div>
+                    </div>
+                </div>
+                {% endif %}
+                <div class="col-12 col-md-6 col-lg-4">
+                    <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
+                        <i class="bi bi-water text-primary"></i>
+                        <div class="small text-muted">Площадь воды</div>
+                        <div class="ms-auto fw-semibold">{{ pool.surface_area|default:"-" }} м²</div>
+                    </div>
+                </div>
+                <div class="col-12 col-md-6 col-lg-4">
+                    <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
+                        <i class="bi bi-box text-primary"></i>
+                        <div class="small text-muted">Объем воды</div>
+                        <div class="ms-auto fw-semibold">{{ pool.volume|default:"-" }} м³</div>
+                    </div>
+                    {% if pool.pool_type == "overflow" and pool.overflow_volume %}
+                        <div class="small text-muted mt-1">С учетом 1/3 переливной емкости</div>
+                    {% endif %}
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -50,6 +129,7 @@
                     <th rowspan="2" scope="col">Комментарий</th>
                     <th rowspan="2" scope="col">Необходимые материалы</th>
                     <th rowspan="2" scope="col">Произведенные работы</th>
+                    <th rowspan="2" scope="col"></th>
                 </tr>
                 <tr>
                     <th scope="col" class="manual-head">pH</th>
@@ -84,7 +164,14 @@
                         <td class="dosing-cell">{% if reading.redox_dosing_station is not None %}{{ reading.redox_dosing_station|floatformat:"1" }}{% else %}—{% endif %}</td>
                         <td>{{ reading.comment|default:"—" }}</td>
                         <td>{{ reading.required_materials|default:"—" }}</td>
-                        <td>{{ reading.performed_works|default:"—" }}</td>
+                        <td>{{ reading.performed_works|default:"-" }}</td>
+                        <td class="text-end">
+                            {% if reading.id in editable_reading_ids %}
+                                <a class="btn btn-outline-secondary btn-sm" href="{% url 'water_reading_edit' reading.id %}">
+                                    <i class="bi bi-pencil"></i>
+                                </a>
+                            {% endif %}
+                        </td>
                     </tr>
                 {% endfor %}
             </tbody>

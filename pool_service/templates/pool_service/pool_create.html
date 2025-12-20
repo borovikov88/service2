@@ -1,11 +1,11 @@
 {% extends 'pool_service/base.html' %}
 
-{% block title %}Новый бассейн{% endblock %}
+{% block title %}{% if is_edit %}Редактирование бассейна{% else %}Новый бассейн{% endif %}{% endblock %}
 
 {% block content %}
 <div class="card card-soft p-4">
-    <h3 class="fw-bold h5 mb-3">Создание бассейна</h3>
-    <form method="post" class="offline-queue-form" action="{% url 'pool_create' %}">
+    <h3 class="fw-bold h5 mb-3">{% if is_edit %}Редактирование бассейна{% else %}Создание бассейна{% endif %}</h3>
+    <form method="post" class="offline-queue-form" action="{% if is_edit %}{% url 'pool_edit' pool.pk %}{% else %}{% url 'pool_create' %}{% endif %}">
         {% csrf_token %}
         {% if not request.user.client_profile %}
         <div class="mb-3">
@@ -36,15 +36,90 @@
             </div>
         </div>
         {% endif %}
-        <div class="mb-3">
+        <div class="mb-3 position-relative">
             <label class="form-label">Адрес</label>
             {{ form.address }}
+            <div id="address-suggest" class="list-group position-absolute w-100 shadow-sm" style="z-index:1050; max-height:240px; overflow-y:auto; display:none;"></div>
             {% if form.address.errors %}<div class="text-danger small mt-1">{{ form.address.errors.0 }}</div>{% endif %}
         </div>
         <div class="mb-3">
             <label class="form-label">Описание</label>
             {{ form.description }}
             {% if form.description.errors %}<div class="text-danger small mt-1">{{ form.description.errors.0 }}</div>{% endif %}
+        </div>
+        <div class="card card-soft p-3 mb-3">
+            <h4 class="fw-bold h6 mb-3">Параметры бассейна</h4>
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label">Форма бассейна</label>
+                    {{ form.shape }}
+                    {% if form.shape.errors %}<div class="text-danger small mt-1">{{ form.shape.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Тип бассейна</label>
+                    {{ form.pool_type }}
+                    {% if form.pool_type.errors %}<div class="text-danger small mt-1">{{ form.pool_type.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6 js-size-rect">
+                    <label class="form-label">Длина, м</label>
+                    {{ form.length }}
+                    {% if form.length.errors %}<div class="text-danger small mt-1">{{ form.length.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6 js-size-rect">
+                    <label class="form-label">Ширина, м</label>
+                    {{ form.width }}
+                    {% if form.width.errors %}<div class="text-danger small mt-1">{{ form.width.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6 js-size-round d-none">
+                    <label class="form-label">Диаметр, м</label>
+                    {{ form.diameter }}
+                    {% if form.diameter.errors %}<div class="text-danger small mt-1">{{ form.diameter.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-12">
+                    <div class="form-check">
+                        {{ form.variable_depth }}
+                        <label class="form-check-label" for="{{ form.variable_depth.id_for_label }}">Переменная глубина</label>
+                    </div>
+                    {% if form.variable_depth.errors %}<div class="text-danger small mt-1">{{ form.variable_depth.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6 js-depth-single">
+                    <label class="form-label">Глубина, м</label>
+                    {{ form.depth }}
+                    {% if form.depth.errors %}<div class="text-danger small mt-1">{{ form.depth.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6 js-depth-range d-none">
+                    <label class="form-label">Глубина мин, м</label>
+                    {{ form.depth_min }}
+                    {% if form.depth_min.errors %}<div class="text-danger small mt-1">{{ form.depth_min.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6 js-depth-range d-none">
+                    <label class="form-label">Глубина макс, м</label>
+                    {{ form.depth_max }}
+                    {% if form.depth_max.errors %}<div class="text-danger small mt-1">{{ form.depth_max.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6 js-overflow d-none">
+                    <label class="form-label">Объем переливных емкостей, м³</label>
+                    {{ form.overflow_volume }}
+                    {% if form.overflow_volume.errors %}<div class="text-danger small mt-1">{{ form.overflow_volume.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Площадь зеркала воды, м²</label>
+                    {{ form.surface_area }}
+                    {% if form.surface_area.errors %}<div class="text-danger small mt-1">{{ form.surface_area.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Объем воды бассейна, м³</label>
+                    {{ form.volume }}
+                    {% if form.volume.errors %}<div class="text-danger small mt-1">{{ form.volume.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-12">
+                    <div class="form-check">
+                        {{ form.dosing_station }}
+                        <label class="form-check-label" for="{{ form.dosing_station.id_for_label }}">Станция дозирования</label>
+                    </div>
+                    {% if form.dosing_station.errors %}<div class="text-danger small mt-1">{{ form.dosing_station.errors.0 }}</div>{% endif %}
+                </div>
+            </div>
         </div>
         <div class="d-flex gap-2">
             <button type="submit" class="btn btn-primary">Создать</button>
@@ -114,7 +189,217 @@
                 input.value = options[0].text;
             }
         }
+
+        const shapeField = document.getElementById("id_shape");
+        const typeField = document.getElementById("id_pool_type");
+        const variableDepthField = document.getElementById("id_variable_depth");
+        const lengthField = document.getElementById("id_length");
+        const widthField = document.getElementById("id_width");
+        const diameterField = document.getElementById("id_diameter");
+        const depthField = document.getElementById("id_depth");
+        const depthMinField = document.getElementById("id_depth_min");
+        const depthMaxField = document.getElementById("id_depth_max");
+        const surfaceAreaField = document.getElementById("id_surface_area");
+        const volumeField = document.getElementById("id_volume");
+        const overflowVolumeField = document.getElementById("id_overflow_volume");
+
+        const rectFields = document.querySelectorAll(".js-size-rect");
+        const roundFields = document.querySelectorAll(".js-size-round");
+        const depthSingleFields = document.querySelectorAll(".js-depth-single");
+        const depthRangeFields = document.querySelectorAll(".js-depth-range");
+        const overflowFields = document.querySelectorAll(".js-overflow");
+
+        function toNumber(value) {
+            if (!value) return null;
+            const parsed = parseFloat(String(value).replace(",", "."));
+            return Number.isFinite(parsed) ? parsed : null;
+        }
+
+        function setGroupVisible(nodes, visible) {
+            nodes.forEach(node => {
+                node.classList.toggle("d-none", !visible);
+            });
+        }
+
+        function updateVisibility() {
+            const shape = shapeField ? shapeField.value : "";
+            const isRound = shape === "round";
+            setGroupVisible(rectFields, !isRound);
+            setGroupVisible(roundFields, isRound);
+
+            const variableDepth = variableDepthField ? variableDepthField.checked : false;
+            setGroupVisible(depthSingleFields, !variableDepth);
+            setGroupVisible(depthRangeFields, variableDepth);
+
+            const poolType = typeField ? typeField.value : "";
+            setGroupVisible(overflowFields, poolType === "overflow");
+        }
+
+        function calcArea() {
+            const shape = shapeField ? shapeField.value : "";
+            const length = toNumber(lengthField && lengthField.value);
+            const width = toNumber(widthField && widthField.value);
+            const diameter = toNumber(diameterField && diameterField.value);
+
+            if (shape === "round") {
+                if (!diameter) return null;
+                const radius = diameter / 2;
+                return Math.PI * radius * radius;
+            }
+            if (!length || !width) return null;
+            if (shape === "oval") {
+                const radius = width / 2;
+                const rectLength = Math.max(length - width, 0);
+                return Math.PI * radius * radius + width * rectLength;
+            }
+            return length * width;
+        }
+
+        function calcDepth() {
+            const variableDepth = variableDepthField ? variableDepthField.checked : false;
+            if (!variableDepth) {
+                return toNumber(depthField && depthField.value);
+            }
+            const minDepth = toNumber(depthMinField && depthMinField.value);
+            const maxDepth = toNumber(depthMaxField && depthMaxField.value);
+            if (!minDepth || !maxDepth) return null;
+            return (minDepth + maxDepth) / 2;
+        }
+
+        function updateCalculatedFields() {
+            const area = calcArea();
+            if (surfaceAreaField) {
+                const manual = surfaceAreaField.dataset.manual === "true";
+                if (!manual) {
+                    surfaceAreaField.value = area ? area.toFixed(2) : "";
+                }
+            }
+
+            const depthVal = calcDepth();
+            let volume = area && depthVal ? area * depthVal : null;
+            const poolType = typeField ? typeField.value : "";
+            const overflowVal = toNumber(overflowVolumeField && overflowVolumeField.value);
+            if (volume && poolType === "overflow" && overflowVal) {
+                volume += overflowVal / 3;
+            }
+            if (volumeField) {
+                const manual = volumeField.dataset.manual === "true";
+                if (!manual) {
+                    volumeField.value = volume ? volume.toFixed(2) : "";
+                }
+            }
+        }
+
+        function handleManualInput(field) {
+            if (!field) return;
+            const val = String(field.value || "").trim();
+            field.dataset.manual = val ? "true" : "false";
+        }
+
+        if (surfaceAreaField) {
+            surfaceAreaField.addEventListener("input", () => handleManualInput(surfaceAreaField));
+        }
+        if (volumeField) {
+            volumeField.addEventListener("input", () => handleManualInput(volumeField));
+        }
+
+        [shapeField, typeField, variableDepthField, lengthField, widthField, diameterField, depthField, depthMinField, depthMaxField, overflowVolumeField]
+            .filter(Boolean)
+            .forEach(field => {
+                field.addEventListener("input", () => {
+                    updateVisibility();
+                    updateCalculatedFields();
+                });
+                field.addEventListener("change", () => {
+                    updateVisibility();
+                    updateCalculatedFields();
+                });
+            });
+
+        updateVisibility();
+        updateCalculatedFields();
+
+        const addressInput = document.getElementById("id_address");
+        const addressSuggest = document.getElementById("address-suggest");
+        let addressTimer = null;
+        let lastAddressQuery = "";
+
+        function hideAddressSuggest() {
+            if (addressSuggest) {
+                addressSuggest.style.display = "none";
+                addressSuggest.innerHTML = "";
+            }
+        }
+
+        function renderAddressSuggest(items) {
+            if (!addressSuggest) return;
+            addressSuggest.innerHTML = "";
+            items.forEach(item => {
+                const btn = document.createElement("button");
+                btn.type = "button";
+                btn.className = "list-group-item list-group-item-action";
+                btn.textContent = item;
+                btn.addEventListener("click", () => {
+                    if (addressInput) {
+                        addressInput.value = item;
+                    }
+                    hideAddressSuggest();
+                });
+                addressSuggest.appendChild(btn);
+            });
+            addressSuggest.style.display = items.length ? "block" : "none";
+        }
+
+        async function fetchAddressSuggest(query) {
+            const url = new URL("/api/yandex/suggest/", window.location.origin);
+            url.searchParams.set("text", query);
+            const response = await fetch(url.toString());
+            if (!response.ok) {
+                return [];
+            }
+            const data = await response.json();
+            return data && data.items ? data.items : [];
+        }
+
+        if (addressInput && addressSuggest) {
+            addressInput.setAttribute("autocomplete", "off");
+            addressInput.addEventListener("input", () => {
+                const query = addressInput.value.trim();
+                if (query.length < 3) {
+                    hideAddressSuggest();
+                    return;
+                }
+                if (query === lastAddressQuery) {
+                    return;
+                }
+                lastAddressQuery = query;
+                if (addressTimer) {
+                    clearTimeout(addressTimer);
+                }
+                addressTimer = setTimeout(async () => {
+                    try {
+                        const items = await fetchAddressSuggest(query);
+                        renderAddressSuggest(items);
+                    } catch (err) {
+                        hideAddressSuggest();
+                    }
+                }, 250);
+            });
+
+            addressInput.addEventListener("focus", () => {
+                if (addressSuggest && addressSuggest.children.length) {
+                    addressSuggest.style.display = "block";
+                }
+            });
+
+            document.addEventListener("click", (event) => {
+                if (!addressSuggest) return;
+                if (event.target === addressInput || addressSuggest.contains(event.target)) {
+                    return;
+                }
+                hideAddressSuggest();
+            });
+        }
     });
 </script>
 {% endblock %}
-

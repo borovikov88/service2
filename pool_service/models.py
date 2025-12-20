@@ -49,6 +49,17 @@ class Client(models.Model):
 
 
 class Pool(models.Model):
+    SHAPE_CHOICES = [
+        ("rect", "Прямоугольный"),
+        ("round", "Круглый"),
+        ("oval", "Овальный"),
+        ("free", "Произвольная форма"),
+    ]
+    TYPE_CHOICES = [
+        ("overflow", "Переливной"),
+        ("skimmer", "Скиммерный"),
+    ]
+
     client = models.ForeignKey(Client, on_delete=models.CASCADE)
     address = models.CharField(max_length=255)
     organization = models.ForeignKey(
@@ -59,6 +70,19 @@ class Pool(models.Model):
         blank=True,
     )
     description = CKEditor5Field(blank=True, null=True, verbose_name="Описание бассейна")
+    shape = models.CharField(max_length=20, choices=SHAPE_CHOICES, default="rect")
+    pool_type = models.CharField(max_length=20, choices=TYPE_CHOICES, default="skimmer")
+    length = models.FloatField(null=True, blank=True)
+    width = models.FloatField(null=True, blank=True)
+    diameter = models.FloatField(null=True, blank=True)
+    variable_depth = models.BooleanField(default=False)
+    depth = models.FloatField(null=True, blank=True)
+    depth_min = models.FloatField(null=True, blank=True)
+    depth_max = models.FloatField(null=True, blank=True)
+    overflow_volume = models.FloatField(null=True, blank=True)
+    surface_area = models.FloatField(null=True, blank=True)
+    volume = models.FloatField(null=True, blank=True)
+    dosing_station = models.BooleanField(default=False)
 
     def __str__(self):
         org_name = self.organization.name if self.organization else "без организации"

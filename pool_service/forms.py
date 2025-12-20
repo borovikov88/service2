@@ -49,6 +49,18 @@ class RegistrationForm(forms.Form):
 
     consent = forms.BooleanField(label="Я соглашаюсь с обработкой персональных данных", required=True)
 
+    def _normalize_phone(self, raw):
+        if not raw:
+            return None
+        digits = "".join(filter(str.isdigit, raw))
+        if digits.startswith("7") and len(digits) == 11:
+            digits = digits[1:]
+        if digits.startswith("8") and len(digits) == 11:
+            digits = digits[1:]
+        if len(digits) != 10:
+            return None
+        return digits
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         for name, field in self.fields.items():
@@ -72,18 +84,11 @@ class RegistrationForm(forms.Form):
     def clean(self):
         cleaned = super().clean()
         phone_raw = cleaned.get("user_phone") or cleaned.get("org_phone")
-        username = None
-        if phone_raw:
-            digits = "".join(filter(str.isdigit, phone_raw))
-            if digits.startswith("7") and len(digits) == 11:
-                digits = digits[1:]
-            if digits.startswith("8") and len(digits) == 11:
-                digits = digits[1:]
-            if len(digits) != 10:
-                self.add_error("user_phone", "Телефон должен быть 10 цифр (без +7/8)")
-            else:
-                username = digits
-                
+        username = self._normalize_phone(phone_raw)
+        self._normalized_username = username
+        if phone_raw and not username:
+            self.add_error("user_phone", "Телефон должен быть 10 цифр (без +7/8)")
+
         if username and User.objects.filter(username=username).exists():
             self.add_error("user_phone", "Пользователь с таким логином уже существует")
 
@@ -112,7 +117,9 @@ class RegistrationForm(forms.Form):
 
     def save(self):
         data = self.cleaned_data
-        username = data.get("user_phone")
+        username = getattr(self, "_normalized_username", None) or self._normalize_phone(
+            data.get("user_phone") or data.get("org_phone")
+        )
         user = User.objects.create_user(
             username=username,
             password=data["password1"],
@@ -129,7 +136,7 @@ class RegistrationForm(forms.Form):
                 phone=data.get("org_phone"),
                 email=data.get("org_email") or data.get("email"),
             )
-            OrganizationAccess.objects.create( organization=org, role="admin")
+            OrganizationAccess.objects.create(user=user, organization=org, role="admin")
         else:
             Client.objects.create(
                 
@@ -208,11 +215,41 @@ class ClientCreateForm(forms.Form):
 class PoolForm(forms.ModelForm):
     class Meta:
         model = Pool
-        fields = ["client", "address", "description"]
+        fields = [
+            "client",
+            "address",
+            "description",
+            "shape",
+            "pool_type",
+            "length",
+            "width",
+            "diameter",
+            "variable_depth",
+            "depth",
+            "depth_min",
+            "depth_max",
+            "overflow_volume",
+            "surface_area",
+            "volume",
+            "dosing_station",
+        ]
         widgets = {
             "client": forms.Select(attrs={"class": "form-select"}),
             "address": forms.TextInput(attrs={"class": "form-control rounded-3"}),
             "description": forms.Textarea(attrs={"class": "form-control rounded-3", "rows": 3}),
+            "shape": forms.Select(attrs={"class": "form-select"}),
+            "pool_type": forms.Select(attrs={"class": "form-select"}),
+            "length": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "width": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "diameter": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "variable_depth": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+            "depth": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "depth_min": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "depth_max": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "overflow_volume": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "surface_area": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "volume": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "dosing_station": forms.CheckboxInput(attrs={"class": "form-check-input"}),
         }
 
     def __init__(self, *args, **kwargs):
@@ -224,6 +261,7 @@ class PoolForm(forms.ModelForm):
 
             if user.is_superuser:
                 client_qs = Client.objects.all()
+                self.fields["client"].empty_label = "Выберите клиента"
             elif client_self.exists():
                 client_qs = client_self
                 self.fields["client"].empty_label = None
@@ -232,5 +270,8 @@ class PoolForm(forms.ModelForm):
                 org_ids = OrganizationAccess.objects.filter(user=user).values_list("organization_id", flat=True)
                 if org_ids:
                     client_qs = Client.objects.filter(organization_id__in=org_ids)
+                self.fields["client"].empty_label = "Выберите клиента"
 
             self.fields["client"].queryset = client_qs
+            if not client_self.exists():
+                self.fields["client"].initial = None

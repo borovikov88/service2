@@ -218,10 +218,17 @@
   <main class="page-shell">
     <div class="container">
       {% if page_title %}
-        <div class="mb-4">
-          <h1 class="fw-bold h3 mb-1">{{ page_title }}</h1>
-          {% if page_subtitle %}
-            <div class="text-muted">{{ page_subtitle }}</div>
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+          <div>
+            <h1 class="fw-bold h3 mb-1">{{ page_title }}</h1>
+            {% if page_subtitle %}
+              <div class="text-muted">{{ page_subtitle }}</div>
+            {% endif %}
+          </div>
+          {% if page_action_label and page_action_url %}
+            <a href="{{ page_action_url }}" class="btn btn-primary rounded-3 d-flex align-items-center gap-2" aria-label="{{ page_action_label }}" title="{{ page_action_label }}">
+              <i class="bi bi-plus-lg"></i><span class="d-none d-sm-inline">{{ page_action_label }}</span>
+            </a>
           {% endif %}
         </div>
       {% endif %}

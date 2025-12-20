@@ -8,7 +8,13 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.csrf import csrf_protect
 from django.urls import reverse, reverse_lazy
 from django.db.models import Count, Q
-from django.http import HttpResponseForbidden
+from django.http import HttpResponseForbidden, JsonResponse
+from django.utils import timezone
+from django.conf import settings
+from urllib.parse import urlencode
+from urllib.request import urlopen, Request
+import json
+from datetime import timedelta
 
 from .forms import WaterReadingForm, RegistrationForm, ClientCreateForm, PoolForm
 from .models import OrganizationAccess, Pool, PoolAccess, WaterReading, Client, Organization
@@ -17,6 +23,22 @@ from django import forms
 
 def index(request):
     return render(request, "pool_service/index.html")
+
+
+def _reading_edit_allowed(reading, user):
+    if not user.is_authenticated:
+        return False
+    if reading.added_by_id != user.id:
+        return False
+    if not reading.date:
+        return False
+    reading_date = reading.date
+    now = timezone.now()
+    if timezone.is_aware(reading_date):
+        now = timezone.localtime(now)
+    else:
+        now = now.replace(tzinfo=None)
+    return now - reading_date <= timedelta(minutes=30)
 
 
 @login_required
@@ -44,6 +66,8 @@ def pool_list(request):
             "pools": pools,
             "page_title": "Бассейны",
             "page_subtitle": "Управление объектами обслуживания",
+            "page_action_label": "Добавить бассейн",
+            "page_action_url": reverse("pool_create"),
             "show_search": False,
             "show_add_button": False,
             "add_url": None,
@@ -104,11 +128,41 @@ def users_view(request):
 class PoolForm(forms.ModelForm):
     class Meta:
         model = Pool
-        fields = ["client", "address", "description"]
+        fields = [
+            "client",
+            "address",
+            "description",
+            "shape",
+            "pool_type",
+            "length",
+            "width",
+            "diameter",
+            "variable_depth",
+            "depth",
+            "depth_min",
+            "depth_max",
+            "overflow_volume",
+            "surface_area",
+            "volume",
+            "dosing_station",
+        ]
         widgets = {
             "client": forms.Select(attrs={"class": "form-select"}),
             "address": forms.TextInput(attrs={"class": "form-control rounded-3"}),
             "description": forms.Textarea(attrs={"class": "form-control rounded-3", "rows": 3}),
+            "shape": forms.Select(attrs={"class": "form-select"}),
+            "pool_type": forms.Select(attrs={"class": "form-select"}),
+            "length": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "width": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "diameter": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "variable_depth": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+            "depth": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "depth_min": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "depth_max": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "overflow_volume": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "surface_area": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "volume": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "dosing_station": forms.CheckboxInput(attrs={"class": "form-check-input"}),
         }
 
     def __init__(self, *args, **kwargs):
@@ -121,6 +175,7 @@ class PoolForm(forms.ModelForm):
 
             if user.is_superuser:
                 client_qs = Client.objects.all()
+                self.fields["client"].empty_label = "Выберите клиента"
             elif client_self.exists():
                 client_qs = client_self
                 self.fields["client"].empty_label = None
@@ -130,6 +185,7 @@ class PoolForm(forms.ModelForm):
                 org_ids = OrganizationAccess.objects.filter(user=user).values_list("organization_id", flat=True)
                 if org_ids:
                     client_qs = Client.objects.filter(organization_id__in=org_ids).distinct()
+                self.fields["client"].empty_label = "Выберите клиента"
 
             self.fields["client"].queryset = client_qs
             if selected_client_id:
@@ -138,6 +194,9 @@ class PoolForm(forms.ModelForm):
                     self.fields["client"].initial = selected_client
                 except Client.DoesNotExist:
                     pass
+            else:
+                if not client_self.exists():
+                    self.fields["client"].initial = None
 
 
 @login_required
@@ -182,6 +241,58 @@ def pool_create(request):
             "active_tab": "pools",
             "show_add_button": False,
             "add_url": None,
+            "is_edit": False,
+            "pool": None,
+        },
+    )
+
+
+@login_required
+def pool_edit(request, pool_id):
+    pool = get_object_or_404(Pool, id=pool_id)
+
+    if request.user.is_superuser:
+        role = "admin"
+    else:
+        role = None
+        pool_access = PoolAccess.objects.filter(user=request.user, pool=pool).first()
+        if pool_access:
+            role = pool_access.role
+
+        org_access = OrganizationAccess.objects.filter(user=request.user, organization=pool.organization).first()
+        if org_access:
+            role = org_access.role
+
+    if not role:
+        return render(request, "403.html")
+    if role != "admin" and not request.user.is_superuser:
+        return render(request, "403.html")
+
+    user_client = Client.objects.filter(user=request.user).first()
+
+    if request.method == "POST":
+        form = PoolForm(request.POST, instance=pool, user=request.user)
+        if form.is_valid():
+            updated = form.save(commit=False)
+            if user_client:
+                updated.client = user_client
+            updated.save()
+            messages.success(request, "Бассейн обновлен")
+            return redirect("pool_detail", pool_id=pool.id)
+    else:
+        form = PoolForm(instance=pool, user=request.user)
+
+    return render(
+        request,
+        "pool_service/pool_create.html",
+        {
+            "form": form,
+            "page_title": "Редактирование бассейна",
+            "active_tab": "pools",
+            "show_add_button": False,
+            "add_url": None,
+            "is_edit": True,
+            "pool": pool,
         },
     )
 
@@ -323,6 +434,11 @@ def pool_detail(request, pool_id):
     page_number = request.GET.get("page")
     readings = paginator.get_page(page_number)
 
+    editable_reading_ids = []
+    for reading in readings:
+        if _reading_edit_allowed(reading, request.user):
+            editable_reading_ids.append(reading.id)
+
     context = {
         "pool": pool,
         "readings": readings,
@@ -331,11 +447,44 @@ def pool_detail(request, pool_id):
         "page_title": None,
         "page_subtitle": None,
         "show_search": False,
-        "show_add_button": True if role in ["viewer", "editor", "service", "admin"] else False,
-        "add_url": reverse("water_reading_create", args=[pool.id]),
+        "show_add_button": False,
+        "add_url": None,
         "active_tab": "pools",
+        "editable_reading_ids": editable_reading_ids,
     }
     return render(request, "pool_service/pool_detail.html", context)
+
+
+@login_required
+def yandex_suggest(request):
+    query = (request.GET.get("text") or "").strip()
+    if not query:
+        return JsonResponse({"items": []})
+    api_key = getattr(settings, "YANDEX_SUGGEST_API_KEY", "")
+    if not api_key:
+        return JsonResponse({"items": []}, status=500)
+    params = {
+        "apikey": api_key,
+        "text": query,
+        "lang": "ru_RU",
+        "results": "7",
+        "types": "geo",
+    }
+    url = "https://suggest-maps.yandex.ru/v1/suggest?" + urlencode(params)
+    req = Request(url, headers={"User-Agent": "PoolService/1.0"})
+    try:
+        with urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return JsonResponse({"items": []}, status=502)
+    results = data.get("results", [])
+    items = []
+    for item in results:
+        title = item.get("title", {})
+        text = title.get("text")
+        if text:
+            items.append(text)
+    return JsonResponse({"items": items})
 
 
 @login_required
@@ -398,6 +547,35 @@ def water_reading_create(request, pool_id):
         form = WaterReadingForm()
 
     return render(request, "pool_service/water_reading_form.html", {"form": form, "pool": pool, "active_tab": "pools"})
+
+
+@login_required
+def water_reading_edit(request, reading_id):
+    reading = get_object_or_404(WaterReading.objects.select_related("pool"), pk=reading_id)
+
+    if not _reading_edit_allowed(reading, request.user):
+        messages.error(request, "Редактирование доступно только автору записи в течение 30 минут.")
+        return redirect("pool_detail", pool_id=reading.pool_id)
+
+    if request.method == "POST":
+        form = WaterReadingForm(request.POST, instance=reading)
+        if form.is_valid():
+            updated = form.save(commit=False)
+            updated.date = reading.date
+            updated.pool = reading.pool
+            updated.added_by = reading.added_by
+            updated.save()
+            messages.success(request, "Запись обновлена.")
+            return redirect("pool_detail", pool_id=reading.pool_id)
+        messages.error(request, "Не удалось обновить запись. Проверьте форму.")
+    else:
+        form = WaterReadingForm(instance=reading)
+
+    return render(
+        request,
+        "pool_service/water_reading_form.html",
+        {"form": form, "pool": reading.pool, "active_tab": "pools", "is_edit": True, "reading": reading},
+    )
 
 
 @login_required
