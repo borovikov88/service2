@@ -94,6 +94,19 @@ class RegistrationForm(forms.Form):
 
         if cleaned.get("password1") != cleaned.get("password2"):
             self.add_error("password2", "Пароли не совпадают")
+        email_value = cleaned.get("email")
+        org_email_value = cleaned.get("org_email")
+        if cleaned.get("user_type") == "organization":
+            if not (email_value or org_email_value):
+                self.add_error("org_email", "??????? email")
+        else:
+            if not email_value:
+                self.add_error("email", "??????? email")
+
+        if email_value and User.objects.filter(email__iexact=email_value).exists():
+            self.add_error("email", "???? email ??? ???????????????")
+        if org_email_value and User.objects.filter(email__iexact=org_email_value).exists():
+            self.add_error("org_email", "???? email ??? ???????????????")
 
         if cleaned.get("user_type") == "organization":
             if not cleaned.get("org_name"):
@@ -126,6 +139,7 @@ class RegistrationForm(forms.Form):
             email=data.get("email") or data.get("org_email"),
             first_name=data.get("first_name", ""),
             last_name=data.get("last_name", ""),
+            is_active=False,
         )
         if data["user_type"] == "organization":
             org = Organization.objects.create(

@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import home, pool_list, pool_detail, water_reading_create, water_reading_edit, readings_all, profile_view, users_view, register, pool_create, pool_edit, client_create, yandex_suggest
+from .views import home, pool_list, pool_detail, water_reading_create, water_reading_edit, readings_all, profile_view, users_view, register, pool_create, pool_edit, client_create, yandex_suggest, confirm_email
 from . import views
 
 urlpatterns = [
@@ -16,5 +16,6 @@ urlpatterns = [
     path("profile/", profile_view, name="profile"),
     path("users/", users_view, name="users"),
     path("register/", register, name="register"),
+    path("accounts/confirm-email/<uidb64>/<token>/", confirm_email, name="confirm_email"),
     path("clients/create/", client_create, name="client_create"),
 ]

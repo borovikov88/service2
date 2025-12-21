@@ -28,9 +28,13 @@ class AuthRedirectMiddleware:
         allowed_paths = [
             "/accounts/login/",
             "/accounts/logout/",
+            "/accounts/password-reset/",
+            "/accounts/reset/",
+            "/accounts/confirm-email/",
             "/register/",
             "/static/",
             "/consent/",
+            "/sw.js",
         ]
         if not request.user.is_authenticated:
             path = request.path

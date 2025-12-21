@@ -1,5 +1,8 @@
 from django.contrib import messages
 from django.contrib.auth import login, authenticate
+from django.contrib.auth.models import User
+from django.contrib.auth.tokens import default_token_generator
+from django.core.mail import send_mail
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.auth.views import LoginView
@@ -11,6 +14,10 @@ from django.urls import reverse, reverse_lazy
 from django.db.models import Count, Q
 from django.http import HttpResponseForbidden, JsonResponse
 from django.utils import timezone
+from django.utils.encoding import force_bytes, force_str
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.template.loader import render_to_string
+from django.templatetags.static import static
 from django.conf import settings
 from urllib.parse import urlencode
 from urllib.request import urlopen, Request
@@ -386,11 +393,12 @@ def register(request):
         form = RegistrationForm(request.POST)
         if form.is_valid():
             user = form.save()
-            messages.success(request, "Регистрация выполнена успешно")
-            auth_user = authenticate(username=user.username, password=form.cleaned_data["password1"])
-            if auth_user:
-                login(request, auth_user)
-            return redirect("pool_create")
+            email_sent = _send_registration_confirmation(request, user)
+            if email_sent:
+                messages.success(request, "Регистрация создана. Проверьте почту и подтвердите аккаунт.")
+            else:
+                messages.error(request, "Регистрация создана, но письмо не отправилось. Обратитесь в поддержку.")
+            return redirect("login")
     else:
         form = RegistrationForm()
 
@@ -404,6 +412,61 @@ def register(request):
             "hide_header": True,
         },
     )
+
+def _build_confirmation_link(request, user):
+    uid = urlsafe_base64_encode(force_bytes(user.pk))
+    token = default_token_generator.make_token(user)
+    path = reverse("confirm_email", kwargs={"uidb64": uid, "token": token})
+    base_url = getattr(settings, "SITE_URL", "")
+    if base_url:
+        return f"{base_url.rstrip("/")}{path}"
+    return request.build_absolute_uri(path)
+
+def _send_registration_confirmation(request, user):
+    if not user.email:
+        return False
+    confirm_url = _build_confirmation_link(request, user)
+    site_url = getattr(settings, "SITE_URL", "").rstrip("/") or request.build_absolute_uri("/").rstrip("/")
+    logo_url = f"{site_url}{static('pool_service/img/logo.png')}"
+    brand_url = f"{site_url}{static('assets/images/rovikpool.png')}"
+    subject = render_to_string("registration/confirm_email_subject.txt", {}).strip()
+    message = render_to_string(
+        "registration/confirm_email.txt",
+        {"confirm_url": confirm_url, "user": user, "site_url": site_url, "logo_url": logo_url},
+    )
+    html_message = render_to_string(
+        "registration/confirm_email.html",
+        {
+            "confirm_url": confirm_url,
+            "user": user,
+            "site_url": site_url,
+            "logo_url": logo_url,
+            "brand_url": brand_url,
+        },
+    )
+    try:
+        send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [user.email], html_message=html_message)
+    except Exception:
+        return False
+    return True
+
+def confirm_email(request, uidb64, token):
+    try:
+        uid = force_str(urlsafe_base64_decode(uidb64))
+        user = User.objects.get(pk=uid)
+    except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+        user = None
+
+    if user and default_token_generator.check_token(user, token):
+        if not user.is_active:
+            user.is_active = True
+            user.save(update_fields=["is_active"])
+        messages.success(request, "Email подтверждён. Теперь можно войти.")
+        return redirect("login")
+
+    messages.error(request, "Ссылка подтверждения недействительна или устарела.")
+    return redirect("login")
+
 
 
 @login_required
@@ -631,6 +694,7 @@ def profile_view(request):
 class CustomLoginView(LoginView):
     template_name = "registration/login.html"
     success_url = reverse_lazy("pool_list")
+    extra_context = {"hide_header": True}
 
     def form_valid(self, form):
         messages.success(self.request, "Вход выполнен успешно")
