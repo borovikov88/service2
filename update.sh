@@ -11,6 +11,9 @@ pip install -r requirements.txt --quiet
 echo "===== Applying migrations ====="
 python manage.py migrate --noinput
 
+echo "===== Collecting static ====="
+python manage.py collectstatic --noinput
+
 echo "===== Restarting passenger ====="
 touch ../tmp/restart.txt
 
