@@ -1,81 +1,341 @@
 {% extends 'pool_service/base.html' %}
-
-{% block title %}Главная{% endblock %}
+{% load static %}
+{% block title %}&#1057;&#1077;&#1088;&#1074;&#1080;&#1089; &#209;&#131;&#1095;&#1077;&#1090;&#1072; &#208;&#190;&#1073;&#1089;&#1083;&#1091;&#1078;&#1080;&#1074;&#1072;&#1085;&#1080;&#1103; &#208;&#177;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074; RovikPool{% endblock %}
+{% block extra_head %}
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=Unbounded:wght@600;700&display=swap" rel="stylesheet">
+{% endblock %}
 
 {% block content %}
-<div class="card card-soft p-4 mb-4">
-    <div class="row g-3 align-items-center">
+<style>
+    .landing-page {
+        font-family: "Manrope", "Segoe UI", sans-serif;
+    }
+    .hero-shell {
+        background: radial-gradient(1200px 600px at 10% -10%, rgba(13,110,253,0.15), transparent 60%),
+                    radial-gradient(900px 500px at 90% 0%, rgba(0,172,193,0.2), transparent 55%),
+                    linear-gradient(180deg, #f4f9fd 0%, #e9f2fb 100%);
+        border-radius: 28px;
+        padding: 48px 40px;
+        overflow: hidden;
+    }
+    .hero-title {
+        font-family: "Unbounded", "Manrope", sans-serif;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+    }
+    .hero-chip {
+        background: rgba(13,110,253,0.12);
+        color: #0d6efd;
+        border-radius: 999px;
+        padding: 6px 14px;
+        font-weight: 600;
+        font-size: 13px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+    }
+    .stat-card {
+        border: 1px solid #e3edf7;
+        border-radius: 18px;
+        background: #fff;
+        padding: 16px;
+    }
+    .feature-card {
+        border: 1px solid #e3edf7;
+        border-radius: 18px;
+        background: #fff;
+        padding: 22px;
+        height: 100%;
+    }
+    .cta-strip {
+        background: #0d6efd;
+        color: #fff;
+        border-radius: 18px;
+        padding: 24px;
+    }
+    .seo-grid p {
+        margin-bottom: 8px;
+    }
+</style>
+
+{% if not user.is_authenticated %}
+<div class="landing-page">
+<header class="d-flex justify-content-between align-items-center mb-4">
+    <div class="d-flex align-items-center gap-3">
+        <img src="{% static 'pool_service/img/logo.png' %}" alt="RovikPool" style="width:52px;height:52px;">
+        <div>
+            <div class="fw-bold text-dark">RovikPool</div>
+            <div class="text-muted small">&#1057;&#1077;&#1088;&#1074;&#1080;&#1089; &#208;&#190;&#1073;&#1089;&#1083;&#1091;&#1078;&#1080;&#1074;&#1072;&#1085;&#1080;&#1103; &#208;&#177;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;</div>
+        </div>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+        <a href="#tariffs" class="btn btn-outline-primary">&#1058;&#1072;&#1088;&#1080;&#1092;&#1099;</a>
+        <button class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#loginModal">&#1042;&#1086;&#1081;&#1090;&#1080;</button>
+        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#registerModal">&#1047;&#1072;&#1088;&#1077;&#1075;&#1080;&#1089;&#1090;&#1088;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;&#1089;&#1103;</button>
+    </div>
+</header>
+
+<section class="hero-shell mb-4">
+    <div class="row align-items-center g-4">
         <div class="col-lg-7">
-            <h1 class="fw-bold h3 mb-2">Добро пожаловать в Pool Service</h1>
-            <p class="text-muted mb-3">Управляйте бассейнами, фиксируйте показания и контролируйте сотрудников в одном месте.</p>
+            <div class="hero-chip mb-3"><i class="bi bi-droplet"></i>&#1062;&#1080;&#1092;&#1088;&#1086;&#1074;&#1086;&#1081; &#208;&#182;&#1091;&#1088;&#1085;&#1072;&#1083; &#208;&#177;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;</div>
+            <h1 class="hero-title display-6 mb-3">&#1059;&#1095;&#1077;&#1090; &#208;&#184; &#208;&#186;&#1086;&#1085;&#1090;&#1088;&#1086;&#1083;&#1100; &#209;&#129;&#1086;&#1089;&#1090;&#1086;&#1103;&#1085;&#1080;&#1103; &#208;&#177;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074; &#208;&#178; &#208;&#190;&#1076;&#1085;&#1086;&#1084; &#209;&#129;&#1077;&#1088;&#1074;&#1080;&#1089;&#1077;</h1>
+            <p class="text-muted fs-5 mb-4">&#1060;&#1080;&#1082;&#1089;&#1080;&#1088;&#1091;&#1081;&#1090;&#1077; &#208;&#183;&#1072;&#1084;&#1077;&#1088;&#1099;, &#208;&#186;&#1086;&#1085;&#1090;&#1088;&#1086;&#1083;&#1080;&#1088;&#1091;&#1081;&#1090;&#1077; &#209;&#130;&#1077;&#1093;&#1085;&#1086;&#1083;&#1086;&#1075;&#1080;&#1080; &#208;&#190;&#1073;&#1089;&#1083;&#1091;&#1078;&#1080;&#1074;&#1072;&#1085;&#1080;&#1103; &#208;&#184; &#208;&#180;&#1077;&#1083;&#1080;&#1090;&#1077;&#1089;&#1100; &#208;&#180;&#1086;&#1089;&#1090;&#1091;&#1087;&#1086;&#1084; &#209;&#129; &#208;&#186;&#1086;&#1083;&#1083;&#1077;&#1075;&#1072;&#1084;&#1080; &#208;&#184; &#208;&#186;&#1083;&#1080;&#1077;&#1085;&#1090;&#1072;&#1084;&#1080;.</p>
             <div class="d-flex flex-wrap gap-2">
-                {% if user.is_authenticated %}
-                    <a href="{% url 'pool_list' %}" class="btn btn-primary">Перейти к бассейнам</a>
-                    <a href="{% url 'readings_all' %}" class="btn btn-outline-primary">История показаний</a>
-                    {% if user.is_superuser or user.organizationaccess_set.all|length %}
-                        <a href="{% url 'users' %}" class="btn btn-outline-secondary">Пользователи</a>
-                    {% endif %}
-                {% else %}
-                    <a href="{% url 'login' %}" class="btn btn-primary">Войти</a>
-                    <a href="{% url 'register' %}" class="btn btn-outline-primary">Зарегистрироваться</a>
-                {% endif %}
+                <button class="btn btn-primary btn-lg" data-bs-toggle="modal" data-bs-target="#registerModal">&#1055;&#1086;&#1087;&#1088;&#1086;&#1073;&#1086;&#1074;&#1072;&#1090;&#1100; &#208;&#177;&#1077;&#1089;&#1087;&#1083;&#1072;&#1090;&#1085;&#1086;</button>
+                <button class="btn btn-outline-dark btn-lg" data-bs-toggle="modal" data-bs-target="#loginModal">&#1042;&#1086;&#1081;&#1090;&#1080; &#208;&#178; &#208;&#186;&#1072;&#1073;&#1080;&#1085;&#1077;&#1090;</button>
             </div>
         </div>
         <div class="col-lg-5">
-            <div class="bg-light rounded-3 p-3 h-100">
-                <div class="text-muted small mb-2">Быстрые действия</div>
-                <div class="d-flex flex-column gap-2">
-                    <div class="d-flex align-items-center gap-2">
-                        <div class="bg-primary bg-gradient text-white rounded-3 d-flex align-items-center justify-content-center" style="width:38px;height:38px;">
-                            <i class="bi bi-building"></i>
-                        </div>
-                        <div>
-                            <div class="fw-semibold">Добавить бассейн</div>
-                            <a class="small text-decoration-none" href="{% url 'pool_create' %}">Открыть форму</a>
+            <div class="bg-white rounded-4 p-4 shadow-sm">
+                <div class="d-flex align-items-center justify-content-between mb-3">
+                    <div>
+                        <div class="fw-semibold">&#1044;&#1083;&#1103; &#209;&#135;&#1072;&#1089;&#1090;&#1085;&#1099;&#1093; &#208;&#184; &#209;&#129;&#1077;&#1088;&#1074;&#1080;&#1089;&#1085;&#1099;&#1093; &#208;&#190;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1081;</div>
+                        <div class="text-muted small">&#1054;&#1076;&#1080;&#1085; &#208;&#176;&#1082;&#1082;&#1072;&#1091;&#1085;&#1090; &#208;&#180;&#1083;&#1103; &#208;&#178;&#1089;&#1077;&#1093; &#209;&#130;&#1080;&#1087;&#1086;&#1074; &#208;&#177;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;</div>
+                    </div>
+                    <i class="bi bi-people fs-3 text-primary"></i>
+                </div>
+                <div class="row g-3">
+                    <div class="col-6">
+                        <div class="stat-card">
+                            <div class="text-muted small">&#1059;&#1088;&#1086;&#1074;&#1085;&#1080; &#208;&#180;&#1086;&#1089;&#1090;&#1091;&#1087;&#1072;</div>
+                            <div class="fw-semibold">&#1040;&#1076;&#1084;&#1080;&#1085; / &#208;&#161;&#1077;&#1088;&#1074;&#1080;&#1089; / &#208;&#154;&#1083;&#1080;&#1077;&#1085;&#1090;</div>
                         </div>
                     </div>
-                    <div class="d-flex align-items-center gap-2">
-                        <div class="bg-primary bg-gradient text-white rounded-3 d-flex align-items-center justify-content-center" style="width:38px;height:38px;">
-                            <i class="bi bi-clipboard-data"></i>
-                        </div>
-                        <div>
-                            <div class="fw-semibold">История показаний</div>
-                            <a class="small text-decoration-none" href="{% url 'readings_all' %}">Перейти к списку</a>
+                    <div class="col-6">
+                        <div class="stat-card">
+                            <div class="text-muted small">&#1054;&#1090;&#1095;&#1077;&#1090;&#1085;&#1086;&#1089;&#1090;&#1100;</div>
+                            <div class="fw-semibold">&#1048;&#1089;&#1090;&#1086;&#1088;&#1080;&#1103;, &#209;&#132;&#1080;&#1083;&#1100;&#1090;&#1088;&#1099;, &#209;&#141;&#1082;&#1089;&#1087;&#1086;&#1088;&#1090;</div>
                         </div>
                     </div>
-                    <div class="d-flex align-items-center gap-2">
-                        <div class="bg-primary bg-gradient text-white rounded-3 d-flex align-items-center justify-content-center" style="width:38px;height:38px;">
-                            <i class="bi bi-person-circle"></i>
-                        </div>
-                        <div>
-                            <div class="fw-semibold">Профиль</div>
-                            <a class="small text-decoration-none" href="{% url 'profile' %}">Настроить аккаунт</a>
+                    <div class="col-12">
+                        <div class="stat-card">
+                            <div class="text-muted small">&#1040;&#1074;&#1090;&#1086;&#1084;&#1072;&#1090;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;</div>
+                            <div class="fw-semibold">&#1056;&#1072;&#1089;&#1095;&#1077;&#1090; &#208;&#190;&#1073;&#1098;&#1077;&#1084;&#1086;&#1074;, &#208;&#191;&#1086;&#1076;&#1089;&#1082;&#1072;&#1079;&#1082;&#1080; &#208;&#184; &#209;&#136;&#1072;&#1073;&#1083;&#1086;&#1085;&#1099; &#209;&#128;&#1072;&#1073;&#1086;&#1090;</div>
                         </div>
                     </div>
                 </div>
             </div>
         </div>
     </div>
+</section>
+
+<section class="mb-4">
+    <div class="row g-3">
+        <div class="col-lg-4">
+            <div class="feature-card">
+                <i class="bi bi-clipboard-data fs-3 text-primary"></i>
+                <h3 class="fw-bold h5 mt-3">&#1047;&#1072;&#1084;&#1077;&#1088;&#1099; &#208;&#184; &#208;&#184;&#1089;&#1090;&#1086;&#1088;&#1080;&#1103;</h3>
+                <p class="text-muted">&#1060;&#1080;&#1082;&#1089;&#1080;&#1088;&#1091;&#1081;&#1090;&#1077; &#209;&#130;&#1077;&#1084;&#1087;&#1077;&#1088;&#1072;&#1090;&#1091;&#1088;&#1091;, pH, &#209;&#133;&#1083;&#1086;&#1088;, redox &#208;&#184; &#208;&#178;&#1089;&#1077; &#208;&#183;&#1072;&#1084;&#1077;&#1088;&#1099; &#208;&#178; &#208;&#181;&#1076;&#1080;&#1085;&#1086;&#1084; &#208;&#182;&#1091;&#1088;&#1085;&#1072;&#1083;&#1077;.</p>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="feature-card">
+                <i class="bi bi-shield-check fs-3 text-primary"></i>
+                <h3 class="fw-bold h5 mt-3">&#1050;&#1086;&#1085;&#1090;&#1088;&#1086;&#1083;&#1100; &#208;&#186;&#1072;&#1095;&#1077;&#1089;&#1090;&#1074;&#1072;</h3>
+                <p class="text-muted">&#1054;&#1090;&#1089;&#1083;&#1077;&#1078;&#1080;&#1074;&#1072;&#1081;&#1090;&#1077; &#208;&#189;&#1086;&#1088;&#1084;&#1072;&#1090;&#1080;&#1074;&#1099; &#208;&#184; &#208;&#190;&#1090;&#1082;&#1083;&#1086;&#1085;&#1077;&#1085;&#1080;&#1103;, &#209;&#129;&#1088;&#1072;&#1074;&#1085;&#1080;&#1074;&#1072;&#1081;&#1090;&#1077; &#209;&#128;&#1072;&#1079;&#1085;&#1099;&#1077; &#208;&#190;&#1073;&#1098;&#1077;&#1082;&#1090;&#1099;.</p>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="feature-card">
+                <i class="bi bi-people fs-3 text-primary"></i>
+                <h3 class="fw-bold h5 mt-3">&#1050;&#1086;&#1084;&#1072;&#1085;&#1076;&#1085;&#1072;&#1103; &#209;&#128;&#1072;&#1073;&#1086;&#1090;&#1072;</h3>
+                <p class="text-muted">&#1053;&#1072;&#1089;&#1090;&#1088;&#1072;&#1080;&#1074;&#1072;&#1081;&#1090;&#1077; &#208;&#180;&#1086;&#1089;&#1090;&#1091;&#1087; &#208;&#180;&#1083;&#1103; &#208;&#188;&#1077;&#1085;&#1077;&#1076;&#1078;&#1077;&#1088;&#1086;&#1074;, &#208;&#184;&#1085;&#1078;&#1077;&#1085;&#1077;&#1088;&#1086;&#1074; &#208;&#184; &#208;&#186;&#1083;&#1080;&#1077;&#1085;&#1090;&#1086;&#1074;.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="cta-strip mb-4" id="tariffs">
+    <div class="row align-items-center">
+        <div class="col-lg-8">
+            <h2 class="fw-bold h4 mb-1">&#1058;&#1072;&#1088;&#1080;&#1092;&#1099; &#208;&#191;&#1086;&#1076; &#208;&#178;&#1072;&#1096;&#208;&#184; &#208;&#183;&#1072;&#1076;&#1072;&#1095;&#1080;</h2>
+            <p class="mb-0">&#1042;&#1099;&#1073;&#1077;&#1088;&#1080;&#1090;&#1077; &#208;&#191;&#1086;&#1076;&#1093;&#1086;&#1076;&#1103;&#1097;&#1080;&#1081; &#209;&#132;&#1086;&#1088;&#1084;&#1072;&#1090;: &#208;&#180;&#1083;&#1103; &#209;&#135;&#1072;&#1089;&#1090;&#1085;&#1086;&#1075;&#1086; &#208;&#178;&#1083;&#1072;&#1076;&#1077;&#1083;&#1100;&#1094;&#1072; &#208;&#184;&#1083;&#1080; &#208;&#180;&#1083;&#1103; &#208;&#190;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1080; &#209;&#129; &#208;&#186;&#1086;&#1084;&#1072;&#1085;&#1076;&#1086;&#1081;.</p>
+        </div>
+        <div class="col-lg-4 text-lg-end mt-3 mt-lg-0">
+            <button class="btn btn-light btn-lg" data-bs-toggle="modal" data-bs-target="#registerModal">&#1055;&#1086;&#1083;&#1091;&#1095;&#1080;&#1090;&#1100; &#208;&#186;&#1086;&#1085;&#1089;&#1091;&#1083;&#1100;&#1090;&#1072;&#1094;&#1080;&#1102;</button>
+        </div>
+    </div>
+</section>
+
+<section class="seo-grid mb-4">
+    <div class="row g-3">
+        <div class="col-lg-6">
+            <h3 class="fw-bold h5">&#1057;&#1077;&#1088;&#1074;&#1080;&#1089; &#208;&#180;&#1083;&#1103; &#209;&#135;&#1072;&#1089;&#1090;&#1085;&#1099;&#1093; &#208;&#184; &#209;&#129;&#1077;&#1088;&#1074;&#1080;&#1089;&#1085;&#1099;&#1093; &#208;&#190;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1081;</h3>
+            <p class="text-muted">RovikPool &#208;&#191;&#1086;&#1076;&#1093;&#1086;&#1076;&#1080;&#1090; &#208;&#180;&#1083;&#1103; &#209;&#135;&#1072;&#1089;&#1090;&#1085;&#1099;&#1093; &#208;&#178;&#1083;&#1072;&#1076;&#1077;&#1083;&#1100;&#1094;&#1077;&#1074; &#208;&#184; &#208;&#180;&#1083;&#1103; &#209;&#129;&#1077;&#1088;&#1074;&#1080;&#1089;&#1085;&#1099;&#1093; &#208;&#186;&#1086;&#1084;&#1087;&#1072;&#1085;&#1080;&#1081;. &#208;&#151;&#1076;&#1077;&#1089;&#1100; &#208;&#178;&#1089;&#1105;: &#209;&#131;&#1095;&#1077;&#1090; &#208;&#177;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;, &#208;&#182;&#1091;&#1088;&#1085;&#1072;&#1083; &#208;&#183;&#1072;&#1084;&#1077;&#1088;&#1086;&#1074;, &#208;&#190;&#1090;&#1095;&#1077;&#1090;&#1099; &#208;&#184; &#208;&#186;&#1086;&#1085;&#1090;&#1088;&#1086;&#1083;&#1100; &#208;&#186;&#1072;&#1095;&#1077;&#1089;&#1090;&#1074;&#1072; &#208;&#178;&#1086;&#1076;&#1099;.</p>
+        </div>
+        <div class="col-lg-6">
+            <h3 class="fw-bold h5">&#1059;&#1088;&#1086;&#1074;&#1085;&#1080; &#208;&#180;&#1086;&#1089;&#1090;&#1091;&#1087;&#1072;</h3>
+            <p class="text-muted">&#1043;&#1080;&#1073;&#1082;&#1072;&#1103; &#209;&#128;&#1086;&#1083;&#1077;&#1074;&#1072;&#1103; &#208;&#188;&#1086;&#1076;&#1077;&#1083;&#1100;: &#208;&#176;&#1076;&#1084;&#1080;&#1085;&#1080;&#1089;&#1090;&#1088;&#1072;&#1090;&#1086;&#1088;, &#208;&#184;&#1085;&#1078;&#1077;&#1085;&#1077;&#1088;, &#208;&#188;&#1077;&#1085;&#1077;&#1076;&#1078;&#1077;&#1088;, &#208;&#186;&#1083;&#1080;&#1077;&#1085;&#1090;. &#208;&#154;&#1072;&#1078;&#1076;&#1072;&#1103; &#209;&#128;&#1086;&#1083;&#1100; &#208;&#178;&#1080;&#1076;&#1080;&#1090; &#209;&#130;&#1086;&#1083;&#1100;&#1082;&#1086; &#209;&#130;&#1086;, &#209;&#135;&#1090;&#1086; &#208;&#181;&#1081; &#208;&#189;&#1091;&#1078;&#1085;&#1086;.</p>
+        </div>
+    </div>
+</section>
+
+<section class="mb-5">
+    <div class="row g-3">
+        <div class="col-lg-4">
+            <div class="feature-card">
+                <i class="bi bi-graph-up fs-3 text-primary"></i>
+                <h3 class="fw-bold h5 mt-3">&#1040;&#1085;&#1072;&#1083;&#1080;&#1090;&#1080;&#1082;&#1072;</h3>
+                <p class="text-muted">&#1054;&#1090;&#1095;&#1077;&#1090;&#1099; &#208;&#191;&#1086; &#208;&#191;&#1086;&#1082;&#1072;&#1079;&#1072;&#1090;&#1077;&#1083;&#1103;&#1084; &#208;&#184; &#208;&#180;&#1080;&#1085;&#1072;&#1084;&#1080;&#1082;&#1077; &#208;&#190;&#1073;&#1089;&#1083;&#1091;&#1078;&#1080;&#1074;&#1072;&#1085;&#1080;&#1103;.</p>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="feature-card">
+                <i class="bi bi-speedometer2 fs-3 text-primary"></i>
+                <h3 class="fw-bold h5 mt-3">&#1041;&#1099;&#1089;&#1090;&#1088;&#1099;&#1081; &#208;&#178;&#1074;&#1086;&#1076;</h3>
+                <p class="text-muted">&#1060;&#1086;&#1088;&#1084;&#1099; &#208;&#184; &#208;&#191;&#1086;&#1076;&#1089;&#1082;&#1072;&#1079;&#1082;&#1080; &#208;&#180;&#1083;&#1103; &#208;&#184;&#1085;&#1078;&#1077;&#1085;&#1077;&#1088;&#1086;&#1074; &#208;&#178; &#208;&#191;&#1086;&#1083;&#1077;.</p>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="feature-card">
+                <i class="bi bi-cloud-check fs-3 text-primary"></i>
+                <h3 class="fw-bold h5 mt-3">&#1054;&#1073;&#1083;&#1072;&#1082;&#1086;</h3>
+                <p class="text-muted">&#1044;&#1072;&#1085;&#1085;&#1099;&#1077; &#209;&#129;&#1086;&#1093;&#1088;&#1072;&#1085;&#1103;&#1102;&#1090;&#1089;&#1103; &#208;&#184; &#208;&#180;&#1086;&#1089;&#1090;&#1091;&#1087;&#1085;&#1099; &#208;&#178; &#208;&#187;&#1102;&#1073;&#1086;&#1077; &#208;&#178;&#1088;&#1077;&#1084;&#1103;.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<div class="modal fade" id="loginModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">&#1042;&#1093;&#1086;&#1076;</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <form method="post" novalidate>
+        {% csrf_token %}
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">Email &#208;&#184;&#1083;&#1080; &#208;&#187;&#1086;&#1075;&#1080;&#1085;</label>
+            <input type="text" name="{{ form.username.html_name }}" class="form-control" value="{{ form.username.value|default_if_none:'' }}" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">&#1055;&#1072;&#1088;&#1086;&#1083;&#1100;</label>
+            <input type="password" name="{{ form.password.html_name }}" class="form-control" required>
+          </div>
+          {% if form.non_field_errors %}
+            <div class="alert alert-danger">{{ form.non_field_errors|join:", " }}</div>
+          {% endif %}
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">&#1054;&#1090;&#1084;&#1077;&#1085;&#1072;</button>
+          <button type="submit" class="btn btn-primary">&#1042;&#1086;&#1081;&#1090;&#1080;</button>
+        </div>
+      </form>
+    </div>
+  </div>
 </div>
 
-<div class="row g-3">
-    <div class="col-lg-4">
-        <div class="card card-soft p-3 h-100">
-            <div class="fw-bold mb-1">Мониторинг</div>
-            <div class="text-muted small">Следите за показателями воды и добавляйте новые замеры в пару кликов.</div>
+<div class="modal fade" id="registerModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">&#1056;&#1077;&#1075;&#1080;&#1089;&#1090;&#1088;&#1072;&#1094;&#1080;&#1103;</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <form method="post" action="{% url 'register' %}" novalidate>
+        {% csrf_token %}
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label d-block mb-1">&#1058;&#1080;&#1087; &#209;&#131;&#1095;&#1077;&#1090;&#1085;&#1086;&#1081; &#208;&#183;&#1072;&#1087;&#1080;&#1089;&#1080;</label>
+            <div class="d-flex flex-column gap-2">
+              {% for choice in register_form.user_type %}
+                <label class="border rounded-4 p-3 w-100 bg-light">
+                  {{ choice.tag }}
+                  <span class="fw-semibold ms-2">{{ choice.choice_label }}</span>
+                </label>
+              {% endfor %}
+            </div>
+          </div>
+
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">&#1048;&#1084;&#1103;</label>
+              {{ register_form.first_name }}
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">&#1060;&#1072;&#1084;&#1080;&#1083;&#1080;&#1103;</label>
+              {{ register_form.last_name }}
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">&#1058;&#1077;&#1083;&#1077;&#1092;&#1086;&#1085;</label>
+              {{ register_form.user_phone }}
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Email</label>
+              {{ register_form.email }}
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">&#1055;&#1072;&#1088;&#1086;&#1083;&#1100;</label>
+              {{ register_form.password1 }}
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">&#1055;&#1086;&#1074;&#1090;&#1086;&#1088;&#1080;&#1090;&#1077; &#208;&#191;&#1072;&#1088;&#1086;&#1083;&#1100;</label>
+              {{ register_form.password2 }}
+            </div>
+          </div>
+
+          <div class="mt-3" id="org-block">
+            <h6 class="fw-bold mb-2">&#1044;&#1072;&#1085;&#1085;&#1099;&#1077; &#208;&#190;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1080;</h6>
+            <div class="row g-3">
+              <div class="col-12">
+                <label class="form-label">&#1053;&#1072;&#1079;&#1074;&#1072;&#1085;&#1080;&#1077; &#208;&#190;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1080;</label>
+                {{ register_form.org_name }}
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">&#1048;&#1053;&#1053;</label>
+                {{ register_form.org_inn }}
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">&#1043;&#1086;&#1088;&#1086;&#1076;</label>
+                {{ register_form.org_city }}
+              </div>
+              <div class="col-12">
+                <label class="form-label">&#1040;&#1076;&#1088;&#1077;&#1089;</label>
+                {{ register_form.org_address }}
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">&#1058;&#1077;&#1083;&#1077;&#1092;&#1086;&#1085; &#208;&#190;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1080;</label>
+                {{ register_form.org_phone }}
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Email &#208;&#190;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1080;</label>
+                {{ register_form.org_email }}
+              </div>
+            </div>
+          </div>
+
+          <div class="form-check mt-3">
+            {{ register_form.consent }}
+            <label class="form-check-label ms-2">&#1071; &#209;&#129;&#1086;&#1075;&#1083;&#1072;&#1096;&#1072;&#1102;&#1089;&#1100; &#209;&#129; &#208;&#190;&#1073;&#1088;&#1072;&#1073;&#1086;&#1090;&#1082;&#1086;&#1081; &#208;&#191;&#1077;&#1088;&#1089;&#1086;&#1085;&#1072;&#1083;&#1100;&#1085;&#1099;&#1093; &#208;&#180;&#1072;&#1085;&#1085;&#1099;&#1093;</label>
+          </div>
         </div>
-    </div>
-    <div class="col-lg-4">
-        <div class="card card-soft p-3 h-100">
-            <div class="fw-bold mb-1">Команда</div>
-            <div class="text-muted small">Управляйте доступами сервисников и инструкторов, контролируйте роли.</div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">&#1054;&#1090;&#1084;&#1077;&#1085;&#1072;</button>
+          <button type="submit" class="btn btn-primary">&#1047;&#1072;&#1088;&#1077;&#1075;&#1080;&#1089;&#1090;&#1088;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;&#1089;&#1103;</button>
         </div>
+      </form>
     </div>
-    <div class="col-lg-4">
-        <div class="card card-soft p-3 h-100">
-            <div class="fw-bold mb-1">Объекты</div>
-            <div class="text-muted small">Храните данные клиентов и бассейнов, подключайте новых за пару минут.</div>
-        </div>
-    </div>
+  </div>
 </div>
+
+<script>
+  document.addEventListener("DOMContentLoaded", function() {
+    const orgBlock = document.getElementById("org-block");
+    const toggleOrg = () => {
+      const type = document.querySelector('input[name="user_type"]:checked')?.value;
+      if (orgBlock) orgBlock.style.display = type === "organization" ? "" : "none";
+    };
+    document.querySelectorAll('input[name="user_type"]').forEach((el) => {
+      el.addEventListener("change", toggleOrg);
+    });
+    toggleOrg();
+  });
+</script>
+</div>
+{% endif %}
 {% endblock %}

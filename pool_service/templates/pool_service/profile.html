@@ -1,6 +1,6 @@
 {% extends 'pool_service/base.html' %}
 
-{% block title %}Профиль{% endblock %}
+{% block title %}&#1055;&#1088;&#1086;&#1092;&#1080;&#1083;&#1100;{% endblock %}
 
 {% block content %}
 <section class="pt-2">
@@ -9,42 +9,43 @@
             <div class="col-lg-4">
                 <div class="card card-soft h-100">
                     <div class="card-body">
-                        <p class="text-muted mb-1">Имя пользователя</p>
+                        <p class="text-muted mb-1">&#1042;&#1072;&#1096; &#1087;&#1088;&#1086;&#1092;&#1080;&#1083;&#1100;</p>
                         <h3 class="card-title mb-3">{{ user_full_name }}</h3>
 
                         <div class="list-group list-group-flush">
                             <div class="list-group-item px-0 d-flex justify-content-between">
-                                <span class="text-muted">Логин</span>
+                                <span class="text-muted">&#1051;&#1086;&#1075;&#1080;&#1085;</span>
                                 <span class="fw-semibold">{{ username }}</span>
                             </div>
                             <div class="list-group-item px-0 d-flex justify-content-between">
-                                <span class="text-muted">Телефон</span>
-                                <span class="fw-semibold">{{ phone|default:"Не указан" }}</span>
+                                <span class="text-muted">&#1058;&#1077;&#1083;&#1077;&#1092;&#1086;&#1085;</span>
+                                <span class="fw-semibold">{{ phone|default:"&#1053;&#1077; &#1091;&#1082;&#1072;&#1079;&#1072;&#1085;" }}</span>
                             </div>
                             <div class="list-group-item px-0 d-flex justify-content-between">
-                                <span class="text-muted">Почта</span>
-                                <span class="fw-semibold">{{ email|default:"Не указана" }}</span>
+                                <span class="text-muted">Email</span>
+                                <span class="fw-semibold">{{ email|default:"&#1053;&#1077; &#1091;&#1082;&#1072;&#1079;&#1072;&#1085;" }}</span>
                             </div>
                             <div class="list-group-item px-0 d-flex justify-content-between">
-                                <span class="text-muted">Часовой пояс</span>
-                                <span class="fw-semibold">{{ timezone|default:"Не указан" }}</span>
+                                <span class="text-muted">&#1063;&#1072;&#1089;&#1086;&#1074;&#1086;&#1081; &#1087;&#1086;&#1103;&#1089;</span>
+                                <span class="fw-semibold">{{ timezone|default:"&#1053;&#1077; &#1091;&#1082;&#1072;&#1079;&#1072;&#1085;" }}</span>
                             </div>
                         </div>
                     </div>
                     <div class="card-footer bg-white border-0 pt-0">
-                        <div class="small text-muted">В системе с</div>
+                        <div class="small text-muted">&#1044;&#1072;&#1090;&#1072; &#1088;&#1077;&#1075;&#1080;&#1089;&#1090;&#1088;&#1072;&#1094;&#1080;&#1080;</div>
                         <div class="fw-semibold">
-                            {% if date_joined %}{{ date_joined|date:"d.m.Y H:i" }}{% else %}—{% endif %}
+                            {% if date_joined %}{{ date_joined|date:"d.m.Y H:i" }}{% else %}-{% endif %}
                         </div>
-                        <div class="small text-muted mt-2">Последний вход</div>
+                        <div class="small text-muted mt-2">&#1055;&#1086;&#1089;&#1083;&#1077;&#1076;&#1085;&#1080;&#1081; &#1074;&#1093;&#1086;&#1076;</div>
                         <div class="fw-semibold">
-                            {% if last_login %}{{ last_login|date:"d.m.Y H:i" }}{% else %}—{% endif %}
+                            {% if last_login %}{{ last_login|date:"d.m.Y H:i" }}{% else %}-{% endif %}
                         </div>
                     </div>
                     <div class="card-footer bg-white border-0 pt-0">
+                        <button type="button" class="btn btn-outline-primary w-100 rounded-3 mb-2" data-bs-toggle="modal" data-bs-target="#passwordModal">&#1057;&#1084;&#1077;&#1085;&#1080;&#1090;&#1100; &#1087;&#1072;&#1088;&#1086;&#1083;&#1100;</button>
                         <form method="post" action="{% url 'logout' %}">
                             {% csrf_token %}
-                            <button class="btn btn-outline-danger w-100 rounded-3">Выйти из аккаунта</button>
+                            <button class="btn btn-outline-danger w-100 rounded-3">&#1042;&#1099;&#1081;&#1090;&#1080; &#1080;&#1079; &#1089;&#1080;&#1089;&#1090;&#1077;&#1084;&#1099;</button>
                         </form>
                     </div>
                 </div>
@@ -54,36 +55,36 @@
                 <div class="card card-soft mb-4">
                     <div class="card-body">
                         <div class="d-flex justify-content-between align-items-center mb-2">
-                            <h4 class="card-title mb-0">Права доступа</h4>
+                            <h4 class="card-title mb-0">&#1059;&#1088;&#1086;&#1074;&#1077;&#1085;&#1100; &#1076;&#1086;&#1089;&#1090;&#1091;&#1087;&#1072;</h4>
                             <span class="badge bg-primary fs-6">{{ role_level }}</span>
                         </div>
-                        <p class="text-muted mb-0">Роли определяются доступами к организациям и объектам обслуживания.</p>
+                        <p class="text-muted mb-0">&#1056;&#1086;&#1083;&#1100;, &#1082;&#1086;&#1090;&#1086;&#1088;&#1072;&#1103; &#1086;&#1087;&#1088;&#1077;&#1076;&#1077;&#1083;&#1103;&#1077;&#1090; &#1074;&#1072;&#1096;&#1080; &#1087;&#1088;&#1072;&#1074;&#1072; &#1074; &#1089;&#1080;&#1089;&#1090;&#1077;&#1084;&#1077;.</p>
                     </div>
                 </div>
 
                 <div class="card card-soft mb-4">
                     <div class="card-body pb-0">
-                        <h5 class="card-title">Доступ к организациям</h5>
-                        <p class="text-muted">Организации, в которых у вас есть роль.</p>
+                        <h5 class="card-title">&#1044;&#1086;&#1089;&#1090;&#1091;&#1087;&#1099; &#1082; &#1086;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;&#1084;</h5>
+                        <p class="text-muted">&#1054;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1080;, &#1082; &#1082;&#1086;&#1090;&#1086;&#1088;&#1099;&#1084; &#1091; &#1074;&#1072;&#1089; &#1077;&#1089;&#1090;&#1100; &#1076;&#1086;&#1089;&#1090;&#1091;&#1087;.</p>
                     </div>
                     <div class="list-group list-group-flush">
                         {% for access in org_accesses %}
                             <div class="list-group-item d-flex justify-content-between align-items-start">
                                 <div>
                                     <div class="fw-semibold">{{ access.organization.name }}</div>
-                                    <div class="small text-muted">Роль: {{ access.get_role_display }}</div>
+                                    <div class="small text-muted">&#1056;&#1086;&#1083;&#1100;: {{ access.get_role_display }}</div>
                                 </div>
                             </div>
                         {% empty %}
-                            <div class="list-group-item text-muted">Нет закрепленных организаций.</div>
+                            <div class="list-group-item text-muted">&#1053;&#1077;&#1090; &#1076;&#1086;&#1089;&#1090;&#1091;&#1087;&#1085;&#1099;&#1093; &#1086;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1081;.</div>
                         {% endfor %}
                     </div>
                 </div>
 
                 <div class="card card-soft">
                     <div class="card-body pb-0">
-                        <h5 class="card-title">Доступ к объектам</h5>
-                        <p class="text-muted">Бассейны, к которым предоставлен доступ.</p>
+                        <h5 class="card-title">&#1044;&#1086;&#1089;&#1090;&#1091;&#1087;&#1099; &#1082; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1072;&#1084;</h5>
+                        <p class="text-muted">&#1057;&#1087;&#1080;&#1089;&#1086;&#1082; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;, &#1082; &#1082;&#1086;&#1090;&#1086;&#1088;&#1099;&#1084; &#1091; &#1074;&#1072;&#1089; &#1077;&#1089;&#1090;&#1100; &#1076;&#1086;&#1089;&#1090;&#1091;&#1087;.</p>
                     </div>
                     <div class="list-group list-group-flush">
                         {% for access in pool_accesses %}
@@ -95,7 +96,7 @@
                                 <span class="badge bg-light text-dark border">{{ access.get_role_display }}</span>
                             </div>
                         {% empty %}
-                            <div class="list-group-item text-muted">Доступные объекты отсутствуют.</div>
+                            <div class="list-group-item text-muted">&#1053;&#1077;&#1090; &#1076;&#1086;&#1089;&#1090;&#1091;&#1087;&#1085;&#1099;&#1093; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;.</div>
                         {% endfor %}
                     </div>
                 </div>
@@ -103,4 +104,32 @@
 
         </div>
 </section>
+
+<div class="modal fade" id="passwordModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">&#1057;&#1084;&#1077;&#1085;&#1072; &#1087;&#1072;&#1088;&#1086;&#1083;&#1103;</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <form method="post" action="{% url 'password_change_inline' %}">
+        {% csrf_token %}
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">&#1053;&#1086;&#1074;&#1099;&#1081; &#1087;&#1072;&#1088;&#1086;&#1083;&#1100;</label>
+            <input type="password" name="new_password1" class="form-control" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">&#1055;&#1086;&#1074;&#1090;&#1086;&#1088;&#1080;&#1090;&#1077; &#1087;&#1072;&#1088;&#1086;&#1083;&#1100;</label>
+            <input type="password" name="new_password2" class="form-control" required>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">&#1054;&#1090;&#1084;&#1077;&#1085;&#1072;</button>
+          <button type="submit" class="btn btn-primary">&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
 {% endblock %}

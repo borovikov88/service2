@@ -1,6 +1,6 @@
 {% extends 'pool_service/base.html' %}
 
-{% block title %}Бассейны{% endblock %}
+{% block title %}&#1052;&#1086;&#1080; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1099;{% endblock %}
 
 {% block content %}
 <div class="row g-3">
@@ -15,8 +15,8 @@
                         </div>
                         <div>
                             <div class="fw-bold">{{ pool.client.name }}</div>
-                            <div class="text-muted small"><i class="bi bi-geo-alt me-1"></i>{{ pool.address|default:"—" }}</div>
-                            <div class="text-muted small mt-1">Показаний: {{ pool.num_readings|default:0 }}</div>
+                            <div class="text-muted small"><i class="bi bi-geo-alt me-1"></i>{{ pool.address|default:"-" }}</div>
+                            <div class="text-muted small mt-1">&#1055;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1081;: {{ pool.num_readings|default:0 }}</div>
                         </div>
                     </div>
                     <i class="bi bi-arrow-right text-muted fs-4"></i>
@@ -25,7 +25,7 @@
         </a>
     </div>
     {% empty %}
-        <div class="text-center text-muted py-4">Нет бассейнов</div>
+        <div class="text-center text-muted py-4">&#1055;&#1086;&#1082;&#1072; &#1085;&#1077;&#1090; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;</div>
     {% endfor %}
 </div>
 {% endblock %}

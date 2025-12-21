@@ -1,20 +1,13 @@
 {% extends 'pool_service/base.html' %}
 {% load static %}
-{% block title %}{% if is_edit %}Редактирование показания{% else %}Новое показание{% endif %}{% endblock %}
+{% block title %}{% if is_edit %}&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1085;&#1080;&#1077; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;{% else %}&#1053;&#1086;&#1074;&#1086;&#1077; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1077;{% endif %}{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
     <a href="{% url 'pool_detail' pool.pk %}" class="text-decoration-none d-flex align-items-center gap-2 text-dark">
         <i class="bi bi-arrow-left"></i>
-        <span class="fw-semibold">Назад к списку</span>
+        <span class="fw-semibold">&#1053;&#1072;&#1079;&#1072;&#1076; &#1082; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1091;</span>
     </a>
-    {% if not is_edit %}
-        <div class="d-flex align-items-center gap-2">
-            <a href="{% url 'water_reading_create' pool.pk %}" class="btn btn-primary rounded-3 d-flex align-items-center justify-content-center" style="width:46px;height:46px;">
-                <i class="bi bi-plus-lg"></i>
-            </a>
-        </div>
-    {% endif %}
 </div>
 
 <div class="card card-soft p-4 mb-4">
@@ -26,9 +19,9 @@
     </div>
 
     <div class="card card-soft p-4">
-        <h3 class="fw-bold h5 mb-1">{% if is_edit %}Редактирование показания{% else %}Новое показание{% endif %}</h3>
+        <h3 class="fw-bold h5 mb-1">{% if is_edit %}&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1085;&#1080;&#1077; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;{% else %}&#1053;&#1086;&#1074;&#1086;&#1077; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1077;{% endif %}</h3>
         <p class="text-muted mb-3">
-            {% if is_edit %}Обновите данные замеров для {{ pool.client.name }}{% else %}Заполните данные замеров для {{ pool.client.name }}{% endif %}
+            {% if is_edit %}&#1054;&#1073;&#1085;&#1086;&#1074;&#1080;&#1090;&#1077; &#1076;&#1072;&#1085;&#1085;&#1099;&#1077; &#1079;&#1072;&#1084;&#1077;&#1088;&#1086;&#1074; &#1076;&#1083;&#1103; {{ pool.client.name }}{% else %}&#1047;&#1072;&#1087;&#1086;&#1083;&#1085;&#1080;&#1090;&#1077; &#1076;&#1072;&#1085;&#1085;&#1099;&#1077; &#1079;&#1072;&#1084;&#1077;&#1088;&#1086;&#1074; &#1076;&#1083;&#1103; {{ pool.client.name }}{% endif %}
         </p>
 
         <form method="post" class="offline-queue-form" novalidate>
@@ -36,68 +29,73 @@
             {{ form.date }}
 
             <div class="row g-3 mb-2">
-                <div class="col-12">
-                    <label class="form-label fw-semibold"><i class="bi bi-thermometer me-2"></i>Температура (°C)</label>
+                <div class="col-md-6">
+                    <label class="form-label fw-semibold"><i class="bi bi-thermometer me-2"></i>&#1058;&#1077;&#1084;&#1087;&#1077;&#1088;&#1072;&#1090;&#1091;&#1088;&#1072; (&#176;C)</label>
                     {{ form.temperature }}
                 </div>
                 <div class="col-md-6">
-                    <label class="form-label fw-semibold"><i class="bi bi-cup-hot me-2"></i>pH</label>
+                    <label class="form-label fw-semibold"><i class="bi bi-flask me-2"></i>pH</label>
                     {{ form.ph }}
                 </div>
                 <div class="col-md-6">
-                    <label class="form-label fw-semibold"><i class="bi bi-droplet me-2"></i>Свободный хлор (мг/л)</label>
+                    <label class="form-label fw-semibold"><i class="bi bi-droplet me-2"></i>&#1057;&#1074;&#1086;&#1073;&#1086;&#1076;&#1085;&#1099;&#1081; &#1093;&#1083;&#1086;&#1088; (&#1084;&#1075;/&#1083;)</label>
                     {{ form.cl_free }}
                 </div>
                 <div class="col-md-6">
-                    <label class="form-label fw-semibold"><i class="bi bi-droplet-half me-2"></i>Связанный хлор (мг/л)</label>
+                    <label class="form-label fw-semibold"><i class="bi bi-droplet-half me-2"></i>&#1057;&#1074;&#1103;&#1079;&#1072;&#1085;&#1085;&#1099;&#1081; &#1093;&#1083;&#1086;&#1088; (&#1084;&#1075;/&#1083;)</label>
                     {{ form.cl_total }}
                 </div>
             </div>
 
-            <button type="button" class="btn btn-outline-primary mb-3" id="toggle-dosing">
-                Станция дозирования
-            </button>
-
-            <div id="dosing-fields" class="d-none">
-                <div class="row g-3 mb-2">
-                    <div class="col-md-6">
-                        <label class="form-label fw-semibold">pH, станция дозирования</label>
-                        {{ form.ph_dosing_station }}
+            <div class="card card-soft p-3 mb-3">
+                <div class="d-flex align-items-center justify-content-between gap-2">
+                    <div class="fw-semibold d-flex align-items-center gap-2">
+                        <i class="bi bi-sliders"></i>
+                        &#1057;&#1090;&#1072;&#1085;&#1094;&#1080;&#1103; &#1076;&#1086;&#1079;&#1080;&#1088;&#1086;&#1074;&#1072;&#1085;&#1080;&#1103;
                     </div>
-                    <div class="col-md-6">
-                        <label class="form-label fw-semibold">Свободный хлор, станция дозирования</label>
-                        {{ form.cl_free_dosing_station }}
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label fw-semibold">Общий хлор, станция дозирования</label>
-                        {{ form.cl_total_dosing_station }}
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label fw-semibold">Redox, станция дозирования</label>
-                        {{ form.redox_dosing_station }}
+                    <button type="button" class="btn btn-outline-primary btn-sm" id="toggle-dosing"></button>
+                </div>
+                <div id="dosing-fields" class="d-none mt-3">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold"><i class="bi bi-flask me-2"></i>pH, &#1089;&#1090;&#1072;&#1085;&#1094;&#1080;&#1103; &#1076;&#1086;&#1079;&#1080;&#1088;&#1086;&#1074;&#1072;&#1085;&#1080;&#1103;</label>
+                            {{ form.ph_dosing_station }}
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold"><i class="bi bi-droplet me-2"></i>&#1057;&#1074;&#1086;&#1073;&#1086;&#1076;&#1085;&#1099;&#1081; &#1093;&#1083;&#1086;&#1088;, &#1089;&#1090;&#1072;&#1085;&#1094;&#1080;&#1103; &#1076;&#1086;&#1079;&#1080;&#1088;&#1086;&#1074;&#1072;&#1085;&#1080;&#1103;</label>
+                            {{ form.cl_free_dosing_station }}
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold"><i class="bi bi-droplet-half me-2"></i>&#1057;&#1074;&#1103;&#1079;&#1072;&#1085;&#1085;&#1099;&#1081; &#1093;&#1083;&#1086;&#1088;, &#1089;&#1090;&#1072;&#1085;&#1094;&#1080;&#1103; &#1076;&#1086;&#1079;&#1080;&#1088;&#1086;&#1074;&#1072;&#1085;&#1080;&#1103;</label>
+                            {{ form.cl_total_dosing_station }}
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold"><i class="bi bi-activity me-2"></i>Redox, &#1089;&#1090;&#1072;&#1085;&#1094;&#1080;&#1103; &#1076;&#1086;&#1079;&#1080;&#1088;&#1086;&#1074;&#1072;&#1085;&#1080;&#1103;</label>
+                            {{ form.redox_dosing_station }}
+                        </div>
                     </div>
                 </div>
             </div>
 
             <div class="mb-3">
-                <label class="form-label fw-semibold">Комментарий</label>
+                <label class="form-label fw-semibold"><i class="bi bi-chat-left-text me-2"></i>&#1050;&#1086;&#1084;&#1084;&#1077;&#1085;&#1090;&#1072;&#1088;&#1080;&#1081;</label>
                 {{ form.comment }}
             </div>
 
             <div class="row g-3 mb-3">
                 <div class="col-md-6">
-                    <label class="form-label fw-semibold">Необходимые материалы</label>
+                    <label class="form-label fw-semibold"><i class="bi bi-box-seam me-2"></i>&#1053;&#1077;&#1086;&#1073;&#1093;&#1086;&#1076;&#1080;&#1084;&#1099;&#1077; &#1084;&#1072;&#1090;&#1077;&#1088;&#1080;&#1072;&#1083;&#1099;</label>
                     {{ form.required_materials }}
                 </div>
                 <div class="col-md-6">
-                    <label class="form-label fw-semibold">Произведенные работы</label>
+                    <label class="form-label fw-semibold"><i class="bi bi-tools me-2"></i>&#1042;&#1099;&#1087;&#1086;&#1083;&#1085;&#1077;&#1085;&#1085;&#1099;&#1077; &#1088;&#1072;&#1073;&#1086;&#1090;&#1099;</label>
                     {{ form.performed_works }}
                 </div>
             </div>
 
             <div class="d-flex gap-2">
-                <button type="submit" class="btn btn-primary btn-lg">Сохранить</button>
-                <a href="{% url 'pool_detail' pool.pk %}" class="btn btn-outline-secondary btn-lg">Отмена</a>
+                <button type="submit" class="btn btn-primary btn-lg">&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;</button>
+                <a href="{% url 'pool_detail' pool.pk %}" class="btn btn-outline-secondary btn-lg">&#1054;&#1090;&#1084;&#1077;&#1085;&#1072;</a>
             </div>
         </form>
     </div>
@@ -107,12 +105,27 @@
     document.addEventListener("DOMContentLoaded", function() {
         const toggleBtn = document.getElementById("toggle-dosing");
         const dosing = document.getElementById("dosing-fields");
-        toggleBtn.addEventListener("click", function() {
-            dosing.classList.toggle("d-none");
-        });
+        const updateToggleText = () => {
+            if (!toggleBtn || !dosing) return;
+            toggleBtn.textContent = dosing.classList.contains("d-none")
+                ? "\u041f\u043e\u043a\u0430\u0437\u0430\u0442\u044c \u043f\u0430\u0440\u0430\u043c\u0435\u0442\u0440\u044b"
+                : "\u0421\u043a\u0440\u044b\u0442\u044c \u043f\u0430\u0440\u0430\u043c\u0435\u0442\u0440\u044b";
+        };
+
+        if (toggleBtn && dosing) {
+            const inputs = dosing.querySelectorAll("input");
+            const hasValue = Array.from(inputs).some((input) => String(input.value || "").trim().length);
+            if (hasValue) {
+                dosing.classList.remove("d-none");
+            }
+            updateToggleText();
+            toggleBtn.addEventListener("click", function() {
+                dosing.classList.toggle("d-none");
+                updateToggleText();
+            });
+        }
 
         {% if not is_edit %}
-        // заполнение даты локальным ISO
         const dateField = document.querySelector('input[name="date"]');
         if (dateField) {
             const tzoffset = (new Date()).getTimezoneOffset() * 60000;

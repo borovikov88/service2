@@ -25,7 +25,7 @@ urlpatterns = [
             html_email_template_name='registration/password_reset_email.html',
             extra_email_context={
                 'site_url': settings.SITE_URL,
-                'logo_url': f"{settings.SITE_URL.rstrip('/')}{static('pool_service/img/logo.png')}",
+                'logo_url': f"{settings.SITE_URL.rstrip('/')}{static('assets/images/favicon.png')}",
                 'brand_url': f"{settings.SITE_URL.rstrip('/')}{static('assets/images/rovikpool.png')}",
             },
             extra_context={'hide_header': True},

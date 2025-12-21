@@ -1,5 +1,7 @@
 from django import forms
 from django.contrib.auth.models import User
+from django.contrib.auth.forms import AuthenticationForm
+from django.contrib.auth.password_validation import validate_password
 from django.utils.crypto import get_random_string
 from .models import WaterReading, Organization, Client, OrganizationAccess, Pool
 
@@ -24,30 +26,48 @@ class WaterReadingForm(forms.ModelForm):
             "performed_works",
         ]
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for field in self.fields.values():
+            if isinstance(field.widget, forms.HiddenInput):
+                continue
+            classes = field.widget.attrs.get("class", "")
+            extra = "form-control rounded-3"
+            if isinstance(field.widget, forms.Textarea):
+                field.widget.attrs.setdefault("rows", 3)
+            field.widget.attrs["class"] = f"{classes} {extra}".strip()
+
 
 class RegistrationForm(forms.Form):
     USER_TYPE_CHOICES = [
-        ("client", "Частный клиент / бюджетник"),
-        ("organization", "Сервисная организация"),
+        ("client", "??????? ???????? / ??????"),
+        ("organization", "????????? ???????????"),
     ]
 
-    user_type = forms.ChoiceField(choices=USER_TYPE_CHOICES, widget=forms.RadioSelect, label="Тип регистрации")
+    user_type = forms.ChoiceField(
+        choices=USER_TYPE_CHOICES,
+        widget=forms.RadioSelect,
+        label="??? ??????? ??????",
+    )
 
-    first_name = forms.CharField(label="Имя", required=False)
-    last_name = forms.CharField(label="Фамилия", required=False)
-    user_phone = forms.CharField(label="Телефон (логин, без +7/8)", required=False)
+    first_name = forms.CharField(label="???", required=False)
+    last_name = forms.CharField(label="???????", required=False)
+    user_phone = forms.CharField(label="??????? (?????? ?????, ??? +7/8)", required=False)
     email = forms.EmailField(label="Email", required=False)
-    password1 = forms.CharField(label="Пароль", widget=forms.PasswordInput)
-    password2 = forms.CharField(label="Повторите пароль", widget=forms.PasswordInput)
+    password1 = forms.CharField(label="??????", widget=forms.PasswordInput)
+    password2 = forms.CharField(label="????????? ??????", widget=forms.PasswordInput)
 
-    org_name = forms.CharField(label="Наименование организации", required=False)
-    org_inn = forms.CharField(label="ИНН", required=False)
-    org_city = forms.CharField(label="Город", required=False)
-    org_address = forms.CharField(label="Адрес", required=False)
-    org_phone = forms.CharField(label="Телефон", required=False)
-    org_email = forms.EmailField(label="Email", required=False)
+    org_name = forms.CharField(label="???????? ???????????", required=False)
+    org_inn = forms.CharField(label="???", required=False)
+    org_city = forms.CharField(label="?????", required=False)
+    org_address = forms.CharField(label="?????", required=False)
+    org_phone = forms.CharField(label="??????? ???????????", required=False)
+    org_email = forms.EmailField(label="Email ???????????", required=False)
 
-    consent = forms.BooleanField(label="Я соглашаюсь с обработкой персональных данных", required=True)
+    consent = forms.BooleanField(
+        label="? ?????????? ? ?????????? ???????????? ??????",
+        required=True,
+    )
 
     def _normalize_phone(self, raw):
         if not raw:
@@ -87,13 +107,21 @@ class RegistrationForm(forms.Form):
         username = self._normalize_phone(phone_raw)
         self._normalized_username = username
         if phone_raw and not username:
-            self.add_error("user_phone", "Телефон должен быть 10 цифр (без +7/8)")
+            self.add_error("user_phone", "??????? ?????? ????????? 10 ???? (??? +7/8)")
 
         if username and User.objects.filter(username=username).exists():
-            self.add_error("user_phone", "Пользователь с таким логином уже существует")
+            self.add_error("user_phone", "???????????? ? ????? ????????? ??? ??????????")
 
         if cleaned.get("password1") != cleaned.get("password2"):
-            self.add_error("password2", "Пароли не совпадают")
+            self.add_error("password2", "?????? ?? ?????????")
+
+        password_value = cleaned.get("password1")
+        if password_value:
+            try:
+                validate_password(password_value)
+            except forms.ValidationError as exc:
+                self.add_error("password1", exc)
+
         email_value = cleaned.get("email")
         org_email_value = cleaned.get("org_email")
         if cleaned.get("user_type") == "organization":
@@ -110,22 +138,22 @@ class RegistrationForm(forms.Form):
 
         if cleaned.get("user_type") == "organization":
             if not cleaned.get("org_name"):
-                self.add_error("org_name", "Укажите название организации")
+                self.add_error("org_name", "??????? ???????? ???????????")
             if not cleaned.get("org_city"):
-                self.add_error("org_city", "Укажите город")
+                self.add_error("org_city", "??????? ?????")
             if not cleaned.get("org_phone"):
-                self.add_error("org_phone", "Укажите телефон")
+                self.add_error("org_phone", "??????? ??????? ???????????")
             if not cleaned.get("first_name"):
-                self.add_error("first_name", "Укажите имя")
+                self.add_error("first_name", "??????? ???")
             if not cleaned.get("last_name"):
-                self.add_error("last_name", "Укажите фамилию")
+                self.add_error("last_name", "??????? ???????")
         if cleaned.get("user_type") == "client":
             if not cleaned.get("first_name"):
-                self.add_error("first_name", "Укажите имя")
+                self.add_error("first_name", "??????? ???")
             if not cleaned.get("last_name"):
-                self.add_error("last_name", "Укажите фамилию")
+                self.add_error("last_name", "??????? ???????")
             if not cleaned.get("user_phone"):
-                self.add_error("user_phone", "Укажите телефон")
+                self.add_error("user_phone", "??????? ???????")
         return cleaned
 
     def save(self):
@@ -153,7 +181,6 @@ class RegistrationForm(forms.Form):
             OrganizationAccess.objects.create(user=user, organization=org, role="admin")
         else:
             Client.objects.create(
-                
                 client_type="private",
                 first_name=data.get("first_name"),
                 last_name=data.get("last_name"),
@@ -289,3 +316,15 @@ class PoolForm(forms.ModelForm):
             self.fields["client"].queryset = client_qs
             if not client_self.exists():
                 self.fields["client"].initial = None
+
+
+class EmailOrUsernameAuthenticationForm(AuthenticationForm):
+    def clean(self):
+        username = self.cleaned_data.get("username")
+        if username and "@" in username:
+            users = User.objects.filter(email__iexact=username, is_active=True)
+            if users.count() == 1:
+                self.cleaned_data["username"] = users.first().username
+            elif users.count() > 1:
+                raise forms.ValidationError("\u041d\u0435\u0441\u043a\u043e\u043b\u044c\u043a\u043e \u0430\u043a\u043a\u0430\u0443\u043d\u0442\u043e\u0432 \u0441 \u044d\u0442\u0438\u043c email. \u0418\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0439\u0442\u0435 \u043b\u043e\u0433\u0438\u043d.")
+        return super().clean()

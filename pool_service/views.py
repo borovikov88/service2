@@ -1,7 +1,8 @@
 from django.contrib import messages
-from django.contrib.auth import login, authenticate
+from django.contrib.auth import login, authenticate, update_session_auth_hash
 from django.contrib.auth.models import User
 from django.contrib.auth.tokens import default_token_generator
+from django.contrib.auth.password_validation import validate_password
 from django.core.mail import send_mail
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import AuthenticationForm
@@ -17,6 +18,7 @@ from django.utils import timezone
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.template.loader import render_to_string
+import html
 from django.templatetags.static import static
 from django.conf import settings
 from urllib.parse import urlencode
@@ -24,7 +26,7 @@ from urllib.request import urlopen, Request
 import json
 from datetime import timedelta
 
-from .forms import WaterReadingForm, RegistrationForm, ClientCreateForm, PoolForm
+from .forms import WaterReadingForm, RegistrationForm, ClientCreateForm, PoolForm, EmailOrUsernameAuthenticationForm
 from .models import OrganizationAccess, Pool, PoolAccess, WaterReading, Client, Organization
 from django import forms
 
@@ -364,40 +366,44 @@ def client_create(request):
 
 
 def home(request):
+    """    ??????? ???????? ??? ???????????????? ?????????????.
     """
-    Домашняя страница с формой авторизации и кратким описанием сервиса.
-    """
+    if request.user.is_authenticated:
+        return redirect("pool_list")
+
     if request.method == "POST":
-        form = AuthenticationForm(data=request.POST)
+        form = EmailOrUsernameAuthenticationForm(data=request.POST)
         if form.is_valid():
             user = form.get_user()
             login(request, user)
-            messages.success(request, "Вход выполнен успешно")
+            messages.success(request, "?? ??????? ????? ? ???????.")
             return redirect("pool_list")
-        else:
-            messages.error(request, "Неверные учетные данные. Попробуйте ещё раз.")
+        messages.error(request, "???????? ????? ??? ??????. ?????????? ??? ???.")
     else:
-        form = AuthenticationForm()
+        form = EmailOrUsernameAuthenticationForm()
 
     context = {
         "form": form,
-        "info": "Добро пожаловать на наш сервис обслуживания бассейнов и водоочистки. Здесь вы можете узнать об услугах и войти в личный кабинет.",
+        "register_form": RegistrationForm(),
         "active_tab": "home",
     }
     return render(request, "pool_service/home.html", context)
 
 
 def register(request):
-    """Регистрация сервисной организации или частного клиента."""
+    """??????????? ?????? ????????????."""
     if request.method == "POST":
         form = RegistrationForm(request.POST)
         if form.is_valid():
             user = form.save()
             email_sent = _send_registration_confirmation(request, user)
             if email_sent:
-                messages.success(request, "Регистрация создана. Проверьте почту и подтвердите аккаунт.")
+                messages.success(request, "??????????? ?????????. ????????? ????? ? ??????????? ???????.")
             else:
-                messages.error(request, "Регистрация создана, но письмо не отправилось. Обратитесь в поддержку.")
+                messages.error(
+                    request,
+                    "??????????? ?????????, ?? ?????? ?? ??????????. ????????? ????? ??? ????????? ? ??????????.",
+                )
             return redirect("login")
     else:
         form = RegistrationForm()
@@ -407,11 +413,12 @@ def register(request):
         "registration/register.html",
         {
             "form": form,
-            "page_title": "Регистрация",
+            "page_title": "???????????",
             "active_tab": "home",
             "hide_header": True,
         },
     )
+
 
 def _build_confirmation_link(request, user):
     uid = urlsafe_base64_encode(force_bytes(user.pk))
@@ -427,9 +434,9 @@ def _send_registration_confirmation(request, user):
         return False
     confirm_url = _build_confirmation_link(request, user)
     site_url = getattr(settings, "SITE_URL", "").rstrip("/") or request.build_absolute_uri("/").rstrip("/")
-    logo_url = f"{site_url}{static('pool_service/img/logo.png')}"
+    logo_url = f"{site_url}{static('assets/images/favicon.png')}"
     brand_url = f"{site_url}{static('assets/images/rovikpool.png')}"
-    subject = render_to_string("registration/confirm_email_subject.txt", {}).strip()
+    subject = html.unescape(render_to_string("registration/confirm_email_subject.txt", {}).strip())
     message = render_to_string(
         "registration/confirm_email.txt",
         {"confirm_url": confirm_url, "user": user, "site_url": site_url, "logo_url": logo_url},
@@ -695,6 +702,7 @@ class CustomLoginView(LoginView):
     template_name = "registration/login.html"
     success_url = reverse_lazy("pool_list")
     extra_context = {"hide_header": True}
+    authentication_form = EmailOrUsernameAuthenticationForm
 
     def form_valid(self, form):
         messages.success(self.request, "Вход выполнен успешно")
@@ -703,3 +711,31 @@ class CustomLoginView(LoginView):
     def form_invalid(self, form):
         messages.error(self.request, "Неверные учетные данные. Попробуйте ещё раз.")
         return super().form_invalid(form)
+
+
+@login_required
+def password_change_inline(request):
+    if request.method != "POST":
+        return redirect("profile")
+
+    new_password1 = (request.POST.get("new_password1") or "").strip()
+    new_password2 = (request.POST.get("new_password2") or "").strip()
+    if not new_password1 or not new_password2:
+        messages.error(request, "Заполните оба поля пароля.")
+        return redirect("profile")
+    if new_password1 != new_password2:
+        messages.error(request, "Пароли не совпадают.")
+        return redirect("profile")
+
+    try:
+        validate_password(new_password1, user=request.user)
+    except forms.ValidationError as exc:
+        for error in exc:
+            messages.error(request, error)
+        return redirect("profile")
+
+    request.user.set_password(new_password1)
+    request.user.save(update_fields=["password"])
+    update_session_auth_hash(request, request.user)
+    messages.success(request, "Пароль обновлен.")
+    return redirect("profile")
