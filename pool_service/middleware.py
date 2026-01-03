@@ -25,7 +25,7 @@ class AuthRedirectMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
-        allowed_paths = [
+        allowed_prefixes = [
             "/accounts/login/",
             "/accounts/logout/",
             "/accounts/password-reset/",
@@ -38,6 +38,6 @@ class AuthRedirectMiddleware:
         ]
         if not request.user.is_authenticated:
             path = request.path
-            if not any(path.startswith(p) for p in allowed_paths):
+            if path not in {"/", "/index/"} and not any(path.startswith(p) for p in allowed_prefixes):
                 return redirect("/accounts/login/")
         return self.get_response(request)

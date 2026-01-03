@@ -40,32 +40,32 @@ class WaterReadingForm(forms.ModelForm):
 
 class RegistrationForm(forms.Form):
     USER_TYPE_CHOICES = [
-        ("client", "??????? ???????? / ??????"),
-        ("organization", "????????? ???????????"),
+        ("client", "Частный владелец / клиент"),
+        ("organization", "Сервисная организация"),
     ]
 
     user_type = forms.ChoiceField(
         choices=USER_TYPE_CHOICES,
         widget=forms.RadioSelect,
-        label="??? ??????? ??????",
+        label="Тип учетной записи",
     )
 
-    first_name = forms.CharField(label="???", required=False)
-    last_name = forms.CharField(label="???????", required=False)
-    user_phone = forms.CharField(label="??????? (?????? ?????, ??? +7/8)", required=False)
+    first_name = forms.CharField(label="Имя", required=False)
+    last_name = forms.CharField(label="Фамилия", required=False)
+    user_phone = forms.CharField(label="Телефон (только цифры, код +7/8)", required=False)
     email = forms.EmailField(label="Email", required=False)
-    password1 = forms.CharField(label="??????", widget=forms.PasswordInput)
-    password2 = forms.CharField(label="????????? ??????", widget=forms.PasswordInput)
+    password1 = forms.CharField(label="Пароль", widget=forms.PasswordInput)
+    password2 = forms.CharField(label="Повторите пароль", widget=forms.PasswordInput)
 
-    org_name = forms.CharField(label="???????? ???????????", required=False)
-    org_inn = forms.CharField(label="???", required=False)
-    org_city = forms.CharField(label="?????", required=False)
-    org_address = forms.CharField(label="?????", required=False)
-    org_phone = forms.CharField(label="??????? ???????????", required=False)
-    org_email = forms.EmailField(label="Email ???????????", required=False)
+    org_name = forms.CharField(label="Название организации", required=False)
+    org_inn = forms.CharField(label="ИНН", required=False)
+    org_city = forms.CharField(label="Город", required=False)
+    org_address = forms.CharField(label="Адрес", required=False)
+    org_phone = forms.CharField(label="Телефон организации", required=False)
+    org_email = forms.EmailField(label="Email организации", required=False)
 
     consent = forms.BooleanField(
-        label="? ?????????? ? ?????????? ???????????? ??????",
+        label="Я соглашаюсь с обработкой персональных данных",
         required=True,
     )
 
@@ -107,13 +107,13 @@ class RegistrationForm(forms.Form):
         username = self._normalize_phone(phone_raw)
         self._normalized_username = username
         if phone_raw and not username:
-            self.add_error("user_phone", "??????? ?????? ????????? 10 ???? (??? +7/8)")
+            self.add_error("user_phone", "Телефон должен содержать 10 цифр (код +7/8)")
 
         if username and User.objects.filter(username=username).exists():
-            self.add_error("user_phone", "???????????? ? ????? ????????? ??? ??????????")
+            self.add_error("user_phone", "Пользователь с таким телефоном уже существует")
 
         if cleaned.get("password1") != cleaned.get("password2"):
-            self.add_error("password2", "?????? ?? ?????????")
+            self.add_error("password2", "Пароли не совпадают")
 
         password_value = cleaned.get("password1")
         if password_value:
@@ -126,34 +126,34 @@ class RegistrationForm(forms.Form):
         org_email_value = cleaned.get("org_email")
         if cleaned.get("user_type") == "organization":
             if not (email_value or org_email_value):
-                self.add_error("org_email", "??????? email")
+                self.add_error("org_email", "Укажите email")
         else:
             if not email_value:
-                self.add_error("email", "??????? email")
+                self.add_error("email", "Укажите email")
 
         if email_value and User.objects.filter(email__iexact=email_value).exists():
-            self.add_error("email", "???? email ??? ???????????????")
+            self.add_error("email", "Этот email уже зарегистрирован")
         if org_email_value and User.objects.filter(email__iexact=org_email_value).exists():
-            self.add_error("org_email", "???? email ??? ???????????????")
+            self.add_error("org_email", "Этот email уже зарегистрирован")
 
         if cleaned.get("user_type") == "organization":
             if not cleaned.get("org_name"):
-                self.add_error("org_name", "??????? ???????? ???????????")
+                self.add_error("org_name", "Укажите название организации")
             if not cleaned.get("org_city"):
-                self.add_error("org_city", "??????? ?????")
+                self.add_error("org_city", "Укажите город")
             if not cleaned.get("org_phone"):
-                self.add_error("org_phone", "??????? ??????? ???????????")
+                self.add_error("org_phone", "Укажите телефон организации")
             if not cleaned.get("first_name"):
-                self.add_error("first_name", "??????? ???")
+                self.add_error("first_name", "Укажите имя")
             if not cleaned.get("last_name"):
-                self.add_error("last_name", "??????? ???????")
+                self.add_error("last_name", "Укажите фамилию")
         if cleaned.get("user_type") == "client":
             if not cleaned.get("first_name"):
-                self.add_error("first_name", "??????? ???")
+                self.add_error("first_name", "Укажите имя")
             if not cleaned.get("last_name"):
-                self.add_error("last_name", "??????? ???????")
+                self.add_error("last_name", "Укажите фамилию")
             if not cleaned.get("user_phone"):
-                self.add_error("user_phone", "??????? ???????")
+                self.add_error("user_phone", "Укажите телефон")
         return cleaned
 
     def save(self):

@@ -4,14 +4,14 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{% block title %}RovikPool{% endblock %}</title>
+  <title>{% block title %}{{ brand_name }}{% endblock %}</title>
   <meta name="theme-color" content="#0d6efd" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
 
-  <link rel="icon" type="image/png" href="{% static 'assets/images/favicon.png' %}" />
+  <link rel="icon" type="image/png" href="{% static brand_favicon %}" />
   <link rel="manifest" href="{% static 'manifest.webmanifest' %}">
-  <link rel="apple-touch-icon" href="{% static 'pool_service/img/logo.png' %}">
+  <link rel="apple-touch-icon" href="{% static brand_logo %}">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" />
   <link href="{% static 'assets/css/style.css' %}" rel="stylesheet" />
 
@@ -181,9 +181,9 @@
           <button class="btn btn-light d-lg-none border-0 shadow-sm" style="width:44px;height:44px;" onclick="openMenu()" aria-label="&#1054;&#1090;&#1082;&#1088;&#1099;&#1090;&#1100; &#1084;&#1077;&#1085;&#1102;">
             <i class="bi bi-list fs-4"></i>
           </button>
-          <img src="{% static 'pool_service/img/logo.png' %}" class="app-logo" alt="RovikPool">
+          <img src="{% static brand_logo %}" class="app-logo" alt="{{ brand_name }}">
           <div>
-            <div class="fw-bold text-dark">RovikPool</div>
+            <div class="fw-bold text-dark">{{ brand_name }}</div>
             <div class="text-muted small">&#1057;&#1080;&#1089;&#1090;&#1077;&#1084;&#1072; &#1086;&#1073;&#1089;&#1083;&#1091;&#1078;&#1080;&#1074;&#1072;&#1085;&#1080;&#1103; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;</div>
           </div>
         </div>
@@ -246,9 +246,9 @@
   <div id="mobile-menu" class="mobile-menu">
       <div class="menu-header d-flex align-items-center justify-content-between mb-3">
           <div class="d-flex align-items-center gap-2">
-              <img src="{% static 'pool_service/img/logo.png' %}" class="app-logo" alt="RovikPool" style="width:38px;height:38px;">
+              <img src="{% static brand_logo %}" class="app-logo" alt="{{ brand_name }}" style="width:38px;height:38px;">
               <div>
-                  <div class="fw-bold text-dark">RovikPool</div>
+                  <div class="fw-bold text-dark">{{ brand_name }}</div>
                   <div class="text-muted small">&#1052;&#1077;&#1085;&#1102;</div>
               </div>
           </div>
@@ -282,7 +282,7 @@
       <div class="card shadow-sm border-0">
         <div class="card-body d-flex flex-wrap align-items-center justify-content-between gap-3">
           <div>
-            <div class="fw-semibold">&#1059;&#1089;&#1090;&#1072;&#1085;&#1086;&#1074;&#1080;&#1090;&#1077; RovikPool</div>
+            <div class="fw-semibold">&#1059;&#1089;&#1090;&#1072;&#1085;&#1086;&#1074;&#1080;&#1090;&#1077; {{ brand_name }}</div>
             <div class="text-muted small">&#1044;&#1086;&#1073;&#1072;&#1074;&#1100;&#1090;&#1077; &#1087;&#1088;&#1080;&#1083;&#1086;&#1078;&#1077;&#1085;&#1080;&#1077; &#1085;&#1072; &#1075;&#1083;&#1072;&#1074;&#1085;&#1099;&#1081; &#1101;&#1082;&#1088;&#1072;&#1085; &#1076;&#1083;&#1103; &#1073;&#1099;&#1089;&#1090;&#1088;&#1086;&#1075;&#1086; &#1076;&#1086;&#1089;&#1090;&#1091;&#1087;&#1072;.</div>
           </div>
           <div class="d-flex gap-2">
