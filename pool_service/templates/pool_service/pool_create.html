@@ -5,7 +5,7 @@
 {% block content %}
 <div class="card card-soft p-4">
     <h3 class="fw-bold h5 mb-3">{% if is_edit %}Редактирование бассейна{% else %}Создание бассейна{% endif %}</h3>
-    <form method="post" class="offline-queue-form" action="{% if is_edit %}{% url 'pool_edit' pool.pk %}{% else %}{% url 'pool_create' %}{% endif %}">
+    <form method="post" class="offline-queue-form" action="{% if is_edit %}{% url 'pool_edit' pool.uuid %}{% else %}{% url 'pool_create' %}{% endif %}">
         {% csrf_token %}
         {% if not request.user.client_profile %}
         <div class="mb-3">

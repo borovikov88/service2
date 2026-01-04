@@ -6,7 +6,7 @@
 <div class="row g-3">
     {% for pool in pools %}
     <div class="col-12 col-md-6 col-lg-4">
-        <a href="{% url 'pool_detail' pool.pk %}" class="text-decoration-none text-dark h-100 d-block">
+        <a href="{% url 'pool_detail' pool.uuid %}" class="text-decoration-none text-dark h-100 d-block">
             <div class="card card-soft p-3 h-100 hover-shadow">
                 <div class="d-flex align-items-start justify-content-between">
                     <div class="d-flex gap-3 align-items-start">

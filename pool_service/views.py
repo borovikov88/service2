@@ -239,7 +239,7 @@ def pool_create(request):
             if pool.client and pool.client.user:
                 PoolAccess.objects.get_or_create(user=pool.client.user, pool=pool, defaults={"role": "viewer"})
             messages.success(request, "Бассейн создан")
-            return redirect("pool_detail", pool_id=pool.id)
+            return redirect("pool_detail", pool_uuid=pool.uuid)
     else:
         form = PoolForm(user=request.user, selected_client_id=selected_client_id)
 
@@ -260,8 +260,8 @@ def pool_create(request):
 
 @login_required
 @never_cache
-def pool_edit(request, pool_id):
-    pool = get_object_or_404(Pool, id=pool_id)
+def pool_edit(request, pool_uuid):
+    pool = get_object_or_404(Pool, uuid=pool_uuid)
 
     if request.user.is_superuser:
         role = "admin"
@@ -290,7 +290,7 @@ def pool_edit(request, pool_id):
                 updated.client = user_client
             updated.save()
             messages.success(request, "Бассейн обновлен")
-            return redirect("pool_detail", pool_id=pool.id)
+            return redirect("pool_detail", pool_uuid=pool.uuid)
     else:
         form = PoolForm(instance=pool, user=request.user)
 
@@ -477,9 +477,9 @@ def confirm_email(request, uidb64, token):
 
 
 @login_required
-def pool_detail(request, pool_id):
+def pool_detail(request, pool_uuid):
     """Детальная страница бассейна с показателями и доступами."""
-    pool = get_object_or_404(Pool, id=pool_id)
+    pool = get_object_or_404(Pool, uuid=pool_uuid)
 
     if request.user.is_superuser:
         role = "admin"
@@ -602,9 +602,9 @@ def readings_all(request):
 
 @csrf_protect
 @never_cache
-def water_reading_create(request, pool_id):
+def water_reading_create(request, pool_uuid):
     """Создание нового замера для выбранного бассейна."""
-    pool = get_object_or_404(Pool, pk=pool_id)
+    pool = get_object_or_404(Pool, uuid=pool_uuid)
 
     if request.method == "POST":
         form = WaterReadingForm(request.POST)
@@ -615,7 +615,7 @@ def water_reading_create(request, pool_id):
             reading.added_by = request.user
             reading.save()
             messages.success(request, "Показания добавлены")
-            return redirect("pool_detail", pool_id=pool.id)
+            return redirect("pool_detail", pool_uuid=pool.uuid)
         else:
             messages.error(request, "Не удалось сохранить показания, проверьте данные")
     else:
@@ -625,12 +625,12 @@ def water_reading_create(request, pool_id):
 
 
 @login_required
-def water_reading_edit(request, reading_id):
-    reading = get_object_or_404(WaterReading.objects.select_related("pool"), pk=reading_id)
+def water_reading_edit(request, reading_uuid):
+    reading = get_object_or_404(WaterReading.objects.select_related("pool"), uuid=reading_uuid)
 
     if not _reading_edit_allowed(reading, request.user):
         messages.error(request, "Редактирование доступно только автору записи в течение 30 минут.")
-        return redirect("pool_detail", pool_id=reading.pool_id)
+        return redirect("pool_detail", pool_uuid=reading.pool.uuid)
 
     if request.method == "POST":
         form = WaterReadingForm(request.POST, instance=reading)
@@ -641,7 +641,7 @@ def water_reading_edit(request, reading_id):
             updated.added_by = reading.added_by
             updated.save()
             messages.success(request, "Запись обновлена.")
-            return redirect("pool_detail", pool_id=reading.pool_id)
+            return redirect("pool_detail", pool_uuid=reading.pool.uuid)
         messages.error(request, "Не удалось обновить запись. Проверьте форму.")
     else:
         form = WaterReadingForm(instance=reading)

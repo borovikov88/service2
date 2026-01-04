@@ -4,7 +4,7 @@
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-    <a href="{% url 'pool_detail' pool.pk %}" class="text-decoration-none d-flex align-items-center gap-2 text-dark">
+    <a href="{% url 'pool_detail' pool.uuid %}" class="text-decoration-none d-flex align-items-center gap-2 text-dark">
         <i class="bi bi-arrow-left"></i>
         <span class="fw-semibold">&#1053;&#1072;&#1079;&#1072;&#1076; &#1082; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1091;</span>
     </a>
@@ -95,7 +95,7 @@
 
             <div class="d-flex gap-2">
                 <button type="submit" class="btn btn-primary btn-lg">&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;</button>
-                <a href="{% url 'pool_detail' pool.pk %}" class="btn btn-outline-secondary btn-lg">&#1054;&#1090;&#1084;&#1077;&#1085;&#1072;</a>
+                <a href="{% url 'pool_detail' pool.uuid %}" class="btn btn-outline-secondary btn-lg">&#1054;&#1090;&#1084;&#1077;&#1085;&#1072;</a>
             </div>
         </form>
     </div>

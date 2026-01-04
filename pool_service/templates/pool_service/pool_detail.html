@@ -13,11 +13,11 @@
     {% if role == 'editor' or role == 'service' or role == 'admin' or user.is_superuser %}
         <div class="d-flex align-items-center gap-2">
             {% if role == 'admin' or user.is_superuser %}
-                <a class="btn btn-outline-primary rounded-3 d-flex align-items-center gap-2" href="{% url 'pool_edit' pool.pk %}" aria-label="Редактировать бассейн" title="Редактировать бассейн">
+                <a class="btn btn-outline-primary rounded-3 d-flex align-items-center gap-2" href="{% url 'pool_edit' pool.uuid %}" aria-label="Редактировать бассейн" title="Редактировать бассейн">
                     <i class="bi bi-pencil"></i><span class="d-none d-sm-inline">Редактировать бассейн</span>
                 </a>
             {% endif %}
-            <a class="btn btn-primary rounded-3 d-flex align-items-center gap-2" href="{% url 'water_reading_create' pool.pk %}" aria-label="Добавить показания" title="Добавить показания">
+            <a class="btn btn-primary rounded-3 d-flex align-items-center gap-2" href="{% url 'water_reading_create' pool.uuid %}" aria-label="Добавить показания" title="Добавить показания">
                 <i class="bi bi-plus-lg"></i><span class="d-none d-sm-inline">Добавить показания</span>
             </a>
         </div>
@@ -173,7 +173,7 @@
                         <td>{{ reading.performed_works|default:"-" }}</td>
                         <td class="text-end">
                             {% if reading.id in editable_reading_ids %}
-                                <a class="btn btn-outline-secondary btn-sm" href="{% url 'water_reading_edit' reading.id %}">
+                                <a class="btn btn-outline-secondary btn-sm" href="{% url 'water_reading_edit' reading.uuid %}">
                                     <i class="bi bi-pencil"></i>
                                 </a>
                             {% endif %}

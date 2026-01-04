@@ -24,7 +24,7 @@
 
 {% elif role == "editor" or role == "service" or request.user.is_superuser %}
     <p>Вы можете редактировать этот бассейн.</p>
-    <a class="btn btn-primary btn-lg" href="{% url 'water_reading_create' pool.pk %}">Добавить показание</a>
+    <a class="btn btn-primary btn-lg" href="{% url 'water_reading_create' pool.uuid %}">Добавить показание</a>
 {% endif %}
   <h2>История показаний воды</h2>
   </div>

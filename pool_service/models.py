@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import models
 from django.contrib.auth.models import User
 from django_ckeditor_5.fields import CKEditor5Field
@@ -49,6 +51,7 @@ class Client(models.Model):
 
 
 class Pool(models.Model):
+    uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     SHAPE_CHOICES = [
         ("rect", "Прямоугольный"),
         ("round", "Круглый"),
@@ -119,6 +122,7 @@ class OrganizationAccess(models.Model):
 
 
 class WaterReading(models.Model):
+    uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     pool = models.ForeignKey(Pool, on_delete=models.CASCADE, related_name="waterreading")
     date = models.DateTimeField()
     added_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
