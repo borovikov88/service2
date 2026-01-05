@@ -115,6 +115,29 @@
             <h3 class="fw-bold h5 mb-1">История показаний</h3>
             <div class="text-muted small">Последние {{ per_page }} записей</div>
         </div>
+        <form method="get" class="d-flex align-items-center gap-2">
+            <input type="hidden" name="per_page" id="pool-readings-per-page-input" value="{{ per_page|default:20 }}">
+            <button class="btn pool-readings-per-page-trigger dropdown-toggle" type="button" id="pool-readings-per-page-button" data-bs-toggle="dropdown" aria-expanded="false">
+                {{ per_page|default:20 }} &#47; &#1089;&#1090;&#1088;
+            </button>
+            <ul class="dropdown-menu pool-readings-per-page-menu" aria-labelledby="pool-readings-per-page-button">
+                <li>
+                    <button class="dropdown-item {% if per_page == 20 %}active{% endif %}" type="button" data-value="20">
+                        20 &#47; &#1089;&#1090;&#1088;
+                    </button>
+                </li>
+                <li>
+                    <button class="dropdown-item {% if per_page == 50 %}active{% endif %}" type="button" data-value="50">
+                        50 &#47; &#1089;&#1090;&#1088;
+                    </button>
+                </li>
+                <li>
+                    <button class="dropdown-item {% if per_page == 100 %}active{% endif %}" type="button" data-value="100">
+                        100 &#47; &#1089;&#1090;&#1088;
+                    </button>
+                </li>
+            </ul>
+        </form>
     </div>
 
     <div class="table-responsive">
@@ -183,8 +206,79 @@
             </tbody>
         </table>
     </div>
+    {% if readings.has_other_pages %}
+        <div class="d-flex justify-content-between align-items-center mt-3">
+            <div class="text-muted small">
+                &#1057;&#1090;&#1088;&#1072;&#1085;&#1080;&#1094;&#1072; {{ readings.number }} &#1080;&#1079; {{ readings.paginator.num_pages }}
+            </div>
+            <div class="btn-group">
+                {% if readings.has_previous %}
+                    <a class="btn btn-outline-secondary btn-sm" href="?page={{ readings.previous_page_number }}{% if pagination_query %}&{{ pagination_query }}{% endif %}">&#1053;&#1072;&#1079;&#1072;&#1076;</a>
+                {% endif %}
+                {% if readings.has_next %}
+                    <a class="btn btn-outline-secondary btn-sm" href="?page={{ readings.next_page_number }}{% if pagination_query %}&{{ pagination_query }}{% endif %}">&#1042;&#1087;&#1077;&#1088;&#1077;&#1076;</a>
+                {% endif %}
+            </div>
+        </div>
+    {% endif %}
 </div>
 {% else %}
     <div class="card card-soft p-4 text-center text-muted">Пока нет показаний</div>
 {% endif %}
+
+<script>
+  (function () {
+    const perPageInput = document.getElementById("pool-readings-per-page-input");
+    const perPageButton = document.getElementById("pool-readings-per-page-button");
+    const form = perPageButton?.closest("form");
+
+    document.querySelectorAll(".pool-readings-per-page-menu [data-value]").forEach((item) => {
+      item.addEventListener("click", () => {
+        if (!perPageInput || !perPageButton) return;
+        perPageInput.value = item.getAttribute("data-value") || "20";
+        perPageButton.textContent = item.textContent || "";
+        form?.submit();
+      });
+    });
+  })();
+</script>
+
+<style>
+  .pool-readings-per-page-trigger {
+    border: none;
+    border-bottom: 1px solid rgba(15, 23, 42, 0.12);
+    background: transparent;
+    color: #5f6f82;
+    padding: 6px 0 8px;
+    font-size: 0.9rem;
+    box-shadow: none;
+    white-space: nowrap;
+  }
+  .pool-readings-per-page-trigger:focus,
+  .pool-readings-per-page-trigger:hover {
+    border-bottom-color: rgba(13, 110, 253, 0.4);
+    color: #1f2d3d;
+    box-shadow: none;
+  }
+  .pool-readings-per-page-menu {
+    border: 1px solid #e6eef5;
+    border-radius: 14px;
+    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+    padding: 8px 0;
+    min-width: 160px;
+  }
+  .pool-readings-per-page-menu .dropdown-item {
+    padding: 10px 16px;
+    color: #1f2d3d;
+  }
+  .pool-readings-per-page-menu .dropdown-item:hover,
+  .pool-readings-per-page-menu .dropdown-item:focus {
+    background: #f2f7ff;
+  }
+  .pool-readings-per-page-menu .dropdown-item.active,
+  .pool-readings-per-page-menu .dropdown-item.active:focus {
+    background: #e6f1fa;
+    color: #0d6efd;
+  }
+</style>
 {% endblock %}

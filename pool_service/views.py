@@ -12,7 +12,8 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.cache import never_cache
 from django.urls import reverse, reverse_lazy
-from django.db.models import Count, Q
+from django.db import connection
+from django.db.models import Count, Q, Max
 from django.http import HttpResponseForbidden, JsonResponse
 from django.utils import timezone
 from django.utils.encoding import force_bytes, force_str
@@ -29,6 +30,16 @@ from datetime import timedelta
 from .forms import WaterReadingForm, RegistrationForm, ClientCreateForm, PoolForm, EmailOrUsernameAuthenticationForm
 from .models import OrganizationAccess, Pool, PoolAccess, WaterReading, Client, Organization
 from django import forms
+
+PER_PAGE_CHOICES = {20, 50, 100}
+
+
+def _parse_per_page(value, default):
+    try:
+        per_page = int(value)
+    except (TypeError, ValueError):
+        return default
+    return per_page if per_page in PER_PAGE_CHOICES else default
 
 
 def index(request):
@@ -69,13 +80,71 @@ def pool_list(request):
     else:
         pools = Pool.objects.filter(accesses__user=request.user)
 
-    pools = pools.annotate(num_readings=Count("waterreading")).select_related("client")
+    search_query = request.GET.get("q", "").strip()
+    use_python_search = bool(search_query) and connection.vendor == "sqlite"
+    if search_query and not use_python_search:
+        pools = pools.filter(
+            Q(client__name__icontains=search_query)
+            | Q(address__icontains=search_query)
+            | Q(organization__name__icontains=search_query)
+        )
+
+    sort = request.GET.get("sort", "client_asc")
+    sort_options = {
+        "client_asc",
+        "client_desc",
+        "recent_desc",
+        "recent_asc",
+        "created_desc",
+        "created_asc",
+    }
+    if sort not in sort_options:
+        sort = "client_asc"
+
+    pools = pools.annotate(
+        num_readings=Count("waterreading"),
+        last_reading=Max("waterreading__date"),
+    ).select_related("client")
+
+    if sort == "recent_desc":
+        pools = pools.order_by("-last_reading", "client__name", "address")
+    elif sort == "recent_asc":
+        pools = pools.order_by("last_reading", "client__name", "address")
+    elif sort == "client_desc":
+        pools = pools.order_by("-client__name", "address")
+    elif sort == "created_desc":
+        pools = pools.order_by("-id")
+    elif sort == "created_asc":
+        pools = pools.order_by("id")
+    else:
+        pools = pools.order_by("client__name", "address")
+
+    if use_python_search:
+        query_cf = search_query.casefold()
+        filtered = []
+        for pool in pools:
+            parts = [
+                getattr(pool.client, "name", ""),
+                getattr(pool, "address", ""),
+                getattr(getattr(pool, "organization", None), "name", ""),
+            ]
+            haystack = " ".join(part for part in parts if part).casefold()
+            if query_cf in haystack:
+                filtered.append(pool)
+        pools = filtered
+
+    per_page = _parse_per_page(request.GET.get("per_page"), 20)
+    paginator = Paginator(pools, per_page)
+    page_number = request.GET.get("page")
+    pools_page = paginator.get_page(page_number)
+    query_params = request.GET.copy()
+    query_params.pop("page", None)
 
     return render(
         request,
         "pool_service/pool_list.html",
         {
-            "pools": pools,
+            "pools": pools_page,
             "page_title": "Бассейны",
             "page_subtitle": "Управление объектами обслуживания",
             "page_action_label": "Добавить бассейн",
@@ -84,6 +153,10 @@ def pool_list(request):
             "show_add_button": False,
             "add_url": None,
             "active_tab": "pools",
+            "search_query": search_query,
+            "sort": sort,
+            "per_page": per_page,
+            "pagination_query": query_params.urlencode(),
         },
     )
 
@@ -500,15 +573,13 @@ def pool_detail(request, pool_uuid):
 
     readings_list = WaterReading.objects.filter(pool=pool).select_related("added_by").order_by("-date")
 
-    per_page = request.GET.get("per_page", 20)
-    try:
-        per_page = int(per_page)
-    except ValueError:
-        per_page = 20
+    per_page = _parse_per_page(request.GET.get("per_page"), 20)
 
     paginator = Paginator(readings_list, per_page)
     page_number = request.GET.get("page")
     readings = paginator.get_page(page_number)
+    query_params = request.GET.copy()
+    query_params.pop("page", None)
 
     editable_reading_ids = []
     for reading in readings:
@@ -520,6 +591,7 @@ def pool_detail(request, pool_uuid):
         "readings": readings,
         "per_page": per_page,
         "role": role,
+        "pagination_query": query_params.urlencode(),
         "page_title": None,
         "page_subtitle": None,
         "show_search": False,
@@ -582,10 +654,12 @@ def readings_all(request):
         .order_by("-date")
     )
 
-    per_page = request.GET.get("per_page", 50)
+    per_page = _parse_per_page(request.GET.get("per_page"), 50)
     paginator = Paginator(readings_list, per_page)
     page_number = request.GET.get("page")
     readings = paginator.get_page(page_number)
+    query_params = request.GET.copy()
+    query_params.pop("page", None)
 
     return render(
         request,
@@ -598,6 +672,8 @@ def readings_all(request):
             "show_add_button": False,
             "add_url": None,
             "active_tab": "readings",
+            "per_page": per_page,
+            "pagination_query": query_params.urlencode(),
         },
     )
 

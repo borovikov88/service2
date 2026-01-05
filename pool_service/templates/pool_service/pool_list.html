@@ -3,10 +3,93 @@
 {% block title %}&#1052;&#1086;&#1080; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1099;{% endblock %}
 
 {% block content %}
+<form method="get" class="pool-controls" id="pool-search-form">
+    <div class="pool-controls__search">
+        <input type="search" name="q" id="pool-search-input" class="form-control rounded-3" placeholder="&#1050;&#1083;&#1080;&#1077;&#1085;&#1090; &#1080;&#1083;&#1080; &#1072;&#1076;&#1088;&#1077;&#1089;" value="{{ search_query|default:'' }}" autocomplete="off">
+    </div>
+    <div class="pool-controls__sort">
+        <div class="dropdown pool-sort-wrap">
+            <input type="hidden" name="sort" id="pool-sort-input" value="{{ sort|default:'client_asc' }}">
+            <button class="btn pool-sort-trigger dropdown-toggle" type="button" id="pool-sort-button" data-bs-toggle="dropdown" aria-expanded="false">
+                {% if sort == 'client_desc' %}
+                    &#1050;&#1083;&#1080;&#1077;&#1085;&#1090;: &#1071;-&#1040;
+                {% elif sort == 'recent_desc' %}
+                    &#1055;&#1086;&#1089;&#1077;&#1097;&#1077;&#1085;&#1080;&#1077;: &#1085;&#1086;&#1074;&#1099;&#1077;
+                {% elif sort == 'recent_asc' %}
+                    &#1055;&#1086;&#1089;&#1077;&#1097;&#1077;&#1085;&#1080;&#1077;: &#1089;&#1090;&#1072;&#1088;&#1099;&#1077;
+                {% elif sort == 'created_desc' %}
+                    &#1054;&#1073;&#1098;&#1077;&#1082;&#1090;&#1099;: &#1085;&#1086;&#1074;&#1099;&#1077;
+                {% elif sort == 'created_asc' %}
+                    &#1054;&#1073;&#1098;&#1077;&#1082;&#1090;&#1099;: &#1089;&#1090;&#1072;&#1088;&#1099;&#1077;
+                {% else %}
+                    &#1050;&#1083;&#1080;&#1077;&#1085;&#1090;: &#1040;-&#1071;
+                {% endif %}
+            </button>
+            <ul class="dropdown-menu pool-sort-menu" aria-labelledby="pool-sort-button">
+                <li>
+                    <button class="dropdown-item {% if sort == 'client_asc' %}active{% endif %}" type="button" data-value="client_asc">
+                        &#1050;&#1083;&#1080;&#1077;&#1085;&#1090;: &#1040;-&#1071;
+                    </button>
+                </li>
+                <li>
+                    <button class="dropdown-item {% if sort == 'client_desc' %}active{% endif %}" type="button" data-value="client_desc">
+                        &#1050;&#1083;&#1080;&#1077;&#1085;&#1090;: &#1071;-&#1040;
+                    </button>
+                </li>
+                <li>
+                    <button class="dropdown-item {% if sort == 'recent_desc' %}active{% endif %}" type="button" data-value="recent_desc">
+                        &#1055;&#1086;&#1089;&#1077;&#1097;&#1077;&#1085;&#1080;&#1077;: &#1085;&#1086;&#1074;&#1099;&#1077;
+                    </button>
+                </li>
+                <li>
+                    <button class="dropdown-item {% if sort == 'recent_asc' %}active{% endif %}" type="button" data-value="recent_asc">
+                        &#1055;&#1086;&#1089;&#1077;&#1097;&#1077;&#1085;&#1080;&#1077;: &#1089;&#1090;&#1072;&#1088;&#1099;&#1077;
+                    </button>
+                </li>
+                <li>
+                    <button class="dropdown-item {% if sort == 'created_desc' %}active{% endif %}" type="button" data-value="created_desc">
+                        &#1054;&#1073;&#1098;&#1077;&#1082;&#1090;&#1099;: &#1085;&#1086;&#1074;&#1099;&#1077;
+                    </button>
+                </li>
+                <li>
+                    <button class="dropdown-item {% if sort == 'created_asc' %}active{% endif %}" type="button" data-value="created_asc">
+                        &#1054;&#1073;&#1098;&#1077;&#1082;&#1090;&#1099;: &#1089;&#1090;&#1072;&#1088;&#1099;&#1077;
+                    </button>
+                </li>
+            </ul>
+        </div>
+    </div>
+    <div class="pool-controls__pagination">
+        <div class="dropdown pool-per-page-wrap">
+            <input type="hidden" name="per_page" id="pool-per-page-input" value="{{ per_page|default:20 }}">
+            <button class="btn pool-per-page-trigger dropdown-toggle" type="button" id="pool-per-page-button" data-bs-toggle="dropdown" aria-expanded="false">
+                {{ per_page|default:20 }} &#47; &#1089;&#1090;&#1088;
+            </button>
+            <ul class="dropdown-menu pool-sort-menu pool-per-page-menu" aria-labelledby="pool-per-page-button">
+                <li>
+                    <button class="dropdown-item {% if per_page == 20 %}active{% endif %}" type="button" data-value="20">
+                        20 &#47; &#1089;&#1090;&#1088;
+                    </button>
+                </li>
+                <li>
+                    <button class="dropdown-item {% if per_page == 50 %}active{% endif %}" type="button" data-value="50">
+                        50 &#47; &#1089;&#1090;&#1088;
+                    </button>
+                </li>
+                <li>
+                    <button class="dropdown-item {% if per_page == 100 %}active{% endif %}" type="button" data-value="100">
+                        100 &#47; &#1089;&#1090;&#1088;
+                    </button>
+                </li>
+            </ul>
+        </div>
+    </div>
+</form>
+
 <div class="row g-3">
     {% for pool in pools %}
     <div class="col-12 col-md-6 col-lg-4">
-        <a href="{% url 'pool_detail' pool.uuid %}" class="text-decoration-none text-dark h-100 d-block">
+        <a href="{% url 'pool_detail' pool.uuid %}" class="text-decoration-none text-dark h-100 d-block pool-card" data-client="{{ pool.client.name|default:'' }}" data-address="{{ pool.address|default:'' }}">
             <div class="card card-soft p-3 h-100 hover-shadow">
                 <div class="d-flex align-items-start justify-content-between">
                     <div class="d-flex gap-3 align-items-start">
@@ -28,4 +111,187 @@
         <div class="text-center text-muted py-4">&#1055;&#1086;&#1082;&#1072; &#1085;&#1077;&#1090; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;</div>
     {% endfor %}
 </div>
+
+{% if pools.has_other_pages %}
+    <div class="d-flex justify-content-between align-items-center mt-4">
+        <div class="text-muted small">
+            &#1057;&#1090;&#1088;&#1072;&#1085;&#1080;&#1094;&#1072; {{ pools.number }} &#1080;&#1079; {{ pools.paginator.num_pages }}
+        </div>
+        <div class="btn-group">
+            {% if pools.has_previous %}
+                <a class="btn btn-outline-secondary btn-sm" href="?page=1{% if pagination_query %}&{{ pagination_query }}{% endif %}">&laquo; &#1055;&#1077;&#1088;&#1074;&#1072;&#1103;</a>
+                <a class="btn btn-outline-secondary btn-sm" href="?page={{ pools.previous_page_number }}{% if pagination_query %}&{{ pagination_query }}{% endif %}">&#1053;&#1072;&#1079;&#1072;&#1076;</a>
+            {% endif %}
+            {% if pools.has_next %}
+                <a class="btn btn-outline-secondary btn-sm" href="?page={{ pools.next_page_number }}{% if pagination_query %}&{{ pagination_query }}{% endif %}">&#1042;&#1087;&#1077;&#1088;&#1077;&#1076;</a>
+                <a class="btn btn-outline-secondary btn-sm" href="?page={{ pools.paginator.num_pages }}{% if pagination_query %}&{{ pagination_query }}{% endif %}">&#1055;&#1086;&#1089;&#1083;&#1077;&#1076;&#1085;&#1103;&#1103; &raquo;</a>
+            {% endif %}
+        </div>
+    </div>
+{% endif %}
+
+<script>
+  (function () {
+    const input = document.getElementById("pool-search-input");
+    const sortInput = document.getElementById("pool-sort-input");
+    const sortButton = document.getElementById("pool-sort-button");
+    const perPageInput = document.getElementById("pool-per-page-input");
+    const perPageButton = document.getElementById("pool-per-page-button");
+    const form = document.getElementById("pool-search-form");
+    let searchTimer = null;
+    const focusFlagKey = "poolSearchFocus";
+
+    input?.addEventListener("input", () => {
+      if (searchTimer) {
+        clearTimeout(searchTimer);
+      }
+      sessionStorage.setItem(focusFlagKey, "1");
+      searchTimer = setTimeout(() => {
+        form?.submit();
+      }, 350);
+    });
+    document.querySelectorAll(".pool-sort-menu [data-value]").forEach((item) => {
+      item.addEventListener("click", () => {
+        if (item.closest(".pool-sort-wrap")) {
+          if (!sortInput || !sortButton) return;
+          sortInput.value = item.getAttribute("data-value") || "client_asc";
+          sortButton.textContent = item.textContent || "";
+          form?.submit();
+        }
+        if (item.closest(".pool-per-page-wrap")) {
+          if (!perPageInput || !perPageButton) return;
+          perPageInput.value = item.getAttribute("data-value") || "20";
+          perPageButton.textContent = item.textContent || "";
+          form?.submit();
+        }
+      });
+    });
+
+    if (input && sessionStorage.getItem(focusFlagKey) === "1") {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+      sessionStorage.removeItem(focusFlagKey);
+    }
+  })();
+</script>
+
+<style>
+  .pool-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .pool-controls__search {
+    flex: 1 1 380px;
+  }
+  .pool-controls__pagination {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 0 0 auto;
+  }
+  .pool-controls__sort {
+    flex: 0 0 auto;
+  }
+  @media (min-width: 768px) {
+    .pool-controls {
+      flex-wrap: nowrap;
+    }
+  }
+  @media (max-width: 767px) {
+    .pool-controls {
+      gap: 10px;
+    }
+    .pool-controls__search {
+      flex: 0 0 100%;
+      order: 1;
+    }
+    .pool-controls__pagination,
+    .pool-controls__sort {
+      flex: 0 0 calc(50% - 6px);
+      order: 2;
+    }
+    .pool-controls__pagination {
+      flex-wrap: wrap;
+      justify-content: flex-start;
+      row-gap: 6px;
+    }
+    .pool-controls__sort {
+      justify-content: flex-end;
+    }
+  }
+  .pool-sort-wrap {
+    width: 100%;
+    max-width: 160px;
+  }
+  .pool-per-page-wrap {
+    width: 100%;
+    max-width: 90px;
+  }
+  .pool-sort-trigger {
+    width: 100%;
+    text-align: left;
+    border: none;
+    border-bottom: 1px solid rgba(15, 23, 42, 0.12);
+    background: transparent;
+    color: #5f6f82;
+    padding: 6px 0 8px;
+    font-size: 0.92rem;
+    box-shadow: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pool-per-page-trigger {
+    width: 100%;
+    text-align: left;
+    border: none;
+    border-bottom: 1px solid rgba(15, 23, 42, 0.12);
+    background: transparent;
+    color: #5f6f82;
+    padding: 6px 0 8px;
+    font-size: 0.9rem;
+    box-shadow: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pool-sort-trigger:focus,
+  .pool-sort-trigger:hover {
+    border-bottom-color: rgba(13, 110, 253, 0.4);
+    color: #1f2d3d;
+    box-shadow: none;
+  }
+  .pool-per-page-trigger:focus,
+  .pool-per-page-trigger:hover {
+    border-bottom-color: rgba(13, 110, 253, 0.4);
+    color: #1f2d3d;
+    box-shadow: none;
+  }
+  .pool-sort-menu {
+    border: 1px solid #e6eef5;
+    border-radius: 14px;
+    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+    padding: 8px 0;
+    min-width: 220px;
+  }
+  .pool-per-page-menu {
+    min-width: 120px;
+  }
+  .pool-sort-menu .dropdown-item {
+    padding: 10px 16px;
+    color: #1f2d3d;
+  }
+  .pool-sort-menu .dropdown-item:hover,
+  .pool-sort-menu .dropdown-item:focus {
+    background: #f2f7ff;
+  }
+  .pool-sort-menu .dropdown-item.active,
+  .pool-sort-menu .dropdown-item.active:focus {
+    background: #e6f1fa;
+    color: #0d6efd;
+  }
+</style>
 {% endblock %}

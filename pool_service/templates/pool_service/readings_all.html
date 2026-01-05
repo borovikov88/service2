@@ -1,7 +1,8 @@
 {% extends "pool_service/base.html" %}
 {% load static %}
 
-{% block title %}История показаний{% endblock %}
+{% block title %}История показаний
+{% endblock %}
 
 {% block content %}
 <div class="card card-soft p-4">
@@ -10,6 +11,29 @@
             <h4 class="mb-1">История показаний</h4>
             <div class="text-muted small">Последние {{ readings.paginator.per_page }} записей</div>
         </div>
+        <form method="get" class="d-flex align-items-center gap-2">
+            <input type="hidden" name="per_page" id="readings-per-page-input" value="{{ per_page|default:50 }}">
+            <button class="btn readings-per-page-trigger dropdown-toggle" type="button" id="readings-per-page-button" data-bs-toggle="dropdown" aria-expanded="false">
+                {{ per_page|default:50 }} &#47; &#1089;&#1090;&#1088;
+            </button>
+            <ul class="dropdown-menu readings-per-page-menu" aria-labelledby="readings-per-page-button">
+                <li>
+                    <button class="dropdown-item {% if per_page == 20 %}active{% endif %}" type="button" data-value="20">
+                        20 &#47; &#1089;&#1090;&#1088;
+                    </button>
+                </li>
+                <li>
+                    <button class="dropdown-item {% if per_page == 50 %}active{% endif %}" type="button" data-value="50">
+                        50 &#47; &#1089;&#1090;&#1088;
+                    </button>
+                </li>
+                <li>
+                    <button class="dropdown-item {% if per_page == 100 %}active{% endif %}" type="button" data-value="100">
+                        100 &#47; &#1089;&#1090;&#1088;
+                    </button>
+                </li>
+            </ul>
+        </form>
     </div>
 
     <div class="table-responsive">
@@ -57,15 +81,71 @@
             </div>
             <div class="btn-group">
                 {% if readings.has_previous %}
-                    <a class="btn btn-outline-secondary btn-sm" href="?page=1">&laquo; Первая</a>
-                    <a class="btn btn-outline-secondary btn-sm" href="?page={{ readings.previous_page_number }}">Назад</a>
+                    <a class="btn btn-outline-secondary btn-sm" href="?page=1{% if pagination_query %}&{{ pagination_query }}{% endif %}">&laquo; Первая</a>
+                    <a class="btn btn-outline-secondary btn-sm" href="?page={{ readings.previous_page_number }}{% if pagination_query %}&{{ pagination_query }}{% endif %}">Назад</a>
                 {% endif %}
                 {% if readings.has_next %}
-                    <a class="btn btn-outline-secondary btn-sm" href="?page={{ readings.next_page_number }}">Вперед</a>
-                    <a class="btn btn-outline-secondary btn-sm" href="?page={{ readings.paginator.num_pages }}">Последняя &raquo;</a>
+                    <a class="btn btn-outline-secondary btn-sm" href="?page={{ readings.next_page_number }}{% if pagination_query %}&{{ pagination_query }}{% endif %}">Вперед</a>
+                    <a class="btn btn-outline-secondary btn-sm" href="?page={{ readings.paginator.num_pages }}{% if pagination_query %}&{{ pagination_query }}{% endif %}">Последняя &raquo;</a>
                 {% endif %}
             </div>
         </div>
     {% endif %}
 </div>
+
+<script>
+  (function () {
+    const perPageInput = document.getElementById("readings-per-page-input");
+    const perPageButton = document.getElementById("readings-per-page-button");
+    const form = perPageButton?.closest("form");
+
+    document.querySelectorAll(".readings-per-page-menu [data-value]").forEach((item) => {
+      item.addEventListener("click", () => {
+        if (!perPageInput || !perPageButton) return;
+        perPageInput.value = item.getAttribute("data-value") || "50";
+        perPageButton.textContent = item.textContent || "";
+        form?.submit();
+      });
+    });
+  })();
+</script>
+
+<style>
+  .readings-per-page-trigger {
+    border: none;
+    border-bottom: 1px solid rgba(15, 23, 42, 0.12);
+    background: transparent;
+    color: #5f6f82;
+    padding: 6px 0 8px;
+    font-size: 0.9rem;
+    box-shadow: none;
+    white-space: nowrap;
+  }
+  .readings-per-page-trigger:focus,
+  .readings-per-page-trigger:hover {
+    border-bottom-color: rgba(13, 110, 253, 0.4);
+    color: #1f2d3d;
+    box-shadow: none;
+  }
+  .readings-per-page-menu {
+    border: 1px solid #e6eef5;
+    border-radius: 14px;
+    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+    padding: 8px 0;
+    min-width: 160px;
+  }
+  .readings-per-page-menu .dropdown-item {
+    padding: 10px 16px;
+    color: #1f2d3d;
+  }
+  .readings-per-page-menu .dropdown-item:hover,
+  .readings-per-page-menu .dropdown-item:focus {
+    background: #f2f7ff;
+  }
+  .readings-per-page-menu .dropdown-item.active,
+  .readings-per-page-menu .dropdown-item.active:focus {
+    background: #e6f1fa;
+    color: #0d6efd;
+  }
+</style>
 {% endblock %}
