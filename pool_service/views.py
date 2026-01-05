@@ -32,6 +32,8 @@ from django import forms
 
 
 def index(request):
+    if request.user.is_authenticated:
+        return redirect("pool_list")
     return render(request, "pool_service/index.html")
 
 
