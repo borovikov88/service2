@@ -1,10 +1,10 @@
 {% extends 'pool_service/base.html' %}
 
-{% block title %}Создание клиента{% endblock %}
+{% block title %}{{ page_title }}{% endblock %}
 
 {% block content %}
 <div class="card card-soft p-4">
-    <h3 class="fw-bold h5 mb-3">Создание клиента</h3>
+    <h3 class="fw-bold h5 mb-3">{{ page_title }}</h3>
     <form method="post" class="offline-queue-form">
         {% csrf_token %}
         {% if next_url %}<input type="hidden" name="next" value="{{ next_url }}">{% endif %}
@@ -60,8 +60,8 @@
             </div>
         </div>
         <div class="d-flex gap-2 mt-3">
-            <button type="submit" class="btn btn-primary">Создать</button>
-            <a href="{% url 'pool_list' %}" class="btn btn-outline-secondary">Отмена</a>
+            <button type="submit" class="btn btn-primary {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>{% if is_edit %}&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;{% else %}&#1057;&#1086;&#1079;&#1076;&#1072;&#1090;&#1100;{% endif %}</button>
+            <a href="{% if is_edit %}{% url 'clients_list' %}{% else %}{% url 'pool_list' %}{% endif %}" class="btn btn-outline-secondary">&#1054;&#1090;&#1084;&#1077;&#1085;&#1072;</a>
         </div>
     </form>
 </div>

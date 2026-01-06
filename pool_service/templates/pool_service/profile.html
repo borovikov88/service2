@@ -25,6 +25,22 @@
                                 <span class="text-muted">Email</span>
                                 <span class="fw-semibold">{{ email|default:"&#1053;&#1077; &#1091;&#1082;&#1072;&#1079;&#1072;&#1085;" }}</span>
                             </div>
+                            {% if plan_badge %}
+                                <div class="list-group-item px-0 d-flex justify-content-between">
+                                    <span class="text-muted">&#1058;&#1072;&#1088;&#1080;&#1092;</span>
+                                    <span class="fw-semibold">
+                                        {% if plan_badge.type == 'personal_free' %}
+                                            Free (1 &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;)
+                                        {% elif plan_badge.type == 'company_trial' %}
+                                            Trial: {{ plan_badge.days_left }} &#1076;&#1085;&#1077;&#1081;
+                                        {% elif plan_badge.type == 'company_paid' %}
+                                            Paid &#1076;&#1086; {{ plan_badge.paid_until|date:"d.m.Y" }}
+                                        {% elif plan_badge.type == 'company_expired' %}
+                                            Trial &#1080;&#1089;&#1090;&#1077;&#1082;
+                                        {% endif %}
+                                    </span>
+                                </div>
+                            {% endif %}
                             <div class="list-group-item px-0 d-flex justify-content-between">
                                 <span class="text-muted">&#1063;&#1072;&#1089;&#1086;&#1074;&#1086;&#1081; &#1087;&#1086;&#1103;&#1089;</span>
                                 <span class="fw-semibold">{{ timezone|default:"&#1053;&#1077; &#1091;&#1082;&#1072;&#1079;&#1072;&#1085;" }}</span>

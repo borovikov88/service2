@@ -27,8 +27,17 @@ from urllib.request import urlopen, Request
 import json
 from datetime import timedelta
 
-from .forms import WaterReadingForm, RegistrationForm, ClientCreateForm, PoolForm, EmailOrUsernameAuthenticationForm
+from .forms import (
+    WaterReadingForm,
+    RegistrationForm,
+    ClientCreateForm,
+    PoolForm,
+    EmailOrUsernameAuthenticationForm,
+    PersonalSignupForm,
+    CompanySignupForm,
+)
 from .models import OrganizationAccess, Pool, PoolAccess, WaterReading, Client, Organization
+from .services.permissions import is_personal_free, is_personal_user, is_org_access_blocked
 from django import forms
 
 PER_PAGE_CHOICES = {20, 50, 100}
@@ -42,9 +51,32 @@ def _parse_per_page(value, default):
     return per_page if per_page in PER_PAGE_CHOICES else default
 
 
+def _personal_pool_redirect(user):
+    if not is_personal_free(user):
+        return None
+    client = Client.objects.filter(user=user, organization__isnull=True).first()
+    if not client:
+        return None
+    pool = Pool.objects.filter(client=client).first()
+    if not pool:
+        return None
+    return reverse("pool_detail", kwargs={"pool_uuid": pool.uuid})
+
+
+def _redirect_if_access_blocked(request):
+    if not is_org_access_blocked(request.user):
+        return None
+    messages.error(
+        request,
+        "\u041f\u0440\u043e\u0431\u043d\u044b\u0439 \u043f\u0435\u0440\u0438\u043e\u0434 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d. \u0414\u043b\u044f \u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0435\u043d\u0438\u044f \u0440\u0430\u0431\u043e\u0442\u044b \u043e\u043f\u043b\u0430\u0442\u0438\u0442\u0435 \u0442\u0430\u0440\u0438\u0444.",
+    )
+    return redirect("billing")
+
+
 def index(request):
     if request.user.is_authenticated:
-        return redirect("pool_list")
+        redirect_url = _personal_pool_redirect(request.user) or reverse("pool_list")
+        return redirect(redirect_url)
     return render(request, "pool_service/index.html")
 
 
@@ -133,6 +165,13 @@ def pool_list(request):
                 filtered.append(pool)
         pools = filtered
 
+    personal_user = is_personal_user(request.user)
+    personal_pool_count = 0
+    if personal_user:
+        personal_client = Client.objects.filter(user=request.user, organization__isnull=True).first()
+        if personal_client:
+            personal_pool_count = Pool.objects.filter(client=personal_client).count()
+
     per_page = _parse_per_page(request.GET.get("per_page"), 20)
     paginator = Paginator(pools, per_page)
     page_number = request.GET.get("page")
@@ -140,23 +179,45 @@ def pool_list(request):
     query_params = request.GET.copy()
     query_params.pop("page", None)
 
+    allow_pool_create = not (personal_user and personal_pool_count >= 1)
+    page_title = "Мой бассейн" if personal_user else "Бассейны"
+    page_action_label = "Добавить бассейн" if allow_pool_create else None
+    page_action_url = reverse("pool_create") if allow_pool_create else None
+
     return render(
         request,
         "pool_service/pool_list.html",
         {
             "pools": pools_page,
-            "page_title": "Бассейны",
+            "page_title": page_title,
             "page_subtitle": "Управление объектами обслуживания",
-            "page_action_label": "Добавить бассейн",
-            "page_action_url": reverse("pool_create"),
+            "page_action_label": page_action_label,
+            "page_action_url": page_action_url,
             "show_search": False,
             "show_add_button": False,
             "add_url": None,
             "active_tab": "pools",
+            "show_pool_controls": not personal_user,
             "search_query": search_query,
             "sort": sort,
             "per_page": per_page,
             "pagination_query": query_params.urlencode(),
+        },
+    )
+
+
+@login_required
+def billing_info(request):
+    return render(
+        request,
+        "pool_service/billing.html",
+        {
+            "page_title": "\u041e\u043f\u043b\u0430\u0442\u0430 \u0438 \u043f\u0440\u043e\u0434\u043b\u0435\u043d\u0438\u0435",
+            "page_subtitle": "\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0435 \u0442\u0430\u0440\u0438\u0444\u0430",
+            "active_tab": None,
+            "show_search": False,
+            "show_add_button": False,
+            "add_url": None,
         },
     )
 
@@ -203,6 +264,40 @@ def users_view(request):
             "org_staff": org_staff,
             "pool_staff": pool_staff,
             "active_tab": None,
+            "show_search": False,
+            "show_add_button": False,
+            "add_url": None,
+        },
+    )
+
+
+@login_required
+def clients_list(request):
+    is_admin = request.user.is_superuser or OrganizationAccess.objects.filter(user=request.user, role="admin").exists()
+    if not is_admin:
+        return HttpResponseForbidden()
+
+    if request.user.is_superuser:
+        clients = Client.objects.all()
+    else:
+        org_ids = OrganizationAccess.objects.filter(user=request.user, role="admin").values_list(
+            "organization_id",
+            flat=True,
+        )
+        clients = Client.objects.filter(organization_id__in=org_ids).distinct()
+
+    clients = clients.annotate(pool_count=Count("pool")).select_related("organization").order_by("name")
+
+    return render(
+        request,
+        "pool_service/clients.html",
+        {
+            "page_title": "\u041a\u043b\u0438\u0435\u043d\u0442\u044b",
+            "page_subtitle": "\u041a\u043e\u043d\u0442\u0430\u043a\u0442\u044b \u0438 \u043e\u0431\u044a\u0435\u043a\u0442\u044b \u043a\u043b\u0438\u0435\u043d\u0442\u043e\u0432 \u0432 \u043e\u0434\u043d\u043e\u043c \u0441\u043f\u0438\u0441\u043a\u0435",
+            "clients": clients,
+            "active_tab": "clients",
+            "page_action_label": "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u043a\u043b\u0438\u0435\u043d\u0442\u0430",
+            "page_action_url": reverse("client_create"),
             "show_search": False,
             "show_add_button": False,
             "add_url": None,
@@ -287,6 +382,16 @@ class PoolForm(forms.ModelForm):
 @login_required
 @never_cache
 def pool_create(request):
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+
+    if is_personal_user(request.user):
+        client = Client.objects.filter(user=request.user, organization__isnull=True).first()
+        if client and Pool.objects.filter(client=client).exists():
+            messages.info(request, "Можно создать только один бассейн для личного аккаунта.")
+            return redirect("pool_list")
+
     user_client = Client.objects.filter(user=request.user).first()
     selected_client_id = request.GET.get("client_id")
 
@@ -336,6 +441,10 @@ def pool_create(request):
 @login_required
 @never_cache
 def pool_edit(request, pool_uuid):
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+
     pool = get_object_or_404(Pool, uuid=pool_uuid)
 
     if request.user.is_superuser:
@@ -386,6 +495,10 @@ def pool_edit(request, pool_uuid):
 
 @login_required
 def client_create_inline(request):
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+
     roles = list(OrganizationAccess.objects.filter(user=request.user).values_list("role", flat=True))
     if not request.user.is_superuser and not any(r in ["admin", "service", "manager"] for r in roles):
         return HttpResponseForbidden()
@@ -401,6 +514,10 @@ def client_create_inline(request):
 @login_required
 @never_cache
 def client_create(request):
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+
     roles = list(OrganizationAccess.objects.filter(user=request.user).values_list("role", flat=True))
     if not request.user.is_superuser and not any(r in ["admin", "service", "manager"] for r in roles):
         return HttpResponseForbidden()
@@ -427,17 +544,94 @@ def client_create(request):
             return redirect("pool_list")
     else:
         form = ClientCreateForm()
+    page_title = "\u0421\u043e\u0437\u0434\u0430\u043d\u0438\u0435 \u043a\u043b\u0438\u0435\u043d\u0442\u0430"
+    active_tab = "clients" if not next_url else "pools"
 
     return render(
         request,
         "pool_service/client_create.html",
         {
             "form": form,
-            "page_title": "Создание клиента",
-            "active_tab": "pools",
+            "page_title": page_title,
+            "active_tab": active_tab,
             "next_url": next_url,
+            "is_edit": False,
         },
     )
+
+
+@login_required
+def client_edit(request, client_id):
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+
+    client = get_object_or_404(Client, pk=client_id)
+    if request.user.is_superuser:
+        allowed = True
+    else:
+        org_ids = OrganizationAccess.objects.filter(user=request.user, role="admin").values_list(
+            "organization_id",
+            flat=True,
+        )
+        allowed = bool(client.organization_id and client.organization_id in org_ids)
+
+    if not allowed:
+        return HttpResponseForbidden()
+
+    if request.method == "POST":
+        form = ClientCreateForm(request.POST, instance=client)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "\u041a\u043b\u0438\u0435\u043d\u0442 \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d.")
+            return redirect("clients_list")
+    else:
+        form = ClientCreateForm(instance=client)
+
+    return render(
+        request,
+        "pool_service/client_create.html",
+        {
+            "form": form,
+            "page_title": "\u0420\u0435\u0434\u0430\u043a\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u043a\u043b\u0438\u0435\u043d\u0442\u0430",
+            "active_tab": "clients",
+            "next_url": None,
+            "is_edit": True,
+        },
+    )
+
+
+@login_required
+def client_delete(request, client_id):
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+    if request.method != "POST":
+        return redirect("clients_list")
+
+    client = get_object_or_404(Client, pk=client_id)
+    if request.user.is_superuser:
+        allowed = True
+    else:
+        org_ids = OrganizationAccess.objects.filter(user=request.user, role="admin").values_list(
+            "organization_id",
+            flat=True,
+        )
+        allowed = bool(client.organization_id and client.organization_id in org_ids)
+
+    if not allowed:
+        return HttpResponseForbidden()
+
+    if Pool.objects.filter(client=client).exists():
+        messages.error(
+            request,
+            "\u041d\u0435\u043b\u044c\u0437\u044f \u0443\u0434\u0430\u043b\u0438\u0442\u044c \u043a\u043b\u0438\u0435\u043d\u0442\u0430: \u0437\u0430 \u043d\u0438\u043c \u0437\u0430\u043a\u0440\u0435\u043f\u043b\u0435\u043d\u044b \u0431\u0430\u0441\u0441\u0435\u0439\u043d\u044b. \u0421\u043d\u0430\u0447\u0430\u043b\u0430 \u043f\u0435\u0440\u0435\u043d\u0435\u0441\u0438\u0442\u0435 \u0438\u043b\u0438 \u0443\u0434\u0430\u043b\u0438\u0442\u0435 \u0438\u0445.",
+        )
+        return redirect("clients_list")
+
+    client.delete()
+    messages.success(request, "\u041a\u043b\u0438\u0435\u043d\u0442 \u0443\u0434\u0430\u043b\u0435\u043d.")
+    return redirect("clients_list")
 
 
 def home(request):
@@ -451,9 +645,16 @@ def home(request):
         if form.is_valid():
             user = form.get_user()
             login(request, user)
-            messages.success(request, "?? ??????? ????? ? ???????.")
-            return redirect("pool_list")
-        messages.error(request, "???????? ????? ??? ??????. ?????????? ??? ???.")
+            messages.success(
+                request,
+                "\u0412\u044b \u0443\u0441\u043f\u0435\u0448\u043d\u043e \u0432\u043e\u0448\u043b\u0438 \u0432 \u0441\u0438\u0441\u0442\u0435\u043c\u0443.",
+            )
+            redirect_url = _personal_pool_redirect(user) or reverse("pool_list")
+            return redirect(redirect_url)
+        messages.error(
+            request,
+            "\u041d\u0435\u0432\u0435\u0440\u043d\u044b\u0439 \u043b\u043e\u0433\u0438\u043d \u0438\u043b\u0438 \u043f\u0430\u0440\u043e\u043b\u044c. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u0435\u0449\u0435 \u0440\u0430\u0437.",
+        )
     else:
         form = EmailOrUsernameAuthenticationForm()
 
@@ -463,6 +664,57 @@ def home(request):
         "active_tab": "home",
     }
     return render(request, "pool_service/home.html", context)
+
+
+def signup_personal(request):
+    if request.user.is_authenticated:
+        return redirect("pool_list")
+
+    if request.method == "POST":
+        form = PersonalSignupForm(request.POST)
+        if form.is_valid():
+            user = form.save()
+            login(request, user)
+            messages.success(request, "\u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u0441\u043e\u0437\u0434\u0430\u043d.")
+            redirect_url = _personal_pool_redirect(user) or reverse("pool_list")
+            return redirect(redirect_url)
+    else:
+        form = PersonalSignupForm()
+
+    return render(
+        request,
+        "registration/signup_personal.html",
+        {
+            "form": form,
+            "active_tab": "home",
+            "hide_header": True,
+        },
+    )
+
+
+def signup_company(request):
+    if request.user.is_authenticated:
+        return redirect("pool_list")
+
+    if request.method == "POST":
+        form = CompanySignupForm(request.POST)
+        if form.is_valid():
+            user = form.save()
+            login(request, user)
+            messages.success(request, "\u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u043a\u043e\u043c\u043f\u0430\u043d\u0438\u0438 \u0441\u043e\u0437\u0434\u0430\u043d.")
+            return redirect("pool_list")
+    else:
+        form = CompanySignupForm()
+
+    return render(
+        request,
+        "registration/signup_company.html",
+        {
+            "form": form,
+            "active_tab": "home",
+            "hide_header": True,
+        },
+    )
 
 
 def register(request):
@@ -681,6 +933,10 @@ def readings_all(request):
 @csrf_protect
 @never_cache
 def water_reading_create(request, pool_uuid):
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+
     """Создание нового замера для выбранного бассейна."""
     pool = get_object_or_404(Pool, uuid=pool_uuid)
 
@@ -704,6 +960,10 @@ def water_reading_create(request, pool_uuid):
 
 @login_required
 def water_reading_edit(request, reading_uuid):
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+
     reading = get_object_or_404(WaterReading.objects.select_related("pool"), uuid=reading_uuid)
 
     if not _reading_edit_allowed(reading, request.user):
@@ -783,11 +1043,17 @@ class CustomLoginView(LoginView):
     authentication_form = EmailOrUsernameAuthenticationForm
 
     def form_valid(self, form):
-        messages.success(self.request, "Вход выполнен успешно")
+        messages.success(self.request, "\u0412\u044b \u0443\u0441\u043f\u0435\u0448\u043d\u043e \u0432\u043e\u0448\u043b\u0438 \u0432 \u0441\u0438\u0441\u0442\u0435\u043c\u0443.")
         return super().form_valid(form)
 
+    def get_success_url(self):
+        personal_url = _personal_pool_redirect(self.request.user)
+        if personal_url:
+            return personal_url
+        return super().get_success_url()
+
     def form_invalid(self, form):
-        messages.error(self.request, "Неверные учетные данные. Попробуйте ещё раз.")
+        messages.error(self.request, "\u041d\u0435\u0432\u0435\u0440\u043d\u044b\u0439 \u043b\u043e\u0433\u0438\u043d \u0438\u043b\u0438 \u043f\u0430\u0440\u043e\u043b\u044c. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u0435\u0449\u0435 \u0440\u0430\u0437.")
         return super().form_invalid(form)
 
 

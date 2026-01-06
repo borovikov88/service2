@@ -84,6 +84,7 @@ TEMPLATES = [
                 'django.contrib.messages.context_processors.messages',
 		'django.template.context_processors.media',
                 'pool_service.context_processors.brand_context',
+                'pool_service.context_processors.plan_status_context',
             ],
         },
     },

@@ -1,0 +1,106 @@
+{% extends 'pool_service/base.html' %}
+
+{% block title %}&#1053;&#1072;&#1095;&#1072;&#1090;&#1100; &#1087;&#1088;&#1086;&#1073;&#1085;&#1099;&#1081; &#1087;&#1077;&#1088;&#1080;&#1086;&#1076;{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-7">
+    <div class="card card-soft p-4">
+      <h1 class="h4 fw-bold mb-2">&#1055;&#1088;&#1086;&#1073;&#1085;&#1099;&#1081; &#1087;&#1077;&#1088;&#1080;&#1086;&#1076; &#1076;&#1083;&#1103; &#1082;&#1086;&#1084;&#1087;&#1072;&#1085;&#1080;&#1080;</h1>
+      <p class="text-muted mb-4">&#1055;&#1077;&#1088;&#1074;&#1099;&#1077; 14 &#1076;&#1085;&#1077;&#1081; &#1073;&#1077;&#1089;&#1087;&#1083;&#1072;&#1090;&#1085;&#1086;, &#1079;&#1072;&#1090;&#1077;&#1084; 1 290 &#8381;/&#1084;&#1077;&#1089;&#1103;&#1094;.</p>
+
+      <form method="post" novalidate>
+        {% csrf_token %}
+        {% if form.non_field_errors %}
+          <div class="alert alert-danger">{{ form.non_field_errors|join:", " }}</div>
+        {% endif %}
+
+        <div class="row g-3">
+          <div class="col-12">
+            <label class="form-label">&#1053;&#1072;&#1079;&#1074;&#1072;&#1085;&#1080;&#1077; &#1082;&#1086;&#1084;&#1087;&#1072;&#1085;&#1080;&#1080;</label>
+            {{ form.org_name }}
+            {{ form.org_name.errors }}
+          </div>
+          <div class="col-sm-6">
+            <label class="form-label">&#1043;&#1086;&#1088;&#1086;&#1076;</label>
+            {{ form.org_city }}
+            {{ form.org_city.errors }}
+          </div>
+          <div class="col-sm-6">
+            <label class="form-label">&#1040;&#1076;&#1088;&#1077;&#1089;</label>
+            {{ form.org_address }}
+            {{ form.org_address.errors }}
+          </div>
+          <div class="col-sm-6">
+            <label class="form-label">&#1058;&#1077;&#1083;&#1077;&#1092;&#1086;&#1085; &#1082;&#1086;&#1084;&#1087;&#1072;&#1085;&#1080;&#1080;</label>
+            {{ form.org_phone }}
+            {{ form.org_phone.errors }}
+          </div>
+          <div class="col-sm-6">
+            <label class="form-label">Email &#1082;&#1086;&#1084;&#1087;&#1072;&#1085;&#1080;&#1080;</label>
+            {{ form.org_email }}
+            {{ form.org_email.errors }}
+          </div>
+          <div class="col-sm-6">
+            <label class="form-label">&#1048;&#1084;&#1103; &#1074;&#1083;&#1072;&#1076;&#1077;&#1083;&#1100;&#1094;&#1072;</label>
+            {{ form.owner_first_name }}
+            {{ form.owner_first_name.errors }}
+          </div>
+          <div class="col-sm-6">
+            <label class="form-label">&#1060;&#1072;&#1084;&#1080;&#1083;&#1080;&#1103; &#1074;&#1083;&#1072;&#1076;&#1077;&#1083;&#1100;&#1094;&#1072;</label>
+            {{ form.owner_last_name }}
+            {{ form.owner_last_name.errors }}
+          </div>
+          <div class="col-sm-6">
+            <label class="form-label">&#1058;&#1077;&#1083;&#1077;&#1092;&#1086;&#1085; &#1074;&#1083;&#1072;&#1076;&#1077;&#1083;&#1100;&#1094;&#1072;</label>
+            {{ form.owner_phone }}
+            {{ form.owner_phone.errors }}
+          </div>
+          <div class="col-sm-6">
+            <label class="form-label">&#1055;&#1072;&#1088;&#1086;&#1083;&#1100;</label>
+            {{ form.password1 }}
+            {{ form.password1.errors }}
+          </div>
+          <div class="col-sm-6">
+            <label class="form-label">&#1055;&#1086;&#1074;&#1090;&#1086;&#1088;&#1080;&#1090;&#1077; &#1087;&#1072;&#1088;&#1086;&#1083;&#1100;</label>
+            {{ form.password2 }}
+            {{ form.password2.errors }}
+          </div>
+        </div>
+
+        <button type="submit" class="btn btn-primary w-100 mt-4">&#1053;&#1072;&#1095;&#1072;&#1090;&#1100; &#1087;&#1088;&#1086;&#1073;&#1085;&#1099;&#1081; &#1087;&#1077;&#1088;&#1080;&#1086;&#1076;</button>
+        <div class="text-center mt-3">
+          <a href="{% url 'signup_personal' %}" class="text-decoration-none">&#1057;&#1086;&#1079;&#1076;&#1072;&#1090;&#1100; &#1072;&#1082;&#1082;&#1072;&#1091;&#1085;&#1090; &#1074;&#1083;&#1072;&#1076;&#1077;&#1083;&#1100;&#1094;&#1072;</a>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+<script>
+  function formatPhone(value) {
+    let digits = value.replace(/\D/g, "");
+    if (digits.startsWith("8")) digits = digits.slice(1);
+    if (digits.startsWith("7")) digits = digits.slice(1);
+    digits = digits.slice(0, 10);
+    let res = "+7";
+    if (digits.length > 0) res += " " + digits.substring(0, Math.min(3, digits.length));
+    if (digits.length > 3) res += " " + digits.substring(3, Math.min(6, digits.length));
+    if (digits.length > 6) res += " " + digits.substring(6, Math.min(10, digits.length));
+    return res.trimEnd();
+  }
+  document.addEventListener("DOMContentLoaded", function() {
+    document.querySelectorAll(".phone-mask").forEach(inp => {
+      inp.value = formatPhone(inp.value || "+7");
+      inp.addEventListener("input", () => {
+        inp.value = formatPhone(inp.value);
+        inp.setSelectionRange(inp.value.length, inp.value.length);
+      });
+      inp.addEventListener("focus", () => {
+        if (!inp.value.trim()) {
+          inp.value = "+7 ";
+        }
+      });
+    });
+  });
+</script>
+{% endblock %}

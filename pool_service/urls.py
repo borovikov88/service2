@@ -1,5 +1,27 @@
 from django.urls import path
-from .views import home, pool_list, pool_detail, water_reading_create, water_reading_edit, readings_all, profile_view, users_view, register, pool_create, pool_edit, client_create, yandex_suggest, confirm_email, password_change_inline
+from .views import (
+    home,
+    pool_list,
+    pool_detail,
+    water_reading_create,
+    water_reading_edit,
+    readings_all,
+    profile_view,
+    users_view,
+    billing_info,
+    clients_list,
+    register,
+    pool_create,
+    pool_edit,
+    client_create,
+    client_edit,
+    client_delete,
+    yandex_suggest,
+    confirm_email,
+    password_change_inline,
+    signup_personal,
+    signup_company,
+)
 from . import views
 
 urlpatterns = [
@@ -15,8 +37,14 @@ urlpatterns = [
     path("readings/all", readings_all, name="readings_all"),
     path("profile/", profile_view, name="profile"),
     path("users/", users_view, name="users"),
+    path("billing/", billing_info, name="billing"),
+    path("clients/", clients_list, name="clients_list"),
     path("register/", register, name="register"),
+    path("signup/personal/", signup_personal, name="signup_personal"),
+    path("signup/company/", signup_company, name="signup_company"),
     path("accounts/confirm-email/<uidb64>/<token>/", confirm_email, name="confirm_email"),
     path("accounts/password-change/", password_change_inline, name="password_change_inline"),
     path("clients/create/", client_create, name="client_create"),
+    path("clients/<int:client_id>/edit/", client_edit, name="client_edit"),
+    path("clients/<int:client_id>/delete/", client_delete, name="client_delete"),
 ]

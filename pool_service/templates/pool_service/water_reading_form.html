@@ -94,7 +94,7 @@
             </div>
 
             <div class="d-flex gap-2">
-                <button type="submit" class="btn btn-primary btn-lg">&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;</button>
+                <button type="submit" class="btn btn-primary btn-lg {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;</button>
                 <a href="{% url 'pool_detail' pool.uuid %}" class="btn btn-outline-secondary btn-lg">&#1054;&#1090;&#1084;&#1077;&#1085;&#1072;</a>
             </div>
         </form>

@@ -32,6 +32,8 @@ class AuthRedirectMiddleware:
             "/accounts/reset/",
             "/accounts/confirm-email/",
             "/register/",
+            "/signup/personal/",
+            "/signup/company/",
             "/static/",
             "/consent/",
             "/sw.js",

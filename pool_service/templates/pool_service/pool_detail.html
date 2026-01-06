@@ -10,15 +10,15 @@
         <span class="fw-semibold">Назад к списку</span>
     </a>
 
-    {% if role == 'editor' or role == 'service' or role == 'admin' or user.is_superuser %}
+    {% if role == 'editor' or role == 'service' or role == 'admin' or user.is_superuser or pool.client.user_id == user.id %}
         <div class="d-flex align-items-center gap-2">
             {% if role == 'admin' or user.is_superuser %}
-                <a class="btn btn-outline-primary rounded-3 d-flex align-items-center gap-2" href="{% url 'pool_edit' pool.uuid %}" aria-label="Редактировать бассейн" title="Редактировать бассейн">
-                    <i class="bi bi-pencil"></i><span class="d-none d-sm-inline">Редактировать бассейн</span>
+                <a class="btn btn-outline-primary rounded-3 d-flex align-items-center gap-2 {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% url 'pool_edit' pool.uuid %}" aria-label="&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;" title="&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;">
+                    <i class="bi bi-pencil"></i><span class="d-none d-sm-inline">&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;</span>
                 </a>
             {% endif %}
-            <a class="btn btn-primary rounded-3 d-flex align-items-center gap-2" href="{% url 'water_reading_create' pool.uuid %}" aria-label="Добавить показания" title="Добавить показания">
-                <i class="bi bi-plus-lg"></i><span class="d-none d-sm-inline">Добавить показания</span>
+            <a class="btn btn-primary rounded-3 d-flex align-items-center gap-2 {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% url 'water_reading_create' pool.uuid %}" aria-label="&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;" title="&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;">
+                <i class="bi bi-plus-lg"></i><span class="d-none d-sm-inline">&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;</span>
             </a>
         </div>
     {% endif %}
@@ -196,7 +196,7 @@
                         <td>{{ reading.performed_works|default:"-" }}</td>
                         <td class="text-end">
                             {% if reading.id in editable_reading_ids %}
-                                <a class="btn btn-outline-secondary btn-sm" href="{% url 'water_reading_edit' reading.uuid %}">
+                                <a class="btn btn-outline-secondary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% url 'water_reading_edit' reading.uuid %}">
                                     <i class="bi bi-pencil"></i>
                                 </a>
                             {% endif %}

@@ -3,7 +3,8 @@ from django.contrib.auth.models import User
 from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.auth.password_validation import validate_password
 from django.utils.crypto import get_random_string
-from .models import WaterReading, Organization, Client, OrganizationAccess, Pool
+from django.utils import timezone
+from .models import WaterReading, Organization, Client, OrganizationAccess, Pool, PoolAccess
 
 
 class WaterReadingForm(forms.ModelForm):
@@ -177,6 +178,8 @@ class RegistrationForm(forms.Form):
                 address=data.get("org_address"),
                 phone=data.get("org_phone"),
                 email=data.get("org_email") or data.get("email"),
+                plan_type=Organization.PLAN_COMPANY_TRIAL,
+                trial_started_at=timezone.now(),
             )
             OrganizationAccess.objects.create(user=user, organization=org, role="admin")
         else:
@@ -191,6 +194,163 @@ class RegistrationForm(forms.Form):
         return user
 
 
+def normalize_phone(raw):
+    if not raw:
+        return None
+    digits = "".join(filter(str.isdigit, raw))
+    if digits.startswith("7") and len(digits) == 11:
+        digits = digits[1:]
+    if digits.startswith("8") and len(digits) == 11:
+        digits = digits[1:]
+    if len(digits) != 10:
+        return None
+    return digits
+
+
+class PersonalSignupForm(forms.Form):
+    first_name = forms.CharField(required=True)
+    last_name = forms.CharField(required=True)
+    phone = forms.CharField(required=True)
+    email = forms.EmailField(required=True)
+    password1 = forms.CharField(widget=forms.PasswordInput, required=True)
+    password2 = forms.CharField(widget=forms.PasswordInput, required=True)
+    pool_address = forms.CharField(required=True)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for name, field in self.fields.items():
+            classes = "form-control rounded-3"
+            if name in ["phone"]:
+                classes = "form-control rounded-3 phone-mask"
+            field.widget.attrs.update({"class": classes})
+        self.fields["phone"].initial = "+7 "
+
+    def clean(self):
+        cleaned = super().clean()
+        phone_raw = cleaned.get("phone")
+        username = normalize_phone(phone_raw)
+        self._normalized_username = username
+        if phone_raw and not username:
+            self.add_error("phone", "\u041d\u0435\u043a\u043e\u0440\u0440\u0435\u043a\u0442\u043d\u044b\u0439 \u0442\u0435\u043b\u0435\u0444\u043e\u043d")
+
+        if username and User.objects.filter(username=username).exists():
+            self.add_error("phone", "\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044c \u0441 \u0442\u0430\u043a\u0438\u043c \u0442\u0435\u043b\u0435\u0444\u043e\u043d\u043e\u043c \u0443\u0436\u0435 \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u0435\u0442")
+
+        if cleaned.get("password1") != cleaned.get("password2"):
+            self.add_error("password2", "\u041f\u0430\u0440\u043e\u043b\u0438 \u043d\u0435 \u0441\u043e\u0432\u043f\u0430\u0434\u0430\u044e\u0442")
+
+        password_value = cleaned.get("password1")
+        if password_value:
+            try:
+                validate_password(password_value)
+            except forms.ValidationError as exc:
+                self.add_error("password1", exc)
+
+        email_value = cleaned.get("email")
+        if email_value and User.objects.filter(email__iexact=email_value).exists():
+            self.add_error("email", "\u042d\u0442\u043e\u0442 email \u0443\u0436\u0435 \u0437\u0430\u0440\u0435\u0433\u0438\u0441\u0442\u0440\u0438\u0440\u043e\u0432\u0430\u043d")
+        return cleaned
+
+    def save(self):
+        data = self.cleaned_data
+        username = self._normalized_username or normalize_phone(data.get("phone"))
+        user = User.objects.create_user(
+            username=username,
+            password=data["password1"],
+            email=data.get("email"),
+            first_name=data.get("first_name", ""),
+            last_name=data.get("last_name", ""),
+            is_active=True,
+        )
+        client = Client.objects.create(
+            user=user,
+            client_type="private",
+            first_name=data.get("first_name"),
+            last_name=data.get("last_name"),
+            name=f"{data.get('first_name','')} {data.get('last_name','')}".strip(),
+            phone=data.get("phone"),
+            email=data.get("email"),
+        )
+        pool = Pool.objects.create(
+            client=client,
+            address=data.get("pool_address"),
+        )
+        PoolAccess.objects.get_or_create(user=user, pool=pool, defaults={"role": "viewer"})
+        return user
+
+
+class CompanySignupForm(forms.Form):
+    org_name = forms.CharField(required=True)
+    org_city = forms.CharField(required=True)
+    org_address = forms.CharField(required=False)
+    org_phone = forms.CharField(required=True)
+    org_email = forms.EmailField(required=True)
+    owner_first_name = forms.CharField(required=True)
+    owner_last_name = forms.CharField(required=True)
+    owner_phone = forms.CharField(required=True)
+    password1 = forms.CharField(widget=forms.PasswordInput, required=True)
+    password2 = forms.CharField(widget=forms.PasswordInput, required=True)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for name, field in self.fields.items():
+            classes = "form-control rounded-3"
+            if name in ["org_phone", "owner_phone"]:
+                classes = "form-control rounded-3 phone-mask"
+            field.widget.attrs.update({"class": classes})
+        self.fields["org_phone"].initial = "+7 "
+        self.fields["owner_phone"].initial = "+7 "
+
+    def clean(self):
+        cleaned = super().clean()
+        phone_raw = cleaned.get("owner_phone")
+        username = normalize_phone(phone_raw)
+        self._normalized_username = username
+        if phone_raw and not username:
+            self.add_error("owner_phone", "\u041d\u0435\u043a\u043e\u0440\u0440\u0435\u043a\u0442\u043d\u044b\u0439 \u0442\u0435\u043b\u0435\u0444\u043e\u043d")
+
+        if username and User.objects.filter(username=username).exists():
+            self.add_error("owner_phone", "\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044c \u0441 \u0442\u0430\u043a\u0438\u043c \u0442\u0435\u043b\u0435\u0444\u043e\u043d\u043e\u043c \u0443\u0436\u0435 \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u0435\u0442")
+
+        if cleaned.get("password1") != cleaned.get("password2"):
+            self.add_error("password2", "\u041f\u0430\u0440\u043e\u043b\u0438 \u043d\u0435 \u0441\u043e\u0432\u043f\u0430\u0434\u0430\u044e\u0442")
+
+        password_value = cleaned.get("password1")
+        if password_value:
+            try:
+                validate_password(password_value)
+            except forms.ValidationError as exc:
+                self.add_error("password1", exc)
+
+        email_value = cleaned.get("org_email")
+        if email_value and User.objects.filter(email__iexact=email_value).exists():
+            self.add_error("org_email", "\u042d\u0442\u043e\u0442 email \u0443\u0436\u0435 \u0437\u0430\u0440\u0435\u0433\u0438\u0441\u0442\u0440\u0438\u0440\u043e\u0432\u0430\u043d")
+        return cleaned
+
+    def save(self):
+        data = self.cleaned_data
+        username = self._normalized_username or normalize_phone(data.get("owner_phone"))
+        user = User.objects.create_user(
+            username=username,
+            password=data["password1"],
+            email=data.get("org_email"),
+            first_name=data.get("owner_first_name", ""),
+            last_name=data.get("owner_last_name", ""),
+            is_active=True,
+        )
+        org = Organization.objects.create(
+            name=data.get("org_name"),
+            city=data.get("org_city"),
+            address=data.get("org_address"),
+            phone=data.get("org_phone"),
+            email=data.get("org_email"),
+            plan_type=Organization.PLAN_COMPANY_TRIAL,
+            trial_started_at=timezone.now(),
+        )
+        OrganizationAccess.objects.create(user=user, organization=org, role="admin")
+        return user
+
+
 class ClientCreateForm(forms.Form):
     CLIENT_TYPE_CHOICES = [("private", "Частный клиент"), ("legal", "Юрлицо")]
     client_type = forms.ChoiceField(choices=CLIENT_TYPE_CHOICES, widget=forms.RadioSelect, initial="private", label="Тип клиента")
@@ -202,6 +362,7 @@ class ClientCreateForm(forms.Form):
     inn = forms.CharField(label="ИНН", required=False)
 
     def __init__(self, *args, **kwargs):
+        self.instance = kwargs.pop("instance", None)
         super().__init__(*args, **kwargs)
         for name, field in self.fields.items():
             if isinstance(field.widget, forms.RadioSelect):
@@ -209,6 +370,18 @@ class ClientCreateForm(forms.Form):
             field.widget.attrs.update({"class": "form-control rounded-3", "placeholder": field.label})
         self.fields["phone"].widget.attrs.update({"class": "form-control rounded-3 phone-mask", "placeholder": self.fields["phone"].label})
         self.fields["phone"].initial = "+7 "
+        if self.instance:
+            self.initial.update(
+                {
+                    "client_type": self.instance.client_type or "private",
+                    "first_name": self.instance.first_name or "",
+                    "last_name": self.instance.last_name or "",
+                    "phone": self.instance.phone or "+7 ",
+                    "email": self.instance.email or "",
+                    "company_name": self.instance.company_name or "",
+                    "inn": self.instance.inn or "",
+                }
+            )
 
     def clean(self):
         cleaned = super().clean()
@@ -240,16 +413,17 @@ class ClientCreateForm(forms.Form):
     def save(self):
         data = self.cleaned_data
         name_val = data.get("company_name") or f"{data.get('first_name','')} {data.get('last_name','')}".strip()
-        return Client.objects.create(
-            client_type=data.get("client_type"),
-            first_name=data.get("first_name"),
-            last_name=data.get("last_name"),
-            company_name=data.get("company_name"),
-            name=name_val,
-            inn=data.get("inn"),
-            phone=data.get("phone"),
-            email=data.get("email"),
-        )
+        client = self.instance or Client()
+        client.client_type = data.get("client_type")
+        client.first_name = data.get("first_name")
+        client.last_name = data.get("last_name")
+        client.company_name = data.get("company_name")
+        client.name = name_val
+        client.inn = data.get("inn")
+        client.phone = data.get("phone")
+        client.email = data.get("email")
+        client.save()
+        return client
 
 
 

@@ -1,8 +1,15 @@
 {% extends 'pool_service/base.html' %}
 
-{% block title %}&#1052;&#1086;&#1080; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1099;{% endblock %}
+{% block title %}
+  {% if is_personal_user %}
+    &#1052;&#1086;&#1081; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;
+  {% else %}
+    &#1052;&#1086;&#1080; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1099;
+  {% endif %}
+{% endblock %}
 
 {% block content %}
+{% if show_pool_controls %}
 <form method="get" class="pool-controls" id="pool-search-form">
     <div class="pool-controls__search">
         <input type="search" name="q" id="pool-search-input" class="form-control rounded-3" placeholder="&#1050;&#1083;&#1080;&#1077;&#1085;&#1090; &#1080;&#1083;&#1080; &#1072;&#1076;&#1088;&#1077;&#1089;" value="{{ search_query|default:'' }}" autocomplete="off">
@@ -85,6 +92,7 @@
         </div>
     </div>
 </form>
+{% endif %}
 
 <div class="row g-3">
     {% for pool in pools %}
@@ -112,6 +120,7 @@
     {% endfor %}
 </div>
 
+{% if show_pool_controls %}
 {% if pools.has_other_pages %}
     <div class="d-flex justify-content-between align-items-center mt-4">
         <div class="text-muted small">
@@ -294,4 +303,5 @@
     color: #0d6efd;
   }
 </style>
+{% endif %}
 {% endblock %}
