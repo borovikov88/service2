@@ -408,6 +408,66 @@ def invite_accept(request, token):
 
 
 @login_required
+def staff_toggle_block(request, access_id):
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+    if request.method != "POST":
+        return redirect("users")
+
+    access = get_object_or_404(OrganizationAccess, pk=access_id)
+    is_admin = request.user.is_superuser or OrganizationAccess.objects.filter(
+        user=request.user,
+        role="admin",
+        organization=access.organization,
+    ).exists()
+    if not is_admin:
+        return HttpResponseForbidden()
+    if access.user_id == request.user.id:
+        messages.error(request, "\u041d\u0435\u043b\u044c\u0437\u044f \u0437\u0430\u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0441\u0430\u043c\u043e\u0433\u043e \u0441\u0435\u0431\u044f.")
+        return redirect("users")
+    if access.user.is_superuser:
+        return HttpResponseForbidden()
+
+    access.user.is_active = not access.user.is_active
+    access.user.save(update_fields=["is_active"])
+    if access.user.is_active:
+        messages.success(request, "\u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a \u0440\u0430\u0437\u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u0430\u043d.")
+    else:
+        messages.success(request, "\u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a \u0437\u0430\u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u0430\u043d.")
+    return redirect("users")
+
+
+@login_required
+def staff_delete(request, access_id):
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+    if request.method != "POST":
+        return redirect("users")
+
+    access = get_object_or_404(OrganizationAccess, pk=access_id)
+    is_admin = request.user.is_superuser or OrganizationAccess.objects.filter(
+        user=request.user,
+        role="admin",
+        organization=access.organization,
+    ).exists()
+    if not is_admin:
+        return HttpResponseForbidden()
+    if access.user_id == request.user.id:
+        messages.error(request, "\u041d\u0435\u043b\u044c\u0437\u044f \u0443\u0434\u0430\u043b\u0438\u0442\u044c \u0441\u0430\u043c\u043e\u0433\u043e \u0441\u0435\u0431\u044f.")
+        return redirect("users")
+    if access.user.is_superuser:
+        return HttpResponseForbidden()
+
+    PoolAccess.objects.filter(user=access.user, pool__organization=access.organization).delete()
+    PoolAccess.objects.filter(user=access.user, pool__client__organization=access.organization).delete()
+    access.delete()
+    messages.success(request, "\u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a \u0443\u0434\u0430\u043b\u0435\u043d.")
+    return redirect("users")
+
+
+@login_required
 def users_view(request):
     """Список пользователей для суперюзеров/админов, сервисники видят только персонал бассейнов."""
     roles = list(OrganizationAccess.objects.filter(user=request.user).values_list("role", flat=True))

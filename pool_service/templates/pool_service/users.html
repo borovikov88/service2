@@ -1,23 +1,23 @@
 {% extends 'pool_service/base.html' %}
 
-{% block title %}Пользователи{% endblock %}
+{% block title %}????????????{% endblock %}
 
 {% block content %}
 <div class="row g-4">
     <div class="col-12">
         <div class="card card-soft p-4">
-            <h4 class="fw-bold mb-3">Сотрудники сервисной компании</h4>
+            <h4 class="fw-bold mb-3">?????????? ????????? ????????</h4>
             <div class="table-responsive">
                 <table class="table align-middle">
                     <thead class="small text-muted">
                         <tr>
-                            {% if user.is_superuser %}<th>Организация</th>{% endif %}
-                            <th>Сотрудник</th>
+                            {% if user.is_superuser %}<th>???????????</th>{% endif %}
+                            <th>?????????</th>
                             <th>Email</th>
-                            <th>Роль</th>
-                            <th>Статус</th>
-                            {% if user.is_superuser %}<th>Последний вход</th>{% endif %}
-                            {% if user.is_superuser or is_org_admin %}<th class="text-end">Действия</th>{% endif %}
+                            <th>????</th>
+                            <th>??????</th>
+                            {% if user.is_superuser %}<th>????????? ????</th>{% endif %}
+                            {% if user.is_superuser or is_org_admin %}<th class="text-end">????????</th>{% endif %}
                         </tr>
                     </thead>
                     <tbody>
@@ -31,13 +31,32 @@
                                     <td>{{ item.user.email|default:item.user.username }}</td>
                                     <td>{{ item.get_role_display }}</td>
                                     <td>
-                                        <span class="badge bg-success-subtle text-success border">Приглашение принято</span>
+                                        {% if item.user.is_active %}
+                                            <span class="badge bg-success-subtle text-success border">??????????? ???????</span>
+                                        {% else %}
+                                            <span class="badge bg-danger-subtle text-danger border">????????????</span>
+                                        {% endif %}
                                     </td>
                                     {% if user.is_superuser %}
-                                        <td>{% if item.user.last_login %}{{ item.user.last_login|date:"d.m.Y H:i" }}{% else %}—{% endif %}</td>
+                                        <td>{% if item.user.last_login %}{{ item.user.last_login|date:"d.m.Y H:i" }}{% else %}&#8212;{% endif %}</td>
                                     {% endif %}
                                     {% if user.is_superuser or is_org_admin %}
-                                        <td class="text-end">—</td>
+                                        <td class="text-end">
+                                            <div class="d-inline-flex gap-2">
+                                                <form method="post" action="{% url 'staff_toggle_block' item.id %}">
+                                                    {% csrf_token %}
+                                                    <button type="submit" class="btn btn-outline-warning btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
+                                                        {% if item.user.is_active %}?????????????{% else %}??????????????{% endif %}
+                                                    </button>
+                                                </form>
+                                                <form method="post" action="{% url 'staff_delete' item.id %}">
+                                                    {% csrf_token %}
+                                                    <button type="submit" class="btn btn-outline-danger btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
+                                                        ???????
+                                                    </button>
+                                                </form>
+                                            </div>
+                                        </td>
                                     {% endif %}
                                 </tr>
                             {% endfor %}
@@ -55,20 +74,20 @@
                                     <td>{{ invite.get_role_display }}</td>
                                     <td>
                                         {% if invite.is_expired %}
-                                            <span class="badge bg-warning-subtle text-warning border">Пользователь не подтвердил регистрацию</span>
+                                            <span class="badge bg-warning-subtle text-warning border">???????????? ?? ?????????? ???????????</span>
                                         {% else %}
-                                            <span class="badge bg-info-subtle text-info border">Приглашение отправлено</span>
+                                            <span class="badge bg-info-subtle text-info border">??????????? ??????????</span>
                                         {% endif %}
                                     </td>
                                     {% if user.is_superuser %}
-                                        <td>—</td>
+                                        <td>&#8212;</td>
                                     {% endif %}
                                     {% if user.is_superuser or is_org_admin %}
                                         <td class="text-end">
                                             <form method="post" action="{% url 'invite_resend' invite.id %}" class="d-inline">
                                                 {% csrf_token %}
                                                 <button type="submit" class="btn btn-outline-primary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
-                                                    Отправить повторно
+                                                    ????????? ????????
                                                 </button>
                                             </form>
                                         </td>
@@ -76,7 +95,7 @@
                                 </tr>
                             {% endfor %}
                         {% else %}
-                            <tr><td colspan="7" class="text-center text-muted py-3">Пока нет сотрудников</td></tr>
+                            <tr><td colspan="7" class="text-center text-muted py-3">???? ??? ???????????</td></tr>
                         {% endif %}
                     </tbody>
                 </table>
@@ -86,16 +105,16 @@
 
     <div class="col-12">
         <div class="card card-soft p-4">
-            <h4 class="fw-bold mb-3">Сотрудники по бассейнам</h4>
+            <h4 class="fw-bold mb-3">?????????? ?? ?????????</h4>
             <div class="table-responsive">
                 <table class="table align-middle">
                     <thead class="small text-muted">
                         <tr>
-                            <th>Клиент</th>
-                            <th>Адрес</th>
-                            <th>Сотрудник</th>
-                            <th>Роль</th>
-                            {% if user.is_superuser %}<th>Последний вход</th>{% endif %}
+                            <th>??????</th>
+                            <th>?????</th>
+                            <th>?????????</th>
+                            <th>????</th>
+                            {% if user.is_superuser %}<th>????????? ????</th>{% endif %}
                         </tr>
                     </thead>
                     <tbody>
@@ -108,11 +127,11 @@
                                 </td>
                                 <td>{{ item.get_role_display }}</td>
                                 {% if user.is_superuser %}
-                                    <td>{% if item.user.last_login %}{{ item.user.last_login|date:"d.m.Y H:i" }}{% else %}—{% endif %}</td>
+                                    <td>{% if item.user.last_login %}{{ item.user.last_login|date:"d.m.Y H:i" }}{% else %}&#8212;{% endif %}</td>
                                 {% endif %}
                             </tr>
                         {% empty %}
-                            <tr><td colspan="5" class="text-center text-muted py-3">Пока нет закрепленных сотрудников</td></tr>
+                            <tr><td colspan="5" class="text-center text-muted py-3">???? ??? ???????????? ???????????</td></tr>
                         {% endfor %}
                     </tbody>
                 </table>

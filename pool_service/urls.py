@@ -24,6 +24,8 @@ from .views import (
     invite_create,
     invite_resend,
     invite_accept,
+    staff_toggle_block,
+    staff_delete,
 )
 from . import views
 
@@ -40,6 +42,8 @@ urlpatterns = [
     path("readings/all", readings_all, name="readings_all"),
     path("profile/", profile_view, name="profile"),
     path("users/", users_view, name="users"),
+    path("users/<int:access_id>/block/", staff_toggle_block, name="staff_toggle_block"),
+    path("users/<int:access_id>/delete/", staff_delete, name="staff_delete"),
     path("users/invite/", invite_create, name="invite_create"),
     path("users/invite/<int:invite_id>/resend/", invite_resend, name="invite_resend"),
     path("invite/<uuid:token>/", invite_accept, name="invite_accept"),
