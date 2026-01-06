@@ -3,6 +3,7 @@ import uuid
 from django.db import models
 from django.contrib.auth.models import User
 from django_ckeditor_5.fields import CKEditor5Field
+from django.utils import timezone
 
 
 class Organization(models.Model):
@@ -121,7 +122,7 @@ class PoolAccess(models.Model):
 class OrganizationAccess(models.Model):
     ROLE_CHOICES = [
         ("manager", "Менеджер"),
-        ("service", "Сервисник"),
+        ("service", "Сервис"),
         ("admin", "Администратор"),
     ]
 
@@ -131,6 +132,41 @@ class OrganizationAccess(models.Model):
 
     def __str__(self):
         return f"{self.user.get_full_name()} - {self.organization.name} ({self.role})"
+
+
+class OrganizationInvite(models.Model):
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="invites")
+    invited_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sent_org_invites",
+    )
+    accepted_user = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="accepted_org_invites",
+    )
+    email = models.EmailField()
+    first_name = models.CharField(max_length=100, blank=True)
+    last_name = models.CharField(max_length=100, blank=True)
+    phone = models.CharField(max_length=20, blank=True)
+    role = models.CharField(max_length=20, choices=OrganizationAccess.ROLE_CHOICES, default="service")
+    token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_sent_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField()
+    accepted_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.email} ({self.organization.name})"
+
+    def is_expired(self, now=None):
+        now = now or timezone.now()
+        return self.expires_at and self.expires_at <= now
 
 
 class WaterReading(models.Model):

@@ -22,6 +22,7 @@ from django.template.loader import render_to_string
 import html
 from django.templatetags.static import static
 from django.conf import settings
+import uuid
 from urllib.parse import urlencode
 from urllib.request import urlopen, Request
 import json
@@ -35,12 +36,15 @@ from .forms import (
     EmailOrUsernameAuthenticationForm,
     PersonalSignupForm,
     CompanySignupForm,
+    OrganizationInviteForm,
+    InviteAcceptForm,
 )
-from .models import OrganizationAccess, Pool, PoolAccess, WaterReading, Client, Organization
+from .models import OrganizationAccess, Pool, PoolAccess, WaterReading, Client, Organization, OrganizationInvite
 from .services.permissions import is_personal_free, is_personal_user, is_org_access_blocked
 from django import forms
 
 PER_PAGE_CHOICES = {20, 50, 100}
+INVITE_EXPIRY_HOURS = 24
 
 
 def _parse_per_page(value, default):
@@ -223,6 +227,187 @@ def billing_info(request):
 
 
 @login_required
+def invite_create(request):
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+
+    is_admin = request.user.is_superuser or OrganizationAccess.objects.filter(user=request.user, role="admin").exists()
+    if not is_admin:
+        return HttpResponseForbidden()
+
+    if request.method == "POST":
+        form = OrganizationInviteForm(request.POST)
+        if form.is_valid():
+            email = form.cleaned_data["email"].strip().lower()
+            if User.objects.filter(email__iexact=email).exists():
+                form.add_error("email", "\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044c \u0441 \u0442\u0430\u043a\u0438\u043c email \u0443\u0436\u0435 \u0437\u0430\u0440\u0435\u0433\u0438\u0441\u0442\u0440\u0438\u0440\u043e\u0432\u0430\u043d")
+            else:
+                org_access = (
+                    OrganizationAccess.objects.filter(user=request.user, role="admin")
+                    .select_related("organization")
+                    .first()
+                )
+                if not org_access and not request.user.is_superuser:
+                    return HttpResponseForbidden()
+                organization = org_access.organization if org_access else None
+                if not organization:
+                    form.add_error("email", "\u041d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430 \u043e\u0440\u0433\u0430\u043d\u0438\u0437\u0430\u0446\u0438\u044f")
+                else:
+                    now = timezone.now()
+                    expires_at = now + timedelta(hours=INVITE_EXPIRY_HOURS)
+                    invite = OrganizationInvite.objects.filter(
+                        organization=organization,
+                        email__iexact=email,
+                        accepted_at__isnull=True,
+                    ).first()
+                    if invite:
+                        invite.first_name = form.cleaned_data["first_name"]
+                        invite.last_name = form.cleaned_data["last_name"]
+                        invite.phone = form.cleaned_data.get("phone", "")
+                        invite.role = form.cleaned_data["role"]
+                        invite.token = uuid.uuid4()
+                        invite.expires_at = expires_at
+                        invite.invited_by = request.user
+                        invite.last_sent_at = now
+                    else:
+                        invite = OrganizationInvite.objects.create(
+                            organization=organization,
+                            invited_by=request.user,
+                            email=email,
+                            first_name=form.cleaned_data["first_name"],
+                            last_name=form.cleaned_data["last_name"],
+                            phone=form.cleaned_data.get("phone", ""),
+                            role=form.cleaned_data["role"],
+                            expires_at=expires_at,
+                            last_sent_at=now,
+                        )
+                    invite.save()
+                    if _send_invite_email(request, invite):
+                        messages.success(request, "\u041f\u0440\u0438\u0433\u043b\u0430\u0448\u0435\u043d\u0438\u0435 \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u043e.")
+                        return redirect("users")
+                    messages.error(request, "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u043f\u0438\u0441\u044c\u043c\u043e. \u041f\u0440\u043e\u0432\u0435\u0440\u044c\u0442\u0435 \u043f\u043e\u0447\u0442\u043e\u0432\u044b\u0435 \u043d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438.")
+    else:
+        form = OrganizationInviteForm()
+
+    return render(
+        request,
+        "pool_service/invite_create.html",
+        {
+            "form": form,
+            "page_title": "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0441\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a\u0430",
+            "active_tab": "users",
+            "show_search": False,
+            "show_add_button": False,
+            "add_url": None,
+        },
+    )
+
+
+@login_required
+def invite_resend(request, invite_id):
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+    if request.method != "POST":
+        return redirect("users")
+
+    invite = get_object_or_404(OrganizationInvite, pk=invite_id)
+    is_admin = request.user.is_superuser or OrganizationAccess.objects.filter(user=request.user, role="admin").exists()
+    if not is_admin:
+        return HttpResponseForbidden()
+    if not request.user.is_superuser:
+        allowed = OrganizationAccess.objects.filter(
+            user=request.user,
+            role="admin",
+            organization=invite.organization,
+        ).exists()
+        if not allowed:
+            return HttpResponseForbidden()
+
+    if invite.accepted_at:
+        messages.info(request, "\u041f\u0440\u0438\u0433\u043b\u0430\u0448\u0435\u043d\u0438\u0435 \u0443\u0436\u0435 \u043f\u0440\u0438\u043d\u044f\u0442\u043e.")
+        return redirect("users")
+
+    now = timezone.now()
+    invite.token = uuid.uuid4()
+    invite.expires_at = now + timedelta(hours=INVITE_EXPIRY_HOURS)
+    invite.last_sent_at = now
+    invite.save(update_fields=["token", "expires_at", "last_sent_at"])
+
+    if _send_invite_email(request, invite):
+        messages.success(request, "\u041f\u0440\u0438\u0433\u043b\u0430\u0448\u0435\u043d\u0438\u0435 \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u043e \u043f\u043e\u0432\u0442\u043e\u0440\u043d\u043e.")
+    else:
+        messages.error(request, "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u043f\u0438\u0441\u044c\u043c\u043e.")
+    return redirect("users")
+
+
+def invite_accept(request, token):
+    invite = OrganizationInvite.objects.filter(token=token).select_related("organization").first()
+    if not invite:
+        return render(
+            request,
+            "registration/invite_accept.html",
+            {"invite": None, "error_message": "\u0421\u0441\u044b\u043b\u043a\u0430 \u043d\u0435\u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0442\u0435\u043b\u044c\u043d\u0430."},
+        )
+
+    if invite.accepted_at:
+        return render(
+            request,
+            "registration/invite_accept.html",
+            {"invite": invite, "error_message": "\u041f\u0440\u0438\u0433\u043b\u0430\u0448\u0435\u043d\u0438\u0435 \u0443\u0436\u0435 \u043f\u0440\u0438\u043d\u044f\u0442\u043e."},
+        )
+
+    if invite.is_expired():
+        return render(
+            request,
+            "registration/invite_accept.html",
+            {"invite": invite, "error_message": "\u0421\u0441\u044b\u043b\u043a\u0430 \u043f\u0440\u043e\u0441\u0440\u043e\u0447\u0435\u043d\u0430. \u041f\u043e\u043f\u0440\u043e\u0441\u0438\u0442\u0435 \u0430\u0434\u043c\u0438\u043d\u0438\u0441\u0442\u0440\u0430\u0442\u043e\u0440\u0430 \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u043f\u0440\u0438\u0433\u043b\u0430\u0448\u0435\u043d\u0438\u0435 \u043f\u043e\u0432\u0442\u043e\u0440\u043d\u043e."},
+        )
+
+    if request.method == "POST":
+        form = InviteAcceptForm(request.POST)
+        if form.is_valid():
+            email = invite.email.strip().lower()
+            if User.objects.filter(email__iexact=email).exists():
+                form.add_error("password1", "\u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u0441 \u044d\u0442\u0438\u043c email \u0443\u0436\u0435 \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u0435\u0442")
+            else:
+                user = User.objects.create_user(
+                    username=email,
+                    email=email,
+                    first_name=form.cleaned_data["first_name"],
+                    last_name=form.cleaned_data["last_name"],
+                )
+                user.set_password(form.cleaned_data["password1"])
+                user.save()
+                OrganizationAccess.objects.create(
+                    user=user,
+                    organization=invite.organization,
+                    role=invite.role,
+                )
+                invite.accepted_at = timezone.now()
+                invite.accepted_user = user
+                invite.save(update_fields=["accepted_at", "accepted_user"])
+                login(request, user)
+                messages.success(request, "\u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043d.")
+                return redirect("pool_list")
+    else:
+        form = InviteAcceptForm(
+            initial={
+                "first_name": invite.first_name,
+                "last_name": invite.last_name,
+                "phone": invite.phone,
+            }
+        )
+
+    return render(
+        request,
+        "registration/invite_accept.html",
+        {"invite": invite, "form": form},
+    )
+
+
+@login_required
 def users_view(request):
     """Список пользователей для суперюзеров/админов, сервисники видят только персонал бассейнов."""
     roles = list(OrganizationAccess.objects.filter(user=request.user).values_list("role", flat=True))
@@ -242,11 +427,17 @@ def users_view(request):
         pool_filter = {"pool__organization_id__in": org_ids}
 
     org_staff = []
+    org_invites = []
     if request.user.is_superuser or is_org_admin:
         org_staff = (
             OrganizationAccess.objects.filter(**org_filter)
             .select_related("organization", "user")
             .order_by("organization__name", "user__last_name")
+        )
+        org_invites = (
+            OrganizationInvite.objects.filter(**org_filter, accepted_at__isnull=True)
+            .select_related("organization", "invited_by")
+            .order_by("-created_at")
         )
 
     pool_staff = (
@@ -260,10 +451,13 @@ def users_view(request):
         "pool_service/users.html",
         {
             "page_title": "Пользователи",
-            "page_subtitle": "Сотрудники сервисной компании и представители бассейнов",
+            "page_subtitle": "Сотрудники сервисной компании и роли на объектах",
             "org_staff": org_staff,
+            "org_invites": org_invites,
+            "page_action_label": "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0441\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a\u0430" if (request.user.is_superuser or is_org_admin) else None,
+            "page_action_url": reverse("invite_create") if (request.user.is_superuser or is_org_admin) else None,
             "pool_staff": pool_staff,
-            "active_tab": None,
+            "active_tab": "users",
             "show_search": False,
             "show_add_button": False,
             "add_url": None,
@@ -755,6 +949,30 @@ def _build_confirmation_link(request, user):
     if base_url:
         return f"{base_url.rstrip("/")}{path}"
     return request.build_absolute_uri(path)
+
+
+def _build_invite_link(request, token):
+    path = reverse("invite_accept", kwargs={"token": token})
+    base_url = getattr(settings, "SITE_URL", "")
+    if base_url:
+        return f"{base_url.rstrip('/')}{path}"
+    return request.build_absolute_uri(path)
+
+
+def _send_invite_email(request, invite):
+    invite_url = _build_invite_link(request, invite.token)
+    subject = "\u041f\u0440\u0438\u0433\u043b\u0430\u0448\u0435\u043d\u0438\u0435 \u0432 RovikPool"
+    message = (
+        "\u0412\u0430\u0441 \u043f\u0440\u0438\u0433\u043b\u0430\u0441\u0438\u043b\u0438 \u0432 \u043a\u043e\u043c\u043f\u0430\u043d\u0438\u044e \u0432 RovikPool.\n\n"
+        "\u0414\u043b\u044f \u0430\u043a\u0442\u0438\u0432\u0430\u0446\u0438\u0438 \u0430\u043a\u043a\u0430\u0443\u043d\u0442\u0430 \u043f\u0435\u0440\u0435\u0439\u0434\u0438\u0442\u0435 \u043f\u043e \u0441\u0441\u044b\u043b\u043a\u0435:\n"
+        f"{invite_url}\n\n"
+        "\u0421\u0441\u044b\u043b\u043a\u0430 \u0434\u0435\u0439\u0441\u0442\u0432\u0443\u0435\u0442 24 \u0447\u0430\u0441\u0430."
+    )
+    try:
+        send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [invite.email])
+    except Exception:
+        return False
+    return True
 
 def _send_registration_confirmation(request, user):
     if not user.email:

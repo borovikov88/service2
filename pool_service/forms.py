@@ -426,6 +426,54 @@ class ClientCreateForm(forms.Form):
         return client
 
 
+class OrganizationInviteForm(forms.Form):
+    first_name = forms.CharField(label="\u0418\u043c\u044f", required=True)
+    last_name = forms.CharField(label="\u0424\u0430\u043c\u0438\u043b\u0438\u044f", required=True)
+    email = forms.EmailField(label="Email", required=True)
+    phone = forms.CharField(label="\u0422\u0435\u043b\u0435\u0444\u043e\u043d", required=False)
+    role = forms.ChoiceField(choices=OrganizationAccess.ROLE_CHOICES, label="\u0420\u043e\u043b\u044c")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for name, field in self.fields.items():
+            if isinstance(field.widget, forms.RadioSelect):
+                continue
+            classes = "form-control rounded-3"
+            if name in ["role"]:
+                field.widget.attrs.update({"class": "form-select"})
+                field.widget.choices = field.choices
+                continue
+            if name in ["phone"]:
+                field.widget.attrs.update({"class": f"{classes} phone-mask", "placeholder": field.label})
+                self.fields["phone"].initial = "+7 "
+                continue
+            field.widget.attrs.update({"class": classes, "placeholder": field.label})
+
+
+class InviteAcceptForm(forms.Form):
+    first_name = forms.CharField(label="\u0418\u043c\u044f", required=True)
+    last_name = forms.CharField(label="\u0424\u0430\u043c\u0438\u043b\u0438\u044f", required=True)
+    phone = forms.CharField(label="\u0422\u0435\u043b\u0435\u0444\u043e\u043d", required=False)
+    password1 = forms.CharField(label="\u041f\u0430\u0440\u043e\u043b\u044c", widget=forms.PasswordInput)
+    password2 = forms.CharField(label="\u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u0435 \u043f\u0430\u0440\u043e\u043b\u044c", widget=forms.PasswordInput)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for name, field in self.fields.items():
+            classes = "form-control rounded-3"
+            if name == "phone":
+                field.widget.attrs.update({"class": f"{classes} phone-mask", "placeholder": field.label})
+                field.initial = "+7 "
+            else:
+                field.widget.attrs.update({"class": classes, "placeholder": field.label})
+
+    def clean(self):
+        cleaned = super().clean()
+        if cleaned.get("password1") != cleaned.get("password2"):
+            self.add_error("password2", "\u041f\u0430\u0440\u043e\u043b\u0438 \u043d\u0435 \u0441\u043e\u0432\u043f\u0430\u0434\u0430\u044e\u0442")
+        return cleaned
+
+
 
 class PoolForm(forms.ModelForm):
     class Meta:

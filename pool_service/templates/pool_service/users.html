@@ -11,27 +11,73 @@
                 <table class="table align-middle">
                     <thead class="small text-muted">
                         <tr>
-                            <th>Компания</th>
-                            <th>ФИО</th>
+                            {% if user.is_superuser %}<th>Организация</th>{% endif %}
+                            <th>Сотрудник</th>
+                            <th>Email</th>
                             <th>Роль</th>
+                            <th>Статус</th>
                             {% if user.is_superuser %}<th>Последний вход</th>{% endif %}
+                            {% if user.is_superuser or is_org_admin %}<th class="text-end">Действия</th>{% endif %}
                         </tr>
                     </thead>
                     <tbody>
-                        {% for item in org_staff %}
-                            <tr>
-                                <td>{{ item.organization.name }}</td>
-                                <td>
-                                    {% if item.user.get_full_name %}{{ item.user.get_full_name }}{% else %}{{ item.user.username }}{% endif %}
-                                </td>
-                                <td>{{ item.get_role_display }}</td>
-                                {% if user.is_superuser %}
-                                    <td>{% if item.user.last_login %}{{ item.user.last_login|date:"d.m.Y H:i" }}{% else %}—{% endif %}</td>
-                                {% endif %}
-                            </tr>
-                        {% empty %}
-                            <tr><td colspan="3" class="text-center text-muted py-3">Нет данных</td></tr>
-                        {% endfor %}
+                        {% if org_staff or org_invites %}
+                            {% for item in org_staff %}
+                                <tr>
+                                    {% if user.is_superuser %}<td>{{ item.organization.name }}</td>{% endif %}
+                                    <td>
+                                        {% if item.user.get_full_name %}{{ item.user.get_full_name }}{% else %}{{ item.user.username }}{% endif %}
+                                    </td>
+                                    <td>{{ item.user.email|default:item.user.username }}</td>
+                                    <td>{{ item.get_role_display }}</td>
+                                    <td>
+                                        <span class="badge bg-success-subtle text-success border">Приглашение принято</span>
+                                    </td>
+                                    {% if user.is_superuser %}
+                                        <td>{% if item.user.last_login %}{{ item.user.last_login|date:"d.m.Y H:i" }}{% else %}—{% endif %}</td>
+                                    {% endif %}
+                                    {% if user.is_superuser or is_org_admin %}
+                                        <td class="text-end">—</td>
+                                    {% endif %}
+                                </tr>
+                            {% endfor %}
+                            {% for invite in org_invites %}
+                                <tr class="text-muted">
+                                    {% if user.is_superuser %}<td>{{ invite.organization.name }}</td>{% endif %}
+                                    <td>
+                                        {% if invite.first_name or invite.last_name %}
+                                            {{ invite.first_name }} {{ invite.last_name }}
+                                        {% else %}
+                                            {{ invite.email }}
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ invite.email }}</td>
+                                    <td>{{ invite.get_role_display }}</td>
+                                    <td>
+                                        {% if invite.is_expired %}
+                                            <span class="badge bg-warning-subtle text-warning border">Пользователь не подтвердил регистрацию</span>
+                                        {% else %}
+                                            <span class="badge bg-info-subtle text-info border">Приглашение отправлено</span>
+                                        {% endif %}
+                                    </td>
+                                    {% if user.is_superuser %}
+                                        <td>—</td>
+                                    {% endif %}
+                                    {% if user.is_superuser or is_org_admin %}
+                                        <td class="text-end">
+                                            <form method="post" action="{% url 'invite_resend' invite.id %}" class="d-inline">
+                                                {% csrf_token %}
+                                                <button type="submit" class="btn btn-outline-primary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
+                                                    Отправить повторно
+                                                </button>
+                                            </form>
+                                        </td>
+                                    {% endif %}
+                                </tr>
+                            {% endfor %}
+                        {% else %}
+                            <tr><td colspan="7" class="text-center text-muted py-3">Пока нет сотрудников</td></tr>
+                        {% endif %}
                     </tbody>
                 </table>
             </div>
@@ -40,14 +86,14 @@
 
     <div class="col-12">
         <div class="card card-soft p-4">
-            <h4 class="fw-bold mb-3">Представители бассейнов</h4>
+            <h4 class="fw-bold mb-3">Сотрудники по бассейнам</h4>
             <div class="table-responsive">
                 <table class="table align-middle">
                     <thead class="small text-muted">
                         <tr>
-                            <th>Бассейн</th>
+                            <th>Клиент</th>
                             <th>Адрес</th>
-                            <th>Пользователь</th>
+                            <th>Сотрудник</th>
                             <th>Роль</th>
                             {% if user.is_superuser %}<th>Последний вход</th>{% endif %}
                         </tr>
@@ -66,7 +112,7 @@
                                 {% endif %}
                             </tr>
                         {% empty %}
-                            <tr><td colspan="4" class="text-center text-muted py-3">Нет данных</td></tr>
+                            <tr><td colspan="5" class="text-center text-muted py-3">Пока нет закрепленных сотрудников</td></tr>
                         {% endfor %}
                     </tbody>
                 </table>
