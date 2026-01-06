@@ -1,23 +1,23 @@
 {% extends 'pool_service/base.html' %}
 
-{% block title %}????????????{% endblock %}
+{% block title %}&#1055;&#1086;&#1083;&#1100;&#1079;&#1086;&#1074;&#1072;&#1090;&#1077;&#1083;&#1080;{% endblock %}
 
 {% block content %}
 <div class="row g-4">
     <div class="col-12">
         <div class="card card-soft p-4">
-            <h4 class="fw-bold mb-3">?????????? ????????? ????????</h4>
+            <h4 class="fw-bold mb-3">&#1057;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1080; &#1089;&#1077;&#1088;&#1074;&#1080;&#1089;&#1085;&#1086;&#1081; &#1082;&#1086;&#1084;&#1087;&#1072;&#1085;&#1080;&#1080;</h4>
             <div class="table-responsive">
                 <table class="table align-middle">
                     <thead class="small text-muted">
                         <tr>
-                            {% if user.is_superuser %}<th>???????????</th>{% endif %}
-                            <th>?????????</th>
+                            {% if user.is_superuser %}<th>&#1054;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;</th>{% endif %}
+                            <th>&#1057;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;</th>
                             <th>Email</th>
-                            <th>????</th>
-                            <th>??????</th>
-                            {% if user.is_superuser %}<th>????????? ????</th>{% endif %}
-                            {% if user.is_superuser or is_org_admin %}<th class="text-end">????????</th>{% endif %}
+                            <th>&#1056;&#1086;&#1083;&#1100;</th>
+                            <th>&#1057;&#1090;&#1072;&#1090;&#1091;&#1089;</th>
+                            {% if user.is_superuser %}<th>&#1055;&#1086;&#1089;&#1083;&#1077;&#1076;&#1085;&#1080;&#1081; &#1074;&#1093;&#1086;&#1076;</th>{% endif %}
+                            {% if user.is_superuser or is_org_admin %}<th class="text-end">&#1044;&#1077;&#1081;&#1089;&#1090;&#1074;&#1080;&#1103;</th>{% endif %}
                         </tr>
                     </thead>
                     <tbody>
@@ -32,9 +32,9 @@
                                     <td>{{ item.get_role_display }}</td>
                                     <td>
                                         {% if item.user.is_active %}
-                                            <span class="badge bg-success-subtle text-success border">??????????? ???????</span>
+                                            <span class="badge bg-success-subtle text-success border">&#1055;&#1088;&#1080;&#1075;&#1083;&#1072;&#1096;&#1077;&#1085;&#1080;&#1077; &#1087;&#1088;&#1080;&#1085;&#1103;&#1090;&#1086;</span>
                                         {% else %}
-                                            <span class="badge bg-danger-subtle text-danger border">????????????</span>
+                                            <span class="badge bg-danger-subtle text-danger border">&#1047;&#1072;&#1073;&#1083;&#1086;&#1082;&#1080;&#1088;&#1086;&#1074;&#1072;&#1085;</span>
                                         {% endif %}
                                     </td>
                                     {% if user.is_superuser %}
@@ -46,13 +46,13 @@
                                                 <form method="post" action="{% url 'staff_toggle_block' item.id %}">
                                                     {% csrf_token %}
                                                     <button type="submit" class="btn btn-outline-warning btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
-                                                        {% if item.user.is_active %}?????????????{% else %}??????????????{% endif %}
+                                                        {% if item.user.is_active %}&#1047;&#1072;&#1073;&#1083;&#1086;&#1082;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;{% else %}&#1056;&#1072;&#1079;&#1073;&#1083;&#1086;&#1082;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;{% endif %}
                                                     </button>
                                                 </form>
                                                 <form method="post" action="{% url 'staff_delete' item.id %}">
                                                     {% csrf_token %}
                                                     <button type="submit" class="btn btn-outline-danger btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
-                                                        ???????
+                                                        &#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100;
                                                     </button>
                                                 </form>
                                             </div>
@@ -74,9 +74,9 @@
                                     <td>{{ invite.get_role_display }}</td>
                                     <td>
                                         {% if invite.is_expired %}
-                                            <span class="badge bg-warning-subtle text-warning border">???????????? ?? ?????????? ???????????</span>
+                                            <span class="badge bg-warning-subtle text-warning border">&#1055;&#1086;&#1083;&#1100;&#1079;&#1086;&#1074;&#1072;&#1090;&#1077;&#1083;&#1100; &#1085;&#1077; &#1087;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1076;&#1080;&#1083; &#1088;&#1077;&#1075;&#1080;&#1089;&#1090;&#1088;&#1072;&#1094;&#1080;&#1102;</span>
                                         {% else %}
-                                            <span class="badge bg-info-subtle text-info border">??????????? ??????????</span>
+                                            <span class="badge bg-info-subtle text-info border">&#1055;&#1088;&#1080;&#1075;&#1083;&#1072;&#1096;&#1077;&#1085;&#1080;&#1077; &#1086;&#1090;&#1087;&#1088;&#1072;&#1074;&#1083;&#1077;&#1085;&#1086;</span>
                                         {% endif %}
                                     </td>
                                     {% if user.is_superuser %}
@@ -87,7 +87,7 @@
                                             <form method="post" action="{% url 'invite_resend' invite.id %}" class="d-inline">
                                                 {% csrf_token %}
                                                 <button type="submit" class="btn btn-outline-primary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
-                                                    ????????? ????????
+                                                    &#1054;&#1090;&#1087;&#1088;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1074;&#1090;&#1086;&#1088;&#1085;&#1086;
                                                 </button>
                                             </form>
                                         </td>
@@ -95,7 +95,7 @@
                                 </tr>
                             {% endfor %}
                         {% else %}
-                            <tr><td colspan="7" class="text-center text-muted py-3">???? ??? ???????????</td></tr>
+                            <tr><td colspan="7" class="text-center text-muted py-3">&#1055;&#1086;&#1082;&#1072; &#1085;&#1077;&#1090; &#1089;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1086;&#1074;</td></tr>
                         {% endif %}
                     </tbody>
                 </table>
@@ -105,16 +105,16 @@
 
     <div class="col-12">
         <div class="card card-soft p-4">
-            <h4 class="fw-bold mb-3">?????????? ?? ?????????</h4>
+            <h4 class="fw-bold mb-3">&#1057;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1080; &#1087;&#1086; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1072;&#1084;</h4>
             <div class="table-responsive">
                 <table class="table align-middle">
                     <thead class="small text-muted">
                         <tr>
-                            <th>??????</th>
-                            <th>?????</th>
-                            <th>?????????</th>
-                            <th>????</th>
-                            {% if user.is_superuser %}<th>????????? ????</th>{% endif %}
+                            <th>&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;</th>
+                            <th>&#1040;&#1076;&#1088;&#1077;&#1089;</th>
+                            <th>&#1057;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;</th>
+                            <th>&#1056;&#1086;&#1083;&#1100;</th>
+                            {% if user.is_superuser %}<th>&#1055;&#1086;&#1089;&#1083;&#1077;&#1076;&#1085;&#1080;&#1081; &#1074;&#1093;&#1086;&#1076;</th>{% endif %}
                         </tr>
                     </thead>
                     <tbody>
@@ -131,7 +131,7 @@
                                 {% endif %}
                             </tr>
                         {% empty %}
-                            <tr><td colspan="5" class="text-center text-muted py-3">???? ??? ???????????? ???????????</td></tr>
+                            <tr><td colspan="5" class="text-center text-muted py-3">&#1055;&#1086;&#1082;&#1072; &#1085;&#1077;&#1090; &#1079;&#1072;&#1082;&#1088;&#1077;&#1087;&#1083;&#1077;&#1085;&#1085;&#1099;&#1093; &#1089;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1086;&#1074;</td></tr>
                         {% endfor %}
                     </tbody>
                 </table>
