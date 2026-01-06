@@ -77,6 +77,13 @@ def _redirect_if_access_blocked(request):
     return redirect("billing")
 
 
+def _deny_superuser_write(request):
+    if not request.user.is_superuser:
+        return None
+    messages.error(request, "\u0421\u0443\u043f\u0435\u0440\u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044c \u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d \u0442\u043e\u043b\u044c\u043a\u043e \u0434\u043b\u044f \u043f\u0440\u043e\u0441\u043c\u043e\u0442\u0440\u0430.")
+    return redirect(request.META.get("HTTP_REFERER") or "pool_list")
+
+
 def index(request):
     if request.user.is_authenticated:
         redirect_url = _personal_pool_redirect(request.user) or reverse("pool_list")
@@ -184,6 +191,8 @@ def pool_list(request):
     query_params.pop("page", None)
 
     allow_pool_create = not (personal_user and personal_pool_count >= 1)
+    if request.user.is_superuser:
+        allow_pool_create = False
     page_title = "Мой бассейн" if personal_user else "Бассейны"
     page_action_label = "Добавить бассейн" if allow_pool_create else None
     page_action_url = reverse("pool_create") if allow_pool_create else None
@@ -228,6 +237,9 @@ def billing_info(request):
 
 @login_required
 def invite_create(request):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
     blocked = _redirect_if_access_blocked(request)
     if blocked:
         return blocked
@@ -306,6 +318,9 @@ def invite_create(request):
 
 @login_required
 def invite_resend(request, invite_id):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
     blocked = _redirect_if_access_blocked(request)
     if blocked:
         return blocked
@@ -409,6 +424,9 @@ def invite_accept(request, token):
 
 @login_required
 def staff_toggle_block(request, access_id):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
     blocked = _redirect_if_access_blocked(request)
     if blocked:
         return blocked
@@ -440,6 +458,9 @@ def staff_toggle_block(request, access_id):
 
 @login_required
 def staff_delete(request, access_id):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
     blocked = _redirect_if_access_blocked(request)
     if blocked:
         return blocked
@@ -488,6 +509,7 @@ def users_view(request):
 
     org_staff = []
     org_invites = []
+    organizations = []
     if request.user.is_superuser or is_org_admin:
         org_staff = (
             OrganizationAccess.objects.filter(**org_filter)
@@ -499,6 +521,8 @@ def users_view(request):
             .select_related("organization", "invited_by")
             .order_by("-created_at")
         )
+    if request.user.is_superuser:
+        organizations = Organization.objects.order_by("name")
 
     pool_staff = (
         PoolAccess.objects.filter(**pool_filter)
@@ -514,8 +538,9 @@ def users_view(request):
             "page_subtitle": "Сотрудники сервисной компании и роли на объектах",
             "org_staff": org_staff,
             "org_invites": org_invites,
-            "page_action_label": "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0441\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a\u0430" if (request.user.is_superuser or is_org_admin) else None,
-            "page_action_url": reverse("invite_create") if (request.user.is_superuser or is_org_admin) else None,
+            "organizations": organizations,
+            "page_action_label": "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0441\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a\u0430" if is_org_admin else None,
+            "page_action_url": reverse("invite_create") if is_org_admin else None,
             "pool_staff": pool_staff,
             "active_tab": "users",
             "show_search": False,
@@ -550,8 +575,8 @@ def clients_list(request):
             "page_subtitle": "\u041a\u043e\u043d\u0442\u0430\u043a\u0442\u044b \u0438 \u043e\u0431\u044a\u0435\u043a\u0442\u044b \u043a\u043b\u0438\u0435\u043d\u0442\u043e\u0432 \u0432 \u043e\u0434\u043d\u043e\u043c \u0441\u043f\u0438\u0441\u043a\u0435",
             "clients": clients,
             "active_tab": "clients",
-            "page_action_label": "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u043a\u043b\u0438\u0435\u043d\u0442\u0430",
-            "page_action_url": reverse("client_create"),
+            "page_action_label": None if request.user.is_superuser else "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u043a\u043b\u0438\u0435\u043d\u0442\u0430",
+            "page_action_url": None if request.user.is_superuser else reverse("client_create"),
             "show_search": False,
             "show_add_button": False,
             "add_url": None,
@@ -636,6 +661,9 @@ class PoolForm(forms.ModelForm):
 @login_required
 @never_cache
 def pool_create(request):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
     blocked = _redirect_if_access_blocked(request)
     if blocked:
         return blocked
@@ -695,6 +723,9 @@ def pool_create(request):
 @login_required
 @never_cache
 def pool_edit(request, pool_uuid):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
     blocked = _redirect_if_access_blocked(request)
     if blocked:
         return blocked
@@ -702,7 +733,7 @@ def pool_edit(request, pool_uuid):
     pool = get_object_or_404(Pool, uuid=pool_uuid)
 
     if request.user.is_superuser:
-        role = "admin"
+        role = "viewer"
     else:
         role = None
         pool_access = PoolAccess.objects.filter(user=request.user, pool=pool).first()
@@ -749,6 +780,9 @@ def pool_edit(request, pool_uuid):
 
 @login_required
 def client_create_inline(request):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
     blocked = _redirect_if_access_blocked(request)
     if blocked:
         return blocked
@@ -768,6 +802,9 @@ def client_create_inline(request):
 @login_required
 @never_cache
 def client_create(request):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
     blocked = _redirect_if_access_blocked(request)
     if blocked:
         return blocked
@@ -816,6 +853,9 @@ def client_create(request):
 
 @login_required
 def client_edit(request, client_id):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
     blocked = _redirect_if_access_blocked(request)
     if blocked:
         return blocked
@@ -857,6 +897,9 @@ def client_edit(request, client_id):
 
 @login_required
 def client_delete(request, client_id):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
     blocked = _redirect_if_access_blocked(request)
     if blocked:
         return blocked
@@ -1211,6 +1254,9 @@ def readings_all(request):
 @csrf_protect
 @never_cache
 def water_reading_create(request, pool_uuid):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
     blocked = _redirect_if_access_blocked(request)
     if blocked:
         return blocked
@@ -1238,6 +1284,9 @@ def water_reading_create(request, pool_uuid):
 
 @login_required
 def water_reading_edit(request, reading_uuid):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
     blocked = _redirect_if_access_blocked(request)
     if blocked:
         return blocked

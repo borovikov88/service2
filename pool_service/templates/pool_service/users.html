@@ -4,6 +4,37 @@
 
 {% block content %}
 <div class="row g-4">
+    {% if user.is_superuser %}
+    <div class="col-12">
+        <div class="card card-soft p-4">
+            <h4 class="fw-bold mb-3">&#1054;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1080;</h4>
+            <div class="table-responsive">
+                <table class="table align-middle">
+                    <thead class="small text-muted">
+                        <tr>
+                            <th>&#1054;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;</th>
+                            <th>&#1043;&#1086;&#1088;&#1086;&#1076;</th>
+                            <th>Email</th>
+                            <th>&#1058;&#1077;&#1083;&#1077;&#1092;&#1086;&#1085;</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for org in organizations %}
+                            <tr>
+                                <td class="fw-semibold">{{ org.name }}</td>
+                                <td>{{ org.city|default:"-" }}</td>
+                                <td>{{ org.email|default:"-" }}</td>
+                                <td>{{ org.phone|default:"-" }}</td>
+                            </tr>
+                        {% empty %}
+                            <tr><td colspan="4" class="text-center text-muted py-3">&#1055;&#1086;&#1082;&#1072; &#1085;&#1077;&#1090; &#1086;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1081;</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endif %}
     <div class="col-12">
         <div class="card card-soft p-4">
             <h4 class="fw-bold mb-3">&#1057;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1080; &#1089;&#1077;&#1088;&#1074;&#1080;&#1089;&#1085;&#1086;&#1081; &#1082;&#1086;&#1084;&#1087;&#1072;&#1085;&#1080;&#1080;</h4>
@@ -17,7 +48,7 @@
                             <th>&#1056;&#1086;&#1083;&#1100;</th>
                             <th>&#1057;&#1090;&#1072;&#1090;&#1091;&#1089;</th>
                             {% if user.is_superuser %}<th>&#1055;&#1086;&#1089;&#1083;&#1077;&#1076;&#1085;&#1080;&#1081; &#1074;&#1093;&#1086;&#1076;</th>{% endif %}
-                            {% if user.is_superuser or is_org_admin %}<th class="text-end">&#1044;&#1077;&#1081;&#1089;&#1090;&#1074;&#1080;&#1103;</th>{% endif %}
+                            {% if is_org_admin and not user.is_superuser %}<th class="text-end">&#1044;&#1077;&#1081;&#1089;&#1090;&#1074;&#1080;&#1103;</th>{% endif %}
                         </tr>
                     </thead>
                     <tbody>
@@ -40,7 +71,7 @@
                                     {% if user.is_superuser %}
                                         <td>{% if item.user.last_login %}{{ item.user.last_login|date:"d.m.Y H:i" }}{% else %}&#8212;{% endif %}</td>
                                     {% endif %}
-                                    {% if user.is_superuser or is_org_admin %}
+                                    {% if is_org_admin and not user.is_superuser %}
                                         <td class="text-end">
                                             <div class="d-inline-flex gap-2">
                                                 <form method="post" action="{% url 'staff_toggle_block' item.id %}">
@@ -82,7 +113,7 @@
                                     {% if user.is_superuser %}
                                         <td>&#8212;</td>
                                     {% endif %}
-                                    {% if user.is_superuser or is_org_admin %}
+                                    {% if is_org_admin and not user.is_superuser %}
                                         <td class="text-end">
                                             <form method="post" action="{% url 'invite_resend' invite.id %}" class="d-inline">
                                                 {% csrf_token %}
