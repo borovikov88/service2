@@ -124,18 +124,20 @@
     .mobile-menu {
       position: fixed;
       top: 0;
-      left: -280px;
+      left: auto;
+      right: -280px;
       width: 260px;
       height: 100vh;
       background: #fff;
-      box-shadow: 6px 0 24px rgba(15, 23, 42, 0.08);
+      box-shadow: -6px 0 24px rgba(15, 23, 42, 0.08);
       padding: 16px;
       transition: 0.25s ease;
       z-index: 1060;
       pointer-events: none;
     }
     .mobile-menu.open {
-      left: 0;
+      left: auto;
+      right: 0;
       pointer-events: auto;
     }
 
@@ -329,6 +331,25 @@
               <i class="bi bi-x-lg"></i>
           </button>
       </div>
+      {% if plan_badge %}
+      <div class="mb-3">
+          {% if plan_badge.type == 'company_expired' %}
+          <a href="{{ payment_url|default:'/billing/' }}" class="plan-badge plan-badge--company_expired text-decoration-none">
+              Trial: 0 &#1076;&#1085;&#1077;&#1081;
+          </a>
+          {% else %}
+          <span class="plan-badge plan-badge--{{ plan_badge.type }}">
+              {% if plan_badge.type == 'personal_free' %}
+              Free (1 &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;)
+              {% elif plan_badge.type == 'company_trial' %}
+              Trial: {{ plan_badge.days_left }} &#1076;&#1085;&#1077;&#1081;
+              {% elif plan_badge.type == 'company_paid' %}
+              Paid &#1076;&#1086; {{ plan_badge.paid_until|date:"d.m.Y" }}
+              {% endif %}
+          </span>
+          {% endif %}
+      </div>
+      {% endif %}
       <div class="list-group list-group-flush">
           <a href="{% url 'profile' %}" class="list-group-item list-group-item-action">&#1055;&#1088;&#1086;&#1092;&#1080;&#1083;&#1100;</a>
           <a href="/pools" class="list-group-item list-group-item-action">

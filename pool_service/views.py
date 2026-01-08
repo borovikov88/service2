@@ -56,14 +56,14 @@ def _parse_per_page(value, default):
 
 
 def _personal_pool_redirect(user):
-    if not is_personal_free(user):
+    if not is_personal_user(user):
         return None
     client = Client.objects.filter(user=user, organization__isnull=True).first()
     if not client:
         return None
     pool = Pool.objects.filter(client=client).first()
     if not pool:
-        return None
+        return reverse("pool_create")
     return reverse("pool_detail", kwargs={"pool_uuid": pool.uuid})
 
 
@@ -975,7 +975,7 @@ def signup_personal(request):
             if email_sent:
                 messages.success(
                     request,
-                    "\u0420\u0435\u0433\u0438\u0441\u0442\u0440\u0430\u0446\u0438\u044f \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0430. \u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 email \u043f\u043e \u0441\u0441\u044b\u043b\u043a\u0435 \u0438\u0437 \u043f\u0438\u0441\u044c\u043c\u0430.",
+                    "\u041f\u0438\u0441\u044c\u043c\u043e \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u043e \u043d\u0430 \u043f\u043e\u0447\u0442\u0443. \u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 email \u043f\u043e \u0441\u0441\u044b\u043b\u043a\u0435 \u0438\u0437 \u043f\u0438\u0441\u044c\u043c\u0430.",
                 )
             else:
                 messages.error(
@@ -1009,7 +1009,7 @@ def signup_company(request):
             if email_sent:
                 messages.success(
                     request,
-                    "\u0420\u0435\u0433\u0438\u0441\u0442\u0440\u0430\u0446\u0438\u044f \u043a\u043e\u043c\u043f\u0430\u043d\u0438\u0438 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0430. \u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 email \u043f\u043e \u0441\u0441\u044b\u043b\u043a\u0435 \u0438\u0437 \u043f\u0438\u0441\u044c\u043c\u0430.",
+                    "\u041f\u0438\u0441\u044c\u043c\u043e \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u043e \u043d\u0430 \u043f\u043e\u0447\u0442\u0443. \u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 email \u043f\u043e \u0441\u0441\u044b\u043b\u043a\u0435 \u0438\u0437 \u043f\u0438\u0441\u044c\u043c\u0430.",
                 )
             else:
                 messages.error(
@@ -1032,18 +1032,21 @@ def signup_company(request):
 
 
 def register(request):
-    """??????????? ?????? ????????????."""
+    """Register form."""
     if request.method == "POST":
         form = RegistrationForm(request.POST)
         if form.is_valid():
             user = form.save()
             email_sent = _send_registration_confirmation(request, user)
             if email_sent:
-                messages.success(request, "??????????? ?????????. ????????? ????? ? ??????????? ???????.")
+                messages.success(
+                    request,
+                    "\u041f\u0438\u0441\u044c\u043c\u043e \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u043e \u043d\u0430 \u043f\u043e\u0447\u0442\u0443. \u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 email \u043f\u043e \u0441\u0441\u044b\u043b\u043a\u0435 \u0438\u0437 \u043f\u0438\u0441\u044c\u043c\u0430.",
+                )
             else:
                 messages.error(
                     request,
-                    "??????????? ?????????, ?? ?????? ?? ??????????. ????????? ????? ??? ????????? ? ??????????.",
+                    "\u0420\u0435\u0433\u0438\u0441\u0442\u0440\u0430\u0446\u0438\u044f \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0430, \u043d\u043e \u043f\u0438\u0441\u044c\u043c\u043e \u043d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c. \u0421\u0432\u044f\u0436\u0438\u0442\u0435\u0441\u044c \u0441 \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u043a\u043e\u0439.",
                 )
             return redirect("login")
     else:
@@ -1054,12 +1057,11 @@ def register(request):
         "registration/register.html",
         {
             "form": form,
-            "page_title": "???????????",
+            "page_title": "\u0420\u0435\u0433\u0438\u0441\u0442\u0440\u0430\u0446\u0438\u044f",
             "active_tab": "home",
             "hide_header": True,
         },
     )
-
 
 def _build_confirmation_link(request, user):
     uid = urlsafe_base64_encode(force_bytes(user.pk))

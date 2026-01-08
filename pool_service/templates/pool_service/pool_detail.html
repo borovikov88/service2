@@ -5,14 +5,16 @@
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
+    {% if not (is_personal_user and pool.client.user_id == user.id and pool.client.pool_set.count == 1) %}
     <a href="{% url 'pool_list' %}" class="text-decoration-none d-flex align-items-center gap-2 text-dark">
         <i class="bi bi-arrow-left"></i>
-        <span class="fw-semibold">Назад к списку</span>
+        <span class="fw-semibold">&#1053;&#1072;&#1079;&#1072;&#1076; &#1082; &#1089;&#1087;&#1080;&#1089;&#1082;&#1091;</span>
     </a>
+    {% endif %}
 
     {% if role == 'editor' or role == 'service' or role == 'admin' or pool.client.user_id == user.id %}
         <div class="d-flex align-items-center gap-2">
-            {% if role == 'admin' %}
+            {% if role == 'admin' or pool.client.user_id == user.id %}
                 <a class="btn btn-outline-primary rounded-3 d-flex align-items-center gap-2 {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% url 'pool_edit' pool.uuid %}" aria-label="&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;" title="&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;">
                     <i class="bi bi-pencil"></i><span class="d-none d-sm-inline">&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;</span>
                 </a>

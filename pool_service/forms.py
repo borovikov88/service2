@@ -214,7 +214,6 @@ class PersonalSignupForm(forms.Form):
     email = forms.EmailField(required=True)
     password1 = forms.CharField(widget=forms.PasswordInput, required=True)
     password2 = forms.CharField(widget=forms.PasswordInput, required=True)
-    pool_address = forms.CharField(required=True)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -271,11 +270,6 @@ class PersonalSignupForm(forms.Form):
             phone=data.get("phone"),
             email=data.get("email"),
         )
-        pool = Pool.objects.create(
-            client=client,
-            address=data.get("pool_address"),
-        )
-        PoolAccess.objects.get_or_create(user=user, pool=pool, defaults={"role": "viewer"})
         return user
 
 
