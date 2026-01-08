@@ -207,9 +207,6 @@
     <div class="container">
       <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
         <div class="d-flex align-items-center gap-3">
-          <button class="btn btn-light d-lg-none border-0 shadow-sm" style="width:44px;height:44px;" onclick="openMenu()" aria-label="&#1054;&#1090;&#1082;&#1088;&#1099;&#1090;&#1100; &#1084;&#1077;&#1085;&#1102;">
-            <i class="bi bi-list fs-4"></i>
-          </button>
           <img src="{% static brand_logo %}" class="app-logo" alt="{{ brand_name }}">
           <div>
             <div class="fw-bold text-dark">{{ brand_name }}</div>
@@ -218,6 +215,9 @@
         </div>
 
         <div class="d-flex align-items-center gap-3">
+          <button class="btn btn-light d-lg-none border-0 shadow-sm" style="width:44px;height:44px;" onclick="openMenu()" aria-label="&#1054;&#1090;&#1082;&#1088;&#1099;&#1090;&#1100; &#1084;&#1077;&#1085;&#1102;">
+            <i class="bi bi-list fs-4"></i>
+          </button>
           <nav class="d-none d-lg-flex align-items-center gap-3">
           {% if not is_personal_user %}
           <a class="text-decoration-none {% if active_tab == 'readings' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="/readings/all">&#1055;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;</a>
@@ -229,7 +229,6 @@
               &#1052;&#1086;&#1080; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1099;
             {% endif %}
           </a>
-          <a class="text-decoration-none {% if active_tab == 'profile' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'profile' %}">&#1055;&#1088;&#1086;&#1092;&#1080;&#1083;&#1100;</a>
           {% if user.is_authenticated %}
             {% with org_admins=user.organizationaccess_set.all %}
               {% if user.is_superuser or org_admins|length %}
@@ -240,24 +239,29 @@
           {% if is_org_admin %}
             <a class="text-decoration-none {% if active_tab == 'clients' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'clients_list' %}">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;</a>
           {% endif %}
+          <a class="text-decoration-none d-inline-flex align-items-center justify-content-center {% if active_tab == 'profile' %}text-primary{% else %}text-muted{% endif %}" href="{% url 'profile' %}" aria-label="&#1051;&#1080;&#1095;&#1085;&#1099;&#1081; &#1082;&#1072;&#1073;&#1080;&#1085;&#1077;&#1090;" title="&#1051;&#1080;&#1095;&#1085;&#1099;&#1081; &#1082;&#1072;&#1073;&#1080;&#1085;&#1077;&#1090;">
+            <i class="bi bi-person-circle fs-5"></i>
+          </a>
           </nav>
 
           {% if plan_badge %}
-            {% if plan_badge.type == 'company_expired' %}
-              <a href="{{ payment_url|default:'/billing/' }}" class="plan-badge plan-badge--company_expired text-decoration-none">
-                Trial: 0 &#1076;&#1085;&#1077;&#1081;
-              </a>
-            {% else %}
-              <span class="plan-badge plan-badge--{{ plan_badge.type }}">
-                {% if plan_badge.type == 'personal_free' %}
-                  Free (1 &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;)
-                {% elif plan_badge.type == 'company_trial' %}
-                  Trial: {{ plan_badge.days_left }} &#1076;&#1085;&#1077;&#1081;
-                {% elif plan_badge.type == 'company_paid' %}
-                  Paid &#1076;&#1086; {{ plan_badge.paid_until|date:"d.m.Y" }}
-                {% endif %}
-              </span>
-            {% endif %}
+            <div class="d-none d-lg-flex align-items-center">
+              {% if plan_badge.type == 'company_expired' %}
+                <a href="{{ payment_url|default:'/billing/' }}" class="plan-badge plan-badge--company_expired text-decoration-none">
+                  Trial: 0 &#1076;&#1085;&#1077;&#1081;
+                </a>
+              {% else %}
+                <span class="plan-badge plan-badge--{{ plan_badge.type }}">
+                  {% if plan_badge.type == 'personal_free' %}
+                    Free (1 &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;)
+                  {% elif plan_badge.type == 'company_trial' %}
+                    Trial: {{ plan_badge.days_left }} &#1076;&#1085;&#1077;&#1081;
+                  {% elif plan_badge.type == 'company_paid' %}
+                    Paid &#1076;&#1086; {{ plan_badge.paid_until|date:"d.m.Y" }}
+                  {% endif %}
+                </span>
+              {% endif %}
+            </div>
           {% endif %}
 
           {% if show_add_button and add_url %}

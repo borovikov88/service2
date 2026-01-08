@@ -971,10 +971,18 @@ def signup_personal(request):
         form = PersonalSignupForm(request.POST)
         if form.is_valid():
             user = form.save()
-            login(request, user)
-            messages.success(request, "\u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u0441\u043e\u0437\u0434\u0430\u043d.")
-            redirect_url = _personal_pool_redirect(user) or reverse("pool_list")
-            return redirect(redirect_url)
+            email_sent = _send_registration_confirmation(request, user)
+            if email_sent:
+                messages.success(
+                    request,
+                    "\u0420\u0435\u0433\u0438\u0441\u0442\u0440\u0430\u0446\u0438\u044f \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0430. \u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 email \u043f\u043e \u0441\u0441\u044b\u043b\u043a\u0435 \u0438\u0437 \u043f\u0438\u0441\u044c\u043c\u0430.",
+                )
+            else:
+                messages.error(
+                    request,
+                    "\u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u0441\u043e\u0437\u0434\u0430\u043d, \u043d\u043e \u043f\u0438\u0441\u044c\u043c\u043e \u043d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c. \u0421\u0432\u044f\u0436\u0438\u0442\u0435\u0441\u044c \u0441 \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u043a\u043e\u0439.",
+                )
+            return redirect("login")
     else:
         form = PersonalSignupForm()
 
@@ -997,9 +1005,18 @@ def signup_company(request):
         form = CompanySignupForm(request.POST)
         if form.is_valid():
             user = form.save()
-            login(request, user)
-            messages.success(request, "\u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u043a\u043e\u043c\u043f\u0430\u043d\u0438\u0438 \u0441\u043e\u0437\u0434\u0430\u043d.")
-            return redirect("pool_list")
+            email_sent = _send_registration_confirmation(request, user)
+            if email_sent:
+                messages.success(
+                    request,
+                    "\u0420\u0435\u0433\u0438\u0441\u0442\u0440\u0430\u0446\u0438\u044f \u043a\u043e\u043c\u043f\u0430\u043d\u0438\u0438 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0430. \u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 email \u043f\u043e \u0441\u0441\u044b\u043b\u043a\u0435 \u0438\u0437 \u043f\u0438\u0441\u044c\u043c\u0430.",
+                )
+            else:
+                messages.error(
+                    request,
+                    "\u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u0441\u043e\u0437\u0434\u0430\u043d, \u043d\u043e \u043f\u0438\u0441\u044c\u043c\u043e \u043d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c. \u0421\u0432\u044f\u0436\u0438\u0442\u0435\u0441\u044c \u0441 \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u043a\u043e\u0439.",
+                )
+            return redirect("login")
     else:
         form = CompanySignupForm()
 
@@ -1116,13 +1133,17 @@ def confirm_email(request, uidb64, token):
         if not user.is_active:
             user.is_active = True
             user.save(update_fields=["is_active"])
-        messages.success(request, "Email подтверждён. Теперь можно войти.")
+        messages.success(
+            request,
+            "\u041f\u043e\u0447\u0442\u0430 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0430. \u0422\u0435\u043f\u0435\u0440\u044c \u043c\u043e\u0436\u043d\u043e \u0432\u043e\u0439\u0442\u0438.",
+        )
         return redirect("login")
 
-    messages.error(request, "Ссылка подтверждения недействительна или устарела.")
+    messages.error(
+        request,
+        "\u0421\u0441\u044b\u043b\u043a\u0430 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0438\u044f \u043d\u0435\u0432\u0435\u0440\u043d\u0430 \u0438\u043b\u0438 \u0443\u0441\u0442\u0430\u0440\u0435\u043b\u0430.",
+    )
     return redirect("login")
-
-
 
 @login_required
 def pool_detail(request, pool_uuid):
