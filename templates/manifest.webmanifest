@@ -1,3 +1,4 @@
+{% load static %}
 {
   "name": "{{ brand_name }}",
   "short_name": "{{ brand_name }}",
