@@ -501,9 +501,30 @@
       localStorage.setItem("offlineQueue", JSON.stringify(queue));
     }
 
+    function updateOfflineStatus() {
+      const statusEl = document.getElementById("offline-status");
+      if (!statusEl) return;
+      const queued = loadQueue().length;
+      if (!navigator.onLine) {
+        statusEl.textContent = "\u041e\u0444\u043b\u0430\u0439\u043d: \u0434\u0430\u043d\u043d\u044b\u0435 \u0431\u0443\u0434\u0443\u0442 \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u044b \u0438 \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u044b \u043f\u0440\u0438 \u043f\u043e\u044f\u0432\u043b\u0435\u043d\u0438\u0438 \u0441\u0435\u0442\u0438.";
+        statusEl.classList.remove("d-none");
+        return;
+      }
+      if (queued) {
+        statusEl.textContent = "\u0415\u0441\u0442\u044c \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u043d\u044b\u0435 \u0434\u0430\u043d\u043d\u044b\u0435. \u041e\u043d\u0438 \u043e\u0442\u043f\u0440\u0430\u0432\u044f\u0442\u0441\u044f \u043f\u0440\u0438 \u043f\u043e\u044f\u0432\u043b\u0435\u043d\u0438\u0438 \u0441\u0435\u0442\u0438.";
+        statusEl.classList.remove("d-none");
+        return;
+      }
+      statusEl.classList.add("d-none");
+    }
+
     async function processQueue() {
       const queue = loadQueue();
-      if (!queue.length || !navigator.onLine) return;
+      if (!queue.length || !navigator.onLine) {
+        updateOfflineStatus();
+        return;
+      }
+      let sentCount = 0;
       while (queue.length) {
         const item = queue[0];
         try {
@@ -519,16 +540,19 @@
           if (!resp.ok) throw new Error("Network error");
           queue.shift();
           saveQueue(queue);
+          sentCount += 1;
         } catch (e) {
           break;
         }
       }
-      if (queue.length === 0) {
-        showOfflineToast("\u041d\u0435\u0442 \u0441\u0435\u0442\u0438. \u0414\u0430\u043d\u043d\u044b\u0435 \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u044b \u0438 \u0431\u0443\u0434\u0443\u0442 \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u044b \u043f\u0440\u0438 \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0438 \u0441\u043e\u0435\u0434\u0438\u043d\u0435\u043d\u0438\u044f.");
+      if (sentCount > 0 && queue.length === 0) {
+        showOfflineToast("\u0421\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u043d\u044b\u0435 \u0434\u0430\u043d\u043d\u044b\u0435 \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u044b.");
       }
+      updateOfflineStatus();
     }
 
     window.addEventListener("online", processQueue);
+    window.addEventListener("offline", updateOfflineStatus);
 
     document.addEventListener("submit", function (e) {
       const form = e.target;
@@ -547,12 +571,14 @@
         csrf,
       });
       saveQueue(queue);
-      showOfflineToast("Нет сети. Данные сохранены и будут отправлены при подключении");
+      showOfflineToast("\u041d\u0435\u0442 \u0441\u0435\u0442\u0438. \u0414\u0430\u043d\u043d\u044b\u0435 \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u044b \u0438 \u0431\u0443\u0434\u0443\u0442 \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u044b \u043f\u0440\u0438 \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0438 \u0441\u043e\u0435\u0434\u0438\u043d\u0435\u043d\u0438\u044f.");
+      updateOfflineStatus();
     });
 
     if (navigator.onLine) {
       processQueue();
     }
+    updateOfflineStatus();
 
     // PWA: регистрация service worker
     if ("serviceWorker" in navigator) {

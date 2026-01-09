@@ -1,11 +1,11 @@
-const CACHE_NAME = 'pwa-cache-v3';
-const OFFLINE_URLS = [
-  '/',
-];
+const CACHE_VERSION = 'v4';
+const STATIC_CACHE = `pwa-static-${CACHE_VERSION}`;
+const RUNTIME_CACHE = `pwa-runtime-${CACHE_VERSION}`;
+const OFFLINE_URLS = ['/'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(OFFLINE_URLS))
+    caches.open(STATIC_CACHE).then((cache) => cache.addAll(OFFLINE_URLS))
   );
   self.skipWaiting();
 });
@@ -13,7 +13,11 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
+      Promise.all(
+        keys
+          .filter((k) => ![STATIC_CACHE, RUNTIME_CACHE].includes(k))
+          .map((k) => caches.delete(k))
+      )
     )
   );
   self.clients.claim();
@@ -31,12 +35,29 @@ self.addEventListener('fetch', (event) => {
 
   if (event.request.mode === 'navigate') {
     event.respondWith(
-      fetch(event.request).catch(() => caches.match('/'))
+      (async () => {
+        try {
+          const response = await fetch(event.request);
+          const cache = await caches.open(RUNTIME_CACHE);
+          cache.put(event.request, response.clone());
+          return response;
+        } catch (err) {
+          const cached = await caches.match(event.request);
+          return cached || caches.match('/');
+        }
+      })()
     );
     return;
   }
 
   event.respondWith(
-    caches.match(event.request).then((resp) => resp || fetch(event.request))
+    (async () => {
+      const cache = await caches.open(RUNTIME_CACHE);
+      const cached = await cache.match(event.request);
+      if (cached) return cached;
+      const response = await fetch(event.request);
+      cache.put(event.request, response.clone());
+      return response;
+    })()
   );
 });

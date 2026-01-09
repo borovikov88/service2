@@ -1,6 +1,7 @@
 {
   "name": "RovikPool",
   "short_name": "RovikPool",
+  "scope": "/",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#e6f1fa",
