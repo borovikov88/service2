@@ -389,7 +389,7 @@
         <div class="card-body d-flex flex-wrap align-items-center justify-content-between gap-3">
           <div>
             <div class="fw-semibold">&#1059;&#1089;&#1090;&#1072;&#1085;&#1086;&#1074;&#1080;&#1090;&#1077; {{ brand_name }}</div>
-            <div class="text-muted small">&#1044;&#1086;&#1073;&#1072;&#1074;&#1100;&#1090;&#1077; &#1087;&#1088;&#1080;&#1083;&#1086;&#1078;&#1077;&#1085;&#1080;&#1077; &#1085;&#1072; &#1075;&#1083;&#1072;&#1074;&#1085;&#1099;&#1081; &#1101;&#1082;&#1088;&#1072;&#1085; &#1076;&#1083;&#1103; &#1073;&#1099;&#1089;&#1090;&#1088;&#1086;&#1075;&#1086; &#1076;&#1086;&#1089;&#1090;&#1091;&#1087;&#1072;.</div>
+            <div id="install-banner-text" class="text-muted small">&#1044;&#1086;&#1073;&#1072;&#1074;&#1100;&#1090;&#1077; &#1087;&#1088;&#1080;&#1083;&#1086;&#1078;&#1077;&#1085;&#1080;&#1077; &#1085;&#1072; &#1075;&#1083;&#1072;&#1074;&#1085;&#1099;&#1081; &#1101;&#1082;&#1088;&#1072;&#1085; &#1076;&#1083;&#1103; &#1073;&#1099;&#1089;&#1090;&#1088;&#1086;&#1075;&#1086; &#1076;&#1086;&#1089;&#1090;&#1091;&#1087;&#1072;.</div>
           </div>
           <div class="d-flex gap-2">
             <button id="install-dismiss" type="button" class="btn btn-outline-secondary btn-sm">&#1055;&#1086;&#1079;&#1078;&#1077;</button>
@@ -605,6 +605,21 @@
     const installBanner = document.getElementById("install-banner");
     const installBtn = document.getElementById("install-btn");
     const installDismiss = document.getElementById("install-dismiss");
+    const installText = document.getElementById("install-banner-text");
+    let installPromptFired = false;
+
+    function setInstallBannerPrompt() {
+      if (installText) {
+        installText.textContent = "\u0414\u043e\u0431\u0430\u0432\u044c\u0442\u0435 \u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d\u0438\u0435 \u043d\u0430 \u0433\u043b\u0430\u0432\u043d\u044b\u0439 \u044d\u043a\u0440\u0430\u043d \u0434\u043b\u044f \u0431\u044b\u0441\u0442\u0440\u043e\u0433\u043e \u0434\u043e\u0441\u0442\u0443\u043f\u0430.";
+      }
+      if (installBtn) installBtn.style.display = "inline-block";
+    }
+    function setInstallBannerManual() {
+      if (installText) {
+        installText.textContent = "\u041e\u0442\u043a\u0440\u043e\u0439\u0442\u0435 \u043c\u0435\u043d\u044e \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0430 \u0438 \u0432\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u201c\u0423\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c \u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d\u0438\u0435\u201d.";
+      }
+      if (installBtn) installBtn.style.display = "none";
+    }
 
     function showInstallBanner() {
       if (!installBanner) return;
@@ -619,6 +634,8 @@
       e.preventDefault();
       if (window.matchMedia("(display-mode: standalone)").matches) return;
       deferredPrompt = e;
+      installPromptFired = true;
+      setInstallBannerPrompt();
       showInstallBanner();
     });
 
@@ -635,6 +652,14 @@
       deferredPrompt = null;
     });
 
+
+    setTimeout(() => {
+      if (installPromptFired) return;
+      if (isStandalone()) return;
+      if (isIosDevice()) return;
+      setInstallBannerManual();
+      showInstallBanner();
+    }, 2000);
     window.addEventListener("appinstalled", () => {
       hideInstallBanner();
       deferredPrompt = null;
@@ -662,14 +687,14 @@
     }
     function iosDismissed() {
       try {
-        return localStorage.getItem("iosInstallDismissed") === "1";
+        return sessionStorage.getItem("iosInstallDismissed") === "1";
       } catch (e) {
         return false;
       }
     }
     function setIosDismissed() {
       try {
-        localStorage.setItem("iosInstallDismissed", "1");
+        sessionStorage.setItem("iosInstallDismissed", "1");
       } catch (e) {}
     }
     if (isIosDevice() && !isStandalone() && !iosDismissed()) {
