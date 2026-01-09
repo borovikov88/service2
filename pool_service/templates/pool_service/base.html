@@ -453,6 +453,7 @@
         <div><span class="text-muted">manifest:</span> <span id="pwa-manifest">...</span></div>
         <div><span class="text-muted">sw file:</span> <span id="pwa-sw-file">...</span></div>
         <div><span class="text-muted">service worker:</span> <span id="pwa-sw">...</span></div>
+        <div><span class="text-muted">controller:</span> <span id="pwa-controller">...</span></div>
         <div><span class="text-muted">install prompt:</span> <span id="pwa-prompt">...</span></div>
         <div><span class="text-muted">display mode:</span> <span id="pwa-display">...</span></div>
       </div>
@@ -614,6 +615,7 @@
           .catch((err) => {
             console.error("SW registration failed", err);
             const swEl = document.getElementById("pwa-sw");
+      const controllerEl = document.getElementById("pwa-controller");
             if (swEl) swEl.textContent = "error";
           });
       });
