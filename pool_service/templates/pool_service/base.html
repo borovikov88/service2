@@ -446,6 +446,18 @@
     </div>
   </div>
 
+  <div id="pwa-debug" class="position-fixed bottom-0 end-0 p-3" style="z-index:1090; display:none;">
+    <div class="card shadow-sm border-0">
+      <div class="card-body small">
+        <div class="fw-semibold mb-1">PWA debug</div>
+        <div><span class="text-muted">manifest:</span> <span id="pwa-manifest">...</span></div>
+        <div><span class="text-muted">service worker:</span> <span id="pwa-sw">...</span></div>
+        <div><span class="text-muted">install prompt:</span> <span id="pwa-prompt">...</span></div>
+        <div><span class="text-muted">display mode:</span> <span id="pwa-display">...</span></div>
+      </div>
+    </div>
+  </div>
+
   {% if not hide_bottom_nav %}
   {% if user.is_authenticated %}
       <div class="mobile-bottom-nav">
@@ -637,6 +649,8 @@
       installPromptFired = true;
       setInstallBannerPrompt();
       showInstallBanner();
+      const promptEl = document.getElementById("pwa-prompt");
+      if (promptEl) promptEl.textContent = "fired";
     });
 
     installBtn?.addEventListener("click", async () => {
@@ -663,6 +677,8 @@
     window.addEventListener("appinstalled", () => {
       hideInstallBanner();
       deferredPrompt = null;
+      const promptEl = document.getElementById("pwa-prompt");
+      if (promptEl) promptEl.textContent = "installed";
     });
 
     // iOS install hint (custom banner)
@@ -704,6 +720,39 @@
       hideIosBanner();
       setIosDismissed();
     });
+
+    // PWA debug info (show with ?pwa_debug=1)
+    const debugPanel = document.getElementById("pwa-debug");
+    const params = new URLSearchParams(window.location.search);
+    if (debugPanel && params.get("pwa_debug") === "1") {
+      debugPanel.style.display = "block";
+      const manifestEl = document.getElementById("pwa-manifest");
+      const swEl = document.getElementById("pwa-sw");
+      const promptEl = document.getElementById("pwa-prompt");
+      const displayEl = document.getElementById("pwa-display");
+
+      fetch("/manifest.webmanifest", { cache: "no-store" })
+        .then((resp) => {
+          if (manifestEl) manifestEl.textContent = resp.ok ? "ok" : `fail ${resp.status}`;
+        })
+        .catch(() => {
+          if (manifestEl) manifestEl.textContent = "error";
+        });
+
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.getRegistration().then((reg) => {
+          if (swEl) swEl.textContent = reg ? "registered" : "not registered";
+        });
+      } else if (swEl) {
+        swEl.textContent = "unsupported";
+      }
+
+      if (promptEl) promptEl.textContent = installPromptFired ? "fired" : "not fired";
+
+      const isStandaloneMode =
+        window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+      if (displayEl) displayEl.textContent = isStandaloneMode ? "standalone" : "browser";
+    }
   </script>
   <script>
     function formatPhoneMask(value) {
