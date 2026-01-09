@@ -451,6 +451,7 @@
       <div class="card-body small">
         <div class="fw-semibold mb-1">PWA debug</div>
         <div><span class="text-muted">manifest:</span> <span id="pwa-manifest">...</span></div>
+        <div><span class="text-muted">sw file:</span> <span id="pwa-sw-file">...</span></div>
         <div><span class="text-muted">service worker:</span> <span id="pwa-sw">...</span></div>
         <div><span class="text-muted">install prompt:</span> <span id="pwa-prompt">...</span></div>
         <div><span class="text-muted">display mode:</span> <span id="pwa-display">...</span></div>
@@ -608,7 +609,13 @@
     // PWA: регистрация service worker
     if ("serviceWorker" in navigator) {
       window.addEventListener("load", () => {
-        navigator.serviceWorker.register("/sw.js").catch((err) => console.error("SW registration failed", err));
+        navigator.serviceWorker
+          .register("/sw.js", { scope: "/" })
+          .catch((err) => {
+            console.error("SW registration failed", err);
+            const swEl = document.getElementById("pwa-sw");
+            if (swEl) swEl.textContent = "error";
+          });
       });
     }
 
@@ -727,6 +734,7 @@
     if (debugPanel && params.get("pwa_debug") === "1") {
       debugPanel.style.display = "block";
       const manifestEl = document.getElementById("pwa-manifest");
+      const swFileEl = document.getElementById("pwa-sw-file");
       const swEl = document.getElementById("pwa-sw");
       const promptEl = document.getElementById("pwa-prompt");
       const displayEl = document.getElementById("pwa-display");
@@ -737,6 +745,15 @@
         })
         .catch(() => {
           if (manifestEl) manifestEl.textContent = "error";
+        });
+
+      fetch("/sw.js", { cache: "no-store" })
+        .then((resp) => {
+          const ct = resp.headers.get("content-type") || "";
+          if (swFileEl) swFileEl.textContent = resp.ok ? `ok (${ct})` : `fail ${resp.status}`;
+        })
+        .catch(() => {
+          if (swFileEl) swFileEl.textContent = "error";
         });
 
       if ("serviceWorker" in navigator) {
