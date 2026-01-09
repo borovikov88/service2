@@ -37,6 +37,7 @@ class AuthRedirectMiddleware:
             "/static/",
             "/consent/",
             "/sw.js",
+            "/manifest.webmanifest",
         ]
         if not request.user.is_authenticated:
             path = request.path
