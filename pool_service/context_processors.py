@@ -5,6 +5,8 @@ def brand_context(request):
         "name": "RovikPool",
         "logo": "pool_service/img/logo.png",
         "favicon": "assets/images/favicon.png",
+        "icon_192": "assets/images/rovikpool-192.png",
+        "icon_512": "assets/images/rovikpool-512.png",
     }
     brands_by_host = {
         "rovikpool.ru": default_brand,
@@ -13,11 +15,15 @@ def brand_context(request):
             "name": "\u0410\u043a\u0432\u0430\u043b\u0430\u0439\u043d",
             "logo": "assets/images/aqualine.png",
             "favicon": "assets/images/aqualine.png",
+            "icon_192": "assets/images/aqualine-192.png",
+            "icon_512": "assets/images/aqualine-512.png",
         },
         "www.service2.aqualine22.ru": {
             "name": "\u0410\u043a\u0432\u0430\u043b\u0430\u0439\u043d",
             "logo": "assets/images/aqualine.png",
             "favicon": "assets/images/aqualine.png",
+            "icon_192": "assets/images/aqualine-192.png",
+            "icon_512": "assets/images/aqualine-512.png",
         },
     }
 
@@ -26,6 +32,8 @@ def brand_context(request):
         "brand_name": brand["name"],
         "brand_logo": brand["logo"],
         "brand_favicon": brand["favicon"],
+        "brand_icon_192": brand.get("icon_192", default_brand["icon_192"]),
+        "brand_icon_512": brand.get("icon_512", default_brand["icon_512"]),
     }
 
 
