@@ -612,6 +612,15 @@
       window.addEventListener("load", () => {
         navigator.serviceWorker
           .register("/sw.js", { scope: "/" })
+          .then(() => {
+            const reloadKey = "swReloaded";
+            navigator.serviceWorker.ready.then(() => {
+              if (!navigator.serviceWorker.controller && !sessionStorage.getItem(reloadKey)) {
+                sessionStorage.setItem(reloadKey, "1");
+                window.location.reload();
+              }
+            });
+          })
           .catch((err) => {
             console.error("SW registration failed", err);
             const swEl = document.getElementById("pwa-sw");
@@ -660,6 +669,9 @@
       showInstallBanner();
       const promptEl = document.getElementById("pwa-prompt");
       if (promptEl) promptEl.textContent = "fired";
+      setTimeout(() => {
+        if (controllerEl) controllerEl.textContent = navigator.serviceWorker.controller ? "controlled" : "not controlled";
+      }, 1500);
     });
 
     installBtn?.addEventListener("click", async () => {
@@ -762,6 +774,7 @@
         navigator.serviceWorker.getRegistration().then((reg) => {
           if (swEl) swEl.textContent = reg ? "registered" : "not registered";
         });
+      if (controllerEl) controllerEl.textContent = navigator.serviceWorker.controller ? "controlled" : "not controlled";
       } else if (swEl) {
         swEl.textContent = "unsupported";
       }
