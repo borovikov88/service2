@@ -59,5 +59,10 @@ urlpatterns = [
     ),
     path('consent/', TemplateView.as_view(template_name='registration/consent.html'), name='consent'),
     path('sw.js', TemplateView.as_view(template_name='sw.js', content_type='application/javascript'), name='service_worker'),
+    path(
+        'manifest.webmanifest',
+        TemplateView.as_view(template_name='manifest.webmanifest', content_type='application/manifest+json'),
+        name='manifest',
+    ),
     path('ckeditor5/', include('django_ckeditor_5.urls')),
 ]
