@@ -189,6 +189,7 @@ def pool_list(request):
     pools_page = paginator.get_page(page_number)
     query_params = request.GET.copy()
     query_params.pop("page", None)
+    query_params.pop("partial", None)
 
     allow_pool_create = not (personal_user and personal_pool_count >= 1)
     if request.user.is_superuser:
@@ -197,26 +198,27 @@ def pool_list(request):
     page_action_label = "Добавить бассейн" if allow_pool_create else None
     page_action_url = reverse("pool_create") if allow_pool_create else None
 
-    return render(
-        request,
-        "pool_service/pool_list.html",
-        {
-            "pools": pools_page,
-            "page_title": page_title,
-            "page_subtitle": "Управление объектами обслуживания",
-            "page_action_label": page_action_label,
-            "page_action_url": page_action_url,
-            "show_search": False,
-            "show_add_button": False,
-            "add_url": None,
-            "active_tab": "pools",
-            "show_pool_controls": not personal_user,
-            "search_query": search_query,
-            "sort": sort,
-            "per_page": per_page,
-            "pagination_query": query_params.urlencode(),
-        },
-    )
+    context = {
+        "pools": pools_page,
+        "page_title": page_title,
+        "page_subtitle": "Управление объектами обслуживания",
+        "page_action_label": page_action_label,
+        "page_action_url": page_action_url,
+        "show_search": False,
+        "show_add_button": False,
+        "add_url": None,
+        "active_tab": "pools",
+        "show_pool_controls": not personal_user,
+        "search_query": search_query,
+        "sort": sort,
+        "per_page": per_page,
+        "pagination_query": query_params.urlencode(),
+    }
+
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest" or request.GET.get("partial") == "1":
+        return render(request, "pool_service/partials/pool_list_results.html", context)
+
+    return render(request, "pool_service/pool_list.html", context)
 
 
 @login_required

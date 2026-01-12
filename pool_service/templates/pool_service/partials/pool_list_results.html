@@ -1,0 +1,45 @@
+<div class="row g-3">
+    {% for pool in pools %}
+    <div class="col-12 col-md-6 col-lg-4">
+        <a href="{% url 'pool_detail' pool.uuid %}" class="text-decoration-none text-dark h-100 d-block pool-card" data-client="{{ pool.client.name|default:'' }}" data-address="{{ pool.address|default:'' }}">
+            <div class="card card-soft p-3 h-100 hover-shadow">
+                <div class="d-flex align-items-start justify-content-between">
+                    <div class="d-flex gap-3 align-items-start">
+                        <div class="bg-primary bg-gradient text-white rounded-3 d-flex align-items-center justify-content-center" style="width:48px;height:48px;">
+                            <i class="bi bi-droplet fs-4"></i>
+                        </div>
+                        <div>
+                            <div class="fw-bold">{{ pool.client.name }}</div>
+                            <div class="text-muted small"><i class="bi bi-geo-alt me-1"></i>{{ pool.address|default:"-" }}</div>
+                            <div class="text-muted small mt-1">&#1055;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1081;: {{ pool.num_readings|default:0 }}</div>
+                        </div>
+                    </div>
+                    <i class="bi bi-arrow-right text-muted fs-4"></i>
+                </div>
+            </div>
+        </a>
+    </div>
+    {% empty %}
+        <div class="text-center text-muted py-4">&#1055;&#1086;&#1082;&#1072; &#1085;&#1077;&#1090; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;</div>
+    {% endfor %}
+</div>
+
+{% if show_pool_controls %}
+{% if pools.has_other_pages %}
+    <div class="d-flex justify-content-between align-items-center mt-4">
+        <div class="text-muted small">
+            &#1057;&#1090;&#1088;&#1072;&#1085;&#1080;&#1094;&#1072; {{ pools.number }} &#1080;&#1079; {{ pools.paginator.num_pages }}
+        </div>
+        <div class="btn-group">
+            {% if pools.has_previous %}
+                <a class="btn btn-outline-secondary btn-sm" href="?page=1{% if pagination_query %}&{{ pagination_query }}{% endif %}" data-page="1">&laquo; &#1055;&#1077;&#1088;&#1074;&#1072;&#1103;</a>
+                <a class="btn btn-outline-secondary btn-sm" href="?page={{ pools.previous_page_number }}{% if pagination_query %}&{{ pagination_query }}{% endif %}" data-page="{{ pools.previous_page_number }}">&#1053;&#1072;&#1079;&#1072;&#1076;</a>
+            {% endif %}
+            {% if pools.has_next %}
+                <a class="btn btn-outline-secondary btn-sm" href="?page={{ pools.next_page_number }}{% if pagination_query %}&{{ pagination_query }}{% endif %}" data-page="{{ pools.next_page_number }}">&#1042;&#1087;&#1077;&#1088;&#1077;&#1076;</a>
+                <a class="btn btn-outline-secondary btn-sm" href="?page={{ pools.paginator.num_pages }}{% if pagination_query %}&{{ pagination_query }}{% endif %}" data-page="{{ pools.paginator.num_pages }}">&#1055;&#1086;&#1089;&#1083;&#1077;&#1076;&#1085;&#1103;&#1103; &raquo;</a>
+            {% endif %}
+        </div>
+    </div>
+{% endif %}
+{% endif %}
