@@ -14,7 +14,7 @@ from django.views.decorators.cache import never_cache
 from django.urls import reverse, reverse_lazy
 from django.db import connection
 from django.db.models import Count, Q, Max
-from django.http import HttpResponseForbidden, JsonResponse
+from django.http import HttpResponse, HttpResponseForbidden, HttpResponseNotFound, JsonResponse
 from django.utils import timezone
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
@@ -22,6 +22,7 @@ from django.template.loader import render_to_string
 import html
 from django.templatetags.static import static
 from django.conf import settings
+from django.contrib.sitemaps.views import sitemap as sitemap_view
 import uuid
 from urllib.parse import urlencode
 from urllib.request import urlopen, Request
@@ -39,6 +40,42 @@ from .forms import (
     OrganizationInviteForm,
     InviteAcceptForm,
 )
+from .sitemaps import HomeSitemap
+from .seo import is_indexable_host
+
+
+def _request_host(request):
+    return request.get_host().split(":", 1)[0].lower()
+
+
+def robots_txt(request):
+    host = _request_host(request)
+    if not is_indexable_host(host):
+        content = "\n".join(
+            [
+                "User-agent: *",
+                "Disallow: /",
+            ]
+        )
+        return HttpResponse(content, content_type="text/plain")
+
+    sitemap_url = request.build_absolute_uri("/sitemap.xml")
+    content = "\n".join(
+        [
+            "User-agent: *",
+            "Allow: /",
+            f"Sitemap: {sitemap_url}",
+            f"Host: {host}",
+        ]
+    )
+    return HttpResponse(content, content_type="text/plain")
+
+
+def sitemap_xml(request):
+    host = _request_host(request)
+    if not is_indexable_host(host):
+        return HttpResponseNotFound("")
+    return sitemap_view(request, {"home": HomeSitemap()})
 from .models import OrganizationAccess, Pool, PoolAccess, WaterReading, Client, Organization, OrganizationInvite
 from .services.permissions import is_personal_free, is_personal_user, is_org_access_blocked
 from django import forms

@@ -1,3 +1,6 @@
+from .seo import is_indexable_host
+
+
 def brand_context(request):
     host = request.get_host().split(":", 1)[0].lower()
 
@@ -34,6 +37,7 @@ def brand_context(request):
         "brand_favicon": brand["favicon"],
         "brand_icon_192": brand.get("icon_192", default_brand["icon_192"]),
         "brand_icon_512": brand.get("icon_512", default_brand["icon_512"]),
+        "allow_indexing": is_indexable_host(host),
     }
 
 
