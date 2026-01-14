@@ -4,6 +4,29 @@
 
 {% block content %}
 <section class="pt-2">
+
+        <style>
+            .verify-icon {
+                width: 22px;
+                height: 22px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 50%;
+                font-size: 12px;
+                line-height: 1;
+            }
+            .verify-icon.ok {
+                color: #0f5132;
+                background: #d1e7dd;
+                border: 1px solid #badbcc;
+            }
+            .verify-icon.warn {
+                color: #664d03;
+                background: #fff3cd;
+                border: 1px solid #ffecb5;
+            }
+        </style>
         <div class="row g-4">
 
             <div class="col-lg-4">
@@ -17,15 +40,40 @@
                                 <span class="text-muted">&#1051;&#1086;&#1075;&#1080;&#1085;</span>
                                 <span class="fw-semibold">{{ username }}</span>
                             </div>
-                            <div class="list-group-item px-0 d-flex justify-content-between">
+                            
+<div class="list-group-item px-0 d-flex justify-content-between align-items-center">
                                 <span class="text-muted">&#1058;&#1077;&#1083;&#1077;&#1092;&#1086;&#1085;</span>
-                                <span class="fw-semibold">{{ phone|default:"&#1053;&#1077; &#1091;&#1082;&#1072;&#1079;&#1072;&#1085;" }}</span>
+                                <div class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
+                                    <span class="fw-semibold">{{ phone|default:"&#1053;&#1077; &#1091;&#1082;&#1072;&#1079;&#1072;&#1085;" }}</span>
+                                    {% if phone_confirmed %}
+                                        <span class="verify-icon ok" title="&#1058;&#1077;&#1083;&#1077;&#1092;&#1086;&#1085; &#1087;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1078;&#1076;&#1077;&#1085;">&#10003;</span>
+                                    {% else %}
+                                        <span class="verify-icon warn" title="&#1058;&#1077;&#1083;&#1077;&#1092;&#1086;&#1085; &#1085;&#1077; &#1087;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1078;&#1076;&#1077;&#1085;">&#33;</span>
+                                        {% if confirm_phone_url %}
+                                            <a class="btn btn-sm btn-outline-primary" href="{{ confirm_phone_url }}">&#1055;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1076;&#1080;&#1090;&#1100;</a>
+                                        {% endif %}
+                                    {% endif %}
+                                </div>
                             </div>
-                            <div class="list-group-item px-0 d-flex justify-content-between">
+                            <div class="list-group-item px-0 d-flex justify-content-between align-items-center">
                                 <span class="text-muted">Email</span>
-                                <span class="fw-semibold">{{ email|default:"&#1053;&#1077; &#1091;&#1082;&#1072;&#1079;&#1072;&#1085;" }}</span>
+                                <div class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
+                                    <span class="fw-semibold">{{ email|default:"&#1053;&#1077; &#1091;&#1082;&#1072;&#1079;&#1072;&#1085;" }}</span>
+                                    {% if email_confirmed %}
+                                        <span class="verify-icon ok" title="Email &#1087;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1078;&#1076;&#1077;&#1085;">&#10003;</span>
+                                    {% else %}
+                                        <span class="verify-icon warn" title="Email &#1085;&#1077; &#1087;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1078;&#1076;&#1077;&#1085;">&#33;</span>
+                                        {% if email %}
+                                            <form method="post" action="{% url 'resend_email_confirmation' %}" class="d-inline">
+                                                {% csrf_token %}
+                                                <button type="submit" class="btn btn-sm btn-outline-primary">&#1054;&#1090;&#1087;&#1088;&#1072;&#1074;&#1080;&#1090;&#1100;</button>
+                                            </form>
+                                        {% endif %}
+                                    {% endif %}
+                                </div>
                             </div>
-                            {% if plan_badge %}
+                            
+{% if plan_badge %}
                                 <div class="list-group-item px-0 d-flex justify-content-between">
                                     <span class="text-muted">&#1058;&#1072;&#1088;&#1080;&#1092;</span>
                                     <span class="fw-semibold">

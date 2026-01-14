@@ -4,6 +4,7 @@ from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.auth.password_validation import validate_password
 from django.utils.crypto import get_random_string
 from django.utils import timezone
+from django.urls import reverse
 from .models import WaterReading, Organization, Client, OrganizationAccess, Pool, PoolAccess
 
 
@@ -168,7 +169,7 @@ class RegistrationForm(forms.Form):
             email=data.get("email") or data.get("org_email"),
             first_name=data.get("first_name", ""),
             last_name=data.get("last_name", ""),
-            is_active=False,
+            is_active=True,
         )
         if data["user_type"] == "organization":
             org = Organization.objects.create(
@@ -259,7 +260,7 @@ class PersonalSignupForm(forms.Form):
             email=data.get("email"),
             first_name=data.get("first_name", ""),
             last_name=data.get("last_name", ""),
-            is_active=False,
+            is_active=True,
         )
         client = Client.objects.create(
             user=user,
@@ -330,7 +331,7 @@ class CompanySignupForm(forms.Form):
             email=data.get("org_email"),
             first_name=data.get("owner_first_name", ""),
             last_name=data.get("owner_last_name", ""),
-            is_active=False,
+            is_active=True,
         )
         org = Organization.objects.create(
             name=data.get("org_name"),
@@ -554,4 +555,13 @@ class EmailOrUsernameAuthenticationForm(AuthenticationForm):
                 raise forms.ValidationError(
                     "\u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 email, \u0447\u0442\u043e\u0431\u044b \u0432\u043e\u0439\u0442\u0438.",
                 )
-        return super().clean()
+        cleaned = super().clean()
+        user = self.get_user()
+        if user:
+            profile = getattr(user, "profile", None)
+            if profile and profile.phone_verification_required and not profile.phone_confirmed_at:
+                verify_url = reverse("confirm_phone", kwargs={"token": profile.phone_verification_token})
+                raise forms.ValidationError(
+                    f"\u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 \u0442\u0435\u043b\u0435\u0444\u043e\u043d, \u0447\u0442\u043e\u0431\u044b \u0432\u043e\u0439\u0442\u0438. \u041e\u0442\u043a\u0440\u043e\u0439\u0442\u0435: {verify_url}",
+                )
+        return cleaned

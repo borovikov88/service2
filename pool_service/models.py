@@ -37,6 +37,17 @@ class Profile(models.Model):
         default="Europe/Moscow",
         help_text="Часовой пояс пользователя, например, Europe/Moscow",
     )
+    email_confirmed_at = models.DateTimeField(null=True, blank=True)
+    phone_confirmed_at = models.DateTimeField(null=True, blank=True)
+    phone_verification_required = models.BooleanField(default=False)
+    phone_verification_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    phone_verification_attempts = models.PositiveSmallIntegerField(default=0)
+    phone_verification_started_at = models.DateTimeField(null=True, blank=True)
+    phone_verification_expires_at = models.DateTimeField(null=True, blank=True)
+    phone_verification_check_id = models.CharField(max_length=50, blank=True)
+    phone_verification_call_phone = models.CharField(max_length=20, blank=True)
+    phone_sms_code_hash = models.CharField(max_length=128, blank=True)
+    phone_sms_sent_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f"{self.user.username}'s profile"

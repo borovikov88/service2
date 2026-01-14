@@ -18,6 +18,8 @@ from .views import (
     client_delete,
     yandex_suggest,
     confirm_email,
+    resend_email_confirmation,
+    confirm_phone,
     password_change_inline,
     signup_personal,
     signup_company,
@@ -26,6 +28,7 @@ from .views import (
     invite_accept,
     staff_toggle_block,
     staff_delete,
+    smsru_callback,
 )
 from . import views
 
@@ -53,7 +56,10 @@ urlpatterns = [
     path("signup/personal/", signup_personal, name="signup_personal"),
     path("signup/company/", signup_company, name="signup_company"),
     path("accounts/confirm-email/<uidb64>/<token>/", confirm_email, name="confirm_email"),
+    path("accounts/confirm-email/resend/", resend_email_confirmation, name="resend_email_confirmation"),
+    path("accounts/confirm-phone/<uuid:token>/", confirm_phone, name="confirm_phone"),
     path("accounts/password-change/", password_change_inline, name="password_change_inline"),
+    path("api/smsru/callback/", smsru_callback, name="smsru_callback"),
     path("clients/create/", client_create, name="client_create"),
     path("clients/<int:client_id>/edit/", client_edit, name="client_edit"),
     path("clients/<int:client_id>/delete/", client_delete, name="client_delete"),

@@ -37,6 +37,10 @@ allowed_hosts_env = os.getenv('ALLOWED_HOSTS', '')
 ALLOWED_HOSTS = [host.strip() for host in allowed_hosts_env.split(',') if host.strip()]
 YANDEX_SUGGEST_API_KEY = os.getenv("YANDEX_SUGGEST_API_KEY", "")
 SITE_URL = os.getenv("SITE_URL", "")
+SMS_RU_API_ID = os.getenv("SMS_RU_API_ID", "")
+SMS_RU_TIMEOUT = int(os.getenv("SMS_RU_TIMEOUT", "8"))
+PHONE_VERIFY_TTL_MINUTES = int(os.getenv("PHONE_VERIFY_TTL_MINUTES", "5"))
+PHONE_VERIFY_MAX_ATTEMPTS = int(os.getenv("PHONE_VERIFY_MAX_ATTEMPTS", "3"))
 
 
 # Application definition

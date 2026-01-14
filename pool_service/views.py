@@ -2,6 +2,7 @@ from django.contrib import messages
 from django.contrib.auth import login, authenticate, update_session_auth_hash
 from django.contrib.auth.models import User
 from django.contrib.auth.tokens import default_token_generator
+from django.contrib.auth.hashers import check_password, make_password
 from django.contrib.auth.password_validation import validate_password
 from django.core.mail import send_mail
 from django.contrib.auth.decorators import login_required
@@ -16,9 +17,11 @@ from django.db import connection
 from django.db.models import Count, Q, Max
 from django.http import HttpResponse, HttpResponseForbidden, HttpResponseNotFound, JsonResponse
 from django.utils import timezone
+from django.utils.crypto import get_random_string
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.template.loader import render_to_string
+from django.views.decorators.csrf import csrf_exempt
 import html
 from django.templatetags.static import static
 from django.conf import settings
@@ -39,13 +42,40 @@ from .forms import (
     CompanySignupForm,
     OrganizationInviteForm,
     InviteAcceptForm,
+    normalize_phone,
 )
 from .sitemaps import HomeSitemap
 from .seo import is_indexable_host
+from .services.phone_verification import (
+    smsru_callcheck_add,
+    smsru_callcheck_status,
+    smsru_send_sms,
+)
 
 
 def _request_host(request):
     return request.get_host().split(":", 1)[0].lower()
+
+PHONE_VERIFY_TTL_MINUTES = getattr(settings, "PHONE_VERIFY_TTL_MINUTES", 5)
+PHONE_VERIFY_MAX_ATTEMPTS = getattr(settings, "PHONE_VERIFY_MAX_ATTEMPTS", 3)
+
+
+def _user_phone_digits(user):
+    if user.username and user.username.isdigit() and len(user.username) == 10:
+        return user.username
+    client = Client.objects.filter(user=user).first()
+    if client and client.phone:
+        return normalize_phone(client.phone)
+    return None
+
+
+def _smsru_phone(digits):
+    return f"7{digits}" if digits else None
+
+
+def _remaining_phone_attempts(profile):
+    used = profile.phone_verification_attempts or 0
+    return max(0, PHONE_VERIFY_MAX_ATTEMPTS - used)
 
 
 def robots_txt(request):
@@ -76,7 +106,7 @@ def sitemap_xml(request):
     if not is_indexable_host(host):
         return HttpResponseNotFound("")
     return sitemap_view(request, {"home": HomeSitemap()})
-from .models import OrganizationAccess, Pool, PoolAccess, WaterReading, Client, Organization, OrganizationInvite
+from .models import OrganizationAccess, Pool, PoolAccess, WaterReading, Client, Organization, OrganizationInvite, Profile
 from .services.permissions import is_personal_free, is_personal_user, is_org_access_blocked
 from django import forms
 
@@ -102,6 +132,113 @@ def _personal_pool_redirect(user):
     if not pool:
         return reverse("pool_create")
     return reverse("pool_detail", kwargs={"pool_uuid": pool.uuid})
+
+
+def _mark_phone_confirmed(profile):
+    profile.phone_confirmed_at = timezone.now()
+    profile.phone_sms_code_hash = ""
+    profile.phone_verification_check_id = ""
+    profile.phone_verification_call_phone = ""
+    profile.phone_verification_expires_at = None
+    profile.save(
+        update_fields=[
+            "phone_confirmed_at",
+            "phone_sms_code_hash",
+            "phone_verification_check_id",
+            "phone_verification_call_phone",
+            "phone_verification_expires_at",
+        ]
+    )
+
+
+def _start_phone_call(profile, phone_digits):
+    if _remaining_phone_attempts(profile) <= 0:
+        return False, "Попытки подтверждения закончились."
+    api_phone = _smsru_phone(phone_digits)
+    if not api_phone:
+        return False, "Не удалось определить номер телефона."
+    response = smsru_callcheck_add(api_phone)
+    if not response.get("ok"):
+        return False, response.get("error") or "Не удалось запросить звонок."
+    now = timezone.now()
+    profile.phone_verification_required = True
+    profile.phone_verification_attempts += 1
+    profile.phone_verification_started_at = now
+    profile.phone_verification_expires_at = now + timedelta(minutes=PHONE_VERIFY_TTL_MINUTES)
+    profile.phone_verification_check_id = response.get("check_id") or ""
+    profile.phone_verification_call_phone = response.get("call_phone") or ""
+    profile.phone_sms_code_hash = ""
+    profile.phone_sms_sent_at = None
+    profile.save(
+        update_fields=[
+            "phone_verification_required",
+            "phone_verification_attempts",
+            "phone_verification_started_at",
+            "phone_verification_expires_at",
+            "phone_verification_check_id",
+            "phone_verification_call_phone",
+            "phone_sms_code_hash",
+            "phone_sms_sent_at",
+        ]
+    )
+    return True, None
+
+
+def _check_phone_call(profile):
+    if not profile.phone_verification_check_id:
+        return False, "Сначала запросите звонок."
+    response = smsru_callcheck_status(profile.phone_verification_check_id)
+    if not response.get("ok"):
+        return False, response.get("error") or "Не удалось проверить звонок."
+    check_status = str(response.get("check_status") or "")
+    if check_status == "401":
+        _mark_phone_confirmed(profile)
+        return True, None
+    if check_status == "402":
+        return False, "Срок ожидания звонка истек. Запросите звонок снова."
+    return False, response.get("check_status_text") or "Звонок еще не подтвержден."
+
+
+def _send_phone_sms(profile, phone_digits):
+    if _remaining_phone_attempts(profile) <= 0:
+        return False, "Попытки подтверждения закончились."
+    api_phone = _smsru_phone(phone_digits)
+    if not api_phone:
+        return False, "Не удалось определить номер телефона."
+    code = get_random_string(4, allowed_chars="0123456789")
+    text = f"Код подтверждения: {code}"
+    response = smsru_send_sms(api_phone, text)
+    if not response.get("ok"):
+        return False, response.get("error") or "Не удалось отправить СМС."
+    now = timezone.now()
+    profile.phone_verification_required = True
+    profile.phone_verification_attempts += 1
+    profile.phone_verification_started_at = now
+    profile.phone_verification_expires_at = now + timedelta(minutes=PHONE_VERIFY_TTL_MINUTES)
+    profile.phone_sms_code_hash = make_password(code)
+    profile.phone_sms_sent_at = now
+    profile.save(
+        update_fields=[
+            "phone_verification_required",
+            "phone_verification_attempts",
+            "phone_verification_started_at",
+            "phone_verification_expires_at",
+            "phone_sms_code_hash",
+            "phone_sms_sent_at",
+        ]
+    )
+    return True, None
+
+
+def _verify_phone_sms(profile, code):
+    if not profile.phone_sms_code_hash:
+        return False, "Сначала запросите СМС с кодом."
+    if profile.phone_verification_expires_at and profile.phone_verification_expires_at <= timezone.now():
+        return False, "Срок действия кода истек. Запросите новый."
+    if not check_password(code, profile.phone_sms_code_hash):
+        return False, "Неверный код. Попробуйте еще раз."
+    _mark_phone_confirmed(profile)
+    return True, None
 
 
 def _redirect_if_access_blocked(request):
@@ -1021,7 +1158,23 @@ def signup_personal(request):
                     request,
                     "\u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u0441\u043e\u0437\u0434\u0430\u043d, \u043d\u043e \u043f\u0438\u0441\u044c\u043c\u043e \u043d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c. \u0421\u0432\u044f\u0436\u0438\u0442\u0435\u0441\u044c \u0441 \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u043a\u043e\u0439.",
                 )
-            return redirect("login")
+            profile, _ = Profile.objects.get_or_create(user=user)
+            if not profile.phone_verification_required:
+                profile.phone_verification_required = True
+                profile.save(update_fields=["phone_verification_required"])
+            phone_digits = _user_phone_digits(user)
+            if phone_digits:
+                ok, error = _start_phone_call(profile, phone_digits)
+                if ok:
+                    messages.info(
+                        request,
+                        "\u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 \u0442\u0435\u043b\u0435\u0444\u043e\u043d, \u043f\u043e\u0437\u0432\u043e\u043d\u0438\u0432 \u043d\u0430 \u043d\u043e\u043c\u0435\u0440 \u0438\u0437 \u0438\u043d\u0441\u0442\u0440\u0443\u043a\u0446\u0438\u0438.",
+                    )
+                else:
+                    messages.error(request, error)
+            else:
+                messages.error(request, "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0438\u0442\u044c \u0442\u0435\u043b\u0435\u0444\u043e\u043d \u0434\u043b\u044f \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0438\u044f.")
+            return redirect("confirm_phone", token=profile.phone_verification_token)
     else:
         form = PersonalSignupForm()
 
@@ -1055,7 +1208,23 @@ def signup_company(request):
                     request,
                     "\u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u0441\u043e\u0437\u0434\u0430\u043d, \u043d\u043e \u043f\u0438\u0441\u044c\u043c\u043e \u043d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c. \u0421\u0432\u044f\u0436\u0438\u0442\u0435\u0441\u044c \u0441 \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u043a\u043e\u0439.",
                 )
-            return redirect("login")
+            profile, _ = Profile.objects.get_or_create(user=user)
+            if not profile.phone_verification_required:
+                profile.phone_verification_required = True
+                profile.save(update_fields=["phone_verification_required"])
+            phone_digits = _user_phone_digits(user)
+            if phone_digits:
+                ok, error = _start_phone_call(profile, phone_digits)
+                if ok:
+                    messages.info(
+                        request,
+                        "\u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 \u0442\u0435\u043b\u0435\u0444\u043e\u043d, \u043f\u043e\u0437\u0432\u043e\u043d\u0438\u0432 \u043d\u0430 \u043d\u043e\u043c\u0435\u0440 \u0438\u0437 \u0438\u043d\u0441\u0442\u0440\u0443\u043a\u0446\u0438\u0438.",
+                    )
+                else:
+                    messages.error(request, error)
+            else:
+                messages.error(request, "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0438\u0442\u044c \u0442\u0435\u043b\u0435\u0444\u043e\u043d \u0434\u043b\u044f \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0438\u044f.")
+            return redirect("confirm_phone", token=profile.phone_verification_token)
     else:
         form = CompanySignupForm()
 
@@ -1087,7 +1256,23 @@ def register(request):
                     request,
                     "\u0420\u0435\u0433\u0438\u0441\u0442\u0440\u0430\u0446\u0438\u044f \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0430, \u043d\u043e \u043f\u0438\u0441\u044c\u043c\u043e \u043d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c. \u0421\u0432\u044f\u0436\u0438\u0442\u0435\u0441\u044c \u0441 \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u043a\u043e\u0439.",
                 )
-            return redirect("login")
+            profile, _ = Profile.objects.get_or_create(user=user)
+            if not profile.phone_verification_required:
+                profile.phone_verification_required = True
+                profile.save(update_fields=["phone_verification_required"])
+            phone_digits = _user_phone_digits(user)
+            if phone_digits:
+                ok, error = _start_phone_call(profile, phone_digits)
+                if ok:
+                    messages.info(
+                        request,
+                        "\u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 \u0442\u0435\u043b\u0435\u0444\u043e\u043d, \u043f\u043e\u0437\u0432\u043e\u043d\u0438\u0432 \u043d\u0430 \u043d\u043e\u043c\u0435\u0440 \u0438\u0437 \u0438\u043d\u0441\u0442\u0440\u0443\u043a\u0446\u0438\u0438.",
+                    )
+                else:
+                    messages.error(request, error)
+            else:
+                messages.error(request, "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0438\u0442\u044c \u0442\u0435\u043b\u0435\u0444\u043e\u043d \u0434\u043b\u044f \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0438\u044f.")
+            return redirect("confirm_phone", token=profile.phone_verification_token)
     else:
         form = RegistrationForm()
 
@@ -1171,6 +1356,10 @@ def confirm_email(request, uidb64, token):
         user = None
 
     if user and default_token_generator.check_token(user, token):
+        profile, _ = Profile.objects.get_or_create(user=user)
+        if not profile.email_confirmed_at:
+            profile.email_confirmed_at = timezone.now()
+            profile.save(update_fields=["email_confirmed_at"])
         if not user.is_active:
             user.is_active = True
             user.save(update_fields=["is_active"])
@@ -1185,6 +1374,126 @@ def confirm_email(request, uidb64, token):
         "\u0421\u0441\u044b\u043b\u043a\u0430 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0438\u044f \u043d\u0435\u0432\u0435\u0440\u043d\u0430 \u0438\u043b\u0438 \u0443\u0441\u0442\u0430\u0440\u0435\u043b\u0430.",
     )
     return redirect("login")
+
+
+@login_required
+def resend_email_confirmation(request):
+    if request.method != "POST":
+        return redirect("profile")
+
+    profile, _ = Profile.objects.get_or_create(user=request.user)
+    if profile.email_confirmed_at:
+        messages.info(request, "\u041f\u043e\u0447\u0442\u0430 \u0443\u0436\u0435 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0430.")
+        return redirect("profile")
+
+    if not request.user.email:
+        messages.error(request, "\u0423\u043a\u0430\u0436\u0438\u0442\u0435 email, \u0447\u0442\u043e\u0431\u044b \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u044c \u0441\u0441\u044b\u043b\u043a\u0443 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0438\u044f.")
+        return redirect("profile")
+
+    sent = _send_registration_confirmation(request, request.user)
+    if sent:
+        messages.success(
+            request,
+            "\u041f\u0438\u0441\u044c\u043c\u043e \u0441\u043e \u0441\u0441\u044b\u043b\u043a\u043e\u0439 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0438\u044f \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u043e.",
+        )
+    else:
+        messages.error(
+            request,
+            "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u043f\u0438\u0441\u044c\u043c\u043e. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u043e\u0437\u0436\u0435.",
+        )
+    return redirect("profile")
+
+
+@csrf_protect
+@never_cache
+def confirm_phone(request, token):
+    profile = Profile.objects.select_related("user").filter(phone_verification_token=token).first()
+    if not profile:
+        return render(
+            request,
+            "registration/confirm_phone.html",
+            {
+                "error_message": "\u0421\u0441\u044b\u043b\u043a\u0430 \u0434\u043b\u044f \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0438\u044f \u0442\u0435\u043b\u0435\u0444\u043e\u043d\u0430 \u043d\u0435\u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0442\u0435\u043b\u044c\u043d\u0430.",
+                "active_tab": "home",
+                "hide_header": True,
+            },
+        )
+
+    user = profile.user
+    phone_digits = _user_phone_digits(user)
+    if not phone_digits:
+        return render(
+            request,
+            "registration/confirm_phone.html",
+            {
+                "error_message": "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0438\u0442\u044c \u043d\u043e\u043c\u0435\u0440 \u0442\u0435\u043b\u0435\u0444\u043e\u043d\u0430.",
+                "active_tab": "home",
+                "hide_header": True,
+            },
+        )
+
+    if request.method == "POST" and not profile.phone_confirmed_at:
+        action = request.POST.get("action") or ""
+        if action == "start_call":
+            ok, error = _start_phone_call(profile, phone_digits)
+            if ok:
+                messages.success(request, "\u0417\u0432\u043e\u043d\u043e\u043a \u0434\u043b\u044f \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0438\u044f \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d.")
+            else:
+                messages.error(request, error)
+        elif action == "check_call":
+            ok, error = _check_phone_call(profile)
+            if ok:
+                messages.success(request, "\u0422\u0435\u043b\u0435\u0444\u043e\u043d \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d.")
+            else:
+                messages.error(request, error)
+        elif action == "send_sms":
+            ok, error = _send_phone_sms(profile, phone_digits)
+            if ok:
+                messages.success(request, "\u0421\u041c\u0421 \u0441 \u043a\u043e\u0434\u043e\u043c \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0430.")
+            else:
+                messages.error(request, error)
+        elif action == "verify_sms":
+            code = (request.POST.get("sms_code") or "").strip()
+            ok, error = _verify_phone_sms(profile, code)
+            if ok:
+                messages.success(request, "\u0422\u0435\u043b\u0435\u0444\u043e\u043d \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d.")
+            else:
+                messages.error(request, error)
+
+    remaining_attempts = _remaining_phone_attempts(profile)
+    call_phone = profile.phone_verification_call_phone or ""
+    call_phone_display = f"+{call_phone}" if call_phone and call_phone.startswith("7") else call_phone
+
+    return render(
+        request,
+        "registration/confirm_phone.html",
+        {
+            "profile": profile,
+            "phone_confirmed": bool(profile.phone_confirmed_at),
+            "call_phone": call_phone,
+            "call_phone_display": call_phone_display,
+            "remaining_attempts": remaining_attempts,
+            "sms_sent": bool(profile.phone_sms_sent_at),
+            "expires_at": profile.phone_verification_expires_at,
+            "active_tab": "home",
+            "hide_header": True,
+        },
+    )
+
+
+@csrf_exempt
+def smsru_callback(request):
+    data = request.POST or request.GET
+    check_id = data.get("check_id") or data.get("check") or data.get("id")
+    status = data.get("check_status") or data.get("status") or ""
+    if not check_id:
+        return HttpResponse("missing check_id", status=400)
+    profile = Profile.objects.filter(phone_verification_check_id=check_id).first()
+    if not profile:
+        return HttpResponse("not found", status=404)
+    if str(status) == "401":
+        _mark_phone_confirmed(profile)
+    return HttpResponse("OK")
 
 @login_required
 def pool_detail(request, pool_uuid):
@@ -1383,7 +1692,7 @@ def water_reading_edit(request, reading_uuid):
 @login_required
 def profile_view(request):
     """Профиль текущего пользователя с основными контактами и правами доступа."""
-    profile = getattr(request.user, "profile", None)
+    profile, _ = Profile.objects.get_or_create(user=request.user)
     org_accesses = OrganizationAccess.objects.filter(user=request.user).select_related("organization")
     pool_accesses = PoolAccess.objects.filter(user=request.user).select_related("pool", "pool__client")
 
@@ -1404,6 +1713,12 @@ def profile_view(request):
     else:
         role_level = "Пользователь"
 
+    email_confirmed = bool(getattr(profile, "email_confirmed_at", None))
+    phone_confirmed = bool(getattr(profile, "phone_confirmed_at", None))
+    confirm_phone_url = None
+    if not phone_confirmed and getattr(profile, "phone_verification_token", None):
+        confirm_phone_url = reverse("confirm_phone", kwargs={"token": profile.phone_verification_token})
+
     context = {
         "page_title": "Профиль",
         "page_subtitle": "Данные аккаунта и уровни доступа",
@@ -1421,6 +1736,9 @@ def profile_view(request):
         "role_level": role_level,
         "org_accesses": org_accesses,
         "pool_accesses": pool_accesses,
+        "email_confirmed": email_confirmed,
+        "phone_confirmed": phone_confirmed,
+        "confirm_phone_url": confirm_phone_url,
     }
     return render(request, "pool_service/profile.html", context)
 
