@@ -1491,6 +1491,7 @@ def confirm_phone(request, token):
             "expires_at": profile.phone_verification_expires_at,
             "active_tab": "home",
             "hide_header": True,
+            "hide_install_banner": True,
         },
     )
 

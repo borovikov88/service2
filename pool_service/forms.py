@@ -349,14 +349,19 @@ class CompanySignupForm(forms.Form):
 
 
 class ClientCreateForm(forms.Form):
-    CLIENT_TYPE_CHOICES = [("private", "Частный клиент"), ("legal", "Юрлицо")]
-    client_type = forms.ChoiceField(choices=CLIENT_TYPE_CHOICES, widget=forms.RadioSelect, initial="private", label="Тип клиента")
-    first_name = forms.CharField(label="Имя", required=False)
-    last_name = forms.CharField(label="Фамилия", required=False)
-    phone = forms.CharField(label="Телефон (логин, без +7/8)", required=False)
-    email = forms.EmailField(label="Email", required=False)
-    company_name = forms.CharField(label="Название компании", required=False)
-    inn = forms.CharField(label="ИНН", required=False)
+    CLIENT_TYPE_CHOICES = [("private", "??????? ??????"), ("legal", "??????????? ????")]
+    client_type = forms.ChoiceField(
+        choices=CLIENT_TYPE_CHOICES,
+        widget=forms.RadioSelect,
+        initial="private",
+        label="??? ???????",
+    )
+    first_name = forms.CharField(label="???", required=True)
+    last_name = forms.CharField(label="???????", required=True)
+    phone = forms.CharField(label="???????", required=True)
+    email = forms.EmailField(label="Email", required=True)
+    company_name = forms.CharField(label="???????? ???????????", required=False)
+    inn = forms.CharField(label="???", required=False)
 
     def __init__(self, *args, **kwargs):
         self.instance = kwargs.pop("instance", None)
@@ -365,7 +370,9 @@ class ClientCreateForm(forms.Form):
             if isinstance(field.widget, forms.RadioSelect):
                 continue
             field.widget.attrs.update({"class": "form-control rounded-3", "placeholder": field.label})
-        self.fields["phone"].widget.attrs.update({"class": "form-control rounded-3 phone-mask", "placeholder": self.fields["phone"].label})
+        self.fields["phone"].widget.attrs.update(
+            {"class": "form-control rounded-3 phone-mask", "placeholder": self.fields["phone"].label}
+        )
         self.fields["phone"].initial = "+7 "
         if self.instance:
             self.initial.update(
@@ -391,20 +398,25 @@ class ClientCreateForm(forms.Form):
             if digits.startswith("8") and len(digits) == 11:
                 digits = digits[1:]
             if len(digits) != 10:
-                self.add_error("phone", "Номер телефона должен состоять из 10 цифр (без +7/8)")
+                self.add_error("phone", "??????? ?????? ????????? 10 ???? (??? +7/8)")
         else:
-            self.add_error("phone", "Обязательное поле")
+            self.add_error("phone", "??????? ???????")
+
+        if not cleaned.get("email"):
+            self.add_error("email", "??????? email")
 
         if ctype == "private":
             if not cleaned.get("first_name"):
-                self.add_error("first_name", "Обязательное поле")
+                self.add_error("first_name", "??????? ???")
             if not cleaned.get("last_name"):
-                self.add_error("last_name", "Обязательное поле")
+                self.add_error("last_name", "??????? ???????")
         else:
             if not cleaned.get("company_name"):
-                self.add_error("company_name", "Обязательное поле")
-            cleaned["first_name"] = ""
-            cleaned["last_name"] = ""
+                self.add_error("company_name", "??????? ???????? ???????????")
+            if not cleaned.get("first_name"):
+                self.add_error("first_name", "??????? ??? ??????????? ????")
+            if not cleaned.get("last_name"):
+                self.add_error("last_name", "??????? ??????? ??????????? ????")
         return cleaned
 
     def save(self):
@@ -424,6 +436,7 @@ class ClientCreateForm(forms.Form):
 
 
 class OrganizationInviteForm(forms.Form):
+(forms.Form):
     first_name = forms.CharField(label="\u0418\u043c\u044f", required=True)
     last_name = forms.CharField(label="\u0424\u0430\u043c\u0438\u043b\u0438\u044f", required=True)
     email = forms.EmailField(label="Email", required=True)

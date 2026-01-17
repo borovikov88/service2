@@ -10,7 +10,7 @@
         {% if next_url %}<input type="hidden" name="next" value="{{ next_url }}">{% endif %}
         <div class="row g-3">
             <div class="col-12">
-                <label class="form-label d-block mb-1">Тип клиента</label>
+                <label class="form-label d-block mb-1">??? ???????</label>
                 <div class="d-flex flex-column gap-2">
                     {% for choice in form.client_type %}
                         <label class="border rounded-3 p-2">
@@ -20,62 +20,63 @@
                 </div>
                 {% if form.client_type.errors %}<div class="text-danger small">{{ form.client_type.errors.0 }}</div>{% endif %}
             </div>
-            <div id="private-fields" class="row g-3">
-                <div class="col-md-6">
-                    <label class="form-label">Имя</label>
-                    {{ form.first_name }}
-                    {% if form.first_name.errors %}<div class="text-danger small">{{ form.first_name.errors.0 }}</div>{% endif %}
-                </div>
-                <div class="col-md-6">
-                    <label class="form-label">Фамилия</label>
-                    {{ form.last_name }}
-                    {% if form.last_name.errors %}<div class="text-danger small">{{ form.last_name.errors.0 }}</div>{% endif %}
-                </div>
-            </div>
 
             <div id="legal-fields" class="row g-3">
                 <div class="col-12">
-                    <label class="form-label">Наименование юр. лица</label>
+                    <label class="form-label">???????? ??????????? <span class="text-danger">*</span></label>
                     {{ form.company_name }}
                     {% if form.company_name.errors %}<div class="text-danger small">{{ form.company_name.errors.0 }}</div>{% endif %}
                 </div>
                 <div class="col-md-6">
-                    <label class="form-label">ИНН</label>
+                    <label class="form-label">???</label>
                     {{ form.inn }}
                     {% if form.inn.errors %}<div class="text-danger small">{{ form.inn.errors.0 }}</div>{% endif %}
                 </div>
             </div>
 
-            <div class="row g-3">
+            <div class="col-12 mt-2" id="contact-heading">
+                <div class="fw-semibold">?????????? ????</div>
+            </div>
+            <div class="row g-3" id="contact-fields">
                 <div class="col-md-6">
-                    <label class="form-label">Телефон (логин, без +7/8)</label>
+                    <label class="form-label">??? <span class="text-danger">*</span></label>
+                    {{ form.first_name }}
+                    {% if form.first_name.errors %}<div class="text-danger small">{{ form.first_name.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">??????? <span class="text-danger">*</span></label>
+                    {{ form.last_name }}
+                    {% if form.last_name.errors %}<div class="text-danger small">{{ form.last_name.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">??????? <span class="text-danger">*</span></label>
                     {{ form.phone }}
                     {% if form.phone.errors %}<div class="text-danger small">{{ form.phone.errors.0 }}</div>{% endif %}
                 </div>
                 <div class="col-md-6">
-                    <label class="form-label">Email</label>
+                    <label class="form-label">Email <span class="text-danger">*</span></label>
                     {{ form.email }}
                     {% if form.email.errors %}<div class="text-danger small">{{ form.email.errors.0 }}</div>{% endif %}
                 </div>
             </div>
         </div>
         <div class="d-flex gap-2 mt-3">
-            <button type="submit" class="btn btn-primary {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>{% if is_edit %}&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;{% else %}&#1057;&#1086;&#1079;&#1076;&#1072;&#1090;&#1100;{% endif %}</button>
-            <a href="{% if is_edit %}{% url 'clients_list' %}{% else %}{% url 'pool_list' %}{% endif %}" class="btn btn-outline-secondary">&#1054;&#1090;&#1084;&#1077;&#1085;&#1072;</a>
+            <button type="submit" class="btn btn-primary {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>{% if is_edit %}?????????{% else %}???????{% endif %}</button>
+            <a href="{% if is_edit %}{% url 'clients_list' %}{% else %}{% url 'pool_list' %}{% endif %}" class="btn btn-outline-secondary">??????</a>
         </div>
     </form>
 </div>
 <script>
     function toggleClientFields() {
         const type = document.querySelector('input[name="client_type"]:checked')?.value;
-        const privateBlock = document.getElementById("private-fields");
         const legalBlock = document.getElementById("legal-fields");
+        const contactHeading = document.getElementById("contact-heading");
         if (type === "legal") {
-            privateBlock.style.display = "none";
             legalBlock.style.display = "";
+            if (contactHeading) contactHeading.style.display = "";
         } else {
-            privateBlock.style.display = "";
             legalBlock.style.display = "none";
+            if (contactHeading) contactHeading.style.display = "none";
         }
     }
     document.addEventListener("DOMContentLoaded", function() {

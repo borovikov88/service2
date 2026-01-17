@@ -77,4 +77,37 @@
         </div>
     </div>
 </div>
+{% if not phone_confirmed and call_phone_display %}
+<script>
+  (function () {
+    let attempts = 0;
+    const maxAttempts = 24; // ~2 minutes
+
+    function poll() {
+      attempts += 1;
+      if (attempts > maxAttempts) return;
+      const form = document.createElement("form");
+      form.method = "post";
+      form.style.display = "none";
+      const csrf = document.querySelector("input[name=csrfmiddlewaretoken]");
+      if (csrf) {
+        const csrfInput = document.createElement("input");
+        csrfInput.type = "hidden";
+        csrfInput.name = "csrfmiddlewaretoken";
+        csrfInput.value = csrf.value;
+        form.appendChild(csrfInput);
+      }
+      const action = document.createElement("input");
+      action.type = "hidden";
+      action.name = "action";
+      action.value = "check_call";
+      form.appendChild(action);
+      document.body.appendChild(form);
+      form.submit();
+    }
+
+    setInterval(poll, 5000);
+  })();
+</script>
+{% endif %}
 {% endblock %}
