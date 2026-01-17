@@ -10,7 +10,7 @@
         {% if next_url %}<input type="hidden" name="next" value="{{ next_url }}">{% endif %}
         <div class="row g-3">
             <div class="col-12">
-                <label class="form-label d-block mb-1">??? ???????</label>
+                <label class="form-label d-block mb-1">Тип клиента</label>
                 <div class="d-flex flex-column gap-2">
                     {% for choice in form.client_type %}
                         <label class="border rounded-3 p-2">
@@ -23,33 +23,38 @@
 
             <div id="legal-fields" class="row g-3">
                 <div class="col-12">
-                    <label class="form-label">???????? ??????????? <span class="text-danger">*</span></label>
+                    <label class="form-label">Название организации <span class="text-danger">*</span></label>
                     {{ form.company_name }}
                     {% if form.company_name.errors %}<div class="text-danger small">{{ form.company_name.errors.0 }}</div>{% endif %}
                 </div>
                 <div class="col-md-6">
-                    <label class="form-label">???</label>
+                    <label class="form-label">ИНН</label>
                     {{ form.inn }}
                     {% if form.inn.errors %}<div class="text-danger small">{{ form.inn.errors.0 }}</div>{% endif %}
                 </div>
             </div>
 
             <div class="col-12 mt-2" id="contact-heading">
-                <div class="fw-semibold">?????????? ????</div>
+                <div class="fw-semibold">Контактное лицо</div>
             </div>
             <div class="row g-3" id="contact-fields">
                 <div class="col-md-6">
-                    <label class="form-label">??? <span class="text-danger">*</span></label>
+                    <label class="form-label">Имя <span class="text-danger">*</span></label>
                     {{ form.first_name }}
                     {% if form.first_name.errors %}<div class="text-danger small">{{ form.first_name.errors.0 }}</div>{% endif %}
                 </div>
                 <div class="col-md-6">
-                    <label class="form-label">??????? <span class="text-danger">*</span></label>
+                    <label class="form-label">Фамилия <span class="text-danger">*</span></label>
                     {{ form.last_name }}
                     {% if form.last_name.errors %}<div class="text-danger small">{{ form.last_name.errors.0 }}</div>{% endif %}
                 </div>
+                <div class="col-md-6" id="contact-position-field">
+                    <label class="form-label">Должность <span class="text-danger">*</span></label>
+                    {{ form.contact_position }}
+                    {% if form.contact_position.errors %}<div class="text-danger small">{{ form.contact_position.errors.0 }}</div>{% endif %}
+                </div>
                 <div class="col-md-6">
-                    <label class="form-label">??????? <span class="text-danger">*</span></label>
+                    <label class="form-label">Телефон <span class="text-danger">*</span></label>
                     {{ form.phone }}
                     {% if form.phone.errors %}<div class="text-danger small">{{ form.phone.errors.0 }}</div>{% endif %}
                 </div>
@@ -61,8 +66,8 @@
             </div>
         </div>
         <div class="d-flex gap-2 mt-3">
-            <button type="submit" class="btn btn-primary {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>{% if is_edit %}?????????{% else %}???????{% endif %}</button>
-            <a href="{% if is_edit %}{% url 'clients_list' %}{% else %}{% url 'pool_list' %}{% endif %}" class="btn btn-outline-secondary">??????</a>
+            <button type="submit" class="btn btn-primary {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>{% if is_edit %}Сохранить{% else %}Создать{% endif %}</button>
+            <a href="{% if is_edit %}{% url 'clients_list' %}{% else %}{% url 'pool_list' %}{% endif %}" class="btn btn-outline-secondary">Отмена</a>
         </div>
     </form>
 </div>
@@ -71,12 +76,15 @@
         const type = document.querySelector('input[name="client_type"]:checked')?.value;
         const legalBlock = document.getElementById("legal-fields");
         const contactHeading = document.getElementById("contact-heading");
+        const contactPosition = document.getElementById("contact-position-field");
         if (type === "legal") {
             legalBlock.style.display = "";
             if (contactHeading) contactHeading.style.display = "";
+            if (contactPosition) contactPosition.style.display = "";
         } else {
             legalBlock.style.display = "none";
             if (contactHeading) contactHeading.style.display = "none";
+            if (contactPosition) contactPosition.style.display = "none";
         }
     }
     document.addEventListener("DOMContentLoaded", function() {

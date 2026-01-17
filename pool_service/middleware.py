@@ -33,6 +33,7 @@ class AuthRedirectMiddleware:
             "/accounts/reset/",
             "/accounts/confirm-email/",
             "/accounts/confirm-phone/",
+            "/invite/",
             "/register/",
             "/signup/personal/",
             "/signup/company/",

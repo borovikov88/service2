@@ -68,6 +68,7 @@ class Client(models.Model):
     phone = models.CharField(max_length=20, blank=True, null=True)
     email = models.EmailField(blank=True, null=True)
     inn = models.CharField(max_length=20, blank=True, null=True)
+    contact_position = models.CharField(max_length=120, blank=True, null=True)
     organization = models.ForeignKey(Organization, on_delete=models.SET_NULL, null=True, blank=True, related_name="clients")
 
     def __str__(self):

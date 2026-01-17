@@ -349,19 +349,20 @@ class CompanySignupForm(forms.Form):
 
 
 class ClientCreateForm(forms.Form):
-    CLIENT_TYPE_CHOICES = [("private", "??????? ??????"), ("legal", "??????????? ????")]
+    CLIENT_TYPE_CHOICES = [("private", "Частный клиент"), ("legal", "Юридическое лицо")]
     client_type = forms.ChoiceField(
         choices=CLIENT_TYPE_CHOICES,
         widget=forms.RadioSelect,
         initial="private",
-        label="??? ???????",
+        label="Тип клиента",
     )
-    first_name = forms.CharField(label="???", required=True)
-    last_name = forms.CharField(label="???????", required=True)
-    phone = forms.CharField(label="???????", required=True)
+    first_name = forms.CharField(label="Имя", required=True)
+    last_name = forms.CharField(label="Фамилия", required=True)
+    phone = forms.CharField(label="Телефон", required=True)
     email = forms.EmailField(label="Email", required=True)
-    company_name = forms.CharField(label="???????? ???????????", required=False)
-    inn = forms.CharField(label="???", required=False)
+    company_name = forms.CharField(label="Название организации", required=False)
+    inn = forms.CharField(label="ИНН", required=False)
+    contact_position = forms.CharField(label="Должность", required=False)
 
     def __init__(self, *args, **kwargs):
         self.instance = kwargs.pop("instance", None)
@@ -384,6 +385,7 @@ class ClientCreateForm(forms.Form):
                     "email": self.instance.email or "",
                     "company_name": self.instance.company_name or "",
                     "inn": self.instance.inn or "",
+                    "contact_position": getattr(self.instance, "contact_position", "") or "",
                 }
             )
 
@@ -398,25 +400,27 @@ class ClientCreateForm(forms.Form):
             if digits.startswith("8") and len(digits) == 11:
                 digits = digits[1:]
             if len(digits) != 10:
-                self.add_error("phone", "??????? ?????? ????????? 10 ???? (??? +7/8)")
+                self.add_error("phone", "Телефон должен содержать 10 цифр (код +7/8)")
         else:
-            self.add_error("phone", "??????? ???????")
+            self.add_error("phone", "Укажите телефон")
 
         if not cleaned.get("email"):
-            self.add_error("email", "??????? email")
+            self.add_error("email", "Укажите email")
 
         if ctype == "private":
             if not cleaned.get("first_name"):
-                self.add_error("first_name", "??????? ???")
+                self.add_error("first_name", "Укажите имя")
             if not cleaned.get("last_name"):
-                self.add_error("last_name", "??????? ???????")
+                self.add_error("last_name", "Укажите фамилию")
         else:
             if not cleaned.get("company_name"):
-                self.add_error("company_name", "??????? ???????? ???????????")
+                self.add_error("company_name", "Укажите название организации")
             if not cleaned.get("first_name"):
-                self.add_error("first_name", "??????? ??? ??????????? ????")
+                self.add_error("first_name", "Укажите имя контактного лица")
             if not cleaned.get("last_name"):
-                self.add_error("last_name", "??????? ??????? ??????????? ????")
+                self.add_error("last_name", "Укажите фамилию контактного лица")
+            if not cleaned.get("contact_position"):
+                self.add_error("contact_position", "Укажите должность контактного лица")
         return cleaned
 
     def save(self):
@@ -429,6 +433,7 @@ class ClientCreateForm(forms.Form):
         client.company_name = data.get("company_name")
         client.name = name_val
         client.inn = data.get("inn")
+        client.contact_position = data.get("contact_position")
         client.phone = data.get("phone")
         client.email = data.get("email")
         client.save()

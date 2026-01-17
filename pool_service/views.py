@@ -82,6 +82,17 @@ def _format_call_phone_display(phone):
     return phone
 
 
+def _format_profile_phone_display(phone):
+    digits = normalize_phone(phone) if phone else ""
+    if not digits:
+        digits = "".join(filter(str.isdigit, phone or ""))
+        if len(digits) == 11 and digits.startswith(("7", "8")):
+            digits = digits[1:]
+    if len(digits) == 10:
+        return f"+7 {digits[0:3]} {digits[3:6]} {digits[6:]}"
+    return phone
+
+
 def _remaining_phone_attempts(profile):
     used = profile.phone_verification_attempts or 0
     return max(0, PHONE_VERIFY_MAX_ATTEMPTS - used)
@@ -1377,11 +1388,12 @@ def confirm_email(request, uidb64, token):
         if not user.is_active:
             user.is_active = True
             user.save(update_fields=["is_active"])
-        messages.success(
-            request,
-            "\u041f\u043e\u0447\u0442\u0430 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0430. \u0422\u0435\u043f\u0435\u0440\u044c \u043c\u043e\u0436\u043d\u043e \u0432\u043e\u0439\u0442\u0438.",
-        )
-        return redirect("login")
+        messages.success(request, "\u041f\u043e\u0447\u0442\u0430 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0430.")
+        if request.user.is_authenticated:
+            return redirect("profile")
+        login(request, user)
+        personal_url = _personal_pool_redirect(user)
+        return redirect(personal_url or "pool_list")
 
     messages.error(
         request,
@@ -1719,6 +1731,7 @@ def profile_view(request):
         phone = profile.phone
     if not phone and request.user.username and request.user.username.isdigit():
         phone = request.user.username
+    phone_display = _format_profile_phone_display(phone)
 
     if request.user.is_superuser:
         role_level = "Администратор системы"
@@ -1747,8 +1760,7 @@ def profile_view(request):
         "user_full_name": request.user.get_full_name() or request.user.username,
         "username": request.user.username,
         "email": request.user.email,
-        "phone": phone,
-        "timezone": getattr(profile, "timezone", "Не указан"),
+        "phone": phone_display,
         "last_login": request.user.last_login,
         "date_joined": request.user.date_joined,
         "role_level": role_level,
