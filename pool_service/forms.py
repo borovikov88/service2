@@ -278,11 +278,10 @@ class CompanySignupForm(forms.Form):
     org_name = forms.CharField(required=True)
     org_city = forms.CharField(required=True)
     org_address = forms.CharField(required=False)
-    org_phone = forms.CharField(required=True)
-    org_email = forms.EmailField(required=True)
     owner_first_name = forms.CharField(required=True)
     owner_last_name = forms.CharField(required=True)
     owner_phone = forms.CharField(required=True)
+    owner_email = forms.EmailField(required=True)
     password1 = forms.CharField(widget=forms.PasswordInput, required=True)
     password2 = forms.CharField(widget=forms.PasswordInput, required=True)
 
@@ -290,10 +289,9 @@ class CompanySignupForm(forms.Form):
         super().__init__(*args, **kwargs)
         for name, field in self.fields.items():
             classes = "form-control rounded-3"
-            if name in ["org_phone", "owner_phone"]:
+            if name in ["owner_phone"]:
                 classes = "form-control rounded-3 phone-mask"
             field.widget.attrs.update({"class": classes})
-        self.fields["org_phone"].initial = "+7 "
         self.fields["owner_phone"].initial = "+7 "
 
     def clean(self):
@@ -317,9 +315,13 @@ class CompanySignupForm(forms.Form):
             except forms.ValidationError as exc:
                 self.add_error("password1", exc)
 
-        email_value = cleaned.get("org_email")
+        email_value = cleaned.get("owner_email")
+        org_name_value = cleaned.get("org_name")
+        if org_name_value and Organization.objects.filter(name__iexact=org_name_value).exists():
+            self.add_error("org_name", "Такая организация уже зарегистрирована")
+
         if email_value and User.objects.filter(email__iexact=email_value).exists():
-            self.add_error("org_email", "\u042d\u0442\u043e\u0442 email \u0443\u0436\u0435 \u0437\u0430\u0440\u0435\u0433\u0438\u0441\u0442\u0440\u0438\u0440\u043e\u0432\u0430\u043d")
+            self.add_error("owner_email", "\u042d\u0442\u043e\u0442 email \u0443\u0436\u0435 \u0437\u0430\u0440\u0435\u0433\u0438\u0441\u0442\u0440\u0438\u0440\u043e\u0432\u0430\u043d")
         return cleaned
 
     def save(self):
@@ -328,7 +330,7 @@ class CompanySignupForm(forms.Form):
         user = User.objects.create_user(
             username=username,
             password=data["password1"],
-            email=data.get("org_email"),
+            email=data.get("owner_email"),
             first_name=data.get("owner_first_name", ""),
             last_name=data.get("owner_last_name", ""),
             is_active=True,
@@ -337,8 +339,8 @@ class CompanySignupForm(forms.Form):
             name=data.get("org_name"),
             city=data.get("org_city"),
             address=data.get("org_address"),
-            phone=data.get("org_phone"),
-            email=data.get("org_email"),
+            phone=None,
+            email=data.get("owner_email"),
             plan_type=Organization.PLAN_COMPANY_TRIAL,
             trial_started_at=timezone.now(),
         )
