@@ -7,6 +7,9 @@
     <h3 class="fw-bold h5 mb-3">{% if is_edit %}Редактирование бассейна{% else %}Создание бассейна{% endif %}</h3>
     <form method="post" class="offline-queue-form" action="{% if is_edit %}{% url 'pool_edit' pool.uuid %}{% else %}{% url 'pool_create' %}{% endif %}">
         {% csrf_token %}
+        {% if form.client.is_hidden %}
+            {{ form.client }}
+        {% endif %}
         {% if not request.user.client_profile %}
         <div class="mb-3">
             <div class="row g-2 align-items-center">
