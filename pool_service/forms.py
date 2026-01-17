@@ -436,7 +436,6 @@ class ClientCreateForm(forms.Form):
 
 
 class OrganizationInviteForm(forms.Form):
-(forms.Form):
     first_name = forms.CharField(label="\u0418\u043c\u044f", required=True)
     last_name = forms.CharField(label="\u0424\u0430\u043c\u0438\u043b\u0438\u044f", required=True)
     email = forms.EmailField(label="Email", required=True)
