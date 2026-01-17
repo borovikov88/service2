@@ -1,0 +1,93 @@
+{% extends 'pool_service/base.html' %}
+
+{% block title %}Сотрудники клиента{% endblock %}
+
+{% block content %}
+<div class="card card-soft p-4 mb-4">
+    {% if can_manage %}
+        <div class="d-flex justify-content-end mb-3">
+            <a href="{% url 'client_invite_create' client.id %}" class="btn btn-primary rounded-3 d-flex align-items-center gap-2 {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
+                <i class="bi bi-plus-lg"></i><span>Добавить сотрудника</span>
+            </a>
+        </div>
+    {% endif %}
+
+    <div class="table-responsive">
+        <table class="table align-middle">
+            <thead class="small text-muted">
+                <tr>
+                    <th>Сотрудник</th>
+                    <th>Email</th>
+                    <th>Телефон</th>
+                    <th>Статус</th>
+                    <th>Последний вход</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for access in staff_accesses %}
+                    <tr>
+                        <td>{{ access.user.get_full_name|default:access.user.username }}</td>
+                        <td>{{ access.user.email|default:"-" }}</td>
+                        <td>{{ access.phone|default:"-" }}</td>
+                        <td>
+                            {% if access.user.is_active %}
+                                <span class="badge bg-success-subtle text-success border">Активен</span>
+                            {% else %}
+                                <span class="badge bg-danger-subtle text-danger border">Заблокирован</span>
+                            {% endif %}
+                        </td>
+                        <td>{% if access.user.last_login %}{{ access.user.last_login|date:"d.m.Y H:i" }}{% else %}—{% endif %}</td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="5" class="text-center text-muted py-3">Пока нет сотрудников</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card card-soft p-4">
+    <h4 class="fw-bold mb-3">Приглашения</h4>
+    <div class="table-responsive">
+        <table class="table align-middle">
+            <thead class="small text-muted">
+                <tr>
+                    <th>ФИО</th>
+                    <th>Email</th>
+                    <th>Телефон</th>
+                    <th>Статус</th>
+                    {% if can_manage %}<th class="text-end">Действия</th>{% endif %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for invite in invites %}
+                    <tr class="text-muted">
+                        <td>{{ invite.first_name }} {{ invite.last_name }}</td>
+                        <td>{{ invite.email }}</td>
+                        <td>{{ invite.phone|default:"-" }}</td>
+                        <td>
+                            {% if invite.is_expired %}
+                                <span class="badge bg-warning-subtle text-warning border">Пользователь не подтвердил регистрацию</span>
+                            {% else %}
+                                <span class="badge bg-info-subtle text-info border">Приглашение отправлено</span>
+                            {% endif %}
+                        </td>
+                        {% if can_manage %}
+                            <td class="text-end">
+                                <form method="post" action="{% url 'client_invite_resend' invite.id %}" class="d-inline">
+                                    {% csrf_token %}
+                                    <button type="submit" class="btn btn-outline-primary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
+                                        Отправить повторно
+                                    </button>
+                                </form>
+                            </td>
+                        {% endif %}
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="5" class="text-center text-muted py-3">Нет активных приглашений</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

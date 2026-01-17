@@ -5,7 +5,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.utils.crypto import get_random_string
 from django.utils import timezone
 from django.urls import reverse
-from .models import WaterReading, Organization, Client, OrganizationAccess, Pool, PoolAccess
+from .models import WaterReading, Organization, Client, OrganizationAccess, Pool, PoolAccess, ClientAccess
 
 
 class WaterReadingForm(forms.ModelForm):
@@ -359,7 +359,7 @@ class ClientCreateForm(forms.Form):
     first_name = forms.CharField(label="Имя", required=True)
     last_name = forms.CharField(label="Фамилия", required=True)
     phone = forms.CharField(label="Телефон", required=True)
-    email = forms.EmailField(label="Email", required=True)
+    email = forms.EmailField(label="Email", required=False)
     company_name = forms.CharField(label="Название организации", required=False)
     inn = forms.CharField(label="ИНН", required=False)
     contact_position = forms.CharField(label="Должность", required=False)
@@ -404,9 +404,6 @@ class ClientCreateForm(forms.Form):
         else:
             self.add_error("phone", "Укажите телефон")
 
-        if not cleaned.get("email"):
-            self.add_error("email", "Укажите email")
-
         if ctype == "private":
             if not cleaned.get("first_name"):
                 self.add_error("first_name", "Укажите имя")
@@ -419,8 +416,6 @@ class ClientCreateForm(forms.Form):
                 self.add_error("first_name", "Укажите имя контактного лица")
             if not cleaned.get("last_name"):
                 self.add_error("last_name", "Укажите фамилию контактного лица")
-            if not cleaned.get("contact_position"):
-                self.add_error("contact_position", "Укажите должность контактного лица")
         return cleaned
 
     def save(self):
@@ -462,6 +457,61 @@ class OrganizationInviteForm(forms.Form):
                 self.fields["phone"].initial = "+7 "
                 continue
             field.widget.attrs.update({"class": classes, "placeholder": field.label})
+
+
+class ClientInviteForm(forms.Form):
+    first_name = forms.CharField(label="Имя", required=True)
+    last_name = forms.CharField(label="Фамилия", required=True)
+    email = forms.EmailField(label="Email", required=True)
+    phone = forms.CharField(label="Телефон", required=True)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for name, field in self.fields.items():
+            classes = "form-control rounded-3"
+            if name == "phone":
+                field.widget.attrs.update({"class": f"{classes} phone-mask", "placeholder": field.label})
+                field.initial = "+7 "
+            else:
+                field.widget.attrs.update({"class": classes, "placeholder": field.label})
+
+    def clean_phone(self):
+        value = self.cleaned_data.get("phone", "")
+        digits = normalize_phone(value)
+        if not digits:
+            raise forms.ValidationError("Телефон должен содержать 10 цифр (код +7/8)")
+        return value
+
+
+class ClientInviteAcceptForm(forms.Form):
+    first_name = forms.CharField(label="Имя", required=True)
+    last_name = forms.CharField(label="Фамилия", required=True)
+    phone = forms.CharField(label="Телефон", required=True)
+    password1 = forms.CharField(label="Пароль", widget=forms.PasswordInput)
+    password2 = forms.CharField(label="Повторите пароль", widget=forms.PasswordInput)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for name, field in self.fields.items():
+            classes = "form-control rounded-3"
+            if name == "phone":
+                field.widget.attrs.update({"class": f"{classes} phone-mask", "placeholder": field.label})
+                field.initial = "+7 "
+            else:
+                field.widget.attrs.update({"class": classes, "placeholder": field.label})
+
+    def clean_phone(self):
+        value = self.cleaned_data.get("phone", "")
+        digits = normalize_phone(value)
+        if not digits:
+            raise forms.ValidationError("Телефон должен содержать 10 цифр (код +7/8)")
+        return value
+
+    def clean(self):
+        cleaned = super().clean()
+        if cleaned.get("password1") != cleaned.get("password2"):
+            self.add_error("password2", "Пароли не совпадают")
+        return cleaned
 
 
 class InviteAcceptForm(forms.Form):

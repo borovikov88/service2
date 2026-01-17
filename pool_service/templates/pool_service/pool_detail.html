@@ -12,16 +12,18 @@
     </a>
     {% endif %}
 
-    {% if role == 'editor' or role == 'service' or role == 'admin' or pool.client.user_id == user.id %}
+    {% if can_edit_pool or can_add_reading %}
         <div class="d-flex align-items-center gap-2">
-            {% if role == 'admin' or pool.client.user_id == user.id %}
+            {% if can_edit_pool %}
                 <a class="btn btn-outline-primary rounded-3 d-flex align-items-center gap-2 {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% url 'pool_edit' pool.uuid %}" aria-label="&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;" title="&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;">
                     <i class="bi bi-pencil"></i><span class="d-none d-sm-inline">&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;</span>
                 </a>
             {% endif %}
-            <a class="btn btn-primary rounded-3 d-flex align-items-center gap-2 {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% url 'water_reading_create' pool.uuid %}" aria-label="&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;" title="&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;">
-                <i class="bi bi-plus-lg"></i><span class="d-none d-sm-inline">&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;</span>
-            </a>
+            {% if can_add_reading %}
+                <a class="btn btn-primary rounded-3 d-flex align-items-center gap-2 {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% url 'water_reading_create' pool.uuid %}" aria-label="&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;" title="&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;">
+                    <i class="bi bi-plus-lg"></i><span class="d-none d-sm-inline">&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;</span>
+                </a>
+            {% endif %}
         </div>
     {% endif %}
 </div>

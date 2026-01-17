@@ -34,6 +34,7 @@ class AuthRedirectMiddleware:
             "/accounts/confirm-email/",
             "/accounts/confirm-phone/",
             "/invite/",
+            "/client-invite/",
             "/register/",
             "/signup/personal/",
             "/signup/company/",

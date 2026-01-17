@@ -42,6 +42,8 @@ from .forms import (
     CompanySignupForm,
     OrganizationInviteForm,
     InviteAcceptForm,
+    ClientInviteForm,
+    ClientInviteAcceptForm,
     normalize_phone,
 )
 from .sitemaps import HomeSitemap
@@ -126,8 +128,19 @@ def sitemap_xml(request):
     if not is_indexable_host(host):
         return HttpResponseNotFound("")
     return sitemap_view(request, {"home": HomeSitemap()})
-from .models import OrganizationAccess, Pool, PoolAccess, WaterReading, Client, Organization, OrganizationInvite, Profile
-from .services.permissions import is_personal_free, is_personal_user, is_org_access_blocked
+from .models import (
+    OrganizationAccess,
+    Pool,
+    PoolAccess,
+    WaterReading,
+    Client,
+    Organization,
+    OrganizationInvite,
+    Profile,
+    ClientAccess,
+    ClientInvite,
+)
+from .services.permissions import is_personal_free, is_personal_user, is_org_access_blocked, personal_pool
 from django import forms
 
 PER_PAGE_CHOICES = {20, 50, 100}
@@ -152,6 +165,34 @@ def _personal_pool_redirect(user):
     if not pool:
         return reverse("pool_create")
     return reverse("pool_detail", kwargs={"pool_uuid": pool.uuid})
+
+
+def _client_access_for_user(user):
+    if not user or not getattr(user, "is_authenticated", False):
+        return None
+    return ClientAccess.objects.filter(user=user).select_related("client").first()
+
+
+def _pool_role_for_user(user, pool):
+    if user.is_superuser:
+        return "admin"
+
+    role = None
+    pool_access = PoolAccess.objects.filter(user=user, pool=pool).first()
+    if pool_access:
+        role = pool_access.role
+
+    org_access = OrganizationAccess.objects.filter(user=user, organization=pool.organization).first()
+    if org_access:
+        role = org_access.role
+
+    client_access = ClientAccess.objects.filter(user=user, client=pool.client).first()
+    if client_access and not role:
+        role = "client_staff"
+
+    if pool.client and pool.client.user_id == user.id:
+        role = "admin"
+    return role
 
 
 def _mark_phone_confirmed(profile):
@@ -278,6 +319,14 @@ def _deny_superuser_write(request):
     return redirect(request.META.get("HTTP_REFERER") or "pool_list")
 
 
+def _deny_client_staff_write(request):
+    if request.user.is_superuser:
+        return None
+    if _client_access_for_user(request.user) and not OrganizationAccess.objects.filter(user=request.user).exists():
+        return HttpResponseForbidden()
+    return None
+
+
 def index(request):
     if request.user.is_authenticated:
         redirect_url = _personal_pool_redirect(request.user) or reverse("pool_list")
@@ -318,6 +367,9 @@ def pool_list(request):
             ).distinct()
         else:
             pools = Pool.objects.none()
+    elif ClientAccess.objects.filter(user=request.user).exists():
+        client_access = _client_access_for_user(request.user)
+        pools = Pool.objects.filter(client=client_access.client) if client_access else Pool.objects.none()
     else:
         pools = Pool.objects.filter(accesses__user=request.user)
 
@@ -375,6 +427,7 @@ def pool_list(request):
         pools = filtered
 
     personal_user = is_personal_user(request.user)
+    client_access = _client_access_for_user(request.user)
     personal_pool_count = 0
     if personal_user:
         personal_client = Client.objects.filter(user=request.user, organization__isnull=True).first()
@@ -390,9 +443,14 @@ def pool_list(request):
     query_params.pop("partial", None)
 
     allow_pool_create = not (personal_user and personal_pool_count >= 1)
+    if client_access:
+        allow_pool_create = False
     if request.user.is_superuser:
         allow_pool_create = False
-    page_title = "Мой бассейн" if personal_user else "Бассейны"
+    if client_access:
+        page_title = f"Бассейны: {client_access.client.name}"
+    else:
+        page_title = "Мой бассейн" if personal_user else "Бассейны"
     page_action_label = "Добавить бассейн" if allow_pool_create else None
     page_action_url = reverse("pool_create") if allow_pool_create else None
 
@@ -623,6 +681,229 @@ def invite_accept(request, token):
 
 
 @login_required
+def client_staff(request, client_id):
+    client = get_object_or_404(Client, pk=client_id)
+    is_org_staff = OrganizationAccess.objects.filter(
+        user=request.user,
+        organization=client.organization,
+        role__in=["admin", "service", "manager"],
+    ).exists()
+
+    if not request.user.is_superuser and not is_org_staff:
+        return HttpResponseForbidden()
+
+    staff_accesses = (
+        ClientAccess.objects.filter(client=client)
+        .select_related("user")
+        .order_by("user__last_name", "user__first_name")
+    )
+    invites = (
+        ClientInvite.objects.filter(client=client, accepted_at__isnull=True)
+        .select_related("invited_by")
+        .order_by("-created_at")
+    )
+    can_manage = is_org_staff and not request.user.is_superuser
+
+    return render(
+        request,
+        "pool_service/client_staff.html",
+        {
+            "client": client,
+            "staff_accesses": staff_accesses,
+            "invites": invites,
+            "page_title": "Сотрудники клиента",
+            "page_subtitle": client.name,
+            "page_action_label": None,
+            "page_action_url": None,
+            "active_tab": "clients",
+            "show_search": False,
+            "show_add_button": False,
+            "add_url": None,
+            "can_manage": can_manage,
+        },
+    )
+
+
+@login_required
+def client_invite_create(request, client_id):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+
+    client = get_object_or_404(Client, pk=client_id)
+    is_org_staff = OrganizationAccess.objects.filter(
+        user=request.user,
+        organization=client.organization,
+        role__in=["admin", "service", "manager"],
+    ).exists()
+    if not is_org_staff:
+        return HttpResponseForbidden()
+
+    if request.method == "POST":
+        form = ClientInviteForm(request.POST)
+        if form.is_valid():
+            email = form.cleaned_data["email"].strip().lower()
+            if User.objects.filter(email__iexact=email).exists():
+                form.add_error("email", "Пользователь с таким email уже зарегистрирован")
+            else:
+                now = timezone.now()
+                expires_at = now + timedelta(hours=INVITE_EXPIRY_HOURS)
+                invite = ClientInvite.objects.filter(
+                    client=client,
+                    email__iexact=email,
+                    accepted_at__isnull=True,
+                ).first()
+                if invite:
+                    invite.first_name = form.cleaned_data["first_name"]
+                    invite.last_name = form.cleaned_data["last_name"]
+                    invite.phone = form.cleaned_data["phone"]
+                    invite.role = "staff"
+                    invite.token = uuid.uuid4()
+                    invite.expires_at = expires_at
+                    invite.invited_by = request.user
+                    invite.last_sent_at = now
+                else:
+                    invite = ClientInvite.objects.create(
+                        client=client,
+                        invited_by=request.user,
+                        email=email,
+                        first_name=form.cleaned_data["first_name"],
+                        last_name=form.cleaned_data["last_name"],
+                        phone=form.cleaned_data["phone"],
+                        role="staff",
+                        expires_at=expires_at,
+                        last_sent_at=now,
+                    )
+                invite.save()
+                if _send_client_invite_email(request, invite):
+                    messages.success(request, "Приглашение отправлено.")
+                    return redirect("client_staff", client_id=client.id)
+                messages.error(request, "Не удалось отправить письмо.")
+    else:
+        form = ClientInviteForm()
+
+    return render(
+        request,
+        "pool_service/client_invite_create.html",
+        {
+            "form": form,
+            "client": client,
+            "page_title": "Приглашение сотрудника клиента",
+            "active_tab": "clients",
+            "show_search": False,
+            "show_add_button": False,
+            "add_url": None,
+        },
+    )
+
+
+@login_required
+def client_invite_resend(request, invite_id):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+    if request.method != "POST":
+        return redirect("clients_list")
+
+    invite = get_object_or_404(ClientInvite, pk=invite_id)
+    is_org_staff = OrganizationAccess.objects.filter(
+        user=request.user,
+        organization=invite.client.organization,
+        role__in=["admin", "service", "manager"],
+    ).exists()
+    if not is_org_staff:
+        return HttpResponseForbidden()
+
+    if invite.accepted_at:
+        messages.info(request, "Приглашение уже принято.")
+        return redirect("client_staff", client_id=invite.client_id)
+
+    now = timezone.now()
+    invite.token = uuid.uuid4()
+    invite.expires_at = now + timedelta(hours=INVITE_EXPIRY_HOURS)
+    invite.last_sent_at = now
+    invite.save(update_fields=["token", "expires_at", "last_sent_at"])
+
+    if _send_client_invite_email(request, invite):
+        messages.success(request, "Приглашение отправлено повторно.")
+    else:
+        messages.error(request, "Не удалось отправить письмо.")
+    return redirect("client_staff", client_id=invite.client_id)
+
+
+def client_invite_accept(request, token):
+    invite = ClientInvite.objects.filter(token=token).select_related("client").first()
+    if not invite:
+        return render(
+            request,
+            "registration/client_invite_accept.html",
+            {"invite": None, "error_message": "Ссылка недействительна."},
+        )
+
+    if invite.accepted_at:
+        return render(
+            request,
+            "registration/client_invite_accept.html",
+            {"invite": invite, "error_message": "Приглашение уже принято."},
+        )
+
+    if invite.is_expired():
+        return render(
+            request,
+            "registration/client_invite_accept.html",
+            {"invite": invite, "error_message": "Ссылка просрочена. Попросите администратора отправить приглашение повторно."},
+        )
+
+    if request.method == "POST":
+        form = ClientInviteAcceptForm(request.POST)
+        if form.is_valid():
+            email = invite.email.strip().lower()
+            if User.objects.filter(email__iexact=email).exists():
+                form.add_error("password1", "Аккаунт с этим email уже существует")
+            else:
+                user = User.objects.create_user(
+                    username=email,
+                    email=email,
+                    first_name=form.cleaned_data["first_name"],
+                    last_name=form.cleaned_data["last_name"],
+                )
+                user.set_password(form.cleaned_data["password1"])
+                user.save()
+                ClientAccess.objects.create(
+                    user=user,
+                    client=invite.client,
+                    role=invite.role,
+                    phone=form.cleaned_data["phone"],
+                )
+                invite.accepted_at = timezone.now()
+                invite.accepted_user = user
+                invite.save(update_fields=["accepted_at", "accepted_user"])
+                login(request, user)
+                messages.success(request, "Аккаунт активирован.")
+                return redirect("pool_list")
+    else:
+        form = ClientInviteAcceptForm(
+            initial={
+                "first_name": invite.first_name,
+                "last_name": invite.last_name,
+                "phone": invite.phone,
+            }
+        )
+
+    return render(
+        request,
+        "registration/client_invite_accept.html",
+        {"invite": invite, "form": form},
+    )
+
+
+@login_required
 def staff_toggle_block(request, access_id):
     readonly = _deny_superuser_write(request)
     if readonly:
@@ -752,14 +1033,17 @@ def users_view(request):
 
 @login_required
 def clients_list(request):
-    is_admin = request.user.is_superuser or OrganizationAccess.objects.filter(user=request.user, role="admin").exists()
-    if not is_admin:
+    allowed_roles = ["admin", "service", "manager"]
+    is_allowed = request.user.is_superuser or OrganizationAccess.objects.filter(
+        user=request.user, role__in=allowed_roles
+    ).exists()
+    if not is_allowed:
         return HttpResponseForbidden()
 
     if request.user.is_superuser:
         clients = Client.objects.all()
     else:
-        org_ids = OrganizationAccess.objects.filter(user=request.user, role="admin").values_list(
+        org_ids = OrganizationAccess.objects.filter(user=request.user).values_list(
             "organization_id",
             flat=True,
         )
@@ -864,6 +1148,9 @@ def pool_create(request):
     readonly = _deny_superuser_write(request)
     if readonly:
         return readonly
+    client_staff_block = _deny_client_staff_write(request)
+    if client_staff_block:
+        return client_staff_block
     blocked = _redirect_if_access_blocked(request)
     if blocked:
         return blocked
@@ -926,28 +1213,16 @@ def pool_edit(request, pool_uuid):
     readonly = _deny_superuser_write(request)
     if readonly:
         return readonly
+    client_staff_block = _deny_client_staff_write(request)
+    if client_staff_block:
+        return client_staff_block
     blocked = _redirect_if_access_blocked(request)
     if blocked:
         return blocked
 
     pool = get_object_or_404(Pool, uuid=pool_uuid)
-
-    is_owner = pool.client and pool.client.user_id == request.user.id
-    if request.user.is_superuser:
-        role = "viewer"
-    else:
-        role = None
-        pool_access = PoolAccess.objects.filter(user=request.user, pool=pool).first()
-        if pool_access:
-            role = pool_access.role
-
-        org_access = OrganizationAccess.objects.filter(user=request.user, organization=pool.organization).first()
-        if org_access:
-            role = org_access.role
-
-    if not role and not is_owner:
-        return render(request, "403.html")
-    if not is_owner and role != "admin" and not request.user.is_superuser:
+    role = _pool_role_for_user(request.user, pool)
+    if role != "admin":
         return render(request, "403.html")
 
     user_client = Client.objects.filter(user=request.user).first()
@@ -984,6 +1259,9 @@ def client_create_inline(request):
     readonly = _deny_superuser_write(request)
     if readonly:
         return readonly
+    client_staff_block = _deny_client_staff_write(request)
+    if client_staff_block:
+        return client_staff_block
     blocked = _redirect_if_access_blocked(request)
     if blocked:
         return blocked
@@ -1006,6 +1284,9 @@ def client_create(request):
     readonly = _deny_superuser_write(request)
     if readonly:
         return readonly
+    client_staff_block = _deny_client_staff_write(request)
+    if client_staff_block:
+        return client_staff_block
     blocked = _redirect_if_access_blocked(request)
     if blocked:
         return blocked
@@ -1057,6 +1338,9 @@ def client_edit(request, client_id):
     readonly = _deny_superuser_write(request)
     if readonly:
         return readonly
+    client_staff_block = _deny_client_staff_write(request)
+    if client_staff_block:
+        return client_staff_block
     blocked = _redirect_if_access_blocked(request)
     if blocked:
         return blocked
@@ -1101,6 +1385,9 @@ def client_delete(request, client_id):
     readonly = _deny_superuser_write(request)
     if readonly:
         return readonly
+    client_staff_block = _deny_client_staff_write(request)
+    if client_staff_block:
+        return client_staff_block
     blocked = _redirect_if_access_blocked(request)
     if blocked:
         return blocked
@@ -1345,6 +1632,27 @@ def _send_invite_email(request, invite):
         return False
     return True
 
+
+def _build_client_invite_link(request, token):
+    path = reverse("client_invite_accept", kwargs={"token": token})
+    return request.build_absolute_uri(path)
+
+
+def _send_client_invite_email(request, invite):
+    invite_url = _build_client_invite_link(request, invite.token)
+    subject = "\u041f\u0440\u0438\u0433\u043b\u0430\u0448\u0435\u043d\u0438\u0435 \u0432 RovikPool"
+    message = (
+        f"\u0412\u0430\u0441 \u043f\u0440\u0438\u0433\u043b\u0430\u0441\u0438\u043b\u0438 \u043a\u0430\u043a \u0441\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a\u0430 \u043a\u043b\u0438\u0435\u043d\u0442\u0430: {invite.client.name}.\n\n"
+        f"\u0414\u043b\u044f \u0430\u043a\u0442\u0438\u0432\u0430\u0446\u0438\u0438 \u0430\u043a\u043a\u0430\u0443\u043d\u0442\u0430 \u043f\u0435\u0440\u0435\u0439\u0434\u0438\u0442\u0435 \u043f\u043e \u0441\u0441\u044b\u043b\u043a\u0435:\n"
+        f"{invite_url}\n\n"
+        "\u0421\u0441\u044b\u043b\u043a\u0430 \u0434\u0435\u0439\u0441\u0442\u0432\u0443\u0435\u0442 24 \u0447\u0430\u0441\u0430."
+    )
+    try:
+        send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [invite.email])
+    except Exception:
+        return False
+    return True
+
 def _send_registration_confirmation(request, user):
     if not user.email:
         return False
@@ -1527,23 +1835,12 @@ def pool_detail(request, pool_uuid):
     """Детальная страница бассейна с показателями и доступами."""
     pool = get_object_or_404(Pool, uuid=pool_uuid)
 
-    if request.user.is_superuser:
-        role = "admin"
-    else:
-        role = None
-        pool_access = PoolAccess.objects.filter(user=request.user, pool=pool).first()
-        if pool_access:
-            role = pool_access.role
-
-        org_access = OrganizationAccess.objects.filter(user=request.user, organization=pool.organization).first()
-        if org_access:
-            role = org_access.role
-
-    is_owner = pool.client and pool.client.user_id == request.user.id
-    if not role and is_owner:
-        role = "admin"
+    role = _pool_role_for_user(request.user, pool)
     if not role:
         return render(request, "403.html")
+
+    can_edit_pool = role == "admin"
+    can_add_reading = role in {"editor", "service", "admin", "client_staff"}
 
     readings_list = WaterReading.objects.filter(pool=pool).select_related("added_by").order_by("-date")
 
@@ -1565,6 +1862,8 @@ def pool_detail(request, pool_uuid):
         "readings": readings,
         "per_page": per_page,
         "role": role,
+        "can_edit_pool": can_edit_pool,
+        "can_add_reading": can_add_reading,
         "pagination_query": query_params.urlencode(),
         "page_title": None,
         "page_subtitle": None,
@@ -1619,6 +1918,10 @@ def readings_all(request):
         org_access = OrganizationAccess.objects.get(user=request.user)
         pools = Pool.objects.filter(organization=org_access.organization)
 
+    elif ClientAccess.objects.filter(user=request.user).exists():
+        client_access = _client_access_for_user(request.user)
+        pools = Pool.objects.filter(client=client_access.client) if client_access else Pool.objects.none()
+
     else:
         pools = Pool.objects.filter(accesses__user=request.user)
 
@@ -1664,6 +1967,9 @@ def water_reading_create(request, pool_uuid):
 
     """Создание нового замера для выбранного бассейна."""
     pool = get_object_or_404(Pool, uuid=pool_uuid)
+    role = _pool_role_for_user(request.user, pool)
+    if role not in {"editor", "service", "admin", "client_staff"}:
+        return render(request, "403.html")
 
     if request.method == "POST":
         form = WaterReadingForm(request.POST)
@@ -1693,6 +1999,11 @@ def water_reading_edit(request, reading_uuid):
         return blocked
 
     reading = get_object_or_404(WaterReading.objects.select_related("pool"), uuid=reading_uuid)
+
+    role = _pool_role_for_user(request.user, reading.pool)
+    if role == "client_staff":
+        messages.error(request, "Редактирование доступно только сотрудникам сервиса.")
+        return redirect("pool_detail", pool_uuid=reading.pool.uuid)
 
     if not _reading_edit_allowed(reading, request.user):
         messages.error(request, "Редактирование доступно только автору записи в течение 30 минут.")

@@ -146,6 +146,59 @@ class OrganizationAccess(models.Model):
         return f"{self.user.get_full_name()} - {self.organization.name} ({self.role})"
 
 
+class ClientAccess(models.Model):
+    ROLE_CHOICES = [
+        ("staff", "Сотрудник клиента"),
+    ]
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="staff_accesses")
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default="staff")
+    phone = models.CharField(max_length=20, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("user", "client")
+
+    def __str__(self):
+        return f"{self.user.get_full_name()} - {self.client.name} ({self.role})"
+
+
+class ClientInvite(models.Model):
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="invites")
+    invited_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sent_client_invites",
+    )
+    accepted_user = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="accepted_client_invites",
+    )
+    email = models.EmailField()
+    first_name = models.CharField(max_length=100, blank=True)
+    last_name = models.CharField(max_length=100, blank=True)
+    phone = models.CharField(max_length=20, blank=True)
+    role = models.CharField(max_length=20, choices=ClientAccess.ROLE_CHOICES, default="staff")
+    token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_sent_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField()
+    accepted_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.email} ({self.client.name})"
+
+    def is_expired(self, now=None):
+        now = now or timezone.now()
+        return self.expires_at and self.expires_at <= now
+
+
 class OrganizationInvite(models.Model):
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="invites")
     invited_by = models.ForeignKey(

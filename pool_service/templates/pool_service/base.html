@@ -294,7 +294,7 @@
               {% endif %}
             {% endwith %}
           {% endif %}
-          {% if is_org_admin %}
+          {% if is_org_staff %}
             <a class="text-decoration-none {% if active_tab == 'clients' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'clients_list' %}">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;</a>
           {% endif %}
           <a class="text-decoration-none d-inline-flex align-items-center justify-content-center {% if active_tab == 'profile' %}text-primary{% else %}text-muted{% endif %}" href="{% url 'profile' %}" aria-label="&#1051;&#1080;&#1095;&#1085;&#1099;&#1081; &#1082;&#1072;&#1073;&#1080;&#1085;&#1077;&#1090;" title="&#1051;&#1080;&#1095;&#1085;&#1099;&#1081; &#1082;&#1072;&#1073;&#1080;&#1085;&#1077;&#1090;">
@@ -411,7 +411,7 @@
               &#1052;&#1086;&#1080; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1099;
             {% endif %}
           </a>
-          {% if is_org_admin %}
+          {% if is_org_staff %}
           <a href="{% url 'clients_list' %}" class="list-group-item list-group-item-action">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;</a>
           {% endif %}
           {% if not is_personal_user %}
