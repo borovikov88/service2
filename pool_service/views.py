@@ -284,6 +284,10 @@ def _reading_edit_allowed(reading, user):
 @login_required
 def pool_list(request):
     """Список бассейнов доступных пользователю."""
+    if is_personal_user(request.user):
+        redirect_url = _personal_pool_redirect(request.user)
+        if redirect_url:
+            return redirect(redirect_url)
     if request.user.is_superuser:
         pools = Pool.objects.all()
     elif OrganizationAccess.objects.filter(user=request.user).exists():
@@ -908,6 +912,7 @@ def pool_edit(request, pool_uuid):
 
     pool = get_object_or_404(Pool, uuid=pool_uuid)
 
+    is_owner = pool.client and pool.client.user_id == request.user.id
     if request.user.is_superuser:
         role = "viewer"
     else:
@@ -920,9 +925,9 @@ def pool_edit(request, pool_uuid):
         if org_access:
             role = org_access.role
 
-    if not role:
+    if not role and not is_owner:
         return render(request, "403.html")
-    if role != "admin" and not request.user.is_superuser:
+    if not is_owner and role != "admin" and not request.user.is_superuser:
         return render(request, "403.html")
 
     user_client = Client.objects.filter(user=request.user).first()
@@ -1512,6 +1517,9 @@ def pool_detail(request, pool_uuid):
         if org_access:
             role = org_access.role
 
+    is_owner = pool.client and pool.client.user_id == request.user.id
+    if not role and is_owner:
+        role = "admin"
     if not role:
         return render(request, "403.html")
 

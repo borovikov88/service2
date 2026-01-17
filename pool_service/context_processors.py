@@ -56,6 +56,7 @@ def plan_status_context(request):
         is_personal_free,
         is_org_access_blocked,
         organization_for_user,
+        personal_pool,
         trial_ends_at,
     )
 
@@ -68,11 +69,17 @@ def plan_status_context(request):
         "is_org_admin": is_org_admin,
         "payment_url": reverse("billing"),
         "access_blocked": False,
+        "personal_pool_url": None,
     }
 
     if personal_free:
         context["plan_badge"] = {"type": "personal_free"}
-        return context
+    if personal_user:
+        pool = personal_pool(user)
+        if pool:
+            context["personal_pool_url"] = reverse("pool_detail", kwargs={"pool_uuid": pool.uuid})
+        else:
+            context["personal_pool_url"] = reverse("pool_create")
 
     org = organization_for_user(user)
     if not org:

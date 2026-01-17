@@ -58,6 +58,15 @@ def is_personal_user(user) -> bool:
     return Client.objects.filter(user=user, organization__isnull=True).exists()
 
 
+def personal_pool(user):
+    if not is_personal_user(user):
+        return None
+    client = Client.objects.filter(user=user, organization__isnull=True).first()
+    if not client:
+        return None
+    return Pool.objects.filter(client=client).first()
+
+
 def organization_for_user(user):
     if not user or not getattr(user, "is_authenticated", False):
         return None
