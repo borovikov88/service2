@@ -19,8 +19,8 @@
             <form method="post" novalidate>
                 {% csrf_token %}
                 <div class="mb-3">
-                    <label class="form-label">Email &#1080;&#1083;&#1080; &#1083;&#1086;&#1075;&#1080;&#1085;</label>
-                    <input type="text" name="{{ form.username.html_name }}" id="id_username" class="form-control form-control-lg" placeholder="your@email.com" value="{{ form.username.value|default_if_none:'' }}" required>
+                    <label class="form-label">&#1051;&#1086;&#1075;&#1080;&#1085; / email / &#1090;&#1077;&#1083;&#1077;&#1092;&#1086;&#1085;</label>
+                    <input type="text" name="{{ form.username.html_name }}" id="id_username" class="form-control form-control-lg" placeholder="your@email.com или +7 900 000 0000" value="{{ form.username.value|default_if_none:'' }}" required>
                     {% if form.username.errors %}
                         <div class="text-danger small mt-1">{{ form.username.errors.0 }}</div>
                     {% endif %}

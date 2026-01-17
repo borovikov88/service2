@@ -539,24 +539,37 @@ class PoolForm(forms.ModelForm):
 
 class EmailOrUsernameAuthenticationForm(AuthenticationForm):
     def clean(self):
-        username = self.cleaned_data.get("username")
-        if username and "@" in username:
-            users = User.objects.filter(email__iexact=username)
-            if users.count() == 1:
-                user = users.first()
-                if not user.is_active:
+        username = (self.cleaned_data.get("username") or "").strip()
+        if username:
+            if "@" in username:
+                users = User.objects.filter(email__iexact=username)
+                if users.count() == 1:
+                    user = users.first()
+                    if not user.is_active:
+                        raise forms.ValidationError(
+                            "\u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 email, \u0447\u0442\u043e\u0431\u044b \u0432\u043e\u0439\u0442\u0438.",
+                        )
+                    self.cleaned_data["username"] = user.username
+                elif users.count() > 1:
                     raise forms.ValidationError(
-                        "\u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 email, \u0447\u0442\u043e\u0431\u044b \u0432\u043e\u0439\u0442\u0438.",
+                        "\u041d\u0435\u0441\u043a\u043e\u043b\u044c\u043a\u043e \u0430\u043a\u043a\u0430\u0443\u043d\u0442\u043e\u0432 \u0441 \u044d\u0442\u0438\u043c email. \u0418\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0439\u0442\u0435 \u043b\u043e\u0433\u0438\u043d."
                     )
-                self.cleaned_data["username"] = user.username
-            elif users.count() > 1:
-                raise forms.ValidationError("\u041d\u0435\u0441\u043a\u043e\u043b\u044c\u043a\u043e \u0430\u043a\u043a\u0430\u0443\u043d\u0442\u043e\u0432 \u0441 \u044d\u0442\u0438\u043c email. \u0418\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0439\u0442\u0435 \u043b\u043e\u0433\u0438\u043d.")
-        elif username:
-            user = User.objects.filter(username__iexact=username).first()
-            if user and not user.is_active:
-                raise forms.ValidationError(
-                    "\u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 email, \u0447\u0442\u043e\u0431\u044b \u0432\u043e\u0439\u0442\u0438.",
-                )
+            else:
+                phone_digits = normalize_phone(username)
+                if phone_digits:
+                    user = User.objects.filter(username=phone_digits).first()
+                    if user and not user.is_active:
+                        raise forms.ValidationError(
+                            "\u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 email, \u0447\u0442\u043e\u0431\u044b \u0432\u043e\u0439\u0442\u0438.",
+                        )
+                    self.cleaned_data["username"] = phone_digits
+                else:
+                    user = User.objects.filter(username__iexact=username).first()
+                    if user and not user.is_active:
+                        raise forms.ValidationError(
+                            "\u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 email, \u0447\u0442\u043e\u0431\u044b \u0432\u043e\u0439\u0442\u0438.",
+                        )
+                    self.cleaned_data["username"] = username
         cleaned = super().clean()
         user = self.get_user()
         if user:

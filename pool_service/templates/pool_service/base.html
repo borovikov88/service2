@@ -93,9 +93,13 @@
       max-width: 140px;
     }
 
+    :root {
+      --keyboard-offset: 0px;
+    }
+
     .page-shell {
       min-height: calc(100vh - 120px);
-      padding: 16px 0 104px;
+      padding: 16px 0 calc(104px + var(--keyboard-offset));
     }
 
     .card-soft {
@@ -935,6 +939,42 @@
         });
       });
     });
+  </script>
+  <script>
+    (function () {
+      const isFormControl = (el) => {
+        if (!el) return false;
+        const tag = el.tagName;
+        if (tag === "TEXTAREA" || tag === "SELECT") return true;
+        if (tag !== "INPUT") return false;
+        const type = (el.getAttribute("type") || "text").toLowerCase();
+        return !["checkbox", "radio", "range", "file", "color"].includes(type);
+      };
+
+      const updateKeyboardOffset = () => {
+        if (!window.visualViewport) return;
+        const vv = window.visualViewport;
+        const keyboard = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+        document.documentElement.style.setProperty("--keyboard-offset", `${keyboard}px`);
+      };
+
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener("resize", updateKeyboardOffset);
+        window.visualViewport.addEventListener("scroll", updateKeyboardOffset);
+        updateKeyboardOffset();
+      }
+
+      document.addEventListener("focusin", (event) => {
+        if (!isFormControl(event.target)) return;
+        setTimeout(() => {
+          try {
+            event.target.scrollIntoView({ block: "center", behavior: "smooth" });
+          } catch (err) {
+            event.target.scrollIntoView(true);
+          }
+        }, 250);
+      });
+    })();
   </script>
 </body>
 </html>

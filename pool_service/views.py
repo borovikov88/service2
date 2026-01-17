@@ -73,6 +73,15 @@ def _smsru_phone(digits):
     return f"7{digits}" if digits else None
 
 
+def _format_call_phone_display(phone):
+    digits = "".join(filter(str.isdigit, phone or ""))
+    if digits.startswith("8") and len(digits) == 11:
+        digits = "7" + digits[1:]
+    if len(digits) == 11 and digits.startswith("7"):
+        return f"+7 {digits[1:4]} {digits[4:7]} {digits[7:9]} {digits[9:11]}"
+    return phone
+
+
 def _remaining_phone_attempts(profile):
     used = profile.phone_verification_attempts or 0
     return max(0, PHONE_VERIFY_MAX_ATTEMPTS - used)
@@ -1467,7 +1476,7 @@ def confirm_phone(request, token):
 
     remaining_attempts = _remaining_phone_attempts(profile)
     call_phone = profile.phone_verification_call_phone or ""
-    call_phone_display = f"+{call_phone}" if call_phone and call_phone.startswith("7") else call_phone
+    call_phone_display = _format_call_phone_display(call_phone)
 
     return render(
         request,
