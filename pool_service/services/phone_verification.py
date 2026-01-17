@@ -1,8 +1,14 @@
 import json
+import ssl
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from django.conf import settings
+
+try:
+    import certifi
+except ImportError:  # pragma: no cover - optional dependency
+    certifi = None
 
 
 def _smsru_request(path, params):
@@ -15,8 +21,14 @@ def _smsru_request(path, params):
     payload["json"] = 1
     url = f"https://sms.ru/{path}?{urlencode(payload)}"
     req = Request(url, headers={"User-Agent": "RovikPool/1.0"})
+    context = None
+    cafile = getattr(settings, "SMS_RU_CA_FILE", "")
+    if cafile:
+        context = ssl.create_default_context(cafile=cafile)
+    elif certifi:
+        context = ssl.create_default_context(cafile=certifi.where())
     try:
-        with urlopen(req, timeout=getattr(settings, "SMS_RU_TIMEOUT", 8)) as response:
+        with urlopen(req, timeout=getattr(settings, "SMS_RU_TIMEOUT", 8), context=context) as response:
             raw = response.read().decode("utf-8", errors="ignore")
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
