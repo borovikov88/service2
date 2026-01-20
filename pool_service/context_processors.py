@@ -10,6 +10,8 @@ def brand_context(request):
         "favicon": "assets/images/favicon.png",
         "icon_192": "assets/images/rovikpool-192.png",
         "icon_512": "assets/images/rovikpool-512.png",
+        "hide_text_mobile": False,
+        "logo_wide": False,
     }
     brands_by_host = {
         "rovikpool.ru": default_brand,
@@ -20,6 +22,8 @@ def brand_context(request):
             "favicon": "assets/images/aqualine.png",
             "icon_192": "assets/images/aqualine-192.png",
             "icon_512": "assets/images/aqualine-512.png",
+            "hide_text_mobile": True,
+            "logo_wide": True,
         },
         "www.service2.aqualine22.ru": {
             "name": "\u0410\u043a\u0432\u0430\u043b\u0430\u0439\u043d",
@@ -27,6 +31,8 @@ def brand_context(request):
             "favicon": "assets/images/aqualine.png",
             "icon_192": "assets/images/aqualine-192.png",
             "icon_512": "assets/images/aqualine-512.png",
+            "hide_text_mobile": True,
+            "logo_wide": True,
         },
     }
 
@@ -37,6 +43,8 @@ def brand_context(request):
         "brand_favicon": brand["favicon"],
         "brand_icon_192": brand.get("icon_192", default_brand["icon_192"]),
         "brand_icon_512": brand.get("icon_512", default_brand["icon_512"]),
+        "brand_hide_text_on_mobile": brand.get("hide_text_mobile", False),
+        "brand_logo_wide": brand.get("logo_wide", False),
         "allow_indexing": is_indexable_host(host),
     }
 
@@ -62,7 +70,7 @@ def plan_status_context(request):
 
     personal_user = is_personal_user(user)
     org_roles = list(OrganizationAccess.objects.filter(user=user).values_list("role", flat=True))
-    is_org_admin = "admin" in org_roles or user.is_superuser
+    is_org_admin = "admin" in org_roles or "owner" in org_roles or user.is_superuser
     is_org_staff = bool(org_roles)
     personal_free = is_personal_free(user)
     context = {

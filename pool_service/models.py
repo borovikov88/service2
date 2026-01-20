@@ -1,6 +1,7 @@
 import uuid
 
 from django.db import models
+from django.db.models import Q
 from django.contrib.auth.models import User
 from django_ckeditor_5.fields import CKEditor5Field
 from django.utils import timezone
@@ -133,6 +134,7 @@ class PoolAccess(models.Model):
 
 class OrganizationAccess(models.Model):
     ROLE_CHOICES = [
+        ("owner", "Владелец"),
         ("manager", "Менеджер"),
         ("service", "Сервис"),
         ("admin", "Администратор"),
@@ -141,6 +143,15 @@ class OrganizationAccess(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name="Пользователь")
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="accesses", verbose_name="Организация")
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, verbose_name="Роль")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization"],
+                condition=Q(role="owner"),
+                name="unique_owner_per_org",
+            )
+        ]
 
     def __str__(self):
         return f"{self.user.get_full_name()} - {self.organization.name} ({self.role})"

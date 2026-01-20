@@ -93,6 +93,23 @@
       max-width: 140px;
     }
 
+    .app-logo--wide {
+      height: 48px;
+      max-width: 240px;
+    }
+
+    .app-logo--wide.app-logo--compact {
+      height: 40px;
+      max-width: 200px;
+    }
+
+    @media (max-width: 576px) {
+      .app-logo--wide {
+        height: 44px;
+        max-width: 200px;
+      }
+    }
+
     :root {
       --keyboard-offset: 0px;
     }
@@ -265,8 +282,8 @@
     <div class="container">
       <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
         <div class="d-flex align-items-center gap-3">
-          <img src="{% static brand_logo %}" class="app-logo" alt="{{ brand_name }}">
-          <div>
+          <img src="{% static brand_logo %}" class="app-logo{% if brand_logo_wide %} app-logo--wide{% endif %}" alt="{{ brand_name }}">
+          <div class="{% if brand_hide_text_on_mobile %}d-none d-md-block{% endif %}">
             <div class="fw-bold text-dark">{{ brand_name }}</div>
             <div class="text-muted small">&#1057;&#1080;&#1089;&#1090;&#1077;&#1084;&#1072; &#1086;&#1073;&#1089;&#1083;&#1091;&#1078;&#1080;&#1074;&#1072;&#1085;&#1080;&#1103; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;</div>
           </div>
@@ -377,7 +394,7 @@
   <div id="mobile-menu" class="mobile-menu">
       <div class="menu-header d-flex align-items-center justify-content-between mb-3">
           <div class="d-flex align-items-center gap-2">
-              <img src="{% static brand_logo %}" class="app-logo app-logo--compact" alt="{{ brand_name }}">
+              <img src="{% static brand_logo %}" class="app-logo app-logo--compact{% if brand_logo_wide %} app-logo--wide{% endif %}" alt="{{ brand_name }}">
           </div>
           <button class="btn btn-light border-0" onclick="closeMenu()" aria-label="&#1047;&#1072;&#1082;&#1088;&#1099;&#1090;&#1100; &#1084;&#1077;&#1085;&#1102;">
               <i class="bi bi-x-lg"></i>
@@ -493,6 +510,23 @@
         <div class="modal-footer">
           <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">&#1054;&#1090;&#1084;&#1077;&#1085;&#1072;</button>
           <a href="{{ payment_url|default:'/billing/' }}" class="btn btn-primary">&#1055;&#1077;&#1088;&#1077;&#1081;&#1090;&#1080; &#1082; &#1086;&#1087;&#1083;&#1072;&#1090;&#1077;</a>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="modal fade" id="confirmActionModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="confirmActionTitle">&#1055;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1076;&#1080;&#1090;&#1077; &#1076;&#1077;&#1081;&#1089;&#1090;&#1074;&#1080;&#1077;</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body" id="confirmActionBody">
+          &#1055;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1076;&#1080;&#1090;&#1077; &#1076;&#1077;&#1081;&#1089;&#1090;&#1074;&#1080;&#1077;.
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">&#1054;&#1090;&#1084;&#1077;&#1085;&#1072;</button>
+          <button type="button" class="btn btn-primary js-confirm-submit">&#1055;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1076;&#1080;&#1090;&#1100;</button>
         </div>
       </div>
     </div>
@@ -937,6 +971,45 @@
       document.querySelectorAll("[data-requires-access]").forEach((el) => {
         el.addEventListener("click", (event) => {
           event.preventDefault();
+          modal.show();
+        });
+      });
+    });
+  </script>
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+      const modalEl = document.getElementById("confirmActionModal");
+      if (!modalEl) return;
+      const modal = new bootstrap.Modal(modalEl);
+      const titleEl = modalEl.querySelector("#confirmActionTitle");
+      const bodyEl = modalEl.querySelector("#confirmActionBody");
+      const submitBtn = modalEl.querySelector(".js-confirm-submit");
+      let pendingForm = null;
+
+      const setVariant = (variant) => {
+        const base = "btn js-confirm-submit";
+        submitBtn.className = `${base} ${variant ? "btn-" + variant : "btn-primary"}`;
+      };
+
+      modalEl.addEventListener("hidden.bs.modal", () => {
+        pendingForm = null;
+      });
+
+      submitBtn.addEventListener("click", () => {
+        if (!pendingForm) return;
+        pendingForm.submit();
+      });
+
+      document.querySelectorAll(".js-confirm-action").forEach((btn) => {
+        btn.addEventListener("click", (event) => {
+          if (btn.hasAttribute("data-requires-access")) return;
+          event.preventDefault();
+          pendingForm = btn.closest("form");
+          if (!pendingForm) return;
+          titleEl.textContent = btn.dataset.confirmTitle || "\u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435";
+          bodyEl.textContent = btn.dataset.confirmBody || "\u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435.";
+          submitBtn.textContent = btn.dataset.confirmConfirm || "\u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u044c";
+          setVariant(btn.dataset.confirmVariant || "");
           modal.show();
         });
       });

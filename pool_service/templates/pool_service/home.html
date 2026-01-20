@@ -88,8 +88,8 @@
 <div class="landing-page">
 <header class="d-flex justify-content-between align-items-center mb-4">
     <div class="d-flex align-items-center gap-3">
-        <img src="{% static brand_logo %}" alt="{{ brand_name }}" style="width:52px;height:52px;">
-        <div>
+        <img src="{% static brand_logo %}" class="app-logo{% if brand_logo_wide %} app-logo--wide{% endif %}" alt="{{ brand_name }}">
+        <div class="{% if brand_hide_text_on_mobile %}d-none d-md-block{% endif %}">
             <div class="fw-bold text-dark">{{ brand_name }}</div>
             <div class="text-muted small">&#1057;&#1077;&#1088;&#1074;&#1080;&#1089; &#1086;&#1073;&#1089;&#1083;&#1091;&#1078;&#1080;&#1074;&#1072;&#1085;&#1080;&#1103; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;</div>
         </div>

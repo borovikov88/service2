@@ -182,7 +182,7 @@ class RegistrationForm(forms.Form):
                 plan_type=Organization.PLAN_COMPANY_TRIAL,
                 trial_started_at=timezone.now(),
             )
-            OrganizationAccess.objects.create(user=user, organization=org, role="admin")
+            OrganizationAccess.objects.create(user=user, organization=org, role="owner")
         else:
             Client.objects.create(
                 client_type="private",
@@ -344,7 +344,7 @@ class CompanySignupForm(forms.Form):
             plan_type=Organization.PLAN_COMPANY_TRIAL,
             trial_started_at=timezone.now(),
         )
-        OrganizationAccess.objects.create(user=user, organization=org, role="admin")
+        OrganizationAccess.objects.create(user=user, organization=org, role="owner")
         return user
 
 
@@ -450,7 +450,7 @@ class OrganizationInviteForm(forms.Form):
             classes = "form-control rounded-3"
             if name in ["role"]:
                 field.widget.attrs.update({"class": "form-select"})
-                field.widget.choices = field.choices
+                field.widget.choices = [choice for choice in field.choices if choice[0] != "owner"]
                 continue
             if name in ["phone"]:
                 field.widget.attrs.update({"class": f"{classes} phone-mask", "placeholder": field.label})

@@ -21,6 +21,7 @@
                     <th>Телефон</th>
                     <th>Статус</th>
                     <th>Последний вход</th>
+                    {% if can_manage %}<th class="text-end">Действия</th>{% endif %}
                 </tr>
             </thead>
             <tbody>
@@ -37,9 +38,52 @@
                             {% endif %}
                         </td>
                         <td>{% if access.user.last_login %}{{ access.user.last_login|date:"d.m.Y H:i" }}{% else %}—{% endif %}</td>
+                        {% if can_manage %}
+                            <td class="text-end">
+                                {% if access.user_id == user.id %}
+                                    —
+                                {% else %}
+                                    <div class="d-inline-flex gap-2">
+                                        <form method="post" action="{% url 'client_staff_toggle_block' access.id %}">
+                                            {% csrf_token %}
+                                            <button type="button" class="btn btn-outline-warning btn-sm js-confirm-action {% if access_blocked %}opacity-50{% endif %}"
+                                                {% if access.user.is_active %}
+                                                    data-confirm-title="Заблокировать сотрудника?"
+                                                    data-confirm-body="Сотрудник не сможет входить в систему."
+                                                    data-confirm-confirm="Заблокировать"
+                                                    data-confirm-variant="warning"
+                                                {% else %}
+                                                    data-confirm-title="Разблокировать сотрудника?"
+                                                    data-confirm-body="Сотрудник сможет снова входить в систему."
+                                                    data-confirm-confirm="Разблокировать"
+                                                    data-confirm-variant="primary"
+                                                {% endif %}
+                                                {% if access_blocked %}data-requires-access="true"{% endif %}>
+                                                {% if access.user.is_active %}Заблокировать{% else %}Разблокировать{% endif %}
+                                            </button>
+                                        </form>
+                                        <form method="post" action="{% url 'client_staff_delete' access.id %}">
+                                            {% csrf_token %}
+                                            <button type="button" class="btn btn-outline-danger btn-sm js-confirm-action {% if access_blocked %}opacity-50{% endif %}"
+                                                data-confirm-title="Удалить сотрудника?"
+                                                data-confirm-body="Доступ к клиенту будет удален. Показания не удаляются."
+                                                data-confirm-confirm="Удалить"
+                                                data-confirm-variant="danger"
+                                                {% if access_blocked %}data-requires-access="true"{% endif %}>
+                                                Удалить
+                                            </button>
+                                        </form>
+                                    </div>
+                                {% endif %}
+                            </td>
+                        {% endif %}
                     </tr>
                 {% empty %}
-                    <tr><td colspan="5" class="text-center text-muted py-3">Пока нет сотрудников</td></tr>
+                    {% if can_manage %}
+                        <tr><td colspan="6" class="text-center text-muted py-3">Пока нет сотрудников</td></tr>
+                    {% else %}
+                        <tr><td colspan="5" class="text-center text-muted py-3">Пока нет сотрудников</td></tr>
+                    {% endif %}
                 {% endfor %}
             </tbody>
         </table>
@@ -74,12 +118,25 @@
                         </td>
                         {% if can_manage %}
                             <td class="text-end">
-                                <form method="post" action="{% url 'client_invite_resend' invite.id %}" class="d-inline">
-                                    {% csrf_token %}
-                                    <button type="submit" class="btn btn-outline-primary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
-                                        Отправить повторно
-                                    </button>
-                                </form>
+                                <div class="d-inline-flex gap-2">
+                                    <form method="post" action="{% url 'client_invite_resend' client.id invite.id %}" class="d-inline">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-outline-primary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
+                                            Отправить повторно
+                                        </button>
+                                    </form>
+                                    <form method="post" action="{% url 'client_invite_delete' client.id invite.id %}" class="d-inline">
+                                        {% csrf_token %}
+                                        <button type="button" class="btn btn-outline-danger btn-sm js-confirm-action {% if access_blocked %}opacity-50{% endif %}"
+                                            data-confirm-title="Удалить приглашение?"
+                                            data-confirm-body="Ссылка приглашения станет недействительной."
+                                            data-confirm-confirm="Удалить"
+                                            data-confirm-variant="danger"
+                                            {% if access_blocked %}data-requires-access="true"{% endif %}>
+                                            Удалить
+                                        </button>
+                                    </form>
+                                </div>
                             </td>
                         {% endif %}
                     </tr>

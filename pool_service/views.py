@@ -145,6 +145,8 @@ from django import forms
 
 PER_PAGE_CHOICES = {20, 50, 100}
 INVITE_EXPIRY_HOURS = 24
+ADMIN_ROLES = ["owner", "admin"]
+ORG_STAFF_ROLES = ["owner", "admin", "service", "manager"]
 
 
 def _parse_per_page(value, default):
@@ -184,7 +186,7 @@ def _pool_role_for_user(user, pool):
 
     org_access = OrganizationAccess.objects.filter(user=user, organization=pool.organization).first()
     if org_access:
-        role = org_access.role
+        role = "admin" if org_access.role in ADMIN_ROLES else org_access.role
 
     client_access = ClientAccess.objects.filter(user=user, client=pool.client).first()
     if client_access and not role:
@@ -502,7 +504,7 @@ def invite_create(request):
     if blocked:
         return blocked
 
-    is_admin = request.user.is_superuser or OrganizationAccess.objects.filter(user=request.user, role="admin").exists()
+    is_admin = request.user.is_superuser or OrganizationAccess.objects.filter(user=request.user, role__in=ADMIN_ROLES).exists()
     if not is_admin:
         return HttpResponseForbidden()
 
@@ -514,7 +516,7 @@ def invite_create(request):
                 form.add_error("email", "\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044c \u0441 \u0442\u0430\u043a\u0438\u043c email \u0443\u0436\u0435 \u0437\u0430\u0440\u0435\u0433\u0438\u0441\u0442\u0440\u0438\u0440\u043e\u0432\u0430\u043d")
             else:
                 org_access = (
-                    OrganizationAccess.objects.filter(user=request.user, role="admin")
+                    OrganizationAccess.objects.filter(user=request.user, role__in=ADMIN_ROLES)
                     .select_related("organization")
                     .first()
                 )
@@ -586,13 +588,13 @@ def invite_resend(request, invite_id):
         return redirect("users")
 
     invite = get_object_or_404(OrganizationInvite, pk=invite_id)
-    is_admin = request.user.is_superuser or OrganizationAccess.objects.filter(user=request.user, role="admin").exists()
+    is_admin = request.user.is_superuser or OrganizationAccess.objects.filter(user=request.user, role__in=ADMIN_ROLES).exists()
     if not is_admin:
         return HttpResponseForbidden()
     if not request.user.is_superuser:
         allowed = OrganizationAccess.objects.filter(
             user=request.user,
-            role="admin",
+            role__in=ADMIN_ROLES,
             organization=invite.organization,
         ).exists()
         if not allowed:
@@ -612,6 +614,38 @@ def invite_resend(request, invite_id):
         messages.success(request, "\u041f\u0440\u0438\u0433\u043b\u0430\u0448\u0435\u043d\u0438\u0435 \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u043e \u043f\u043e\u0432\u0442\u043e\u0440\u043d\u043e.")
     else:
         messages.error(request, "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u043f\u0438\u0441\u044c\u043c\u043e.")
+    return redirect("users")
+
+
+@login_required
+def invite_delete(request, invite_id):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+    if request.method != "POST":
+        return redirect("users")
+
+    invite = get_object_or_404(OrganizationInvite, pk=invite_id)
+    is_admin = request.user.is_superuser or OrganizationAccess.objects.filter(user=request.user, role__in=ADMIN_ROLES).exists()
+    if not is_admin:
+        return HttpResponseForbidden()
+    if not request.user.is_superuser:
+        allowed = OrganizationAccess.objects.filter(
+            user=request.user,
+            role__in=ADMIN_ROLES,
+            organization=invite.organization,
+        ).exists()
+        if not allowed:
+            return HttpResponseForbidden()
+    if invite.accepted_at:
+        messages.info(request, "Приглашение уже принято.")
+        return redirect("users")
+
+    invite.delete()
+    messages.success(request, "Приглашение удалено.")
     return redirect("users")
 
 
@@ -686,7 +720,7 @@ def client_staff(request, client_id):
     is_org_staff = OrganizationAccess.objects.filter(
         user=request.user,
         organization=client.organization,
-        role__in=["admin", "service", "manager"],
+        role__in=ORG_STAFF_ROLES,
     ).exists()
 
     if not request.user.is_superuser and not is_org_staff:
@@ -725,6 +759,77 @@ def client_staff(request, client_id):
 
 
 @login_required
+def client_staff_toggle_block(request, access_id):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+    if request.method != "POST":
+        return redirect("clients_list")
+
+    access = get_object_or_404(
+        ClientAccess.objects.select_related("client", "client__organization", "user"),
+        pk=access_id,
+    )
+    is_org_staff = OrganizationAccess.objects.filter(
+        user=request.user,
+        organization=access.client.organization,
+        role__in=ORG_STAFF_ROLES,
+    ).exists()
+    if not is_org_staff:
+        return HttpResponseForbidden()
+    if access.user_id == request.user.id:
+        messages.error(request, "Нельзя заблокировать самого себя.")
+        return redirect("client_staff", client_id=access.client_id)
+    if access.user.is_superuser:
+        return HttpResponseForbidden()
+
+    access.user.is_active = not access.user.is_active
+    access.user.save(update_fields=["is_active"])
+    if access.user.is_active:
+        messages.success(request, "Сотрудник разблокирован.")
+    else:
+        messages.success(request, "Сотрудник заблокирован.")
+    return redirect("client_staff", client_id=access.client_id)
+
+
+@login_required
+def client_staff_delete(request, access_id):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+    if request.method != "POST":
+        return redirect("clients_list")
+
+    access = get_object_or_404(
+        ClientAccess.objects.select_related("client", "client__organization", "user"),
+        pk=access_id,
+    )
+    is_org_staff = OrganizationAccess.objects.filter(
+        user=request.user,
+        organization=access.client.organization,
+        role__in=ORG_STAFF_ROLES,
+    ).exists()
+    if not is_org_staff:
+        return HttpResponseForbidden()
+    if access.user_id == request.user.id:
+        messages.error(request, "Нельзя удалить самого себя.")
+        return redirect("client_staff", client_id=access.client_id)
+    if access.user.is_superuser:
+        return HttpResponseForbidden()
+
+    PoolAccess.objects.filter(user=access.user, pool__client=access.client).delete()
+    ClientAccess.objects.filter(user=access.user, client=access.client).delete()
+    messages.success(request, "Сотрудник удален.")
+    return redirect("client_staff", client_id=access.client_id)
+
+
+@login_required
 def client_invite_create(request, client_id):
     readonly = _deny_superuser_write(request)
     if readonly:
@@ -737,7 +842,7 @@ def client_invite_create(request, client_id):
     is_org_staff = OrganizationAccess.objects.filter(
         user=request.user,
         organization=client.organization,
-        role__in=["admin", "service", "manager"],
+        role__in=ORG_STAFF_ROLES,
     ).exists()
     if not is_org_staff:
         return HttpResponseForbidden()
@@ -801,7 +906,7 @@ def client_invite_create(request, client_id):
 
 
 @login_required
-def client_invite_resend(request, invite_id):
+def client_invite_resend(request, invite_id, client_id=None):
     readonly = _deny_superuser_write(request)
     if readonly:
         return readonly
@@ -815,7 +920,7 @@ def client_invite_resend(request, invite_id):
     is_org_staff = OrganizationAccess.objects.filter(
         user=request.user,
         organization=invite.client.organization,
-        role__in=["admin", "service", "manager"],
+        role__in=ORG_STAFF_ROLES,
     ).exists()
     if not is_org_staff:
         return HttpResponseForbidden()
@@ -834,6 +939,34 @@ def client_invite_resend(request, invite_id):
         messages.success(request, "Приглашение отправлено повторно.")
     else:
         messages.error(request, "Не удалось отправить письмо.")
+    return redirect("client_staff", client_id=invite.client_id)
+
+
+@login_required
+def client_invite_delete(request, invite_id, client_id=None):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+    if request.method != "POST":
+        return redirect("clients_list")
+
+    invite = get_object_or_404(ClientInvite, pk=invite_id)
+    is_org_staff = OrganizationAccess.objects.filter(
+        user=request.user,
+        organization=invite.client.organization,
+        role__in=ORG_STAFF_ROLES,
+    ).exists()
+    if not is_org_staff:
+        return HttpResponseForbidden()
+    if invite.accepted_at:
+        messages.info(request, "Приглашение уже принято.")
+        return redirect("client_staff", client_id=invite.client_id)
+
+    invite.delete()
+    messages.success(request, "Приглашение удалено.")
     return redirect("client_staff", client_id=invite.client_id)
 
 
@@ -917,13 +1050,16 @@ def staff_toggle_block(request, access_id):
     access = get_object_or_404(OrganizationAccess, pk=access_id)
     is_admin = request.user.is_superuser or OrganizationAccess.objects.filter(
         user=request.user,
-        role="admin",
+        role__in=ADMIN_ROLES,
         organization=access.organization,
     ).exists()
     if not is_admin:
         return HttpResponseForbidden()
     if access.user_id == request.user.id:
         messages.error(request, "\u041d\u0435\u043b\u044c\u0437\u044f \u0437\u0430\u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0441\u0430\u043c\u043e\u0433\u043e \u0441\u0435\u0431\u044f.")
+        return redirect("users")
+    if access.role == "owner":
+        messages.error(request, "\u041d\u0435\u043b\u044c\u0437\u044f \u0437\u0430\u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0432\u043b\u0430\u0434\u0435\u043b\u044c\u0446\u0430.")
         return redirect("users")
     if access.user.is_superuser:
         return HttpResponseForbidden()
@@ -951,13 +1087,16 @@ def staff_delete(request, access_id):
     access = get_object_or_404(OrganizationAccess, pk=access_id)
     is_admin = request.user.is_superuser or OrganizationAccess.objects.filter(
         user=request.user,
-        role="admin",
+        role__in=ADMIN_ROLES,
         organization=access.organization,
     ).exists()
     if not is_admin:
         return HttpResponseForbidden()
     if access.user_id == request.user.id:
         messages.error(request, "\u041d\u0435\u043b\u044c\u0437\u044f \u0443\u0434\u0430\u043b\u0438\u0442\u044c \u0441\u0430\u043c\u043e\u0433\u043e \u0441\u0435\u0431\u044f.")
+        return redirect("users")
+    if access.role == "owner":
+        messages.error(request, "\u041d\u0435\u043b\u044c\u0437\u044f \u0443\u0434\u0430\u043b\u0438\u0442\u044c \u0432\u043b\u0430\u0434\u0435\u043b\u044c\u0446\u0430.")
         return redirect("users")
     if access.user.is_superuser:
         return HttpResponseForbidden()
@@ -970,10 +1109,54 @@ def staff_delete(request, access_id):
 
 
 @login_required
+def staff_change_role(request, access_id):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+    if request.method != "POST":
+        return redirect("users")
+
+    access = get_object_or_404(OrganizationAccess, pk=access_id)
+    is_admin = request.user.is_superuser or OrganizationAccess.objects.filter(
+        user=request.user,
+        role__in=ADMIN_ROLES,
+        organization=access.organization,
+    ).exists()
+    if not is_admin:
+        return HttpResponseForbidden()
+    if access.user_id == request.user.id:
+        messages.error(request, "\u041d\u0435\u043b\u044c\u0437\u044f \u043c\u0435\u043d\u044f\u0442\u044c \u0441\u0432\u043e\u044e \u0440\u043e\u043b\u044c.")
+        return redirect("users")
+    if access.role == "owner":
+        messages.error(request, "\u041d\u0435\u043b\u044c\u0437\u044f \u043c\u0435\u043d\u044f\u0442\u044c \u0440\u043e\u043b\u044c \u0432\u043b\u0430\u0434\u0435\u043b\u044c\u0446\u0430.")
+        return redirect("users")
+    if access.user.is_superuser:
+        return HttpResponseForbidden()
+
+    new_role = (request.POST.get("role") or "").strip()
+    allowed_roles = ["admin", "service", "manager"]
+    if new_role not in allowed_roles:
+        messages.error(request, "\u041d\u0435\u0434\u043e\u043f\u0443\u0441\u0442\u0438\u043c\u0430\u044f \u0440\u043e\u043b\u044c.")
+        return redirect("users")
+    if access.role == new_role:
+        messages.info(request, "\u0420\u043e\u043b\u044c \u0443\u0436\u0435 \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u0430.")
+        return redirect("users")
+
+    access.role = new_role
+    access.save(update_fields=["role"])
+    messages.success(request, "\u0420\u043e\u043b\u044c \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0430.")
+    return redirect("users")
+
+
+@login_required
 def users_view(request):
     """Список пользователей для суперюзеров/админов, сервисники видят только персонал бассейнов."""
     roles = list(OrganizationAccess.objects.filter(user=request.user).values_list("role", flat=True))
-    is_org_admin = "admin" in roles
+    is_org_owner = "owner" in roles
+    is_org_admin = "admin" in roles or is_org_owner
     is_org_service = "service" in roles
 
     if not (request.user.is_superuser or is_org_admin or is_org_service):
@@ -1022,6 +1205,7 @@ def users_view(request):
             "organizations": organizations,
             "page_action_label": "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0441\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a\u0430" if is_org_admin else None,
             "page_action_url": reverse("invite_create") if is_org_admin else None,
+            "can_manage_roles": is_org_admin and not request.user.is_superuser,
             "pool_staff": pool_staff,
             "active_tab": "users",
             "show_search": False,
@@ -1033,7 +1217,7 @@ def users_view(request):
 
 @login_required
 def clients_list(request):
-    allowed_roles = ["admin", "service", "manager"]
+    allowed_roles = ORG_STAFF_ROLES
     is_allowed = request.user.is_superuser or OrganizationAccess.objects.filter(
         user=request.user, role__in=allowed_roles
     ).exists()
@@ -1176,7 +1360,7 @@ def pool_create(request):
                     pool.organization_id = pool.client.organization_id
                 else:
                     org_access = (
-                        OrganizationAccess.objects.filter(user=request.user, role__in=["admin", "service", "manager"])
+                        OrganizationAccess.objects.filter(user=request.user, role__in=ORG_STAFF_ROLES)
                         .first()
                     )
                     if org_access:
@@ -1267,7 +1451,7 @@ def client_create_inline(request):
         return blocked
 
     roles = list(OrganizationAccess.objects.filter(user=request.user).values_list("role", flat=True))
-    if not request.user.is_superuser and not any(r in ["admin", "service", "manager"] for r in roles):
+    if not request.user.is_superuser and not any(r in ORG_STAFF_ROLES for r in roles):
         return HttpResponseForbidden()
 
     if request.method == "POST":
@@ -1292,7 +1476,7 @@ def client_create(request):
         return blocked
 
     roles = list(OrganizationAccess.objects.filter(user=request.user).values_list("role", flat=True))
-    if not request.user.is_superuser and not any(r in ["admin", "service", "manager"] for r in roles):
+    if not request.user.is_superuser and not any(r in ORG_STAFF_ROLES for r in roles):
         return HttpResponseForbidden()
 
     next_url = request.GET.get("next") or request.POST.get("next")
@@ -1304,7 +1488,7 @@ def client_create(request):
         if form.is_valid():
             client = form.save()
             org_access = (
-                OrganizationAccess.objects.filter(user=request.user, role__in=["admin", "service", "manager"])
+                OrganizationAccess.objects.filter(user=request.user, role__in=ORG_STAFF_ROLES)
                 .select_related("organization")
                 .first()
             )
@@ -1349,7 +1533,7 @@ def client_edit(request, client_id):
     if request.user.is_superuser:
         allowed = True
     else:
-        org_ids = OrganizationAccess.objects.filter(user=request.user, role="admin").values_list(
+        org_ids = OrganizationAccess.objects.filter(user=request.user, role__in=ADMIN_ROLES).values_list(
             "organization_id",
             flat=True,
         )
@@ -1398,7 +1582,7 @@ def client_delete(request, client_id):
     if request.user.is_superuser:
         allowed = True
     else:
-        org_ids = OrganizationAccess.objects.filter(user=request.user, role="admin").values_list(
+        org_ids = OrganizationAccess.objects.filter(user=request.user, role__in=ADMIN_ROLES).values_list(
             "organization_id",
             flat=True,
         )

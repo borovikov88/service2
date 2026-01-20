@@ -60,7 +60,23 @@
                                         {% if item.user.get_full_name %}{{ item.user.get_full_name }}{% else %}{{ item.user.username }}{% endif %}
                                     </td>
                                     <td>{{ item.user.email|default:item.user.username }}</td>
-                                    <td>{{ item.get_role_display }}</td>
+                                    <td>
+                                        {% if can_manage_roles and item.role != "owner" and item.user_id != user.id %}
+                                            <form method="post" action="{% url 'staff_change_role' item.id %}" class="d-flex align-items-center gap-2">
+                                                {% csrf_token %}
+                                                <select name="role" class="form-select form-select-sm">
+                                                    <option value="admin" {% if item.role == "admin" %}selected{% endif %}>&#1040;&#1076;&#1084;&#1080;&#1085;&#1080;&#1089;&#1090;&#1088;&#1072;&#1090;&#1086;&#1088;</option>
+                                                    <option value="manager" {% if item.role == "manager" %}selected{% endif %}>&#1052;&#1077;&#1085;&#1077;&#1076;&#1078;&#1077;&#1088;</option>
+                                                    <option value="service" {% if item.role == "service" %}selected{% endif %}>&#1057;&#1077;&#1088;&#1074;&#1080;&#1089;</option>
+                                                </select>
+                                                <button type="submit" class="btn btn-outline-primary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
+                                                    &#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;
+                                                </button>
+                                            </form>
+                                        {% else %}
+                                            {{ item.get_role_display }}
+                                        {% endif %}
+                                    </td>
                                     <td>
                                         {% if item.user_id == user.id %}
                                             &#8212;
@@ -75,18 +91,35 @@
                                     {% if user.is_superuser %}
                                         <td>{% if item.user.last_login %}{{ item.user.last_login|date:"d.m.Y H:i" }}{% else %}&#8212;{% endif %}</td>
                                     {% endif %}
-                                    {% if is_org_admin and not user.is_superuser and item.user_id != user.id %}
+                                    {% if is_org_admin and not user.is_superuser and item.user_id != user.id and item.role != "owner" %}
                                         <td class="text-end">
                                             <div class="d-inline-flex gap-2">
                                                 <form method="post" action="{% url 'staff_toggle_block' item.id %}">
                                                     {% csrf_token %}
-                                                    <button type="submit" class="btn btn-outline-warning btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
+                                                    <button type="button" class="btn btn-outline-warning btn-sm js-confirm-action {% if access_blocked %}opacity-50{% endif %}"
+                                                        {% if item.user.is_active %}
+                                                            data-confirm-title="&#1047;&#1072;&#1073;&#1083;&#1086;&#1082;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; &#1089;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1072;?"
+                                                            data-confirm-body="&#1057;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082; &#1085;&#1077; &#1089;&#1084;&#1086;&#1078;&#1077;&#1090; &#1074;&#1093;&#1086;&#1076;&#1080;&#1090;&#1100; &#1074; &#1089;&#1080;&#1089;&#1090;&#1077;&#1084;&#1091;."
+                                                            data-confirm-confirm="&#1047;&#1072;&#1073;&#1083;&#1086;&#1082;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;"
+                                                            data-confirm-variant="warning"
+                                                        {% else %}
+                                                            data-confirm-title="&#1056;&#1072;&#1079;&#1073;&#1083;&#1086;&#1082;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; &#1089;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1072;?"
+                                                            data-confirm-body="&#1057;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082; &#1089;&#1084;&#1086;&#1078;&#1077;&#1090; &#1089;&#1085;&#1086;&#1074;&#1072; &#1074;&#1093;&#1086;&#1076;&#1080;&#1090;&#1100; &#1074; &#1089;&#1080;&#1089;&#1090;&#1077;&#1084;&#1091;."
+                                                            data-confirm-confirm="&#1056;&#1072;&#1079;&#1073;&#1083;&#1086;&#1082;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;"
+                                                            data-confirm-variant="primary"
+                                                        {% endif %}
+                                                        {% if access_blocked %}data-requires-access="true"{% endif %}>
                                                         {% if item.user.is_active %}&#1047;&#1072;&#1073;&#1083;&#1086;&#1082;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;{% else %}&#1056;&#1072;&#1079;&#1073;&#1083;&#1086;&#1082;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;{% endif %}
                                                     </button>
                                                 </form>
                                                 <form method="post" action="{% url 'staff_delete' item.id %}">
                                                     {% csrf_token %}
-                                                    <button type="submit" class="btn btn-outline-danger btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
+                                                    <button type="button" class="btn btn-outline-danger btn-sm js-confirm-action {% if access_blocked %}opacity-50{% endif %}"
+                                                        data-confirm-title="&#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100; &#1089;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1072;?"
+                                                        data-confirm-body="&#1044;&#1086;&#1089;&#1090;&#1091;&#1087; &#1082; &#1086;&#1073;&#1098;&#1077;&#1082;&#1090;&#1072;&#1084; &#1073;&#1091;&#1076;&#1077;&#1090; &#1091;&#1076;&#1072;&#1083;&#1077;&#1085;. &#1055;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103; &#1085;&#1077; &#1091;&#1076;&#1072;&#1083;&#1103;&#1102;&#1090;&#1089;&#1103;."
+                                                        data-confirm-confirm="&#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100;"
+                                                        data-confirm-variant="danger"
+                                                        {% if access_blocked %}data-requires-access="true"{% endif %}>
                                                         &#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100;
                                                     </button>
                                                 </form>
@@ -119,12 +152,25 @@
                                     {% endif %}
                                     {% if is_org_admin and not user.is_superuser %}
                                         <td class="text-end">
-                                            <form method="post" action="{% url 'invite_resend' invite.id %}" class="d-inline">
-                                                {% csrf_token %}
-                                                <button type="submit" class="btn btn-outline-primary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
-                                                    &#1054;&#1090;&#1087;&#1088;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1074;&#1090;&#1086;&#1088;&#1085;&#1086;
-                                                </button>
-                                            </form>
+                                            <div class="d-inline-flex gap-2">
+                                                <form method="post" action="{% url 'invite_resend' invite.id %}" class="d-inline">
+                                                    {% csrf_token %}
+                                                    <button type="submit" class="btn btn-outline-primary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
+                                                        &#1054;&#1090;&#1087;&#1088;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1074;&#1090;&#1086;&#1088;&#1085;&#1086;
+                                                    </button>
+                                                </form>
+                                                <form method="post" action="{% url 'invite_delete' invite.id %}" class="d-inline">
+                                                    {% csrf_token %}
+                                                    <button type="button" class="btn btn-outline-danger btn-sm js-confirm-action {% if access_blocked %}opacity-50{% endif %}"
+                                                        data-confirm-title="&#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100; &#1087;&#1088;&#1080;&#1075;&#1083;&#1072;&#1096;&#1077;&#1085;&#1080;&#1077;?"
+                                                        data-confirm-body="&#1057;&#1089;&#1099;&#1083;&#1082;&#1072; &#1087;&#1088;&#1080;&#1075;&#1083;&#1072;&#1096;&#1077;&#1085;&#1080;&#1103; &#1089;&#1090;&#1072;&#1085;&#1077;&#1090; &#1085;&#1077;&#1076;&#1077;&#1081;&#1089;&#1090;&#1074;&#1080;&#1090;&#1077;&#1083;&#1100;&#1085;&#1086;&#1081;."
+                                                        data-confirm-confirm="&#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100;"
+                                                        data-confirm-variant="danger"
+                                                        {% if access_blocked %}data-requires-access="true"{% endif %}>
+                                                        &#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100;
+                                                    </button>
+                                                </form>
+                                            </div>
                                         </td>
                                     {% endif %}
                                 </tr>
