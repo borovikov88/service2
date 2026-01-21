@@ -245,6 +245,55 @@ class OrganizationInvite(models.Model):
         return self.expires_at and self.expires_at <= now
 
 
+class OrganizationPaymentRequest(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    STATUS_CANCELED = "canceled"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "pending"),
+        (STATUS_APPROVED, "approved"),
+        (STATUS_REJECTED, "rejected"),
+        (STATUS_CANCELED, "canceled"),
+    ]
+    PERIOD_CHOICES = [
+        (1, "1"),
+        (3, "3"),
+        (6, "6"),
+        (12, "12"),
+    ]
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="payment_requests",
+    )
+    requested_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="payment_requests",
+    )
+    months = models.PositiveSmallIntegerField(choices=PERIOD_CHOICES)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    created_at = models.DateTimeField(auto_now_add=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    decided_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="payment_requests_decided",
+    )
+    paid_until_before = models.DateTimeField(null=True, blank=True)
+    paid_until_after = models.DateTimeField(null=True, blank=True)
+    note = models.TextField(blank=True)
+
+    def __str__(self):
+        return f"{self.organization.name} ({self.months}m, {self.status})"
+
+
 class WaterReading(models.Model):
     uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     pool = models.ForeignKey(Pool, on_delete=models.CASCADE, related_name="waterreading")

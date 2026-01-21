@@ -31,6 +31,7 @@ from urllib.parse import urlencode
 from urllib.request import urlopen, Request
 import json
 from datetime import timedelta
+from calendar import monthrange
 
 from .forms import (
     WaterReadingForm,
@@ -139,6 +140,7 @@ from .models import (
     Profile,
     ClientAccess,
     ClientInvite,
+    OrganizationPaymentRequest,
 )
 from .services.permissions import is_personal_free, is_personal_user, is_org_access_blocked, personal_pool
 from django import forms
@@ -155,6 +157,25 @@ def _parse_per_page(value, default):
     except (TypeError, ValueError):
         return default
     return per_page if per_page in PER_PAGE_CHOICES else default
+
+
+def _add_months(dt, months):
+    month_index = (dt.month - 1) + months
+    year = dt.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(dt.day, monthrange(year, month)[1])
+    return dt.replace(year=year, month=month, day=day)
+
+
+def _extend_org_paid_until(org, months):
+    now = timezone.now()
+    base = org.paid_until if org.paid_until and org.paid_until > now else now
+    new_until = _add_months(base, months)
+    previous = org.paid_until
+    org.paid_until = new_until
+    org.plan_type = Organization.PLAN_COMPANY_PAID
+    org.save(update_fields=["paid_until", "plan_type"])
+    return previous, new_until
 
 
 def _personal_pool_redirect(user):
@@ -481,6 +502,19 @@ def pool_list(request):
 
 @login_required
 def billing_info(request):
+    org_access = (
+        OrganizationAccess.objects.filter(user=request.user, role__in=ADMIN_ROLES)
+        .select_related("organization")
+        .first()
+    )
+    organization = org_access.organization if org_access else None
+    payment_requests = []
+    if organization:
+        payment_requests = (
+            OrganizationPaymentRequest.objects.filter(organization=organization)
+            .select_related("requested_by", "decided_by")
+            .order_by("-created_at")[:50]
+        )
     return render(
         request,
         "pool_service/billing.html",
@@ -488,6 +522,151 @@ def billing_info(request):
             "page_title": "\u041e\u043f\u043b\u0430\u0442\u0430 \u0438 \u043f\u0440\u043e\u0434\u043b\u0435\u043d\u0438\u0435",
             "page_subtitle": "\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0435 \u0442\u0430\u0440\u0438\u0444\u0430",
             "active_tab": None,
+            "show_search": False,
+            "show_add_button": False,
+            "add_url": None,
+            "payment_requests": payment_requests,
+            "can_request_payment": bool(org_access),
+            "payment_org": organization,
+        },
+    )
+
+
+@login_required
+def billing_request(request):
+    if request.method != "POST":
+        return redirect("billing")
+
+    org_access = (
+        OrganizationAccess.objects.filter(user=request.user, role__in=ADMIN_ROLES)
+        .select_related("organization")
+        .first()
+    )
+    if not org_access:
+        return HttpResponseForbidden()
+
+    try:
+        months = int(request.POST.get("months") or "0")
+    except ValueError:
+        months = 0
+    if months not in {1, 3, 6, 12}:
+        messages.error(request, "\u041d\u0435\u0432\u0435\u0440\u043d\u044b\u0439 \u0441\u0440\u043e\u043a \u043f\u0440\u043e\u0434\u043b\u0435\u043d\u0438\u044f.")
+        return redirect("billing")
+
+    organization = org_access.organization
+    if OrganizationPaymentRequest.objects.filter(
+        organization=organization,
+        status=OrganizationPaymentRequest.STATUS_PENDING,
+    ).exists():
+        messages.info(request, "\u0417\u0430\u044f\u0432\u043a\u0430 \u0443\u0436\u0435 \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0430.")
+        return redirect("billing")
+
+    note = (request.POST.get("note") or "").strip()
+    OrganizationPaymentRequest.objects.create(
+        organization=organization,
+        requested_by=request.user,
+        months=months,
+        status=OrganizationPaymentRequest.STATUS_PENDING,
+        note=note,
+    )
+    messages.success(request, "\u0417\u0430\u044f\u0432\u043a\u0430 \u043d\u0430 \u043f\u0440\u043e\u0434\u043b\u0435\u043d\u0438\u0435 \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0430.")
+    return redirect("billing")
+
+
+@login_required
+def billing_admin(request):
+    if not request.user.is_superuser:
+        return HttpResponseForbidden()
+
+    if request.method == "POST":
+        action = (request.POST.get("action") or "").strip()
+        if action == "approve_request":
+            request_id = request.POST.get("request_id")
+            req = get_object_or_404(
+                OrganizationPaymentRequest,
+                pk=request_id,
+                status=OrganizationPaymentRequest.STATUS_PENDING,
+            )
+            before, after = _extend_org_paid_until(req.organization, req.months)
+            req.status = OrganizationPaymentRequest.STATUS_APPROVED
+            req.decided_at = timezone.now()
+            req.decided_by = request.user
+            req.paid_until_before = before
+            req.paid_until_after = after
+            req.save(
+                update_fields=[
+                    "status",
+                    "decided_at",
+                    "decided_by",
+                    "paid_until_before",
+                    "paid_until_after",
+                ]
+            )
+            messages.success(request, "\u041f\u0440\u043e\u0434\u043b\u0435\u043d\u0438\u0435 \u043e\u0434\u043e\u0431\u0440\u0435\u043d\u043e.")
+            return redirect("billing_admin")
+
+        if action == "reject_request":
+            request_id = request.POST.get("request_id")
+            req = get_object_or_404(
+                OrganizationPaymentRequest,
+                pk=request_id,
+                status=OrganizationPaymentRequest.STATUS_PENDING,
+            )
+            req.status = OrganizationPaymentRequest.STATUS_REJECTED
+            req.decided_at = timezone.now()
+            req.decided_by = request.user
+            req.save(update_fields=["status", "decided_at", "decided_by"])
+            messages.info(request, "\u0417\u0430\u044f\u0432\u043a\u0430 \u043e\u0442\u043a\u043b\u043e\u043d\u0435\u043d\u0430.")
+            return redirect("billing_admin")
+
+        if action == "manual_extend":
+            org_id = request.POST.get("organization_id")
+            try:
+                months = int(request.POST.get("months") or "0")
+            except ValueError:
+                months = 0
+            if months not in {1, 3, 6, 12}:
+                messages.error(request, "\u041d\u0435\u0432\u0435\u0440\u043d\u044b\u0439 \u0441\u0440\u043e\u043a \u043f\u0440\u043e\u0434\u043b\u0435\u043d\u0438\u044f.")
+                return redirect("billing_admin")
+            organization = get_object_or_404(Organization, pk=org_id)
+            before, after = _extend_org_paid_until(organization, months)
+            note = (request.POST.get("note") or "").strip()
+            OrganizationPaymentRequest.objects.create(
+                organization=organization,
+                requested_by=request.user,
+                months=months,
+                status=OrganizationPaymentRequest.STATUS_APPROVED,
+                decided_at=timezone.now(),
+                decided_by=request.user,
+                paid_until_before=before,
+                paid_until_after=after,
+                note=note,
+            )
+            messages.success(request, "\u041f\u0440\u043e\u0434\u043b\u0435\u043d\u0438\u0435 \u0432\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u043e.")
+            return redirect("billing_admin")
+
+    pending_requests = (
+        OrganizationPaymentRequest.objects.filter(status=OrganizationPaymentRequest.STATUS_PENDING)
+        .select_related("organization", "requested_by")
+        .order_by("created_at")
+    )
+    history_requests = (
+        OrganizationPaymentRequest.objects.exclude(status=OrganizationPaymentRequest.STATUS_PENDING)
+        .select_related("organization", "requested_by", "decided_by")
+        .order_by("-created_at")[:50]
+    )
+    organizations = Organization.objects.order_by("name")
+
+    return render(
+        request,
+        "pool_service/billing_admin.html",
+        {
+            "page_title": "\u041f\u0440\u043e\u0434\u043b\u0435\u043d\u0438\u044f \u0442\u0430\u0440\u0438\u0444\u0430",
+            "page_subtitle": "\u0417\u0430\u044f\u0432\u043a\u0438 \u0438 \u0440\u0443\u0447\u043d\u044b\u0435 \u043f\u0440\u043e\u0434\u043b\u0435\u043d\u0438\u044f",
+            "active_tab": "billing_admin",
+            "pending_requests": pending_requests,
+            "history_requests": history_requests,
+            "organizations": organizations,
             "show_search": False,
             "show_add_button": False,
             "add_url": None,

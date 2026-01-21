@@ -1,0 +1,130 @@
+{% extends 'pool_service/base.html' %}
+
+{% block title %}&#1055;&#1083;&#1072;&#1090;&#1077;&#1078;&#1080;{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+  <div class="col-12">
+    <div class="card card-soft p-4">
+      <h4 class="fw-bold mb-3">&#1047;&#1072;&#1103;&#1074;&#1082;&#1080; &#1085;&#1072; &#1087;&#1088;&#1086;&#1076;&#1083;&#1077;&#1085;&#1080;&#1077;</h4>
+      <div class="table-responsive">
+        <table class="table align-middle">
+          <thead class="small text-muted">
+            <tr>
+              <th>&#1054;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;</th>
+              <th>&#1055;&#1077;&#1088;&#1080;&#1086;&#1076;</th>
+              <th>&#1050;&#1090;&#1086; &#1079;&#1072;&#1087;&#1088;&#1086;&#1089;&#1080;&#1083;</th>
+              <th>&#1057;&#1086;&#1079;&#1076;&#1072;&#1085;&#1086;</th>
+              <th class="text-end">&#1044;&#1077;&#1081;&#1089;&#1090;&#1074;&#1080;&#1103;</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for req in pending_requests %}
+              <tr>
+                <td class="fw-semibold">{{ req.organization.name }}</td>
+                <td>{{ req.months }} &#1084;&#1077;&#1089;</td>
+                <td>{% if req.requested_by %}{{ req.requested_by.get_full_name|default:req.requested_by.username }}{% else %}&#8212;{% endif %}</td>
+                <td>{{ req.created_at|date:"d.m.Y H:i" }}</td>
+                <td class="text-end">
+                  <div class="d-inline-flex gap-2">
+                    <form method="post" action="{% url 'billing_admin' %}">
+                      {% csrf_token %}
+                      <input type="hidden" name="action" value="approve_request">
+                      <input type="hidden" name="request_id" value="{{ req.id }}">
+                      <button type="submit" class="btn btn-outline-primary btn-sm">&#1055;&#1088;&#1086;&#1076;&#1083;&#1080;&#1090;&#1100;</button>
+                    </form>
+                    <form method="post" action="{% url 'billing_admin' %}">
+                      {% csrf_token %}
+                      <input type="hidden" name="action" value="reject_request">
+                      <input type="hidden" name="request_id" value="{{ req.id }}">
+                      <button type="submit" class="btn btn-outline-danger btn-sm">&#1054;&#1090;&#1082;&#1083;&#1086;&#1085;&#1080;&#1090;&#1100;</button>
+                    </form>
+                  </div>
+                </td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="5" class="text-center text-muted py-3">&#1053;&#1077;&#1090; &#1079;&#1072;&#1103;&#1074;&#1086;&#1082;</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-12">
+    <div class="card card-soft p-4">
+      <h4 class="fw-bold mb-3">&#1056;&#1091;&#1095;&#1085;&#1086;&#1077; &#1087;&#1088;&#1086;&#1076;&#1083;&#1077;&#1085;&#1080;&#1077;</h4>
+      <form method="post" action="{% url 'billing_admin' %}">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="manual_extend">
+        <div class="row g-3 align-items-end">
+          <div class="col-md-5">
+            <label class="form-label">&#1054;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;</label>
+            <select name="organization_id" class="form-select" required>
+              {% for org in organizations %}
+                <option value="{{ org.id }}">{{ org.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">&#1055;&#1077;&#1088;&#1080;&#1086;&#1076;</label>
+            <select name="months" class="form-select" required>
+              <option value="1">1 &#1084;&#1077;&#1089;</option>
+              <option value="3">3 &#1084;&#1077;&#1089;</option>
+              <option value="6">6 &#1084;&#1077;&#1089;</option>
+              <option value="12">12 &#1084;&#1077;&#1089;</option>
+            </select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">&#1050;&#1086;&#1084;&#1084;&#1077;&#1085;&#1090;&#1072;&#1088;&#1080;&#1081;</label>
+            <input type="text" name="note" class="form-control" placeholder="&#1055;&#1088;&#1080;&#1084;&#1077;&#1095;&#1072;&#1085;&#1080;&#1077; &#1076;&#1083;&#1103; &#1089;&#1077;&#1073;&#1103;">
+          </div>
+          <div class="col-md-12">
+            <button type="submit" class="btn btn-primary">&#1055;&#1088;&#1086;&#1076;&#1083;&#1080;&#1090;&#1100;</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="col-12">
+    <div class="card card-soft p-4">
+      <h4 class="fw-bold mb-3">&#1048;&#1089;&#1090;&#1086;&#1088;&#1080;&#1103; &#1087;&#1088;&#1086;&#1076;&#1083;&#1077;&#1085;&#1080;&#1081;</h4>
+      <div class="table-responsive">
+        <table class="table align-middle">
+          <thead class="small text-muted">
+            <tr>
+              <th>&#1054;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;</th>
+              <th>&#1055;&#1077;&#1088;&#1080;&#1086;&#1076;</th>
+              <th>&#1057;&#1090;&#1072;&#1090;&#1091;&#1089;</th>
+              <th>&#1055;&#1088;&#1086;&#1076;&#1083;&#1077;&#1085;&#1086; &#1076;&#1086;</th>
+              <th>&#1055;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1076;&#1080;&#1083;</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for req in history_requests %}
+              <tr>
+                <td>{{ req.organization.name }}</td>
+                <td>{{ req.months }} &#1084;&#1077;&#1089;</td>
+                <td>
+                  {% if req.status == "approved" %}
+                    <span class="badge bg-success-subtle text-success border">&#1054;&#1076;&#1086;&#1073;&#1088;&#1077;&#1085;&#1086;</span>
+                  {% elif req.status == "rejected" %}
+                    <span class="badge bg-danger-subtle text-danger border">&#1054;&#1090;&#1082;&#1083;&#1086;&#1085;&#1077;&#1085;&#1086;</span>
+                  {% else %}
+                    <span class="badge bg-secondary-subtle text-secondary border">{{ req.status }}</span>
+                  {% endif %}
+                </td>
+                <td>{% if req.paid_until_after %}{{ req.paid_until_after|date:"d.m.Y" }}{% else %}&#8212;{% endif %}</td>
+                <td>{% if req.decided_by %}{{ req.decided_by.get_full_name|default:req.decided_by.username }}{% else %}&#8212;{% endif %}</td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="5" class="text-center text-muted py-3">&#1053;&#1077;&#1090; &#1080;&#1089;&#1090;&#1086;&#1088;&#1080;&#1080;</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
