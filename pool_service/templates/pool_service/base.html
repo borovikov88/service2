@@ -290,8 +290,13 @@
         </div>
 
         <div class="d-flex align-items-center gap-3">
-          <button class="btn btn-light d-lg-none border-0 shadow-sm" style="width:44px;height:44px;" onclick="openMenu()" aria-label="&#1054;&#1090;&#1082;&#1088;&#1099;&#1090;&#1100; &#1084;&#1077;&#1085;&#1102;">
+          <button class="btn btn-light d-lg-none border-0 shadow-sm position-relative" style="width:44px;height:44px;" onclick="openMenu()" aria-label="&#1054;&#1090;&#1082;&#1088;&#1099;&#1090;&#1100; &#1084;&#1077;&#1085;&#1102;">
             <i class="bi bi-list fs-4"></i>
+            {% if notifications_unread_count %}
+              <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger">
+                {{ notifications_unread_count }}
+              </span>
+            {% endif %}
           </button>
           <nav class="d-none d-lg-flex align-items-center gap-3">
           {% if not is_personal_user %}
@@ -314,9 +319,19 @@
           {% if is_org_staff %}
             <a class="text-decoration-none {% if active_tab == 'clients' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'clients_list' %}">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;</a>
           {% endif %}
+          {% if is_org_admin %}
+          {% endif %}
           {% if user.is_superuser %}
             <a class="text-decoration-none {% if active_tab == 'billing_admin' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'billing_admin' %}">&#1055;&#1083;&#1072;&#1090;&#1077;&#1078;&#1080;</a>
           {% endif %}
+          <a class="text-decoration-none d-inline-flex align-items-center justify-content-center position-relative {% if active_tab == 'notifications' %}text-primary{% else %}text-muted{% endif %}" href="{% url 'notifications' %}" aria-label="&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;" title="&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;">
+            <i class="bi bi-bell fs-5"></i>
+            {% if notifications_unread_count %}
+              <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger">
+                {{ notifications_unread_count }}
+              </span>
+            {% endif %}
+          </a>
           <a class="text-decoration-none d-inline-flex align-items-center justify-content-center {% if active_tab == 'profile' %}text-primary{% else %}text-muted{% endif %}" href="{% url 'profile' %}" aria-label="&#1051;&#1080;&#1095;&#1085;&#1099;&#1081; &#1082;&#1072;&#1073;&#1080;&#1085;&#1077;&#1090;" title="&#1051;&#1080;&#1095;&#1085;&#1099;&#1081; &#1082;&#1072;&#1073;&#1080;&#1085;&#1077;&#1090;">
             <i class="bi bi-person-circle fs-5"></i>
           </a>
@@ -423,6 +438,12 @@
       </div>
       {% endif %}
       <div class="list-group list-group-flush">
+          <a href="{% url 'notifications' %}" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
+              <span>&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;</span>
+              {% if notifications_unread_count %}
+                <span class="badge rounded-pill bg-danger">{{ notifications_unread_count }}</span>
+              {% endif %}
+          </a>
           <a href="{% url 'profile' %}" class="list-group-item list-group-item-action">&#1055;&#1088;&#1086;&#1092;&#1080;&#1083;&#1100;</a>
           <a href="{{ personal_pool_url|default:'/pools' }}" class="list-group-item list-group-item-action">
             {% if is_personal_user %}
@@ -433,6 +454,8 @@
           </a>
           {% if is_org_staff %}
           <a href="{% url 'clients_list' %}" class="list-group-item list-group-item-action">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;</a>
+          {% endif %}
+          {% if is_org_admin %}
           {% endif %}
           {% if not is_personal_user %}
           <a href="/readings/all" class="list-group-item list-group-item-action">&#1055;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;</a>
@@ -724,6 +747,62 @@
           });
       });
     }
+
+    const pushEnabled = {{ push_enabled|yesno:"true,false" }};
+    const pushPublicKey = "{{ push_public_key|default:'' }}";
+
+    function getCsrfToken() {
+      const name = "csrftoken=";
+      const decodedCookie = decodeURIComponent(document.cookie || "");
+      const parts = decodedCookie.split("; ");
+      for (const part of parts) {
+        if (part.startsWith(name)) return part.substring(name.length);
+      }
+      return "";
+    }
+
+    function urlBase64ToUint8Array(base64String) {
+      const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+      const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+      const rawData = atob(base64);
+      const outputArray = new Uint8Array(rawData.length);
+      for (let i = 0; i < rawData.length; ++i) {
+        outputArray[i] = rawData.charCodeAt(i);
+      }
+      return outputArray;
+    }
+
+    async function syncPushSubscription() {
+      if (!pushEnabled || !pushPublicKey) return;
+      if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return;
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        let sub = await reg.pushManager.getSubscription();
+        if (!sub) {
+          const permission = await Notification.requestPermission();
+          if (permission !== "granted") return;
+          sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(pushPublicKey),
+          });
+        }
+        await fetch("/api/push/subscribe/", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRFToken": getCsrfToken(),
+          },
+          body: JSON.stringify(sub),
+          credentials: "same-origin",
+        });
+      } catch (err) {
+        console.warn("Push subscription failed", err);
+      }
+    }
+
+    window.addEventListener("load", () => {
+      syncPushSubscription();
+    });
 
     // PWA: собственный промпт установки
     let deferredPrompt = null;

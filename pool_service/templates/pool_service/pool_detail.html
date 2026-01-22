@@ -153,7 +153,7 @@
                     <th rowspan="2" scope="col">Температура</th>
                     <th colspan="3" class="text-center" scope="colgroup">Фотометр/ручной тестер</th>
                     {% if pool.dosing_station %}
-                    <th colspan="4" class="text-center dosing-group" scope="colgroup">Станция дозирования</th>
+                    <th colspan="3" class="text-center dosing-group" scope="colgroup">Станция дозирования</th>
                     {% endif %}
                     <th rowspan="2" scope="col">Комментарий</th>
                     <th rowspan="2" scope="col">Необходимые материалы</th>
@@ -163,11 +163,10 @@
                 <tr>
                     <th scope="col" class="manual-head">pH</th>
                     <th scope="col" class="manual-head">Своб. хлор</th>
-                    <th scope="col" class="manual-head">Связ. хлор</th>
+                    <th scope="col" class="manual-head">Общий хлор</th>
                     {% if pool.dosing_station %}
                     <th scope="col" class="dosing-head">pH</th>
                     <th scope="col" class="dosing-head">Своб. хлор</th>
-                    <th scope="col" class="dosing-head">Связ. хлор</th>
                     <th scope="col" class="dosing-head">Redox</th>
                     {% endif %}
                 </tr>
@@ -187,12 +186,11 @@
                             {% else %}—{% endif %}
                         </td>
                         <td class="manual-cell">{% if reading.ph is not None %}{{ reading.ph|floatformat:"2" }}{% else %}—{% endif %}</td>
-                        <td class="manual-cell">{% if reading.cl_free is not None %}{{ reading.cl_free|floatformat:"2" }}{% else %}—{% endif %}</td>
-                        <td class="manual-cell">{% if reading.cl_total is not None %}{{ reading.cl_total|floatformat:"2" }}{% else %}—{% endif %}</td>
+                        <td class="manual-cell">{% if reading.cl_free is not None %}{{ reading.cl_free|floatformat:"2" }}{% else %}-{% endif %}</td>
+                        <td class="manual-cell">{% if reading.cl_total is not None %}{{ reading.cl_total|floatformat:"2" }}{% else %}-{% endif %}</td>
                         {% if pool.dosing_station %}
                         <td class="dosing-cell">{% if reading.ph_dosing_station is not None %}{{ reading.ph_dosing_station|floatformat:"2" }}{% else %}-{% endif %}</td>
                         <td class="dosing-cell">{% if reading.cl_free_dosing_station is not None %}{{ reading.cl_free_dosing_station|floatformat:"2" }}{% else %}-{% endif %}</td>
-                        <td class="dosing-cell">{% if reading.cl_total_dosing_station is not None %}{{ reading.cl_total_dosing_station|floatformat:"2" }}{% else %}-{% endif %}</td>
                         <td class="dosing-cell">{% if reading.redox_dosing_station is not None %}{{ reading.redox_dosing_station|floatformat:"0" }}{% else %}-{% endif %}</td>
                         {% endif %}
                         <td>{{ reading.comment|default:"-" }}</td>

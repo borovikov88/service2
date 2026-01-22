@@ -120,3 +120,36 @@ def plan_status_context(request):
         return context
 
     return context
+
+
+def notifications_context(request):
+    user = getattr(request, "user", None)
+    if not user or not user.is_authenticated:
+        return {}
+
+    from pool_service.models import Notification
+
+    unread_count = Notification.objects.filter(
+        user=user,
+        is_read=False,
+        is_resolved=False,
+    ).count()
+    return {"notifications_unread_count": unread_count}
+
+
+def push_context(request):
+    user = getattr(request, "user", None)
+    if not user or not user.is_authenticated:
+        return {}
+
+    from django.conf import settings
+    from pool_service.models import OrganizationAccess
+
+    has_org_access = OrganizationAccess.objects.filter(user=user).exists()
+    public_key = getattr(settings, "VAPID_PUBLIC_KEY", "")
+    private_key = getattr(settings, "VAPID_PRIVATE_KEY", "")
+    enabled = bool(has_org_access and public_key and private_key)
+    return {
+        "push_enabled": enabled,
+        "push_public_key": public_key or "",
+    }

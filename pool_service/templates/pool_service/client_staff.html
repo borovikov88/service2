@@ -19,6 +19,7 @@
                     <th>Сотрудник</th>
                     <th>Email</th>
                     <th>Телефон</th>
+                    <th>Роль</th>
                     <th>Статус</th>
                     <th>Последний вход</th>
                     {% if can_manage %}<th class="text-end">Действия</th>{% endif %}
@@ -31,10 +32,33 @@
                         <td>{{ access.user.email|default:"-" }}</td>
                         <td>{{ access.phone|default:"-" }}</td>
                         <td>
-                            {% if access.user.is_active %}
-                                <span class="badge bg-success-subtle text-success border">Активен</span>
+                            {% if can_manage_roles and access.user_id != user.id %}
+                                <form method="post" action="{% url 'client_staff_change_role' access.id %}" class="d-flex align-items-center gap-2">
+                                    {% csrf_token %}
+                                    <select name="role" class="form-select form-select-sm">
+                                        <option value="editor" {% if access.role == "editor" or access.role == "staff" %}selected{% endif %}>Редактор</option>
+                                        <option value="viewer" {% if access.role == "viewer" %}selected{% endif %}>Просмотр</option>
+                                    </select>
+                                    <button type="submit" class="btn btn-outline-primary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} aria-label="Сохранить" title="Сохранить">
+                                        <i class="bi bi-check-lg d-inline d-sm-none"></i>
+                                        <span class="d-none d-sm-inline">Сохранить</span>
+                                    </button>
+                                </form>
                             {% else %}
-                                <span class="badge bg-danger-subtle text-danger border">Заблокирован</span>
+                                {% if access.role == "staff" %}Редактор{% else %}{{ access.get_role_display }}{% endif %}
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if access.user.is_active %}
+                                <span class="badge bg-success-subtle text-success border" title="Активен">
+                                    <i class="bi bi-check-circle"></i>
+                                    <span class="d-none d-sm-inline ms-1">Активен</span>
+                                </span>
+                            {% else %}
+                                <span class="badge bg-danger-subtle text-danger border" title="Заблокирован">
+                                    <i class="bi bi-slash-circle"></i>
+                                    <span class="d-none d-sm-inline ms-1">Заблокирован</span>
+                                </span>
                             {% endif %}
                         </td>
                         <td>{% if access.user.last_login %}{{ access.user.last_login|date:"d.m.Y H:i" }}{% else %}—{% endif %}</td>
@@ -58,8 +82,16 @@
                                                     data-confirm-confirm="Разблокировать"
                                                     data-confirm-variant="primary"
                                                 {% endif %}
-                                                {% if access_blocked %}data-requires-access="true"{% endif %}>
-                                                {% if access.user.is_active %}Заблокировать{% else %}Разблокировать{% endif %}
+                                                {% if access_blocked %}data-requires-access="true"{% endif %}
+                                                aria-label="{% if access.user.is_active %}Заблокировать{% else %}Разблокировать{% endif %}"
+                                                title="{% if access.user.is_active %}Заблокировать{% else %}Разблокировать{% endif %}">
+                                                {% if access.user.is_active %}
+                                                    <i class="bi bi-slash-circle d-inline d-sm-none"></i>
+                                                    <span class="d-none d-sm-inline">Заблокировать</span>
+                                                {% else %}
+                                                    <i class="bi bi-check-circle d-inline d-sm-none"></i>
+                                                    <span class="d-none d-sm-inline">Разблокировать</span>
+                                                {% endif %}
                                             </button>
                                         </form>
                                         <form method="post" action="{% url 'client_staff_delete' access.id %}">
@@ -69,8 +101,11 @@
                                                 data-confirm-body="Доступ к клиенту будет удален. Показания не удаляются."
                                                 data-confirm-confirm="Удалить"
                                                 data-confirm-variant="danger"
-                                                {% if access_blocked %}data-requires-access="true"{% endif %}>
-                                                Удалить
+                                                {% if access_blocked %}data-requires-access="true"{% endif %}
+                                                aria-label="Удалить"
+                                                title="Удалить">
+                                                <i class="bi bi-trash d-inline d-sm-none"></i>
+                                                <span class="d-none d-sm-inline">Удалить</span>
                                             </button>
                                         </form>
                                     </div>
@@ -80,9 +115,9 @@
                     </tr>
                 {% empty %}
                     {% if can_manage %}
-                        <tr><td colspan="6" class="text-center text-muted py-3">Пока нет сотрудников</td></tr>
+                        <tr><td colspan="7" class="text-center text-muted py-3">Пока нет сотрудников</td></tr>
                     {% else %}
-                        <tr><td colspan="5" class="text-center text-muted py-3">Пока нет сотрудников</td></tr>
+                        <tr><td colspan="6" class="text-center text-muted py-3">Пока нет сотрудников</td></tr>
                     {% endif %}
                 {% endfor %}
             </tbody>
@@ -99,6 +134,7 @@
                     <th>ФИО</th>
                     <th>Email</th>
                     <th>Телефон</th>
+                    <th>Роль</th>
                     <th>Статус</th>
                     {% if can_manage %}<th class="text-end">Действия</th>{% endif %}
                 </tr>
@@ -109,11 +145,18 @@
                         <td>{{ invite.first_name }} {{ invite.last_name }}</td>
                         <td>{{ invite.email }}</td>
                         <td>{{ invite.phone|default:"-" }}</td>
+                        <td>{% if invite.role == "staff" %}Редактор{% else %}{{ invite.get_role_display }}{% endif %}</td>
                         <td>
                             {% if invite.is_expired %}
-                                <span class="badge bg-warning-subtle text-warning border">Пользователь не подтвердил регистрацию</span>
+                                <span class="badge bg-warning-subtle text-warning border" title="Пользователь не подтвердил регистрацию">
+                                    <i class="bi bi-exclamation-triangle"></i>
+                                    <span class="d-none d-sm-inline ms-1">Пользователь не подтвердил регистрацию</span>
+                                </span>
                             {% else %}
-                                <span class="badge bg-info-subtle text-info border">Приглашение отправлено</span>
+                                <span class="badge bg-info-subtle text-info border" title="Приглашение отправлено">
+                                    <i class="bi bi-send"></i>
+                                    <span class="d-none d-sm-inline ms-1">Приглашение отправлено</span>
+                                </span>
                             {% endif %}
                         </td>
                         {% if can_manage %}
@@ -121,8 +164,9 @@
                                 <div class="d-inline-flex gap-2">
                                     <form method="post" action="{% url 'client_invite_resend' client.id invite.id %}" class="d-inline">
                                         {% csrf_token %}
-                                        <button type="submit" class="btn btn-outline-primary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
-                                            Отправить повторно
+                                        <button type="submit" class="btn btn-outline-primary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} aria-label="Отправить повторно" title="Отправить повторно">
+                                            <i class="bi bi-arrow-repeat d-inline d-sm-none"></i>
+                                            <span class="d-none d-sm-inline">Отправить повторно</span>
                                         </button>
                                     </form>
                                     <form method="post" action="{% url 'client_invite_delete' client.id invite.id %}" class="d-inline">
@@ -132,8 +176,11 @@
                                             data-confirm-body="Ссылка приглашения станет недействительной."
                                             data-confirm-confirm="Удалить"
                                             data-confirm-variant="danger"
-                                            {% if access_blocked %}data-requires-access="true"{% endif %}>
-                                            Удалить
+                                            {% if access_blocked %}data-requires-access="true"{% endif %}
+                                            aria-label="Удалить"
+                                            title="Удалить">
+                                            <i class="bi bi-trash d-inline d-sm-none"></i>
+                                            <span class="d-none d-sm-inline">Удалить</span>
                                         </button>
                                     </form>
                                 </div>
@@ -141,7 +188,11 @@
                         {% endif %}
                     </tr>
                 {% empty %}
-                    <tr><td colspan="5" class="text-center text-muted py-3">Нет активных приглашений</td></tr>
+                    {% if can_manage %}
+                        <tr><td colspan="6" class="text-center text-muted py-3">Нет активных приглашений</td></tr>
+                    {% else %}
+                        <tr><td colspan="5" class="text-center text-muted py-3">Нет активных приглашений</td></tr>
+                    {% endif %}
                 {% endfor %}
             </tbody>
         </table>

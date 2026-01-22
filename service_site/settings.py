@@ -39,8 +39,16 @@ YANDEX_SUGGEST_API_KEY = os.getenv("YANDEX_SUGGEST_API_KEY", "")
 SITE_URL = os.getenv("SITE_URL", "")
 SMS_RU_API_ID = os.getenv("SMS_RU_API_ID", "")
 SMS_RU_TIMEOUT = int(os.getenv("SMS_RU_TIMEOUT", "8"))
+VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY", "")
+VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "")
 PHONE_VERIFY_TTL_MINUTES = int(os.getenv("PHONE_VERIFY_TTL_MINUTES", "5"))
 PHONE_VERIFY_MAX_ATTEMPTS = int(os.getenv("PHONE_VERIFY_MAX_ATTEMPTS", "3"))
+NOTIFICATIONS_PER_PAGE = int(os.getenv("NOTIFICATIONS_PER_PAGE", "20"))
+WATER_READING_LIMITS = {
+    "ph": {"min": 7.2, "max": 7.8},
+    "cl_free": {"min": 0.3, "max": 1.0},
+    "cl_total": {"min": 0.3, "max": 1.5},
+}
 
 
 # Application definition
@@ -91,6 +99,8 @@ TEMPLATES = [
 		'django.template.context_processors.media',
                 'pool_service.context_processors.brand_context',
                 'pool_service.context_processors.plan_status_context',
+                'pool_service.context_processors.notifications_context',
+                'pool_service.context_processors.push_context',
             ],
         },
     },
@@ -165,6 +175,7 @@ EMAIL_TIMEOUT = int(os.getenv("EMAIL_TIMEOUT", "10"))
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "noreply@rovikpool.ru")
 SERVER_EMAIL = os.getenv("SERVER_EMAIL", DEFAULT_FROM_EMAIL)
 EMAIL_SUBJECT_PREFIX = os.getenv("EMAIL_SUBJECT_PREFIX", "[RovikPool] ")
+VAPID_EMAIL = os.getenv("VAPID_EMAIL", DEFAULT_FROM_EMAIL)
 
 LOGGING = {
     "version": 1,

@@ -124,6 +124,30 @@
                 </div>
             </div>
         </div>
+        <div class="card card-soft p-3 mb-3">
+            <h4 class="fw-bold h6 mb-3">&#1056;&#1077;&#1075;&#1083;&#1072;&#1084;&#1077;&#1085;&#1090; &#1086;&#1073;&#1089;&#1083;&#1091;&#1078;&#1080;&#1074;&#1072;&#1085;&#1080;&#1103;</h4>
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label">&#1063;&#1072;&#1089;&#1090;&#1086;&#1090;&#1072; &#1089;&#1077;&#1088;&#1074;&#1080;&#1089;&#1085;&#1099;&#1093; &#1086;&#1073;&#1089;&#1083;&#1091;&#1078;&#1080;&#1074;&#1072;&#1085;&#1080;&#1081;</label>
+                    {{ form.service_frequency }}
+                    {% if form.service_frequency.errors %}<div class="text-danger small mt-1">{{ form.service_frequency.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6 d-flex align-items-center">
+                    <div class="form-check mt-3 mt-md-4">
+                        {{ form.daily_readings_required }}
+                        <label class="form-check-label" for="{{ form.daily_readings_required.id_for_label }}">&#1045;&#1078;&#1077;&#1076;&#1085;&#1077;&#1074;&#1085;&#1099;&#1077; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1090;&#1077;&#1083;&#1080; &#1086;&#1073;&#1103;&#1079;&#1072;&#1090;&#1077;&#1083;&#1100;&#1085;&#1099;</label>
+                    </div>
+                    {% if form.daily_readings_required.errors %}<div class="text-danger small mt-1">{{ form.daily_readings_required.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-12">
+                    <div class="form-check">
+                        {{ form.service_suspended }}
+                        <label class="form-check-label" for="{{ form.service_suspended.id_for_label }}">&#1042;&#1088;&#1077;&#1084;&#1077;&#1085;&#1085;&#1086; &#1085;&#1077; &#1086;&#1073;&#1089;&#1083;&#1091;&#1078;&#1080;&#1074;&#1072;&#1077;&#1090;&#1089;&#1103;</label>
+                    </div>
+                    {% if form.service_suspended.errors %}<div class="text-danger small mt-1">{{ form.service_suspended.errors.0 }}</div>{% endif %}
+                </div>
+            </div>
+        </div>
         <div class="d-flex gap-2">
             <button type="submit" class="btn btn-primary {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>{% if is_edit %}Сохранить{% else %}Создать{% endif %}</button>
             <a href="{% url 'pool_list' %}" class="btn btn-outline-secondary">Отмена</a>

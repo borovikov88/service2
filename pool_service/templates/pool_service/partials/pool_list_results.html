@@ -5,7 +5,7 @@
             <div class="card card-soft p-3 h-100 hover-shadow">
                 <div class="d-flex align-items-start justify-content-between">
                     <div class="d-flex gap-3 align-items-start">
-                        <div class="bg-primary bg-gradient text-white rounded-3 d-flex align-items-center justify-content-center" style="width:48px;height:48px;">
+                        <div class="{% if pool.service_suspended %}bg-secondary{% else %}bg-primary bg-gradient{% endif %} text-white rounded-3 d-flex align-items-center justify-content-center" style="width:48px;height:48px;">
                             <i class="bi bi-droplet fs-4"></i>
                         </div>
                         <div>

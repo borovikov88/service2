@@ -26,9 +26,29 @@ class Organization(models.Model):
     plan_type = models.CharField(max_length=20, choices=PLAN_CHOICES, default=PLAN_COMPANY_TRIAL)
     trial_started_at = models.DateTimeField(blank=True, null=True)
     paid_until = models.DateTimeField(blank=True, null=True)
+    notify_limits = models.BooleanField(default=True)
+    notify_missed_visits = models.BooleanField(default=True)
+    notify_pool_staff_daily = models.BooleanField(default=True)
 
     def __str__(self):
         return self.name
+
+
+class OrganizationWaterNorms(models.Model):
+    organization = models.OneToOneField(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="water_norms",
+    )
+    ph_min = models.FloatField(null=True, blank=True)
+    ph_max = models.FloatField(null=True, blank=True)
+    cl_free_min = models.FloatField(null=True, blank=True)
+    cl_free_max = models.FloatField(null=True, blank=True)
+    cl_total_min = models.FloatField(null=True, blank=True)
+    cl_total_max = models.FloatField(null=True, blank=True)
+
+    def __str__(self):
+        return f"Norms for {self.organization.name}"
 
 
 class Profile(models.Model):
@@ -88,6 +108,22 @@ class Pool(models.Model):
         ("overflow", "Переливной"),
         ("skimmer", "Скиммерный"),
     ]
+    SERVICE_FREQ_WEEKLY = "weekly"
+    SERVICE_FREQ_TWICE_MONTHLY = "twice_monthly"
+    SERVICE_FREQ_MONTHLY = "monthly"
+    SERVICE_FREQ_BIMONTHLY = "bimonthly"
+    SERVICE_FREQ_QUARTERLY = "quarterly"
+    SERVICE_FREQ_TWICE_YEARLY = "twice_yearly"
+    SERVICE_FREQ_YEARLY = "yearly"
+    SERVICE_FREQUENCY_CHOICES = [
+        (SERVICE_FREQ_WEEKLY, "\u0420\u0430\u0437 \u0432 \u043d\u0435\u0434\u0435\u043b\u044e"),
+        (SERVICE_FREQ_TWICE_MONTHLY, "\u0414\u0432\u0430 \u0440\u0430\u0437\u0430 \u0432 \u043c\u0435\u0441\u044f\u0446"),
+        (SERVICE_FREQ_MONTHLY, "\u0420\u0430\u0437 \u0432 \u043c\u0435\u0441\u044f\u0446"),
+        (SERVICE_FREQ_BIMONTHLY, "\u0420\u0430\u0437 \u0432 2 \u043c\u0435\u0441\u044f\u0446\u0430"),
+        (SERVICE_FREQ_QUARTERLY, "\u0420\u0430\u0437 \u0432 \u043a\u0432\u0430\u0440\u0442\u0430\u043b"),
+        (SERVICE_FREQ_TWICE_YEARLY, "\u0414\u0432\u0430 \u0440\u0430\u0437\u0430 \u0432 \u0433\u043e\u0434"),
+        (SERVICE_FREQ_YEARLY, "\u0420\u0430\u0437 \u0432 \u0433\u043e\u0434"),
+    ]
 
     client = models.ForeignKey(Client, on_delete=models.CASCADE)
     address = models.CharField(max_length=255)
@@ -112,6 +148,10 @@ class Pool(models.Model):
     surface_area = models.FloatField(null=True, blank=True)
     volume = models.FloatField(null=True, blank=True)
     dosing_station = models.BooleanField(default=False)
+    service_frequency = models.CharField(max_length=20, choices=SERVICE_FREQUENCY_CHOICES, null=True, blank=True)
+    service_interval_days = models.PositiveSmallIntegerField(null=True, blank=True)
+    service_suspended = models.BooleanField(default=False)
+    daily_readings_required = models.BooleanField(default=False)
 
     def __str__(self):
         org_name = self.organization.name if self.organization else "без организации"
@@ -159,12 +199,13 @@ class OrganizationAccess(models.Model):
 
 class ClientAccess(models.Model):
     ROLE_CHOICES = [
-        ("staff", "Сотрудник клиента"),
+        ("viewer", "Просмотр"),
+        ("editor", "Редактор"),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="staff_accesses")
-    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default="staff")
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default="editor")
     phone = models.CharField(max_length=20, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -195,7 +236,7 @@ class ClientInvite(models.Model):
     first_name = models.CharField(max_length=100, blank=True)
     last_name = models.CharField(max_length=100, blank=True)
     phone = models.CharField(max_length=20, blank=True)
-    role = models.CharField(max_length=20, choices=ClientAccess.ROLE_CHOICES, default="staff")
+    role = models.CharField(max_length=20, choices=ClientAccess.ROLE_CHOICES, default="editor")
     token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
     last_sent_at = models.DateTimeField(null=True, blank=True)
@@ -292,6 +333,65 @@ class OrganizationPaymentRequest(models.Model):
 
     def __str__(self):
         return f"{self.organization.name} ({self.months}m, {self.status})"
+
+
+class Notification(models.Model):
+    LEVEL_CHOICES = [
+        ("info", "info"),
+        ("warning", "warning"),
+        ("critical", "critical"),
+    ]
+    KIND_CHOICES = [
+        ("limits", "limits"),
+        ("missed_visit", "missed_visit"),
+        ("daily_missing", "daily_missing"),
+        ("new_company", "new_company"),
+        ("new_personal", "new_personal"),
+    ]
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="notifications")
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, null=True, blank=True)
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, null=True, blank=True)
+    pool = models.ForeignKey(Pool, on_delete=models.CASCADE, null=True, blank=True)
+    kind = models.CharField(max_length=32, choices=KIND_CHOICES)
+    level = models.CharField(max_length=16, choices=LEVEL_CHOICES, default="info")
+    title = models.CharField(max_length=200)
+    message = models.TextField(blank=True)
+    action_url = models.CharField(max_length=400, blank=True)
+    dedupe_key = models.CharField(max_length=120, blank=True, db_index=True)
+    is_read = models.BooleanField(default=False)
+    is_resolved = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "is_read"], name="notif_user_read_idx"),
+            models.Index(fields=["user", "is_resolved"], name="notif_user_resolved_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "dedupe_key"],
+                condition=~Q(dedupe_key=""),
+                name="unique_notification_dedupe",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.title} ({self.user_id})"
+
+
+class PushSubscription(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="push_subscriptions")
+    endpoint = models.TextField(unique=True)
+    p256dh = models.CharField(max_length=255)
+    auth = models.CharField(max_length=255)
+    user_agent = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Push subscription {self.user_id}"
 
 
 class WaterReading(models.Model):

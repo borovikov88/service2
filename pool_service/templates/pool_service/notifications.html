@@ -1,0 +1,80 @@
+{% extends 'pool_service/base.html' %}
+
+{% block title %}&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;{% endblock %}
+
+{% block content %}
+<div class="card card-soft p-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+        <h4 class="fw-bold mb-0">&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;</h4>
+        {% if notifications %}
+        <form method="post" action="{% url 'notifications_mark_all' %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-outline-secondary btn-sm">&#1054;&#1090;&#1084;&#1077;&#1090;&#1080;&#1090;&#1100; &#1074;&#1089;&#1077; &#1087;&#1088;&#1086;&#1095;&#1080;&#1090;&#1072;&#1085;&#1085;&#1099;&#1084;&#1080;</button>
+        </form>
+        {% endif %}
+    </div>
+
+    <div class="list-group">
+        {% for note in notifications %}
+        <div class="list-group-item border-0 border-bottom py-3 {% if not note.is_read %}bg-light{% endif %}">
+            <div class="d-flex flex-wrap justify-content-between gap-3">
+                <div class="flex-grow-1">
+                    <div class="d-flex align-items-center gap-2 mb-1">
+                        {% if note.level == "critical" %}
+                        <span class="badge bg-danger-subtle text-danger border">&#1050;&#1088;&#1080;&#1090;&#1080;&#1095;&#1085;&#1086;</span>
+                        {% elif note.level == "warning" %}
+                        <span class="badge bg-warning-subtle text-warning border">&#1042;&#1085;&#1080;&#1084;&#1072;&#1085;&#1080;&#1077;</span>
+                        {% else %}
+                        <span class="badge bg-info-subtle text-info border">&#1048;&#1085;&#1092;&#1086;</span>
+                        {% endif %}
+                        <div class="fw-semibold">{{ note.title }}</div>
+                        {% if not note.is_read %}
+                        <span class="badge bg-primary-subtle text-primary border">&#1053;&#1086;&#1074;&#1086;&#1077;</span>
+                        {% endif %}
+                    </div>
+                    {% if note.message %}
+                    <div class="text-muted">{{ note.message }}</div>
+                    {% endif %}
+                    <div class="text-muted small mt-1">{{ note.created_at|date:"d.m.Y H:i" }}</div>
+                </div>
+                <div class="d-flex align-items-start gap-2">
+                    {% if note.action_url %}
+                    <a href="{{ note.action_url }}" class="btn btn-outline-primary btn-sm">&#1054;&#1090;&#1082;&#1088;&#1099;&#1090;&#1100;</a>
+                    {% endif %}
+                    <form method="post" action="{% url 'notifications_mark_read' note.id %}">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-outline-secondary btn-sm">&#1055;&#1088;&#1086;&#1095;&#1080;&#1090;&#1072;&#1085;&#1086;</button>
+                    </form>
+                    <form method="post" action="{% url 'notification_resolve' note.id %}">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-outline-danger btn-sm">&#1057;&#1082;&#1088;&#1099;&#1090;&#1100;</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+        {% empty %}
+        <div class="text-center text-muted py-4">&#1053;&#1077;&#1090; &#1091;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1081;</div>
+        {% endfor %}
+    </div>
+
+    {% if notifications.paginator.num_pages > 1 %}
+    <nav class="mt-4">
+        <ul class="pagination justify-content-center">
+            {% if notifications.has_previous %}
+            <li class="page-item">
+                <a class="page-link" href="?page={{ notifications.previous_page_number }}&{{ pagination_query }}">&#1053;&#1072;&#1079;&#1072;&#1076;</a>
+            </li>
+            {% endif %}
+            <li class="page-item active">
+                <span class="page-link">{{ notifications.number }}</span>
+            </li>
+            {% if notifications.has_next %}
+            <li class="page-item">
+                <a class="page-link" href="?page={{ notifications.next_page_number }}&{{ pagination_query }}">&#1042;&#1087;&#1077;&#1088;&#1105;&#1076;</a>
+            </li>
+            {% endif %}
+        </ul>
+    </nav>
+    {% endif %}
+</div>
+{% endblock %}

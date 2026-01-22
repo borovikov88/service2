@@ -5,7 +5,16 @@ from django.contrib.auth.password_validation import validate_password
 from django.utils.crypto import get_random_string
 from django.utils import timezone
 from django.urls import reverse
-from .models import WaterReading, Organization, Client, OrganizationAccess, Pool, PoolAccess, ClientAccess
+from .models import (
+    WaterReading,
+    Organization,
+    Client,
+    OrganizationAccess,
+    OrganizationWaterNorms,
+    Pool,
+    PoolAccess,
+    ClientAccess,
+)
 
 
 class WaterReadingForm(forms.ModelForm):
@@ -21,7 +30,6 @@ class WaterReadingForm(forms.ModelForm):
             "cl_total",
             "ph_dosing_station",
             "cl_free_dosing_station",
-            "cl_total_dosing_station",
             "redox_dosing_station",
             "comment",
             "required_materials",
@@ -206,6 +214,30 @@ def normalize_phone(raw):
     if len(digits) != 10:
         return None
     return digits
+
+
+_SERVICE_FREQUENCY_THRESHOLDS = [
+    (7, Pool.SERVICE_FREQ_WEEKLY),
+    (15, Pool.SERVICE_FREQ_TWICE_MONTHLY),
+    (31, Pool.SERVICE_FREQ_MONTHLY),
+    (62, Pool.SERVICE_FREQ_BIMONTHLY),
+    (93, Pool.SERVICE_FREQ_QUARTERLY),
+    (186, Pool.SERVICE_FREQ_TWICE_YEARLY),
+    (10_000, Pool.SERVICE_FREQ_YEARLY),
+]
+
+
+def _map_interval_to_frequency(interval):
+    if not interval:
+        return None
+    try:
+        value = int(interval)
+    except (TypeError, ValueError):
+        return None
+    for max_days, frequency in _SERVICE_FREQUENCY_THRESHOLDS:
+        if value <= max_days:
+            return frequency
+    return Pool.SERVICE_FREQ_YEARLY
 
 
 class PersonalSignupForm(forms.Form):
@@ -464,11 +496,15 @@ class ClientInviteForm(forms.Form):
     last_name = forms.CharField(label="Фамилия", required=True)
     email = forms.EmailField(label="Email", required=True)
     phone = forms.CharField(label="Телефон", required=True)
+    role = forms.ChoiceField(choices=ClientAccess.ROLE_CHOICES, label="Роль", initial="editor")
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         for name, field in self.fields.items():
             classes = "form-control rounded-3"
+            if name == "role":
+                field.widget.attrs.update({"class": "form-select"})
+                continue
             if name == "phone":
                 field.widget.attrs.update({"class": f"{classes} phone-mask", "placeholder": field.label})
                 field.initial = "+7 "
@@ -559,6 +595,9 @@ class PoolForm(forms.ModelForm):
             "surface_area",
             "volume",
             "dosing_station",
+            "service_frequency",
+            "service_suspended",
+            "daily_readings_required",
         ]
         widgets = {
             "client": forms.Select(attrs={"class": "form-select"}),
@@ -577,11 +616,20 @@ class PoolForm(forms.ModelForm):
             "surface_area": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
             "volume": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
             "dosing_station": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+            "service_frequency": forms.Select(attrs={"class": "form-select"}),
+            "service_suspended": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+            "daily_readings_required": forms.CheckboxInput(attrs={"class": "form-check-input"}),
         }
 
     def __init__(self, *args, **kwargs):
         user = kwargs.pop("user", None)
+        selected_client_id = kwargs.pop("selected_client_id", None)
         super().__init__(*args, **kwargs)
+        if "service_frequency" in self.fields and not self.initial.get("service_frequency"):
+            interval = getattr(self.instance, "service_interval_days", None)
+            mapped = _map_interval_to_frequency(interval)
+            if mapped:
+                self.initial["service_frequency"] = mapped
         if user:
             client_qs = Client.objects.none()
             client_self = Client.objects.filter(user=user)
@@ -593,15 +641,51 @@ class PoolForm(forms.ModelForm):
                 client_qs = client_self
                 self.fields["client"].empty_label = None
                 self.fields["client"].initial = client_self.first()
+                self.fields["client"].widget = forms.HiddenInput()
             else:
                 org_ids = OrganizationAccess.objects.filter(user=user).values_list("organization_id", flat=True)
                 if org_ids:
-                    client_qs = Client.objects.filter(organization_id__in=org_ids)
+                    client_qs = Client.objects.filter(organization_id__in=org_ids).distinct()
                 self.fields["client"].empty_label = "Выберите клиента"
 
             self.fields["client"].queryset = client_qs
-            if not client_self.exists():
+            if selected_client_id:
+                try:
+                    selected_client = client_qs.get(pk=selected_client_id)
+                    self.fields["client"].initial = selected_client
+                except Client.DoesNotExist:
+                    pass
+            elif not client_self.exists():
                 self.fields["client"].initial = None
+
+
+class OrganizationWaterNormsForm(forms.ModelForm):
+    class Meta:
+        model = OrganizationWaterNorms
+        fields = [
+            "ph_min",
+            "ph_max",
+            "cl_free_min",
+            "cl_free_max",
+            "cl_total_min",
+            "cl_total_max",
+        ]
+        labels = {
+            "ph_min": "pH min",
+            "ph_max": "pH max",
+            "cl_free_min": "Свободный хлор min",
+            "cl_free_max": "Свободный хлор max",
+            "cl_total_min": "Общий хлор min",
+            "cl_total_max": "Общий хлор max",
+        }
+        widgets = {
+            "ph_min": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "ph_max": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "cl_free_min": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "cl_free_max": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "cl_total_min": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "cl_total_max": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+        }
 
 
 class EmailOrUsernameAuthenticationForm(AuthenticationForm):

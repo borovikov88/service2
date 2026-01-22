@@ -12,6 +12,7 @@ from django.core.paginator import Paginator
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.cache import never_cache
+from django.views.decorators.http import require_POST
 from django.urls import reverse, reverse_lazy
 from django.db import connection
 from django.db.models import Count, Q, Max
@@ -46,6 +47,7 @@ from .forms import (
     ClientInviteForm,
     ClientInviteAcceptForm,
     normalize_phone,
+    OrganizationWaterNormsForm,
 )
 from .sitemaps import HomeSitemap
 from .seo import is_indexable_host
@@ -54,6 +56,7 @@ from .services.phone_verification import (
     smsru_callcheck_status,
     smsru_send_sms,
 )
+from .services.notifications import notify_reading_out_of_range, notify_superusers
 
 
 def _request_host(request):
@@ -141,6 +144,9 @@ from .models import (
     ClientAccess,
     ClientInvite,
     OrganizationPaymentRequest,
+    Notification,
+    OrganizationWaterNorms,
+    PushSubscription,
 )
 from .services.permissions import is_personal_free, is_personal_user, is_org_access_blocked, personal_pool
 from django import forms
@@ -211,7 +217,9 @@ def _pool_role_for_user(user, pool):
 
     client_access = ClientAccess.objects.filter(user=user, client=pool.client).first()
     if client_access and not role:
-        role = "client_staff"
+        role = client_access.role or "viewer"
+        if role == "staff":
+            role = "editor"
 
     if pool.client and pool.client.user_id == user.id:
         role = "admin"
@@ -423,17 +431,17 @@ def pool_list(request):
     ).select_related("client")
 
     if sort == "recent_desc":
-        pools = pools.order_by("-last_reading", "client__name", "address")
+        pools = pools.order_by("service_suspended", "-last_reading", "client__name", "address")
     elif sort == "recent_asc":
-        pools = pools.order_by("last_reading", "client__name", "address")
+        pools = pools.order_by("service_suspended", "last_reading", "client__name", "address")
     elif sort == "client_desc":
-        pools = pools.order_by("-client__name", "address")
+        pools = pools.order_by("service_suspended", "-client__name", "address")
     elif sort == "created_desc":
-        pools = pools.order_by("-id")
+        pools = pools.order_by("service_suspended", "-id")
     elif sort == "created_asc":
-        pools = pools.order_by("id")
+        pools = pools.order_by("service_suspended", "id")
     else:
-        pools = pools.order_by("client__name", "address")
+        pools = pools.order_by("service_suspended", "client__name", "address")
 
     if use_python_search:
         query_cf = search_query.casefold()
@@ -508,6 +516,8 @@ def billing_info(request):
         .first()
     )
     organization = org_access.organization if org_access else None
+    if not organization:
+        return render(request, "403.html")
     payment_requests = []
     if organization:
         payment_requests = (
@@ -901,6 +911,11 @@ def client_staff(request, client_id):
         organization=client.organization,
         role__in=ORG_STAFF_ROLES,
     ).exists()
+    is_org_admin = OrganizationAccess.objects.filter(
+        user=request.user,
+        organization=client.organization,
+        role__in=ADMIN_ROLES,
+    ).exists()
 
     if not request.user.is_superuser and not is_org_staff:
         return HttpResponseForbidden()
@@ -933,6 +948,7 @@ def client_staff(request, client_id):
             "show_add_button": False,
             "add_url": None,
             "can_manage": can_manage,
+            "can_manage_roles": is_org_admin and not request.user.is_superuser,
         },
     )
 
@@ -1009,6 +1025,49 @@ def client_staff_delete(request, access_id):
 
 
 @login_required
+def client_staff_change_role(request, access_id):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+    if request.method != "POST":
+        return redirect("clients_list")
+
+    access = get_object_or_404(
+        ClientAccess.objects.select_related("client", "client__organization", "user"),
+        pk=access_id,
+    )
+    is_org_admin = OrganizationAccess.objects.filter(
+        user=request.user,
+        organization=access.client.organization,
+        role__in=ADMIN_ROLES,
+    ).exists()
+    if not is_org_admin:
+        return HttpResponseForbidden()
+    if access.user_id == request.user.id:
+        messages.error(request, "Нельзя менять свою роль.")
+        return redirect("client_staff", client_id=access.client_id)
+    if access.user.is_superuser:
+        return HttpResponseForbidden()
+
+    new_role = (request.POST.get("role") or "").strip()
+    allowed_roles = ["editor", "viewer"]
+    if new_role not in allowed_roles:
+        messages.error(request, "Недопустимая роль.")
+        return redirect("client_staff", client_id=access.client_id)
+    if access.role == new_role:
+        messages.info(request, "Роль уже установлена.")
+        return redirect("client_staff", client_id=access.client_id)
+
+    access.role = new_role
+    access.save(update_fields=["role"])
+    messages.success(request, "Роль обновлена.")
+    return redirect("client_staff", client_id=access.client_id)
+
+
+@login_required
 def client_invite_create(request, client_id):
     readonly = _deny_superuser_write(request)
     if readonly:
@@ -1044,7 +1103,7 @@ def client_invite_create(request, client_id):
                     invite.first_name = form.cleaned_data["first_name"]
                     invite.last_name = form.cleaned_data["last_name"]
                     invite.phone = form.cleaned_data["phone"]
-                    invite.role = "staff"
+                    invite.role = form.cleaned_data["role"]
                     invite.token = uuid.uuid4()
                     invite.expires_at = expires_at
                     invite.invited_by = request.user
@@ -1057,7 +1116,7 @@ def client_invite_create(request, client_id):
                         first_name=form.cleaned_data["first_name"],
                         last_name=form.cleaned_data["last_name"],
                         phone=form.cleaned_data["phone"],
-                        role="staff",
+                        role=form.cleaned_data["role"],
                         expires_at=expires_at,
                         last_sent_at=now,
                     )
@@ -1187,10 +1246,13 @@ def client_invite_accept(request, token):
                 )
                 user.set_password(form.cleaned_data["password1"])
                 user.save()
+                invite_role = invite.role
+                if invite_role == "staff":
+                    invite_role = "editor"
                 ClientAccess.objects.create(
                     user=user,
                     client=invite.client,
-                    role=invite.role,
+                    role=invite_role,
                     phone=form.cleaned_data["phone"],
                 )
                 invite.accepted_at = timezone.now()
@@ -1430,79 +1492,6 @@ def clients_list(request):
         },
     )
 
-
-class PoolForm(forms.ModelForm):
-    class Meta:
-        model = Pool
-        fields = [
-            "client",
-            "address",
-            "description",
-            "shape",
-            "pool_type",
-            "length",
-            "width",
-            "diameter",
-            "variable_depth",
-            "depth",
-            "depth_min",
-            "depth_max",
-            "overflow_volume",
-            "surface_area",
-            "volume",
-            "dosing_station",
-        ]
-        widgets = {
-            "client": forms.Select(attrs={"class": "form-select"}),
-            "address": forms.TextInput(attrs={"class": "form-control rounded-3"}),
-            "description": forms.Textarea(attrs={"class": "form-control rounded-3", "rows": 3}),
-            "shape": forms.Select(attrs={"class": "form-select"}),
-            "pool_type": forms.Select(attrs={"class": "form-select"}),
-            "length": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
-            "width": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
-            "diameter": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
-            "variable_depth": forms.CheckboxInput(attrs={"class": "form-check-input"}),
-            "depth": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
-            "depth_min": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
-            "depth_max": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
-            "overflow_volume": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
-            "surface_area": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
-            "volume": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
-            "dosing_station": forms.CheckboxInput(attrs={"class": "form-check-input"}),
-        }
-
-    def __init__(self, *args, **kwargs):
-        user = kwargs.pop("user", None)
-        selected_client_id = kwargs.pop("selected_client_id", None)
-        super().__init__(*args, **kwargs)
-        if user:
-            client_qs = Client.objects.none()
-            client_self = Client.objects.filter(user=user)
-
-            if user.is_superuser:
-                client_qs = Client.objects.all()
-                self.fields["client"].empty_label = "Выберите клиента"
-            elif client_self.exists():
-                client_qs = client_self
-                self.fields["client"].empty_label = None
-                self.fields["client"].initial = client_self.first()
-                self.fields["client"].widget = forms.HiddenInput()
-            else:
-                org_ids = OrganizationAccess.objects.filter(user=user).values_list("organization_id", flat=True)
-                if org_ids:
-                    client_qs = Client.objects.filter(organization_id__in=org_ids).distinct()
-                self.fields["client"].empty_label = "Выберите клиента"
-
-            self.fields["client"].queryset = client_qs
-            if selected_client_id:
-                try:
-                    selected_client = client_qs.get(pk=selected_client_id)
-                    self.fields["client"].initial = selected_client
-                except Client.DoesNotExist:
-                    pass
-            else:
-                if not client_self.exists():
-                    self.fields["client"].initial = None
 
 
 @login_required
@@ -1822,6 +1811,13 @@ def signup_personal(request):
         form = PersonalSignupForm(request.POST)
         if form.is_valid():
             user = form.save()
+            notify_superusers(
+                title="Новый частный пользователь",
+                message=f"{user.get_full_name() or user.username} ({user.email or user.username})",
+                kind="new_personal",
+                level="info",
+                action_url=reverse("users"),
+            )
             email_sent = _send_registration_confirmation(request, user)
             if email_sent:
                 messages.success(
@@ -1872,6 +1868,15 @@ def signup_company(request):
         form = CompanySignupForm(request.POST)
         if form.is_valid():
             user = form.save()
+            org_access = OrganizationAccess.objects.filter(user=user, role="owner").select_related("organization").first()
+            organization = org_access.organization if org_access else None
+            notify_superusers(
+                title="Новая компания",
+                message=f"{organization.name if organization else 'Организация'} — {user.get_full_name() or user.username}",
+                kind="new_company",
+                level="info",
+                action_url=reverse("users"),
+            )
             email_sent = _send_registration_confirmation(request, user)
             if email_sent:
                 messages.success(
@@ -2203,7 +2208,7 @@ def pool_detail(request, pool_uuid):
         return render(request, "403.html")
 
     can_edit_pool = role == "admin"
-    can_add_reading = role in {"editor", "service", "admin", "client_staff"}
+    can_add_reading = role in {"editor", "service", "admin"}
 
     readings_list = WaterReading.objects.filter(pool=pool).select_related("added_by").order_by("-date")
 
@@ -2216,9 +2221,10 @@ def pool_detail(request, pool_uuid):
     query_params.pop("page", None)
 
     editable_reading_ids = []
-    for reading in readings:
-        if _reading_edit_allowed(reading, request.user):
-            editable_reading_ids.append(reading.id)
+    if can_add_reading:
+        for reading in readings:
+            if _reading_edit_allowed(reading, request.user):
+                editable_reading_ids.append(reading.id)
 
     context = {
         "pool": pool,
@@ -2331,7 +2337,7 @@ def water_reading_create(request, pool_uuid):
     """Создание нового замера для выбранного бассейна."""
     pool = get_object_or_404(Pool, uuid=pool_uuid)
     role = _pool_role_for_user(request.user, pool)
-    if role not in {"editor", "service", "admin", "client_staff"}:
+    if role not in {"editor", "service", "admin"}:
         return render(request, "403.html")
 
     if request.method == "POST":
@@ -2342,6 +2348,7 @@ def water_reading_create(request, pool_uuid):
             reading.pool = pool
             reading.added_by = request.user
             reading.save()
+            notify_reading_out_of_range(reading)
             messages.success(request, "Показания добавлены")
             return redirect("pool_detail", pool_uuid=pool.uuid)
         else:
@@ -2364,8 +2371,8 @@ def water_reading_edit(request, reading_uuid):
     reading = get_object_or_404(WaterReading.objects.select_related("pool"), uuid=reading_uuid)
 
     role = _pool_role_for_user(request.user, reading.pool)
-    if role == "client_staff":
-        messages.error(request, "Редактирование доступно только сотрудникам сервиса.")
+    if role not in {"editor", "service", "admin"}:
+        messages.error(request, "Редактирование доступно только пользователям с правами редактора.")
         return redirect("pool_detail", pool_uuid=reading.pool.uuid)
 
     if not _reading_edit_allowed(reading, request.user):
@@ -2380,6 +2387,7 @@ def water_reading_edit(request, reading_uuid):
             updated.pool = reading.pool
             updated.added_by = reading.added_by
             updated.save()
+            notify_reading_out_of_range(updated)
             messages.success(request, "Запись обновлена.")
             return redirect("pool_detail", pool_uuid=reading.pool.uuid)
         messages.error(request, "Не удалось обновить запись. Проверьте форму.")
@@ -2399,6 +2407,26 @@ def profile_view(request):
     profile, _ = Profile.objects.get_or_create(user=request.user)
     org_accesses = OrganizationAccess.objects.filter(user=request.user).select_related("organization")
     pool_accesses = PoolAccess.objects.filter(user=request.user).select_related("pool", "pool__client")
+    notification_access = (
+        org_accesses.filter(role__in={"owner", "admin"}).select_related("organization").first()
+    )
+
+    if request.method == "POST" and request.POST.get("notification_settings") == "1":
+        if not notification_access:
+            return render(request, "403.html")
+        organization = notification_access.organization
+        organization.notify_limits = bool(request.POST.get("notify_limits"))
+        organization.notify_missed_visits = bool(request.POST.get("notify_missed_visits"))
+        organization.notify_pool_staff_daily = bool(request.POST.get("notify_pool_staff_daily"))
+        organization.save(
+            update_fields=[
+                "notify_limits",
+                "notify_missed_visits",
+                "notify_pool_staff_daily",
+            ]
+        )
+        messages.success(request, "\u041d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438 \u0443\u0432\u0435\u0434\u043e\u043c\u043b\u0435\u043d\u0438\u0439 \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u044b.")
+        return redirect("profile")
 
     phone = None
     if profile and hasattr(profile, "phone"):
@@ -2443,8 +2471,151 @@ def profile_view(request):
         "email_confirmed": email_confirmed,
         "phone_confirmed": phone_confirmed,
         "confirm_phone_url": confirm_phone_url,
+        "can_manage_notifications": bool(notification_access),
+        "notification_org": notification_access.organization if notification_access else None,
+        "notify_limits": notification_access.organization.notify_limits if notification_access else False,
+        "notify_missed_visits": notification_access.organization.notify_missed_visits if notification_access else False,
+        "notify_pool_staff_daily": notification_access.organization.notify_pool_staff_daily if notification_access else False,
     }
     return render(request, "pool_service/profile.html", context)
+
+
+@login_required
+def organization_norms(request):
+    org_access = OrganizationAccess.objects.filter(user=request.user).select_related("organization").first()
+    if not org_access:
+        return render(request, "403.html")
+
+    if not request.user.is_superuser and org_access.role not in {"owner", "admin"}:
+        return render(request, "403.html")
+
+    organization = org_access.organization
+
+    norms, _ = OrganizationWaterNorms.objects.get_or_create(organization=organization)
+
+    if request.method == "POST":
+        form = OrganizationWaterNormsForm(request.POST, instance=norms)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "\u041d\u043e\u0440\u043c\u0430\u0442\u0438\u0432\u044b \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u044b.")
+            return redirect("organization_norms")
+    else:
+        form = OrganizationWaterNormsForm(instance=norms)
+
+    return render(
+        request,
+        "pool_service/organization_norms.html",
+        {
+            "form": form,
+            "page_title": "\u041d\u043e\u0440\u043c\u0430\u0442\u0438\u0432\u044b \u0432\u043e\u0434\u044b",
+            "page_subtitle": "\u041e\u0431\u0449\u0438\u0435 \u043f\u0430\u0440\u0430\u043c\u0435\u0442\u0440\u044b \u0434\u043b\u044f \u0432\u0441\u0435\u0445 \u0431\u0430\u0441\u0441\u0435\u0439\u043d\u043e\u0432 \u043e\u0440\u0433\u0430\u043d\u0438\u0437\u0430\u0446\u0438\u0438",
+            "active_tab": "norms",
+            "show_search": False,
+            "show_add_button": False,
+            "add_url": None,
+        },
+    )
+
+
+@login_required
+def notifications_list(request):
+    per_page = getattr(settings, "NOTIFICATIONS_PER_PAGE", 20)
+    qs = Notification.objects.filter(user=request.user, is_resolved=False).order_by("-created_at")
+    paginator = Paginator(qs, per_page)
+    page_number = request.GET.get("page")
+    notifications = paginator.get_page(page_number)
+    query_params = request.GET.copy()
+    query_params.pop("page", None)
+
+    return render(
+        request,
+        "pool_service/notifications.html",
+        {
+            "notifications": notifications,
+            "page_title": "Уведомления",
+            "page_subtitle": "Все важные события и напоминания",
+            "active_tab": "notifications",
+            "show_search": False,
+            "show_add_button": False,
+            "add_url": None,
+            "pagination_query": query_params.urlencode(),
+        },
+    )
+
+
+@login_required
+def notification_mark_read(request, notification_id):
+    if request.method != "POST":
+        return redirect("notifications")
+    note = get_object_or_404(Notification, id=notification_id, user=request.user)
+    if not note.is_read:
+        note.is_read = True
+        note.save(update_fields=["is_read"])
+    return redirect(request.POST.get("next") or "notifications")
+
+
+@login_required
+def notifications_mark_all(request):
+    if request.method == "POST":
+        Notification.objects.filter(user=request.user, is_read=False).update(is_read=True)
+    return redirect("notifications")
+
+
+@login_required
+def notification_resolve(request, notification_id):
+    if request.method != "POST":
+        return redirect("notifications")
+    note = get_object_or_404(Notification, id=notification_id, user=request.user)
+    if not note.is_resolved:
+        note.is_resolved = True
+        note.is_read = True
+        note.resolved_at = timezone.now()
+        note.save(update_fields=["is_resolved", "is_read", "resolved_at"])
+    return redirect(request.POST.get("next") or "notifications")
+
+
+@login_required
+@require_POST
+def push_subscribe(request):
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JsonResponse({"ok": False, "error": "invalid_payload"}, status=400)
+
+    endpoint = payload.get("endpoint")
+    keys = payload.get("keys") or {}
+    p256dh = keys.get("p256dh")
+    auth = keys.get("auth")
+    if not endpoint or not p256dh or not auth:
+        return JsonResponse({"ok": False, "error": "missing_fields"}, status=400)
+
+    user_agent = request.META.get("HTTP_USER_AGENT", "")[:255]
+    PushSubscription.objects.update_or_create(
+        endpoint=endpoint,
+        defaults={
+            "user": request.user,
+            "p256dh": p256dh,
+            "auth": auth,
+            "user_agent": user_agent,
+        },
+    )
+    return JsonResponse({"ok": True})
+
+
+@login_required
+@require_POST
+def push_unsubscribe(request):
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JsonResponse({"ok": False, "error": "invalid_payload"}, status=400)
+
+    endpoint = payload.get("endpoint")
+    if not endpoint:
+        return JsonResponse({"ok": False, "error": "missing_fields"}, status=400)
+
+    PushSubscription.objects.filter(user=request.user, endpoint=endpoint).delete()
+    return JsonResponse({"ok": True})
 
 
 class CustomLoginView(LoginView):

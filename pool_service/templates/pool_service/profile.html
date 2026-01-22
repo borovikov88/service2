@@ -122,6 +122,41 @@
                     </div>
                 </div>
 
+                {% if can_manage_notifications %}
+                <div class="card card-soft mb-4">
+                    <div class="card-body">
+                        <h5 class="card-title">&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;</h5>
+                        {% if notification_org %}
+                            <p class="text-muted mb-3">&#1054;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;: {{ notification_org.name }}</p>
+                        {% endif %}
+                        <form method="post">
+                            {% csrf_token %}
+                            <input type="hidden" name="notification_settings" value="1">
+                            <div class="form-check mb-2">
+                                <input class="form-check-input" type="checkbox" id="notify_limits" name="notify_limits" {% if notify_limits %}checked{% endif %}>
+                                <label class="form-check-label" for="notify_limits">
+                                    &#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103; &#1086;&#1073; &#1086;&#1090;&#1082;&#1083;&#1086;&#1085;&#1077;&#1085;&#1080;&#1080; &#1086;&#1090; &#1085;&#1086;&#1088;&#1084;&#1099;
+                                    (<a href="{% url 'organization_norms' %}">&#1085;&#1086;&#1088;&#1084;&#1072;&#1090;&#1080;&#1074;&#1099;</a>)
+                                </label>
+                            </div>
+                            <div class="form-check mb-2">
+                                <input class="form-check-input" type="checkbox" id="notify_missed_visits" name="notify_missed_visits" {% if notify_missed_visits %}checked{% endif %}>
+                                <label class="form-check-label" for="notify_missed_visits">
+                                    &#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103; &#1086; &#1085;&#1077;&#1086;&#1073;&#1093;&#1086;&#1076;&#1080;&#1084;&#1086;&#1089;&#1090;&#1080; &#1087;&#1086;&#1089;&#1077;&#1097;&#1077;&#1085;&#1080;&#1103; &#1086;&#1073;&#1098;&#1077;&#1082;&#1090;&#1086;&#1074;
+                                </label>
+                            </div>
+                            <div class="form-check mb-3">
+                                <input class="form-check-input" type="checkbox" id="notify_pool_staff_daily" name="notify_pool_staff_daily" {% if notify_pool_staff_daily %}checked{% endif %}>
+                                <label class="form-check-label" for="notify_pool_staff_daily">
+                                    &#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103; &#1076;&#1083;&#1103; &#1089;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1086;&#1074; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1072; &#1086; &#1085;&#1077;&#1086;&#1073;&#1093;&#1086;&#1076;&#1080;&#1084;&#1086;&#1089;&#1090;&#1080; &#1080;&#1079;&#1084;&#1077;&#1088;&#1103;&#1090;&#1100; &#1087;&#1072;&#1088;&#1072;&#1084;&#1077;&#1090;&#1088;&#1099; &#1074;&#1086;&#1076;&#1099;
+                                </label>
+                            </div>
+                            <button type="submit" class="btn btn-primary btn-sm">&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;</button>
+                        </form>
+                    </div>
+                </div>
+                {% endif %}
+
                 <div class="card card-soft mb-4">
                     <div class="card-body pb-0">
                         <h5 class="card-title">&#1044;&#1086;&#1089;&#1090;&#1091;&#1087;&#1099; &#1082; &#1086;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;&#1084;</h5>

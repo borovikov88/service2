@@ -1,0 +1,47 @@
+{% extends 'pool_service/base.html' %}
+
+{% block title %}&#1053;&#1086;&#1088;&#1084;&#1072;&#1090;&#1080;&#1074;&#1099; &#1074;&#1086;&#1076;&#1099;{% endblock %}
+
+{% block content %}
+<div class="card card-soft p-4">
+    <h4 class="fw-bold mb-3">&#1053;&#1086;&#1088;&#1084;&#1072;&#1090;&#1080;&#1074;&#1099; &#1074;&#1086;&#1076;&#1099;</h4>
+    <form method="post">
+        {% csrf_token %}
+        <div class="row g-3">
+            <div class="col-md-6">
+                <label class="form-label">{{ form.ph_min.label }}</label>
+                {{ form.ph_min }}
+            </div>
+            <div class="col-md-6">
+                <label class="form-label">{{ form.ph_max.label }}</label>
+                {{ form.ph_max }}
+            </div>
+            <div class="col-md-6">
+                <label class="form-label">{{ form.cl_free_min.label }}</label>
+                {{ form.cl_free_min }}
+            </div>
+            <div class="col-md-6">
+                <label class="form-label">{{ form.cl_free_max.label }}</label>
+                {{ form.cl_free_max }}
+            </div>
+            <div class="col-md-6">
+                <label class="form-label">{{ form.cl_total_min.label }}</label>
+                {{ form.cl_total_min }}
+            </div>
+            <div class="col-md-6">
+                <label class="form-label">{{ form.cl_total_max.label }}</label>
+                {{ form.cl_total_max }}
+            </div>
+        </div>
+
+        {% if form.non_field_errors %}
+        <div class="text-danger small mt-2">{{ form.non_field_errors|join:", " }}</div>
+        {% endif %}
+
+        <div class="d-flex gap-2 mt-4">
+            <button type="submit" class="btn btn-primary">&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;</button>
+            <a href="{% url 'pool_list' %}" class="btn btn-outline-secondary">&#1054;&#1090;&#1084;&#1077;&#1085;&#1072;</a>
+        </div>
+    </form>
+</div>
+{% endblock %}
