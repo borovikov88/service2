@@ -40,8 +40,8 @@
                                         <option value="viewer" {% if access.role == "viewer" %}selected{% endif %}>Просмотр</option>
                                     </select>
                                     <button type="submit" class="btn btn-outline-primary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} aria-label="Сохранить" title="Сохранить">
-                                        <i class="bi bi-check-lg d-inline d-sm-none"></i>
-                                        <span class="d-none d-sm-inline">Сохранить</span>
+                                        <i class="bi bi-check-lg d-inline d-md-none"></i>
+                                        <span class="d-none d-md-inline">Сохранить</span>
                                     </button>
                                 </form>
                             {% else %}
@@ -52,12 +52,12 @@
                             {% if access.user.is_active %}
                                 <span class="badge bg-success-subtle text-success border" title="Активен">
                                     <i class="bi bi-check-circle"></i>
-                                    <span class="d-none d-sm-inline ms-1">Активен</span>
+                                    <span class="d-none d-md-inline ms-1">Активен</span>
                                 </span>
                             {% else %}
                                 <span class="badge bg-danger-subtle text-danger border" title="Заблокирован">
                                     <i class="bi bi-slash-circle"></i>
-                                    <span class="d-none d-sm-inline ms-1">Заблокирован</span>
+                                    <span class="d-none d-md-inline ms-1">Заблокирован</span>
                                 </span>
                             {% endif %}
                         </td>
@@ -86,11 +86,11 @@
                                                 aria-label="{% if access.user.is_active %}Заблокировать{% else %}Разблокировать{% endif %}"
                                                 title="{% if access.user.is_active %}Заблокировать{% else %}Разблокировать{% endif %}">
                                                 {% if access.user.is_active %}
-                                                    <i class="bi bi-slash-circle d-inline d-sm-none"></i>
-                                                    <span class="d-none d-sm-inline">Заблокировать</span>
+                                                    <i class="bi bi-slash-circle d-inline d-md-none"></i>
+                                                    <span class="d-none d-md-inline">Заблокировать</span>
                                                 {% else %}
-                                                    <i class="bi bi-check-circle d-inline d-sm-none"></i>
-                                                    <span class="d-none d-sm-inline">Разблокировать</span>
+                                                    <i class="bi bi-check-circle d-inline d-md-none"></i>
+                                                    <span class="d-none d-md-inline">Разблокировать</span>
                                                 {% endif %}
                                             </button>
                                         </form>
@@ -104,8 +104,8 @@
                                                 {% if access_blocked %}data-requires-access="true"{% endif %}
                                                 aria-label="Удалить"
                                                 title="Удалить">
-                                                <i class="bi bi-trash d-inline d-sm-none"></i>
-                                                <span class="d-none d-sm-inline">Удалить</span>
+                                                <i class="bi bi-trash d-inline d-md-none"></i>
+                                                <span class="d-none d-md-inline">Удалить</span>
                                             </button>
                                         </form>
                                     </div>
@@ -150,12 +150,12 @@
                             {% if invite.is_expired %}
                                 <span class="badge bg-warning-subtle text-warning border" title="Пользователь не подтвердил регистрацию">
                                     <i class="bi bi-exclamation-triangle"></i>
-                                    <span class="d-none d-sm-inline ms-1">Пользователь не подтвердил регистрацию</span>
+                                    <span class="d-none d-md-inline ms-1">Пользователь не подтвердил регистрацию</span>
                                 </span>
                             {% else %}
                                 <span class="badge bg-info-subtle text-info border" title="Приглашение отправлено">
                                     <i class="bi bi-send"></i>
-                                    <span class="d-none d-sm-inline ms-1">Приглашение отправлено</span>
+                                    <span class="d-none d-md-inline ms-1">Приглашение отправлено</span>
                                 </span>
                             {% endif %}
                         </td>
@@ -165,8 +165,8 @@
                                     <form method="post" action="{% url 'client_invite_resend' client.id invite.id %}" class="d-inline">
                                         {% csrf_token %}
                                         <button type="submit" class="btn btn-outline-primary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} aria-label="Отправить повторно" title="Отправить повторно">
-                                            <i class="bi bi-arrow-repeat d-inline d-sm-none"></i>
-                                            <span class="d-none d-sm-inline">Отправить повторно</span>
+                                            <i class="bi bi-arrow-repeat d-inline d-md-none"></i>
+                                            <span class="d-none d-md-inline">Отправить повторно</span>
                                         </button>
                                     </form>
                                     <form method="post" action="{% url 'client_invite_delete' client.id invite.id %}" class="d-inline">
@@ -179,8 +179,8 @@
                                             {% if access_blocked %}data-requires-access="true"{% endif %}
                                             aria-label="Удалить"
                                             title="Удалить">
-                                            <i class="bi bi-trash d-inline d-sm-none"></i>
-                                            <span class="d-none d-sm-inline">Удалить</span>
+                                            <i class="bi bi-trash d-inline d-md-none"></i>
+                                            <span class="d-none d-md-inline">Удалить</span>
                                         </button>
                                     </form>
                                 </div>

@@ -70,8 +70,8 @@
                                                     <option value="service" {% if item.role == "service" %}selected{% endif %}>&#1057;&#1077;&#1088;&#1074;&#1080;&#1089;</option>
                                                 </select>
                                                 <button type="submit" class="btn btn-outline-primary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} aria-label="&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;" title="&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;">
-                                                    <i class="bi bi-check-lg d-inline d-sm-none"></i>
-                                                    <span class="d-none d-sm-inline">&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;</span>
+                                                    <i class="bi bi-check-lg d-inline d-md-none"></i>
+                                                    <span class="d-none d-md-inline">&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;</span>
                                                 </button>
                                             </form>
                                         {% else %}
@@ -85,12 +85,12 @@
                                             {% if item.user.is_active %}
                                             <span class="badge bg-success-subtle text-success border" title="&#1055;&#1088;&#1080;&#1075;&#1083;&#1072;&#1096;&#1077;&#1085;&#1080;&#1077; &#1087;&#1088;&#1080;&#1085;&#1103;&#1090;&#1086;">
                                                 <i class="bi bi-check-circle"></i>
-                                                <span class="d-none d-sm-inline ms-1">&#1055;&#1088;&#1080;&#1075;&#1083;&#1072;&#1096;&#1077;&#1085;&#1080;&#1077; &#1087;&#1088;&#1080;&#1085;&#1103;&#1090;&#1086;</span>
+                                                <span class="d-none d-md-inline ms-1">&#1055;&#1088;&#1080;&#1075;&#1083;&#1072;&#1096;&#1077;&#1085;&#1080;&#1077; &#1087;&#1088;&#1080;&#1085;&#1103;&#1090;&#1086;</span>
                                             </span>
                                         {% else %}
                                             <span class="badge bg-danger-subtle text-danger border" title="&#1047;&#1072;&#1073;&#1083;&#1086;&#1082;&#1080;&#1088;&#1086;&#1074;&#1072;&#1085;">
                                                 <i class="bi bi-slash-circle"></i>
-                                                <span class="d-none d-sm-inline ms-1">&#1047;&#1072;&#1073;&#1083;&#1086;&#1082;&#1080;&#1088;&#1086;&#1074;&#1072;&#1085;</span>
+                                                <span class="d-none d-md-inline ms-1">&#1047;&#1072;&#1073;&#1083;&#1086;&#1082;&#1080;&#1088;&#1086;&#1074;&#1072;&#1085;</span>
                                             </span>
                                         {% endif %}
                                         {% endif %}
@@ -119,11 +119,11 @@
                                                         aria-label="{% if item.user.is_active %}&#1047;&#1072;&#1073;&#1083;&#1086;&#1082;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;{% else %}&#1056;&#1072;&#1079;&#1073;&#1083;&#1086;&#1082;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;{% endif %}"
                                                         title="{% if item.user.is_active %}&#1047;&#1072;&#1073;&#1083;&#1086;&#1082;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;{% else %}&#1056;&#1072;&#1079;&#1073;&#1083;&#1086;&#1082;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;{% endif %}">
                                                         {% if item.user.is_active %}
-                                                            <i class="bi bi-slash-circle d-inline d-sm-none"></i>
-                                                            <span class="d-none d-sm-inline">&#1047;&#1072;&#1073;&#1083;&#1086;&#1082;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;</span>
+                                                            <i class="bi bi-slash-circle d-inline d-md-none"></i>
+                                                            <span class="d-none d-md-inline">&#1047;&#1072;&#1073;&#1083;&#1086;&#1082;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;</span>
                                                         {% else %}
-                                                            <i class="bi bi-check-circle d-inline d-sm-none"></i>
-                                                            <span class="d-none d-sm-inline">&#1056;&#1072;&#1079;&#1073;&#1083;&#1086;&#1082;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;</span>
+                                                            <i class="bi bi-check-circle d-inline d-md-none"></i>
+                                                            <span class="d-none d-md-inline">&#1056;&#1072;&#1079;&#1073;&#1083;&#1086;&#1082;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;</span>
                                                         {% endif %}
                                                     </button>
                                                 </form>
@@ -137,8 +137,8 @@
                                                         {% if access_blocked %}data-requires-access="true"{% endif %}
                                                         aria-label="&#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100;"
                                                         title="&#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100;">
-                                                        <i class="bi bi-trash d-inline d-sm-none"></i>
-                                                        <span class="d-none d-sm-inline">&#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100;</span>
+                                                        <i class="bi bi-trash d-inline d-md-none"></i>
+                                                        <span class="d-none d-md-inline">&#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100;</span>
                                                     </button>
                                                 </form>
                                             </div>
@@ -162,12 +162,12 @@
                                         {% if invite.is_expired %}
                                             <span class="badge bg-warning-subtle text-warning border" title="&#1055;&#1086;&#1083;&#1100;&#1079;&#1086;&#1074;&#1072;&#1090;&#1077;&#1083;&#1100; &#1085;&#1077; &#1087;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1076;&#1080;&#1083; &#1088;&#1077;&#1075;&#1080;&#1089;&#1090;&#1088;&#1072;&#1094;&#1080;&#1102;">
                                                 <i class="bi bi-exclamation-triangle"></i>
-                                                <span class="d-none d-sm-inline ms-1">&#1055;&#1086;&#1083;&#1100;&#1079;&#1086;&#1074;&#1072;&#1090;&#1077;&#1083;&#1100; &#1085;&#1077; &#1087;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1076;&#1080;&#1083; &#1088;&#1077;&#1075;&#1080;&#1089;&#1090;&#1088;&#1072;&#1094;&#1080;&#1102;</span>
+                                                <span class="d-none d-md-inline ms-1">&#1055;&#1086;&#1083;&#1100;&#1079;&#1086;&#1074;&#1072;&#1090;&#1077;&#1083;&#1100; &#1085;&#1077; &#1087;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1076;&#1080;&#1083; &#1088;&#1077;&#1075;&#1080;&#1089;&#1090;&#1088;&#1072;&#1094;&#1080;&#1102;</span>
                                             </span>
                                         {% else %}
                                             <span class="badge bg-info-subtle text-info border" title="&#1055;&#1088;&#1080;&#1075;&#1083;&#1072;&#1096;&#1077;&#1085;&#1080;&#1077; &#1086;&#1090;&#1087;&#1088;&#1072;&#1074;&#1083;&#1077;&#1085;&#1086;">
                                                 <i class="bi bi-send"></i>
-                                                <span class="d-none d-sm-inline ms-1">&#1055;&#1088;&#1080;&#1075;&#1083;&#1072;&#1096;&#1077;&#1085;&#1080;&#1077; &#1086;&#1090;&#1087;&#1088;&#1072;&#1074;&#1083;&#1077;&#1085;&#1086;</span>
+                                                <span class="d-none d-md-inline ms-1">&#1055;&#1088;&#1080;&#1075;&#1083;&#1072;&#1096;&#1077;&#1085;&#1080;&#1077; &#1086;&#1090;&#1087;&#1088;&#1072;&#1074;&#1083;&#1077;&#1085;&#1086;</span>
                                             </span>
                                         {% endif %}
                                     </td>
@@ -180,8 +180,8 @@
                                                 <form method="post" action="{% url 'invite_resend' invite.id %}" class="d-inline">
                                                     {% csrf_token %}
                                                     <button type="submit" class="btn btn-outline-primary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} aria-label="&#1054;&#1090;&#1087;&#1088;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1074;&#1090;&#1086;&#1088;&#1085;&#1086;" title="&#1054;&#1090;&#1087;&#1088;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1074;&#1090;&#1086;&#1088;&#1085;&#1086;">
-                                                        <i class="bi bi-arrow-repeat d-inline d-sm-none"></i>
-                                                        <span class="d-none d-sm-inline">&#1054;&#1090;&#1087;&#1088;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1074;&#1090;&#1086;&#1088;&#1085;&#1086;</span>
+                                                        <i class="bi bi-arrow-repeat d-inline d-md-none"></i>
+                                                        <span class="d-none d-md-inline">&#1054;&#1090;&#1087;&#1088;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1074;&#1090;&#1086;&#1088;&#1085;&#1086;</span>
                                                     </button>
                                                 </form>
                                                 <form method="post" action="{% url 'invite_delete' invite.id %}" class="d-inline">
@@ -194,8 +194,8 @@
                                                         {% if access_blocked %}data-requires-access="true"{% endif %}
                                                         aria-label="&#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100;"
                                                         title="&#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100;">
-                                                        <i class="bi bi-trash d-inline d-sm-none"></i>
-                                                        <span class="d-none d-sm-inline">&#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100;</span>
+                                                        <i class="bi bi-trash d-inline d-md-none"></i>
+                                                        <span class="d-none d-md-inline">&#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100;</span>
                                                     </button>
                                                 </form>
                                             </div>
@@ -234,7 +234,23 @@
                                 <td>
                                     {% if item.user.get_full_name %}{{ item.user.get_full_name }}{% else %}{{ item.user.username }}{% endif %}
                                 </td>
-                                <td>{{ item.get_role_display }}</td>
+                                <td>
+                                    {% if can_manage_roles and not user.is_superuser and item.user_id != user.id %}
+                                        <form method="post" action="{% url 'pool_staff_change_role' item.id %}" class="d-flex align-items-center gap-2">
+                                            {% csrf_token %}
+                                            <select name="role" class="form-select form-select-sm">
+                                                <option value="editor" {% if item.role == "editor" %}selected{% endif %}>Редактор</option>
+                                                <option value="viewer" {% if item.role == "viewer" %}selected{% endif %}>Просмотр</option>
+                                            </select>
+                                            <button type="submit" class="btn btn-outline-primary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} aria-label="Сохранить" title="Сохранить">
+                                                <i class="bi bi-check-lg d-inline d-md-none"></i>
+                                                <span class="d-none d-md-inline">Сохранить</span>
+                                            </button>
+                                        </form>
+                                    {% else %}
+                                        {{ item.get_role_display }}
+                                    {% endif %}
+                                </td>
                                 {% if user.is_superuser %}
                                     <td>{% if item.user.last_login %}{{ item.user.last_login|date:"d.m.Y H:i" }}{% else %}&#8212;{% endif %}</td>
                                 {% endif %}

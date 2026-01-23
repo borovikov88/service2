@@ -383,7 +383,8 @@ class Notification(models.Model):
 
 class PushSubscription(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="push_subscriptions")
-    endpoint = models.TextField(unique=True)
+    endpoint = models.TextField()
+    endpoint_hash = models.CharField(max_length=64, unique=True, db_index=True)
     p256dh = models.CharField(max_length=255)
     auth = models.CharField(max_length=255)
     user_agent = models.CharField(max_length=255, blank=True)

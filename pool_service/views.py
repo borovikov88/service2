@@ -206,21 +206,22 @@ def _pool_role_for_user(user, pool):
     if user.is_superuser:
         return "admin"
 
-    role = None
     pool_access = PoolAccess.objects.filter(user=user, pool=pool).first()
-    if pool_access:
-        role = pool_access.role
-
-    org_access = OrganizationAccess.objects.filter(user=user, organization=pool.organization).first()
-    if org_access:
-        role = "admin" if org_access.role in ADMIN_ROLES else org_access.role
-
     client_access = ClientAccess.objects.filter(user=user, client=pool.client).first()
-    if client_access and not role:
-        role = client_access.role or "viewer"
-        if role == "staff":
-            role = "editor"
+    org_access = OrganizationAccess.objects.filter(user=user, organization=pool.organization).first()
 
+    pool_role = pool_access.role if pool_access else None
+    client_role = None
+    if client_access:
+        client_role = client_access.role or "viewer"
+        if client_role == "staff":
+            client_role = "editor"
+
+    org_role = None
+    if org_access:
+        org_role = "admin" if org_access.role in ADMIN_ROLES else org_access.role
+
+    role = org_role or client_role or pool_role
     if pool.client and pool.client.user_id == user.id:
         role = "admin"
     return role
@@ -1379,6 +1380,49 @@ def staff_change_role(request, access_id):
 
     new_role = (request.POST.get("role") or "").strip()
     allowed_roles = ["admin", "service", "manager"]
+    if new_role not in allowed_roles:
+        messages.error(request, "\u041d\u0435\u0434\u043e\u043f\u0443\u0441\u0442\u0438\u043c\u0430\u044f \u0440\u043e\u043b\u044c.")
+        return redirect("users")
+    if access.role == new_role:
+        messages.info(request, "\u0420\u043e\u043b\u044c \u0443\u0436\u0435 \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u0430.")
+        return redirect("users")
+
+    access.role = new_role
+    access.save(update_fields=["role"])
+    messages.success(request, "\u0420\u043e\u043b\u044c \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0430.")
+    return redirect("users")
+
+
+@login_required
+def pool_staff_change_role(request, access_id):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+    if request.method != "POST":
+        return redirect("users")
+
+    access = get_object_or_404(
+        PoolAccess.objects.select_related("pool", "pool__organization", "user"),
+        pk=access_id,
+    )
+    is_admin = request.user.is_superuser or OrganizationAccess.objects.filter(
+        user=request.user,
+        role__in=ADMIN_ROLES,
+        organization=access.pool.organization,
+    ).exists()
+    if not is_admin:
+        return HttpResponseForbidden()
+    if access.user_id == request.user.id:
+        messages.error(request, "\u041d\u0435\u043b\u044c\u0437\u044f \u043c\u0435\u043d\u044f\u0442\u044c \u0441\u0432\u043e\u044e \u0440\u043e\u043b\u044c.")
+        return redirect("users")
+    if access.user.is_superuser:
+        return HttpResponseForbidden()
+
+    new_role = (request.POST.get("role") or "").strip()
+    allowed_roles = ["editor", "viewer"]
     if new_role not in allowed_roles:
         messages.error(request, "\u041d\u0435\u0434\u043e\u043f\u0443\u0441\u0442\u0438\u043c\u0430\u044f \u0440\u043e\u043b\u044c.")
         return redirect("users")
