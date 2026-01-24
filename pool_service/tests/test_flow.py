@@ -62,6 +62,8 @@ class PoolServiceFlowTests(TestCase):
             "client": str(self.client_profile.id),
             "address": "г. Москва, ул. Тестовая 1",
             "description": "",
+            "shape": "rect",
+            "pool_type": "skimmer",
         }
         resp = self.http.post(url, payload, follow=True)
         self.assertEqual(resp.status_code, 200)
@@ -91,6 +93,8 @@ class PoolServiceFlowTests(TestCase):
             "client": str(solo_client.id),
             "address": "Адрес клиента",
             "description": "",
+            "shape": "rect",
+            "pool_type": "skimmer",
         }
         resp = self.http.post(url, payload, follow=True)
         self.assertEqual(resp.status_code, 200)

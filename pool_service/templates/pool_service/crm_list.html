@@ -4,31 +4,161 @@
 
 {% block content %}
 <div class="card card-soft p-4">
+    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+        <form method="get" class="d-flex flex-wrap align-items-center gap-2">
+            <div class="input-group input-group-sm">
+                <span class="input-group-text"><i class="bi bi-search"></i></span>
+                <input type="search" name="q" class="form-control" placeholder="&#1055;&#1086;&#1080;&#1089;&#1082; &#1087;&#1086; &#1079;&#1072;&#1076;&#1072;&#1095;&#1072;&#1084;" value="{{ search_query|default:'' }}" autocomplete="off">
+            </div>
+            {% if current_sort %}
+                <input type="hidden" name="sort" value="{{ current_sort }}">
+                <input type="hidden" name="dir" value="{{ current_dir }}">
+            {% endif %}
+            <button type="submit" class="btn btn-outline-secondary btn-sm">&#1053;&#1072;&#1081;&#1090;&#1080;</button>
+        </form>
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#crm-table-settings" aria-label="&#1053;&#1072;&#1089;&#1090;&#1088;&#1086;&#1081;&#1082;&#1080; &#1090;&#1072;&#1073;&#1083;&#1080;&#1094;&#1099;" title="&#1053;&#1072;&#1089;&#1090;&#1088;&#1086;&#1081;&#1082;&#1080; &#1090;&#1072;&#1073;&#1083;&#1080;&#1094;&#1099;">
+            <i class="bi bi-gear"></i>
+        </button>
+    </div>
     <div class="table-responsive">
-        <table class="table align-middle">
+        <table class="table align-middle" id="crm-table" data-crm-direction="{{ direction }}">
             <thead class="small text-muted">
                 <tr>
-                    <th>Название</th>
-                    <th>Клиент</th>
-                    <th>Объект</th>
-                    <th>Этап</th>
+                    <th data-col="title">
+                        <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=title&dir={% if current_sort == 'title' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
+                            <span>&#1053;&#1072;&#1079;&#1074;&#1072;&#1085;&#1080;&#1077;</span>
+                            {% if current_sort == 'title' %}
+                                <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
+                            {% else %}
+                                <span class="text-muted small">&#8597;</span>
+                            {% endif %}
+                        </a>
+                    </th>
+                    <th data-col="client">
+                        <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=client&dir={% if current_sort == 'client' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
+                            <span>&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;</span>
+                            {% if current_sort == 'client' %}
+                                <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
+                            {% else %}
+                                <span class="text-muted small">&#8597;</span>
+                            {% endif %}
+                        </a>
+                    </th>
+                    <th data-col="pool">
+                        <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=pool&dir={% if current_sort == 'pool' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
+                            <span>&#1054;&#1073;&#1098;&#1077;&#1082;&#1090;</span>
+                            {% if current_sort == 'pool' %}
+                                <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
+                            {% else %}
+                                <span class="text-muted small">&#8597;</span>
+                            {% endif %}
+                        </a>
+                    </th>
+                    <th data-col="stage">
+                        <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=stage&dir={% if current_sort == 'stage' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
+                            <span>&#1069;&#1090;&#1072;&#1087;</span>
+                            {% if current_sort == 'stage' %}
+                                <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
+                            {% else %}
+                                <span class="text-muted small">&#8597;</span>
+                            {% endif %}
+                        </a>
+                    </th>
                     {% if direction == "service" %}
-                        <th>Срочность</th>
+                        <th data-col="urgency">
+                            <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=urgency&dir={% if current_sort == 'urgency' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
+                                <span>&#1057;&#1088;&#1086;&#1095;&#1085;&#1086;&#1089;&#1090;&#1100;</span>
+                                {% if current_sort == 'urgency' %}
+                                    <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
+                                {% else %}
+                                    <span class="text-muted small">&#8597;</span>
+                                {% endif %}
+                            </a>
+                        </th>
                     {% endif %}
-                    <th>Сумма</th>
-                    <th>Ответственный</th>
+                    <th data-col="amount">
+                        <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=amount&dir={% if current_sort == 'amount' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
+                            <span>&#1057;&#1091;&#1084;&#1084;&#1072;, &#8381;</span>
+                            {% if current_sort == 'amount' %}
+                                <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
+                            {% else %}
+                                <span class="text-muted small">&#8597;</span>
+                            {% endif %}
+                        </a>
+                    </th>
+                    <th data-col="responsible">
+                        <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=responsible&dir={% if current_sort == 'responsible' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
+                            <span>&#1054;&#1090;&#1074;&#1077;&#1090;&#1089;&#1090;&#1074;&#1077;&#1085;&#1085;&#1099;&#1081;</span>
+                            {% if current_sort == 'responsible' %}
+                                <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
+                            {% else %}
+                                <span class="text-muted small">&#8597;</span>
+                            {% endif %}
+                        </a>
+                    </th>
+                    <th data-col="description">
+                        <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=description&dir={% if current_sort == 'description' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
+                            <span>&#1054;&#1087;&#1080;&#1089;&#1072;&#1085;&#1080;&#1077;</span>
+                            {% if current_sort == 'description' %}
+                                <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
+                            {% else %}
+                                <span class="text-muted small">&#8597;</span>
+                            {% endif %}
+                        </a>
+                    </th>
+                    {% if direction == "service" %}
+                        <th data-col="service_works">
+                            <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=service_works&dir={% if current_sort == 'service_works' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
+                                <span>&#1042;&#1099;&#1087;&#1086;&#1083;&#1085;&#1077;&#1085;&#1085;&#1099;&#1077; &#1088;&#1072;&#1073;&#1086;&#1090;&#1099;</span>
+                                {% if current_sort == 'service_works' %}
+                                    <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
+                                {% else %}
+                                    <span class="text-muted small">&#8597;</span>
+                                {% endif %}
+                            </a>
+                        </th>
+                        <th data-col="equipment_replacement">
+                            <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=equipment_replacement&dir={% if current_sort == 'equipment_replacement' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
+                                <span>&#1047;&#1072;&#1084;&#1077;&#1085;&#1072; &#1086;&#1073;&#1086;&#1088;&#1091;&#1076;&#1086;&#1074;&#1072;&#1085;&#1080;&#1103;</span>
+                                {% if current_sort == 'equipment_replacement' %}
+                                    <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
+                                {% else %}
+                                    <span class="text-muted small">&#8597;</span>
+                                {% endif %}
+                            </a>
+                        </th>
+                        <th data-col="photo_url">
+                            <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=photo_url&dir={% if current_sort == 'photo_url' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
+                                <span>&#1060;&#1086;&#1090;&#1086; (&#1089;&#1089;&#1099;&#1083;&#1082;&#1072;)</span>
+                                {% if current_sort == 'photo_url' %}
+                                    <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
+                                {% else %}
+                                    <span class="text-muted small">&#8597;</span>
+                                {% endif %}
+                            </a>
+                        </th>
+                    {% endif %}
                     {% if user.is_superuser %}
-                        <th>Организация</th>
+                        <th data-col="organization">
+                            <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=organization&dir={% if current_sort == 'organization' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
+                                <span>&#1054;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;</span>
+                                {% if current_sort == 'organization' %}
+                                    <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
+                                {% else %}
+                                    <span class="text-muted small">&#8597;</span>
+                                {% endif %}
+                            </a>
+                        </th>
                     {% endif %}
-                    <th class="text-end"></th>
+                    <th data-col="actions" class="text-end"></th>
                 </tr>
             </thead>
             <tbody>
                 {% for item in items %}
                     <tr class="{% if service_done_stage and item.stage == service_done_stage %}text-muted{% endif %}">
-                        <td class="fw-semibold">{{ item.title }}</td>
-                        <td>{{ item.client.name|default:"-" }}</td>
-                        <td>
+                        <td data-col="title" class="fw-semibold">{{ item.title }}</td>
+                        <td data-col="client">{{ item.client.name|default:"-" }}</td>
+                        <td data-col="pool">
                             {% if item.pool %}
                                 {{ item.pool.address }}
                             {% elif item.client %}
@@ -37,46 +167,244 @@
                                 -
                             {% endif %}
                         </td>
-                        <td>{{ item.stage_label|default:item.stage }}</td>
+                        <td data-col="stage">{{ item.stage_label|default:item.stage }}</td>
                         {% if direction == "service" %}
-                            <td>
+                            <td data-col="urgency">
                                 {% if item.urgency %}
                                     <span class="urgency-badge urgency-{{ item.urgency }}" title="{{ item.get_urgency_display }}" aria-label="{{ item.get_urgency_display }}"></span>
                                 {% else %}
-                                    <span class="urgency-badge urgency-low" title="Срочность не задана" aria-label="Срочность не задана"></span>
+                                    <span class="urgency-badge urgency-low" title="&#1053;&#1077; &#1089;&#1088;&#1086;&#1095;&#1085;&#1086;" aria-label="&#1053;&#1077; &#1089;&#1088;&#1086;&#1095;&#1085;&#1086;"></span>
                                 {% endif %}
                             </td>
                         {% endif %}
-                        <td>
+                        <td data-col="amount">
                             {% if item.amount %}
-                                {{ item.amount|floatformat:2 }} ₽
+                                {{ item.amount|floatformat:2 }} &#8381;
                             {% else %}
                                 -
                             {% endif %}
                         </td>
-                        <td>
+                        <td data-col="responsible">
                             {% if item.responsible %}
                                 {{ item.responsible.get_full_name|default:item.responsible.username }}
                             {% else %}
                                 -
                             {% endif %}
                         </td>
-                        {% if user.is_superuser %}
-                            <td>{{ item.organization.name|default:"-" }}</td>
+                        <td data-col="description">
+                            {% if item.description %}
+                                {{ item.description|truncatechars:120 }}
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                        {% if direction == "service" %}
+                            <td data-col="service_works">
+                                {% if item.service_works %}
+                                    {{ item.service_works|truncatechars:120 }}
+                                {% else %}
+                                    -
+                                {% endif %}
+                            </td>
+                            <td data-col="equipment_replacement">
+                                {% if item.equipment_replacement %}
+                                    {{ item.equipment_replacement|truncatechars:120 }}
+                                {% else %}
+                                    -
+                                {% endif %}
+                            </td>
+                            <td data-col="photo_url">
+                                {% if item.photo_url %}
+                                    <a href="{{ item.photo_url }}" class="text-decoration-none" target="_blank" rel="noopener">{{ item.photo_url|truncatechars:40 }}</a>
+                                {% else %}
+                                    -
+                                {% endif %}
+                            </td>
                         {% endif %}
-                        <td class="text-end">
-                            <a class="btn btn-outline-secondary btn-sm" href="{% url 'crm_edit' direction=direction item_id=item.id %}" aria-label="Редактировать">
+                        {% if user.is_superuser %}
+                            <td data-col="organization">
+                                {% if item.organization %}
+                                    {{ item.organization.name }}
+                                {% else %}
+                                    -
+                                {% endif %}
+                            </td>
+                        {% endif %}
+                        <td data-col="actions" class="text-end">
+                            <a class="btn btn-outline-secondary btn-sm" href="{% url 'crm_edit' direction=direction item_id=item.id %}" aria-label="&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;">
                                 <i class="bi bi-pencil"></i>
                             </a>
                         </td>
                     </tr>
                 {% empty %}
                     <tr>
-                        <td colspan="{% if user.is_superuser %}{% if direction == "service" %}9{% else %}8{% endif %}{% else %}{% if direction == "service" %}8{% else %}7{% endif %}{% endif %}" class="text-center text-muted py-3">Пока нет записей</td>
+                        <td data-crm-empty colspan="{{ crm_table_colspan }}" class="text-center text-muted py-3">&#1055;&#1086;&#1082;&#1072; &#1085;&#1077;&#1090; &#1079;&#1072;&#1076;&#1072;&#1095;</td>
                     </tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
 </div>
+
+<div class="modal fade" id="crm-table-settings" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">&#1053;&#1072;&#1089;&#1090;&#1088;&#1086;&#1081;&#1082;&#1080; &#1090;&#1072;&#1073;&#1083;&#1080;&#1094;&#1099;</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-2">
+                    <div class="col-12 col-sm-6">
+                        <label class="form-check">
+                            <input class="form-check-input crm-column-toggle" type="checkbox" value="title" checked>
+                            <span class="form-check-label">&#1053;&#1072;&#1079;&#1074;&#1072;&#1085;&#1080;&#1077;</span>
+                        </label>
+                        <label class="form-check">
+                            <input class="form-check-input crm-column-toggle" type="checkbox" value="client" checked>
+                            <span class="form-check-label">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;</span>
+                        </label>
+                        <label class="form-check">
+                            <input class="form-check-input crm-column-toggle" type="checkbox" value="pool" checked>
+                            <span class="form-check-label">&#1054;&#1073;&#1098;&#1077;&#1082;&#1090;</span>
+                        </label>
+                        <label class="form-check">
+                            <input class="form-check-input crm-column-toggle" type="checkbox" value="stage" checked>
+                            <span class="form-check-label">&#1069;&#1090;&#1072;&#1087;</span>
+                        </label>
+                        {% if direction == "service" %}
+                        <label class="form-check">
+                            <input class="form-check-input crm-column-toggle" type="checkbox" value="urgency" checked>
+                            <span class="form-check-label">&#1057;&#1088;&#1086;&#1095;&#1085;&#1086;&#1089;&#1090;&#1100;</span>
+                        </label>
+                        {% endif %}
+                        <label class="form-check">
+                            <input class="form-check-input crm-column-toggle" type="checkbox" value="amount" checked>
+                            <span class="form-check-label">&#1057;&#1091;&#1084;&#1084;&#1072;, &#8381;</span>
+                        </label>
+                        <label class="form-check">
+                            <input class="form-check-input crm-column-toggle" type="checkbox" value="responsible" checked>
+                            <span class="form-check-label">&#1054;&#1090;&#1074;&#1077;&#1090;&#1089;&#1090;&#1074;&#1077;&#1085;&#1085;&#1099;&#1081;</span>
+                        </label>
+                        {% if user.is_superuser %}
+                        <label class="form-check">
+                            <input class="form-check-input crm-column-toggle" type="checkbox" value="organization" checked>
+                            <span class="form-check-label">&#1054;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;</span>
+                        </label>
+                        {% endif %}
+                    </div>
+                    <div class="col-12 col-sm-6">
+                        <label class="form-check">
+                            <input class="form-check-input crm-column-toggle" type="checkbox" value="description">
+                            <span class="form-check-label">&#1054;&#1087;&#1080;&#1089;&#1072;&#1085;&#1080;&#1077;</span>
+                        </label>
+                        {% if direction == "service" %}
+                        <label class="form-check">
+                            <input class="form-check-input crm-column-toggle" type="checkbox" value="service_works">
+                            <span class="form-check-label">&#1042;&#1099;&#1087;&#1086;&#1083;&#1085;&#1077;&#1085;&#1085;&#1099;&#1077; &#1088;&#1072;&#1073;&#1086;&#1090;&#1099;</span>
+                        </label>
+                        <label class="form-check">
+                            <input class="form-check-input crm-column-toggle" type="checkbox" value="equipment_replacement">
+                            <span class="form-check-label">&#1047;&#1072;&#1084;&#1077;&#1085;&#1072; &#1086;&#1073;&#1086;&#1088;&#1091;&#1076;&#1086;&#1074;&#1072;&#1085;&#1080;&#1103;</span>
+                        </label>
+                        <label class="form-check">
+                            <input class="form-check-input crm-column-toggle" type="checkbox" value="photo_url">
+                            <span class="form-check-label">&#1060;&#1086;&#1090;&#1086; (&#1089;&#1089;&#1099;&#1083;&#1082;&#1072;)</span>
+                        </label>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="crm-columns-reset">&#1057;&#1073;&#1088;&#1086;&#1089;&#1080;&#1090;&#1100;</button>
+                <button type="button" class="btn btn-primary btn-sm" data-bs-dismiss="modal">&#1043;&#1086;&#1090;&#1086;&#1074;&#1086;</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .crm-col-hidden {
+        display: none !important;
+    }
+    .crm-column-toggle {
+        cursor: pointer;
+    }
+</style>
+
+<script>
+    (function () {
+        const table = document.getElementById("crm-table");
+        if (!table) return;
+        const toggles = Array.from(document.querySelectorAll(".crm-column-toggle"));
+        if (!toggles.length) return;
+        const direction = table.dataset.crmDirection || "all";
+        const storageKey = "crm_columns_" + direction;
+        const fixedColumns = new Set(["actions"]);
+        const defaultColumns = toggles.filter((input) => input.checked).map((input) => input.value);
+
+        function updateColspan(active) {
+            const emptyCell = table.querySelector("[data-crm-empty]");
+            if (!emptyCell) return;
+            const headers = table.querySelectorAll("thead [data-col]");
+            let count = 0;
+            headers.forEach((header) => {
+                if (active.has(header.dataset.col)) {
+                    count += 1;
+                }
+            });
+            emptyCell.setAttribute("colspan", String(count));
+        }
+
+        function applyColumns(columns) {
+            const active = new Set(columns);
+            fixedColumns.forEach((col) => active.add(col));
+            table.querySelectorAll("[data-col]").forEach((el) => {
+                if (active.has(el.dataset.col)) {
+                    el.classList.remove("crm-col-hidden");
+                } else {
+                    el.classList.add("crm-col-hidden");
+                }
+            });
+            updateColspan(active);
+        }
+
+        function loadColumns() {
+            let stored = null;
+            try {
+                stored = JSON.parse(localStorage.getItem(storageKey) || "null");
+            } catch (e) {
+                stored = null;
+            }
+            if (!Array.isArray(stored) || !stored.length) {
+                stored = defaultColumns;
+            }
+            toggles.forEach((input) => {
+                input.checked = stored.includes(input.value);
+            });
+            applyColumns(stored);
+        }
+
+        toggles.forEach((input) => {
+            input.addEventListener("change", () => {
+                const selected = toggles.filter((item) => item.checked).map((item) => item.value);
+                applyColumns(selected);
+                localStorage.setItem(storageKey, JSON.stringify(selected));
+            });
+        });
+
+        const resetBtn = document.getElementById("crm-columns-reset");
+        if (resetBtn) {
+            resetBtn.addEventListener("click", () => {
+                localStorage.removeItem(storageKey);
+                toggles.forEach((input) => {
+                    input.checked = defaultColumns.includes(input.value);
+                });
+                applyColumns(defaultColumns);
+            });
+        }
+
+        loadColumns();
+    })();
+</script>
 {% endblock %}

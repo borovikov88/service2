@@ -302,6 +302,9 @@
             <i class="bi bi-list fs-4"></i>
           </button>
           <nav class="d-none d-lg-flex align-items-center gap-3">
+          {% if can_access_crm %}
+            <a class="text-decoration-none {% if active_tab == 'crm' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'crm_index' %}">CRM</a>
+          {% endif %}
           {% if not is_personal_user %}
           <a class="text-decoration-none {% if active_tab == 'readings' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="/readings/all">&#1055;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;</a>
           {% endif %}
@@ -312,9 +315,6 @@
               &#1052;&#1086;&#1080; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1099;
             {% endif %}
           </a>
-          {% if can_access_crm %}
-            <a class="text-decoration-none {% if active_tab == 'crm' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'crm_index' %}">CRM</a>
-          {% endif %}
           {% if user.is_authenticated %}
             {% with org_admins=user.organizationaccess_set.all %}
               {% if user.is_superuser or org_admins|length %}
@@ -444,6 +444,9 @@
       </div>
       {% endif %}
       <div class="list-group list-group-flush">
+          {% if can_access_crm %}
+          <a href="{% url 'crm_index' %}" class="list-group-item list-group-item-action">CRM</a>
+          {% endif %}
           <a href="{% url 'profile' %}" class="list-group-item list-group-item-action">&#1055;&#1088;&#1086;&#1092;&#1080;&#1083;&#1100;</a>
           <a href="{{ personal_pool_url|default:'/pools' }}" class="list-group-item list-group-item-action">
             {% if is_personal_user %}
@@ -452,9 +455,6 @@
               &#1052;&#1086;&#1080; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1099;
             {% endif %}
           </a>
-          {% if can_access_crm %}
-          <a href="{% url 'crm_index' %}" class="list-group-item list-group-item-action">CRM</a>
-          {% endif %}
           {% if is_org_staff %}
           <a href="{% url 'clients_list' %}" class="list-group-item list-group-item-action">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;</a>
           {% endif %}
