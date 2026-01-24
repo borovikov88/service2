@@ -1,0 +1,167 @@
+{% extends 'pool_service/base.html' %}
+
+{% block title %}{{ page_title }}{% endblock %}
+
+{% block content %}
+<div class="card card-soft p-4">
+    <h4 class="fw-bold mb-3">{{ page_title }}</h4>
+
+    {% if form.non_field_errors %}
+        <div class="alert alert-danger">{{ form.non_field_errors|join:", " }}</div>
+    {% endif %}
+
+    <form method="post" novalidate>
+        {% csrf_token %}
+        <div class="row g-3">
+            <div class="col-12 col-md-8">
+                <label class="form-label">&#1053;&#1072;&#1079;&#1074;&#1072;&#1085;&#1080;&#1077;</label>
+                {{ form.title }}
+                {% if form.title.errors %}<div class="text-danger small">{{ form.title.errors.0 }}</div>{% endif %}
+            </div>
+            <div class="col-12 col-md-4">
+                <label class="form-label">&#1057;&#1091;&#1084;&#1084;&#1072;, &#8381;</label>
+                {{ form.amount }}
+                {% if form.amount.errors %}<div class="text-danger small">{{ form.amount.errors.0 }}</div>{% endif %}
+            </div>
+            <div class="col-12 col-md-6">
+                <label class="form-label">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;</label>
+                {{ form.client }}
+                {% if form.client.errors %}<div class="text-danger small">{{ form.client.errors.0 }}</div>{% endif %}
+            </div>
+            <div class="col-12 col-md-6">
+                <label class="form-label">&#1054;&#1073;&#1098;&#1077;&#1082;&#1090;</label>
+                {{ form.pool }}
+                {% if form.pool.errors %}<div class="text-danger small">{{ form.pool.errors.0 }}</div>{% endif %}
+            </div>
+            <div class="col-12 col-md-6">
+                <label class="form-label">&#1069;&#1090;&#1072;&#1087;</label>
+                {{ form.stage }}
+                {% if form.stage.errors %}<div class="text-danger small">{{ form.stage.errors.0 }}</div>{% endif %}
+            </div>
+            {% if direction == "service" %}
+            <div class="col-12 col-md-6">
+                <label class="form-label">&#1057;&#1088;&#1086;&#1095;&#1085;&#1086;&#1089;&#1090;&#1100;</label>
+                {{ form.urgency }}
+                {% if form.urgency.errors %}<div class="text-danger small">{{ form.urgency.errors.0 }}</div>{% endif %}
+            </div>
+            {% endif %}
+            <div class="col-12 col-md-6">
+                <label class="form-label">&#1054;&#1090;&#1074;&#1077;&#1090;&#1089;&#1090;&#1074;&#1077;&#1085;&#1085;&#1099;&#1081;</label>
+                {{ form.responsible }}
+                {% if form.responsible.errors %}<div class="text-danger small">{{ form.responsible.errors.0 }}</div>{% endif %}
+            </div>
+            <div class="col-12">
+                <label class="form-label">&#1054;&#1087;&#1080;&#1089;&#1072;&#1085;&#1080;&#1077;</label>
+                {{ form.description }}
+                {% if form.description.errors %}<div class="text-danger small">{{ form.description.errors.0 }}</div>{% endif %}
+            </div>
+            {% if direction == "service" %}
+                <div class="col-12">
+                    <label class="form-label">&#1042;&#1099;&#1087;&#1086;&#1083;&#1085;&#1077;&#1085;&#1085;&#1099;&#1077; &#1088;&#1072;&#1073;&#1086;&#1090;&#1099;</label>
+                    {{ form.service_works }}
+                    {% if form.service_works.errors %}<div class="text-danger small">{{ form.service_works.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-12">
+                    <label class="form-label">&#1047;&#1072;&#1084;&#1077;&#1085;&#1072; &#1086;&#1073;&#1086;&#1088;&#1091;&#1076;&#1086;&#1074;&#1072;&#1085;&#1080;&#1103;</label>
+                    {{ form.equipment_replacement }}
+                    {% if form.equipment_replacement.errors %}<div class="text-danger small">{{ form.equipment_replacement.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-12">
+                    <label class="form-label">&#1060;&#1086;&#1090;&#1086; (&#1089;&#1089;&#1099;&#1083;&#1082;&#1072;)</label>
+                    {{ form.photo_url }}
+                    {% if form.photo_url.errors %}<div class="text-danger small">{{ form.photo_url.errors.0 }}</div>{% endif %}
+                </div>
+            {% endif %}
+        </div>
+            <div class="d-flex gap-2 mt-3">
+                <button type="submit" class="btn btn-primary">&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;</button>
+                <a href="{% url 'crm_list' direction=direction %}" class="btn btn-outline-secondary">&#1054;&#1090;&#1084;&#1077;&#1085;&#1072;</a>
+            </div>
+            {% if item_photo_urls %}
+                <div class="mt-4">
+                    <label class="form-label">&#1060;&#1086;&#1090;&#1086;</label>
+                    <div class="issue-photo-thumbs issue-photo-thumbs--large" data-photos="{{ item_photo_urls_json|escape }}">
+                        {% for url in item_photo_urls %}
+                            <button type="button" class="issue-photo-thumb issue-photo-thumb--large" data-index="{{ forloop.counter0 }}">
+                                <img src="{{ url }}" alt="&#1060;&#1086;&#1090;&#1086; {{ forloop.counter }}">
+                            </button>
+                        {% endfor %}
+                    </div>
+                </div>
+            {% endif %}
+    </form>
+</div>
+
+{% if item_photo_urls %}
+<div class="modal fade" id="issuePhotoModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content">
+      <div class="modal-body p-0">
+        <div id="issuePhotoCarousel" class="carousel slide" data-bs-ride="false">
+          <div class="carousel-indicators"></div>
+          <div class="carousel-inner"></div>
+          <button class="carousel-control-prev" type="button" data-bs-target="#issuePhotoCarousel" data-bs-slide="prev">
+            <span class="carousel-control-prev-icon" aria-hidden="true"></span>
+            <span class="visually-hidden">&#1053;&#1072;&#1079;&#1072;&#1076;</span>
+          </button>
+          <button class="carousel-control-next" type="button" data-bs-target="#issuePhotoCarousel" data-bs-slide="next">
+            <span class="carousel-control-next-icon" aria-hidden="true"></span>
+            <span class="visually-hidden">&#1042;&#1087;&#1077;&#1088;&#1105;&#1076;</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    const modalEl = document.getElementById("issuePhotoModal");
+    const carouselEl = document.getElementById("issuePhotoCarousel");
+    if (!modalEl || !carouselEl) return;
+    const indicators = carouselEl.querySelector(".carousel-indicators");
+    const inner = carouselEl.querySelector(".carousel-inner");
+    const modal = new bootstrap.Modal(modalEl);
+
+    function renderCarousel(urls, startIndex) {
+      indicators.innerHTML = "";
+      inner.innerHTML = "";
+      urls.forEach((url, idx) => {
+        const indicator = document.createElement("button");
+        indicator.type = "button";
+        indicator.dataset.bsTarget = "#issuePhotoCarousel";
+        indicator.dataset.bsSlideTo = String(idx);
+        if (idx === startIndex) indicator.classList.add("active");
+        indicators.appendChild(indicator);
+
+        const item = document.createElement("div");
+        item.className = "carousel-item" + (idx === startIndex ? " active" : "");
+        const img = document.createElement("img");
+        img.className = "d-block w-100";
+        img.src = url;
+        img.alt = "&#1060;&#1086;&#1090;&#1086; " + (idx + 1);
+        item.appendChild(img);
+        inner.appendChild(item);
+      });
+    }
+
+    document.querySelectorAll(".issue-photo-thumb").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const container = btn.closest(".issue-photo-thumbs");
+        if (!container) return;
+        let urls = [];
+        try {
+          urls = JSON.parse(container.dataset.photos || "[]");
+        } catch (e) {
+          urls = [];
+        }
+        if (!urls.length) return;
+        const startIndex = Number(btn.dataset.index || 0);
+        renderCarousel(urls, startIndex);
+        modal.show();
+      });
+    });
+  })();
+</script>
+{% endif %}
+{% endblock %}

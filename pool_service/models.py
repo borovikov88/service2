@@ -272,6 +272,7 @@ class OrganizationInvite(models.Model):
     last_name = models.CharField(max_length=100, blank=True)
     phone = models.CharField(max_length=20, blank=True)
     role = models.CharField(max_length=20, choices=OrganizationAccess.ROLE_CHOICES, default="service")
+    roles = models.JSONField(default=list, blank=True)
     token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
     last_sent_at = models.DateTimeField(null=True, blank=True)
@@ -333,6 +334,137 @@ class OrganizationPaymentRequest(models.Model):
 
     def __str__(self):
         return f"{self.organization.name} ({self.months}m, {self.status})"
+
+
+class CrmItem(models.Model):
+    DIRECTION_SERVICE = "service"
+    DIRECTION_PROJECT = "project"
+    DIRECTION_SALES = "sales"
+    DIRECTION_TENDER = "tender"
+    DIRECTION_CHOICES = [
+        (DIRECTION_SERVICE, "service"),
+        (DIRECTION_PROJECT, "project"),
+        (DIRECTION_SALES, "sales"),
+        (DIRECTION_TENDER, "tender"),
+    ]
+
+    STAGE_SERVICE_NEW = "srv_new"
+    STAGE_SERVICE_IN_PROGRESS = "srv_in_progress"
+    STAGE_SERVICE_DONE = "srv_done"
+    STAGE_SERVICE_BLOCKED = "srv_blocked"
+    STAGE_PROJECT_IDEA = "prj_idea"
+    STAGE_PROJECT_DESIGN = "prj_design"
+    STAGE_PROJECT_BUILD = "prj_build"
+    STAGE_PROJECT_COMMISSION = "prj_commission"
+    STAGE_PROJECT_DONE = "prj_done"
+    STAGE_PROJECT_HOLD = "prj_hold"
+    STAGE_SALES_LEAD = "sale_lead"
+    STAGE_SALES_QUALIFY = "sale_qualify"
+    STAGE_SALES_OFFER = "sale_offer"
+    STAGE_SALES_CONTRACT = "sale_contract"
+    STAGE_SALES_WON = "sale_won"
+    STAGE_SALES_LOST = "sale_lost"
+    STAGE_TENDER_PREPARE = "tend_prepare"
+    STAGE_TENDER_SUBMITTED = "tend_submitted"
+    STAGE_TENDER_SHORTLIST = "tend_shortlist"
+    STAGE_TENDER_WON = "tend_won"
+    STAGE_TENDER_LOST = "tend_lost"
+    STAGE_TENDER_CANCEL = "tend_cancel"
+    URGENCY_LOW = "low"
+    URGENCY_REQUIRED = "required"
+    URGENCY_CRITICAL = "critical"
+    STAGE_CHOICES = [
+        (STAGE_SERVICE_NEW, "service_new"),
+        (STAGE_SERVICE_IN_PROGRESS, "service_in_progress"),
+        (STAGE_SERVICE_DONE, "service_done"),
+        (STAGE_SERVICE_BLOCKED, "service_blocked"),
+        (STAGE_PROJECT_IDEA, "project_idea"),
+        (STAGE_PROJECT_DESIGN, "project_design"),
+        (STAGE_PROJECT_BUILD, "project_build"),
+        (STAGE_PROJECT_COMMISSION, "project_commission"),
+        (STAGE_PROJECT_DONE, "project_done"),
+        (STAGE_PROJECT_HOLD, "project_hold"),
+        (STAGE_SALES_LEAD, "sales_lead"),
+        (STAGE_SALES_QUALIFY, "sales_qualify"),
+        (STAGE_SALES_OFFER, "sales_offer"),
+        (STAGE_SALES_CONTRACT, "sales_contract"),
+        (STAGE_SALES_WON, "sales_won"),
+        (STAGE_SALES_LOST, "sales_lost"),
+        (STAGE_TENDER_PREPARE, "tender_prepare"),
+        (STAGE_TENDER_SUBMITTED, "tender_submitted"),
+        (STAGE_TENDER_SHORTLIST, "tender_shortlist"),
+        (STAGE_TENDER_WON, "tender_won"),
+        (STAGE_TENDER_LOST, "tender_lost"),
+        (STAGE_TENDER_CANCEL, "tender_cancel"),
+    ]
+    URGENCY_CHOICES = [
+        (URGENCY_LOW, "\u041d\u0435\u0441\u0440\u043e\u0447\u043d\u043e"),
+        (URGENCY_REQUIRED, "\u0422\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044f"),
+        (URGENCY_CRITICAL, "\u041a\u0440\u0438\u0442\u0438\u0447\u043d\u043e"),
+    ]
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="crm_items",
+    )
+    direction = models.CharField(max_length=20, choices=DIRECTION_CHOICES)
+    title = models.CharField(max_length=255)
+    client = models.ForeignKey(
+        Client,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="crm_items",
+    )
+    pool = models.ForeignKey(
+        Pool,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="crm_items",
+    )
+    stage = models.CharField(max_length=40, choices=STAGE_CHOICES, default=STAGE_SERVICE_NEW)
+    urgency = models.CharField(max_length=20, choices=URGENCY_CHOICES, blank=True)
+    amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    description = models.TextField(blank=True)
+    service_works = models.TextField(blank=True)
+    equipment_replacement = models.TextField(blank=True)
+    photo_url = models.URLField(blank=True)
+    photo = models.ImageField(upload_to="crm_issues/", blank=True, null=True)
+    responsible = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="crm_responsible_items",
+    )
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="crm_created_items",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["organization", "direction"], name="crm_org_dir_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.title} ({self.direction})"
+
+
+class CrmItemPhoto(models.Model):
+    item = models.ForeignKey(CrmItem, on_delete=models.CASCADE, related_name="photos")
+    image = models.ImageField(upload_to="crm_issues/")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"CrmItemPhoto {self.item_id}"
 
 
 class Notification(models.Model):

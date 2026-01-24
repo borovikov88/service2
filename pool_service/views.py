@@ -15,7 +15,7 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_POST
 from django.urls import reverse, reverse_lazy
 from django.db import connection
-from django.db.models import Count, Q, Max
+from django.db.models import Count, Q, Max, Case, When, Value, IntegerField
 from django.http import HttpResponse, HttpResponseForbidden, HttpResponseNotFound, JsonResponse
 from django.utils import timezone
 from django.utils.crypto import get_random_string
@@ -48,6 +48,9 @@ from .forms import (
     ClientInviteAcceptForm,
     normalize_phone,
     OrganizationWaterNormsForm,
+    CrmItemForm,
+    CrmServiceIssueForm,
+    CRM_STAGE_CHOICES_BY_DIRECTION,
 )
 from .sitemaps import HomeSitemap
 from .seo import is_indexable_host
@@ -147,14 +150,56 @@ from .models import (
     Notification,
     OrganizationWaterNorms,
     PushSubscription,
+    CrmItem,
+    CrmItemPhoto,
 )
-from .services.permissions import is_personal_free, is_personal_user, is_org_access_blocked, personal_pool
+from .services.permissions import (
+    is_personal_free,
+    is_personal_user,
+    is_org_access_blocked,
+    personal_pool,
+    organization_for_user,
+)
 from django import forms
 
 PER_PAGE_CHOICES = {20, 50, 100}
 INVITE_EXPIRY_HOURS = 24
 ADMIN_ROLES = ["owner", "admin"]
 ORG_STAFF_ROLES = ["owner", "admin", "service", "manager"]
+CRM_ALLOWED_ROLES = {"owner", "admin", "service"}
+
+CRM_DIRECTION_META = {
+    CrmItem.DIRECTION_SERVICE: {
+        "label": "Сервис",
+        "subtitle": "Работы, замены и контроль объектов",
+        "icon": "bi-wrench-adjustable",
+    },
+    CrmItem.DIRECTION_PROJECT: {
+        "label": "Проекты",
+        "subtitle": "Проектные и строительные объекты",
+        "icon": "bi-building",
+    },
+    CrmItem.DIRECTION_SALES: {
+        "label": "Продажи",
+        "subtitle": "Воронка продаж и сделки",
+        "icon": "bi-graph-up",
+    },
+    CrmItem.DIRECTION_TENDER: {
+        "label": "Торги",
+        "subtitle": "Конкурсы и тендеры",
+        "icon": "bi-journal-check",
+    },
+}
+CRM_STAGE_LABELS = {value: label for direction in CRM_STAGE_CHOICES_BY_DIRECTION.values() for value, label in direction}
+
+
+def _can_access_crm(user):
+    if not user or not user.is_authenticated:
+        return False
+    if user.is_superuser:
+        return True
+    roles = OrganizationAccess.objects.filter(user=user).values_list("role", flat=True)
+    return any(role in CRM_ALLOWED_ROLES for role in roles)
 
 
 def _parse_per_page(value, default):
@@ -208,7 +253,9 @@ def _pool_role_for_user(user, pool):
 
     pool_access = PoolAccess.objects.filter(user=user, pool=pool).first()
     client_access = ClientAccess.objects.filter(user=user, client=pool.client).first()
-    org_access = OrganizationAccess.objects.filter(user=user, organization=pool.organization).first()
+    org_roles = list(
+        OrganizationAccess.objects.filter(user=user, organization=pool.organization).values_list("role", flat=True)
+    )
 
     pool_role = pool_access.role if pool_access else None
     client_role = None
@@ -218,8 +265,13 @@ def _pool_role_for_user(user, pool):
             client_role = "editor"
 
     org_role = None
-    if org_access:
-        org_role = "admin" if org_access.role in ADMIN_ROLES else org_access.role
+    if org_roles:
+        if any(role in ADMIN_ROLES for role in org_roles):
+            org_role = "admin"
+        elif "service" in org_roles:
+            org_role = "service"
+        elif "manager" in org_roles:
+            org_role = "manager"
 
     role = org_role or client_role or pool_role
     if pool.client and pool.client.user_id == user.id:
@@ -723,11 +775,13 @@ def invite_create(request):
                         email__iexact=email,
                         accepted_at__isnull=True,
                     ).first()
+                    roles = form.cleaned_data.get("roles") or []
                     if invite:
                         invite.first_name = form.cleaned_data["first_name"]
                         invite.last_name = form.cleaned_data["last_name"]
                         invite.phone = form.cleaned_data.get("phone", "")
-                        invite.role = form.cleaned_data["role"]
+                        invite.roles = roles
+                        invite.role = roles[0] if roles else invite.role
                         invite.token = uuid.uuid4()
                         invite.expires_at = expires_at
                         invite.invited_by = request.user
@@ -740,7 +794,8 @@ def invite_create(request):
                             first_name=form.cleaned_data["first_name"],
                             last_name=form.cleaned_data["last_name"],
                             phone=form.cleaned_data.get("phone", ""),
-                            role=form.cleaned_data["role"],
+                            role=roles[0] if roles else "service",
+                            roles=roles,
                             expires_at=expires_at,
                             last_sent_at=now,
                         )
@@ -877,11 +932,17 @@ def invite_accept(request, token):
                 )
                 user.set_password(form.cleaned_data["password1"])
                 user.save()
-                OrganizationAccess.objects.create(
-                    user=user,
-                    organization=invite.organization,
-                    role=invite.role,
-                )
+                roles = list(invite.roles or [])
+                if not roles and invite.role:
+                    roles = [invite.role]
+                allowed_roles = {"admin", "service", "manager"}
+                roles = [role for role in roles if role in allowed_roles] or ["service"]
+                for role in roles:
+                    OrganizationAccess.objects.get_or_create(
+                        user=user,
+                        organization=invite.organization,
+                        role=role,
+                    )
                 invite.accepted_at = timezone.now()
                 invite.accepted_user = user
                 invite.save(update_fields=["accepted_at", "accepted_user"])
@@ -1300,7 +1361,11 @@ def staff_toggle_block(request, access_id):
     if access.user_id == request.user.id:
         messages.error(request, "\u041d\u0435\u043b\u044c\u0437\u044f \u0437\u0430\u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0441\u0430\u043c\u043e\u0433\u043e \u0441\u0435\u0431\u044f.")
         return redirect("users")
-    if access.role == "owner":
+    if OrganizationAccess.objects.filter(
+        user=access.user,
+        organization=access.organization,
+        role="owner",
+    ).exists():
         messages.error(request, "\u041d\u0435\u043b\u044c\u0437\u044f \u0437\u0430\u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0432\u043b\u0430\u0434\u0435\u043b\u044c\u0446\u0430.")
         return redirect("users")
     if access.user.is_superuser:
@@ -1337,7 +1402,11 @@ def staff_delete(request, access_id):
     if access.user_id == request.user.id:
         messages.error(request, "\u041d\u0435\u043b\u044c\u0437\u044f \u0443\u0434\u0430\u043b\u0438\u0442\u044c \u0441\u0430\u043c\u043e\u0433\u043e \u0441\u0435\u0431\u044f.")
         return redirect("users")
-    if access.role == "owner":
+    if OrganizationAccess.objects.filter(
+        user=access.user,
+        organization=access.organization,
+        role="owner",
+    ).exists():
         messages.error(request, "\u041d\u0435\u043b\u044c\u0437\u044f \u0443\u0434\u0430\u043b\u0438\u0442\u044c \u0432\u043b\u0430\u0434\u0435\u043b\u044c\u0446\u0430.")
         return redirect("users")
     if access.user.is_superuser:
@@ -1345,7 +1414,7 @@ def staff_delete(request, access_id):
 
     PoolAccess.objects.filter(user=access.user, pool__organization=access.organization).delete()
     PoolAccess.objects.filter(user=access.user, pool__client__organization=access.organization).delete()
-    access.delete()
+    OrganizationAccess.objects.filter(user=access.user, organization=access.organization).delete()
     messages.success(request, "\u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a \u0443\u0434\u0430\u043b\u0435\u043d.")
     return redirect("users")
 
@@ -1372,24 +1441,39 @@ def staff_change_role(request, access_id):
     if access.user_id == request.user.id:
         messages.error(request, "\u041d\u0435\u043b\u044c\u0437\u044f \u043c\u0435\u043d\u044f\u0442\u044c \u0441\u0432\u043e\u044e \u0440\u043e\u043b\u044c.")
         return redirect("users")
-    if access.role == "owner":
+    if OrganizationAccess.objects.filter(
+        user=access.user,
+        organization=access.organization,
+        role="owner",
+    ).exists():
         messages.error(request, "\u041d\u0435\u043b\u044c\u0437\u044f \u043c\u0435\u043d\u044f\u0442\u044c \u0440\u043e\u043b\u044c \u0432\u043b\u0430\u0434\u0435\u043b\u044c\u0446\u0430.")
         return redirect("users")
     if access.user.is_superuser:
         return HttpResponseForbidden()
 
-    new_role = (request.POST.get("role") or "").strip()
     allowed_roles = ["admin", "service", "manager"]
-    if new_role not in allowed_roles:
-        messages.error(request, "\u041d\u0435\u0434\u043e\u043f\u0443\u0441\u0442\u0438\u043c\u0430\u044f \u0440\u043e\u043b\u044c.")
-        return redirect("users")
-    if access.role == new_role:
-        messages.info(request, "\u0420\u043e\u043b\u044c \u0443\u0436\u0435 \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u0430.")
+    roles = request.POST.getlist("roles")
+    if not roles:
+        single = (request.POST.get("role") or "").strip()
+        if single:
+            roles = [single]
+    roles = [role for role in roles if role in allowed_roles]
+    if not roles:
+        messages.error(request, "\u041d\u0443\u0436\u043d\u043e \u0432\u044b\u0431\u0440\u0430\u0442\u044c \u0445\u043e\u0442\u044f \u0431\u044b \u043e\u0434\u043d\u0443 \u0440\u043e\u043b\u044c.")
         return redirect("users")
 
-    access.role = new_role
-    access.save(update_fields=["role"])
-    messages.success(request, "\u0420\u043e\u043b\u044c \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0430.")
+    OrganizationAccess.objects.filter(
+        user=access.user,
+        organization=access.organization,
+        role__in=allowed_roles,
+    ).delete()
+    for role in roles:
+        OrganizationAccess.objects.get_or_create(
+            user=access.user,
+            organization=access.organization,
+            role=role,
+        )
+    messages.success(request, "\u0420\u043e\u043b\u0438 \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u044b.")
     return redirect("users")
 
 
@@ -1460,16 +1544,48 @@ def users_view(request):
     org_invites = []
     organizations = []
     if request.user.is_superuser or is_org_admin:
-        org_staff = (
+        org_staff_qs = (
             OrganizationAccess.objects.filter(**org_filter)
             .select_related("organization", "user")
             .order_by("organization__name", "user__last_name")
         )
+        role_labels = dict(OrganizationAccess.ROLE_CHOICES)
+        role_order = ["owner", "admin", "manager", "service"]
+        grouped = {}
+        for access in org_staff_qs:
+            key = (access.organization_id, access.user_id)
+            if key not in grouped:
+                grouped[key] = {
+                    "id": access.id,
+                    "user": access.user,
+                    "organization": access.organization,
+                    "roles": set(),
+                    "is_owner": False,
+                }
+            grouped[key]["roles"].add(access.role)
+            if access.role == "owner":
+                grouped[key]["is_owner"] = True
+
+        org_staff = list(grouped.values())
+        for item in org_staff:
+            roles = item["roles"]
+            ordered = [role for role in role_order if role in roles]
+            ordered += sorted([role for role in roles if role not in role_order])
+            item["roles"] = ordered
+            item["role_labels"] = ", ".join(role_labels.get(role, role) for role in ordered)
+
         org_invites = (
             OrganizationInvite.objects.filter(**org_filter, accepted_at__isnull=True)
             .select_related("organization", "invited_by")
             .order_by("-created_at")
         )
+        for invite in org_invites:
+            invite_roles = list(invite.roles or [])
+            if not invite_roles and invite.role:
+                invite_roles = [invite.role]
+            ordered = [role for role in role_order if role in invite_roles]
+            ordered += sorted([role for role in invite_roles if role not in role_order])
+            invite.role_labels = ", ".join(role_labels.get(role, role) for role in ordered)
     if request.user.is_superuser:
         organizations = Organization.objects.order_by("name")
 
@@ -1510,15 +1626,50 @@ def clients_list(request):
         return HttpResponseForbidden()
 
     if request.user.is_superuser:
-        clients = Client.objects.all()
+        clients_qs = Client.objects.all()
+        pool_staff_qs = PoolAccess.objects.all()
     else:
         org_ids = OrganizationAccess.objects.filter(user=request.user).values_list(
             "organization_id",
             flat=True,
         )
-        clients = Client.objects.filter(organization_id__in=org_ids).distinct()
+        clients_qs = Client.objects.filter(organization_id__in=org_ids).distinct()
+        pool_staff_qs = PoolAccess.objects.filter(pool__organization_id__in=org_ids)
 
-    clients = clients.annotate(pool_count=Count("pool")).select_related("organization").order_by("name")
+    clients = list(
+        clients_qs.annotate(pool_count=Count("pool")).select_related("organization").order_by("name")
+    )
+    companies = [client for client in clients if client.client_type == "legal"]
+    private_contacts = [client for client in clients if client.client_type != "legal"]
+
+    staff_by_client = {}
+    company_ids = [client.id for client in companies]
+    if company_ids:
+        staff_accesses = (
+            ClientAccess.objects.filter(client_id__in=company_ids)
+            .select_related("user")
+            .order_by("user__last_name", "user__first_name")
+        )
+        for access in staff_accesses:
+            staff_by_client.setdefault(access.client_id, []).append(access)
+
+    for company in companies:
+        contact_name = " ".join(part for part in [company.first_name, company.last_name] if part).strip()
+        primary_contact = {
+            "name": contact_name,
+            "position": company.contact_position,
+            "phone": company.phone,
+            "email": company.email,
+        }
+        if not any(primary_contact.values()):
+            primary_contact = None
+        company.primary_contact = primary_contact
+        company.staff_contacts = staff_by_client.get(company.id, [])
+
+    pool_staff = (
+        pool_staff_qs.select_related("pool", "pool__client", "pool__organization", "user")
+        .order_by("pool__client__name", "pool__address", "user__last_name", "user__first_name")
+    )
 
     return render(
         request,
@@ -1526,13 +1677,244 @@ def clients_list(request):
         {
             "page_title": "\u041a\u043b\u0438\u0435\u043d\u0442\u044b",
             "page_subtitle": "\u041a\u043e\u043d\u0442\u0430\u043a\u0442\u044b \u0438 \u043e\u0431\u044a\u0435\u043a\u0442\u044b \u043a\u043b\u0438\u0435\u043d\u0442\u043e\u0432 \u0432 \u043e\u0434\u043d\u043e\u043c \u0441\u043f\u0438\u0441\u043a\u0435",
-            "clients": clients,
+            "companies": companies,
+            "private_contacts": private_contacts,
+            "pool_staff": pool_staff,
             "active_tab": "clients",
             "page_action_label": None if request.user.is_superuser else "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u043a\u043b\u0438\u0435\u043d\u0442\u0430",
             "page_action_url": None if request.user.is_superuser else reverse("client_create"),
             "show_search": False,
             "show_add_button": False,
             "add_url": None,
+        },
+    )
+
+
+@login_required
+def crm_index(request):
+    if not _can_access_crm(request.user):
+        return HttpResponseForbidden()
+
+    primary_cards = []
+    for key, meta in CRM_DIRECTION_META.items():
+        primary_cards.append(
+            {
+                "label": meta["label"],
+                "subtitle": meta["subtitle"],
+                "url": reverse("crm_list", kwargs={"direction": key}),
+                "direction": key,
+                "icon": meta["icon"],
+            }
+        )
+
+    secondary_cards = [
+        {
+            "label": "Клиенты",
+            "subtitle": "Контакты и объекты",
+            "url": reverse("clients_list"),
+            "icon": "bi-people",
+        },
+        {
+            "label": "Задачи",
+            "subtitle": "Планирование работ",
+            "url": reverse("crm_tasks"),
+            "icon": "bi-list-check",
+        },
+    ]
+
+    return render(
+        request,
+        "pool_service/crm_index.html",
+        {
+            "page_title": "CRM",
+            "page_subtitle": "\u0421\u0435\u0440\u0432\u0438\u0441, \u043f\u0440\u043e\u0435\u043a\u0442\u044b, \u043f\u0440\u043e\u0434\u0430\u0436\u0438 \u0438 \u0442\u043e\u0440\u0433\u0438",
+            "active_tab": "crm",
+            "primary_cards": primary_cards,
+            "secondary_cards": secondary_cards,
+            "show_search": False,
+            "show_add_button": False,
+            "add_url": None,
+        },
+    )
+
+
+@login_required
+def crm_tasks(request):
+    if not _can_access_crm(request.user):
+        return HttpResponseForbidden()
+
+    return render(
+        request,
+        "pool_service/crm_tasks.html",
+        {
+            "page_title": "\u0417\u0430\u0434\u0430\u0447\u0438",
+            "page_subtitle": "\u041f\u043b\u0430\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u0438 \u043a\u043e\u043d\u0442\u0440\u043e\u043b\u044c \u0440\u0430\u0431\u043e\u0442",
+            "active_tab": "crm",
+            "show_search": False,
+            "show_add_button": False,
+            "add_url": None,
+        },
+    )
+
+
+def _crm_get_org_for_request(request):
+    org = organization_for_user(request.user)
+    if org:
+        return org
+    if not request.user.is_superuser:
+        return None
+    org_id = request.GET.get("org_id") or request.POST.get("org_id")
+    if not org_id:
+        return None
+    return Organization.objects.filter(id=org_id).first()
+
+
+@login_required
+def crm_list(request, direction):
+    if not _can_access_crm(request.user):
+        return HttpResponseForbidden()
+    if direction not in CRM_DIRECTION_META:
+        return HttpResponseNotFound("Unknown CRM direction")
+
+    org = _crm_get_org_for_request(request)
+    items = CrmItem.objects.filter(direction=direction)
+    if org:
+        items = items.filter(organization=org)
+    elif not request.user.is_superuser:
+        return HttpResponseForbidden()
+
+    items = items.select_related("client", "pool", "responsible", "organization")
+    service_done_stage = None
+    if direction == CrmItem.DIRECTION_SERVICE:
+        service_done_stage = CrmItem.STAGE_SERVICE_DONE
+        items = items.annotate(
+            is_done=Case(
+                When(stage=service_done_stage, then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            )
+        ).order_by("is_done", "-updated_at")
+    else:
+        items = items.order_by("-updated_at")
+    for item in items:
+        item.stage_label = CRM_STAGE_LABELS.get(item.stage, item.stage)
+
+    return render(
+        request,
+        "pool_service/crm_list.html",
+        {
+            "page_title": CRM_DIRECTION_META[direction]["label"],
+            "page_subtitle": CRM_DIRECTION_META[direction]["subtitle"],
+            "active_tab": "crm",
+            "direction": direction,
+            "direction_label": CRM_DIRECTION_META[direction]["label"],
+            "items": items,
+            "page_action_label": "Добавить",
+            "page_action_url": reverse("crm_create", kwargs={"direction": direction}),
+            "service_done_stage": service_done_stage,
+        },
+    )
+
+
+@login_required
+def crm_create(request, direction):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+    if not _can_access_crm(request.user):
+        return HttpResponseForbidden()
+    if direction not in CRM_DIRECTION_META:
+        return HttpResponseNotFound("Unknown CRM direction")
+
+    org = _crm_get_org_for_request(request)
+    if not org:
+        messages.error(request, "Не найдена организация для CRM.")
+        return redirect("crm_index")
+
+    if request.method == "POST":
+        form = CrmItemForm(request.POST, direction=direction, organization=org)
+        if form.is_valid():
+            item = form.save(commit=False)
+            item.organization = org
+            item.direction = direction
+            item.created_by = request.user
+            if not item.stage:
+                item.stage = CRM_STAGE_CHOICES_BY_DIRECTION[direction][0][0]
+            item.save()
+            messages.success(request, "Запись CRM создана.")
+            return redirect("crm_list", direction=direction)
+    else:
+        form = CrmItemForm(direction=direction, organization=org)
+
+    return render(
+        request,
+        "pool_service/crm_form.html",
+        {
+            "page_title": f"{CRM_DIRECTION_META[direction]['label']}: создание",
+            "page_subtitle": CRM_DIRECTION_META[direction]["subtitle"],
+            "active_tab": "crm",
+            "direction": direction,
+            "direction_label": CRM_DIRECTION_META[direction]["label"],
+            "form": form,
+        },
+    )
+
+
+@login_required
+def crm_edit(request, direction, item_id):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+    if not _can_access_crm(request.user):
+        return HttpResponseForbidden()
+    if direction not in CRM_DIRECTION_META:
+        return HttpResponseNotFound("Unknown CRM direction")
+
+    item = get_object_or_404(CrmItem, pk=item_id, direction=direction)
+    if not request.user.is_superuser:
+        org = organization_for_user(request.user)
+        if not org or item.organization_id != org.id:
+            return HttpResponseForbidden()
+    else:
+        org = item.organization
+
+    if request.method == "POST":
+        form = CrmItemForm(request.POST, instance=item, direction=direction, organization=org)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Запись CRM обновлена.")
+            return redirect("crm_list", direction=direction)
+    else:
+        form = CrmItemForm(instance=item, direction=direction, organization=org)
+
+    item_photo_urls = []
+    for photo in item.photos.all():
+        if photo.image:
+            item_photo_urls.append(photo.image.url)
+    if item.photo:
+        item_photo_urls.append(item.photo.url)
+    if item.photo_url:
+        item_photo_urls.append(item.photo_url)
+
+    return render(
+        request,
+        "pool_service/crm_form.html",
+        {
+            "page_title": f"{CRM_DIRECTION_META[direction]['label']}: редактирование",
+            "page_subtitle": CRM_DIRECTION_META[direction]["subtitle"],
+            "active_tab": "crm",
+            "direction": direction,
+            "direction_label": CRM_DIRECTION_META[direction]["label"],
+            "form": form,
+            "item": item,
+            "item_photo_urls": item_photo_urls,
+            "item_photo_urls_json": json.dumps(item_photo_urls, ensure_ascii=False),
         },
     )
 
@@ -1618,7 +2000,7 @@ def pool_edit(request, pool_uuid):
 
     pool = get_object_or_404(Pool, uuid=pool_uuid)
     role = _pool_role_for_user(request.user, pool)
-    if role != "admin":
+    if role not in {"admin", "service"}:
         return render(request, "403.html")
 
     user_client = Client.objects.filter(user=request.user).first()
@@ -2251,7 +2633,7 @@ def pool_detail(request, pool_uuid):
     if not role:
         return render(request, "403.html")
 
-    can_edit_pool = role == "admin"
+    can_edit_pool = role in {"admin", "service"}
     can_add_reading = role in {"editor", "service", "admin"}
 
     readings_list = WaterReading.objects.filter(pool=pool).select_related("added_by").order_by("-date")
@@ -2270,6 +2652,47 @@ def pool_detail(request, pool_uuid):
             if _reading_edit_allowed(reading, request.user):
                 editable_reading_ids.append(reading.id)
 
+    show_service_issues = False
+    can_manage_service_issues = False
+    service_issues = []
+    service_issue_form = None
+    service_issue_stage_choices = CRM_STAGE_CHOICES_BY_DIRECTION.get(CrmItem.DIRECTION_SERVICE, [])
+    if pool.organization_id:
+        org_staff_access = OrganizationAccess.objects.filter(
+            user=request.user,
+            organization=pool.organization,
+            role__in=ORG_STAFF_ROLES,
+        ).exists()
+        show_service_issues = org_staff_access or request.user.is_superuser
+        can_manage_service_issues = org_staff_access and role in {"admin", "service", "manager"}
+        if show_service_issues:
+            service_issues = (
+                CrmItem.objects.filter(
+                    direction=CrmItem.DIRECTION_SERVICE,
+                    pool=pool,
+                    organization=pool.organization,
+                )
+                .select_related("responsible", "created_by")
+                .prefetch_related("photos")
+                .order_by("-created_at")
+            )
+            for issue in service_issues:
+                issue.stage_label = CRM_STAGE_LABELS.get(issue.stage, issue.stage)
+                photo_urls = []
+                if issue.photo:
+                    photo_urls.append(issue.photo.url)
+                if issue.photo_url:
+                    photo_urls.append(issue.photo_url)
+                for photo in issue.photos.all():
+                    if photo.image:
+                        photo_urls.append(photo.image.url)
+                issue.photo_urls = photo_urls
+                issue.photo_count = len(photo_urls)
+                issue.photo_extra_count = max(0, len(photo_urls) - 3)
+                issue.photo_urls_json = json.dumps(photo_urls, ensure_ascii=False)
+            if can_manage_service_issues:
+                service_issue_form = CrmServiceIssueForm()
+
     context = {
         "pool": pool,
         "readings": readings,
@@ -2285,8 +2708,97 @@ def pool_detail(request, pool_uuid):
         "add_url": None,
         "active_tab": "pools",
         "editable_reading_ids": editable_reading_ids,
+        "show_service_issues": show_service_issues,
+        "can_manage_service_issues": can_manage_service_issues,
+        "service_issues": service_issues,
+        "service_issue_form": service_issue_form,
+        "service_issue_stage_choices": service_issue_stage_choices,
+        "service_issue_done_stage": CrmItem.STAGE_SERVICE_DONE,
     }
     return render(request, "pool_service/pool_detail.html", context)
+
+
+@login_required
+@require_POST
+def pool_issue_create(request, pool_uuid):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+
+    pool = get_object_or_404(Pool, uuid=pool_uuid)
+    if not pool.organization_id:
+        return HttpResponseForbidden()
+
+    is_org_staff = OrganizationAccess.objects.filter(
+        user=request.user,
+        organization=pool.organization,
+        role__in=ORG_STAFF_ROLES,
+    ).exists()
+    if not is_org_staff:
+        return HttpResponseForbidden()
+
+    form = CrmServiceIssueForm(request.POST, request.FILES)
+    if form.is_valid():
+        issue = form.save(commit=False)
+        issue.organization = pool.organization
+        issue.direction = CrmItem.DIRECTION_SERVICE
+        issue.pool = pool
+        issue.client = pool.client
+        issue.stage = CrmItem.STAGE_SERVICE_NEW
+        issue.created_by = request.user
+        if not issue.responsible:
+            issue.responsible = request.user
+        issue.save()
+        for photo in request.FILES.getlist("photos"):
+            CrmItemPhoto.objects.create(item=issue, image=photo)
+        messages.success(request, "Неисправность добавлена.")
+    else:
+        messages.error(request, "Проверьте поля неисправности.")
+    return redirect("pool_detail", pool_uuid=pool.uuid)
+
+
+@login_required
+@require_POST
+def pool_issue_update(request, pool_uuid, item_id):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+
+    pool = get_object_or_404(Pool, uuid=pool_uuid)
+    if not pool.organization_id:
+        return HttpResponseForbidden()
+
+    is_org_staff = OrganizationAccess.objects.filter(
+        user=request.user,
+        organization=pool.organization,
+        role__in=ORG_STAFF_ROLES,
+    ).exists()
+    if not is_org_staff:
+        return HttpResponseForbidden()
+
+    issue = get_object_or_404(
+        CrmItem,
+        id=item_id,
+        direction=CrmItem.DIRECTION_SERVICE,
+        pool=pool,
+        organization=pool.organization,
+    )
+    stage = (request.POST.get("stage") or "").strip()
+    allowed = {choice[0] for choice in CRM_STAGE_CHOICES_BY_DIRECTION.get(CrmItem.DIRECTION_SERVICE, [])}
+    if stage not in allowed:
+        messages.error(request, "Выберите корректный статус.")
+        return redirect("pool_detail", pool_uuid=pool.uuid)
+
+    issue.stage = stage
+    issue.save(update_fields=["stage", "updated_at"])
+    messages.success(request, "Статус обновлен.")
+    return redirect("pool_detail", pool_uuid=pool.uuid)
 
 
 @login_required
@@ -2570,6 +3082,15 @@ def notifications_list(request):
     notifications = paginator.get_page(page_number)
     query_params = request.GET.copy()
     query_params.pop("page", None)
+    current_tz = timezone.get_current_timezone()
+    for note in notifications:
+        created_at = note.created_at
+        if timezone.is_naive(created_at):
+            if str(getattr(settings, "TIME_ZONE", "UTC")).upper() == "UTC":
+                created_at = timezone.make_aware(created_at, timezone.utc)
+            else:
+                created_at = timezone.make_aware(created_at, current_tz)
+        note.display_time = timezone.localtime(created_at, current_tz)
 
     return render(
         request,

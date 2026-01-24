@@ -61,25 +61,34 @@
                                     </td>
                                     <td>{{ item.user.email|default:item.user.username }}</td>
                                     <td>
-                                        {% if can_manage_roles and item.role != "owner" and item.user_id != user.id %}
-                                            <form method="post" action="{% url 'staff_change_role' item.id %}" class="d-flex align-items-center gap-2">
+                                        {% if can_manage_roles and not item.is_owner and item.user.id != user.id %}
+                                            <form method="post" action="{% url 'staff_change_role' item.id %}" class="d-flex align-items-center gap-2 flex-wrap">
                                                 {% csrf_token %}
-                                                <select name="role" class="form-select form-select-sm">
-                                                    <option value="admin" {% if item.role == "admin" %}selected{% endif %}>&#1040;&#1076;&#1084;&#1080;&#1085;&#1080;&#1089;&#1090;&#1088;&#1072;&#1090;&#1086;&#1088;</option>
-                                                    <option value="manager" {% if item.role == "manager" %}selected{% endif %}>&#1052;&#1077;&#1085;&#1077;&#1076;&#1078;&#1077;&#1088;</option>
-                                                    <option value="service" {% if item.role == "service" %}selected{% endif %}>&#1057;&#1077;&#1088;&#1074;&#1080;&#1089;</option>
-                                                </select>
+                                                <div class="d-flex flex-wrap gap-2">
+                                                    <label class="form-check form-check-inline mb-0">
+                                                        <input class="form-check-input" type="checkbox" name="roles" value="admin" {% if "admin" in item.roles %}checked{% endif %}>
+                                                        <span class="form-check-label">&#1040;&#1076;&#1084;&#1080;&#1085;</span>
+                                                    </label>
+                                                    <label class="form-check form-check-inline mb-0">
+                                                        <input class="form-check-input" type="checkbox" name="roles" value="manager" {% if "manager" in item.roles %}checked{% endif %}>
+                                                        <span class="form-check-label">&#1052;&#1077;&#1085;&#1077;&#1076;&#1078;&#1077;&#1088;</span>
+                                                    </label>
+                                                    <label class="form-check form-check-inline mb-0">
+                                                        <input class="form-check-input" type="checkbox" name="roles" value="service" {% if "service" in item.roles %}checked{% endif %}>
+                                                        <span class="form-check-label">&#1057;&#1077;&#1088;&#1074;&#1080;&#1089;</span>
+                                                    </label>
+                                                </div>
                                                 <button type="submit" class="btn btn-outline-primary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} aria-label="&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;" title="&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;">
                                                     <i class="bi bi-check-lg d-inline d-md-none"></i>
                                                     <span class="d-none d-md-inline">&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;</span>
                                                 </button>
                                             </form>
                                         {% else %}
-                                            {{ item.get_role_display }}
+                                            {{ item.role_labels }}
                                         {% endif %}
                                     </td>
                                     <td>
-                                        {% if item.user_id == user.id %}
+                                        {% if item.user.id == user.id %}
                                             &#8212;
                                         {% else %}
                                             {% if item.user.is_active %}
@@ -98,7 +107,7 @@
                                     {% if user.is_superuser %}
                                         <td>{% if item.user.last_login %}{{ item.user.last_login|date:"d.m.Y H:i" }}{% else %}&#8212;{% endif %}</td>
                                     {% endif %}
-                                    {% if is_org_admin and not user.is_superuser and item.user_id != user.id and item.role != "owner" %}
+                                    {% if is_org_admin and not user.is_superuser and item.user.id != user.id and not item.is_owner %}
                                         <td class="text-end">
                                             <div class="d-inline-flex gap-2">
                                                 <form method="post" action="{% url 'staff_toggle_block' item.id %}">
@@ -157,7 +166,7 @@
                                         {% endif %}
                                     </td>
                                     <td>{{ invite.email }}</td>
-                                    <td>{{ invite.get_role_display }}</td>
+                                    <td>{{ invite.role_labels|default:"-" }}</td>
                                     <td>
                                         {% if invite.is_expired %}
                                             <span class="badge bg-warning-subtle text-warning border" title="&#1055;&#1086;&#1083;&#1100;&#1079;&#1086;&#1074;&#1072;&#1090;&#1077;&#1083;&#1100; &#1085;&#1077; &#1087;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1076;&#1080;&#1083; &#1088;&#1077;&#1075;&#1080;&#1089;&#1090;&#1088;&#1072;&#1094;&#1080;&#1102;">
@@ -235,7 +244,7 @@
                                     {% if item.user.get_full_name %}{{ item.user.get_full_name }}{% else %}{{ item.user.username }}{% endif %}
                                 </td>
                                 <td>
-                                    {% if can_manage_roles and not user.is_superuser and item.user_id != user.id %}
+                                    {% if can_manage_roles and not user.is_superuser and item.user.id != user.id %}
                                         <form method="post" action="{% url 'pool_staff_change_role' item.id %}" class="d-flex align-items-center gap-2">
                                             {% csrf_token %}
                                             <select name="role" class="form-select form-select-sm">

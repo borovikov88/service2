@@ -4,71 +4,241 @@
 
 {% block content %}
 <div class="card card-soft p-4">
-  <h4 class="fw-bold mb-3">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099; &#1089;&#1077;&#1088;&#1074;&#1080;&#1089;&#1085;&#1086;&#1081; &#1082;&#1086;&#1084;&#1087;&#1072;&#1085;&#1080;&#1080;</h4>
-  <div class="table-responsive">
-    <table class="table align-middle">
-      <thead class="small text-muted">
-        <tr>
-          <th>&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;</th>
-          <th>&#1058;&#1080;&#1087;</th>
-          <th>&#1058;&#1077;&#1083;&#1077;&#1092;&#1086;&#1085;</th>
-          <th>Email</th>
-          <th>&#1041;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;</th>
-          {% if user.is_superuser %}<th>&#1054;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;</th>{% endif %}
-          {% if is_org_staff and not user.is_superuser %}<th class="text-end"></th>{% endif %}
-        </tr>
-      </thead>
-      <tbody>
-        {% for client in clients %}
-          <tr>
-            <td class="fw-semibold">{{ client.name }}</td>
-            <td>
-              {% if client.client_type == "legal" %}
-                &#1070;&#1088;. &#1083;&#1080;&#1094;&#1086;
-              {% else %}
-                &#1063;&#1072;&#1089;&#1090;&#1085;&#1099;&#1081;
-              {% endif %}
-            </td>
-            <td>{{ client.phone|default:"-" }}</td>
-            <td>{{ client.email|default:"-" }}</td>
-            <td>{{ client.pool_count|default:0 }}</td>
-            {% if user.is_superuser %}
-              <td>{{ client.organization.name|default:"-" }}</td>
-            {% endif %}
-            {% if is_org_staff and not user.is_superuser %}
-              <td class="text-end">
-                <div class="d-inline-flex gap-1">
-                  <a class="btn btn-outline-primary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% url 'client_staff' client.id %}" aria-label="Сотрудники клиента" title="Сотрудники клиента">
-                    <i class="bi bi-people"></i>
-                  </a>
-                  {% if is_org_admin %}
-                    <a class="btn btn-outline-secondary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% url 'client_edit' client.id %}" aria-label="&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;">
-                      <i class="bi bi-pencil"></i>
-                    </a>
-                    {% if client.pool_count|default:0 > 0 %}
-                      <button type="button" class="btn btn-outline-danger btn-sm opacity-50" data-client-delete-blocked="true" aria-label="&#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100;" title="&#1059; &#1082;&#1083;&#1080;&#1077;&#1085;&#1090;&#1072; &#1077;&#1089;&#1090;&#1100; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1099;">
-                        <i class="bi bi-trash"></i>
-                      </button>
-                    {% else %}
-                      <form method="post" action="{% url 'client_delete' client.id %}" class="d-inline">
-                        {% csrf_token %}
-                        <button type="submit" class="btn btn-outline-danger btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} aria-label="&#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100;" onclick="return confirm('&#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100; &#1082;&#1083;&#1080;&#1077;&#1085;&#1090;&#1072;?');">
-                          <i class="bi bi-trash"></i>
-                        </button>
-                      </form>
-                    {% endif %}
+  <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+    <h4 class="fw-bold mb-0">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099; &#1089;&#1077;&#1088;&#1074;&#1080;&#1089;&#1085;&#1086;&#1081; &#1082;&#1086;&#1084;&#1087;&#1072;&#1085;&#1080;&#1080;</h4>
+    <ul class="nav nav-pills gap-2" id="clients-tab" role="tablist">
+      <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="companies-tab" data-bs-toggle="tab" data-bs-target="#companies-pane" type="button" role="tab" aria-controls="companies-pane" aria-selected="true">&#1050;&#1086;&#1084;&#1087;&#1072;&#1085;&#1080;&#1080;</button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="contacts-tab" data-bs-toggle="tab" data-bs-target="#contacts-pane" type="button" role="tab" aria-controls="contacts-pane" aria-selected="false">&#1050;&#1086;&#1085;&#1090;&#1072;&#1082;&#1090;&#1099;</button>
+      </li>
+    </ul>
+  </div>
+  <div class="tab-content">
+    <div class="tab-pane fade show active" id="companies-pane" role="tabpanel" aria-labelledby="companies-tab">
+      <div class="table-responsive">
+        <table class="table align-middle">
+          <thead class="small text-muted">
+            <tr>
+              <th>&#1050;&#1086;&#1084;&#1087;&#1072;&#1085;&#1080;&#1103;</th>
+              <th>&#1058;&#1077;&#1083;&#1077;&#1092;&#1086;&#1085;</th>
+              <th>Email</th>
+              <th>&#1041;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;</th>
+              <th>&#1050;&#1086;&#1085;&#1090;&#1072;&#1082;&#1090;&#1099;</th>
+              {% if user.is_superuser %}<th>&#1054;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;</th>{% endif %}
+              {% if is_org_staff and not user.is_superuser %}<th class="text-end"></th>{% endif %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for company in companies %}
+              <tr>
+                <td class="fw-semibold">{{ company.name }}</td>
+                <td>{{ company.phone|default:"-" }}</td>
+                <td>{{ company.email|default:"-" }}</td>
+                <td>{{ company.pool_count|default:0 }}</td>
+                <td>
+                  {% if company.primary_contact or company.staff_contacts %}
+                    <div class="d-flex flex-column gap-1">
+                      {% if company.primary_contact %}
+                        <div class="fw-semibold">{{ company.primary_contact.name|default:"-" }}</div>
+                        {% if company.primary_contact.position %}
+                          <div class="text-muted small">{{ company.primary_contact.position }}</div>
+                        {% endif %}
+                        {% if company.primary_contact.phone or company.primary_contact.email %}
+                          <div class="text-muted small">
+                            {% if company.primary_contact.phone %}{{ company.primary_contact.phone }}{% endif %}
+                            {% if company.primary_contact.email %}
+                              {% if company.primary_contact.phone %} &middot; {% endif %}
+                              {{ company.primary_contact.email }}
+                            {% endif %}
+                          </div>
+                        {% endif %}
+                      {% endif %}
+                      {% if company.staff_contacts %}
+                        <div class="text-muted small mt-1">&#1057;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1080;:</div>
+                        <div class="d-flex flex-column gap-1">
+                          {% for access in company.staff_contacts %}
+                            <div class="small">
+                              <span class="fw-semibold">
+                                {% if access.user.get_full_name %}{{ access.user.get_full_name }}{% else %}{{ access.user.username }}{% endif %}
+                              </span>
+                              <span class="text-muted">&middot; {{ access.phone|default:access.user.email|default:access.user.username }}</span>
+                            </div>
+                          {% endfor %}
+                        </div>
+                      {% endif %}
+                    </div>
+                  {% else %}
+                    -
                   {% endif %}
-                </div>
-              </td>
-            {% endif %}
-          </tr>
-        {% empty %}
-          <tr>
-            <td colspan="6" class="text-center text-muted py-3">&#1055;&#1086;&#1082;&#1072; &#1085;&#1077;&#1090; &#1082;&#1083;&#1080;&#1077;&#1085;&#1090;&#1086;&#1074;</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+                </td>
+                {% if user.is_superuser %}
+                  <td>
+                    {% if company.organization %}
+                      {{ company.organization.name }}
+                    {% else %}
+                      -
+                    {% endif %}
+                  </td>
+                {% endif %}
+                {% if is_org_staff and not user.is_superuser %}
+                  <td class="text-end">
+                    <div class="d-inline-flex gap-1">
+                      <a class="btn btn-outline-primary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% url "client_staff" company.id %}" aria-label="&#1057;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1080; &#1082;&#1083;&#1080;&#1077;&#1085;&#1090;&#1072;" title="&#1057;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1080; &#1082;&#1083;&#1080;&#1077;&#1085;&#1090;&#1072;">
+                        <i class="bi bi-people"></i>
+                      </a>
+                      {% if is_org_admin %}
+                        <a class="btn btn-outline-secondary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% url "client_edit" company.id %}" aria-label="&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;">
+                          <i class="bi bi-pencil"></i>
+                        </a>
+                        {% if company.pool_count|default:0 > 0 %}
+                          <button type="button" class="btn btn-outline-danger btn-sm opacity-50" data-client-delete-blocked="true" aria-label="&#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100;" title="&#1059; &#1082;&#1083;&#1080;&#1077;&#1085;&#1090;&#1072; &#1077;&#1089;&#1090;&#1100; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1099;">
+                            <i class="bi bi-trash"></i>
+                          </button>
+                        {% else %}
+                          <form method="post" action="{% url "client_delete" company.id %}" class="d-inline">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-outline-danger btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} aria-label="&#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100;" onclick="return confirm('&#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100; &#1082;&#1083;&#1080;&#1077;&#1085;&#1090;&#1072;?');">
+                              <i class="bi bi-trash"></i>
+                            </button>
+                          </form>
+                        {% endif %}
+                      {% endif %}
+                    </div>
+                  </td>
+                {% endif %}
+              </tr>
+            {% empty %}
+              <tr>
+                <td colspan="{% if user.is_superuser %}6{% elif is_org_staff %}6{% else %}5{% endif %}" class="text-center text-muted py-3">&#1055;&#1086;&#1082;&#1072; &#1085;&#1077;&#1090; &#1082;&#1086;&#1084;&#1087;&#1072;&#1085;&#1080;&#1081;</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="tab-pane fade" id="contacts-pane" role="tabpanel" aria-labelledby="contacts-tab">
+      <div class="mb-4">
+        <div class="fw-semibold mb-2">&#1060;&#1080;&#1079;&#1080;&#1095;&#1077;&#1089;&#1082;&#1080;&#1077; &#1083;&#1080;&#1094;&#1072;</div>
+        <div class="table-responsive">
+          <table class="table align-middle">
+            <thead class="small text-muted">
+              <tr>
+                <th>&#1050;&#1086;&#1085;&#1090;&#1072;&#1082;&#1090;</th>
+                <th>&#1058;&#1077;&#1083;&#1077;&#1092;&#1086;&#1085;</th>
+                <th>Email</th>
+                <th>&#1050;&#1086;&#1084;&#1087;&#1072;&#1085;&#1080;&#1103;</th>
+                <th>&#1041;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;</th>
+                {% if user.is_superuser %}<th>&#1054;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;</th>{% endif %}
+                {% if is_org_staff and not user.is_superuser %}<th class="text-end"></th>{% endif %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for client in private_contacts %}
+                <tr>
+                  <td class="fw-semibold">{{ client.name }}</td>
+                  <td>{{ client.phone|default:"-" }}</td>
+                  <td>{{ client.email|default:"-" }}</td>
+                  <td>
+                    {% if client.company_name %}
+                      {{ client.company_name }}
+                    {% else %}
+                      &#1063;&#1072;&#1089;&#1090;&#1085;&#1099;&#1081; &#1082;&#1083;&#1080;&#1077;&#1085;&#1090;
+                    {% endif %}
+                  </td>
+                  <td>{{ client.pool_count|default:0 }}</td>
+                  {% if user.is_superuser %}
+                    <td>
+                      {% if client.organization %}
+                        {{ client.organization.name }}
+                      {% else %}
+                        -
+                      {% endif %}
+                    </td>
+                  {% endif %}
+                  {% if is_org_staff and not user.is_superuser %}
+                    <td class="text-end">
+                      <div class="d-inline-flex gap-1">
+                        <a class="btn btn-outline-primary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% url "client_staff" client.id %}" aria-label="&#1057;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1080; &#1082;&#1083;&#1080;&#1077;&#1085;&#1090;&#1072;" title="&#1057;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1080; &#1082;&#1083;&#1080;&#1077;&#1085;&#1090;&#1072;">
+                          <i class="bi bi-people"></i>
+                        </a>
+                        {% if is_org_admin %}
+                          <a class="btn btn-outline-secondary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% url "client_edit" client.id %}" aria-label="&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;">
+                            <i class="bi bi-pencil"></i>
+                          </a>
+                          {% if client.pool_count|default:0 > 0 %}
+                            <button type="button" class="btn btn-outline-danger btn-sm opacity-50" data-client-delete-blocked="true" aria-label="&#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100;" title="&#1059; &#1082;&#1083;&#1080;&#1077;&#1085;&#1090;&#1072; &#1077;&#1089;&#1090;&#1100; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1099;">
+                              <i class="bi bi-trash"></i>
+                            </button>
+                          {% else %}
+                            <form method="post" action="{% url "client_delete" client.id %}" class="d-inline">
+                              {% csrf_token %}
+                              <button type="submit" class="btn btn-outline-danger btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} aria-label="&#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100;" onclick="return confirm('&#1059;&#1076;&#1072;&#1083;&#1080;&#1090;&#1100; &#1082;&#1083;&#1080;&#1077;&#1085;&#1090;&#1072;?');">
+                                <i class="bi bi-trash"></i>
+                              </button>
+                            </form>
+                          {% endif %}
+                        {% endif %}
+                      </div>
+                    </td>
+                  {% endif %}
+                </tr>
+              {% empty %}
+                <tr>
+                  <td colspan="{% if user.is_superuser %}6{% elif is_org_staff %}6{% else %}5{% endif %}" class="text-center text-muted py-3">&#1055;&#1086;&#1082;&#1072; &#1085;&#1077;&#1090; &#1082;&#1086;&#1085;&#1090;&#1072;&#1082;&#1090;&#1086;&#1074;</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <div class="fw-semibold mb-2">&#1057;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1080; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;</div>
+        <div class="table-responsive">
+          <table class="table align-middle">
+            <thead class="small text-muted">
+              <tr>
+                <th>&#1057;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;</th>
+                <th>&#1058;&#1077;&#1083;&#1077;&#1092;&#1086;&#1085;</th>
+                <th>Email</th>
+                <th>&#1050;&#1086;&#1084;&#1087;&#1072;&#1085;&#1080;&#1103;</th>
+                <th>&#1041;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;</th>
+                <th>&#1056;&#1086;&#1083;&#1100;</th>
+                {% if user.is_superuser %}<th>&#1054;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;</th>{% endif %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for access in pool_staff %}
+                <tr>
+                  <td class="fw-semibold">
+                    {% if access.user.get_full_name %}{{ access.user.get_full_name }}{% else %}{{ access.user.username }}{% endif %}
+                  </td>
+                  <td>{{ access.user.username|default:"-" }}</td>
+                  <td>{{ access.user.email|default:"-" }}</td>
+                  <td>{{ access.pool.client.name|default:"-" }}</td>
+                  <td>{{ access.pool.address|default:"-" }}</td>
+                  <td>{{ access.get_role_display|default:"-" }}</td>
+                  {% if user.is_superuser %}
+                    <td>
+                      {% if access.pool.organization %}
+                        {{ access.pool.organization.name }}
+                      {% else %}
+                        -
+                      {% endif %}
+                    </td>
+                  {% endif %}
+                </tr>
+              {% empty %}
+                <tr>
+                  <td colspan="{% if user.is_superuser %}7{% else %}6{% endif %}" class="text-center text-muted py-3">&#1055;&#1086;&#1082;&#1072; &#1085;&#1077;&#1090; &#1089;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1086;&#1074;</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 <div class="modal fade" id="clientDeleteBlockedModal" tabindex="-1" aria-hidden="true">

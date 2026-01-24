@@ -112,6 +112,7 @@
     </div>
 </div>
 
+
 {% if readings %}
 <div class="card card-soft p-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
@@ -228,6 +229,130 @@
     <div class="card card-soft p-4 text-center text-muted">Пока нет показаний</div>
 {% endif %}
 
+{% if show_service_issues %}
+<div class="card card-soft p-4 mb-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <div>
+            <h3 class="fw-bold h5 mb-1">Неисправности</h3>
+            <div class="text-muted small">Заявки по работам и оборудованию</div>
+        </div>
+    </div>
+
+    {% if can_manage_service_issues and service_issue_form %}
+    <form method="post" action="{% url 'pool_issue_create' pool.uuid %}" class="row g-3 mb-4" enctype="multipart/form-data" id="service-issue-form">
+        {% csrf_token %}
+        <div class="col-12 col-lg-6">
+            <label class="form-label">Неисправность</label>
+            {{ service_issue_form.title }}
+            {% if service_issue_form.title.errors %}<div class="text-danger small">{{ service_issue_form.title.errors.0 }}</div>{% endif %}
+        </div>
+        <div class="col-12 col-md-6 col-lg-3">
+            <label class="form-label">Срочность</label>
+            {{ service_issue_form.urgency }}
+            {% if service_issue_form.urgency.errors %}<div class="text-danger small">{{ service_issue_form.urgency.errors.0 }}</div>{% endif %}
+        </div>
+        <div class="col-12 col-md-6 col-lg-3">
+            <label class="form-label">Фото</label>
+            {{ service_issue_form.photos }}
+            {% if service_issue_form.photos.errors %}<div class="text-danger small">{{ service_issue_form.photos.errors.0 }}</div>{% endif %}
+        </div>
+        <div class="col-12">
+            <label class="form-label">Комментарий</label>
+            {{ service_issue_form.description }}
+            {% if service_issue_form.description.errors %}<div class="text-danger small">{{ service_issue_form.description.errors.0 }}</div>{% endif %}
+        </div>
+        <div class="col-12 d-flex gap-2">
+            <button type="submit" class="btn btn-primary {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
+                Добавить
+            </button>
+        </div>
+    </form>
+    {% endif %}
+
+    <div class="table-responsive">
+        <table class="table align-middle">
+            <thead class="small text-muted">
+                <tr>
+                    <th>Дата</th>
+                    <th>Неисправность</th>
+                    <th>Срочность</th>
+                    <th>Статус</th>
+                    <th>Ответственный</th>
+                    <th>Фото</th>
+                    <th class="text-end"></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for issue in service_issues %}
+                    <tr class="{% if issue.stage == service_issue_done_stage %}text-muted{% endif %}">
+                        <td>{{ issue.created_at|date:"d.m.Y H:i" }}</td>
+                        <td class="fw-semibold">{{ issue.title }}</td>
+                        <td>
+                            {% if issue.urgency %}
+                                <span class="urgency-badge urgency-{{ issue.urgency }}" title="{{ issue.get_urgency_display }}" aria-label="{{ issue.get_urgency_display }}"></span>
+                            {% else %}
+                                <span class="urgency-badge urgency-low" title="Срочность не задана" aria-label="Срочность не задана"></span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <span class="badge {% if issue.stage == service_issue_done_stage %}bg-success-subtle text-success border{% else %}bg-info-subtle text-info border{% endif %}">
+                                {{ issue.stage_label|default:issue.stage }}
+                            </span>
+                        </td>
+                        <td>
+                            {% if issue.responsible %}
+                                {{ issue.responsible.get_full_name|default:issue.responsible.username }}
+                            {% elif issue.created_by %}
+                                {{ issue.created_by.get_full_name|default:issue.created_by.username }}
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if issue.photo_urls %}
+                                <div class="issue-photo-thumbs" data-photos="{{ issue.photo_urls_json|escape }}">
+                                    {% for url in issue.photo_urls|slice:":3" %}
+                                        <button type="button" class="issue-photo-thumb" data-index="{{ forloop.counter0 }}">
+                                            <img src="{{ url }}" alt="Фото {{ forloop.counter }}">
+                                        </button>
+                                    {% endfor %}
+                                    {% if issue.photo_extra_count|default:0 > 0 %}
+                                        <span class="issue-photo-more">+{{ issue.photo_extra_count }}</span>
+                                    {% endif %}
+                                </div>
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                        <td class="text-end">
+                            {% if can_manage_service_issues %}
+                                <form method="post" action="{% url 'pool_issue_update' pool.uuid issue.id %}" class="d-flex align-items-center gap-2 justify-content-end">
+                                    {% csrf_token %}
+                                    <select name="stage" class="form-select form-select-sm w-auto">
+                                        {% for value, label in service_issue_stage_choices %}
+                                            <option value="{{ value }}" {% if value == issue.stage %}selected{% endif %}>{{ label }}</option>
+                                        {% endfor %}
+                                    </select>
+                                    <button type="submit" class="btn btn-outline-primary btn-sm">Сохранить</button>
+                                </form>
+                            {% else %}
+                                {% if issue.stage == service_issue_done_stage %}
+                                    <i class="bi bi-check-circle-fill text-success"></i>
+                                {% endif %}
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% empty %}
+                    <tr>
+                        <td colspan="7" class="text-center text-muted py-3">Пока нет неисправностей</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
 <script>
   (function () {
     const perPageInput = document.getElementById("pool-readings-per-page-input");
@@ -240,6 +365,143 @@
         perPageInput.value = item.getAttribute("data-value") || "20";
         perPageButton.textContent = item.textContent || "";
         form?.submit();
+      });
+    });
+  })();
+</script>
+
+<div class="modal fade" id="issuePhotoModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content">
+      <div class="modal-body p-0">
+        <div id="issuePhotoCarousel" class="carousel slide" data-bs-ride="false">
+          <div class="carousel-indicators"></div>
+          <div class="carousel-inner"></div>
+          <button class="carousel-control-prev" type="button" data-bs-target="#issuePhotoCarousel" data-bs-slide="prev">
+            <span class="carousel-control-prev-icon" aria-hidden="true"></span>
+            <span class="visually-hidden">Назад</span>
+          </button>
+          <button class="carousel-control-next" type="button" data-bs-target="#issuePhotoCarousel" data-bs-slide="next">
+            <span class="carousel-control-next-icon" aria-hidden="true"></span>
+            <span class="visually-hidden">Вперед</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% if can_manage_service_issues %}
+<script>
+  (function () {
+    const input = document.querySelector("#service-issue-form input[type='file'][name='photos']");
+    if (!input) return;
+
+    const MAX_SIZE = 1600;
+    const QUALITY = 0.8;
+
+    function compressImage(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          const img = new Image();
+          img.onload = () => {
+            let { width, height } = img;
+            if (width > MAX_SIZE || height > MAX_SIZE) {
+              const scale = Math.min(MAX_SIZE / width, MAX_SIZE / height);
+              width = Math.round(width * scale);
+              height = Math.round(height * scale);
+            }
+            const canvas = document.createElement("canvas");
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0, width, height);
+            canvas.toBlob(
+              (blob) => {
+                if (!blob) {
+                  reject(new Error("compress_failed"));
+                  return;
+                }
+                resolve(blob);
+              },
+              "image/jpeg",
+              QUALITY
+            );
+          };
+          img.onerror = reject;
+          img.src = event.target.result;
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    input.addEventListener("change", async () => {
+      const files = Array.from(input.files || []).filter((file) => file.type.startsWith("image/"));
+      if (!files.length) return;
+      const dataTransfer = new DataTransfer();
+      for (const file of files) {
+        try {
+          const blob = await compressImage(file);
+          const name = file.name.replace(/\.[^.]+$/, "") + ".jpg";
+          const compressedFile = new File([blob], name, { type: "image/jpeg" });
+          dataTransfer.items.add(compressedFile);
+        } catch (error) {
+          dataTransfer.items.add(file);
+        }
+      }
+      input.files = dataTransfer.files;
+    });
+  })();
+</script>
+{% endif %}
+
+<script>
+  (function () {
+    const modalEl = document.getElementById("issuePhotoModal");
+    const carouselEl = document.getElementById("issuePhotoCarousel");
+    if (!modalEl || !carouselEl) return;
+    const indicators = carouselEl.querySelector(".carousel-indicators");
+    const inner = carouselEl.querySelector(".carousel-inner");
+    const modal = new bootstrap.Modal(modalEl);
+
+    function renderCarousel(urls, startIndex) {
+      indicators.innerHTML = "";
+      inner.innerHTML = "";
+      urls.forEach((url, idx) => {
+        const indicator = document.createElement("button");
+        indicator.type = "button";
+        indicator.dataset.bsTarget = "#issuePhotoCarousel";
+        indicator.dataset.bsSlideTo = String(idx);
+        if (idx === startIndex) indicator.classList.add("active");
+        indicators.appendChild(indicator);
+
+        const item = document.createElement("div");
+        item.className = "carousel-item" + (idx === startIndex ? " active" : "");
+        const img = document.createElement("img");
+        img.className = "d-block w-100";
+        img.src = url;
+        img.alt = "Фото " + (idx + 1);
+        item.appendChild(img);
+        inner.appendChild(item);
+      });
+    }
+
+    document.querySelectorAll(".issue-photo-thumb").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const container = btn.closest(".issue-photo-thumbs");
+        if (!container) return;
+        let urls = [];
+        try {
+          urls = JSON.parse(container.dataset.photos || "[]");
+        } catch (e) {
+          urls = [];
+        }
+        if (!urls.length) return;
+        const startIndex = Number(btn.dataset.index || 0);
+        renderCarousel(urls, startIndex);
+        modal.show();
       });
     });
   })();

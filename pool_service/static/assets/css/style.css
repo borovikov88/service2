@@ -11829,3 +11829,56 @@ textarea.form-control-lg {
         display: none;
     }
 }
+
+.issue-photo-thumbs {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.issue-photo-thumb {
+    border: none;
+    background: transparent;
+    padding: 0;
+}
+
+.issue-photo-thumb img {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    object-fit: cover;
+    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.12);
+}
+
+.issue-photo-thumb--large img {
+    width: 88px;
+    height: 88px;
+    border-radius: 14px;
+}
+
+.issue-photo-more {
+    font-size: 0.85rem;
+    color: #6c757d;
+}
+
+.urgency-badge,
+.urgency-dot {
+    display: inline-block;
+    width: 18px;
+    height: 10px;
+    border-radius: 999px;
+    vertical-align: middle;
+    box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.1);
+}
+
+.urgency-low {
+    background: #f1c40f;
+}
+
+.urgency-required {
+    background: #f39c12;
+}
+
+.urgency-critical {
+    background: #dc3545;
+}

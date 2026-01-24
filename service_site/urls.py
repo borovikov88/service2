@@ -9,6 +9,7 @@ from django.views.generic import TemplateView
 from django.urls import reverse_lazy
 from django.conf import settings
 from django.templatetags.static import static
+from django.conf.urls.static import static as static_serve
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -68,3 +69,6 @@ urlpatterns = [
     ),
     path('ckeditor5/', include('django_ckeditor_5.urls')),
 ]
+
+if settings.DEBUG:
+    urlpatterns += static_serve(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

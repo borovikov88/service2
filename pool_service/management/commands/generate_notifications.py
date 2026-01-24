@@ -138,7 +138,8 @@ class Command(BaseCommand):
 
             label = self._period_label(frequency)
             title = "\u041d\u0435\u0442 \u0441\u0435\u0440\u0432\u0438\u0441\u043d\u043e\u0433\u043e \u043f\u043e\u0441\u0435\u0449\u0435\u043d\u0438\u044f"
-            message = f"{pool.address}: \u043d\u0435\u0442 \u043f\u043e\u0441\u0435\u0449\u0435\u043d\u0438\u044f {label}".strip()
+            client_label = pool.client.name if pool.client else pool.address
+            message = f"{client_label}: \u043d\u0435\u0442 \u043f\u043e\u0441\u0435\u0449\u0435\u043d\u0438\u044f {label}".strip()
             action_url = reverse("pool_detail", kwargs={"pool_uuid": pool.uuid})
             dedupe_key = f"missed_visit:{pool.id}:{period_key}"
 
@@ -165,7 +166,8 @@ class Command(BaseCommand):
             if has_reading:
                 continue
             title = "\u041d\u0435\u0442 \u0435\u0436\u0435\u0434\u043d\u0435\u0432\u043d\u044b\u0445 \u043f\u043e\u043a\u0430\u0437\u0430\u043d\u0438\u0439"
-            message = f"{pool.address}: \u0441\u0435\u0433\u043e\u0434\u043d\u044f \u043d\u0435\u0442 \u043f\u043e\u043a\u0430\u0437\u0430\u043d\u0438\u0439"
+            client_label = pool.client.name if pool.client else pool.address
+            message = f"{client_label}: \u0441\u0435\u0433\u043e\u0434\u043d\u044f \u043d\u0435\u0442 \u043f\u043e\u043a\u0430\u0437\u0430\u043d\u0438\u0439"
             action_url = reverse("pool_detail", kwargs={"pool_uuid": pool.uuid})
             dedupe_key = f"daily_missing:{pool.id}:{today.isoformat()}"
 

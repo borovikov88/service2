@@ -35,7 +35,7 @@
                     {% if note.message %}
                     <div class="text-muted">{{ note.message }}</div>
                     {% endif %}
-                    <div class="text-muted small mt-1">{{ note.created_at|date:"d.m.Y H:i" }}</div>
+                    <div class="text-muted small mt-1">{{ note.display_time|date:"d.m.Y H:i" }}</div>
                 </div>
                 <div class="d-flex align-items-start gap-2">
                     {% if note.action_url %}

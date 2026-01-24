@@ -290,13 +290,16 @@
         </div>
 
         <div class="d-flex align-items-center gap-3">
-          <button class="btn btn-light d-lg-none border-0 shadow-sm position-relative" style="width:44px;height:44px;" onclick="openMenu()" aria-label="&#1054;&#1090;&#1082;&#1088;&#1099;&#1090;&#1100; &#1084;&#1077;&#1085;&#1102;">
-            <i class="bi bi-list fs-4"></i>
+          <a class="btn btn-light d-lg-none border-0 shadow-sm position-relative" style="width:44px;height:44px;" href="{% url 'notifications' %}" aria-label="&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;">
+            <i class="bi bi-bell fs-5"></i>
             {% if notifications_unread_count %}
               <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger">
                 {{ notifications_unread_count }}
               </span>
             {% endif %}
+          </a>
+          <button class="btn btn-light d-lg-none border-0 shadow-sm" style="width:44px;height:44px;" onclick="openMenu()" aria-label="&#1054;&#1090;&#1082;&#1088;&#1099;&#1090;&#1100; &#1084;&#1077;&#1085;&#1102;">
+            <i class="bi bi-list fs-4"></i>
           </button>
           <nav class="d-none d-lg-flex align-items-center gap-3">
           {% if not is_personal_user %}
@@ -309,6 +312,9 @@
               &#1052;&#1086;&#1080; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1099;
             {% endif %}
           </a>
+          {% if can_access_crm %}
+            <a class="text-decoration-none {% if active_tab == 'crm' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'crm_index' %}">CRM</a>
+          {% endif %}
           {% if user.is_authenticated %}
             {% with org_admins=user.organizationaccess_set.all %}
               {% if user.is_superuser or org_admins|length %}
@@ -438,12 +444,6 @@
       </div>
       {% endif %}
       <div class="list-group list-group-flush">
-          <a href="{% url 'notifications' %}" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
-              <span>&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;</span>
-              {% if notifications_unread_count %}
-                <span class="badge rounded-pill bg-danger">{{ notifications_unread_count }}</span>
-              {% endif %}
-          </a>
           <a href="{% url 'profile' %}" class="list-group-item list-group-item-action">&#1055;&#1088;&#1086;&#1092;&#1080;&#1083;&#1100;</a>
           <a href="{{ personal_pool_url|default:'/pools' }}" class="list-group-item list-group-item-action">
             {% if is_personal_user %}
@@ -452,6 +452,9 @@
               &#1052;&#1086;&#1080; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1099;
             {% endif %}
           </a>
+          {% if can_access_crm %}
+          <a href="{% url 'crm_index' %}" class="list-group-item list-group-item-action">CRM</a>
+          {% endif %}
           {% if is_org_staff %}
           <a href="{% url 'clients_list' %}" class="list-group-item list-group-item-action">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;</a>
           {% endif %}

@@ -1,0 +1,82 @@
+{% extends 'pool_service/base.html' %}
+
+{% block title %}{{ page_title }}{% endblock %}
+
+{% block content %}
+<div class="card card-soft p-4">
+    <div class="table-responsive">
+        <table class="table align-middle">
+            <thead class="small text-muted">
+                <tr>
+                    <th>Название</th>
+                    <th>Клиент</th>
+                    <th>Объект</th>
+                    <th>Этап</th>
+                    {% if direction == "service" %}
+                        <th>Срочность</th>
+                    {% endif %}
+                    <th>Сумма</th>
+                    <th>Ответственный</th>
+                    {% if user.is_superuser %}
+                        <th>Организация</th>
+                    {% endif %}
+                    <th class="text-end"></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in items %}
+                    <tr class="{% if service_done_stage and item.stage == service_done_stage %}text-muted{% endif %}">
+                        <td class="fw-semibold">{{ item.title }}</td>
+                        <td>{{ item.client.name|default:"-" }}</td>
+                        <td>
+                            {% if item.pool %}
+                                {{ item.pool.address }}
+                            {% elif item.client %}
+                                {{ item.client.name }}
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                        <td>{{ item.stage_label|default:item.stage }}</td>
+                        {% if direction == "service" %}
+                            <td>
+                                {% if item.urgency %}
+                                    <span class="urgency-badge urgency-{{ item.urgency }}" title="{{ item.get_urgency_display }}" aria-label="{{ item.get_urgency_display }}"></span>
+                                {% else %}
+                                    <span class="urgency-badge urgency-low" title="Срочность не задана" aria-label="Срочность не задана"></span>
+                                {% endif %}
+                            </td>
+                        {% endif %}
+                        <td>
+                            {% if item.amount %}
+                                {{ item.amount|floatformat:2 }} ₽
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if item.responsible %}
+                                {{ item.responsible.get_full_name|default:item.responsible.username }}
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                        {% if user.is_superuser %}
+                            <td>{{ item.organization.name|default:"-" }}</td>
+                        {% endif %}
+                        <td class="text-end">
+                            <a class="btn btn-outline-secondary btn-sm" href="{% url 'crm_edit' direction=direction item_id=item.id %}" aria-label="Редактировать">
+                                <i class="bi bi-pencil"></i>
+                            </a>
+                        </td>
+                    </tr>
+                {% empty %}
+                    <tr>
+                        <td colspan="{% if user.is_superuser %}{% if direction == "service" %}9{% else %}8{% endif %}{% else %}{% if direction == "service" %}8{% else %}7{% endif %}{% endif %}" class="text-center text-muted py-3">Пока нет записей</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

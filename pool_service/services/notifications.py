@@ -154,7 +154,8 @@ def notify_reading_out_of_range(reading):
     if not violations:
         return []
     title = "\u041f\u043e\u043a\u0430\u0437\u0430\u0442\u0435\u043b\u0438 \u0432\u043d\u0435 \u043d\u043e\u0440\u043c\u044b"
-    message = f"{pool.address}: " + "; ".join(violations)
+    client_label = pool.client.name if pool.client else pool.address
+    message = f"{client_label}: " + "; ".join(violations)
     action_url = reverse("pool_detail", kwargs={"pool_uuid": pool.uuid})
     dedupe_key = f"limits:{reading.uuid}"
     created = notify_org_users(

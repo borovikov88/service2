@@ -1,5 +1,6 @@
 from django import forms
 from django.contrib.auth.models import User
+from django.db import models
 from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.auth.password_validation import validate_password
 from django.utils.crypto import get_random_string
@@ -14,6 +15,7 @@ from .models import (
     Pool,
     PoolAccess,
     ClientAccess,
+    CrmItem,
 )
 
 
@@ -472,7 +474,12 @@ class OrganizationInviteForm(forms.Form):
     last_name = forms.CharField(label="\u0424\u0430\u043c\u0438\u043b\u0438\u044f", required=True)
     email = forms.EmailField(label="Email", required=True)
     phone = forms.CharField(label="\u0422\u0435\u043b\u0435\u0444\u043e\u043d", required=False)
-    role = forms.ChoiceField(choices=OrganizationAccess.ROLE_CHOICES, label="\u0420\u043e\u043b\u044c")
+    roles = forms.MultipleChoiceField(
+        choices=OrganizationAccess.ROLE_CHOICES,
+        label="\u0420\u043e\u043b\u0438",
+        widget=forms.CheckboxSelectMultiple,
+        initial=["service"],
+    )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -480,9 +487,11 @@ class OrganizationInviteForm(forms.Form):
             if isinstance(field.widget, forms.RadioSelect):
                 continue
             classes = "form-control rounded-3"
-            if name in ["role"]:
-                field.widget.attrs.update({"class": "form-select"})
-                field.widget.choices = [choice for choice in field.choices if choice[0] != "owner"]
+            if name in ["roles"]:
+                field.widget.attrs.update({"class": "form-check-input"})
+                filtered_choices = [choice for choice in field.choices if choice[0] != "owner"]
+                field.choices = filtered_choices
+                field.widget.choices = filtered_choices
                 continue
             if name in ["phone"]:
                 field.widget.attrs.update({"class": f"{classes} phone-mask", "placeholder": field.label})
@@ -731,3 +740,159 @@ class EmailOrUsernameAuthenticationForm(AuthenticationForm):
                     f"\u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 \u0442\u0435\u043b\u0435\u0444\u043e\u043d, \u0447\u0442\u043e\u0431\u044b \u0432\u043e\u0439\u0442\u0438. \u041e\u0442\u043a\u0440\u043e\u0439\u0442\u0435: {verify_url}",
                 )
         return cleaned
+
+
+CRM_DIRECTION_LABELS = {
+    CrmItem.DIRECTION_SERVICE: "\u0421\u0435\u0440\u0432\u0438\u0441",
+    CrmItem.DIRECTION_PROJECT: "\u041f\u0440\u043e\u0435\u043a\u0442\u044b",
+    CrmItem.DIRECTION_SALES: "\u041f\u0440\u043e\u0434\u0430\u0436\u0438",
+    CrmItem.DIRECTION_TENDER: "\u0422\u043e\u0440\u0433\u0438",
+}
+CRM_STAGE_CHOICES_BY_DIRECTION = {
+    CrmItem.DIRECTION_SERVICE: [
+        (CrmItem.STAGE_SERVICE_NEW, "\u041d\u0435 \u0440\u0430\u0437\u043e\u0431\u0440\u0430\u043d\u043e"),
+        (CrmItem.STAGE_SERVICE_IN_PROGRESS, "\u0412 \u0440\u0430\u0431\u043e\u0442\u0435"),
+        (CrmItem.STAGE_SERVICE_BLOCKED, "\u0422\u043e\u0432\u0430\u0440 \u0437\u0430\u043a\u0430\u0437\u0430\u043d"),
+        (CrmItem.STAGE_SERVICE_DONE, "\u0412\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u043e"),
+    ],
+    CrmItem.DIRECTION_PROJECT: [
+        (CrmItem.STAGE_PROJECT_IDEA, "\u0418\u0434\u0435\u044f"),
+        (CrmItem.STAGE_PROJECT_DESIGN, "\u041f\u0440\u043e\u0435\u043a\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435"),
+        (CrmItem.STAGE_PROJECT_BUILD, "\u0421\u0442\u0440\u043e\u0438\u0442\u0435\u043b\u044c\u0441\u0442\u0432\u043e"),
+        (CrmItem.STAGE_PROJECT_COMMISSION, "\u041f\u0443\u0441\u043a\u043e\u043d\u0430\u043b\u0430\u0434\u043a\u0430"),
+        (CrmItem.STAGE_PROJECT_DONE, "\u0417\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u043e"),
+        (CrmItem.STAGE_PROJECT_HOLD, "\u0417\u0430\u043c\u043e\u0440\u043e\u0436\u0435\u043d\u043e"),
+    ],
+    CrmItem.DIRECTION_SALES: [
+        (CrmItem.STAGE_SALES_LEAD, "\u041b\u0438\u0434"),
+        (CrmItem.STAGE_SALES_QUALIFY, "\u041a\u0432\u0430\u043b\u0438\u0444\u0438\u043a\u0430\u0446\u0438\u044f"),
+        (CrmItem.STAGE_SALES_OFFER, "\u041a\u043e\u043c\u043c\u0435\u0440\u0447\u0435\u0441\u043a\u043e\u0435 \u043f\u0440\u0435\u0434\u043b\u043e\u0436\u0435\u043d\u0438\u0435"),
+        (CrmItem.STAGE_SALES_CONTRACT, "\u0414\u043e\u0433\u043e\u0432\u043e\u0440"),
+        (CrmItem.STAGE_SALES_WON, "\u0412\u044b\u0438\u0433\u0440\u0430\u043d\u043e"),
+        (CrmItem.STAGE_SALES_LOST, "\u041f\u0440\u043e\u0438\u0433\u0440\u0430\u043d\u043e"),
+    ],
+    CrmItem.DIRECTION_TENDER: [
+        (CrmItem.STAGE_TENDER_PREPARE, "\u041f\u043e\u0434\u0433\u043e\u0442\u043e\u0432\u043a\u0430"),
+        (CrmItem.STAGE_TENDER_SUBMITTED, "\u041f\u043e\u0434\u0430\u043d\u043e"),
+        (CrmItem.STAGE_TENDER_SHORTLIST, "\u0428\u043e\u0440\u0442-\u043b\u0438\u0441\u0442"),
+        (CrmItem.STAGE_TENDER_WON, "\u0412\u044b\u0438\u0433\u0440\u0430\u043d\u043e"),
+        (CrmItem.STAGE_TENDER_LOST, "\u041f\u0440\u043e\u0438\u0433\u0440\u0430\u043d\u043e"),
+        (CrmItem.STAGE_TENDER_CANCEL, "\u041e\u0442\u043c\u0435\u043d\u0435\u043d\u043e"),
+    ],
+}
+
+
+class CrmItemForm(forms.ModelForm):
+    class Meta:
+        model = CrmItem
+        fields = [
+            "title",
+            "client",
+            "pool",
+            "amount",
+            "stage",
+            "urgency",
+            "responsible",
+            "description",
+            "service_works",
+            "equipment_replacement",
+            "photo_url",
+        ]
+
+    def __init__(self, *args, direction=None, organization=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._direction = direction
+        self._organization = organization
+
+        for name, field in self.fields.items():
+            classes = "form-control rounded-3"
+            if name in ["description", "service_works", "equipment_replacement"]:
+                field.widget.attrs.update({"class": classes, "rows": 3})
+                continue
+            if name in ["stage", "urgency", "client", "pool", "responsible"]:
+                field.widget.attrs.update({"class": "form-select"})
+                continue
+            if name == "amount":
+                field.widget.attrs.update({"class": classes, "step": "0.01"})
+                continue
+            field.widget.attrs.update({"class": classes})
+
+        if direction and "stage" in self.fields:
+            self.fields["stage"].choices = CRM_STAGE_CHOICES_BY_DIRECTION.get(
+                direction, CRM_STAGE_CHOICES_BY_DIRECTION[CrmItem.DIRECTION_SERVICE]
+            )
+        if "urgency" in self.fields:
+            self.fields["urgency"].label = "\u0421\u0440\u043e\u0447\u043d\u043e\u0441\u0442\u044c"
+            self.fields["urgency"].required = direction == CrmItem.DIRECTION_SERVICE
+
+        if organization:
+            self.fields["client"].queryset = Client.objects.filter(organization=organization).order_by("name")
+            self.fields["pool"].queryset = Pool.objects.filter(
+                models.Q(organization=organization) | models.Q(client__organization=organization)
+            ).order_by("client__name")
+            self.fields["responsible"].queryset = User.objects.filter(
+                organizationaccess__organization=organization
+            ).distinct().order_by("last_name", "first_name")
+        else:
+            self.fields["client"].queryset = Client.objects.none()
+            self.fields["pool"].queryset = Pool.objects.none()
+            self.fields["responsible"].queryset = User.objects.none()
+
+        if direction and not self.initial.get("stage"):
+            choices = self.fields["stage"].choices
+            if choices:
+                self.initial["stage"] = choices[0][0]
+
+    def clean_stage(self):
+        value = self.cleaned_data.get("stage")
+        if not self._direction or not value:
+            return value
+        allowed = {choice[0] for choice in CRM_STAGE_CHOICES_BY_DIRECTION.get(self._direction, [])}
+        if value not in allowed:
+            raise forms.ValidationError("Неверный этап для выбранного направления.")
+        return value
+
+class MultipleClearableFileInput(forms.ClearableFileInput):
+    allow_multiple_selected = True
+
+
+class MultipleFileField(forms.FileField):
+    def clean(self, data, initial=None):
+        if not data:
+            return []
+        if isinstance(data, (list, tuple)):
+            return [super().clean(item, initial) for item in data]
+        return [super().clean(data, initial)]
+
+
+class CrmServiceIssueForm(forms.ModelForm):
+    photos = MultipleFileField(
+        required=False,
+        widget=MultipleClearableFileInput(attrs={"multiple": True, "accept": "image/*"}),
+        label="Фото",
+    )
+
+    class Meta:
+        model = CrmItem
+        fields = [
+            "title",
+            "urgency",
+            "description",
+        ]
+        labels = {
+            "title": "\u041d\u0435\u0438\u0441\u043f\u0440\u0430\u0432\u043d\u043e\u0441\u0442\u044c",
+            "urgency": "\u0421\u0440\u043e\u0447\u043d\u043e\u0441\u0442\u044c",
+            "description": "\u041a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0439",
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["title"].widget.attrs.update({"class": "form-control rounded-3"})
+        self.fields["urgency"].widget.attrs.update({"class": "form-select"})
+        self.fields["urgency"].required = True
+        self.fields["description"].widget.attrs.update(
+            {"class": "form-control rounded-3", "rows": 3}
+        )
+        self.fields["photos"].widget.attrs.update(
+            {"class": "form-control rounded-3", "accept": "image/*"}
+        )
