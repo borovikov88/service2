@@ -114,7 +114,7 @@
 
 
 {% if readings %}
-<div class="card card-soft p-4">
+<div class="card card-soft p-4 mb-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
         <div>
             <h3 class="fw-bold h5 mb-1">История показаний</h3>
@@ -399,6 +399,27 @@
 
     const MAX_SIZE = 1600;
     const QUALITY = 0.8;
+    const isMobile =
+      /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "") ||
+      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    let skipPrompt = false;
+
+    input.addEventListener("click", (event) => {
+      if (!isMobile) return;
+      if (skipPrompt) {
+        skipPrompt = false;
+        return;
+      }
+      event.preventDefault();
+      const useCamera = window.confirm("Сделать фото? OK - камера, Отмена - галерея.");
+      if (useCamera) {
+        input.setAttribute("capture", "environment");
+      } else {
+        input.removeAttribute("capture");
+      }
+      skipPrompt = true;
+      input.click();
+    });
 
     function compressImage(file) {
       return new Promise((resolve, reject) => {
@@ -440,6 +461,7 @@
     input.addEventListener("change", async () => {
       const files = Array.from(input.files || []).filter((file) => file.type.startsWith("image/"));
       if (!files.length) return;
+      if (typeof DataTransfer === "undefined") return;
       const dataTransfer = new DataTransfer();
       for (const file of files) {
         try {
@@ -461,12 +483,13 @@
   (function () {
     const modalEl = document.getElementById("issuePhotoModal");
     const carouselEl = document.getElementById("issuePhotoCarousel");
-    if (!modalEl || !carouselEl) return;
-    const indicators = carouselEl.querySelector(".carousel-indicators");
-    const inner = carouselEl.querySelector(".carousel-inner");
-    const modal = new bootstrap.Modal(modalEl);
+    const hasBootstrap = typeof bootstrap !== "undefined" && modalEl && carouselEl;
+    const indicators = hasBootstrap ? carouselEl.querySelector(".carousel-indicators") : null;
+    const inner = hasBootstrap ? carouselEl.querySelector(".carousel-inner") : null;
+    const modal = hasBootstrap ? new bootstrap.Modal(modalEl) : null;
 
     function renderCarousel(urls, startIndex) {
+      if (!indicators || !inner) return;
       indicators.innerHTML = "";
       inner.innerHTML = "";
       urls.forEach((url, idx) => {
@@ -488,21 +511,31 @@
       });
     }
 
-    document.querySelectorAll(".issue-photo-thumb").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const container = btn.closest(".issue-photo-thumbs");
-        if (!container) return;
-        let urls = [];
-        try {
-          urls = JSON.parse(container.dataset.photos || "[]");
-        } catch (e) {
-          urls = [];
-        }
-        if (!urls.length) return;
-        const startIndex = Number(btn.dataset.index || 0);
-        renderCarousel(urls, startIndex);
-        modal.show();
-      });
+    function openPhotos(urls, startIndex) {
+      if (!urls.length) return;
+      if (!hasBootstrap) {
+        const url = urls[startIndex] || urls[0];
+        if (url) window.open(url, "_blank", "noopener");
+        return;
+      }
+      renderCarousel(urls, startIndex);
+      modal.show();
+    }
+
+    document.addEventListener("click", (event) => {
+      const btn = event.target.closest(".issue-photo-thumb");
+      if (!btn) return;
+      const container = btn.closest(".issue-photo-thumbs");
+      if (!container) return;
+      let urls = [];
+      try {
+        urls = JSON.parse(container.dataset.photos || "[]");
+      } catch (e) {
+        urls = [];
+      }
+      if (!urls.length) return;
+      const startIndex = Number(btn.dataset.index || 0);
+      openPhotos(urls, startIndex);
     });
   })();
 </script>

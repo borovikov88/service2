@@ -147,6 +147,11 @@ def notify_reading_out_of_range(reading):
     organization = pool.organization
     if not organization:
         return []
+    if reading.added_by_id and OrganizationAccess.objects.filter(
+        user_id=reading.added_by_id,
+        organization=organization,
+    ).exists():
+        return []
     if not organization.notify_limits:
         return []
     limits = _limits_for_org(organization)

@@ -6,6 +6,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.utils.crypto import get_random_string
 from django.utils import timezone
 from django.urls import reverse
+from pathlib import Path
 from .models import (
     WaterReading,
     Organization,
@@ -864,11 +865,17 @@ class MultipleFileField(forms.FileField):
             return [super().clean(item, initial) for item in data]
         return [super().clean(data, initial)]
 
+ISSUE_PHOTO_ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png"}
+ISSUE_PHOTO_ALLOWED_MIME_TYPES = {"image/jpeg", "image/png"}
+ISSUE_PHOTO_ACCEPT = "image/jpeg,image/png"
+ISSUE_PHOTO_MAX_SIZE_MB = 8
+ISSUE_PHOTO_MAX_SIZE_BYTES = ISSUE_PHOTO_MAX_SIZE_MB * 1024 * 1024
+
 
 class CrmServiceIssueForm(forms.ModelForm):
     photos = MultipleFileField(
         required=False,
-        widget=MultipleClearableFileInput(attrs={"multiple": True, "accept": "image/*"}),
+        widget=MultipleClearableFileInput(attrs={"multiple": True, "accept": ISSUE_PHOTO_ACCEPT}),
         label="Фото",
     )
 
@@ -894,5 +901,26 @@ class CrmServiceIssueForm(forms.ModelForm):
             {"class": "form-control rounded-3", "rows": 3}
         )
         self.fields["photos"].widget.attrs.update(
-            {"class": "form-control rounded-3", "accept": "image/*"}
+            {"class": "form-control rounded-3", "accept": ISSUE_PHOTO_ACCEPT}
         )
+
+    def clean_photos(self):
+        photos = self.cleaned_data.get("photos", [])
+        if not photos:
+            return []
+        errors = []
+        for photo in photos:
+            name = photo.name or "file"
+            ext = Path(name).suffix.lower().lstrip(".")
+            content_type = (getattr(photo, "content_type", "") or "").lower()
+            if ext not in ISSUE_PHOTO_ALLOWED_EXTENSIONS:
+                errors.append(f"Файл {name}: допустимы jpg, jpeg, png.")
+                continue
+            if content_type and content_type not in ISSUE_PHOTO_ALLOWED_MIME_TYPES:
+                errors.append(f"Файл {name}: недопустимый тип.")
+                continue
+            if photo.size and photo.size > ISSUE_PHOTO_MAX_SIZE_BYTES:
+                errors.append(f"Файл {name} больше {ISSUE_PHOTO_MAX_SIZE_MB} МБ.")
+        if errors:
+            raise forms.ValidationError(errors)
+        return photos
