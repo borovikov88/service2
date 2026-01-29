@@ -483,12 +483,16 @@
   (function () {
     const modalEl = document.getElementById("issuePhotoModal");
     const carouselEl = document.getElementById("issuePhotoCarousel");
-    const hasBootstrap = typeof bootstrap !== "undefined" && modalEl && carouselEl;
-    const indicators = hasBootstrap ? carouselEl.querySelector(".carousel-indicators") : null;
-    const inner = hasBootstrap ? carouselEl.querySelector(".carousel-inner") : null;
-    const modal = hasBootstrap ? new bootstrap.Modal(modalEl) : null;
+    if (!modalEl || !carouselEl) return;
+
+    const getModal = () => {
+      if (typeof bootstrap === "undefined") return null;
+      return bootstrap.Modal.getOrCreateInstance(modalEl);
+    };
 
     function renderCarousel(urls, startIndex) {
+      const indicators = carouselEl.querySelector(".carousel-indicators");
+      const inner = carouselEl.querySelector(".carousel-inner");
       if (!indicators || !inner) return;
       indicators.innerHTML = "";
       inner.innerHTML = "";
@@ -513,11 +517,8 @@
 
     function openPhotos(urls, startIndex) {
       if (!urls.length) return;
-      if (!hasBootstrap) {
-        const url = urls[startIndex] || urls[0];
-        if (url) window.open(url, "_blank", "noopener");
-        return;
-      }
+      const modal = getModal();
+      if (!modal) return;
       renderCarousel(urls, startIndex);
       modal.show();
     }

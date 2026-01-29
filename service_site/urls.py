@@ -70,5 +70,5 @@ urlpatterns = [
     path('ckeditor5/', include('django_ckeditor_5.urls')),
 ]
 
-if settings.DEBUG:
+if settings.DEBUG or getattr(settings, "SERVE_MEDIA", False):
     urlpatterns += static_serve(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

@@ -32,6 +32,7 @@ SECRET_KEY = 'django-insecure-n#p_@2+6a_@4bk$j7np)$y3um#1gb362r5-mgm*_moio)gx&8=
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = _env_bool("DEBUG", False)
+SERVE_MEDIA = _env_bool("SERVE_MEDIA", False)
 
 allowed_hosts_env = os.getenv('ALLOWED_HOSTS', '')
 ALLOWED_HOSTS = [host.strip() for host in allowed_hosts_env.split(',') if host.strip()]

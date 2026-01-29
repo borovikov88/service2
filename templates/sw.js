@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'v5';
+const CACHE_VERSION = 'v6';
 const STATIC_CACHE = `pwa-static-${CACHE_VERSION}`;
 const RUNTIME_CACHE = `pwa-runtime-${CACHE_VERSION}`;
 const OFFLINE_URLS = ['/'];
@@ -32,14 +32,19 @@ self.addEventListener('fetch', (event) => {
   if (requestUrl.origin !== self.location.origin) {
     return;
   }
+  if (requestUrl.pathname.startsWith('/media/')) {
+    return;
+  }
 
   if (event.request.mode === 'navigate') {
     event.respondWith(
       (async () => {
         try {
           const response = await fetch(event.request);
-          const cache = await caches.open(RUNTIME_CACHE);
-          cache.put(event.request, response.clone());
+          if (response && response.ok) {
+            const cache = await caches.open(RUNTIME_CACHE);
+            cache.put(event.request, response.clone());
+          }
           return response;
         } catch (err) {
           const cached = await caches.match(event.request);
@@ -56,7 +61,9 @@ self.addEventListener('fetch', (event) => {
       const cached = await cache.match(event.request);
       if (cached) return cached;
       const response = await fetch(event.request);
-      cache.put(event.request, response.clone());
+      if (response && response.ok) {
+        cache.put(event.request, response.clone());
+      }
       return response;
     })()
   );
