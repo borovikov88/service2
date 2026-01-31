@@ -1,3 +1,5 @@
+from datetime import timezone as datetime_timezone
+
 from django.contrib import messages
 
 from django.contrib.auth import login, authenticate, update_session_auth_hash
@@ -6355,7 +6357,7 @@ def notifications_list(request):
 
             if str(getattr(settings, "TIME_ZONE", "UTC")).upper() == "UTC":
 
-                created_at = timezone.make_aware(created_at, timezone.utc)
+                created_at = timezone.make_aware(created_at, datetime_timezone.utc)
 
             else:
 
