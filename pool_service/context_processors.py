@@ -145,12 +145,14 @@ def push_context(request):
         return {}
 
     from django.conf import settings
-    from pool_service.models import OrganizationAccess
+    from pool_service.models import Client, ClientAccess, OrganizationAccess
 
     has_org_access = OrganizationAccess.objects.filter(user=user).exists()
+    has_client_access = ClientAccess.objects.filter(user=user).exists()
+    has_client_profile = Client.objects.filter(user=user).exists()
     public_key = getattr(settings, "VAPID_PUBLIC_KEY", "")
     private_key = getattr(settings, "VAPID_PRIVATE_KEY", "")
-    enabled = bool(has_org_access and public_key and private_key)
+    enabled = bool((has_org_access or has_client_access or has_client_profile) and public_key and private_key)
     return {
         "push_enabled": enabled,
         "push_public_key": public_key or "",

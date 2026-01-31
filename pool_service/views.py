@@ -1,4 +1,4 @@
-from datetime import timezone as datetime_timezone
+from zoneinfo import ZoneInfo
 
 from django.contrib import messages
 
@@ -6348,22 +6348,29 @@ def notifications_list(request):
     query_params.pop("page", None)
 
     current_tz = timezone.get_current_timezone()
+    default_tz = timezone.get_default_timezone()
+    if not settings.USE_TZ and request.user.is_authenticated:
+        tz_name = None
+        try:
+            tz_name = request.user.profile.timezone
+        except Profile.DoesNotExist:
+            tz_name = None
+        if tz_name:
+            try:
+                current_tz = ZoneInfo(tz_name)
+            except Exception:
+                current_tz = default_tz
+        else:
+            current_tz = default_tz
 
     for note in notifications:
 
         created_at = note.created_at
 
         if timezone.is_naive(created_at):
+            created_at = timezone.make_aware(created_at, default_tz)
 
-            if str(getattr(settings, "TIME_ZONE", "UTC")).upper() == "UTC":
-
-                created_at = timezone.make_aware(created_at, datetime_timezone.utc)
-
-            else:
-
-                created_at = timezone.make_aware(created_at, current_tz)
-
-        note.display_time = timezone.localtime(created_at, current_tz)
+        note.display_time = created_at.astimezone(current_tz)
 
 
 
