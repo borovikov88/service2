@@ -1,10 +1,13 @@
 import json
+import logging
 
 from django.conf import settings
 from django.templatetags.static import static
 from pywebpush import WebPushException, webpush
 
 from pool_service.models import PushSubscription
+
+logger = logging.getLogger(__name__)
 
 
 def _push_config():
@@ -42,6 +45,9 @@ def send_push_to_users(users, *, title, message, action_url=""):
     for user in users:
         subscriptions = PushSubscription.objects.filter(user=user)
         for sub in subscriptions:
+            if not sub.endpoint or not sub.p256dh or not sub.auth:
+                sub.delete()
+                continue
             subscription_info = {
                 "endpoint": sub.endpoint,
                 "keys": {"p256dh": sub.p256dh, "auth": sub.auth},
@@ -59,5 +65,10 @@ def send_push_to_users(users, *, title, message, action_url=""):
                 status = getattr(getattr(exc, "response", None), "status_code", None)
                 if status in {404, 410}:
                     sub.delete()
+                else:
+                    logger.warning("Web push failed for user %s: %s", user.id, exc)
+                continue
+            except Exception:
+                logger.exception("Web push failed for user %s", user.id)
                 continue
     return sent
