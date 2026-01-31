@@ -15,3 +15,4 @@ tablib==3.9.0
 tzdata==2025.2
 certifi==2026.1.4
 pywebpush==1.14.0
+whitenoise==6.6.0
