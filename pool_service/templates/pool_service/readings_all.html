@@ -1,151 +1,430 @@
 {% extends "pool_service/base.html" %}
-{% load static %}
 
-{% block title %}История показаний
-{% endblock %}
+{% block title %}&#1055;&#1083;&#1072;&#1085; &#1074;&#1099;&#1077;&#1079;&#1076;&#1086;&#1074;{% endblock %}
 
 {% block content %}
-<div class="card card-soft p-4">
-    <div class="d-flex flex-wrap justify-content-between align-items-start mb-3 gap-3">
-        <div>
-            <h4 class="mb-1">История показаний</h4>
-            <div class="text-muted small">Последние {{ readings.paginator.per_page }} записей</div>
-        </div>
-        <form method="get" class="d-flex align-items-center gap-2">
-            <input type="hidden" name="per_page" id="readings-per-page-input" value="{{ per_page|default:50 }}">
-            <button class="btn readings-per-page-trigger dropdown-toggle" type="button" id="readings-per-page-button" data-bs-toggle="dropdown" aria-expanded="false">
-                {{ per_page|default:50 }} &#47; &#1089;&#1090;&#1088;
-            </button>
-            <ul class="dropdown-menu readings-per-page-menu" aria-labelledby="readings-per-page-button">
-                <li>
-                    <button class="dropdown-item {% if per_page == 20 %}active{% endif %}" type="button" data-value="20">
-                        20 &#47; &#1089;&#1090;&#1088;
-                    </button>
-                </li>
-                <li>
-                    <button class="dropdown-item {% if per_page == 50 %}active{% endif %}" type="button" data-value="50">
-                        50 &#47; &#1089;&#1090;&#1088;
-                    </button>
-                </li>
-                <li>
-                    <button class="dropdown-item {% if per_page == 100 %}active{% endif %}" type="button" data-value="100">
-                        100 &#47; &#1089;&#1090;&#1088;
-                    </button>
-                </li>
-            </ul>
-        </form>
-    </div>
-
-    <div class="table-responsive">
-        <table class="table align-middle table-borderless mb-0">
-            <thead class="small text-muted">
-                <tr>
-                    <th scope="col">Дата/Время посещения</th>
-                    <th scope="col">Бассейн</th>
-                    <th scope="col">ФИО сотрудника</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for r in readings %}
-                    <tr class="border-top">
-                        <td class="fw-semibold">{{ r.date|date:"d.m.Y H:i" }}</td>
-                        <td>
-                            <a class="fw-semibold text-decoration-none" href="{% url 'pool_detail' r.pool.uuid %}">{{ r.pool.client.name }}</a>
-                            <div class="text-muted small">{{ r.pool.address }}</div>
-                        </td>
-                        <td>
-                            {% if r.added_by %}
-                                {% if r.added_by.get_full_name %}
-                                    {{ r.added_by.get_full_name }}
-                                {% else %}
-                                    {{ r.added_by.username }}
-                                {% endif %}
-                            {% else %}
-                                —
-                            {% endif %}
-                        </td>
-                    </tr>
-                {% empty %}
-                    <tr>
-                        <td colspan="3" class="text-center text-muted py-4">Пока нет записей</td>
-                    </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-
-    {% if readings.has_other_pages %}
-        <div class="d-flex justify-content-between align-items-center mt-3">
-            <div class="text-muted small">
-                Страница {{ readings.number }} из {{ readings.paginator.num_pages }}
-            </div>
-            <div class="btn-group">
-                {% if readings.has_previous %}
-                    <a class="btn btn-outline-secondary btn-sm" href="?page=1{% if pagination_query %}&{{ pagination_query }}{% endif %}">&laquo; Первая</a>
-                    <a class="btn btn-outline-secondary btn-sm" href="?page={{ readings.previous_page_number }}{% if pagination_query %}&{{ pagination_query }}{% endif %}">Назад</a>
-                {% endif %}
-                {% if readings.has_next %}
-                    <a class="btn btn-outline-secondary btn-sm" href="?page={{ readings.next_page_number }}{% if pagination_query %}&{{ pagination_query }}{% endif %}">Вперед</a>
-                    <a class="btn btn-outline-secondary btn-sm" href="?page={{ readings.paginator.num_pages }}{% if pagination_query %}&{{ pagination_query }}{% endif %}">Последняя &raquo;</a>
-                {% endif %}
-            </div>
-        </div>
-    {% endif %}
+<div class="calendar-toolbar d-flex flex-wrap align-items-center justify-content-between gap-3 mb-3">
+  <div class="d-flex align-items-center gap-2">
+    <a class="btn btn-light btn-sm" href="?month={{ prev_month }}" aria-label="&#1055;&#1088;&#1077;&#1076;&#1099;&#1076;&#1091;&#1097;&#1080;&#1081; &#1084;&#1077;&#1089;&#1103;&#1094;">
+      <i class="bi bi-chevron-left"></i>
+    </a>
+    <div class="fw-semibold">{{ month_label }}</div>
+    <a class="btn btn-light btn-sm" href="?month={{ next_month }}" aria-label="&#1057;&#1083;&#1077;&#1076;&#1091;&#1102;&#1097;&#1080;&#1081; &#1084;&#1077;&#1089;&#1103;&#1094;">
+      <i class="bi bi-chevron-right"></i>
+    </a>
+  </div>
+  <div class="d-flex align-items-center gap-2">
+    <a class="btn btn-outline-secondary btn-sm" href="?month={{ today_month }}">
+      &#1057;&#1077;&#1075;&#1086;&#1076;&#1085;&#1103;
+    </a>
+  </div>
 </div>
+
+<div class="calendar-summary d-flex flex-wrap gap-2 mb-3 small">
+  <span class="summary-pill summary-pill--planned">
+    &#1055;&#1083;&#1072;&#1085;: {{ planned_count }}
+  </span>
+  <span class="summary-pill summary-pill--done">
+    &#1042;&#1099;&#1087;&#1086;&#1083;&#1085;&#1077;&#1085;&#1086;: {{ done_count }}
+  </span>
+  <span class="summary-pill summary-pill--overdue">
+    &#1055;&#1088;&#1086;&#1089;&#1088;&#1086;&#1095;&#1077;&#1085;&#1086;: {{ overdue_count }}
+  </span>
+</div>
+
+<div class="calendar-grid calendar-grid--header">
+  <div class="calendar-weekday">&#1055;&#1085;</div>
+  <div class="calendar-weekday">&#1042;&#1090;</div>
+  <div class="calendar-weekday">&#1057;&#1088;</div>
+  <div class="calendar-weekday">&#1063;&#1090;</div>
+  <div class="calendar-weekday">&#1055;&#1090;</div>
+  <div class="calendar-weekday">&#1057;&#1073;</div>
+  <div class="calendar-weekday">&#1042;&#1089;</div>
+</div>
+
+<div class="calendar-grid calendar-grid--body">
+  {% for day in calendar_days %}
+    <div class="calendar-day {% if not day.is_current_month %}calendar-day--muted{% endif %} {% if day.is_today %}calendar-day--today{% endif %}" data-date="{{ day.date|date:'Y-m-d' }}" data-week-start="{{ day.week_start|date:'Y-m-d' }}">
+      <div class="calendar-day__header">
+        <span class="calendar-day__number">{{ day.day }}</span>
+        {% if day.is_today %}
+          <span class="calendar-day__badge">&#1057;&#1077;&#1075;&#1086;&#1076;&#1085;&#1103;</span>
+        {% endif %}
+      </div>
+      <div class="calendar-day__items">
+        {% for item in day.items %}
+          <div class="calendar-chip calendar-chip--{{ item.status }} calendar-chip--type-{{ item.object_type }} {% if item.is_draggable %}calendar-chip--draggable{% endif %}" draggable="{{ item.is_draggable|yesno:'true,false' }}" data-pool-ids="{{ item.pool_ids|join:',' }}" data-week-start="{{ item.week_start|date:'Y-m-d' }}" data-source-week-start="{{ item.source_week_start }}" data-source-weeks="{{ item.source_weeks }}" data-source-month="{{ item.source_month }}" data-allow-month="{{ item.allow_month_move|yesno:'true,false' }}" data-date="{{ item.date|date:'Y-m-d' }}" title="{{ item.title }}">
+            <span class="calendar-chip__icon">
+              {% if item.object_type == 'water' %}
+                <i class="bi bi-gear"></i>
+              {% else %}
+                <i class="bi bi-droplet"></i>
+              {% endif %}
+            </span>
+            <span class="calendar-chip__text">{{ item.display_name }}</span>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+  {% endfor %}
+</div>
+
+{% if paused_pools or unscheduled_pools %}
+  <details class="calendar-details mt-3">
+    <summary class="text-muted small">
+      &#1058;&#1088;&#1077;&#1073;&#1091;&#1102;&#1090;&#1089;&#1103; &#1085;&#1072;&#1089;&#1090;&#1088;&#1086;&#1081;&#1082;&#1080; &#1087;&#1083;&#1072;&#1085;&#1072;
+    </summary>
+    <div class="row g-3 mt-2">
+      {% if paused_pools %}
+        <div class="col-12 col-lg-6">
+          <div class="card border-0 shadow-sm h-100">
+            <div class="card-body">
+              <div class="fw-semibold mb-2">&#1042;&#1099;&#1077;&#1079;&#1076;&#1099; &#1087;&#1088;&#1080;&#1086;&#1089;&#1090;&#1072;&#1085;&#1086;&#1074;&#1083;&#1077;&#1085;&#1099;</div>
+              <div class="d-flex flex-column gap-2">
+                {% for pool in paused_pools %}
+                  <div>
+                    <a href="{% url 'pool_detail' pool.uuid %}" class="text-decoration-none fw-semibold">{{ pool.client.name }}</a>
+                    <div class="text-muted small">{{ pool.address }}</div>
+                  </div>
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+        </div>
+      {% endif %}
+      {% if unscheduled_pools %}
+        <div class="col-12 col-lg-6">
+          <div class="card border-0 shadow-sm h-100">
+            <div class="card-body">
+              <div class="fw-semibold mb-2">&#1053;&#1077; &#1079;&#1072;&#1076;&#1072;&#1085;&#1072; &#1087;&#1077;&#1088;&#1080;&#1086;&#1076;&#1080;&#1095;&#1085;&#1086;&#1089;&#1090;&#1100;</div>
+              <div class="d-flex flex-column gap-2">
+                {% for pool in unscheduled_pools %}
+                  <div>
+                    <a href="{% url 'pool_detail' pool.uuid %}" class="text-decoration-none fw-semibold">{{ pool.client.name }}</a>
+                    <div class="text-muted small">{{ pool.address }}</div>
+                  </div>
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+        </div>
+      {% endif %}
+    </div>
+  </details>
+{% endif %}
 
 <script>
   (function () {
-    const perPageInput = document.getElementById("readings-per-page-input");
-    const perPageButton = document.getElementById("readings-per-page-button");
-    const form = perPageButton?.closest("form");
+    const moveUrl = "{% url 'visit_plan_move' %}";
+    const chips = document.querySelectorAll(".calendar-chip--draggable");
+    const days = document.querySelectorAll(".calendar-day");
+    let dragged = null;
 
-    document.querySelectorAll(".readings-per-page-menu [data-value]").forEach((item) => {
-      item.addEventListener("click", () => {
-        if (!perPageInput || !perPageButton) return;
-        perPageInput.value = item.getAttribute("data-value") || "50";
-        perPageButton.textContent = item.textContent || "";
-        form?.submit();
+    function getCookie(name) {
+      const match = document.cookie.match(new RegExp("(^| )" + name + "=([^;]+)"));
+      if (match) return decodeURIComponent(match[2]);
+      return "";
+    }
+
+    function showMessage(text) {
+      if (typeof showOfflineToast === "function") {
+        showOfflineToast(text);
+      } else {
+        alert(text);
+      }
+    }
+
+    function clearDropState() {
+      document.querySelectorAll(".calendar-day--drop").forEach((el) => el.classList.remove("calendar-day--drop"));
+    }
+
+    chips.forEach((chip) => {
+      chip.addEventListener("dragstart", (event) => {
+        dragged = chip;
+        chip.classList.add("calendar-chip--dragging");
+        event.dataTransfer.effectAllowed = "move";
+      });
+      chip.addEventListener("dragend", () => {
+        chip.classList.remove("calendar-chip--dragging");
+        dragged = null;
+        clearDropState();
+      });
+    });
+
+    days.forEach((day) => {
+      day.addEventListener("dragover", (event) => {
+        if (!dragged) return;
+        const allowMonth = dragged.dataset.allowMonth === "true";
+        const sourceMonth = dragged.dataset.sourceMonth || "";
+        const targetMonth = (day.dataset.date || "").slice(0, 7);
+        if (allowMonth) {
+          if (!sourceMonth || targetMonth !== sourceMonth) return;
+        } else if (day.dataset.weekStart !== dragged.dataset.weekStart) {
+          return;
+        }
+        event.preventDefault();
+        day.classList.add("calendar-day--drop");
+      });
+
+      day.addEventListener("dragleave", () => {
+        day.classList.remove("calendar-day--drop");
+      });
+
+      day.addEventListener("drop", (event) => {
+        if (!dragged) return;
+        event.preventDefault();
+        day.classList.remove("calendar-day--drop");
+
+        const movedChip = dragged;
+        const targetDate = day.dataset.date;
+        const allowMonth = dragged.dataset.allowMonth === "true";
+        const sourceMonth = dragged.dataset.sourceMonth || "";
+        const targetMonth = targetDate.slice(0, 7);
+
+        if (allowMonth) {
+          if (!sourceMonth) {
+            showMessage("\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0438\u0442\u044c \u043c\u0435\u0441\u044f\u0446 \u043f\u043b\u0430\u043d\u0430.");
+            return;
+          }
+          if (targetMonth !== sourceMonth) {
+            showMessage("\u041f\u0435\u0440\u0435\u043d\u043e\u0441 \u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d \u0442\u043e\u043b\u044c\u043a\u043e \u0432 \u043f\u0440\u0435\u0434\u0435\u043b\u0430\u0445 \u044d\u0442\u043e\u0433\u043e \u043c\u0435\u0441\u044f\u0446\u0430.");
+            return;
+          }
+        } else if (day.dataset.weekStart !== dragged.dataset.weekStart) {
+          showMessage("\u041c\u043e\u0436\u043d\u043e \u043f\u0435\u0440\u0435\u043d\u043e\u0441\u0438\u0442\u044c \u0442\u043e\u043b\u044c\u043a\u043e \u0432 \u043f\u0440\u0435\u0434\u0435\u043b\u0430\u0445 \u043d\u0435\u0434\u0435\u043b\u0438.");
+          return;
+        }
+        if (targetDate === dragged.dataset.date) return;
+
+        const poolIds = (dragged.dataset.poolIds || "")
+          .split(",")
+          .map((val) => val.trim())
+          .filter(Boolean);
+        if (!poolIds.length) {
+          showMessage("\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0438\u0442\u044c \u0441\u043f\u0438\u0441\u043e\u043a \u0431\u0430\u0441\u0441\u0435\u0439\u043d\u043e\u0432 \u0434\u043b\u044f \u043f\u0435\u0440\u0435\u043d\u043e\u0441\u0430.");
+          return;
+        }
+
+        let sourceWeeks = {};
+        if (dragged.dataset.sourceWeeks) {
+          try {
+            sourceWeeks = JSON.parse(dragged.dataset.sourceWeeks);
+          } catch (e) {
+            sourceWeeks = {};
+          }
+        }
+        if (!Object.keys(sourceWeeks).length) {
+          const sourceWeek = dragged.dataset.sourceWeekStart || dragged.dataset.weekStart;
+          poolIds.forEach((pid) => {
+            sourceWeeks[pid] = sourceWeek;
+          });
+        }
+
+        const payload = {
+          pool_ids: poolIds,
+          source_weeks: sourceWeeks,
+          source_month: sourceMonth,
+          week_start: dragged.dataset.weekStart,
+          planned_date: targetDate,
+        };
+
+        fetch(moveUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRFToken": getCookie("csrftoken"),
+          },
+          body: JSON.stringify(payload),
+        })
+          .then(async (response) => {
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.ok) {
+              const error = data.error || "save_failed";
+              throw new Error(error);
+            }
+            return data;
+          })
+          .then(() => {
+            const targetList = day.querySelector(".calendar-day__items");
+            if (targetList && movedChip) {
+              targetList.appendChild(movedChip);
+              movedChip.dataset.date = targetDate;
+            }
+          })
+          .catch((error) => {
+            if (error.message === "already_completed") {
+              showMessage("\u0412\u044b\u0435\u0437\u0434 \u0443\u0436\u0435 \u043e\u0442\u043c\u0435\u0447\u0435\u043d. \u041e\u0431\u043d\u043e\u0432\u0438\u0442\u0435 \u0441\u0442\u0440\u0430\u043d\u0438\u0446\u0443.");
+            } else if (error.message === "invalid_month") {
+              showMessage("\u041f\u0435\u0440\u0435\u043d\u043e\u0441 \u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d \u0442\u043e\u043b\u044c\u043a\u043e \u0432 \u043f\u0440\u0435\u0434\u0435\u043b\u0430\u0445 \u043c\u0435\u0441\u044f\u0446\u0430 \u043f\u043b\u0430\u043d\u0430.");
+            } else if (error.message === "invalid_week") {
+              showMessage("\u041f\u0435\u0440\u0435\u043d\u043e\u0441 \u0432\u043e\u0437\u043c\u043e\u0436\u0435\u043d \u0442\u043e\u043b\u044c\u043a\u043e \u0432 \u043f\u0440\u0435\u0434\u0435\u043b\u0430\u0445 \u044d\u0442\u043e\u0439 \u043d\u0435\u0434\u0435\u043b\u0438.");
+            } else {
+              const details = error.message ? `: ${error.message}` : "";
+              showMessage(`\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c \u043f\u0435\u0440\u0435\u043d\u043e\u0441${details}.`);
+            }
+          });
       });
     });
   })();
 </script>
 
 <style>
-  .readings-per-page-trigger {
-    border: none;
-    border-bottom: 1px solid rgba(15, 23, 42, 0.12);
-    background: transparent;
-    color: #5f6f82;
-    padding: 6px 0 8px;
-    font-size: 0.9rem;
-    box-shadow: none;
+  .calendar-toolbar {
+    background: #ffffff;
+  }
+  .calendar-summary .summary-pill {
+    border-radius: 999px;
+    padding: 6px 12px;
+    font-weight: 600;
+  }
+  .summary-pill--planned {
+    background: rgba(44, 123, 229, 0.12);
+    color: #2c7be5;
+  }
+  .summary-pill--done {
+    background: rgba(31, 157, 85, 0.12);
+    color: #1f9d55;
+  }
+  .summary-pill--overdue {
+    background: rgba(229, 83, 83, 0.12);
+    color: #e55353;
+  }
+  .calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 1px;
+    background: #e6edf5;
+    border-radius: 16px;
+    overflow: hidden;
+  }
+  .calendar-grid--header {
+    margin-bottom: 6px;
+  }
+  .calendar-weekday {
+    padding: 10px;
+    background: #f7f9fc;
+    text-align: center;
+    font-weight: 600;
+    color: #617085;
+  }
+  .calendar-grid--body {
+    background: #e6edf5;
+  }
+  .calendar-day {
+    background: #ffffff;
+    min-height: 130px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    transition: background 0.2s ease;
+  }
+  .calendar-day--muted {
+    background: #f4f6f9;
+    color: #9aa6b2;
+  }
+  .calendar-day--muted .calendar-day__number {
+    color: #9aa6b2;
+  }
+  .calendar-day--today {
+    box-shadow: inset 0 0 0 2px rgba(44, 123, 229, 0.35);
+  }
+  .calendar-day--drop {
+    background: #eef5ff;
+  }
+  .calendar-day__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .calendar-day__number {
+    font-weight: 600;
+    color: #1f2d3d;
+  }
+  .calendar-day__badge {
+    font-size: 0.7rem;
+    background: rgba(44, 123, 229, 0.12);
+    color: #2c7be5;
+    padding: 2px 6px;
+    border-radius: 999px;
+  }
+  .calendar-day__items {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .calendar-chip {
+    border-radius: 10px;
+    padding: 6px 8px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    background: #eef2f7;
+    color: #1f2d3d;
+    border-left: 3px solid transparent;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .calendar-chip__icon {
+    font-size: 0.85rem;
+    display: inline-flex;
+    align-items: center;
+  }
+  .calendar-chip--type-pool .calendar-chip__icon {
+    color: #2c7be5;
+  }
+  .calendar-chip--type-water .calendar-chip__icon {
+    color: #1f9d55;
+  }
+  .calendar-chip__text {
+    display: block;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
   }
-  .readings-per-page-trigger:focus,
-  .readings-per-page-trigger:hover {
-    border-bottom-color: rgba(13, 110, 253, 0.4);
-    color: #1f2d3d;
-    box-shadow: none;
+  .calendar-chip--planned {
+    background: #eef5ff;
+    border-left-color: #2c7be5;
+    color: #1d4f9c;
   }
-  .readings-per-page-menu {
-    border: 1px solid #e6eef5;
-    border-radius: 14px;
-    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
-    padding: 8px 0;
-    min-width: 160px;
+  .calendar-chip--done {
+    background: #f0fbf4;
+    border-left-color: #1f9d55;
+    color: #1f7a49;
   }
-  .readings-per-page-menu .dropdown-item {
-    padding: 10px 16px;
-    color: #1f2d3d;
+  .calendar-chip--overdue {
+    background: #fff4f4;
+    border-left-color: #e55353;
+    color: #b12d2d;
   }
-  .readings-per-page-menu .dropdown-item:hover,
-  .readings-per-page-menu .dropdown-item:focus {
-    background: #f2f7ff;
+  .calendar-chip--draggable {
+    cursor: grab;
   }
-  .readings-per-page-menu .dropdown-item.active,
-  .readings-per-page-menu .dropdown-item.active:focus {
-    background: #e6f1fa;
-    color: #0d6efd;
+  .calendar-chip--dragging {
+    opacity: 0.6;
+  }
+  .calendar-details summary {
+    cursor: pointer;
+  }
+  @media (max-width: 768px) {
+    .calendar-day {
+      min-height: 110px;
+    }
+    .calendar-chip {
+      font-size: 0.78rem;
+    }
+  }
+  @media (max-width: 576px) {
+    .calendar-grid--header {
+      display: none;
+    }
+    .calendar-grid--body {
+      grid-template-columns: repeat(1, minmax(0, 1fr));
+    }
+    .calendar-day {
+      min-height: auto;
+    }
   }
 </style>
 {% endblock %}

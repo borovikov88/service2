@@ -5,13 +5,17 @@
             <div class="card card-soft p-3 h-100 hover-shadow">
                 <div class="d-flex align-items-start justify-content-between">
                     <div class="d-flex gap-3 align-items-start">
-                        <div class="{% if pool.service_suspended %}bg-secondary{% else %}bg-primary bg-gradient{% endif %} text-white rounded-3 d-flex align-items-center justify-content-center" style="width:48px;height:48px;">
-                            <i class="bi bi-droplet fs-4"></i>
+                        <div class="{% if pool.service_suspended %}bg-secondary{% elif pool.object_type == 'water' %}bg-success bg-gradient{% else %}bg-primary bg-gradient{% endif %} text-white rounded-3 d-flex align-items-center justify-content-center" style="width:48px;height:48px;">
+                            {% if pool.object_type == 'water' %}
+                                <i class="bi bi-gear fs-4"></i>
+                            {% else %}
+                                <i class="bi bi-droplet fs-4"></i>
+                            {% endif %}
                         </div>
                         <div>
                             <div class="fw-bold">{{ pool.client.name }}</div>
                             <div class="text-muted small"><i class="bi bi-geo-alt me-1"></i>{{ pool.address|default:"-" }}</div>
-                            <div class="text-muted small mt-1">&#1055;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1081;: {{ pool.num_readings|default:0 }}</div>
+                            <div class="text-muted small mt-1">&#1047;&#1072;&#1087;&#1080;&#1089;&#1077;&#1081;: {{ pool.num_readings|default:0 }}</div>
                         </div>
                     </div>
                     <i class="bi bi-arrow-right text-muted fs-4"></i>
@@ -20,7 +24,7 @@
         </a>
     </div>
     {% empty %}
-        <div class="text-center text-muted py-4">&#1055;&#1086;&#1082;&#1072; &#1085;&#1077;&#1090; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;</div>
+        <div class="text-center text-muted py-4">&#1055;&#1086;&#1082;&#1072; &#1085;&#1077;&#1090; &#1086;&#1073;&#1098;&#1077;&#1082;&#1090;&#1086;&#1074;</div>
     {% endfor %}
 </div>
 

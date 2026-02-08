@@ -37,6 +37,7 @@ class WaterReadingForm(forms.ModelForm):
             "comment",
             "required_materials",
             "performed_works",
+            "consumables_replaced",
         ]
 
     def __init__(self, *args, **kwargs):
@@ -592,6 +593,7 @@ class PoolForm(forms.ModelForm):
             "client",
             "address",
             "description",
+            "object_type",
             "shape",
             "pool_type",
             "length",
@@ -608,11 +610,22 @@ class PoolForm(forms.ModelForm):
             "service_frequency",
             "service_suspended",
             "daily_readings_required",
+            "water_system_type",
+            "water_source",
+            "water_capacity_value",
+            "water_capacity_unit",
+            "water_control_parameters",
+            "water_equipment",
+            "water_operation_mode",
+            "water_contact_name",
+            "water_contact_phone",
+            "water_access_notes",
         ]
         widgets = {
             "client": forms.Select(attrs={"class": "form-select"}),
             "address": forms.TextInput(attrs={"class": "form-control rounded-3"}),
             "description": forms.Textarea(attrs={"class": "form-control rounded-3", "rows": 3}),
+            "object_type": forms.Select(attrs={"class": "form-select"}),
             "shape": forms.Select(attrs={"class": "form-select"}),
             "pool_type": forms.Select(attrs={"class": "form-select"}),
             "length": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
@@ -629,6 +642,16 @@ class PoolForm(forms.ModelForm):
             "service_frequency": forms.Select(attrs={"class": "form-select"}),
             "service_suspended": forms.CheckboxInput(attrs={"class": "form-check-input"}),
             "daily_readings_required": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+            "water_system_type": forms.Select(attrs={"class": "form-select"}),
+            "water_source": forms.Select(attrs={"class": "form-select"}),
+            "water_capacity_value": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
+            "water_capacity_unit": forms.Select(attrs={"class": "form-select"}),
+            "water_control_parameters": forms.Textarea(attrs={"class": "form-control rounded-3", "rows": 3}),
+            "water_equipment": forms.Textarea(attrs={"class": "form-control rounded-3", "rows": 3}),
+            "water_operation_mode": forms.Select(attrs={"class": "form-select"}),
+            "water_contact_name": forms.TextInput(attrs={"class": "form-control rounded-3"}),
+            "water_contact_phone": forms.TextInput(attrs={"class": "form-control rounded-3"}),
+            "water_access_notes": forms.Textarea(attrs={"class": "form-control rounded-3", "rows": 3}),
         }
 
     def __init__(self, *args, **kwargs):

@@ -98,6 +98,12 @@ class Client(models.Model):
 
 class Pool(models.Model):
     uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    OBJECT_TYPE_POOL = "pool"
+    OBJECT_TYPE_WATER = "water"
+    OBJECT_TYPE_CHOICES = [
+        (OBJECT_TYPE_POOL, "Бассейн"),
+        (OBJECT_TYPE_WATER, "Водоподготовка"),
+    ]
     SHAPE_CHOICES = [
         ("rect", "Прямоугольный"),
         ("round", "Круглый"),
@@ -108,6 +114,38 @@ class Pool(models.Model):
         ("overflow", "Переливной"),
         ("skimmer", "Скиммерный"),
     ]
+    WATER_SYSTEM_SOFTENING = "softening"
+    WATER_SYSTEM_IRON_REMOVAL = "iron_removal"
+    WATER_SYSTEM_REVERSE_OSMOSIS = "reverse_osmosis"
+    WATER_SYSTEM_UV = "uv"
+    WATER_SYSTEM_COMPLEX = "complex"
+    WATER_SYSTEM_CHOICES = [
+        (WATER_SYSTEM_SOFTENING, "Умягчение"),
+        (WATER_SYSTEM_IRON_REMOVAL, "Обезжелезивание"),
+        (WATER_SYSTEM_REVERSE_OSMOSIS, "Обратный осмос"),
+        (WATER_SYSTEM_UV, "УФ обработка"),
+        (WATER_SYSTEM_COMPLEX, "Комплексная"),
+    ]
+    WATER_SOURCE_WELL = "well"
+    WATER_SOURCE_CITY = "city"
+    WATER_SOURCE_TANK = "tank"
+    WATER_SOURCE_CHOICES = [
+        (WATER_SOURCE_WELL, "Скважина"),
+        (WATER_SOURCE_CITY, "Центральная"),
+        (WATER_SOURCE_TANK, "Резервуар"),
+    ]
+    WATER_CAPACITY_M3_HOUR = "m3_hour"
+    WATER_CAPACITY_M3_DAY = "m3_day"
+    WATER_CAPACITY_UNIT_CHOICES = [
+        (WATER_CAPACITY_M3_HOUR, "м³/час"),
+        (WATER_CAPACITY_M3_DAY, "м³/сутки"),
+    ]
+    WATER_OPERATION_CONTINUOUS = "continuous"
+    WATER_OPERATION_SCHEDULED = "scheduled"
+    WATER_OPERATION_MODE_CHOICES = [
+        (WATER_OPERATION_CONTINUOUS, "Постоянно"),
+        (WATER_OPERATION_SCHEDULED, "По расписанию"),
+    ]
     SERVICE_FREQ_WEEKLY = "weekly"
     SERVICE_FREQ_TWICE_MONTHLY = "twice_monthly"
     SERVICE_FREQ_MONTHLY = "monthly"
@@ -117,7 +155,7 @@ class Pool(models.Model):
     SERVICE_FREQ_YEARLY = "yearly"
     SERVICE_FREQUENCY_CHOICES = [
         (SERVICE_FREQ_WEEKLY, "\u0420\u0430\u0437 \u0432 \u043d\u0435\u0434\u0435\u043b\u044e"),
-        (SERVICE_FREQ_TWICE_MONTHLY, "\u0414\u0432\u0430 \u0440\u0430\u0437\u0430 \u0432 \u043c\u0435\u0441\u044f\u0446"),
+        (SERVICE_FREQ_TWICE_MONTHLY, "\u0420\u0430\u0437 \u0432 2 \u043d\u0435\u0434\u0435\u043b\u0438"),
         (SERVICE_FREQ_MONTHLY, "\u0420\u0430\u0437 \u0432 \u043c\u0435\u0441\u044f\u0446"),
         (SERVICE_FREQ_BIMONTHLY, "\u0420\u0430\u0437 \u0432 2 \u043c\u0435\u0441\u044f\u0446\u0430"),
         (SERVICE_FREQ_QUARTERLY, "\u0420\u0430\u0437 \u0432 \u043a\u0432\u0430\u0440\u0442\u0430\u043b"),
@@ -134,7 +172,8 @@ class Pool(models.Model):
         null=True,
         blank=True,
     )
-    description = CKEditor5Field(blank=True, null=True, verbose_name="Описание бассейна")
+    object_type = models.CharField(max_length=20, choices=OBJECT_TYPE_CHOICES, default=OBJECT_TYPE_POOL)
+    description = CKEditor5Field(blank=True, null=True, verbose_name="Описание объекта")
     shape = models.CharField(max_length=20, choices=SHAPE_CHOICES, default="rect")
     pool_type = models.CharField(max_length=20, choices=TYPE_CHOICES, default="skimmer")
     length = models.FloatField(null=True, blank=True)
@@ -152,10 +191,43 @@ class Pool(models.Model):
     service_interval_days = models.PositiveSmallIntegerField(null=True, blank=True)
     service_suspended = models.BooleanField(default=False)
     daily_readings_required = models.BooleanField(default=False)
+    water_system_type = models.CharField(max_length=30, choices=WATER_SYSTEM_CHOICES, null=True, blank=True)
+    water_source = models.CharField(max_length=30, choices=WATER_SOURCE_CHOICES, null=True, blank=True)
+    water_capacity_value = models.FloatField(null=True, blank=True)
+    water_capacity_unit = models.CharField(max_length=20, choices=WATER_CAPACITY_UNIT_CHOICES, null=True, blank=True)
+    water_control_parameters = models.TextField(null=True, blank=True)
+    water_equipment = models.TextField(null=True, blank=True)
+    water_operation_mode = models.CharField(max_length=20, choices=WATER_OPERATION_MODE_CHOICES, null=True, blank=True)
+    water_contact_name = models.CharField(max_length=120, null=True, blank=True)
+    water_contact_phone = models.CharField(max_length=30, null=True, blank=True)
+    water_access_notes = models.TextField(null=True, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
 
     def __str__(self):
         org_name = self.organization.name if self.organization else "без организации"
-        return f"Бассейн: {self.address} ({org_name})"
+        label = self.get_object_type_display() if hasattr(self, "get_object_type_display") else "Объект"
+        return f"{label}: {self.address} ({org_name})"
+
+
+class ServiceVisitPlan(models.Model):
+    pool = models.ForeignKey(Pool, on_delete=models.CASCADE, related_name="visit_plans")
+    week_start = models.DateField()
+    planned_date = models.DateField()
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_visit_plans",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("pool", "week_start")
+
+    def __str__(self):
+        return f"{self.pool} {self.week_start}"
 
 
 class PoolAccess(models.Model):
@@ -542,6 +614,7 @@ class WaterReading(models.Model):
     comment = models.TextField(null=True, blank=True)
     required_materials = models.TextField(null=True, blank=True)
     performed_works = models.TextField(null=True, blank=True)
+    consumables_replaced = models.TextField(null=True, blank=True)
 
     def __str__(self):
         return f"{self.pool.address} - {self.date.strftime('%d.%m.%Y %H:%M')}"

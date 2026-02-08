@@ -69,7 +69,8 @@ from urllib.request import urlopen, Request
 
 import json
 
-from datetime import timedelta
+import calendar
+from datetime import date, timedelta
 
 from calendar import monthrange
 
@@ -310,6 +311,8 @@ from .models import (
     CrmItem,
 
     CrmItemPhoto,
+
+    ServiceVisitPlan,
 
 )
 
@@ -905,7 +908,7 @@ def _reading_edit_allowed(reading, user):
 
 def pool_list(request):
 
-    """?????? ????????? ????????? ????????????."""
+    """Список объектов обслуживания."""
 
     if is_personal_user(request.user):
 
@@ -1097,13 +1100,13 @@ def pool_list(request):
 
     if client_access:
 
-        page_title = f"Бассейны: {client_access.client.name}"
+        page_title = f"Объекты: {client_access.client.name}"
 
     else:
 
-        page_title = "Мой бассейн" if personal_user else "Бассейны"
+        page_title = "Мой объект" if personal_user else "Объекты"
 
-    page_action_label = "Добавить бассейн" if allow_pool_create else None
+    page_action_label = "Добавить объект" if allow_pool_create else None
 
     page_action_url = reverse("pool_create") if allow_pool_create else None
 
@@ -3077,7 +3080,7 @@ def pool_staff_change_role(request, access_id):
 
 def users_view(request):
 
-    """Список пользователей для суперюзеров/админов, сервисники видят только персонал бассейнов."""
+    """Список пользователей для суперюзеров/админов, сервисники видят только персонал объектов."""
 
     roles = list(OrganizationAccess.objects.filter(user=request.user).values_list("role", flat=True))
 
@@ -4050,7 +4053,7 @@ def pool_create(request):
 
         if client and Pool.objects.filter(client=client).exists():
 
-            messages.info(request, "Можно создать только один бассейн для личного аккаунта.")
+            messages.info(request, "Можно создать только один объект для личного аккаунта.")
 
             return redirect("pool_list")
 
@@ -4108,7 +4111,7 @@ def pool_create(request):
 
                 PoolAccess.objects.get_or_create(user=pool.client.user, pool=pool, defaults={"role": "viewer"})
 
-            messages.success(request, "Бассейн создан")
+            messages.success(request, "Объект создан")
 
             return redirect("pool_detail", pool_uuid=pool.uuid)
 
@@ -4128,7 +4131,7 @@ def pool_create(request):
 
             "form": form,
 
-            "page_title": "Новый бассейн",
+            "page_title": "Новый объект",
 
             "active_tab": "pools",
 
@@ -4175,6 +4178,7 @@ def pool_edit(request, pool_uuid):
 
 
     pool = get_object_or_404(Pool, uuid=pool_uuid)
+    is_water_object = pool.object_type == Pool.OBJECT_TYPE_WATER
 
     role = _pool_role_for_user(request.user, pool)
 
@@ -4202,7 +4206,7 @@ def pool_edit(request, pool_uuid):
 
             updated.save()
 
-            messages.success(request, "Бассейн обновлен")
+            messages.success(request, "Объект обновлен")
 
             return redirect("pool_detail", pool_uuid=pool.uuid)
 
@@ -4222,7 +4226,7 @@ def pool_edit(request, pool_uuid):
 
             "form": form,
 
-            "page_title": "Редактирование бассейна",
+            "page_title": "Редактирование объекта",
 
             "active_tab": "pools",
 
@@ -5429,7 +5433,7 @@ def smsru_callback(request):
 
 def pool_detail(request, pool_uuid):
 
-    """Детальная страница бассейна с показателями и доступами."""
+    """Детальная страница объекта с показателями и доступами."""
 
     pool = get_object_or_404(Pool, uuid=pool_uuid)
 
@@ -5565,6 +5569,7 @@ def pool_detail(request, pool_uuid):
     context = {
 
         "pool": pool,
+        "is_water_object": pool.object_type == Pool.OBJECT_TYPE_WATER,
 
         "readings": readings,
 
@@ -5853,95 +5858,706 @@ def yandex_suggest(request):
 
 def readings_all(request):
 
-    """??? ????????? ??? ????????? ?????????."""
+    """Service visit calendar."""
 
     if request.user.is_superuser:
-
         pools = Pool.objects.all()
-
-
-
     elif OrganizationAccess.objects.filter(user=request.user).exists():
-
-        org_access = OrganizationAccess.objects.get(user=request.user)
-
-        pools = Pool.objects.filter(organization=org_access.organization)
-
-
-
+        org_ids = OrganizationAccess.objects.filter(user=request.user).values_list("organization_id", flat=True)
+        pools = Pool.objects.filter(organization_id__in=org_ids)
     elif ClientAccess.objects.filter(user=request.user).exists():
-
         client_access = _client_access_for_user(request.user)
-
         pools = Pool.objects.filter(client=client_access.client) if client_access else Pool.objects.none()
-
-
-
     else:
-
         pools = Pool.objects.filter(accesses__user=request.user)
 
+    pools = pools.select_related("client", "organization").order_by("client__name", "address")
+    pool_list = list(pools)
 
+    today = timezone.localdate() if settings.USE_TZ else date.today()
 
-    readings_list = (
+    def _add_month(d, months):
+        month_index = d.month - 1 + months
+        year = d.year + (month_index // 12)
+        month = (month_index % 12) + 1
+        day = min(d.day, calendar.monthrange(year, month)[1])
+        return date(year, month, day)
 
-        WaterReading.objects.filter(pool__in=pools)
+    def _week_start(d):
+        return d - timedelta(days=d.weekday())
 
-        .select_related("pool", "added_by")
+    def _shift_from_weekend(d):
+        if d.weekday() == 5:
+            return d - timedelta(days=1)
+        if d.weekday() == 6:
+            return d - timedelta(days=2)
+        return d
 
-        .order_by("-date")
+    month_labels = {
+        1: "\u042f\u043d\u0432\u0430\u0440\u044c",
+        2: "\u0424\u0435\u0432\u0440\u0430\u043b\u044c",
+        3: "\u041c\u0430\u0440\u0442",
+        4: "\u0410\u043f\u0440\u0435\u043b\u044c",
+        5: "\u041c\u0430\u0439",
+        6: "\u0418\u044e\u043d\u044c",
+        7: "\u0418\u044e\u043b\u044c",
+        8: "\u0410\u0432\u0433\u0443\u0441\u0442",
+        9: "\u0421\u0435\u043d\u0442\u044f\u0431\u0440\u044c",
+        10: "\u041e\u043a\u0442\u044f\u0431\u0440\u044c",
+        11: "\u041d\u043e\u044f\u0431\u0440\u044c",
+        12: "\u0414\u0435\u043a\u0430\u0431\u0440\u044c",
+    }
 
+    month_param = request.GET.get("month")
+    target_month = None
+    if month_param:
+        try:
+            year_str, month_str = month_param.split("-")
+            target_month = date(int(year_str), int(month_str), 1)
+        except (TypeError, ValueError):
+            target_month = None
+    if not target_month:
+        target_month = today.replace(day=1)
+
+    month_label = f"{month_labels.get(target_month.month, target_month.month)} {target_month.year}"
+    prev_month_date = _add_month(target_month, -1)
+    next_month_date = _add_month(target_month, 1)
+    prev_month = f"{prev_month_date.year}-{prev_month_date.month:02d}"
+    next_month = f"{next_month_date.year}-{next_month_date.month:02d}"
+    today_month = f"{today.year}-{today.month:02d}"
+
+    first_day = target_month
+    last_day = date(target_month.year, target_month.month, calendar.monthrange(target_month.year, target_month.month)[1])
+    range_start = _week_start(first_day)
+    range_end = last_day + timedelta(days=(6 - last_day.weekday()))
+
+    calendar_days = []
+    cursor = range_start
+    while cursor <= range_end:
+        calendar_days.append(
+            {
+                "date": cursor,
+                "day": cursor.day,
+                "is_current_month": cursor.month == target_month.month,
+                "is_today": cursor == today,
+                "week_start": _week_start(cursor),
+            }
+        )
+        cursor += timedelta(days=1)
+
+    schedule_by_date = {}
+    unscheduled_pools = []
+    paused_pools = []
+
+    pool_ids = [pool.id for pool in pool_list]
+    org_ids = {pool.organization_id for pool in pool_list if pool.organization_id}
+
+    org_user_ids = set(
+        OrganizationAccess.objects.filter(organization_id__in=org_ids)
+        .values_list("user_id", flat=True)
     )
 
+    base_readings = WaterReading.objects.filter(pool_id__in=pool_ids)
+    if org_user_ids:
+        base_readings = base_readings.filter(added_by_id__in=org_user_ids)
+    else:
+        base_readings = base_readings.none()
 
+    last_reading_before_range = {}
+    for reading in (
+        base_readings.filter(date__date__lt=range_start)
+        .select_related("added_by")
+        .order_by("pool_id", "-date", "-id")
+    ):
+        if reading.pool_id not in last_reading_before_range:
+            last_reading_before_range[reading.pool_id] = reading
 
-    per_page = _parse_per_page(request.GET.get("per_page"), 50)
+    readings_in_range = list(
+        base_readings.filter(date__date__gte=range_start, date__date__lte=range_end)
+        .select_related("added_by")
+        .order_by("date", "id")
+    )
 
-    paginator = Paginator(readings_list, per_page)
+    readings_by_pool_week = {}
+    readings_by_pool_month = {}
+    for reading in readings_in_range:
+        if not reading.date:
+            continue
+        reading_date = reading.date.date()
+        reading._calendar_date = reading_date
+        week_key = _week_start(reading_date)
+        month_key = f"{reading_date.year}-{reading_date.month:02d}"
+        readings_by_pool_week.setdefault(reading.pool_id, {}).setdefault(week_key, []).append(reading)
+        readings_by_pool_month.setdefault(reading.pool_id, {}).setdefault(month_key, []).append(reading)
 
-    page_number = request.GET.get("page")
+    responsible_by_pool = {}
+    org_staff_ids = set(
+        OrganizationAccess.objects.filter(organization_id__in=org_ids, role__in=ORG_STAFF_ROLES)
+        .values_list("user_id", flat=True)
+    )
+    if org_staff_ids:
+        for access in (
+            PoolAccess.objects.filter(pool_id__in=pool_ids, user_id__in=org_staff_ids)
+            .select_related("user")
+            .order_by("pool_id", "user__last_name", "user__first_name")
+        ):
+            if access.pool_id not in responsible_by_pool:
+                responsible_by_pool[access.pool_id] = access.user
 
-    readings = paginator.get_page(page_number)
+    plan_by_pool_week = {}
+    for plan in ServiceVisitPlan.objects.filter(
+        pool_id__in=pool_ids,
+        week_start__gte=range_start,
+        week_start__lte=range_end,
+    ):
+        plan_by_pool_week[(plan.pool_id, plan.week_start)] = plan
 
-    query_params = request.GET.copy()
+    def _frequency_days(pool):
+        if pool.service_interval_days:
+            return int(pool.service_interval_days)
+        mapping = {
+            Pool.SERVICE_FREQ_WEEKLY: 7,
+            Pool.SERVICE_FREQ_TWICE_MONTHLY: 14,
+        }
+        return mapping.get(pool.service_frequency)
 
-    query_params.pop("page", None)
+    def _frequency_months(pool):
+        mapping = {
+            Pool.SERVICE_FREQ_MONTHLY: 1,
+            Pool.SERVICE_FREQ_BIMONTHLY: 2,
+            Pool.SERVICE_FREQ_QUARTERLY: 3,
+            Pool.SERVICE_FREQ_TWICE_YEARLY: 6,
+            Pool.SERVICE_FREQ_YEARLY: 12,
+        }
+        return mapping.get(pool.service_frequency)
 
+    def _frequency_label(pool):
+        if pool.service_interval_days:
+            return f"\u041a\u0430\u0436\u0434\u044b\u0435 {pool.service_interval_days} \u0434\u043d\u0435\u0439"
+        if pool.service_frequency:
+            return pool.get_service_frequency_display()
+        return "\u041d\u0435 \u0437\u0430\u0434\u0430\u043d\u0430"
 
+    used_reading_ids = set()
+
+    def _period_kind(pool):
+        if pool.service_interval_days:
+            return "week" if int(pool.service_interval_days) <= 14 else "month"
+        if pool.service_frequency in {Pool.SERVICE_FREQ_WEEKLY, Pool.SERVICE_FREQ_TWICE_MONTHLY}:
+            return "week"
+        return "month"
+
+    def _period_key(kind, d):
+        return _week_start(d) if kind == "week" else f"{d.year}-{d.month:02d}"
+
+    def _select_reading(pool, expected_date):
+        kind = _period_kind(pool)
+        key = _period_key(kind, expected_date)
+        if kind == "week":
+            readings = readings_by_pool_week.get(pool.id, {}).get(key, [])
+        else:
+            readings = readings_by_pool_month.get(pool.id, {}).get(key, [])
+        available = [reading for reading in readings if reading.id not in used_reading_ids]
+        if not available:
+            return None
+        chosen = min(
+            available,
+            key=lambda reading: (
+                abs((reading._calendar_date - expected_date).days),
+                reading._calendar_date,
+                reading.id,
+            ),
+        )
+        used_reading_ids.add(chosen.id)
+        return chosen
+
+    pool_events = []
+
+    def _allow_month_move(pool):
+        return _period_kind(pool) == "month"
+
+    def _record_pool_event(
+        pool,
+        source_week_start,
+        due_date,
+        planned_date,
+        plan_id,
+        status,
+        actual_date,
+        group_key=None,
+        is_extra=False,
+    ):
+        responsible = responsible_by_pool.get(pool.id)
+        responsible_name = None
+        if responsible:
+            responsible_name = responsible.get_full_name() or responsible.username
+
+        display_date = actual_date or planned_date or due_date
+        display_week_start = _week_start(display_date)
+        display_week_end = display_week_start + timedelta(days=6)
+        if group_key is None:
+            group_key = display_week_start
+        group_token = ("extra", group_key) if is_extra else ("base", group_key)
+
+        pool_events.append(
+            {
+                "pool": pool,
+                "client_id": pool.client_id,
+                "client_name": pool.client.name,
+                "pool_address": pool.address,
+                "object_type": pool.object_type or Pool.OBJECT_TYPE_POOL,
+                "source_week_start": source_week_start,
+                "display_week_start": display_week_start,
+                "display_week_end": display_week_end,
+                "group_key": group_token,
+                "is_extra": is_extra,
+                "due_date": due_date,
+                "plan_date": planned_date,
+                "plan_id": plan_id,
+                "status": status,
+                "actual_date": actual_date,
+                "frequency_label": _frequency_label(pool),
+                "responsible_name": responsible_name,
+                "allow_month_move": _allow_month_move(pool),
+            }
+        )
+
+    for pool in pool_list:
+        if getattr(pool, "service_suspended", False):
+            paused_pools.append(pool)
+            continue
+
+        interval_days = _frequency_days(pool)
+        interval_months = _frequency_months(pool)
+
+        if not interval_days and not interval_months:
+            unscheduled_pools.append(pool)
+            continue
+
+        last_reading = last_reading_before_range.get(pool.id)
+        last_visit_date = last_reading.date.date() if last_reading else None
+        anchor_date = last_visit_date or (pool.created_at.date() if pool.created_at else None)
+        if not anchor_date:
+            continue
+
+        if interval_days:
+            due_date = anchor_date + timedelta(days=interval_days)
+            if due_date < range_start:
+                delta_days = (range_start - due_date).days
+                steps = delta_days // interval_days
+                if due_date + timedelta(days=steps * interval_days) < range_start:
+                    steps += 1
+                due_date = due_date + timedelta(days=steps * interval_days)
+
+            while due_date <= range_end:
+                week_key = _week_start(due_date)
+                plan = plan_by_pool_week.get((pool.id, week_key))
+                planned_date = plan.planned_date if plan else due_date
+                actual_reading = _select_reading(pool, planned_date)
+
+                if actual_reading:
+                    event_date = actual_reading._calendar_date
+                    _record_pool_event(
+                        pool,
+                        week_key,
+                        due_date,
+                        planned_date,
+                        plan.id if plan else None,
+                        "done",
+                        event_date,
+                    )
+                    anchor_date = event_date
+                    due_date = anchor_date + timedelta(days=interval_days)
+                    continue
+
+                status = "overdue" if (week_key + timedelta(days=6)) < today else "planned"
+                _record_pool_event(
+                    pool,
+                    week_key,
+                    due_date,
+                    planned_date,
+                    plan.id if plan else None,
+                    status,
+                    None,
+                )
+                due_date = due_date + timedelta(days=interval_days)
+        else:
+            step = 1
+            due_date = _shift_from_weekend(_add_month(anchor_date, interval_months * step))
+            if due_date < range_start:
+                delta_months = (range_start.year - anchor_date.year) * 12 + (range_start.month - anchor_date.month)
+                step = max(1, delta_months // interval_months)
+                while _shift_from_weekend(_add_month(anchor_date, interval_months * step)) < range_start:
+                    step += 1
+                due_date = _shift_from_weekend(_add_month(anchor_date, interval_months * step))
+
+            while due_date <= range_end:
+                week_key = _week_start(due_date)
+                plan = plan_by_pool_week.get((pool.id, week_key))
+                planned_date = plan.planned_date if plan else due_date
+                actual_reading = _select_reading(pool, planned_date)
+
+                if actual_reading:
+                    event_date = actual_reading._calendar_date
+                    _record_pool_event(
+                        pool,
+                        week_key,
+                        due_date,
+                        planned_date,
+                        plan.id if plan else None,
+                        "done",
+                        event_date,
+                    )
+                    anchor_date = event_date
+                    step = 1
+                    due_date = _shift_from_weekend(_add_month(anchor_date, interval_months * step))
+                    continue
+
+                status = "overdue" if (week_key + timedelta(days=6)) < today else "planned"
+                _record_pool_event(
+                    pool,
+                    week_key,
+                    due_date,
+                    planned_date,
+                    plan.id if plan else None,
+                    status,
+                    None,
+                )
+                step += 1
+                due_date = _shift_from_weekend(_add_month(anchor_date, interval_months * step))
+
+    unscheduled_ids = {pool.id for pool in unscheduled_pools}
+    paused_ids = {pool.id for pool in paused_pools}
+    extra_seen = set()
+    for pool in pool_list:
+        if pool.id in unscheduled_ids or pool.id in paused_ids:
+            continue
+        period_kind = _period_kind(pool)
+        if period_kind == "week":
+            period_map = readings_by_pool_week.get(pool.id, {})
+        else:
+            period_map = readings_by_pool_month.get(pool.id, {})
+        for readings in period_map.values():
+            for reading in readings:
+                if reading.id in used_reading_ids:
+                    continue
+                actual_date = reading._calendar_date
+                extra_key = (pool.id, actual_date)
+                if extra_key in extra_seen:
+                    continue
+                extra_seen.add(extra_key)
+                _record_pool_event(
+                    pool,
+                    _week_start(actual_date),
+                    actual_date,
+                    None,
+                    None,
+                    "done",
+                    actual_date,
+                    group_key=actual_date,
+                    is_extra=True,
+                )
+                used_reading_ids.add(reading.id)
+
+    grouped = {}
+    for event in pool_events:
+        key = (event["client_id"], event["group_key"], event["object_type"])
+        group = grouped.setdefault(
+            key,
+            {
+                "client_id": event["client_id"],
+                "client_name": event["client_name"],
+                "week_start": event["display_week_start"],
+                "week_end": event["display_week_end"],
+                "pool_ids": [],
+                "pool_addresses": [],
+                "plan_dates": [],
+                "due_dates": [],
+                "actual_dates": [],
+                "frequency_labels": set(),
+                "responsibles": set(),
+                "allow_month_move": True,
+                "source_weeks": {},
+                "is_extra": event["is_extra"],
+                "object_type": event["object_type"],
+            },
+        )
+        group["pool_ids"].append(event["pool"].id)
+        group["pool_addresses"].append(event["pool_address"])
+        group["due_dates"].append(event["due_date"])
+        group["source_weeks"][event["pool"].id] = event["source_week_start"]
+        if event["plan_date"]:
+            group["plan_dates"].append(event["plan_date"])
+        if event["actual_date"]:
+            group["actual_dates"].append(event["actual_date"])
+        if event["frequency_label"]:
+            group["frequency_labels"].add(event["frequency_label"])
+        if event["responsible_name"]:
+            group["responsibles"].add(event["responsible_name"])
+        group["allow_month_move"] = group["allow_month_move"] and event["allow_month_move"]
+
+    overdue_count = 0
+    planned_count = 0
+    done_count = 0
+
+    for group in grouped.values():
+        is_extra = group.get("is_extra", False)
+        if group["actual_dates"]:
+            event_date = min(group["actual_dates"])
+            status = "done"
+            draggable = False
+        else:
+            status = "overdue" if group["week_end"] < today else "planned"
+            planned_date = min(group["plan_dates"]) if group["plan_dates"] else min(group["due_dates"])
+            event_date = planned_date
+            draggable = status == "planned"
+
+        if event_date < range_start or event_date > range_end:
+            continue
+
+        if not is_extra:
+            if status == "overdue":
+                overdue_count += 1
+            elif status == "planned":
+                planned_count += 1
+            else:
+                done_count += 1
+
+        pool_count = len(group["pool_ids"])
+        display_name = group["client_name"]
+        if pool_count > 1:
+            display_name = f"{display_name} ({pool_count})"
+
+        addresses = group["pool_addresses"]
+        addresses_display = ", ".join(addresses[:3])
+        if len(addresses) > 3:
+            addresses_display = f"{addresses_display} \u0438 \u0435\u0449\u0435 {len(addresses) - 3}"
+
+        frequency_label = None
+        if len(group["frequency_labels"]) == 1:
+            frequency_label = next(iter(group["frequency_labels"]))
+        elif len(group["frequency_labels"]) > 1:
+            frequency_label = "\u041d\u0435\u0441\u043a\u043e\u043b\u044c\u043a\u043e \u0447\u0430\u0441\u0442\u043e\u0442"
+
+        responsible_label = None
+        if len(group["responsibles"]) == 1:
+            responsible_label = next(iter(group["responsibles"]))
+        elif len(group["responsibles"]) > 1:
+            responsible_label = "\u041d\u0435\u0441\u043a\u043e\u043b\u044c\u043a\u043e"
+
+        title_parts = [f"\u0411\u0430\u0441\u0441\u0435\u0439\u043d\u043e\u0432: {pool_count}"]
+        if addresses_display:
+            title_parts.append(f"\u0410\u0434\u0440\u0435\u0441\u0430: {addresses_display}")
+        if responsible_label:
+            title_parts.append(f"\u041e\u0442\u0432\u0435\u0442\u0441\u0442\u0432\u0435\u043d\u043d\u044b\u0439: {responsible_label}")
+        if status == "done":
+            title_parts.append(f"\u0412\u044b\u0435\u0437\u0434: {event_date:%d.%m.%Y}")
+        else:
+            title_parts.append(f"\u041f\u043b\u0430\u043d: {event_date:%d.%m.%Y}")
+        if is_extra:
+            title_parts.append("\u0414\u043e\u043f\u043e\u043b\u043d\u0438\u0442\u0435\u043b\u044c\u043d\u044b\u0439 \u0432\u044b\u0435\u0437\u0434")
+        if frequency_label:
+            title_parts.append(f"\u0427\u0430\u0441\u0442\u043e\u0442\u0430: {frequency_label}")
+        if status == "overdue":
+            title_parts.append("\u041f\u0440\u043e\u0441\u0440\u043e\u0447\u0435\u043d\u043e")
+
+        source_weeks = {str(pid): week.isoformat() for pid, week in group["source_weeks"].items()}
+        source_weeks_json = json.dumps(source_weeks)
+        source_week_values = list({week.isoformat() for week in group["source_weeks"].values()})
+        source_week_start = source_week_values[0] if len(source_week_values) == 1 else ""
+
+        schedule_by_date.setdefault(event_date, []).append(
+            {
+                "client_name": group["client_name"],
+                "display_name": display_name,
+                "pool_ids": group["pool_ids"],
+                "status": status,
+                "date": event_date,
+                "week_start": group["week_start"],
+                "source_week_start": source_week_start,
+                "source_weeks": source_weeks_json,
+                "source_month": event_date.strftime("%Y-%m"),
+                "allow_month_move": group["allow_month_move"],
+                "is_draggable": draggable,
+                "title": " | ".join(title_parts),
+                "object_type": group["object_type"],
+            }
+        )
+
+    status_order = {"overdue": 0, "planned": 1, "done": 2}
+    for day in calendar_days:
+        items = schedule_by_date.get(day["date"], [])
+        items.sort(key=lambda item: (status_order.get(item["status"], 9), item["client_name"]))
+        day["items"] = items
 
     return render(
-
         request,
-
         "pool_service/readings_all.html",
-
         {
-
-            "readings": readings,
-
-            "page_title": "История посещений",
-
-            "page_subtitle": "Записывайте показания",
-
-            "show_search": False,
-
-            "show_add_button": False,
-
-            "add_url": None,
-
+            "calendar_days": calendar_days,
+            "month_label": month_label,
+            "prev_month": prev_month,
+            "next_month": next_month,
+            "today_month": today_month,
+            "page_title": "\u041f\u043b\u0430\u043d \u0432\u044b\u0435\u0437\u0434\u043e\u0432",
+            "page_subtitle": None,
             "active_tab": "readings",
-
-            "per_page": per_page,
-
-            "pagination_query": query_params.urlencode(),
-
+            "overdue_count": overdue_count,
+            "planned_count": planned_count,
+            "done_count": done_count,
+            "unscheduled_pools": unscheduled_pools,
+            "paused_pools": paused_pools,
         },
-
     )
 
 
+@csrf_protect
+@login_required
+def visit_plan_move(request):
+    if request.method != "POST":
+        return JsonResponse({"ok": False, "error": "method_not_allowed"}, status=405)
 
+    try:
+        payload = json.loads(request.body.decode("utf-8")) if request.body else request.POST
+    except (TypeError, ValueError):
+        payload = request.POST
 
+    pool_id = payload.get("pool_id")
+    pool_ids = payload.get("pool_ids")
+    source_weeks_raw = payload.get("source_weeks")
+    source_week_start_raw = payload.get("source_week_start")
+    display_week_start_raw = payload.get("week_start")
+    source_month = payload.get("source_month")
+    planned_date_raw = payload.get("planned_date")
+
+    if (not pool_id and not pool_ids) or not planned_date_raw:
+        return JsonResponse({"ok": False, "error": "missing_fields"}, status=400)
+
+    try:
+        planned_date = date.fromisoformat(planned_date_raw)
+    except ValueError:
+        return JsonResponse({"ok": False, "error": "invalid_date"}, status=400)
+
+    if pool_ids:
+        if isinstance(pool_ids, str):
+            pool_ids = [pid for pid in pool_ids.split(",") if pid]
+        elif not isinstance(pool_ids, (list, tuple)):
+            pool_ids = [pool_ids]
+    else:
+        pool_ids = [pool_id]
+
+    try:
+        pool_ids = [int(pid) for pid in pool_ids]
+    except (TypeError, ValueError):
+        return JsonResponse({"ok": False, "error": "invalid_pool_ids"}, status=400)
+
+    source_weeks = {}
+    if source_weeks_raw:
+        if isinstance(source_weeks_raw, str):
+            try:
+                source_weeks = json.loads(source_weeks_raw)
+            except (TypeError, ValueError):
+                source_weeks = {}
+        elif isinstance(source_weeks_raw, dict):
+            source_weeks = source_weeks_raw
+
+    pool_week_map = {}
+    if source_weeks:
+        for key, value in source_weeks.items():
+            try:
+                pid = int(key)
+                pool_week_map[pid] = date.fromisoformat(value)
+            except (TypeError, ValueError):
+                return JsonResponse({"ok": False, "error": "invalid_source_weeks"}, status=400)
+    elif source_week_start_raw:
+        try:
+            source_week_start = date.fromisoformat(source_week_start_raw)
+        except ValueError:
+            return JsonResponse({"ok": False, "error": "invalid_week"}, status=400)
+        pool_week_map = {pid: source_week_start for pid in pool_ids}
+    else:
+        return JsonResponse({"ok": False, "error": "missing_fields"}, status=400)
+
+    pools = list(Pool.objects.filter(id__in=pool_ids).select_related("organization"))
+    if not pools or len({pool.id for pool in pools}) != len(set(pool_ids)):
+        return JsonResponse({"ok": False, "error": "pool_not_found"}, status=404)
+
+    if not request.user.is_superuser:
+        org_ids = {pool.organization_id for pool in pools}
+        if None in org_ids:
+            return JsonResponse({"ok": False, "error": "forbidden"}, status=403)
+        access_org_ids = set(
+            OrganizationAccess.objects.filter(user=request.user, organization_id__in=org_ids)
+            .values_list("organization_id", flat=True)
+        )
+        if access_org_ids != org_ids:
+            return JsonResponse({"ok": False, "error": "forbidden"}, status=403)
+
+    def _allow_month_move(pool):
+        if pool.service_interval_days:
+            return int(pool.service_interval_days) > 14
+        if not pool.service_frequency:
+            return False
+        return pool.service_frequency not in {
+            Pool.SERVICE_FREQ_WEEKLY,
+            Pool.SERVICE_FREQ_TWICE_MONTHLY,
+        }
+
+    allow_month_move = all(_allow_month_move(pool) for pool in pools)
+
+    if allow_month_move:
+        if not source_month:
+            return JsonResponse({"ok": False, "error": "invalid_month"}, status=400)
+        if planned_date.strftime("%Y-%m") != source_month:
+            return JsonResponse({"ok": False, "error": "invalid_month"}, status=400)
+    else:
+        display_week_start = None
+        if display_week_start_raw:
+            try:
+                display_week_start = date.fromisoformat(display_week_start_raw)
+            except ValueError:
+                return JsonResponse({"ok": False, "error": "invalid_week"}, status=400)
+        if not display_week_start and pool_week_map:
+            unique_weeks = {week for week in pool_week_map.values() if week}
+            if len(unique_weeks) == 1:
+                display_week_start = next(iter(unique_weeks))
+        if not display_week_start:
+            return JsonResponse({"ok": False, "error": "invalid_week"}, status=400)
+        display_week_end = display_week_start + timedelta(days=6)
+        if planned_date < display_week_start or planned_date > display_week_end:
+            return JsonResponse({"ok": False, "error": "invalid_week"}, status=400)
+
+    target_week_start = planned_date - timedelta(days=planned_date.weekday())
+    target_week_end = target_week_start + timedelta(days=6)
+
+    org_user_ids = set(
+        OrganizationAccess.objects.filter(organization_id__in={pool.organization_id for pool in pools})
+        .values_list("user_id", flat=True)
+    )
+    if org_user_ids:
+        has_actual = WaterReading.objects.filter(
+            pool_id__in=pool_ids,
+            added_by_id__in=org_user_ids,
+            date__date__gte=target_week_start,
+            date__date__lte=target_week_end,
+        ).exists()
+        if has_actual:
+            return JsonResponse({"ok": False, "error": "already_completed"}, status=409)
+
+    for pool in pools:
+        source_week = pool_week_map.get(pool.id)
+        if not source_week:
+            return JsonResponse({"ok": False, "error": "invalid_source_weeks"}, status=400)
+        plan, created = ServiceVisitPlan.objects.get_or_create(
+            pool=pool,
+            week_start=source_week,
+            defaults={"planned_date": planned_date, "created_by": request.user},
+        )
+        if not created and plan.planned_date != planned_date:
+            plan.planned_date = planned_date
+            plan.save(update_fields=["planned_date", "updated_at"])
+
+    return JsonResponse({"ok": True, "planned_date": planned_date.isoformat()})
 
 @csrf_protect
 
@@ -5963,9 +6579,10 @@ def water_reading_create(request, pool_uuid):
 
 
 
-    """Создание нового замера для выбранного бассейна."""
+    """Создание нового замера для выбранного объекта."""
 
     pool = get_object_or_404(Pool, uuid=pool_uuid)
+    is_water_object = pool.object_type == Pool.OBJECT_TYPE_WATER
 
     role = _pool_role_for_user(request.user, pool)
 
@@ -5993,13 +6610,18 @@ def water_reading_create(request, pool_uuid):
 
             notify_reading_out_of_range(reading)
 
-            messages.success(request, "Показания добавлены")
+            if is_water_object:
+                messages.success(request, "Запись добавлена")
+            else:
+                messages.success(request, "Показания добавлены")
 
             return redirect("pool_detail", pool_uuid=pool.uuid)
 
         else:
-
-            messages.error(request, "?? ??????? ????????? ?????????, ????????? ??????")
+            if is_water_object:
+                messages.error(request, "Проверьте поля записи.")
+            else:
+                messages.error(request, "Проверьте поля показаний.")
 
     else:
 
@@ -6011,6 +6633,16 @@ def water_reading_create(request, pool_uuid):
 
 
 
+
+
+@csrf_protect
+@never_cache
+@login_required
+def water_object_visit_create(request, pool_uuid):
+    pool = get_object_or_404(Pool, uuid=pool_uuid)
+    if pool.object_type != Pool.OBJECT_TYPE_WATER:
+        return redirect("water_reading_create", pool_uuid=pool.uuid)
+    return water_reading_create(request, pool_uuid=pool.uuid)
 
 
 @login_required
@@ -6032,6 +6664,7 @@ def water_reading_edit(request, reading_uuid):
 
 
     reading = get_object_or_404(WaterReading.objects.select_related("pool"), uuid=reading_uuid)
+    is_water_object = reading.pool.object_type == Pool.OBJECT_TYPE_WATER
 
 
 
@@ -6071,11 +6704,17 @@ def water_reading_edit(request, reading_uuid):
 
             notify_reading_out_of_range(updated)
 
-            messages.success(request, "Запись обновлена.")
+            if is_water_object:
+                messages.success(request, "Запись обновлена.")
+            else:
+                messages.success(request, "Показания обновлены.")
 
             return redirect("pool_detail", pool_uuid=reading.pool.uuid)
 
-        messages.error(request, "Не удалось обновить запись. Проверьте форму.")
+        if is_water_object:
+            messages.error(request, "Не удалось обновить запись. Проверьте форму.")
+        else:
+            messages.error(request, "Не удалось обновить показания. Проверьте форму.")
 
     else:
 

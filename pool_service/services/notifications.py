@@ -81,8 +81,22 @@ def _create_notification(user, *, title, message, kind, level="info", action_url
     return Notification.objects.create(user=user, **payload), True
 
 
-def notify_users(users, *, title, message, kind, level="info", action_url="", organization=None, client=None, pool=None, dedupe_key=""):
+def notify_users(
+    users,
+    *,
+    title,
+    message,
+    kind,
+    level="info",
+    action_url="",
+    organization=None,
+    client=None,
+    pool=None,
+    dedupe_key="",
+    send_push=True,
+):
     created = []
+    created_users = {}
     for user in users:
         if not user or not user.is_active:
             continue
@@ -100,15 +114,29 @@ def notify_users(users, *, title, message, kind, level="info", action_url="", or
         )
         if was_created:
             created.append(obj)
+            created_users[user.id] = user
+    if send_push and created_users:
+        send_push_to_users(created_users.values(), title=title, message=message, action_url=action_url)
     return created
 
 
-def notify_superusers(*, title, message, kind, level="info", action_url=""):
+def notify_superusers(*, title, message, kind, level="info", action_url="", send_push=True):
     users = User.objects.filter(is_superuser=True, is_active=True)
-    return notify_users(users, title=title, message=message, kind=kind, level=level, action_url=action_url)
+    return notify_users(users, title=title, message=message, kind=kind, level=level, action_url=action_url, send_push=send_push)
 
 
-def notify_org_users(organization, *, title, message, kind, level="info", action_url="", pool=None, dedupe_key=""):
+def notify_org_users(
+    organization,
+    *,
+    title,
+    message,
+    kind,
+    level="info",
+    action_url="",
+    pool=None,
+    dedupe_key="",
+    send_push=True,
+):
     users = User.objects.filter(organizationaccess__organization=organization, is_active=True).distinct()
     return notify_users(
         users,
@@ -120,10 +148,22 @@ def notify_org_users(organization, *, title, message, kind, level="info", action
         organization=organization,
         pool=pool,
         dedupe_key=dedupe_key,
+        send_push=send_push,
     )
 
 
-def notify_client_users(client, *, title, message, kind, level="info", action_url="", pool=None, dedupe_key=""):
+def notify_client_users(
+    client,
+    *,
+    title,
+    message,
+    kind,
+    level="info",
+    action_url="",
+    pool=None,
+    dedupe_key="",
+    send_push=True,
+):
     users = User.objects.filter(clientaccess__client=client, is_active=True).distinct()
     if client.user and client.user.is_active:
         users = list(users) + [client.user]
@@ -137,6 +177,7 @@ def notify_client_users(client, *, title, message, kind, level="info", action_ur
         client=client,
         pool=pool,
         dedupe_key=dedupe_key,
+        send_push=send_push,
     )
 
 
@@ -173,13 +214,4 @@ def notify_reading_out_of_range(reading):
         pool=pool,
         dedupe_key=dedupe_key,
     )
-    is_org_staff = False
-    if reading.added_by_id:
-        is_org_staff = OrganizationAccess.objects.filter(
-            user_id=reading.added_by_id,
-            organization=organization,
-        ).exists()
-    if not is_org_staff:
-        users = User.objects.filter(organizationaccess__organization=organization, is_active=True).distinct()
-        send_push_to_users(users, title=title, message=message, action_url=action_url)
     return created

@@ -1,12 +1,18 @@
 {% extends 'pool_service/base.html' %}
 {% load static %}
-{% block title %}{% if is_edit %}&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1085;&#1080;&#1077; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;{% else %}&#1053;&#1086;&#1074;&#1086;&#1077; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1077;{% endif %}{% endblock %}
+{% block title %}
+  {% if is_edit %}
+    {% if pool.object_type == 'water' %}Редактирование записи{% else %}Редактирование показания{% endif %}
+  {% else %}
+    {% if pool.object_type == 'water' %}Новая запись{% else %}Новое показание{% endif %}
+  {% endif %}
+{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
     <a href="{% url 'pool_detail' pool.uuid %}" class="text-decoration-none d-flex align-items-center gap-2 text-dark">
         <i class="bi bi-arrow-left"></i>
-        <span class="fw-semibold">&#1053;&#1072;&#1079;&#1072;&#1076; &#1082; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1091;</span>
+        <span class="fw-semibold">Назад к объекту</span>
     </a>
 </div>
 
@@ -19,9 +25,27 @@
     </div>
 
     <div class="card card-soft p-4">
-        <h3 class="fw-bold h5 mb-1">{% if is_edit %}&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1085;&#1080;&#1077; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;{% else %}&#1053;&#1086;&#1074;&#1086;&#1077; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1077;{% endif %}</h3>
+        <h3 class="fw-bold h5 mb-1">
+            {% if is_edit %}
+                {% if pool.object_type == 'water' %}Редактирование записи{% else %}Редактирование показания{% endif %}
+            {% else %}
+                {% if pool.object_type == 'water' %}Новая запись{% else %}Новое показание{% endif %}
+            {% endif %}
+        </h3>
         <p class="text-muted mb-3">
-            {% if is_edit %}&#1054;&#1073;&#1085;&#1086;&#1074;&#1080;&#1090;&#1077; &#1076;&#1072;&#1085;&#1085;&#1099;&#1077; &#1079;&#1072;&#1084;&#1077;&#1088;&#1086;&#1074; &#1076;&#1083;&#1103; {{ pool.client.name }}{% else %}&#1047;&#1072;&#1087;&#1086;&#1083;&#1085;&#1080;&#1090;&#1077; &#1076;&#1072;&#1085;&#1085;&#1099;&#1077; &#1079;&#1072;&#1084;&#1077;&#1088;&#1086;&#1074; &#1076;&#1083;&#1103; {{ pool.client.name }}{% endif %}
+            {% if is_edit %}
+                {% if pool.object_type == 'water' %}
+                    Обновите данные визита для {{ pool.client.name }}
+                {% else %}
+                    Обновите данные замеров для {{ pool.client.name }}
+                {% endif %}
+            {% else %}
+                {% if pool.object_type == 'water' %}
+                    Заполните данные визита для {{ pool.client.name }}
+                {% else %}
+                    Заполните данные замеров для {{ pool.client.name }}
+                {% endif %}
+            {% endif %}
         </p>
 
         <div id="offline-status" class="alert alert-warning d-none mb-3"></div>
@@ -29,6 +53,7 @@
             {% csrf_token %}
             {{ form.date }}
 
+            {% if pool.object_type != 'water' %}
             <div class="row g-3 mb-2">
                 <div class="col-md-6">
                     <label class="form-label fw-semibold"><i class="bi bi-thermometer me-2"></i>&#1058;&#1077;&#1084;&#1087;&#1077;&#1088;&#1072;&#1090;&#1091;&#1088;&#1072; (&#176;C)</label>
@@ -73,12 +98,14 @@
                     </div>
                 </div>
             </div>
+            {% endif %}
 
             <div class="mb-3">
                 <label class="form-label fw-semibold"><i class="bi bi-chat-left-text me-2"></i>&#1050;&#1086;&#1084;&#1084;&#1077;&#1085;&#1090;&#1072;&#1088;&#1080;&#1081;</label>
                 {{ form.comment }}
             </div>
 
+            {% if pool.object_type != 'water' %}
             <div class="row g-3 mb-3">
                 <div class="col-md-6">
                     <label class="form-label fw-semibold"><i class="bi bi-box-seam me-2"></i>&#1053;&#1077;&#1086;&#1073;&#1093;&#1086;&#1076;&#1080;&#1084;&#1099;&#1077; &#1084;&#1072;&#1090;&#1077;&#1088;&#1080;&#1072;&#1083;&#1099;</label>
@@ -89,10 +116,15 @@
                     {{ form.performed_works }}
                 </div>
             </div>
+            {% endif %}
+            <div class="mb-3">
+                <label class="form-label fw-semibold"><i class="bi bi-arrow-repeat me-2"></i>Замены расходников</label>
+                {{ form.consumables_replaced }}
+            </div>
 
             <div class="d-flex gap-2">
                 <button type="submit" class="btn btn-primary btn-lg {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;</button>
-                <a href="{% url 'pool_detail' pool.uuid %}" class="btn btn-outline-secondary btn-lg">&#1054;&#1090;&#1084;&#1077;&#1085;&#1072;</a>
+                <a href="{% url 'pool_detail' pool.uuid %}" class="btn btn-outline-secondary btn-lg">Отмена</a>
             </div>
         </form>
     </div>

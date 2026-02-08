@@ -1,10 +1,10 @@
 {% extends 'pool_service/base.html' %}
 
-{% block title %}{% if is_edit %}Редактирование бассейна{% else %}Новый бассейн{% endif %}{% endblock %}
+{% block title %}{% if is_edit %}Редактирование объекта{% else %}Новый объект{% endif %}{% endblock %}
 
 {% block content %}
 <div class="card card-soft p-4">
-    <h3 class="fw-bold h5 mb-3">{% if is_edit %}Редактирование бассейна{% else %}Создание бассейна{% endif %}</h3>
+    <h3 class="fw-bold h5 mb-3">{% if is_edit %}Редактирование объекта{% else %}Создание объекта{% endif %}</h3>
     <form method="post" class="offline-queue-form" action="{% if is_edit %}{% url 'pool_edit' pool.uuid %}{% else %}{% url 'pool_create' %}{% endif %}">
         {% csrf_token %}
         {% if form.client.is_hidden %}
@@ -39,6 +39,11 @@
             </div>
         </div>
         {% endif %}
+        <div class="mb-3">
+            <label class="form-label">Тип объекта</label>
+            {{ form.object_type }}
+            {% if form.object_type.errors %}<div class="text-danger small mt-1">{{ form.object_type.errors.0 }}</div>{% endif %}
+        </div>
         <div class="mb-3 position-relative">
             <label class="form-label">Адрес</label>
             {{ form.address }}
@@ -50,7 +55,7 @@
             {{ form.description }}
             {% if form.description.errors %}<div class="text-danger small mt-1">{{ form.description.errors.0 }}</div>{% endif %}
         </div>
-        <div class="card card-soft p-3 mb-3">
+        <div class="card card-soft p-3 mb-3 js-object-pool">
             <h4 class="fw-bold h6 mb-3">Параметры бассейна</h4>
             <div class="row g-3">
                 <div class="col-md-6">
@@ -121,6 +126,61 @@
                         <label class="form-check-label" for="{{ form.dosing_station.id_for_label }}">Станция дозирования</label>
                     </div>
                     {% if form.dosing_station.errors %}<div class="text-danger small mt-1">{{ form.dosing_station.errors.0 }}</div>{% endif %}
+                </div>
+            </div>
+        </div>
+        <div class="card card-soft p-3 mb-3 js-object-water d-none">
+            <h4 class="fw-bold h6 mb-3">Параметры водоподготовки</h4>
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label">Тип системы</label>
+                    {{ form.water_system_type }}
+                    {% if form.water_system_type.errors %}<div class="text-danger small mt-1">{{ form.water_system_type.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Источник воды</label>
+                    {{ form.water_source }}
+                    {% if form.water_source.errors %}<div class="text-danger small mt-1">{{ form.water_source.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Производительность</label>
+                    {{ form.water_capacity_value }}
+                    {% if form.water_capacity_value.errors %}<div class="text-danger small mt-1">{{ form.water_capacity_value.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Единица измерения</label>
+                    {{ form.water_capacity_unit }}
+                    {% if form.water_capacity_unit.errors %}<div class="text-danger small mt-1">{{ form.water_capacity_unit.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Режим работы</label>
+                    {{ form.water_operation_mode }}
+                    {% if form.water_operation_mode.errors %}<div class="text-danger small mt-1">{{ form.water_operation_mode.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-12">
+                    <label class="form-label">Ключевые параметры контроля</label>
+                    {{ form.water_control_parameters }}
+                    {% if form.water_control_parameters.errors %}<div class="text-danger small mt-1">{{ form.water_control_parameters.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-12">
+                    <label class="form-label">Оборудование / загрузка</label>
+                    {{ form.water_equipment }}
+                    {% if form.water_equipment.errors %}<div class="text-danger small mt-1">{{ form.water_equipment.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Ответственный контакт</label>
+                    {{ form.water_contact_name }}
+                    {% if form.water_contact_name.errors %}<div class="text-danger small mt-1">{{ form.water_contact_name.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Телефон контакта</label>
+                    {{ form.water_contact_phone }}
+                    {% if form.water_contact_phone.errors %}<div class="text-danger small mt-1">{{ form.water_contact_phone.errors.0 }}</div>{% endif %}
+                </div>
+                <div class="col-12">
+                    <label class="form-label">Доступ / пропуск / время посещения</label>
+                    {{ form.water_access_notes }}
+                    {% if form.water_access_notes.errors %}<div class="text-danger small mt-1">{{ form.water_access_notes.errors.0 }}</div>{% endif %}
                 </div>
             </div>
         </div>
@@ -215,6 +275,21 @@
                 select.value = options[0].value;
                 input.value = options[0].text;
             }
+        }
+
+        const objectTypeField = document.getElementById("id_object_type");
+        const poolBlocks = document.querySelectorAll(".js-object-pool");
+        const waterBlocks = document.querySelectorAll(".js-object-water");
+
+        function toggleObjectType() {
+            const isWater = objectTypeField && objectTypeField.value === "water";
+            poolBlocks.forEach((block) => block.classList.toggle("d-none", isWater));
+            waterBlocks.forEach((block) => block.classList.toggle("d-none", !isWater));
+        }
+
+        if (objectTypeField) {
+            objectTypeField.addEventListener("change", toggleObjectType);
+            toggleObjectType();
         }
 
         const shapeField = document.getElementById("id_shape");

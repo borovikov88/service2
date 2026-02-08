@@ -41,7 +41,7 @@ class PoolAdmin(admin.ModelAdmin):
         if obj.description:
             return format_html(obj.description)
         return "-"
-    formatted_description.short_description = "Описание бассейна"
+    formatted_description.short_description = "Описание объекта"
 
 # Client admin
 @admin.register(Client)

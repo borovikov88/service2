@@ -15,13 +15,13 @@
     {% if can_edit_pool or can_add_reading %}
         <div class="d-flex align-items-center gap-2">
             {% if can_edit_pool %}
-                <a class="btn btn-outline-primary rounded-3 d-flex align-items-center gap-2 {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% url 'pool_edit' pool.uuid %}" aria-label="&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;" title="&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;">
-                    <i class="bi bi-pencil"></i><span class="d-none d-sm-inline">&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;</span>
+                <a class="btn btn-outline-primary rounded-3 d-flex align-items-center gap-2 {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% url 'pool_edit' pool.uuid %}" aria-label="&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; &#1086;&#1073;&#1098;&#1077;&#1082;&#1090;" title="&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; &#1086;&#1073;&#1098;&#1077;&#1082;&#1090;">
+                    <i class="bi bi-pencil"></i><span class="d-none d-sm-inline">&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; &#1086;&#1073;&#1098;&#1077;&#1082;&#1090;</span>
                 </a>
             {% endif %}
             {% if can_add_reading %}
-                <a class="btn btn-primary rounded-3 d-flex align-items-center gap-2 {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% url 'water_reading_create' pool.uuid %}" aria-label="&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;" title="&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;">
-                    <i class="bi bi-plus-lg"></i><span class="d-none d-sm-inline">&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;</span>
+                <a class="btn btn-primary rounded-3 d-flex align-items-center gap-2 {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% if is_water_object %}{% url 'water_object_visit_create' pool.uuid %}{% else %}{% url 'water_reading_create' pool.uuid %}{% endif %}" aria-label="{% if is_water_object %}&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1079;&#1072;&#1087;&#1080;&#1089;&#1100;{% else %}&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;{% endif %}" title="{% if is_water_object %}&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1079;&#1072;&#1087;&#1080;&#1089;&#1100;{% else %}&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;{% endif %}">
+                    <i class="bi bi-plus-lg"></i><span class="d-none d-sm-inline">{% if is_water_object %}&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1079;&#1072;&#1087;&#1080;&#1089;&#1100;{% else %}&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;{% endif %}</span>
                 </a>
             {% endif %}
         </div>
@@ -36,6 +36,13 @@
             {% if pool.description %}
                 <div class="text-muted small">{{ pool.description|safe }}</div>
             {% endif %}
+            <div class="mt-2">
+                <span class="badge rounded-pill {% if is_water_object %}bg-success{% else %}bg-primary{% endif %}">
+                    <i class="bi {% if is_water_object %}bi-gear{% else %}bi-droplet{% endif %} me-1"></i>
+                    {{ pool.get_object_type_display }}
+                </span>
+            </div>
+            {% if not is_water_object %}
             <div class="row g-2 mt-3">
                 <div class="col-12 col-md-6 col-lg-4">
                     <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
@@ -108,6 +115,72 @@
                     {% endif %}
                 </div>
             </div>
+            {% else %}
+            <div class="row g-2 mt-3">
+                <div class="col-12 col-md-6 col-lg-4">
+                    <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
+                        <i class="bi bi-gear text-success"></i>
+                        <div class="small text-muted">Тип системы</div>
+                        <div class="ms-auto fw-semibold">{{ pool.get_water_system_type_display|default:"-" }}</div>
+                    </div>
+                </div>
+                <div class="col-12 col-md-6 col-lg-4">
+                    <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
+                        <i class="bi bi-water text-success"></i>
+                        <div class="small text-muted">Источник воды</div>
+                        <div class="ms-auto fw-semibold">{{ pool.get_water_source_display|default:"-" }}</div>
+                    </div>
+                </div>
+                <div class="col-12 col-md-6 col-lg-4">
+                    <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
+                        <i class="bi bi-speedometer2 text-success"></i>
+                        <div class="small text-muted">Производительность</div>
+                        <div class="ms-auto fw-semibold">
+                            {% if pool.water_capacity_value %}
+                                {{ pool.water_capacity_value|floatformat:"2" }} {% if pool.water_capacity_unit %}{{ pool.get_water_capacity_unit_display }}{% endif %}
+                            {% else %}
+                                -
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+                <div class="col-12 col-md-6 col-lg-4">
+                    <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
+                        <i class="bi bi-clock text-success"></i>
+                        <div class="small text-muted">Режим работы</div>
+                        <div class="ms-auto fw-semibold">{{ pool.get_water_operation_mode_display|default:"-" }}</div>
+                    </div>
+                </div>
+                <div class="col-12 col-md-6 col-lg-4">
+                    <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
+                        <i class="bi bi-person text-success"></i>
+                        <div class="small text-muted">Ответственный контакт</div>
+                        <div class="ms-auto fw-semibold">{{ pool.water_contact_name|default:"-" }}</div>
+                    </div>
+                    {% if pool.water_contact_phone %}
+                        <div class="small text-muted mt-1">{{ pool.water_contact_phone }}</div>
+                    {% endif %}
+                </div>
+                <div class="col-12">
+                    <div class="p-2 rounded-3 bg-light">
+                        <div class="small text-muted">Ключевые параметры контроля</div>
+                        <div class="fw-semibold">{{ pool.water_control_parameters|default:"-" }}</div>
+                    </div>
+                </div>
+                <div class="col-12">
+                    <div class="p-2 rounded-3 bg-light">
+                        <div class="small text-muted">Оборудование / загрузка</div>
+                        <div class="fw-semibold">{{ pool.water_equipment|default:"-" }}</div>
+                    </div>
+                </div>
+                <div class="col-12">
+                    <div class="p-2 rounded-3 bg-light">
+                        <div class="small text-muted">Доступ / пропуск / время посещения</div>
+                        <div class="fw-semibold">{{ pool.water_access_notes|default:"-" }}</div>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
         </div>
     </div>
 </div>
@@ -117,7 +190,7 @@
 <div class="card card-soft p-4 mb-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
         <div>
-            <h3 class="fw-bold h5 mb-1">История показаний</h3>
+            <h3 class="fw-bold h5 mb-1">{% if is_water_object %}История посещений{% else %}История показаний{% endif %}</h3>
             <div class="text-muted small">Последние {{ per_page }} записей</div>
         </div>
         <form method="get" class="d-flex align-items-center gap-2">
@@ -146,6 +219,40 @@
     </div>
 
     <div class="table-responsive">
+        {% if is_water_object %}
+        <table class="table align-middle table-borderless">
+            <thead class="small text-muted">
+                <tr>
+                    <th scope="col">Дата/Время</th>
+                    <th scope="col">Внёс</th>
+                    <th scope="col">Комментарий</th>
+                    <th scope="col">Замены расходников</th>
+                    <th scope="col"></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for reading in readings %}
+                    <tr class="border-top">
+                        <td class="fw-semibold">{{ reading.date|date:"d.m.Y H:i" }} ({{ reading.date|date:"D" }})</td>
+                        <td>
+                            {% if reading.added_by %}
+                                {% if reading.added_by.get_full_name %}{{ reading.added_by.get_full_name }}{% else %}{{ reading.added_by.username }}{% endif %}
+                            {% else %}—{% endif %}
+                        </td>
+                        <td>{{ reading.comment|default:"-" }}</td>
+                        <td>{{ reading.consumables_replaced|default:"-" }}</td>
+                        <td class="text-end">
+                            {% if reading.id in editable_reading_ids %}
+                                <a class="btn btn-outline-secondary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% url 'water_reading_edit' reading.uuid %}">
+                                    <i class="bi bi-pencil"></i>
+                                </a>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
         <table class="table align-middle table-borderless" style="min-width: 1150px;">
             <thead class="small text-muted">
                 <tr>
@@ -208,6 +315,7 @@
                 {% endfor %}
             </tbody>
         </table>
+        {% endif %}
     </div>
     {% if readings.has_other_pages %}
         <div class="d-flex justify-content-between align-items-center mt-3">
@@ -226,7 +334,9 @@
     {% endif %}
 </div>
 {% else %}
-    <div class="card card-soft p-4 text-center text-muted">Пока нет показаний</div>
+    <div class="card card-soft p-4 text-center text-muted">
+        {% if is_water_object %}Пока нет записей{% else %}Пока нет показаний{% endif %}
+    </div>
 {% endif %}
 
 {% if show_service_issues %}
