@@ -8,7 +8,7 @@
     <a class="btn btn-light btn-sm" href="?month={{ prev_month }}" aria-label="&#1055;&#1088;&#1077;&#1076;&#1099;&#1076;&#1091;&#1097;&#1080;&#1081; &#1084;&#1077;&#1089;&#1103;&#1094;">
       <i class="bi bi-chevron-left"></i>
     </a>
-    <div class="fw-semibold">{{ month_label }}</div>
+    <div class="calendar-month-label fw-semibold">{{ month_label }}</div>
     <a class="btn btn-light btn-sm" href="?month={{ next_month }}" aria-label="&#1057;&#1083;&#1077;&#1076;&#1091;&#1102;&#1097;&#1080;&#1081; &#1084;&#1077;&#1089;&#1103;&#1094;">
       <i class="bi bi-chevron-right"></i>
     </a>
@@ -385,7 +385,18 @@
 
 <style>
   .calendar-toolbar {
-    background: #ffffff;
+    background: linear-gradient(180deg, #ffffff 0%, #f6f9ff 100%);
+    border: 1px solid #e6eef5;
+    border-radius: 16px;
+    padding: 8px 12px;
+    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+  }
+  .calendar-month-label {
+    background: #f1f5ff;
+    border: 1px solid #dbe5f5;
+    border-radius: 999px;
+    padding: 6px 12px;
+    color: #1f2d3d;
   }
   .calendar-summary .summary-pill {
     border-radius: 999px;
@@ -411,7 +422,7 @@
     background: #e6edf5;
     border-radius: 16px;
     overflow: hidden;
-    min-width: 840px;
+    min-width: 1120px;
   }
   .calendar-grid--header {
     margin-bottom: 6px;
@@ -554,7 +565,7 @@
       padding: 0 12px 8px;
     }
     .calendar-grid {
-      min-width: 760px;
+      min-width: 1120px;
     }
     .calendar-weekday {
       font-size: 0.72rem;
@@ -566,6 +577,12 @@
     }
     .calendar-chip {
       font-size: 0.76rem;
+    }
+    .calendar-chip__text {
+      white-space: normal;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
     }
   }
 </style>
