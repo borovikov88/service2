@@ -32,41 +32,43 @@
   </span>
 </div>
 
-<div class="calendar-grid calendar-grid--header">
-  <div class="calendar-weekday">&#1055;&#1085;</div>
-  <div class="calendar-weekday">&#1042;&#1090;</div>
-  <div class="calendar-weekday">&#1057;&#1088;</div>
-  <div class="calendar-weekday">&#1063;&#1090;</div>
-  <div class="calendar-weekday">&#1055;&#1090;</div>
-  <div class="calendar-weekday">&#1057;&#1073;</div>
-  <div class="calendar-weekday">&#1042;&#1089;</div>
-</div>
+<div class="calendar-scroll">
+  <div class="calendar-grid calendar-grid--header">
+    <div class="calendar-weekday">&#1055;&#1085;</div>
+    <div class="calendar-weekday">&#1042;&#1090;</div>
+    <div class="calendar-weekday">&#1057;&#1088;</div>
+    <div class="calendar-weekday">&#1063;&#1090;</div>
+    <div class="calendar-weekday">&#1055;&#1090;</div>
+    <div class="calendar-weekday">&#1057;&#1073;</div>
+    <div class="calendar-weekday">&#1042;&#1089;</div>
+  </div>
 
-<div class="calendar-grid calendar-grid--body">
-  {% for day in calendar_days %}
-    <div class="calendar-day {% if not day.is_current_month %}calendar-day--muted{% endif %} {% if day.is_today %}calendar-day--today{% endif %}" data-date="{{ day.date|date:'Y-m-d' }}" data-week-start="{{ day.week_start|date:'Y-m-d' }}">
-      <div class="calendar-day__header">
-        <span class="calendar-day__number">{{ day.day }}</span>
-        {% if day.is_today %}
-          <span class="calendar-day__badge">&#1057;&#1077;&#1075;&#1086;&#1076;&#1085;&#1103;</span>
-        {% endif %}
+  <div class="calendar-grid calendar-grid--body">
+    {% for day in calendar_days %}
+      <div class="calendar-day {% if not day.is_current_month %}calendar-day--muted{% endif %} {% if day.is_today %}calendar-day--today{% endif %}" data-date="{{ day.date|date:'Y-m-d' }}" data-week-start="{{ day.week_start|date:'Y-m-d' }}">
+        <div class="calendar-day__header">
+          <span class="calendar-day__number">{{ day.day }}</span>
+          {% if day.is_today %}
+            <span class="calendar-day__badge">&#1057;&#1077;&#1075;&#1086;&#1076;&#1085;&#1103;</span>
+          {% endif %}
+        </div>
+        <div class="calendar-day__items">
+          {% for item in day.items %}
+            <div class="calendar-chip calendar-chip--{{ item.status }} calendar-chip--type-{{ item.object_type }} {% if item.is_draggable %}calendar-chip--draggable{% endif %}" draggable="{{ item.is_draggable|yesno:'true,false' }}" data-pool-ids="{{ item.pool_ids|join:',' }}" data-week-start="{{ item.week_start|date:'Y-m-d' }}" data-source-week-start="{{ item.source_week_start }}" data-source-weeks="{{ item.source_weeks }}" data-source-month="{{ item.source_month }}" data-allow-month="{{ item.allow_month_move|yesno:'true,false' }}" data-date="{{ item.date|date:'Y-m-d' }}" title="{{ item.title }}">
+              <span class="calendar-chip__icon" data-drag-handle="true" aria-hidden="true">
+                {% if item.object_type == 'water' %}
+                  <i class="bi bi-gear"></i>
+                {% else %}
+                  <i class="bi bi-droplet"></i>
+                {% endif %}
+              </span>
+              <span class="calendar-chip__text">{{ item.display_name }}</span>
+            </div>
+          {% endfor %}
+        </div>
       </div>
-      <div class="calendar-day__items">
-        {% for item in day.items %}
-          <div class="calendar-chip calendar-chip--{{ item.status }} calendar-chip--type-{{ item.object_type }} {% if item.is_draggable %}calendar-chip--draggable{% endif %}" draggable="{{ item.is_draggable|yesno:'true,false' }}" data-pool-ids="{{ item.pool_ids|join:',' }}" data-week-start="{{ item.week_start|date:'Y-m-d' }}" data-source-week-start="{{ item.source_week_start }}" data-source-weeks="{{ item.source_weeks }}" data-source-month="{{ item.source_month }}" data-allow-month="{{ item.allow_month_move|yesno:'true,false' }}" data-date="{{ item.date|date:'Y-m-d' }}" title="{{ item.title }}">
-            <span class="calendar-chip__icon">
-              {% if item.object_type == 'water' %}
-                <i class="bi bi-gear"></i>
-              {% else %}
-                <i class="bi bi-droplet"></i>
-              {% endif %}
-            </span>
-            <span class="calendar-chip__text">{{ item.display_name }}</span>
-          </div>
-        {% endfor %}
-      </div>
-    </div>
-  {% endfor %}
+    {% endfor %}
+  </div>
 </div>
 
 {% if paused_pools or unscheduled_pools %}
@@ -118,7 +120,10 @@
     const moveUrl = "{% url 'visit_plan_move' %}";
     const chips = document.querySelectorAll(".calendar-chip--draggable");
     const days = document.querySelectorAll(".calendar-day");
+    const dragHandles = document.querySelectorAll("[data-drag-handle='true']");
     let dragged = null;
+    let currentDrop = null;
+    let touchDrag = null;
 
     function getCookie(name) {
       const match = document.cookie.match(new RegExp("(^| )" + name + "=([^;]+)"));
@@ -135,7 +140,139 @@
     }
 
     function clearDropState() {
-      document.querySelectorAll(".calendar-day--drop").forEach((el) => el.classList.remove("calendar-day--drop"));
+      if (currentDrop) {
+        currentDrop.classList.remove("calendar-day--drop");
+        currentDrop = null;
+      }
+    }
+
+    function setDropState(day) {
+      if (currentDrop === day) return;
+      if (currentDrop) currentDrop.classList.remove("calendar-day--drop");
+      currentDrop = day;
+      if (currentDrop) currentDrop.classList.add("calendar-day--drop");
+    }
+
+    function isDropAllowed(chip, day) {
+      if (!chip || !day) return false;
+      const targetDate = day.dataset.date || "";
+      if (!targetDate) return false;
+      const allowMonth = chip.dataset.allowMonth === "true";
+      const sourceMonth = chip.dataset.sourceMonth || "";
+      const targetMonth = targetDate.slice(0, 7);
+      if (allowMonth) {
+        if (!sourceMonth) return false;
+        return targetMonth === sourceMonth;
+      }
+      return day.dataset.weekStart === chip.dataset.weekStart;
+    }
+
+    function getDropIssueMessage(chip, day) {
+      if (!chip || !day) return "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0438\u0442\u044c \u0434\u0430\u0442\u0443 \u043f\u0435\u0440\u0435\u043d\u043e\u0441\u0430.";
+      const targetDate = day.dataset.date || "";
+      if (!targetDate) return "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0438\u0442\u044c \u0434\u0430\u0442\u0443 \u043f\u0435\u0440\u0435\u043d\u043e\u0441\u0430.";
+      const allowMonth = chip.dataset.allowMonth === "true";
+      const sourceMonth = chip.dataset.sourceMonth || "";
+      const targetMonth = targetDate.slice(0, 7);
+      if (allowMonth) {
+        if (!sourceMonth) {
+          return "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0438\u0442\u044c \u043c\u0435\u0441\u044f\u0446 \u043f\u043b\u0430\u043d\u0430.";
+        }
+        if (targetMonth !== sourceMonth) {
+          return "\u041f\u0435\u0440\u0435\u043d\u043e\u0441 \u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d \u0442\u043e\u043b\u044c\u043a\u043e \u0432 \u043f\u0440\u0435\u0434\u0435\u043b\u0430\u0445 \u044d\u0442\u043e\u0433\u043e \u043c\u0435\u0441\u044f\u0446\u0430.";
+        }
+      } else if (day.dataset.weekStart !== chip.dataset.weekStart) {
+        return "\u041c\u043e\u0436\u043d\u043e \u043f\u0435\u0440\u0435\u043d\u043e\u0441\u0438\u0442\u044c \u0442\u043e\u043b\u044c\u043a\u043e \u0432 \u043f\u0440\u0435\u0434\u0435\u043b\u0430\u0445 \u043d\u0435\u0434\u0435\u043b\u0438.";
+      }
+      return "";
+    }
+
+    function buildPayload(chip, targetDate) {
+      const poolIds = (chip.dataset.poolIds || "")
+        .split(",")
+        .map((val) => val.trim())
+        .filter(Boolean);
+      if (!poolIds.length) {
+        showMessage("\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0438\u0442\u044c \u0441\u043f\u0438\u0441\u043e\u043a \u0431\u0430\u0441\u0441\u0435\u0439\u043d\u043e\u0432 \u0434\u043b\u044f \u043f\u0435\u0440\u0435\u043d\u043e\u0441\u0430.");
+        return null;
+      }
+
+      let sourceWeeks = {};
+      if (chip.dataset.sourceWeeks) {
+        try {
+          sourceWeeks = JSON.parse(chip.dataset.sourceWeeks);
+        } catch (e) {
+          sourceWeeks = {};
+        }
+      }
+      if (!Object.keys(sourceWeeks).length) {
+        const sourceWeek = chip.dataset.sourceWeekStart || chip.dataset.weekStart;
+        poolIds.forEach((pid) => {
+          sourceWeeks[pid] = sourceWeek;
+        });
+      }
+
+      return {
+        pool_ids: poolIds,
+        source_weeks: sourceWeeks,
+        source_month: chip.dataset.sourceMonth || "",
+        week_start: chip.dataset.weekStart,
+        planned_date: targetDate,
+      };
+    }
+
+    function submitMove(chip, day) {
+      if (!chip || !day) return;
+      const targetDate = day.dataset.date || "";
+      if (!targetDate) {
+        showMessage("\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0438\u0442\u044c \u0434\u0430\u0442\u0443 \u043f\u0435\u0440\u0435\u043d\u043e\u0441\u0430.");
+        return;
+      }
+      if (targetDate === chip.dataset.date) return;
+      if (!isDropAllowed(chip, day)) {
+        const message = getDropIssueMessage(chip, day);
+        if (message) showMessage(message);
+        return;
+      }
+
+      const payload = buildPayload(chip, targetDate);
+      if (!payload) return;
+
+      fetch(moveUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": getCookie("csrftoken"),
+        },
+        body: JSON.stringify(payload),
+      })
+        .then(async (response) => {
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok || !data.ok) {
+            const error = data.error || "save_failed";
+            throw new Error(error);
+          }
+          return data;
+        })
+        .then(() => {
+          const targetList = day.querySelector(".calendar-day__items");
+          if (targetList) {
+            targetList.appendChild(chip);
+            chip.dataset.date = targetDate;
+          }
+        })
+        .catch((error) => {
+          if (error.message === "already_completed") {
+            showMessage("\u0412\u044b\u0435\u0437\u0434 \u0443\u0436\u0435 \u043e\u0442\u043c\u0435\u0447\u0435\u043d. \u041e\u0431\u043d\u043e\u0432\u0438\u0442\u0435 \u0441\u0442\u0440\u0430\u043d\u0438\u0446\u0443.");
+          } else if (error.message === "invalid_month") {
+            showMessage("\u041f\u0435\u0440\u0435\u043d\u043e\u0441 \u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d \u0442\u043e\u043b\u044c\u043a\u043e \u0432 \u043f\u0440\u0435\u0434\u0435\u043b\u0430\u0445 \u043c\u0435\u0441\u044f\u0446\u0430 \u043f\u043b\u0430\u043d\u0430.");
+          } else if (error.message === "invalid_week") {
+            showMessage("\u041f\u0435\u0440\u0435\u043d\u043e\u0441 \u0432\u043e\u0437\u043c\u043e\u0436\u0435\u043d \u0442\u043e\u043b\u044c\u043a\u043e \u0432 \u043f\u0440\u0435\u0434\u0435\u043b\u0430\u0445 \u044d\u0442\u043e\u0439 \u043d\u0435\u0434\u0435\u043b\u0438.");
+          } else {
+            const details = error.message ? `: ${error.message}` : "";
+            showMessage(`\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c \u043f\u0435\u0440\u0435\u043d\u043e\u0441${details}.`);
+          }
+        });
     }
 
     chips.forEach((chip) => {
@@ -154,115 +291,93 @@
     days.forEach((day) => {
       day.addEventListener("dragover", (event) => {
         if (!dragged) return;
-        const allowMonth = dragged.dataset.allowMonth === "true";
-        const sourceMonth = dragged.dataset.sourceMonth || "";
-        const targetMonth = (day.dataset.date || "").slice(0, 7);
-        if (allowMonth) {
-          if (!sourceMonth || targetMonth !== sourceMonth) return;
-        } else if (day.dataset.weekStart !== dragged.dataset.weekStart) {
-          return;
-        }
+        if (!isDropAllowed(dragged, day)) return;
         event.preventDefault();
-        day.classList.add("calendar-day--drop");
+        setDropState(day);
       });
 
       day.addEventListener("dragleave", () => {
-        day.classList.remove("calendar-day--drop");
+        if (currentDrop === day) {
+          setDropState(null);
+        }
       });
 
       day.addEventListener("drop", (event) => {
         if (!dragged) return;
         event.preventDefault();
-        day.classList.remove("calendar-day--drop");
+        clearDropState();
+        submitMove(dragged, day);
+      });
+    });
 
-        const movedChip = dragged;
-        const targetDate = day.dataset.date;
-        const allowMonth = dragged.dataset.allowMonth === "true";
-        const sourceMonth = dragged.dataset.sourceMonth || "";
-        const targetMonth = targetDate.slice(0, 7);
+    dragHandles.forEach((handle) => {
+      handle.addEventListener("pointerdown", (event) => {
+        const chip = handle.closest(".calendar-chip--draggable");
+        if (!chip) return;
+        if (event.pointerType === "mouse") return;
+        event.preventDefault();
+        handle.setPointerCapture?.(event.pointerId);
 
-        if (allowMonth) {
-          if (!sourceMonth) {
-            showMessage("\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0438\u0442\u044c \u043c\u0435\u0441\u044f\u0446 \u043f\u043b\u0430\u043d\u0430.");
-            return;
-          }
-          if (targetMonth !== sourceMonth) {
-            showMessage("\u041f\u0435\u0440\u0435\u043d\u043e\u0441 \u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d \u0442\u043e\u043b\u044c\u043a\u043e \u0432 \u043f\u0440\u0435\u0434\u0435\u043b\u0430\u0445 \u044d\u0442\u043e\u0433\u043e \u043c\u0435\u0441\u044f\u0446\u0430.");
-            return;
-          }
-        } else if (day.dataset.weekStart !== dragged.dataset.weekStart) {
-          showMessage("\u041c\u043e\u0436\u043d\u043e \u043f\u0435\u0440\u0435\u043d\u043e\u0441\u0438\u0442\u044c \u0442\u043e\u043b\u044c\u043a\u043e \u0432 \u043f\u0440\u0435\u0434\u0435\u043b\u0430\u0445 \u043d\u0435\u0434\u0435\u043b\u0438.");
-          return;
-        }
-        if (targetDate === dragged.dataset.date) return;
+        dragged = chip;
+        chip.classList.add("calendar-chip--dragging");
 
-        const poolIds = (dragged.dataset.poolIds || "")
-          .split(",")
-          .map((val) => val.trim())
-          .filter(Boolean);
-        if (!poolIds.length) {
-          showMessage("\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0438\u0442\u044c \u0441\u043f\u0438\u0441\u043e\u043a \u0431\u0430\u0441\u0441\u0435\u0439\u043d\u043e\u0432 \u0434\u043b\u044f \u043f\u0435\u0440\u0435\u043d\u043e\u0441\u0430.");
-          return;
-        }
+        const rect = chip.getBoundingClientRect();
+        const ghost = chip.cloneNode(true);
+        ghost.classList.add("calendar-chip--ghost");
+        ghost.style.width = `${rect.width}px`;
+        ghost.style.height = `${rect.height}px`;
+        ghost.style.left = `${event.clientX}px`;
+        ghost.style.top = `${event.clientY}px`;
+        document.body.appendChild(ghost);
 
-        let sourceWeeks = {};
-        if (dragged.dataset.sourceWeeks) {
-          try {
-            sourceWeeks = JSON.parse(dragged.dataset.sourceWeeks);
-          } catch (e) {
-            sourceWeeks = {};
-          }
-        }
-        if (!Object.keys(sourceWeeks).length) {
-          const sourceWeek = dragged.dataset.sourceWeekStart || dragged.dataset.weekStart;
-          poolIds.forEach((pid) => {
-            sourceWeeks[pid] = sourceWeek;
-          });
-        }
-
-        const payload = {
-          pool_ids: poolIds,
-          source_weeks: sourceWeeks,
-          source_month: sourceMonth,
-          week_start: dragged.dataset.weekStart,
-          planned_date: targetDate,
+        touchDrag = {
+          chip,
+          ghost,
+          pointerId: event.pointerId,
         };
+      });
 
-        fetch(moveUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-CSRFToken": getCookie("csrftoken"),
-          },
-          body: JSON.stringify(payload),
-        })
-          .then(async (response) => {
-            const data = await response.json().catch(() => ({}));
-            if (!response.ok || !data.ok) {
-              const error = data.error || "save_failed";
-              throw new Error(error);
-            }
-            return data;
-          })
-          .then(() => {
-            const targetList = day.querySelector(".calendar-day__items");
-            if (targetList && movedChip) {
-              targetList.appendChild(movedChip);
-              movedChip.dataset.date = targetDate;
-            }
-          })
-          .catch((error) => {
-            if (error.message === "already_completed") {
-              showMessage("\u0412\u044b\u0435\u0437\u0434 \u0443\u0436\u0435 \u043e\u0442\u043c\u0435\u0447\u0435\u043d. \u041e\u0431\u043d\u043e\u0432\u0438\u0442\u0435 \u0441\u0442\u0440\u0430\u043d\u0438\u0446\u0443.");
-            } else if (error.message === "invalid_month") {
-              showMessage("\u041f\u0435\u0440\u0435\u043d\u043e\u0441 \u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d \u0442\u043e\u043b\u044c\u043a\u043e \u0432 \u043f\u0440\u0435\u0434\u0435\u043b\u0430\u0445 \u043c\u0435\u0441\u044f\u0446\u0430 \u043f\u043b\u0430\u043d\u0430.");
-            } else if (error.message === "invalid_week") {
-              showMessage("\u041f\u0435\u0440\u0435\u043d\u043e\u0441 \u0432\u043e\u0437\u043c\u043e\u0436\u0435\u043d \u0442\u043e\u043b\u044c\u043a\u043e \u0432 \u043f\u0440\u0435\u0434\u0435\u043b\u0430\u0445 \u044d\u0442\u043e\u0439 \u043d\u0435\u0434\u0435\u043b\u0438.");
-            } else {
-              const details = error.message ? `: ${error.message}` : "";
-              showMessage(`\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c \u043f\u0435\u0440\u0435\u043d\u043e\u0441${details}.`);
-            }
-          });
+      handle.addEventListener("pointermove", (event) => {
+        if (!touchDrag || touchDrag.pointerId !== event.pointerId) return;
+        event.preventDefault();
+        const ghost = touchDrag.ghost;
+        if (ghost) {
+          ghost.style.left = `${event.clientX}px`;
+          ghost.style.top = `${event.clientY}px`;
+        }
+        const target = document.elementFromPoint(event.clientX, event.clientY);
+        const day = target ? target.closest(".calendar-day") : null;
+        if (day && isDropAllowed(touchDrag.chip, day)) {
+          setDropState(day);
+        } else {
+          setDropState(null);
+        }
+      });
+
+      handle.addEventListener("pointerup", (event) => {
+        if (!touchDrag || touchDrag.pointerId !== event.pointerId) return;
+        event.preventDefault();
+        const ghost = touchDrag.ghost;
+        if (ghost && ghost.parentNode) ghost.parentNode.removeChild(ghost);
+        const target = document.elementFromPoint(event.clientX, event.clientY);
+        const day = target ? target.closest(".calendar-day") : null;
+        clearDropState();
+        submitMove(touchDrag.chip, day);
+
+        touchDrag.chip.classList.remove("calendar-chip--dragging");
+        touchDrag = null;
+        dragged = null;
+      });
+
+      handle.addEventListener("pointercancel", (event) => {
+        if (!touchDrag || touchDrag.pointerId !== event.pointerId) return;
+        event.preventDefault();
+        const ghost = touchDrag.ghost;
+        if (ghost && ghost.parentNode) ghost.parentNode.removeChild(ghost);
+        clearDropState();
+        touchDrag.chip.classList.remove("calendar-chip--dragging");
+        touchDrag = null;
+        dragged = null;
       });
     });
   })();
@@ -296,6 +411,7 @@
     background: #e6edf5;
     border-radius: 16px;
     overflow: hidden;
+    min-width: 840px;
   }
   .calendar-grid--header {
     margin-bottom: 6px;
@@ -364,11 +480,14 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    user-select: none;
   }
   .calendar-chip__icon {
     font-size: 0.85rem;
     display: inline-flex;
     align-items: center;
+    flex: 0 0 auto;
+    touch-action: none;
   }
   .calendar-chip--type-pool .calendar-chip__icon {
     color: #2c7be5;
@@ -404,8 +523,22 @@
   .calendar-chip--dragging {
     opacity: 0.6;
   }
+  .calendar-chip--ghost {
+    position: fixed;
+    z-index: 2000;
+    pointer-events: none;
+    transform: translate(-50%, -50%);
+    box-shadow: 0 10px 25px rgba(15, 23, 42, 0.18);
+    opacity: 0.9;
+  }
   .calendar-details summary {
     cursor: pointer;
+  }
+  .calendar-scroll {
+    overflow-x: auto;
+    overflow-y: visible;
+    padding-bottom: 6px;
+    -webkit-overflow-scrolling: touch;
   }
   @media (max-width: 768px) {
     .calendar-day {
@@ -416,14 +549,23 @@
     }
   }
   @media (max-width: 576px) {
-    .calendar-grid--header {
-      display: none;
+    .calendar-scroll {
+      margin: 0 -12px;
+      padding: 0 12px 8px;
     }
-    .calendar-grid--body {
-      grid-template-columns: repeat(1, minmax(0, 1fr));
+    .calendar-grid {
+      min-width: 760px;
+    }
+    .calendar-weekday {
+      font-size: 0.72rem;
+      padding: 8px 4px;
     }
     .calendar-day {
       min-height: auto;
+      padding: 8px;
+    }
+    .calendar-chip {
+      font-size: 0.76rem;
     }
   }
 </style>
