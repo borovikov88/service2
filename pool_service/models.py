@@ -618,3 +618,98 @@ class WaterReading(models.Model):
 
     def __str__(self):
         return f"{self.pool.address} - {self.date.strftime('%d.%m.%Y %H:%M')}"
+
+
+class ServiceTask(models.Model):
+    VISIBILITY_PUBLIC = "public"
+    VISIBILITY_PRIVATE = "private"
+    VISIBILITY_CHOICES = [
+        (VISIBILITY_PUBLIC, "Общая"),
+        (VISIBILITY_PRIVATE, "Личная"),
+    ]
+
+    PRIORITY_LOW = "low"
+    PRIORITY_NORMAL = "normal"
+    PRIORITY_HIGH = "high"
+    PRIORITY_CHOICES = [
+        (PRIORITY_LOW, "Низкий"),
+        (PRIORITY_NORMAL, "Обычный"),
+        (PRIORITY_HIGH, "Высокий"),
+    ]
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="service_tasks",
+    )
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    start_date = models.DateField()
+    end_date = models.DateField(null=True, blank=True)
+    visibility = models.CharField(max_length=16, choices=VISIBILITY_CHOICES, default=VISIBILITY_PUBLIC)
+    priority = models.CharField(max_length=16, choices=PRIORITY_CHOICES, default=PRIORITY_NORMAL)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_service_tasks",
+    )
+    responsibles = models.ManyToManyField(User, related_name="service_tasks")
+    completed_at = models.DateTimeField(null=True, blank=True)
+    completed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="completed_service_tasks",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["organization", "start_date"], name="task_org_start_idx"),
+            models.Index(fields=["organization", "end_date"], name="task_org_end_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.title} ({self.organization.name})"
+
+    @property
+    def is_completed(self):
+        return bool(self.completed_at)
+
+    def get_end_date(self):
+        return self.end_date or self.start_date
+
+
+class ServiceTaskChange(models.Model):
+    ACTION_CREATED = "created"
+    ACTION_UPDATED = "updated"
+    ACTION_COMPLETED = "completed"
+    ACTION_REOPENED = "reopened"
+    ACTION_MOVED = "moved"
+    ACTION_CHOICES = [
+        (ACTION_CREATED, "Создание"),
+        (ACTION_UPDATED, "Изменение"),
+        (ACTION_COMPLETED, "Выполнено"),
+        (ACTION_REOPENED, "Возобновлено"),
+        (ACTION_MOVED, "Перенос"),
+    ]
+
+    task = models.ForeignKey(ServiceTask, on_delete=models.CASCADE, related_name="changes")
+    changed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    action = models.CharField(max_length=16, choices=ACTION_CHOICES)
+    field_name = models.CharField(max_length=80, blank=True)
+    old_value = models.TextField(blank=True)
+    new_value = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["task", "created_at"], name="task_change_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.task_id} {self.action}"

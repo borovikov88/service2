@@ -1,0 +1,9 @@
+{% extends "pool_service/base.html" %}
+
+{% block title %}{{ page_title }}{% endblock %}
+
+{% block content %}
+<div class="card card-soft p-4">
+  {% include "pool_service/task_form_body.html" %}
+</div>
+{% endblock %}

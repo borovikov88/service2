@@ -265,6 +265,109 @@
     [data-requires-access] {
       cursor: not-allowed;
     }
+
+    .multi-select {
+      position: relative;
+      min-width: 220px;
+    }
+    .multi-select__trigger {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 12px;
+      border: 1px solid #dbe5f5;
+      border-radius: 12px;
+      background: #f8fbff;
+      color: #1f2d3d;
+      text-align: left;
+    }
+    .multi-select__trigger:focus {
+      outline: none;
+      box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.16);
+    }
+    .multi-select--open .multi-select__trigger {
+      background: #f0f6ff;
+      border-color: #cfe0ff;
+    }
+    .multi-select__value {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .multi-select__caret {
+      color: #6c7a90;
+      display: flex;
+      align-items: center;
+    }
+    .multi-select__dropdown {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      right: 0;
+      background: #fff;
+      border: 1px solid #e6eef5;
+      border-radius: 12px;
+      box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
+      padding: 8px;
+      max-height: 260px;
+      overflow-y: auto;
+      display: none;
+      z-index: 30;
+    }
+    .multi-select--open .multi-select__dropdown {
+      display: block;
+    }
+    .multi-select__option {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 8px;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    .multi-select__option input {
+      width: 16px;
+      height: 16px;
+      margin: 0;
+    }
+    .multi-select__option:hover {
+      background: #f0f6ff;
+    }
+    .multi-select__empty {
+      padding: 6px 8px;
+      color: #8a97a8;
+      font-size: 0.85rem;
+    }
+
+    .task-history {
+      border: 1px solid #e6eef5;
+      border-radius: 12px;
+      padding: 12px 14px;
+      background: #fff;
+      box-shadow: 0 8px 20px rgba(15, 23, 42, 0.05);
+    }
+    .task-history__summary {
+      cursor: pointer;
+      font-weight: 600;
+      color: #1f2d3d;
+      list-style: none;
+    }
+    .task-history__summary::-webkit-details-marker {
+      display: none;
+    }
+    .task-history__summary::after {
+      content: "▼";
+      float: right;
+      font-size: 0.75rem;
+      color: #98a6b5;
+      transition: transform 0.2s ease;
+    }
+    .task-history[open] .task-history__summary::after {
+      transform: rotate(180deg);
+    }
   </style>
   {% block extra_head %}{% endblock %}
 </head>
@@ -306,7 +409,7 @@
             <a class="text-decoration-none {% if active_tab == 'crm' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'crm_index' %}">CRM</a>
           {% endif %}
           {% if not is_personal_user %}
-          <a class="text-decoration-none {% if active_tab == 'readings' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="/readings/all">&#1055;&#1083;&#1072;&#1085; &#1074;&#1099;&#1077;&#1079;&#1076;&#1086;&#1074;</a>
+          <a class="text-decoration-none {% if active_tab == 'readings' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="/readings/all">&#1050;&#1072;&#1083;&#1077;&#1085;&#1076;&#1072;&#1088;&#1100;</a>
           {% endif %}
           <a class="text-decoration-none {% if active_tab == 'pools' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{{ personal_pool_url|default:'/pools' }}">
             {% if is_personal_user %}
@@ -461,7 +564,7 @@
           {% if is_org_admin %}
           {% endif %}
           {% if not is_personal_user %}
-          <a href="/readings/all" class="list-group-item list-group-item-action">&#1055;&#1083;&#1072;&#1085; &#1074;&#1099;&#1077;&#1079;&#1076;&#1086;&#1074;</a>
+          <a href="/readings/all" class="list-group-item list-group-item-action">&#1050;&#1072;&#1083;&#1077;&#1085;&#1076;&#1072;&#1088;&#1100;</a>
           {% endif %}
           {% if user.is_authenticated %}
             {% with org_admins=user.organizationaccess_set.all %}
@@ -596,7 +699,7 @@
       {% if not is_personal_user %}
       <a href="/readings/all" class="bottom-item {% if active_tab == 'readings' %}active{% endif %}">
         <i class="bi bi-calendar2-week bottom-icon"></i>
-        <span>&#1055;&#1083;&#1072;&#1085; &#1074;&#1099;&#1077;&#1079;&#1076;&#1086;&#1074;</span>
+        <span>&#1050;&#1072;&#1083;&#1077;&#1085;&#1076;&#1072;&#1088;&#1100;</span>
       </a>
       {% endif %}
       <a href="{% url 'profile' %}" class="bottom-item {% if active_tab == 'profile' %}active{% endif %}">
@@ -1137,6 +1240,129 @@
           }
         }, 250);
       });
+    })();
+  </script>
+  <script>
+    (function () {
+      const getOptionLabel = (checkbox) => {
+        const label = checkbox.closest(".multi-select__option");
+        if (!label) return checkbox.value;
+        return label.textContent.replace(/\s+/g, " ").trim();
+      };
+
+      const updateLabel = (root) => {
+        const valueEl = root.querySelector(".multi-select__value");
+        if (!valueEl) return;
+        const placeholder = root.dataset.placeholder || "\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435";
+        const checked = Array.from(root.querySelectorAll("input[type='checkbox']:checked"));
+        if (!checked.length) {
+          valueEl.textContent = placeholder;
+          return;
+        }
+        const labels = checked.map(getOptionLabel);
+        valueEl.textContent = labels.length <= 2 ? labels.join(", ") : `\u0412\u044b\u0431\u0440\u0430\u043d\u043e: ${labels.length}`;
+      };
+
+      const initMultiSelect = (root) => {
+        if (!root || root.dataset.multiSelectReady === "1") return;
+        const trigger = root.querySelector("[data-multi-select-trigger]");
+        const list = root.querySelector("[data-multi-select-list]");
+        if (!trigger || !list) return;
+        root.dataset.multiSelectReady = "1";
+
+        trigger.addEventListener("click", (event) => {
+          event.preventDefault();
+          root.classList.toggle("multi-select--open");
+        });
+
+        root.addEventListener("change", (event) => {
+          if (!event.target.matches("input[type='checkbox']")) return;
+          updateLabel(root);
+        });
+
+        document.addEventListener("click", (event) => {
+          if (root.contains(event.target)) return;
+          root.classList.remove("multi-select--open");
+        });
+
+        updateLabel(root);
+      };
+
+      const initAllMultiSelects = (scope) => {
+        const root = scope || document;
+        root.querySelectorAll("[data-multi-select]").forEach(initMultiSelect);
+      };
+
+      document.addEventListener("DOMContentLoaded", () => initAllMultiSelects());
+      window.initMultiSelect = initMultiSelect;
+      window.initAllMultiSelects = initAllMultiSelects;
+    })();
+  </script>
+  <script>
+    (function () {
+      const initTaskForms = (scope) => {
+        const root = scope || document;
+        root.querySelectorAll("[data-task-form]").forEach((form) => {
+          if (form.dataset.taskFormReady === "1") return;
+          form.dataset.taskFormReady = "1";
+
+          const visibilityField = form.querySelector("[name='visibility']");
+          const responsiblesBlock = form.querySelector("[data-responsibles-block]");
+          const responsiblesInfo = form.querySelector("[data-responsibles-info]");
+          const fixedInput = form.querySelector("[data-responsibles-fixed]");
+          const defaultAll = responsiblesBlock && responsiblesBlock.dataset.defaultAll === "1";
+
+          const applyState = () => {
+            const isPrivate = visibilityField && visibilityField.value === "private";
+            const checkboxes = responsiblesBlock
+              ? responsiblesBlock.querySelectorAll("input[type='checkbox'][name='responsibles']")
+              : [];
+
+            if (isPrivate) {
+              responsiblesBlock?.classList.add("d-none");
+              responsiblesInfo?.classList.remove("d-none");
+              checkboxes.forEach((cb) => {
+                cb.disabled = true;
+              });
+              if (fixedInput) fixedInput.disabled = false;
+            } else {
+              responsiblesBlock?.classList.remove("d-none");
+              responsiblesInfo?.classList.add("d-none");
+              checkboxes.forEach((cb) => {
+                cb.disabled = false;
+              });
+              if (fixedInput) fixedInput.disabled = true;
+              if (defaultAll && !form.dataset.responsiblesTouched) {
+                const anyChecked = Array.from(checkboxes).some((cb) => cb.checked);
+                if (!anyChecked) {
+                  checkboxes.forEach((cb) => {
+                    cb.checked = true;
+                  });
+                }
+              }
+            }
+
+            if (window.initAllMultiSelects) {
+              window.initAllMultiSelects(form);
+            }
+          };
+
+          form.addEventListener("change", (event) => {
+            if (event.target && event.target.name === "responsibles") {
+              form.dataset.responsiblesTouched = "1";
+            }
+          });
+
+          if (visibilityField) {
+            visibilityField.addEventListener("change", applyState);
+          }
+
+          applyState();
+        });
+      };
+
+      document.addEventListener("DOMContentLoaded", () => initTaskForms());
+      window.initTaskForms = initTaskForms;
     })();
   </script>
 </body>

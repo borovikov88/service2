@@ -110,6 +110,8 @@ from .forms import (
 
     CRM_STAGE_CHOICES_BY_DIRECTION,
 
+    ServiceTaskForm,
+
 )
 
 from .sitemaps import HomeSitemap
@@ -313,6 +315,10 @@ from .models import (
     CrmItemPhoto,
 
     ServiceVisitPlan,
+
+    ServiceTask,
+
+    ServiceTaskChange,
 
 )
 
@@ -5851,11 +5857,403 @@ def yandex_suggest(request):
     return JsonResponse({"items": items})
 
 
+def _task_user_label(user):
+    if not user:
+        return ""
+    return user.get_full_name() or user.username or str(user.id)
 
+
+def _is_modal_request(request):
+    return (
+        request.GET.get("modal") == "1"
+        or request.POST.get("modal") == "1"
+        or request.headers.get("x-requested-with") == "XMLHttpRequest"
+    )
+
+
+def _task_responsible_context(form):
+    options = []
+    field = form.fields.get("responsibles")
+    if field:
+        options = [{"id": user.id, "name": _task_user_label(user)} for user in field.queryset]
+    selected = form["responsibles"].value() if "responsibles" in form.fields else []
+    if not selected:
+        selected = []
+    selected = [str(value) for value in selected]
+    return options, selected
+
+
+def _is_org_owner(user, organization):
+    if not user or not organization:
+        return False
+    if user.is_superuser:
+        return True
+    return OrganizationAccess.objects.filter(user=user, organization=organization, role="owner").exists()
+
+
+def _task_can_edit(task, user):
+    if not user or not user.is_authenticated:
+        return False
+    if user.is_superuser:
+        return True
+    is_responsible = task.responsibles.filter(id=user.id).exists()
+    if task.visibility == ServiceTask.VISIBILITY_PRIVATE:
+        return task.created_by_id == user.id or is_responsible
+    if _is_org_owner(user, task.organization):
+        return True
+    return task.created_by_id == user.id or is_responsible
+
+
+def _record_task_change(task, user, action, field_name="", old_value="", new_value=""):
+    ServiceTaskChange.objects.create(
+        task=task,
+        changed_by=user,
+        action=action,
+        field_name=field_name or "",
+        old_value=old_value or "",
+        new_value=new_value or "",
+    )
 
 
 @login_required
+def task_create(request):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
 
+    is_modal = _is_modal_request(request)
+
+    org = organization_for_user(request.user)
+    if not org:
+        return HttpResponseForbidden()
+    is_staff = OrganizationAccess.objects.filter(
+        user=request.user,
+        organization=org,
+        role__in=ORG_STAFF_ROLES,
+    ).exists()
+    if not is_staff:
+        return HttpResponseForbidden()
+
+    staff_ids = list(
+        User.objects.filter(
+            organizationaccess__organization=org,
+            organizationaccess__role__in=ORG_STAFF_ROLES,
+        )
+        .values_list("id", flat=True)
+        .distinct()
+    )
+    default_responsible_id = request.user.id
+    default_responsible_name = _task_user_label(request.user)
+    default_all_responsibles = True
+
+    next_url = request.GET.get("next") or request.POST.get("next") or ""
+    initial = {}
+    date_param = request.GET.get("date")
+    if date_param:
+        try:
+            initial_date = date.fromisoformat(date_param)
+            initial["start_date"] = initial_date
+            initial["end_date"] = initial_date
+        except ValueError:
+            pass
+    initial["responsibles"] = staff_ids or [request.user.id]
+
+    if request.method == "POST":
+        post_data = request.POST.copy()
+        visibility = post_data.get("visibility") or ServiceTask.VISIBILITY_PUBLIC
+        if visibility == ServiceTask.VISIBILITY_PRIVATE:
+            post_data.setlist("responsibles", [str(default_responsible_id)])
+        form = ServiceTaskForm(post_data, organization=org)
+        if form.is_valid():
+            task = form.save(commit=False)
+            task.organization = org
+            task.created_by = request.user
+            task.save()
+            form.save_m2m()
+
+            _record_task_change(
+                task,
+                request.user,
+                ServiceTaskChange.ACTION_CREATED,
+                new_value=task.title,
+            )
+            if form.cleaned_data.get("is_completed"):
+                task.completed_at = timezone.now()
+                task.completed_by = request.user
+                task.save(update_fields=["completed_at", "completed_by", "updated_at"])
+                _record_task_change(
+                    task,
+                    request.user,
+                    ServiceTaskChange.ACTION_COMPLETED,
+                )
+            if is_modal:
+                return JsonResponse({"ok": True})
+            messages.success(request, "Задача добавлена.")
+            if next_url:
+                return redirect(next_url)
+            return redirect("readings_all")
+    else:
+        form = ServiceTaskForm(initial=initial, organization=org)
+
+    current_visibility = form["visibility"].value() or ServiceTask.VISIBILITY_PUBLIC
+    responsible_options, selected_responsibles = _task_responsible_context(form)
+    context = {
+        "form": form,
+        "task": None,
+        "page_title": "\u041d\u043e\u0432\u0430\u044f \u0437\u0430\u0434\u0430\u0447\u0430",
+        "page_subtitle": "\u0421\u043e\u0437\u0434\u0430\u043d\u0438\u0435 \u0437\u0430\u0434\u0430\u0447\u0438 \u0434\u043b\u044f \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u044f",
+        "active_tab": "readings",
+        "next_url": next_url,
+        "form_action": request.path,
+        "show_history": False,
+        "responsible_options": responsible_options,
+        "selected_responsibles": selected_responsibles,
+        "is_modal": is_modal,
+        "default_responsible_id": default_responsible_id,
+        "default_responsible_name": default_responsible_name,
+        "current_visibility": current_visibility,
+        "default_all_responsibles": default_all_responsibles,
+    }
+    template_name = "pool_service/task_form_modal.html" if is_modal else "pool_service/task_form.html"
+    status_code = 400 if request.method == "POST" and not form.is_valid() and is_modal else 200
+    return render(request, template_name, context, status=status_code)
+
+
+@login_required
+def task_edit(request, task_id):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+
+    is_modal = _is_modal_request(request)
+
+    task = get_object_or_404(ServiceTask, pk=task_id)
+    if not _task_can_edit(task, request.user):
+        return HttpResponseForbidden()
+
+    next_url = request.GET.get("next") or request.POST.get("next") or ""
+    default_responsible_id = task.created_by_id or request.user.id
+    default_responsible_name = _task_user_label(task.created_by or request.user)
+    default_all_responsibles = False
+
+    old_values = {
+        "title": task.title,
+        "description": task.description,
+        "start_date": task.start_date,
+        "end_date": task.end_date,
+        "visibility": task.visibility,
+        "priority": task.priority,
+    }
+    old_responsibles = list(task.responsibles.all())
+    old_responsible_ids = {user.id for user in old_responsibles}
+    old_completed = bool(task.completed_at)
+
+    if request.method == "POST":
+        post_data = request.POST.copy()
+        visibility = post_data.get("visibility") or task.visibility or ServiceTask.VISIBILITY_PUBLIC
+        if visibility == ServiceTask.VISIBILITY_PRIVATE:
+            post_data.setlist("responsibles", [str(default_responsible_id)])
+        form = ServiceTaskForm(post_data, instance=task, organization=task.organization)
+        if form.is_valid():
+            task = form.save(commit=False)
+            task.organization = task.organization
+            task.save()
+            form.save_m2m()
+
+            priority_labels = dict(ServiceTask.PRIORITY_CHOICES)
+            visibility_labels = dict(ServiceTask.VISIBILITY_CHOICES)
+
+            def _format_value(field, value):
+                if value is None:
+                    return ""
+                if field in {"start_date", "end_date"} and isinstance(value, date):
+                    return value.strftime("%d.%m.%Y")
+                if field == "priority":
+                    return priority_labels.get(value, value)
+                if field == "visibility":
+                    return visibility_labels.get(value, value)
+                return str(value)
+
+            for field in ["title", "description", "start_date", "end_date", "visibility", "priority"]:
+                old_val = old_values.get(field)
+                new_val = getattr(task, field)
+                if old_val != new_val:
+                    action = ServiceTaskChange.ACTION_MOVED if field in {"start_date", "end_date"} else ServiceTaskChange.ACTION_UPDATED
+                    _record_task_change(
+                        task,
+                        request.user,
+                        action,
+                        field_name=field,
+                        old_value=_format_value(field, old_val),
+                        new_value=_format_value(field, new_val),
+                    )
+
+            new_responsibles = list(task.responsibles.all())
+            new_responsible_ids = {user.id for user in new_responsibles}
+            if new_responsible_ids != old_responsible_ids:
+                old_names = ", ".join(sorted(_task_user_label(user) for user in old_responsibles))
+                new_names = ", ".join(sorted(_task_user_label(user) for user in new_responsibles))
+                _record_task_change(
+                    task,
+                    request.user,
+                    ServiceTaskChange.ACTION_UPDATED,
+                    field_name="responsibles",
+                    old_value=old_names,
+                    new_value=new_names,
+                )
+
+            is_completed = bool(form.cleaned_data.get("is_completed"))
+            if is_completed and not old_completed:
+                task.completed_at = timezone.now()
+                task.completed_by = request.user
+                task.save(update_fields=["completed_at", "completed_by", "updated_at"])
+                _record_task_change(task, request.user, ServiceTaskChange.ACTION_COMPLETED)
+            elif not is_completed and old_completed:
+                task.completed_at = None
+                task.completed_by = None
+                task.save(update_fields=["completed_at", "completed_by", "updated_at"])
+                _record_task_change(task, request.user, ServiceTaskChange.ACTION_REOPENED)
+
+            if is_modal:
+                return JsonResponse({"ok": True})
+            messages.success(request, "Задача обновлена.")
+            if next_url:
+                return redirect(next_url)
+            return redirect("task_edit", task_id=task.id)
+    else:
+        form = ServiceTaskForm(instance=task, organization=task.organization)
+
+    history = []
+    field_labels = {
+        "title": "Название",
+        "description": "Описание",
+        "start_date": "Дата начала",
+        "end_date": "Дата окончания",
+        "visibility": "Видимость",
+        "priority": "Приоритет",
+        "responsibles": "Ответственные",
+    }
+    action_labels = dict(ServiceTaskChange.ACTION_CHOICES)
+    for change in task.changes.select_related("changed_by").order_by("-created_at")[:100]:
+        history.append(
+            {
+                "created_at": change.created_at,
+                "user": _task_user_label(change.changed_by),
+                "action": action_labels.get(change.action, change.action),
+                "field": field_labels.get(change.field_name, change.field_name),
+                "old_value": change.old_value,
+                "new_value": change.new_value,
+            }
+        )
+
+    current_visibility = form["visibility"].value() or task.visibility or ServiceTask.VISIBILITY_PUBLIC
+    responsible_options, selected_responsibles = _task_responsible_context(form)
+    context = {
+        "form": form,
+        "task": task,
+        "page_title": "\u0420\u0435\u0434\u0430\u043a\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u0437\u0430\u0434\u0430\u0447\u0438",
+        "page_subtitle": task.title,
+        "active_tab": "readings",
+        "next_url": next_url,
+        "form_action": request.path,
+        "show_history": True,
+        "history": history,
+        "responsible_options": responsible_options,
+        "selected_responsibles": selected_responsibles,
+        "is_modal": is_modal,
+        "default_responsible_id": default_responsible_id,
+        "default_responsible_name": default_responsible_name,
+        "current_visibility": current_visibility,
+        "default_all_responsibles": default_all_responsibles,
+    }
+    template_name = "pool_service/task_form_modal.html" if is_modal else "pool_service/task_form.html"
+    status_code = 400 if request.method == "POST" and not form.is_valid() and is_modal else 200
+    return render(request, template_name, context, status=status_code)
+
+
+@csrf_protect
+@login_required
+def task_move(request):
+    if request.method != "POST":
+        return JsonResponse({"ok": False, "error": "method_not_allowed"}, status=405)
+
+    try:
+        payload = json.loads(request.body.decode("utf-8")) if request.body else request.POST
+    except (TypeError, ValueError):
+        payload = request.POST
+
+    task_id = payload.get("task_id")
+    target_date_raw = payload.get("target_date") or payload.get("date")
+    if not task_id or not target_date_raw:
+        return JsonResponse({"ok": False, "error": "missing_fields"}, status=400)
+
+    try:
+        task_id = int(task_id)
+    except (TypeError, ValueError):
+        return JsonResponse({"ok": False, "error": "invalid_task"}, status=400)
+
+    try:
+        target_date = date.fromisoformat(target_date_raw)
+    except ValueError:
+        return JsonResponse({"ok": False, "error": "invalid_date"}, status=400)
+
+    task = get_object_or_404(ServiceTask, pk=task_id)
+    if not _task_can_edit(task, request.user):
+        return JsonResponse({"ok": False, "error": "forbidden"}, status=403)
+    if task.completed_at:
+        return JsonResponse({"ok": False, "error": "completed_task"}, status=400)
+
+    old_start = task.start_date
+    old_end = task.end_date or task.start_date
+    delta = target_date - old_start
+    new_start = old_start + delta
+    new_end = old_end + delta
+
+    if new_start == old_start and new_end == old_end:
+        return JsonResponse({"ok": True})
+
+    task.start_date = new_start
+    task.end_date = new_end
+    task.save(update_fields=["start_date", "end_date", "updated_at"])
+
+    def _fmt(value):
+        return value.strftime("%d.%m.%Y") if value else ""
+
+    if old_start != new_start:
+        _record_task_change(
+            task,
+            request.user,
+            ServiceTaskChange.ACTION_MOVED,
+            field_name="start_date",
+            old_value=_fmt(old_start),
+            new_value=_fmt(new_start),
+        )
+    if old_end != new_end:
+        _record_task_change(
+            task,
+            request.user,
+            ServiceTaskChange.ACTION_MOVED,
+            field_name="end_date",
+            old_value=_fmt(old_end),
+            new_value=_fmt(new_end),
+        )
+
+    return JsonResponse(
+        {
+            "ok": True,
+            "start_date": new_start.isoformat(),
+            "end_date": new_end.isoformat(),
+        }
+    )
+
+
+@login_required
 def readings_all(request):
 
     """Service visit calendar."""
@@ -5919,12 +6317,27 @@ def readings_all(request):
     if not target_month:
         target_month = today.replace(day=1)
 
+    selected_responsible_ids = []
+    for raw_id in request.GET.getlist("responsible"):
+        try:
+            selected_responsible_ids.append(int(raw_id))
+        except (TypeError, ValueError):
+            continue
+
     month_label = f"{month_labels.get(target_month.month, target_month.month)} {target_month.year}"
     prev_month_date = _add_month(target_month, -1)
     next_month_date = _add_month(target_month, 1)
-    prev_month = f"{prev_month_date.year}-{prev_month_date.month:02d}"
-    next_month = f"{next_month_date.year}-{next_month_date.month:02d}"
-    today_month = f"{today.year}-{today.month:02d}"
+    target_month_value = f"{target_month.year}-{target_month.month:02d}"
+    prev_month_value = f"{prev_month_date.year}-{prev_month_date.month:02d}"
+    next_month_value = f"{next_month_date.year}-{next_month_date.month:02d}"
+    today_month_value = f"{today.year}-{today.month:02d}"
+
+    responsible_params = [("responsible", str(rid)) for rid in selected_responsible_ids]
+    responsible_filter_set = set(selected_responsible_ids)
+    prev_month_query = urlencode([("month", prev_month_value), *responsible_params])
+    next_month_query = urlencode([("month", next_month_value), *responsible_params])
+    today_month_query = urlencode([("month", today_month_value), *responsible_params])
+    current_query = urlencode([("month", target_month_value), *responsible_params])
 
     first_day = target_month
     last_day = date(target_month.year, target_month.month, calendar.monthrange(target_month.year, target_month.month)[1])
@@ -5951,6 +6364,27 @@ def readings_all(request):
 
     pool_ids = [pool.id for pool in pool_list]
     org_ids = {pool.organization_id for pool in pool_list if pool.organization_id}
+
+    task_org = organization_for_user(request.user)
+    responsible_options = []
+    can_create_tasks = False
+    if task_org:
+        task_staff = (
+            User.objects.filter(
+                organizationaccess__organization=task_org,
+                organizationaccess__role__in=ORG_STAFF_ROLES,
+            )
+            .distinct()
+            .order_by("last_name", "first_name", "username")
+        )
+        responsible_options = [
+            {"id": user.id, "name": _task_user_label(user)} for user in task_staff
+        ]
+        can_create_tasks = OrganizationAccess.objects.filter(
+            user=request.user,
+            organization=task_org,
+            role__in=ORG_STAFF_ROLES,
+        ).exists()
 
     org_user_ids = set(
         OrganizationAccess.objects.filter(organization_id__in=org_ids)
@@ -6091,6 +6525,9 @@ def readings_all(request):
         responsible_name = None
         if responsible:
             responsible_name = responsible.get_full_name() or responsible.username
+        if responsible_filter_set:
+            if not responsible or responsible.id not in responsible_filter_set:
+                return
 
         display_date = actual_date or planned_date or due_date
         display_week_start = _week_start(display_date)
@@ -6381,13 +6818,148 @@ def readings_all(request):
                 "is_draggable": draggable,
                 "title": " | ".join(title_parts),
                 "object_type": group["object_type"],
+                "item_type": "auto",
+                "kind_order": 0,
             }
         )
+
+    calendar_return_url = f"{reverse('readings_all')}?{current_query}" if current_query else reverse("readings_all")
+
+    if task_org:
+        task_qs = ServiceTask.objects.filter(organization=task_org)
+        if not request.user.is_superuser:
+            task_qs = task_qs.filter(
+                Q(visibility=ServiceTask.VISIBILITY_PUBLIC)
+                | Q(
+                    visibility=ServiceTask.VISIBILITY_PRIVATE,
+                    created_by=request.user,
+                )
+                | Q(
+                    visibility=ServiceTask.VISIBILITY_PRIVATE,
+                    responsibles=request.user,
+                )
+            )
+        if responsible_filter_set:
+            task_qs = task_qs.filter(responsibles__in=responsible_filter_set)
+
+        task_qs = task_qs.filter(
+            Q(end_date__isnull=True, start_date__lte=range_end, start_date__gte=range_start)
+            | Q(end_date__isnull=False, start_date__lte=range_end, end_date__gte=range_start)
+        )
+
+        task_qs = task_qs.select_related("created_by").prefetch_related("responsibles").distinct()
+        priority_labels = dict(ServiceTask.PRIORITY_CHOICES)
+        visibility_labels = dict(ServiceTask.VISIBILITY_CHOICES)
+        is_owner = _is_org_owner(request.user, task_org)
+
+        for task in task_qs:
+            task_start = task.start_date
+            task_end = task.end_date or task.start_date
+            if task_end < range_start or task_start > range_end:
+                continue
+
+            is_completed = bool(task.completed_at)
+            if is_completed:
+                status = "done"
+            elif task_end < today:
+                status = "overdue"
+            else:
+                status = "planned"
+
+            if status == "overdue":
+                overdue_count += 1
+            elif status == "planned":
+                planned_count += 1
+            else:
+                done_count += 1
+
+            task_responsibles = list(task.responsibles.all())
+            responsible_names = [_task_user_label(user) for user in task_responsibles]
+            responsible_names = [name for name in responsible_names if name]
+            responsible_label = ", ".join(responsible_names) if responsible_names else ""
+
+            title_parts = []
+            if responsible_label:
+                title_parts.append(f"Ответственные: {responsible_label}")
+            title_parts.append(f"Приоритет: {priority_labels.get(task.priority, task.priority)}")
+            title_parts.append(f"Видимость: {visibility_labels.get(task.visibility, task.visibility)}")
+            if task_start == task_end:
+                title_parts.append(f"Дата: {task_start:%d.%m.%Y}")
+            else:
+                title_parts.append(f"Период: {task_start:%d.%m.%Y} — {task_end:%d.%m.%Y}")
+            if is_completed and task.completed_at:
+                title_parts.append(f"Выполнено: {task.completed_at:%d.%m.%Y}")
+            if status == "overdue":
+                title_parts.append("Просрочено")
+
+            responsible_ids = {user.id for user in task_responsibles}
+            can_edit = (
+                request.user.is_superuser
+                or request.user.id in responsible_ids
+                or task.created_by_id == request.user.id
+                or (task.visibility == ServiceTask.VISIBILITY_PUBLIC and is_owner)
+            )
+            is_draggable = can_edit and not is_completed
+            edit_url = reverse("task_edit", kwargs={"task_id": task.id})
+            if calendar_return_url:
+                edit_url = f"{edit_url}?{urlencode({'next': calendar_return_url})}"
+
+            display_start = max(task_start, range_start)
+            display_end = min(task_end, range_end)
+            span_days = (task_end - task_start).days + 1
+
+            schedule_by_date.setdefault(display_start, []).append(
+                {
+                    "client_name": task.title,
+                    "display_name": task.title,
+                    "status": status,
+                    "date": display_start,
+                    "priority": task.priority,
+                    "visibility": task.visibility,
+                    "is_completed": is_completed,
+                    "is_multi": span_days > 1,
+                    "span_days": span_days,
+                    "is_continued": task_start < range_start,
+                    "title": " | ".join(title_parts),
+                    "task_id": task.id,
+                    "start_date": task_start,
+                    "end_date": task_end,
+                    "is_draggable": is_draggable,
+                    "item_type": "task",
+                    "edit_url": edit_url if can_edit else "",
+                    "kind_order": 1,
+                }
+            )
+
+            if span_days > 1:
+                cursor = display_start + timedelta(days=1)
+                while cursor <= display_end:
+                    schedule_by_date.setdefault(cursor, []).append(
+                        {
+                            "client_name": task.title,
+                            "display_name": task.title,
+                            "status": status,
+                            "date": cursor,
+                            "priority": task.priority,
+                            "visibility": task.visibility,
+                            "is_completed": is_completed,
+                            "title": " | ".join(title_parts),
+                            "item_type": "task_continuation",
+                            "kind_order": 2,
+                        }
+                    )
+                    cursor += timedelta(days=1)
 
     status_order = {"overdue": 0, "planned": 1, "done": 2}
     for day in calendar_days:
         items = schedule_by_date.get(day["date"], [])
-        items.sort(key=lambda item: (status_order.get(item["status"], 9), item["client_name"]))
+        items.sort(
+            key=lambda item: (
+                status_order.get(item["status"], 9),
+                item.get("kind_order", 0),
+                item.get("client_name") or "",
+            )
+        )
         day["items"] = items
 
     return render(
@@ -6396,17 +6968,22 @@ def readings_all(request):
         {
             "calendar_days": calendar_days,
             "month_label": month_label,
-            "prev_month": prev_month,
-            "next_month": next_month,
-            "today_month": today_month,
-            "page_title": "\u041f\u043b\u0430\u043d \u0432\u044b\u0435\u0437\u0434\u043e\u0432",
-            "page_subtitle": None,
+            "prev_month_query": prev_month_query,
+            "next_month_query": next_month_query,
+            "today_month_query": today_month_query,
+            "current_month": target_month_value,
+            "calendar_return_url": calendar_return_url,
+            "page_title": "\u041a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u044c \u0437\u0430\u0434\u0430\u0447",
+            "page_subtitle": "\u0412\u044b\u0435\u0437\u0434\u044b \u0438 \u0440\u0443\u0447\u043d\u044b\u0435 \u0437\u0430\u0434\u0430\u0447\u0438 \u043a\u043e\u043c\u0430\u043d\u0434\u044b",
             "active_tab": "readings",
             "overdue_count": overdue_count,
             "planned_count": planned_count,
             "done_count": done_count,
             "unscheduled_pools": unscheduled_pools,
             "paused_pools": paused_pools,
+            "responsible_options": responsible_options,
+            "selected_responsibles": [str(rid) for rid in selected_responsible_ids],
+            "can_create_tasks": can_create_tasks,
         },
     )
 

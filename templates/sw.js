@@ -32,6 +32,9 @@ self.addEventListener('fetch', (event) => {
   if (requestUrl.origin !== self.location.origin) {
     return;
   }
+  if (requestUrl.pathname.startsWith('/tasks/') || requestUrl.searchParams.has('modal')) {
+    return;
+  }
   if (requestUrl.pathname.startsWith('/media/')) {
     return;
   }

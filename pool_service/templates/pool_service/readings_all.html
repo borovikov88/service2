@@ -1,20 +1,52 @@
 {% extends "pool_service/base.html" %}
 
-{% block title %}&#1055;&#1083;&#1072;&#1085; &#1074;&#1099;&#1077;&#1079;&#1076;&#1086;&#1074;{% endblock %}
+{% block title %}&#1050;&#1072;&#1083;&#1077;&#1085;&#1076;&#1072;&#1088;&#1100; &#1079;&#1072;&#1076;&#1072;&#1095;{% endblock %}
 
 {% block content %}
 <div class="calendar-toolbar d-flex flex-wrap align-items-center justify-content-between gap-3 mb-3">
-  <div class="d-flex align-items-center gap-2">
-    <a class="btn btn-light btn-sm" href="?month={{ prev_month }}" aria-label="&#1055;&#1088;&#1077;&#1076;&#1099;&#1076;&#1091;&#1097;&#1080;&#1081; &#1084;&#1077;&#1089;&#1103;&#1094;">
-      <i class="bi bi-chevron-left"></i>
-    </a>
-    <div class="calendar-month-label fw-semibold">{{ month_label }}</div>
-    <a class="btn btn-light btn-sm" href="?month={{ next_month }}" aria-label="&#1057;&#1083;&#1077;&#1076;&#1091;&#1102;&#1097;&#1080;&#1081; &#1084;&#1077;&#1089;&#1103;&#1094;">
-      <i class="bi bi-chevron-right"></i>
-    </a>
+  <div class="d-flex flex-wrap align-items-center gap-3">
+    <div class="d-flex align-items-center gap-2">
+      <a class="btn btn-light btn-sm" href="?{{ prev_month_query }}" aria-label="&#1055;&#1088;&#1077;&#1076;&#1099;&#1076;&#1091;&#1097;&#1080;&#1081; &#1084;&#1077;&#1089;&#1103;&#1094;">
+        <i class="bi bi-chevron-left"></i>
+      </a>
+      <div class="calendar-month-label fw-semibold">{{ month_label }}</div>
+      <a class="btn btn-light btn-sm" href="?{{ next_month_query }}" aria-label="&#1057;&#1083;&#1077;&#1076;&#1091;&#1102;&#1097;&#1080;&#1081; &#1084;&#1077;&#1089;&#1103;&#1094;">
+        <i class="bi bi-chevron-right"></i>
+      </a>
+    </div>
+    {% if responsible_options %}
+      <form class="calendar-filter calendar-filter--inline d-flex flex-wrap align-items-center gap-2" method="get">
+        <input type="hidden" name="month" value="{{ current_month }}">
+        <label class="form-label mb-0 small d-none d-md-block">&#1054;&#1090;&#1074;&#1077;&#1090;&#1089;&#1090;&#1074;&#1077;&#1085;&#1085;&#1099;&#1077;</label>
+        <div class="calendar-filter__field">
+          <div class="multi-select" data-multi-select data-placeholder="&#1042;&#1089;&#1077; &#1086;&#1090;&#1074;&#1077;&#1090;&#1089;&#1090;&#1074;&#1077;&#1085;&#1085;&#1099;&#1077;">
+            <button type="button" class="multi-select__trigger" data-multi-select-trigger>
+              <span class="multi-select__value"></span>
+              <span class="multi-select__caret" aria-hidden="true">
+                <i class="bi bi-chevron-down"></i>
+              </span>
+            </button>
+            <div class="multi-select__dropdown" data-multi-select-list>
+              {% for option in responsible_options %}
+                <label class="multi-select__option">
+                  <input type="checkbox" name="responsible" value="{{ option.id }}" {% if option.id|stringformat:"s" in selected_responsibles %}checked{% endif %}>
+                  <span>{{ option.name }}</span>
+                </label>
+              {% empty %}
+                <div class="multi-select__empty">&#1053;&#1077;&#1090; &#1076;&#1086;&#1089;&#1090;&#1091;&#1087;&#1085;&#1099;&#1093; &#1089;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1086;&#1074;.</div>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+        <div class="calendar-filter__actions d-flex gap-2">
+          <button class="btn btn-primary btn-sm" type="submit">&#1055;&#1088;&#1080;&#1084;&#1077;&#1085;&#1080;&#1090;&#1100;</button>
+          <a class="btn btn-outline-secondary btn-sm" href="?month={{ current_month }}">&#1057;&#1073;&#1088;&#1086;&#1089;&#1080;&#1090;&#1100;</a>
+        </div>
+      </form>
+    {% endif %}
   </div>
   <div class="d-flex align-items-center gap-2">
-    <a class="btn btn-outline-secondary btn-sm" href="?month={{ today_month }}">
+    <a class="btn btn-outline-secondary btn-sm" href="?{{ today_month_query }}">
       &#1057;&#1077;&#1075;&#1086;&#1076;&#1085;&#1103;
     </a>
   </div>
@@ -45,26 +77,76 @@
 
   <div class="calendar-grid calendar-grid--body">
     {% for day in calendar_days %}
-      <div class="calendar-day {% if not day.is_current_month %}calendar-day--muted{% endif %} {% if day.is_today %}calendar-day--today{% endif %}" data-date="{{ day.date|date:'Y-m-d' }}" data-week-start="{{ day.week_start|date:'Y-m-d' }}">
+      <div class="calendar-day {% if not day.is_current_month %}calendar-day--muted{% endif %} {% if day.is_today %}calendar-day--today{% endif %}" data-date="{{ day.date|date:'Y-m-d' }}" data-week-start="{{ day.week_start|date:'Y-m-d' }}"{% if can_create_tasks %} data-create-url="{% url 'task_create' %}?date={{ day.date|date:'Y-m-d' }}&next={{ calendar_return_url|urlencode }}"{% endif %}>
         <div class="calendar-day__header">
           <span class="calendar-day__number">{{ day.day }}</span>
-          {% if day.is_today %}
-            <span class="calendar-day__badge">&#1057;&#1077;&#1075;&#1086;&#1076;&#1085;&#1103;</span>
-          {% endif %}
+          <div class="calendar-day__meta">
+            {% if day.is_today %}
+              <span class="calendar-day__badge">&#1057;&#1077;&#1075;&#1086;&#1076;&#1085;&#1103;</span>
+            {% endif %}
+            {% if can_create_tasks %}
+              <a class="calendar-day__add" href="{% url 'task_create' %}?date={{ day.date|date:'Y-m-d' }}&next={{ calendar_return_url|urlencode }}" data-task-modal-url="{% url 'task_create' %}?date={{ day.date|date:'Y-m-d' }}&next={{ calendar_return_url|urlencode }}" aria-label="&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1079;&#1072;&#1076;&#1072;&#1095;&#1091;">
+                <i class="bi bi-plus"></i>
+              </a>
+            {% endif %}
+          </div>
         </div>
         <div class="calendar-day__items">
           {% for item in day.items %}
-            <div class="calendar-chip calendar-chip--{{ item.status }} calendar-chip--type-{{ item.object_type }} {% if item.is_draggable %}calendar-chip--draggable{% endif %}" draggable="{{ item.is_draggable|yesno:'true,false' }}" data-pool-ids="{{ item.pool_ids|join:',' }}" data-week-start="{{ item.week_start|date:'Y-m-d' }}" data-source-week-start="{{ item.source_week_start }}" data-source-weeks="{{ item.source_weeks }}" data-source-month="{{ item.source_month }}" data-allow-month="{{ item.allow_month_move|yesno:'true,false' }}" data-date="{{ item.date|date:'Y-m-d' }}" title="{{ item.title }}">
-              <span class="calendar-chip__icon" data-drag-handle="true" aria-hidden="true">
-                {% if item.object_type == 'water' %}
-                  <i class="bi bi-gear"></i>
-                {% else %}
-                  <i class="bi bi-droplet"></i>
-                {% endif %}
-              </span>
-              <span class="calendar-chip__text">{{ item.display_name }}</span>
-            </div>
+            {% if forloop.counter0 == 7 %}
+              <div class="calendar-day__extra d-none">
+            {% endif %}
+            {% if item.item_type == "task_continuation" %}
+              <div class="calendar-chip calendar-chip--continuation calendar-chip--{{ item.status }} calendar-chip--priority-{{ item.priority }} {% if item.is_completed or item.status == 'done' %}calendar-chip--completed{% endif %}" title="{{ item.title }}">
+                <span class="calendar-chip__text">&#8594; {{ item.display_name }}</span>
+              </div>
+            {% elif item.item_type == "task" %}
+              {% if item.edit_url %}
+                <a class="calendar-chip calendar-chip--task calendar-chip--{{ item.status }} calendar-chip--priority-{{ item.priority }} {% if item.is_completed or item.status == 'done' %}calendar-chip--completed{% endif %} calendar-chip--link {% if item.is_draggable %}calendar-chip--draggable calendar-chip--task-draggable{% endif %}" href="{{ item.edit_url }}" data-task-modal-url="{{ item.edit_url }}" draggable="{{ item.is_draggable|yesno:'true,false' }}" data-task-id="{{ item.task_id }}" data-task-start="{{ item.start_date|date:'Y-m-d' }}" data-task-end="{{ item.end_date|date:'Y-m-d' }}" data-date="{{ item.date|date:'Y-m-d' }}" title="{{ item.title }}">
+              {% else %}
+                <div class="calendar-chip calendar-chip--task calendar-chip--{{ item.status }} calendar-chip--priority-{{ item.priority }} {% if item.is_completed or item.status == 'done' %}calendar-chip--completed{% endif %}" title="{{ item.title }}">
+              {% endif %}
+                  <span class="calendar-chip__icon" data-drag-handle="true" aria-hidden="true">
+                    <i class="bi bi-list-check"></i>
+                  </span>
+                  <span class="calendar-chip__text">
+                    {{ item.display_name }}
+                    {% if item.is_multi %}
+                      <span class="calendar-chip__badge">{{ item.span_days }} &#1076;&#1085;</span>
+                    {% endif %}
+                    {% if item.is_continued %}
+                      <span class="calendar-chip__badge calendar-chip__badge--ghost">&#1087;&#1088;&#1086;&#1076;.</span>
+                    {% endif %}
+                  </span>
+                  <span class="calendar-chip__priority calendar-chip__priority--{{ item.priority }}" aria-hidden="true"></span>
+              {% if item.edit_url %}
+                </a>
+              {% else %}
+                </div>
+              {% endif %}
+            {% else %}
+              <div class="calendar-chip calendar-chip--{{ item.status }} calendar-chip--type-{{ item.object_type }} {% if item.is_draggable %}calendar-chip--draggable{% endif %} {% if item.status == 'done' %}calendar-chip--completed{% endif %}" draggable="{{ item.is_draggable|yesno:'true,false' }}" data-pool-ids="{{ item.pool_ids|join:',' }}" data-week-start="{{ item.week_start|date:'Y-m-d' }}" data-source-week-start="{{ item.source_week_start }}" data-source-weeks="{{ item.source_weeks }}" data-source-month="{{ item.source_month }}" data-allow-month="{{ item.allow_month_move|yesno:'true,false' }}" data-date="{{ item.date|date:'Y-m-d' }}" title="{{ item.title }}">
+                <span class="calendar-chip__icon" data-drag-handle="true" aria-hidden="true">
+                  {% if item.object_type == 'water' %}
+                    <i class="bi bi-gear"></i>
+                  {% else %}
+                    <i class="bi bi-droplet"></i>
+                  {% endif %}
+                </span>
+                <span class="calendar-chip__text">{{ item.display_name }}</span>
+              </div>
+            {% endif %}
+            {% if forloop.last and forloop.counter0 >= 7 %}
+              </div>
+            {% endif %}
           {% endfor %}
+          {% if day.items|length > 7 %}
+            {% with extra_count=day.items|length|add:"-7" %}
+              <button type="button" class="calendar-day__more" data-more-toggle data-more-count="{{ extra_count }}">
+                &#1045;&#1097;&#1077; {{ extra_count }} &#1079;&#1072;&#1076;&#1072;&#1095;
+              </button>
+            {% endwith %}
+          {% endif %}
         </div>
       </div>
     {% endfor %}
@@ -115,12 +197,70 @@
   </details>
 {% endif %}
 
+<div class="modal fade" id="taskModal" tabindex="-1" aria-labelledby="taskModalTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+    <div class="modal-content task-modal__content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="taskModalTitle">&#1047;&#1072;&#1076;&#1072;&#1095;&#1072;</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="&#1047;&#1072;&#1082;&#1088;&#1099;&#1090;&#1100;"></button>
+      </div>
+      <div class="modal-body task-modal__body">
+        <div class="task-modal__loading d-flex align-items-center gap-2 text-muted">
+          <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+          <span>&#1047;&#1072;&#1075;&#1088;&#1091;&#1079;&#1082;&#1072;...</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
-  (function () {
-    const moveUrl = "{% url 'visit_plan_move' %}";
+  document.addEventListener("DOMContentLoaded", function () {
+    const autoMoveUrl = "{% url 'visit_plan_move' %}";
+    const taskMoveUrl = "{% url 'task_move' %}";
     const chips = document.querySelectorAll(".calendar-chip--draggable");
     const days = document.querySelectorAll(".calendar-day");
     const dragHandles = document.querySelectorAll("[data-drag-handle='true']");
+    const taskModalEl = document.getElementById("taskModal");
+    const taskModalTitle = taskModalEl ? taskModalEl.querySelector("#taskModalTitle") : null;
+    const taskModalBody = taskModalEl ? taskModalEl.querySelector(".task-modal__body") : null;
+    const canUseBootstrap = taskModalEl && window.bootstrap && typeof window.bootstrap.Modal === "function";
+    let fallbackBackdrop = null;
+    function createFallbackModal(modalEl) {
+      return {
+        show() {
+          if (!modalEl) return;
+          modalEl.style.display = "block";
+          modalEl.classList.add("show");
+          modalEl.removeAttribute("aria-hidden");
+          modalEl.setAttribute("aria-modal", "true");
+          document.body.classList.add("modal-open");
+          if (!fallbackBackdrop) {
+            fallbackBackdrop = document.createElement("div");
+            fallbackBackdrop.className = "modal-backdrop fade show";
+            document.body.appendChild(fallbackBackdrop);
+          }
+        },
+        hide() {
+          if (!modalEl) return;
+          modalEl.classList.remove("show");
+          modalEl.style.display = "none";
+          modalEl.setAttribute("aria-hidden", "true");
+          modalEl.removeAttribute("aria-modal");
+          document.body.classList.remove("modal-open");
+          if (fallbackBackdrop) {
+            fallbackBackdrop.remove();
+            fallbackBackdrop = null;
+          }
+          showTaskLoading();
+        },
+      };
+    }
+    const taskModal = taskModalEl
+      ? canUseBootstrap
+        ? new bootstrap.Modal(taskModalEl)
+        : createFallbackModal(taskModalEl)
+      : null;
     let dragged = null;
     let currentDrop = null;
     let touchDrag = null;
@@ -138,6 +278,158 @@
         alert(text);
       }
     }
+
+    function isTaskChip(chip) {
+      return Boolean(chip && chip.dataset.taskId);
+    }
+
+    function showTaskLoading() {
+      if (!taskModalBody) return;
+      if (taskModalTitle) {
+        taskModalTitle.textContent = "\u0417\u0430\u0434\u0430\u0447\u0430";
+      }
+      taskModalBody.innerHTML = `
+        <div class="task-modal__loading d-flex align-items-center gap-2 text-muted">
+          <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+          <span>\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430...</span>
+        </div>
+      `;
+    }
+
+    function appendModalParam(url) {
+      if (!url) return url;
+      if (url.includes("modal=1")) return url;
+      const divider = url.includes("?") ? "&" : "?";
+      return `${url}${divider}modal=1`;
+    }
+
+    function openTaskModal(url) {
+      if (!url) return;
+      if (!taskModalEl || !taskModalBody || !taskModal) {
+        window.location.href = url;
+        return;
+      }
+      showTaskLoading();
+      taskModal.show();
+      const modalUrl = appendModalParam(url);
+      fetch(modalUrl, {
+        headers: { "X-Requested-With": "XMLHttpRequest" },
+        cache: "no-store",
+        credentials: "same-origin",
+      })
+        .then((resp) => resp.text())
+        .then((html) => {
+          taskModalBody.innerHTML = html;
+          const root = taskModalBody.querySelector(".task-modal");
+          if (root && root.dataset.modalTitle && taskModalTitle) {
+            taskModalTitle.textContent = root.dataset.modalTitle;
+          }
+          if (window.initAllMultiSelects) {
+            window.initAllMultiSelects(taskModalBody);
+          }
+          if (window.initTaskForms) {
+            window.initTaskForms(taskModalBody);
+          }
+        })
+        .catch(() => {
+          taskModalBody.innerHTML = `
+            <div class="text-danger">
+              \u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044c \u0444\u043e\u0440\u043c\u0443.
+            </div>
+          `;
+        });
+    }
+
+    if (taskModalEl && taskModal) {
+      taskModalEl.addEventListener("submit", (event) => {
+        const form = event.target.closest("[data-task-form]");
+        if (!form) return;
+        event.preventDefault();
+        const formData = new FormData(form);
+        if (!formData.has("modal")) {
+          formData.append("modal", "1");
+        }
+        fetch(form.action, {
+          method: "POST",
+          headers: {
+            "X-Requested-With": "XMLHttpRequest",
+            "X-CSRFToken": getCookie("csrftoken"),
+          },
+          body: formData,
+          credentials: "same-origin",
+        })
+          .then(async (resp) => {
+            const contentType = resp.headers.get("content-type") || "";
+            if (contentType.includes("application/json")) {
+              const data = await resp.json().catch(() => ({}));
+              if (!resp.ok || !data.ok) {
+                const error = data.error || "save_failed";
+                throw new Error(error);
+              }
+              return { ok: true };
+            }
+            const html = await resp.text();
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, "text/html");
+            const formNode = doc.querySelector("[data-task-form]");
+            if (formNode) {
+              taskModalBody.innerHTML = html;
+              if (window.initAllMultiSelects) {
+                window.initAllMultiSelects(taskModalBody);
+              }
+              if (window.initTaskForms) {
+                window.initTaskForms(taskModalBody);
+              }
+              return { ok: false };
+            }
+            const message = resp.ok
+              ? "\u041e\u0448\u0438\u0431\u043a\u0430 \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u0438\u044f. \u041e\u0431\u043d\u043e\u0432\u0438\u0442\u0435 \u0441\u0442\u0440\u0430\u043d\u0438\u0446\u0443 \u0438 \u043f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u0435."
+              : "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c \u0437\u0430\u0434\u0430\u0447\u0443. \u041f\u0440\u043e\u0432\u0435\u0440\u044c\u0442\u0435 \u0434\u0430\u043d\u043d\u044b\u0435.";
+            showMessage(message);
+            return { ok: false };
+          })
+          .then((result) => {
+            if (result && result.ok) {
+              taskModal.hide();
+              window.location.reload();
+            }
+          })
+          .catch((error) => {
+            const details = error.message ? `: ${error.message}` : "";
+            showMessage(`\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c \u0437\u0430\u0434\u0430\u0447\u0443${details}.`);
+          });
+      });
+
+      if (canUseBootstrap) {
+        taskModalEl.addEventListener("hidden.bs.modal", () => {
+          showTaskLoading();
+        });
+      } else {
+        taskModalEl.addEventListener("click", (event) => {
+          if (event.target.closest("[data-bs-dismiss='modal']")) {
+            event.preventDefault();
+            taskModal.hide();
+            return;
+          }
+          if (event.target === taskModalEl) {
+            taskModal.hide();
+          }
+        });
+      }
+    }
+
+    document.addEventListener("click", (event) => {
+      if (dragged || touchDrag) return;
+      const trigger = event.target.closest("[data-task-modal-url]");
+      if (!trigger) return;
+      const hasButton = typeof event.button === "number";
+      if (event.defaultPrevented || (hasButton && event.button !== 0) || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+        return;
+      }
+      event.preventDefault();
+      const url = trigger.dataset.taskModalUrl || trigger.getAttribute("href");
+      if (url) openTaskModal(url);
+    });
 
     function clearDropState() {
       if (currentDrop) {
@@ -157,6 +449,7 @@
       if (!chip || !day) return false;
       const targetDate = day.dataset.date || "";
       if (!targetDate) return false;
+      if (isTaskChip(chip)) return true;
       const allowMonth = chip.dataset.allowMonth === "true";
       const sourceMonth = chip.dataset.sourceMonth || "";
       const targetMonth = targetDate.slice(0, 7);
@@ -187,7 +480,7 @@
       return "";
     }
 
-    function buildPayload(chip, targetDate) {
+    function buildAutoPayload(chip, targetDate) {
       const poolIds = (chip.dataset.poolIds || "")
         .split(",")
         .map((val) => val.trim())
@@ -221,6 +514,58 @@
       };
     }
 
+    function buildTaskPayload(chip, targetDate) {
+      const taskId = chip.dataset.taskId || "";
+      if (!taskId) {
+        showMessage("\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0438\u0442\u044c \u0437\u0430\u0434\u0430\u0447\u0443.");
+        return null;
+      }
+      return {
+        task_id: taskId,
+        target_date: targetDate,
+      };
+    }
+
+    function handleTaskMove(chip, targetDate) {
+      const payload = buildTaskPayload(chip, targetDate);
+      if (!payload) return;
+      fetch(taskMoveUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": getCookie("csrftoken"),
+        },
+        body: JSON.stringify(payload),
+      })
+        .then(async (response) => {
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok || !data.ok) {
+            const error = data.error || "save_failed";
+            throw new Error(error);
+          }
+          return data;
+        })
+        .then(() => {
+          window.location.reload();
+        })
+        .catch((error) => {
+          const errorMap = {
+            forbidden: "\u041d\u0435\u0442 \u043f\u0440\u0430\u0432 \u0434\u043b\u044f \u043f\u0435\u0440\u0435\u043d\u043e\u0441\u0430 \u0437\u0430\u0434\u0430\u0447\u0438.",
+            invalid_task: "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0438\u0442\u044c \u0437\u0430\u0434\u0430\u0447\u0443.",
+            invalid_date: "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0438\u0442\u044c \u0434\u0430\u0442\u0443 \u043f\u0435\u0440\u0435\u043d\u043e\u0441\u0430.",
+            missing_fields: "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0438\u0442\u044c \u0434\u0430\u0442\u0443 \u043f\u0435\u0440\u0435\u043d\u043e\u0441\u0430.",
+            completed_task: "\u0417\u0430\u043a\u0440\u044b\u0442\u0443\u044e \u0437\u0430\u0434\u0430\u0447\u0443 \u043d\u0435\u043b\u044c\u0437\u044f \u043f\u0435\u0440\u0435\u043d\u043e\u0441\u0438\u0442\u044c.",
+          };
+          const message = errorMap[error.message];
+          if (message) {
+            showMessage(message);
+            return;
+          }
+          const details = error.message ? `: ${error.message}` : "";
+          showMessage(`\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c \u043f\u0435\u0440\u0435\u043d\u043e\u0441 \u0437\u0430\u0434\u0430\u0447\u0438${details}.`);
+        });
+    }
+
     function submitMove(chip, day) {
       if (!chip || !day) return;
       const targetDate = day.dataset.date || "";
@@ -229,16 +574,20 @@
         return;
       }
       if (targetDate === chip.dataset.date) return;
+      if (isTaskChip(chip)) {
+        handleTaskMove(chip, targetDate);
+        return;
+      }
       if (!isDropAllowed(chip, day)) {
         const message = getDropIssueMessage(chip, day);
         if (message) showMessage(message);
         return;
       }
 
-      const payload = buildPayload(chip, targetDate);
+      const payload = buildAutoPayload(chip, targetDate);
       if (!payload) return;
 
-      fetch(moveUrl, {
+      fetch(autoMoveUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -256,7 +605,7 @@
         })
         .then(() => {
           const targetList = day.querySelector(".calendar-day__items");
-          if (targetList) {
+          if (targetList && chip && chip.nodeType === 1) {
             targetList.appendChild(chip);
             chip.dataset.date = targetDate;
           }
@@ -279,7 +628,10 @@
       chip.addEventListener("dragstart", (event) => {
         dragged = chip;
         chip.classList.add("calendar-chip--dragging");
-        event.dataTransfer.effectAllowed = "move";
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", "");
+        }
       });
       chip.addEventListener("dragend", () => {
         chip.classList.remove("calendar-chip--dragging");
@@ -291,9 +643,12 @@
     days.forEach((day) => {
       day.addEventListener("dragover", (event) => {
         if (!dragged) return;
-        if (!isDropAllowed(dragged, day)) return;
         event.preventDefault();
-        setDropState(day);
+        if (isDropAllowed(dragged, day)) {
+          setDropState(day);
+        } else {
+          setDropState(null);
+        }
       });
 
       day.addEventListener("dragleave", () => {
@@ -380,7 +735,33 @@
         dragged = null;
       });
     });
-  })();
+
+    days.forEach((day) => {
+      day.addEventListener("click", (event) => {
+        if (dragged || touchDrag) return;
+        if (event.target.closest(".calendar-chip")) return;
+        if (event.target.closest(".calendar-day__add")) return;
+        if (event.target.closest(".calendar-day__more")) return;
+        const url = day.dataset.createUrl;
+        if (url) {
+          openTaskModal(url);
+        }
+      });
+    });
+
+    document.addEventListener("click", (event) => {
+      const toggle = event.target.closest("[data-more-toggle]");
+      if (!toggle) return;
+      event.preventDefault();
+      const day = toggle.closest(".calendar-day");
+      const extra = day ? day.querySelector(".calendar-day__extra") : null;
+      if (!extra) return;
+      extra.classList.toggle("d-none");
+      const expanded = !extra.classList.contains("d-none");
+      const count = toggle.dataset.moreCount || "";
+      toggle.textContent = expanded ? "\u0421\u0432\u0435\u0440\u043d\u0443\u0442\u044c" : `\u0415\u0449\u0435 ${count} \u0437\u0430\u0434\u0430\u0447`;
+    });
+  });
 </script>
 
 <style>
@@ -402,6 +783,25 @@
     border-radius: 999px;
     padding: 6px 12px;
     font-weight: 600;
+  }
+  .calendar-filter {
+    background: #ffffff;
+    border: 1px solid #e6eef5;
+    border-radius: 14px;
+    padding: 10px 12px;
+    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+  }
+  .calendar-filter--inline {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    padding: 0;
+  }
+  .calendar-filter__field {
+    min-width: 220px;
+  }
+  .calendar-filter__field .form-select {
+    min-height: 44px;
   }
   .summary-pill--planned {
     background: rgba(44, 123, 229, 0.12);
@@ -464,6 +864,11 @@
     align-items: center;
     justify-content: space-between;
   }
+  .calendar-day__meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
   .calendar-day__number {
     font-weight: 600;
     color: #1f2d3d;
@@ -475,10 +880,45 @@
     padding: 2px 6px;
     border-radius: 999px;
   }
+  .calendar-day__add {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 1px solid #d7e2f1;
+    color: #2c7be5;
+    background: #f3f7ff;
+    text-decoration: none;
+    font-size: 0.8rem;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+  .calendar-day__add:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 10px rgba(44, 123, 229, 0.2);
+  }
   .calendar-day__items {
     display: flex;
     flex-direction: column;
     gap: 6px;
+  }
+  .calendar-day__extra {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 2px;
+  }
+  .calendar-day__more {
+    margin-top: 2px;
+    padding: 4px 8px;
+    border-radius: 10px;
+    border: 1px dashed #c9d6e6;
+    background: #f3f7ff;
+    color: #2c7be5;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-align: left;
   }
   .calendar-chip {
     border-radius: 10px;
@@ -493,12 +933,48 @@
     gap: 6px;
     user-select: none;
   }
+  .calendar-chip--link {
+    text-decoration: none;
+    color: inherit;
+  }
   .calendar-chip__icon {
     font-size: 0.85rem;
     display: inline-flex;
     align-items: center;
     flex: 0 0 auto;
     touch-action: none;
+  }
+  .calendar-chip__badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: rgba(31, 45, 61, 0.1);
+    color: #1f2d3d;
+    font-size: 0.65rem;
+    font-weight: 700;
+    margin-left: 6px;
+  }
+  .calendar-chip__badge--ghost {
+    background: rgba(44, 123, 229, 0.12);
+    color: #2c7be5;
+  }
+  .calendar-chip__priority {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-left: auto;
+    flex: 0 0 auto;
+  }
+  .calendar-chip__priority--low {
+    background: #9aa6b2;
+  }
+  .calendar-chip__priority--normal {
+    background: #2c7be5;
+  }
+  .calendar-chip__priority--high {
+    background: #e55353;
   }
   .calendar-chip--type-pool .calendar-chip__icon {
     color: #2c7be5;
@@ -528,11 +1004,36 @@
     border-left-color: #e55353;
     color: #b12d2d;
   }
+  .calendar-chip--task.calendar-chip--planned {
+    background: #f2f5ff;
+  }
+  .calendar-chip--task.calendar-chip--overdue {
+    background: #ffecec;
+  }
+  .calendar-chip--task.calendar-chip--done {
+    background: #eefaf4;
+  }
+  .calendar-chip--continuation {
+    font-size: 0.74rem;
+    padding: 4px 8px;
+    border-left-style: dashed;
+    opacity: 0.85;
+  }
   .calendar-chip--draggable {
     cursor: grab;
   }
+  .calendar-chip__icon[data-drag-handle='true'] {
+    cursor: grab;
+  }
+  .calendar-chip__icon[data-drag-handle='true']:active {
+    cursor: grabbing;
+  }
   .calendar-chip--dragging {
     opacity: 0.6;
+  }
+  .calendar-chip--completed {
+    text-decoration: line-through;
+    opacity: 0.7;
   }
   .calendar-chip--ghost {
     position: fixed;
@@ -557,6 +1058,9 @@
     }
     .calendar-chip {
       font-size: 0.78rem;
+    }
+    .calendar-filter {
+      width: 100%;
     }
   }
   @media (max-width: 576px) {

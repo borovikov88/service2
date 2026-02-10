@@ -1,0 +1,145 @@
+<form method="post" action="{{ form_action|default:'' }}" class="d-flex flex-column gap-3 task-form" data-task-form>
+  {% csrf_token %}
+  {% if next_url %}
+    <input type="hidden" name="next" value="{{ next_url }}">
+  {% endif %}
+  {% if is_modal %}
+    <input type="hidden" name="modal" value="1">
+  {% endif %}
+
+  {% if form.non_field_errors %}
+    <div class="alert alert-danger mb-0">{{ form.non_field_errors }}</div>
+  {% endif %}
+
+  <div>
+    <label class="form-label">{{ form.title.label }}</label>
+    {{ form.title }}
+    {% if form.title.errors %}
+      <div class="text-danger small mt-1">{{ form.title.errors }}</div>
+    {% endif %}
+  </div>
+
+  <div>
+    <label class="form-label">{{ form.description.label }}</label>
+    {{ form.description }}
+    {% if form.description.errors %}
+      <div class="text-danger small mt-1">{{ form.description.errors }}</div>
+    {% endif %}
+  </div>
+
+  <div class="row g-3">
+    <div class="col-12 col-md-6">
+      <label class="form-label">{{ form.start_date.label }}</label>
+      {{ form.start_date }}
+      {% if form.start_date.errors %}
+        <div class="text-danger small mt-1">{{ form.start_date.errors }}</div>
+      {% endif %}
+    </div>
+    <div class="col-12 col-md-6">
+      <label class="form-label">{{ form.end_date.label }}</label>
+      {{ form.end_date }}
+      <div class="text-muted small mt-1">&#1045;&#1089;&#1083;&#1080; &#1085;&#1077; &#1091;&#1082;&#1072;&#1079;&#1072;&#1085;&#1072;, &#1079;&#1072;&#1076;&#1072;&#1095;&#1072; &#1089;&#1095;&#1080;&#1090;&#1072;&#1077;&#1090;&#1089;&#1103; &#1086;&#1076;&#1085;&#1086;&#1076;&#1085;&#1077;&#1074;&#1085;&#1086;&#1081;.</div>
+      {% if form.end_date.errors %}
+        <div class="text-danger small mt-1">{{ form.end_date.errors }}</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="row g-3">
+    <div class="col-12 col-md-6">
+      <label class="form-label">{{ form.visibility.label }}</label>
+      {{ form.visibility }}
+      {% if form.visibility.errors %}
+        <div class="text-danger small mt-1">{{ form.visibility.errors }}</div>
+      {% endif %}
+    </div>
+    <div class="col-12 col-md-6">
+      <label class="form-label">{{ form.priority.label }}</label>
+      {{ form.priority }}
+      {% if form.priority.errors %}
+        <div class="text-danger small mt-1">{{ form.priority.errors }}</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div>
+    <label class="form-label">{{ form.responsibles.label }}</label>
+    <input type="hidden" name="responsibles" value="{{ default_responsible_id }}" data-responsibles-fixed {% if current_visibility != 'private' %}disabled{% endif %}>
+    <div class="text-muted small mb-2 {% if current_visibility != 'private' %}d-none{% endif %}" data-responsibles-info>
+      &#1054;&#1090;&#1074;&#1077;&#1090;&#1089;&#1090;&#1074;&#1077;&#1085;&#1085;&#1099;&#1081;: {{ default_responsible_name }}
+    </div>
+    <div class="{% if current_visibility == 'private' %}d-none{% endif %}" data-responsibles-block data-default-all="{{ default_all_responsibles|yesno:'1,0' }}">
+      <div class="multi-select" data-multi-select data-placeholder="&#1042;&#1099;&#1073;&#1077;&#1088;&#1080;&#1090;&#1077; &#1086;&#1090;&#1074;&#1077;&#1090;&#1089;&#1090;&#1074;&#1077;&#1085;&#1085;&#1099;&#1093;">
+        <button type="button" class="multi-select__trigger" data-multi-select-trigger>
+          <span class="multi-select__value"></span>
+          <span class="multi-select__caret" aria-hidden="true">
+            <i class="bi bi-chevron-down"></i>
+          </span>
+        </button>
+        <div class="multi-select__dropdown" data-multi-select-list>
+          {% for option in responsible_options %}
+            <label class="multi-select__option">
+              <input type="checkbox" name="responsibles" value="{{ option.id }}" {% if option.id|stringformat:"s" in selected_responsibles %}checked{% endif %}>
+              <span>{{ option.name }}</span>
+            </label>
+          {% empty %}
+            <div class="multi-select__empty">&#1053;&#1077;&#1090; &#1076;&#1086;&#1089;&#1090;&#1091;&#1087;&#1085;&#1099;&#1093; &#1089;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1086;&#1074;.</div>
+          {% endfor %}
+        </div>
+      </div>
+      {% if form.responsibles.errors %}
+        <div class="text-danger small mt-1">{{ form.responsibles.errors }}</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if task %}
+    <div class="form-check">
+      {{ form.is_completed }}
+      <label class="form-check-label" for="{{ form.is_completed.id_for_label }}">{{ form.is_completed.label }}</label>
+    </div>
+  {% endif %}
+
+  <div class="d-flex flex-wrap gap-2">
+    <button type="submit" class="btn btn-primary rounded-3">&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;</button>
+    {% if is_modal %}
+      <button type="button" class="btn btn-outline-secondary rounded-3" data-bs-dismiss="modal">&#1047;&#1072;&#1082;&#1088;&#1099;&#1090;&#1100;</button>
+    {% elif next_url %}
+      <a class="btn btn-outline-secondary rounded-3" href="{{ next_url }}">&#1053;&#1072;&#1079;&#1072;&#1076; &#1082; &#1082;&#1072;&#1083;&#1077;&#1085;&#1076;&#1072;&#1088;&#1102;</a>
+    {% else %}
+      <a class="btn btn-outline-secondary rounded-3" href="{% url 'readings_all' %}">&#1053;&#1072;&#1079;&#1072;&#1076; &#1082; &#1082;&#1072;&#1083;&#1077;&#1085;&#1076;&#1072;&#1088;&#1102;</a>
+    {% endif %}
+  </div>
+</form>
+
+{% if show_history and history %}
+  <details class="task-history mt-3">
+    <summary class="task-history__summary">&#1048;&#1089;&#1090;&#1086;&#1088;&#1080;&#1103; &#1080;&#1079;&#1084;&#1077;&#1085;&#1077;&#1085;&#1080;&#1081;</summary>
+    <div class="table-responsive mt-3">
+      <table class="table table-sm align-middle">
+        <thead>
+          <tr>
+            <th>&#1044;&#1072;&#1090;&#1072;</th>
+            <th>&#1050;&#1090;&#1086;</th>
+            <th>&#1044;&#1077;&#1081;&#1089;&#1090;&#1074;&#1080;&#1077;</th>
+            <th>&#1055;&#1086;&#1083;&#1077;</th>
+            <th>&#1041;&#1099;&#1083;&#1086;</th>
+            <th>&#1057;&#1090;&#1072;&#1083;&#1086;</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in history %}
+            <tr>
+              <td>{{ row.created_at|date:"d.m.Y H:i" }}</td>
+              <td>{{ row.user|default:"-" }}</td>
+              <td>{{ row.action }}</td>
+              <td>{{ row.field|default:"-" }}</td>
+              <td class="text-muted">{{ row.old_value|default:"-" }}</td>
+              <td>{{ row.new_value|default:"-" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+{% endif %}

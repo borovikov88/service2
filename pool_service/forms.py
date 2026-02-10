@@ -17,6 +17,7 @@ from .models import (
     PoolAccess,
     ClientAccess,
     CrmItem,
+    ServiceTask,
 )
 
 
@@ -50,6 +51,70 @@ class WaterReadingForm(forms.ModelForm):
             if isinstance(field.widget, forms.Textarea):
                 field.widget.attrs.setdefault("rows", 3)
             field.widget.attrs["class"] = f"{classes} {extra}".strip()
+
+
+class ServiceTaskForm(forms.ModelForm):
+    responsibles = forms.ModelMultipleChoiceField(
+        queryset=User.objects.none(),
+        required=True,
+        label="Ответственные",
+        widget=forms.SelectMultiple(attrs={"class": "form-select"}),
+    )
+    is_completed = forms.BooleanField(required=False, label="Выполнено")
+
+    class Meta:
+        model = ServiceTask
+        fields = [
+            "title",
+            "description",
+            "start_date",
+            "end_date",
+            "visibility",
+            "priority",
+            "responsibles",
+        ]
+        labels = {
+            "title": "Название",
+            "description": "Комментарий",
+            "start_date": "Дата начала",
+            "end_date": "Дата окончания",
+            "visibility": "Видимость",
+            "priority": "Приоритет",
+        }
+        widgets = {
+            "title": forms.TextInput(attrs={"class": "form-control rounded-3"}),
+            "description": forms.Textarea(attrs={"class": "form-control rounded-3", "rows": 3}),
+            "start_date": forms.DateInput(attrs={"class": "form-control rounded-3", "type": "date"}, format="%Y-%m-%d"),
+            "end_date": forms.DateInput(attrs={"class": "form-control rounded-3", "type": "date"}, format="%Y-%m-%d"),
+            "visibility": forms.Select(attrs={"class": "form-select"}),
+            "priority": forms.Select(attrs={"class": "form-select"}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        organization = kwargs.pop("organization", None)
+        super().__init__(*args, **kwargs)
+        if organization:
+            self.fields["responsibles"].queryset = User.objects.filter(
+                organizationaccess__organization=organization
+            ).distinct().order_by("last_name", "first_name", "username")
+        if self.instance and self.instance.pk:
+            self.fields["is_completed"].initial = bool(self.instance.completed_at)
+        self.fields["is_completed"].widget.attrs.update({"class": "form-check-input"})
+        for field_name in ("start_date", "end_date"):
+            if field_name in self.fields:
+                self.fields[field_name].input_formats = ["%Y-%m-%d"]
+                if hasattr(self.fields[field_name].widget, "format"):
+                    self.fields[field_name].widget.format = "%Y-%m-%d"
+
+    def clean(self):
+        cleaned = super().clean()
+        start_date = cleaned.get("start_date")
+        end_date = cleaned.get("end_date")
+        if start_date and end_date and end_date < start_date:
+            self.add_error("end_date", "Дата окончания не может быть раньше даты начала.")
+        if start_date and not end_date:
+            cleaned["end_date"] = start_date
+        return cleaned
 
 
 class RegistrationForm(forms.Form):
