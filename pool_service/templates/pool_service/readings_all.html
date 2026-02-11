@@ -4,7 +4,7 @@
 
 {% block content %}
 <div class="calendar-toolbar d-flex flex-wrap align-items-center justify-content-between gap-3 mb-3">
-  <div class="d-flex flex-wrap align-items-center gap-3">
+  <div class="d-flex flex-wrap align-items-center gap-3 calendar-toolbar__main">
     <div class="d-flex align-items-center gap-2">
       <a class="btn btn-light btn-sm" href="?{{ prev_month_query }}" aria-label="&#1055;&#1088;&#1077;&#1076;&#1099;&#1076;&#1091;&#1097;&#1080;&#1081; &#1084;&#1077;&#1089;&#1103;&#1094;">
         <i class="bi bi-chevron-left"></i>
@@ -14,36 +14,36 @@
         <i class="bi bi-chevron-right"></i>
       </a>
     </div>
-    {% if responsible_options %}
-      <form class="calendar-filter calendar-filter--inline d-flex flex-wrap align-items-center gap-2" method="get">
-        <input type="hidden" name="month" value="{{ current_month }}">
-        <label class="form-label mb-0 small d-none d-md-block">&#1054;&#1090;&#1074;&#1077;&#1090;&#1089;&#1090;&#1074;&#1077;&#1085;&#1085;&#1099;&#1077;</label>
-        <div class="calendar-filter__field">
-          <div class="multi-select" data-multi-select data-placeholder="&#1042;&#1089;&#1077; &#1086;&#1090;&#1074;&#1077;&#1090;&#1089;&#1090;&#1074;&#1077;&#1085;&#1085;&#1099;&#1077;">
-            <button type="button" class="multi-select__trigger" data-multi-select-trigger>
-              <span class="multi-select__value"></span>
-              <span class="multi-select__caret" aria-hidden="true">
-                <i class="bi bi-chevron-down"></i>
-              </span>
+    <div class="calendar-search" data-calendar-search data-current-month="{{ current_month }}">
+      <div class="calendar-search__field">
+        <i class="bi bi-search"></i>
+        <input type="search" class="calendar-search__input" placeholder="&#1060;&#1080;&#1083;&#1100;&#1090;&#1088; + &#1087;&#1086;&#1080;&#1089;&#1082;" autocomplete="off" data-calendar-search-input>
+        {% if selected_responsible_label %}
+          <span class="calendar-search__tag" data-calendar-filter-tag>
+            {{ selected_responsible_label }}
+            <button type="button" class="calendar-search__tag-clear" data-calendar-filter-clear aria-label="&#1057;&#1073;&#1088;&#1086;&#1089;&#1080;&#1090;&#1100; &#1092;&#1080;&#1083;&#1100;&#1090;&#1088;">
+              <i class="bi bi-x"></i>
             </button>
-            <div class="multi-select__dropdown" data-multi-select-list>
-              {% for option in responsible_options %}
-                <label class="multi-select__option">
-                  <input type="checkbox" name="responsible" value="{{ option.id }}" {% if option.id|stringformat:"s" in selected_responsibles %}checked{% endif %}>
-                  <span>{{ option.name }}</span>
-                </label>
-              {% empty %}
-                <div class="multi-select__empty">&#1053;&#1077;&#1090; &#1076;&#1086;&#1089;&#1090;&#1091;&#1087;&#1085;&#1099;&#1093; &#1089;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1086;&#1074;.</div>
-              {% endfor %}
-            </div>
-          </div>
-        </div>
-        <div class="calendar-filter__actions d-flex gap-2">
-          <button class="btn btn-primary btn-sm" type="submit">&#1055;&#1088;&#1080;&#1084;&#1077;&#1085;&#1080;&#1090;&#1100;</button>
-          <a class="btn btn-outline-secondary btn-sm" href="?month={{ current_month }}">&#1057;&#1073;&#1088;&#1086;&#1089;&#1080;&#1090;&#1100;</a>
-        </div>
-      </form>
-    {% endif %}
+          </span>
+        {% endif %}
+        <button type="button" class="calendar-search__clear" data-calendar-search-clear aria-label="&#1057;&#1073;&#1088;&#1086;&#1089;&#1080;&#1090;&#1100; &#1087;&#1086;&#1080;&#1089;&#1082;">
+          <i class="bi bi-x-lg"></i>
+        </button>
+      </div>
+      <div class="calendar-search__dropdown" data-calendar-search-dropdown>
+        <div class="calendar-search__dropdown-title">&#1059;&#1095;&#1072;&#1089;&#1090;&#1085;&#1080;&#1082;&#1080;</div>
+        <button type="button" class="calendar-search__option {% if not selected_responsibles %}is-active{% endif %}" data-calendar-filter-option data-responsible-id="">
+          &#1042;&#1089;&#1077; &#1091;&#1095;&#1072;&#1089;&#1090;&#1085;&#1080;&#1082;&#1080;
+        </button>
+        {% for option in responsible_options %}
+          <button type="button" class="calendar-search__option {% if option.id|stringformat:"s" in selected_responsibles %}is-active{% endif %}" data-calendar-filter-option data-responsible-id="{{ option.id }}">
+            {{ option.name }}
+          </button>
+        {% empty %}
+          <div class="calendar-search__empty">&#1053;&#1077;&#1090; &#1076;&#1086;&#1089;&#1090;&#1091;&#1087;&#1085;&#1099;&#1093; &#1089;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1086;&#1074;.</div>
+        {% endfor %}
+      </div>
+    </div>
   </div>
   <div class="d-flex align-items-center gap-2">
     <a class="btn btn-outline-secondary btn-sm" href="?{{ today_month_query }}">
@@ -62,6 +62,14 @@
   <span class="summary-pill summary-pill--overdue">
     &#1055;&#1088;&#1086;&#1089;&#1088;&#1086;&#1095;&#1077;&#1085;&#1086;: {{ overdue_count }}
   </span>
+</div>
+
+<div class="calendar-search-results d-none" data-calendar-search-results>
+  <div class="calendar-search-results__header d-flex align-items-center justify-content-between flex-wrap gap-2">
+    <div class="fw-semibold">&#1053;&#1072;&#1081;&#1076;&#1077;&#1085;&#1086;: <span data-calendar-search-count>0</span></div>
+    <div class="text-muted small" data-calendar-search-hint></div>
+  </div>
+  <div class="calendar-search-results__list" data-calendar-search-list></div>
 </div>
 
 <div class="calendar-scroll">
@@ -109,6 +117,9 @@
                   <span class="calendar-chip__icon" data-drag-handle="true" aria-hidden="true">
                     <i class="bi bi-list-check"></i>
                   </span>
+                  {% if item.start_time %}
+                    <span class="calendar-chip__time">{{ item.start_time|time:"H:i" }}</span>
+                  {% endif %}
                   <span class="calendar-chip__text">
                     {{ item.display_name }}
                     {% if item.is_multi %}
@@ -118,7 +129,11 @@
                       <span class="calendar-chip__badge calendar-chip__badge--ghost">&#1087;&#1088;&#1086;&#1076;.</span>
                     {% endif %}
                   </span>
-                  <span class="calendar-chip__priority calendar-chip__priority--{{ item.priority }}" aria-hidden="true"></span>
+                  {% if item.priority == "high" %}
+                    <span class="calendar-chip__priority" aria-hidden="true">
+                      <i class="bi bi-fire"></i>
+                    </span>
+                  {% endif %}
               {% if item.edit_url %}
                 </a>
               {% else %}
@@ -128,9 +143,9 @@
               <div class="calendar-chip calendar-chip--{{ item.status }} calendar-chip--type-{{ item.object_type }} {% if item.is_draggable %}calendar-chip--draggable{% endif %} {% if item.status == 'done' %}calendar-chip--completed{% endif %}" draggable="{{ item.is_draggable|yesno:'true,false' }}" data-pool-ids="{{ item.pool_ids|join:',' }}" data-week-start="{{ item.week_start|date:'Y-m-d' }}" data-source-week-start="{{ item.source_week_start }}" data-source-weeks="{{ item.source_weeks }}" data-source-month="{{ item.source_month }}" data-allow-month="{{ item.allow_month_move|yesno:'true,false' }}" data-date="{{ item.date|date:'Y-m-d' }}" title="{{ item.title }}">
                 <span class="calendar-chip__icon" data-drag-handle="true" aria-hidden="true">
                   {% if item.object_type == 'water' %}
-                    <i class="bi bi-gear"></i>
+                    <i class="bi bi-funnel"></i>
                   {% else %}
-                    <i class="bi bi-droplet"></i>
+                    <i class="bi bi-water"></i>
                   {% endif %}
                 </span>
                 <span class="calendar-chip__text">{{ item.display_name }}</span>
@@ -201,7 +216,7 @@
   <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
     <div class="modal-content task-modal__content">
       <div class="modal-header">
-        <h5 class="modal-title" id="taskModalTitle">&#1047;&#1072;&#1076;&#1072;&#1095;&#1072;</h5>
+        <h5 class="modal-title" id="taskModalTitle"></h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="&#1047;&#1072;&#1082;&#1088;&#1099;&#1090;&#1100;"></button>
       </div>
       <div class="modal-body task-modal__body">
@@ -213,6 +228,8 @@
     </div>
   </div>
 </div>
+
+{{ task_search_index|json_script:"task-search-data" }}
 
 <script>
   document.addEventListener("DOMContentLoaded", function () {
@@ -286,7 +303,7 @@
     function showTaskLoading() {
       if (!taskModalBody) return;
       if (taskModalTitle) {
-        taskModalTitle.textContent = "\u0417\u0430\u0434\u0430\u0447\u0430";
+        taskModalTitle.textContent = "";
       }
       taskModalBody.innerHTML = `
         <div class="task-modal__loading d-flex align-items-center gap-2 text-muted">
@@ -761,6 +778,160 @@
       const count = toggle.dataset.moreCount || "";
       toggle.textContent = expanded ? "\u0421\u0432\u0435\u0440\u043d\u0443\u0442\u044c" : `\u0415\u0449\u0435 ${count} \u0437\u0430\u0434\u0430\u0447`;
     });
+
+    const searchRoot = document.querySelector("[data-calendar-search]");
+    if (searchRoot) {
+      const searchInput = searchRoot.querySelector("[data-calendar-search-input]");
+      const searchDropdown = searchRoot.querySelector("[data-calendar-search-dropdown]");
+      const searchClear = searchRoot.querySelector("[data-calendar-search-clear]");
+      const filterClear = searchRoot.querySelector("[data-calendar-filter-clear]");
+      const searchResults = document.querySelector("[data-calendar-search-results]");
+      const searchList = searchResults ? searchResults.querySelector("[data-calendar-search-list]") : null;
+      const searchCount = searchResults ? searchResults.querySelector("[data-calendar-search-count]") : null;
+      const searchHint = searchResults ? searchResults.querySelector("[data-calendar-search-hint]") : null;
+      const calendarSummary = document.querySelector(".calendar-summary");
+      const calendarScroll = document.querySelector(".calendar-scroll");
+      const calendarDetails = document.querySelector(".calendar-details");
+      const dataEl = document.getElementById("task-search-data");
+      let searchData = [];
+
+      if (dataEl) {
+        try {
+          searchData = JSON.parse(dataEl.textContent || "[]");
+        } catch (e) {
+          searchData = [];
+        }
+      }
+
+      function normalizeValue(value) {
+        return (value || "").toString().toLowerCase().trim();
+      }
+
+      function setSearchVisible(isVisible) {
+        if (searchResults) searchResults.classList.toggle("d-none", !isVisible);
+        if (calendarSummary) calendarSummary.classList.toggle("d-none", isVisible);
+        if (calendarScroll) calendarScroll.classList.toggle("d-none", isVisible);
+        if (calendarDetails) calendarDetails.classList.toggle("d-none", isVisible);
+      }
+
+      function setDropdownOpen(isOpen) {
+        searchRoot.classList.toggle("calendar-search--open", isOpen);
+      }
+
+      function formatMeta(item) {
+        const dateLabel = item.date_label || "";
+        const timeLabel = item.time_label ? ` \u00b7 ${item.time_label}` : "";
+        return `${dateLabel}${timeLabel}`.trim();
+      }
+
+      function renderResults(items, query) {
+        if (!searchList) return;
+        searchList.innerHTML = "";
+        if (!items.length) {
+          const empty = document.createElement("div");
+          empty.className = "calendar-search-results__empty";
+          empty.textContent = "\u041d\u0438\u0447\u0435\u0433\u043e \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e";
+          searchList.appendChild(empty);
+        } else {
+          items.forEach((item) => {
+            const link = document.createElement(item.edit_url ? "a" : "div");
+            link.className = `calendar-search-results__item${item.edit_url ? "" : " is-disabled"}`;
+            if (item.edit_url) {
+              link.href = item.edit_url;
+              link.dataset.taskModalUrl = item.edit_url;
+            }
+            const title = document.createElement("div");
+            title.className = "calendar-search-results__title";
+            title.textContent = item.title || "\u0411\u0435\u0437 \u043d\u0430\u0437\u0432\u0430\u043d\u0438\u044f";
+            const meta = document.createElement("div");
+            meta.className = "calendar-search-results__meta";
+            meta.textContent = formatMeta(item);
+            link.appendChild(title);
+            link.appendChild(meta);
+            searchList.appendChild(link);
+          });
+        }
+        if (searchCount) {
+          searchCount.textContent = items.length.toString();
+        }
+        if (searchHint) {
+          searchHint.textContent = query ? `\u041f\u043e \u0437\u0430\u043f\u0440\u043e\u0441\u0443 \u201c${query}\u201d` : "";
+        }
+      }
+
+      function runSearch() {
+        if (!searchInput) return;
+        const query = normalizeValue(searchInput.value);
+        if (!query) {
+          setSearchVisible(false);
+          setDropdownOpen(false);
+          if (searchClear) searchClear.classList.remove("is-visible");
+          return;
+        }
+        const results = searchData.filter((item) =>
+          normalizeValue(item.title).includes(query)
+        );
+        results.sort((a, b) => {
+          if (a.date === b.date) {
+            return (a.time_label || "99:99").localeCompare(b.time_label || "99:99");
+          }
+          return (a.date || "").localeCompare(b.date || "");
+        });
+        renderResults(results, query);
+        setSearchVisible(true);
+        setDropdownOpen(false);
+        if (searchClear) searchClear.classList.add("is-visible");
+      }
+
+      function applyResponsibleFilter(responsibleId) {
+        const params = new URLSearchParams(window.location.search);
+        const monthValue = searchRoot.dataset.currentMonth || params.get("month") || "{{ current_month }}";
+        params.set("month", monthValue);
+        params.delete("responsible");
+        if (responsibleId) {
+          params.append("responsible", responsibleId);
+        }
+        window.location.search = params.toString();
+      }
+
+      searchInput?.addEventListener("input", runSearch);
+      searchInput?.addEventListener("focus", () => {
+        if (!searchInput.value) {
+          setDropdownOpen(true);
+        }
+      });
+      searchInput?.addEventListener("click", () => {
+        if (!searchInput.value) {
+          setDropdownOpen(true);
+        }
+      });
+
+      searchClear?.addEventListener("click", () => {
+        if (!searchInput) return;
+        searchInput.value = "";
+        setSearchVisible(false);
+        setDropdownOpen(false);
+        searchInput.focus();
+        searchClear.classList.remove("is-visible");
+      });
+
+      filterClear?.addEventListener("click", () => {
+        applyResponsibleFilter("");
+      });
+
+      searchRoot.querySelectorAll("[data-calendar-filter-option]").forEach((option) => {
+        option.addEventListener("click", () => {
+          const id = option.dataset.responsibleId || "";
+          applyResponsibleFilter(id);
+        });
+      });
+
+      document.addEventListener("click", (event) => {
+        if (!searchRoot.contains(event.target)) {
+          setDropdownOpen(false);
+        }
+      });
+    }
   });
 </script>
 
@@ -772,12 +943,175 @@
     padding: 8px 12px;
     box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
   }
+  .calendar-toolbar__main {
+    flex: 1;
+    min-width: 0;
+  }
   .calendar-month-label {
     background: #f1f5ff;
     border: 1px solid #dbe5f5;
     border-radius: 999px;
     padding: 6px 12px;
     color: #1f2d3d;
+  }
+  .calendar-search {
+    position: relative;
+    flex: 1;
+    min-width: 220px;
+  }
+  .calendar-search__field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    background: #ffffff;
+    border: 1px solid #e2e8f3;
+    border-radius: 999px;
+    padding: 6px 12px;
+    box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.02);
+  }
+  .calendar-search__input {
+    border: none;
+    background: transparent;
+    outline: none;
+    width: 100%;
+    flex: 1 1 160px;
+    min-width: 140px;
+    font-size: 0.85rem;
+    color: #1f2d3d;
+  }
+  .calendar-search__input::-webkit-search-cancel-button,
+  .calendar-search__input::-webkit-search-decoration {
+    -webkit-appearance: none;
+  }
+  .calendar-search__input[type="search"] {
+    appearance: textfield;
+  }
+  .calendar-search__input::placeholder {
+    color: #94a3b8;
+  }
+  .calendar-search__clear {
+    border: none;
+    background: transparent;
+    color: #9aa6b2;
+    font-size: 0.85rem;
+    padding: 0;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+  }
+  .calendar-search__clear.is-visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .calendar-search__tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #e7f0ff;
+    color: #1d4f9c;
+    font-size: 0.7rem;
+    white-space: nowrap;
+  }
+  .calendar-search__tag-clear {
+    border: none;
+    background: transparent;
+    color: inherit;
+    font-size: 0.7rem;
+    padding: 0;
+  }
+  .calendar-search__dropdown {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    right: 0;
+    background: #ffffff;
+    border: 1px solid #e6eef5;
+    border-radius: 14px;
+    padding: 8px;
+    box-shadow: 0 14px 30px rgba(15, 23, 42, 0.12);
+    display: none;
+    z-index: 30;
+  }
+  .calendar-search--open .calendar-search__dropdown {
+    display: block;
+  }
+  .calendar-search__dropdown-title {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #94a3b8;
+    margin-bottom: 6px;
+  }
+  .calendar-search__option {
+    width: 100%;
+    border: none;
+    background: #f7f9fc;
+    border-radius: 10px;
+    padding: 8px 10px;
+    text-align: left;
+    font-size: 0.82rem;
+    color: #1f2d3d;
+    margin-bottom: 6px;
+  }
+  .calendar-search__option:last-child {
+    margin-bottom: 0;
+  }
+  .calendar-search__option.is-active {
+    background: #e7f0ff;
+    color: #1d4f9c;
+    font-weight: 600;
+  }
+  .calendar-search__empty {
+    padding: 8px;
+    font-size: 0.8rem;
+    color: #94a3b8;
+  }
+  .calendar-search-results {
+    border: 1px solid #e6eef5;
+    border-radius: 16px;
+    padding: 12px 14px;
+    background: #ffffff;
+    box-shadow: 0 10px 26px rgba(15, 23, 42, 0.05);
+    margin-bottom: 16px;
+  }
+  .calendar-search-results__list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 10px;
+  }
+  .calendar-search-results__item {
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: #f7f9fc;
+    border: 1px solid transparent;
+    text-decoration: none;
+    color: inherit;
+  }
+  .calendar-search-results__item:hover {
+    border-color: rgba(44, 123, 229, 0.2);
+    background: #f0f5ff;
+  }
+  .calendar-search-results__item.is-disabled {
+    opacity: 0.6;
+    pointer-events: none;
+  }
+  .calendar-search-results__title {
+    font-weight: 600;
+    font-size: 0.9rem;
+  }
+  .calendar-search-results__meta {
+    font-size: 0.78rem;
+    color: #7a8798;
+  }
+  .calendar-search-results__empty {
+    font-size: 0.85rem;
+    color: #94a3b8;
+    padding: 12px;
+    text-align: center;
   }
   .calendar-summary .summary-pill {
     border-radius: 999px;
@@ -843,7 +1177,7 @@
     padding: 10px;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 4px;
     transition: background 0.2s ease;
   }
   .calendar-day--muted {
@@ -854,7 +1188,13 @@
     color: #9aa6b2;
   }
   .calendar-day--today {
-    box-shadow: inset 0 0 0 2px rgba(44, 123, 229, 0.35);
+    background: #eaf2ff;
+  }
+  .calendar-day--muted.calendar-day--today {
+    background: #e1e9f6;
+  }
+  .calendar-day--today .calendar-day__number {
+    color: #1d4f9c;
   }
   .calendar-day--drop {
     background: #eef5ff;
@@ -862,16 +1202,21 @@
   .calendar-day__header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 6px;
   }
   .calendar-day__meta {
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    order: 1;
   }
   .calendar-day__number {
     font-weight: 600;
     color: #1f2d3d;
+    order: 2;
+    margin-left: auto;
+    text-align: right;
+    font-size: 0.85rem;
   }
   .calendar-day__badge {
     font-size: 0.7rem;
@@ -901,7 +1246,7 @@
   .calendar-day__items {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 4px;
   }
   .calendar-day__extra {
     display: flex;
@@ -921,16 +1266,16 @@
     text-align: left;
   }
   .calendar-chip {
-    border-radius: 10px;
-    padding: 6px 8px;
-    font-size: 0.82rem;
+    border-radius: 8px;
+    padding: 4px 6px;
+    font-size: 0.76rem;
     font-weight: 600;
     background: #eef2f7;
     color: #1f2d3d;
-    border-left: 3px solid transparent;
+    border-left: 2px solid transparent;
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
     user-select: none;
   }
   .calendar-chip--link {
@@ -938,43 +1283,42 @@
     color: inherit;
   }
   .calendar-chip__icon {
-    font-size: 0.85rem;
+    font-size: 0.8rem;
     display: inline-flex;
     align-items: center;
     flex: 0 0 auto;
     touch-action: none;
   }
+  .calendar-chip__time {
+    font-size: 0.7rem;
+    color: #6b7c90;
+    font-variant-numeric: tabular-nums;
+    min-width: 38px;
+    text-align: right;
+  }
   .calendar-chip__badge {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    padding: 1px 6px;
+    padding: 1px 5px;
     border-radius: 999px;
     background: rgba(31, 45, 61, 0.1);
     color: #1f2d3d;
-    font-size: 0.65rem;
+    font-size: 0.6rem;
     font-weight: 700;
-    margin-left: 6px;
+    margin-left: 4px;
   }
   .calendar-chip__badge--ghost {
     background: rgba(44, 123, 229, 0.12);
     color: #2c7be5;
   }
   .calendar-chip__priority {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
     margin-left: auto;
     flex: 0 0 auto;
-  }
-  .calendar-chip__priority--low {
-    background: #9aa6b2;
-  }
-  .calendar-chip__priority--normal {
-    background: #2c7be5;
-  }
-  .calendar-chip__priority--high {
-    background: #e55353;
+    color: #e55353;
+    font-size: 0.85rem;
+    display: inline-flex;
+    align-items: center;
   }
   .calendar-chip--type-pool .calendar-chip__icon {
     color: #2c7be5;
@@ -1014,8 +1358,8 @@
     background: #eefaf4;
   }
   .calendar-chip--continuation {
-    font-size: 0.74rem;
-    padding: 4px 8px;
+    font-size: 0.7rem;
+    padding: 3px 6px;
     border-left-style: dashed;
     opacity: 0.85;
   }
@@ -1057,9 +1401,9 @@
       min-height: 110px;
     }
     .calendar-chip {
-      font-size: 0.78rem;
+      font-size: 0.72rem;
     }
-    .calendar-filter {
+    .calendar-search {
       width: 100%;
     }
   }
@@ -1080,7 +1424,7 @@
       padding: 8px;
     }
     .calendar-chip {
-      font-size: 0.76rem;
+      font-size: 0.7rem;
     }
     .calendar-chip__text {
       white-space: normal;

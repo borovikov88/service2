@@ -5,7 +5,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}{{ brand_name }}{% endblock %}</title>
-  <meta name="theme-color" content="#0d6efd" />
+  <meta name="theme-color" content="#f7f9fc" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   {% if not allow_indexing %}
@@ -58,12 +58,18 @@
       padding: 0;
     }
     :root {
-      --app-bg-start: #f4f9fd;
-      --app-bg-end: #e6f1fa;
+      --app-bg-start: #f8fbff;
+      --app-bg-end: #dbe7f6;
+      --app-header-bg: #f7f9fc;
+      --bottom-nav-bg: rgba(255, 255, 255, 0.9);
+      --menu-bg-start: #eef3ff;
+      --menu-bg-end: #dbe7f6;
+      --menu-item-bg: rgba(255, 255, 255, 0.75);
+      --menu-item-hover: rgba(255, 255, 255, 0.95);
     }
 
     body {
-      background: linear-gradient(180deg, var(--app-bg-start) 0%, var(--app-bg-end) 100%);
+      background: linear-gradient(180deg, var(--app-bg-start) 0%, #f1f6ff 58%, var(--app-bg-end) 100%);
       min-height: 100vh;
       font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
       color: #1f2d3d;
@@ -71,8 +77,8 @@
     }
 
     .app-header {
-      background: #fff;
-      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+      background: var(--app-header-bg);
+      box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
       position: sticky;
       top: 0;
       left: 0;
@@ -80,8 +86,34 @@
       z-index: 1000;
     }
 
+    .header-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 12px;
+      border: none;
+      background: transparent;
+      color: #5f6f82;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+    }
+    .header-icon:hover {
+      color: #1f2d3d;
+    }
+
+    .nav-link-button {
+      background: none;
+      border: none;
+      padding: 0;
+      color: inherit;
+      font: inherit;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
     .app-logo {
-      height: 44px;
+      height: 40px;
       width: auto;
       max-width: 160px;
       object-fit: contain;
@@ -89,17 +121,17 @@
     }
 
     .app-logo--compact {
-      height: 38px;
+      height: 34px;
       max-width: 140px;
     }
 
     .app-logo--wide {
-      height: 48px;
+      height: 44px;
       max-width: 240px;
     }
 
     .app-logo--wide.app-logo--compact {
-      height: 40px;
+      height: 36px;
       max-width: 200px;
     }
 
@@ -116,7 +148,12 @@
 
     .page-shell {
       min-height: calc(100vh - 120px);
-      padding: 16px 0 calc(104px + var(--keyboard-offset));
+      padding: 12px 0 calc(116px + var(--keyboard-offset));
+    }
+    @media (max-width: 991px) {
+      .page-shell {
+        padding-bottom: calc(132px + var(--keyboard-offset));
+      }
     }
 
     .card-soft {
@@ -128,26 +165,29 @@
 
     .mobile-bottom-nav {
       position: fixed;
-      left: 0;
-      right: 0;
-      bottom: 0;
+      left: 12px;
+      right: 12px;
+      bottom: 12px;
       display: flex;
       justify-content: space-around;
       align-items: center;
-      background: #fff;
-      border-top: 1px solid #e6eef5;
-      padding: 10px 6px 12px;
+      background: var(--bottom-nav-bg);
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      border-radius: 22px;
+      padding: 6px 8px;
+      box-shadow: 0 12px 26px rgba(15, 23, 42, 0.14);
+      backdrop-filter: blur(12px);
       z-index: 900;
     }
 
     .mobile-bottom-nav .bottom-item {
       text-decoration: none;
       color: #7b8a9c;
-      font-size: 14px;
+      font-size: 12px;
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 6px;
+      gap: 4px;
       flex: 1;
     }
 
@@ -173,7 +213,8 @@
     .menu-overlay {
       position: fixed;
       inset: 0;
-      background: rgba(0, 0, 0, 0.4);
+      background: rgba(15, 23, 42, 0.35);
+      backdrop-filter: blur(2px);
       opacity: 0;
       visibility: hidden;
       pointer-events: none;
@@ -189,22 +230,87 @@
     }
     .mobile-menu {
       position: fixed;
-      top: 0;
+      top: 12px;
       left: auto;
-      right: -280px;
-      width: 260px;
-      height: 100vh;
-      background: #fff;
-      box-shadow: -6px 0 24px rgba(15, 23, 42, 0.08);
-      padding: 16px;
+      right: -320px;
+      width: 280px;
+      height: calc(100vh - 24px);
+      background: linear-gradient(160deg, var(--menu-bg-start) 0%, #f8fbff 48%, var(--menu-bg-end) 100%);
+      box-shadow: -14px 0 28px rgba(15, 23, 42, 0.16);
+      border-radius: 24px 0 0 24px;
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      padding: 62px 16px 20px;
       transition: 0.25s ease;
       z-index: 1060;
       pointer-events: none;
+      overflow-y: auto;
     }
     .mobile-menu.open {
       left: auto;
-      right: 0;
+      right: 12px;
       pointer-events: auto;
+    }
+
+    .menu-header {
+      height: 0;
+      margin: 0;
+      padding: 0;
+      border: none;
+    }
+
+    .menu-close {
+      position: fixed;
+      top: 12px;
+      right: 16px;
+      width: 36px;
+      height: 36px;
+      border-radius: 12px;
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      background: rgba(255, 255, 255, 0.65);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #526273;
+      padding: 0;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease, background 0.2s ease, color 0.2s ease;
+    }
+    .menu-close:hover {
+      background: rgba(255, 255, 255, 0.9);
+      color: #1f2d3d;
+    }
+    .mobile-menu.open .menu-close {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .mobile-menu .list-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .mobile-menu .list-group-item {
+      display: block;
+      width: 100%;
+      border-radius: 14px;
+      border: 1px solid transparent;
+      background: var(--menu-item-bg);
+      color: #1f2d3d;
+      font-weight: 600;
+      padding: 10px 12px;
+      box-shadow: 0 6px 14px rgba(15, 23, 42, 0.06);
+      text-align: left;
+    }
+    .mobile-menu .list-group-item-action:hover {
+      background: var(--menu-item-hover);
+      border-color: rgba(13, 110, 253, 0.15);
+    }
+    .mobile-menu .list-group-item-action:active {
+      transform: translateY(1px);
+    }
+    .mobile-menu form {
+      margin: 0;
     }
 
     .hover-shadow {
@@ -317,6 +423,10 @@
       display: none;
       z-index: 30;
     }
+    .multi-select--drop-up .multi-select__dropdown {
+      top: auto;
+      bottom: calc(100% + 6px);
+    }
     .multi-select--open .multi-select__dropdown {
       display: block;
     }
@@ -340,6 +450,37 @@
       padding: 6px 8px;
       color: #8a97a8;
       font-size: 0.85rem;
+    }
+    .multi-select__option--locked {
+      opacity: 0.75;
+      cursor: default;
+    }
+    .multi-select__option--locked input {
+      pointer-events: none;
+    }
+
+    .task-form__row {
+      margin-top: 2px;
+    }
+    .task-form__separator {
+      color: #8a97a8;
+      font-weight: 600;
+    }
+    .task-form__field {
+      flex: 1 1 140px;
+      min-width: 140px;
+    }
+    .task-form__field--date input,
+    .task-form__field--time input {
+      width: 100%;
+    }
+
+    .task-modal__content .modal-header {
+      border-bottom: none;
+      padding-bottom: 0;
+    }
+    .task-modal__content .modal-title:empty {
+      display: none;
     }
 
     .task-history {
@@ -381,19 +522,19 @@
   </noscript>
   <!-- /Yandex.Metrika counter (noscript) -->
   {% if user.is_authenticated %}
-  <header class="app-header py-3" {% if hide_header %}style="display:none"{% endif %}>
+  <header class="app-header py-2" {% if hide_header %}style="display:none"{% endif %}>
     <div class="container">
       <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
-        <div class="d-flex align-items-center gap-3">
+        <a href="{% if not is_personal_user %}{% url 'readings_all' %}{% else %}{{ personal_pool_url|default:'/pools' }}{% endif %}" class="d-flex align-items-center gap-3 text-decoration-none">
           <img src="{% static brand_logo %}" class="app-logo{% if brand_logo_wide %} app-logo--wide{% endif %}" alt="{{ brand_name }}">
           <div class="{% if brand_hide_text_on_mobile %}d-none d-md-block{% endif %}">
             <div class="fw-bold text-dark">{{ brand_name }}</div>
             <div class="text-muted small">&#1057;&#1080;&#1089;&#1090;&#1077;&#1084;&#1072; &#1086;&#1073;&#1089;&#1083;&#1091;&#1078;&#1080;&#1074;&#1072;&#1085;&#1080;&#1103; &#1086;&#1073;&#1098;&#1077;&#1082;&#1090;&#1086;&#1074;</div>
           </div>
-        </div>
+        </a>
 
         <div class="d-flex align-items-center gap-3">
-          <a class="btn btn-light d-lg-none border-0 shadow-sm position-relative" style="width:44px;height:44px;" href="{% url 'notifications' %}" aria-label="&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;">
+          <a class="header-icon d-lg-none position-relative" href="{% url 'notifications' %}" aria-label="&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;">
             <i class="bi bi-bell fs-5"></i>
             {% if notifications_unread_count %}
               <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger">
@@ -401,7 +542,7 @@
               </span>
             {% endif %}
           </a>
-          <button class="btn btn-light d-lg-none border-0 shadow-sm" style="width:44px;height:44px;" onclick="openMenu()" aria-label="&#1054;&#1090;&#1082;&#1088;&#1099;&#1090;&#1100; &#1084;&#1077;&#1085;&#1102;">
+          <button class="header-icon d-lg-none" type="button" onclick="openMenu()" aria-label="&#1054;&#1090;&#1082;&#1088;&#1099;&#1090;&#1100; &#1084;&#1077;&#1085;&#1102;" data-menu-button="true">
             <i class="bi bi-list fs-4"></i>
           </button>
           <nav class="d-none d-lg-flex align-items-center gap-3">
@@ -418,6 +559,9 @@
               &#1052;&#1086;&#1080; &#1086;&#1073;&#1098;&#1077;&#1082;&#1090;&#1099;
             {% endif %}
           </a>
+          {% if is_org_staff %}
+            <a class="text-decoration-none {% if active_tab == 'clients' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'clients_list' %}">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;</a>
+          {% endif %}
           {% if user.is_authenticated %}
             {% with org_admins=user.organizationaccess_set.all %}
               {% if user.is_superuser or org_admins|length %}
@@ -425,14 +569,11 @@
               {% endif %}
             {% endwith %}
           {% endif %}
-          {% if is_org_staff %}
-            <a class="text-decoration-none {% if active_tab == 'clients' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'clients_list' %}">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;</a>
-          {% endif %}
-          {% if is_org_admin %}
-          {% endif %}
-          {% if user.is_superuser %}
-            <a class="text-decoration-none {% if active_tab == 'billing_admin' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'billing_admin' %}">&#1055;&#1083;&#1072;&#1090;&#1077;&#1078;&#1080;</a>
-          {% endif %}
+          <a class="text-decoration-none {% if active_tab == 'profile' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'profile' %}">&#1055;&#1088;&#1086;&#1092;&#1080;&#1083;&#1100;</a>
+          <form method="post" action="{% url 'logout' %}" class="d-inline">
+            {% csrf_token %}
+            <button type="submit" class="nav-link-button text-muted">&#1042;&#1099;&#1081;&#1090;&#1080;</button>
+          </form>
           <a class="text-decoration-none d-inline-flex align-items-center justify-content-center position-relative {% if active_tab == 'notifications' %}text-primary{% else %}text-muted{% endif %}" href="{% url 'notifications' %}" aria-label="&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;" title="&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;">
             <i class="bi bi-bell fs-5"></i>
             {% if notifications_unread_count %}
@@ -440,9 +581,6 @@
                 {{ notifications_unread_count }}
               </span>
             {% endif %}
-          </a>
-          <a class="text-decoration-none d-inline-flex align-items-center justify-content-center {% if active_tab == 'profile' %}text-primary{% else %}text-muted{% endif %}" href="{% url 'profile' %}" aria-label="&#1051;&#1080;&#1095;&#1085;&#1099;&#1081; &#1082;&#1072;&#1073;&#1080;&#1085;&#1077;&#1090;" title="&#1051;&#1080;&#1095;&#1085;&#1099;&#1081; &#1082;&#1072;&#1073;&#1080;&#1085;&#1077;&#1090;">
-            <i class="bi bi-person-circle fs-5"></i>
           </a>
           </nav>
 
@@ -519,11 +657,8 @@
   {% if user.is_authenticated %}
   <div id="menu-overlay" class="menu-overlay" onclick="closeMenu()"></div>
   <div id="mobile-menu" class="mobile-menu">
-      <div class="menu-header d-flex align-items-center justify-content-between mb-3">
-          <div class="d-flex align-items-center gap-2">
-              <img src="{% static brand_logo %}" class="app-logo app-logo--compact{% if brand_logo_wide %} app-logo--wide{% endif %}" alt="{{ brand_name }}">
-          </div>
-          <button class="btn btn-light border-0" onclick="closeMenu()" aria-label="&#1047;&#1072;&#1082;&#1088;&#1099;&#1090;&#1100; &#1084;&#1077;&#1085;&#1102;">
+      <div class="menu-header d-flex align-items-center justify-content-end">
+          <button class="menu-close" type="button" onclick="closeMenu()" aria-label="&#1047;&#1072;&#1082;&#1088;&#1099;&#1090;&#1100; &#1084;&#1077;&#1085;&#1102;">
               <i class="bi bi-x-lg"></i>
           </button>
       </div>
@@ -550,7 +685,9 @@
           {% if can_access_crm %}
           <a href="{% url 'crm_index' %}" class="list-group-item list-group-item-action">CRM</a>
           {% endif %}
-          <a href="{% url 'profile' %}" class="list-group-item list-group-item-action">&#1055;&#1088;&#1086;&#1092;&#1080;&#1083;&#1100;</a>
+          {% if not is_personal_user %}
+          <a href="/readings/all" class="list-group-item list-group-item-action">&#1050;&#1072;&#1083;&#1077;&#1085;&#1076;&#1072;&#1088;&#1100;</a>
+          {% endif %}
           <a href="{{ personal_pool_url|default:'/pools' }}" class="list-group-item list-group-item-action">
             {% if is_personal_user %}
               &#1052;&#1086;&#1081; &#1086;&#1073;&#1098;&#1077;&#1082;&#1090;
@@ -561,11 +698,6 @@
           {% if is_org_staff %}
           <a href="{% url 'clients_list' %}" class="list-group-item list-group-item-action">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;</a>
           {% endif %}
-          {% if is_org_admin %}
-          {% endif %}
-          {% if not is_personal_user %}
-          <a href="/readings/all" class="list-group-item list-group-item-action">&#1050;&#1072;&#1083;&#1077;&#1085;&#1076;&#1072;&#1088;&#1100;</a>
-          {% endif %}
           {% if user.is_authenticated %}
             {% with org_admins=user.organizationaccess_set.all %}
               {% if user.is_superuser or org_admins|length %}
@@ -573,13 +705,11 @@
               {% endif %}
             {% endwith %}
           {% endif %}
-          {% if user.is_superuser %}
-          <a href="{% url 'billing_admin' %}" class="list-group-item list-group-item-action">&#1055;&#1083;&#1072;&#1090;&#1077;&#1078;&#1080;</a>
-          {% endif %}
+          <a href="{% url 'profile' %}" class="list-group-item list-group-item-action">&#1055;&#1088;&#1086;&#1092;&#1080;&#1083;&#1100;</a>
           {% if user.is_authenticated %}
-          <form method="post" action="{% url 'logout' %}" class="list-group-item list-group-item-action p-0 border-0">
+          <form method="post" action="{% url 'logout' %}">
               {% csrf_token %}
-              <button class="btn w-100 text-start">&#1042;&#1099;&#1081;&#1090;&#1080;</button>
+              <button type="submit" class="list-group-item list-group-item-action w-100 text-start">&#1042;&#1099;&#1081;&#1090;&#1080;</button>
           </form>
           {% endif %}
       </div>
@@ -720,9 +850,22 @@
 
       // сбрасываем состояние мобильного меню при загрузке
       closeMenu();
+      positionMenuClose();
+      window.addEventListener("resize", positionMenuClose);
     });
 
+    function positionMenuClose() {
+      const closeBtn = document.querySelector(".menu-close");
+      const menuBtn = document.querySelector("[data-menu-button]");
+      if (!closeBtn || !menuBtn) return;
+      const rect = menuBtn.getBoundingClientRect();
+      closeBtn.style.top = `${Math.round(rect.top)}px`;
+      closeBtn.style.left = `${Math.round(rect.left)}px`;
+      closeBtn.style.right = "auto";
+    }
+
     function openMenu() {
+      positionMenuClose();
       document.getElementById("mobile-menu").classList.add("open");
       document.getElementById("menu-overlay").classList.add("show");
     }
@@ -917,6 +1060,37 @@
     const installDismiss = document.getElementById("install-dismiss");
     const installText = document.getElementById("install-banner-text");
     let installPromptFired = false;
+    function getStoredInstalled() {
+      try {
+        return localStorage.getItem("pwaInstalled") === "1";
+      } catch (e) {
+        return false;
+      }
+    }
+    function setStoredInstalled() {
+      try {
+        localStorage.setItem("pwaInstalled", "1");
+      } catch (e) {}
+    }
+    async function isAppInstalled() {
+      if (isStandalone()) {
+        setStoredInstalled();
+        return true;
+      }
+      if (getStoredInstalled()) {
+        return true;
+      }
+      if ("getInstalledRelatedApps" in navigator) {
+        try {
+          const related = await navigator.getInstalledRelatedApps();
+          if (Array.isArray(related) && related.length) {
+            setStoredInstalled();
+            return true;
+          }
+        } catch (e) {}
+      }
+      return false;
+    }
 
     function setInstallBannerPrompt() {
       if (installText) {
@@ -940,9 +1114,9 @@
       installBanner.style.display = "none";
     }
 
-    window.addEventListener("beforeinstallprompt", (e) => {
+    window.addEventListener("beforeinstallprompt", async (e) => {
       e.preventDefault();
-      if (window.matchMedia("(display-mode: standalone)").matches) return;
+      if (await isAppInstalled()) return;
       deferredPrompt = e;
       installPromptFired = true;
       setInstallBannerPrompt();
@@ -980,14 +1154,15 @@
     });
 
 
-    setTimeout(() => {
+    setTimeout(async () => {
       if (installPromptFired) return;
-      if (isStandalone()) return;
+      if (await isAppInstalled()) return;
       if (isIosDevice()) return;
       setInstallBannerManual();
       showInstallBanner();
     }, 2000);
     window.addEventListener("appinstalled", () => {
+      setStoredInstalled();
       hideInstallBanner();
       deferredPrompt = null;
       const promptEl = document.getElementById("pwa-prompt");
@@ -1026,7 +1201,7 @@
         sessionStorage.setItem("iosInstallDismissed", "1");
       } catch (e) {}
     }
-    if (isIosDevice() && !isStandalone() && !iosDismissed()) {
+    if (isIosDevice() && !isStandalone() && !getStoredInstalled() && !iosDismissed()) {
       showIosBanner();
     }
     iosDismiss?.addEventListener("click", () => {
@@ -1263,6 +1438,26 @@
         valueEl.textContent = labels.length <= 2 ? labels.join(", ") : `\u0412\u044b\u0431\u0440\u0430\u043d\u043e: ${labels.length}`;
       };
 
+      const setDropdownPosition = (root) => {
+        const dropdown = root.querySelector("[data-multi-select-list]");
+        if (!dropdown) return;
+        const rect = root.getBoundingClientRect();
+        const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+        const spaceBelow = viewportHeight - rect.bottom;
+        const spaceAbove = rect.top;
+        const computed = window.getComputedStyle(dropdown);
+        const maxHeight = parseInt(computed.maxHeight, 10) || 260;
+        const needed = Math.min(dropdown.scrollHeight || maxHeight, maxHeight);
+        const useDropUp = spaceBelow < needed && spaceAbove > spaceBelow;
+        root.classList.toggle("multi-select--drop-up", useDropUp);
+        const available = (useDropUp ? spaceAbove : spaceBelow) - 12;
+        if (available > 120) {
+          dropdown.style.maxHeight = `${Math.min(maxHeight, available)}px`;
+        } else {
+          dropdown.style.maxHeight = `${maxHeight}px`;
+        }
+      };
+
       const initMultiSelect = (root) => {
         if (!root || root.dataset.multiSelectReady === "1") return;
         const trigger = root.querySelector("[data-multi-select-trigger]");
@@ -1272,7 +1467,11 @@
 
         trigger.addEventListener("click", (event) => {
           event.preventDefault();
-          root.classList.toggle("multi-select--open");
+          const willOpen = !root.classList.contains("multi-select--open");
+          root.classList.toggle("multi-select--open", willOpen);
+          if (willOpen) {
+            setDropdownPosition(root);
+          }
         });
 
         root.addEventListener("change", (event) => {
@@ -1283,6 +1482,7 @@
         document.addEventListener("click", (event) => {
           if (root.contains(event.target)) return;
           root.classList.remove("multi-select--open");
+          root.classList.remove("multi-select--drop-up");
         });
 
         updateLabel(root);
@@ -1306,58 +1506,37 @@
           if (form.dataset.taskFormReady === "1") return;
           form.dataset.taskFormReady = "1";
 
-          const visibilityField = form.querySelector("[name='visibility']");
-          const responsiblesBlock = form.querySelector("[data-responsibles-block]");
-          const responsiblesInfo = form.querySelector("[data-responsibles-info]");
-          const fixedInput = form.querySelector("[data-responsibles-fixed]");
-          const defaultAll = responsiblesBlock && responsiblesBlock.dataset.defaultAll === "1";
+          const timeToggle = form.querySelector("[data-task-time-toggle]");
+          const timeFields = form.querySelector("[data-task-time-fields]");
+          const timeInputs = timeFields ? timeFields.querySelectorAll("input[type='time']") : [];
 
-          const applyState = () => {
-            const isPrivate = visibilityField && visibilityField.value === "private";
-            const checkboxes = responsiblesBlock
-              ? responsiblesBlock.querySelectorAll("input[type='checkbox'][name='responsibles']")
-              : [];
-
-            if (isPrivate) {
-              responsiblesBlock?.classList.add("d-none");
-              responsiblesInfo?.classList.remove("d-none");
-              checkboxes.forEach((cb) => {
-                cb.disabled = true;
-              });
-              if (fixedInput) fixedInput.disabled = false;
-            } else {
-              responsiblesBlock?.classList.remove("d-none");
-              responsiblesInfo?.classList.add("d-none");
-              checkboxes.forEach((cb) => {
-                cb.disabled = false;
-              });
-              if (fixedInput) fixedInput.disabled = true;
-              if (defaultAll && !form.dataset.responsiblesTouched) {
-                const anyChecked = Array.from(checkboxes).some((cb) => cb.checked);
-                if (!anyChecked) {
-                  checkboxes.forEach((cb) => {
-                    cb.checked = true;
-                  });
-                }
+          const syncTimeFields = (clearValues) => {
+            if (!timeFields || !timeToggle) return;
+            const show = timeToggle.checked;
+            timeFields.classList.toggle("d-none", !show);
+            timeInputs.forEach((input) => {
+              input.disabled = !show;
+              if (!show && clearValues) {
+                input.value = "";
               }
-            }
-
-            if (window.initAllMultiSelects) {
-              window.initAllMultiSelects(form);
-            }
+            });
           };
 
-          form.addEventListener("change", (event) => {
-            if (event.target && event.target.name === "responsibles") {
-              form.dataset.responsiblesTouched = "1";
-            }
-          });
-
-          if (visibilityField) {
-            visibilityField.addEventListener("change", applyState);
+          if (timeToggle) {
+            syncTimeFields(false);
+            timeToggle.addEventListener("change", () => syncTimeFields(true));
           }
 
-          applyState();
+          form.querySelectorAll("input[data-locked='1']").forEach((input) => {
+            input.checked = true;
+            input.addEventListener("click", (event) => {
+              event.preventDefault();
+            });
+          });
+
+          if (window.initAllMultiSelects) {
+            window.initAllMultiSelects(form);
+          }
         });
       };
 

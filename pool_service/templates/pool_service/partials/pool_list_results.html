@@ -7,15 +7,14 @@
                     <div class="d-flex gap-3 align-items-start">
                         <div class="{% if pool.service_suspended %}bg-secondary{% elif pool.object_type == 'water' %}bg-success bg-gradient{% else %}bg-primary bg-gradient{% endif %} text-white rounded-3 d-flex align-items-center justify-content-center" style="width:48px;height:48px;">
                             {% if pool.object_type == 'water' %}
-                                <i class="bi bi-gear fs-4"></i>
+                                <i class="bi bi-funnel fs-4"></i>
                             {% else %}
-                                <i class="bi bi-droplet fs-4"></i>
+                                <i class="bi bi-water fs-4"></i>
                             {% endif %}
                         </div>
                         <div>
                             <div class="fw-bold">{{ pool.client.name }}</div>
                             <div class="text-muted small"><i class="bi bi-geo-alt me-1"></i>{{ pool.address|default:"-" }}</div>
-                            <div class="text-muted small mt-1">&#1047;&#1072;&#1087;&#1080;&#1089;&#1077;&#1081;: {{ pool.num_readings|default:0 }}</div>
                         </div>
                     </div>
                     <i class="bi bi-arrow-right text-muted fs-4"></i>

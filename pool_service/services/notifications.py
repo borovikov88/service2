@@ -215,3 +215,46 @@ def notify_reading_out_of_range(reading):
         dedupe_key=dedupe_key,
     )
     return created
+
+
+def notify_task_assignment(task, users, *, added_by=None, send_push=True):
+    title = "Добавили в задачу"
+    date_label = ""
+    if task.start_date and task.end_date:
+        if task.start_date == task.end_date:
+            date_label = task.start_date.strftime("%d.%m.%Y")
+        else:
+            date_label = f"{task.start_date:%d.%m.%Y} — {task.end_date:%d.%m.%Y}"
+    time_label = ""
+    if task.start_time and task.end_time:
+        time_label = f"{task.start_time:%H:%M} — {task.end_time:%H:%M}"
+    elif task.start_time:
+        time_label = f"{task.start_time:%H:%M}"
+    elif task.end_time:
+        time_label = f"{task.end_time:%H:%M}"
+
+    details = " | ".join([part for part in [date_label, time_label] if part])
+    message = task.title
+    if details:
+        message = f"{message} ({details})"
+
+    action_url = reverse("task_edit", kwargs={"task_id": task.id})
+    recipients = []
+    for user in users:
+        if not user or not user.is_active:
+            continue
+        if added_by and user.id == added_by.id:
+            continue
+        recipients.append(user)
+    if not recipients:
+        return []
+    return notify_users(
+        recipients,
+        title=title,
+        message=message,
+        kind="task_assignment",
+        level="info",
+        action_url=action_url,
+        organization=task.organization,
+        send_push=send_push,
+    )

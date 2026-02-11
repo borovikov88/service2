@@ -57,10 +57,11 @@ class ServiceTaskForm(forms.ModelForm):
     responsibles = forms.ModelMultipleChoiceField(
         queryset=User.objects.none(),
         required=True,
-        label="Ответственные",
+        label="Участники",
         widget=forms.SelectMultiple(attrs={"class": "form-select"}),
     )
     is_completed = forms.BooleanField(required=False, label="Выполнено")
+    is_important = forms.BooleanField(required=False, label="Важная задача")
 
     class Meta:
         model = ServiceTask
@@ -69,8 +70,8 @@ class ServiceTaskForm(forms.ModelForm):
             "description",
             "start_date",
             "end_date",
-            "visibility",
-            "priority",
+            "start_time",
+            "end_time",
             "responsibles",
         ]
         labels = {
@@ -78,16 +79,16 @@ class ServiceTaskForm(forms.ModelForm):
             "description": "Комментарий",
             "start_date": "Дата начала",
             "end_date": "Дата окончания",
-            "visibility": "Видимость",
-            "priority": "Приоритет",
+            "start_time": "Время начала",
+            "end_time": "Время окончания",
         }
         widgets = {
             "title": forms.TextInput(attrs={"class": "form-control rounded-3"}),
             "description": forms.Textarea(attrs={"class": "form-control rounded-3", "rows": 3}),
             "start_date": forms.DateInput(attrs={"class": "form-control rounded-3", "type": "date"}, format="%Y-%m-%d"),
             "end_date": forms.DateInput(attrs={"class": "form-control rounded-3", "type": "date"}, format="%Y-%m-%d"),
-            "visibility": forms.Select(attrs={"class": "form-select"}),
-            "priority": forms.Select(attrs={"class": "form-select"}),
+            "start_time": forms.TimeInput(attrs={"class": "form-control rounded-3", "type": "time"}, format="%H:%M"),
+            "end_time": forms.TimeInput(attrs={"class": "form-control rounded-3", "type": "time"}, format="%H:%M"),
         }
 
     def __init__(self, *args, **kwargs):
@@ -95,16 +96,44 @@ class ServiceTaskForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         if organization:
             self.fields["responsibles"].queryset = User.objects.filter(
-                organizationaccess__organization=organization
+                organizationaccess__organization=organization,
+                is_active=True,
             ).distinct().order_by("last_name", "first_name", "username")
         if self.instance and self.instance.pk:
             self.fields["is_completed"].initial = bool(self.instance.completed_at)
+            self.fields["is_important"].initial = self.instance.priority == ServiceTask.PRIORITY_HIGH
         self.fields["is_completed"].widget.attrs.update({"class": "form-check-input"})
+        self.fields["is_important"].widget.attrs.update({"class": "form-check-input"})
+        self.fields["title"].widget.attrs.update(
+            {
+                "placeholder": "Название задачи",
+                "aria-label": "Название задачи",
+            }
+        )
+        self.fields["description"].widget.attrs.update(
+            {
+                "placeholder": "Расскажите подробнее о задаче",
+                "aria-label": "Описание задачи",
+            }
+        )
+        for field_name, label in {
+            "start_date": "Дата начала",
+            "end_date": "Дата окончания",
+            "start_time": "Время начала",
+            "end_time": "Время окончания",
+        }.items():
+            if field_name in self.fields:
+                self.fields[field_name].widget.attrs.update({"aria-label": label})
         for field_name in ("start_date", "end_date"):
             if field_name in self.fields:
                 self.fields[field_name].input_formats = ["%Y-%m-%d"]
                 if hasattr(self.fields[field_name].widget, "format"):
                     self.fields[field_name].widget.format = "%Y-%m-%d"
+        for field_name in ("start_time", "end_time"):
+            if field_name in self.fields:
+                self.fields[field_name].input_formats = ["%H:%M"]
+                if hasattr(self.fields[field_name].widget, "format"):
+                    self.fields[field_name].widget.format = "%H:%M"
 
     def clean(self):
         cleaned = super().clean()
@@ -114,7 +143,25 @@ class ServiceTaskForm(forms.ModelForm):
             self.add_error("end_date", "Дата окончания не может быть раньше даты начала.")
         if start_date and not end_date:
             cleaned["end_date"] = start_date
+        start_time = cleaned.get("start_time")
+        end_time = cleaned.get("end_time")
+        if start_time and not end_time:
+            cleaned["end_time"] = start_time
+        if end_time and not start_time:
+            cleaned["start_time"] = end_time
+        if start_time and end_time and start_date and end_date and start_date == end_date:
+            if end_time < start_time:
+                self.add_error("end_time", "Время окончания не может быть раньше времени начала.")
         return cleaned
+
+    def save(self, commit=True):
+        instance = super().save(commit=False)
+        is_important = bool(self.cleaned_data.get("is_important"))
+        instance.priority = ServiceTask.PRIORITY_HIGH if is_important else ServiceTask.PRIORITY_NORMAL
+        if commit:
+            instance.save()
+            self.save_m2m()
+        return instance
 
 
 class RegistrationForm(forms.Form):

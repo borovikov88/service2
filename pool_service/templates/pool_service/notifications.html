@@ -7,74 +7,109 @@
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
         <h4 class="fw-bold mb-0">&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;</h4>
         {% if notifications %}
-        <form method="post" action="{% url 'notifications_mark_all' %}">
-            {% csrf_token %}
-            <button type="submit" class="btn btn-outline-secondary btn-sm">&#1054;&#1090;&#1084;&#1077;&#1090;&#1080;&#1090;&#1100; &#1074;&#1089;&#1077; &#1087;&#1088;&#1086;&#1095;&#1080;&#1090;&#1072;&#1085;&#1085;&#1099;&#1084;&#1080;</button>
-        </form>
+        <div class="d-flex flex-wrap gap-2">
+            <form method="post" action="{% url 'notifications_mark_all' %}">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-outline-secondary btn-sm">&#1054;&#1090;&#1084;&#1077;&#1090;&#1080;&#1090;&#1100; &#1074;&#1089;&#1077; &#1087;&#1088;&#1086;&#1095;&#1080;&#1090;&#1072;&#1085;&#1085;&#1099;&#1084;&#1080;</button>
+            </form>
+            <form method="post" action="{% url 'notifications_resolve_all' %}">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-outline-danger btn-sm">&#1057;&#1082;&#1088;&#1099;&#1090;&#1100; &#1074;&#1089;&#1077; &#1091;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;</button>
+            </form>
+        </div>
         {% endif %}
     </div>
 
-    <div class="list-group">
-        {% for note in notifications %}
-        <div class="list-group-item border-0 border-bottom py-3 {% if not note.is_read %}bg-light{% endif %}">
-            <div class="d-flex flex-wrap justify-content-between gap-3">
-                <div class="flex-grow-1">
-                    <div class="d-flex align-items-center gap-2 mb-1">
-                        {% if note.level == "critical" %}
-                        <span class="badge bg-danger-subtle text-danger border">&#1050;&#1088;&#1080;&#1090;&#1080;&#1095;&#1085;&#1086;</span>
-                        {% elif note.level == "warning" %}
-                        <span class="badge bg-warning-subtle text-warning border">&#1042;&#1085;&#1080;&#1084;&#1072;&#1085;&#1080;&#1077;</span>
-                        {% else %}
-                        <span class="badge bg-info-subtle text-info border">&#1048;&#1085;&#1092;&#1086;</span>
+    <div class="mb-4">
+        <div class="text-uppercase text-muted small fw-semibold mb-2">&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103; &#1087;&#1086; &#1087;&#1072;&#1088;&#1072;&#1084;&#1077;&#1090;&#1088;&#1072;&#1084;</div>
+        <div class="list-group">
+            {% for note in service_notifications %}
+            <div class="list-group-item border-0 border-bottom py-3 {% if not note.is_read %}bg-light{% endif %}">
+                <div class="d-flex flex-wrap justify-content-between gap-3">
+                    <div class="flex-grow-1">
+                        <div class="d-flex align-items-center gap-2 mb-1">
+                            {% if note.level == "critical" %}
+                            <span class="badge bg-danger-subtle text-danger border">&#1050;&#1088;&#1080;&#1090;&#1080;&#1095;&#1085;&#1086;</span>
+                            {% elif note.level == "warning" %}
+                            <span class="badge bg-warning-subtle text-warning border">&#1042;&#1085;&#1080;&#1084;&#1072;&#1085;&#1080;&#1077;</span>
+                            {% else %}
+                            <span class="badge bg-info-subtle text-info border">&#1048;&#1085;&#1092;&#1086;</span>
+                            {% endif %}
+                            <div class="fw-semibold">{{ note.title }}</div>
+                            {% if not note.is_read %}
+                            <span class="badge bg-primary-subtle text-primary border">&#1053;&#1086;&#1074;&#1086;&#1077;</span>
+                            {% endif %}
+                        </div>
+                        {% if note.message %}
+                        <div class="text-muted">{{ note.message }}</div>
                         {% endif %}
-                        <div class="fw-semibold">{{ note.title }}</div>
-                        {% if not note.is_read %}
-                        <span class="badge bg-primary-subtle text-primary border">&#1053;&#1086;&#1074;&#1086;&#1077;</span>
-                        {% endif %}
+                        <div class="text-muted small mt-1">{{ note.display_time|date:"d.m.Y H:i" }}</div>
                     </div>
-                    {% if note.message %}
-                    <div class="text-muted">{{ note.message }}</div>
-                    {% endif %}
-                    <div class="text-muted small mt-1">{{ note.display_time|date:"d.m.Y H:i" }}</div>
-                </div>
-                <div class="d-flex align-items-start gap-2">
-                    {% if note.action_url %}
-                    <a href="{{ note.action_url }}" class="btn btn-outline-primary btn-sm">&#1054;&#1090;&#1082;&#1088;&#1099;&#1090;&#1100;</a>
-                    {% endif %}
-                    <form method="post" action="{% url 'notifications_mark_read' note.id %}">
-                        {% csrf_token %}
-                        <button type="submit" class="btn btn-outline-secondary btn-sm">&#1055;&#1088;&#1086;&#1095;&#1080;&#1090;&#1072;&#1085;&#1086;</button>
-                    </form>
-                    <form method="post" action="{% url 'notification_resolve' note.id %}">
-                        {% csrf_token %}
-                        <button type="submit" class="btn btn-outline-danger btn-sm">&#1057;&#1082;&#1088;&#1099;&#1090;&#1100;</button>
-                    </form>
+                    <div class="d-flex align-items-start gap-2">
+                        {% if note.action_url %}
+                        <a href="{{ note.action_url }}" class="btn btn-outline-primary btn-sm">&#1054;&#1090;&#1082;&#1088;&#1099;&#1090;&#1100;</a>
+                        {% endif %}
+                        <form method="post" action="{% url 'notifications_mark_read' note.id %}">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-outline-secondary btn-sm">&#1055;&#1088;&#1086;&#1095;&#1080;&#1090;&#1072;&#1085;&#1086;</button>
+                        </form>
+                        <form method="post" action="{% url 'notification_resolve' note.id %}">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-outline-danger btn-sm">&#1057;&#1082;&#1088;&#1099;&#1090;&#1100;</button>
+                        </form>
+                    </div>
                 </div>
             </div>
+            {% empty %}
+            <div class="text-center text-muted py-4">&#1053;&#1077;&#1090; &#1091;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1081; &#1086; &#1087;&#1072;&#1088;&#1072;&#1084;&#1077;&#1090;&#1088;&#1072;&#1093;</div>
+            {% endfor %}
         </div>
-        {% empty %}
-        <div class="text-center text-muted py-4">&#1053;&#1077;&#1090; &#1091;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1081;</div>
-        {% endfor %}
     </div>
 
-    {% if notifications.paginator.num_pages > 1 %}
-    <nav class="mt-4">
-        <ul class="pagination justify-content-center">
-            {% if notifications.has_previous %}
-            <li class="page-item">
-                <a class="page-link" href="?page={{ notifications.previous_page_number }}&{{ pagination_query }}">&#1053;&#1072;&#1079;&#1072;&#1076;</a>
-            </li>
-            {% endif %}
-            <li class="page-item active">
-                <span class="page-link">{{ notifications.number }}</span>
-            </li>
-            {% if notifications.has_next %}
-            <li class="page-item">
-                <a class="page-link" href="?page={{ notifications.next_page_number }}&{{ pagination_query }}">&#1042;&#1087;&#1077;&#1088;&#1105;&#1076;</a>
-            </li>
-            {% endif %}
-        </ul>
-    </nav>
-    {% endif %}
+    <div>
+        <div class="text-uppercase text-muted small fw-semibold mb-2">&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1083;&#1080; &#1074; &#1079;&#1072;&#1076;&#1072;&#1095;&#1091;</div>
+        <div class="list-group">
+            {% for note in task_notifications %}
+            <div class="list-group-item border-0 border-bottom py-3 {% if not note.is_read %}bg-light{% endif %}">
+                <div class="d-flex flex-wrap justify-content-between gap-3">
+                    <div class="flex-grow-1">
+                        <div class="d-flex align-items-center gap-2 mb-1">
+                            {% if note.level == "critical" %}
+                            <span class="badge bg-danger-subtle text-danger border">&#1050;&#1088;&#1080;&#1090;&#1080;&#1095;&#1085;&#1086;</span>
+                            {% elif note.level == "warning" %}
+                            <span class="badge bg-warning-subtle text-warning border">&#1042;&#1085;&#1080;&#1084;&#1072;&#1085;&#1080;&#1077;</span>
+                            {% else %}
+                            <span class="badge bg-info-subtle text-info border">&#1048;&#1085;&#1092;&#1086;</span>
+                            {% endif %}
+                            <div class="fw-semibold">{{ note.title }}</div>
+                            {% if not note.is_read %}
+                            <span class="badge bg-primary-subtle text-primary border">&#1053;&#1086;&#1074;&#1086;&#1077;</span>
+                            {% endif %}
+                        </div>
+                        {% if note.message %}
+                        <div class="text-muted">{{ note.message }}</div>
+                        {% endif %}
+                        <div class="text-muted small mt-1">{{ note.display_time|date:"d.m.Y H:i" }}</div>
+                    </div>
+                    <div class="d-flex align-items-start gap-2">
+                        {% if note.action_url %}
+                        <a href="{{ note.action_url }}" class="btn btn-outline-primary btn-sm">&#1054;&#1090;&#1082;&#1088;&#1099;&#1090;&#1100;</a>
+                        {% endif %}
+                        <form method="post" action="{% url 'notifications_mark_read' note.id %}">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-outline-secondary btn-sm">&#1055;&#1088;&#1086;&#1095;&#1080;&#1090;&#1072;&#1085;&#1086;</button>
+                        </form>
+                        <form method="post" action="{% url 'notification_resolve' note.id %}">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-outline-danger btn-sm">&#1057;&#1082;&#1088;&#1099;&#1090;&#1100;</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            {% empty %}
+            <div class="text-center text-muted py-4">&#1053;&#1077;&#1090; &#1091;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1081; &#1086; &#1079;&#1072;&#1076;&#1072;&#1095;&#1072;&#1093;</div>
+            {% endfor %}
+        </div>
+    </div>
 </div>
 {% endblock %}

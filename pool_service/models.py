@@ -551,6 +551,7 @@ class Notification(models.Model):
         ("daily_missing", "daily_missing"),
         ("new_company", "new_company"),
         ("new_personal", "new_personal"),
+        ("task_assignment", "task_assignment"),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="notifications")
@@ -646,6 +647,8 @@ class ServiceTask(models.Model):
     description = models.TextField(blank=True)
     start_date = models.DateField()
     end_date = models.DateField(null=True, blank=True)
+    start_time = models.TimeField(null=True, blank=True)
+    end_time = models.TimeField(null=True, blank=True)
     visibility = models.CharField(max_length=16, choices=VISIBILITY_CHOICES, default=VISIBILITY_PUBLIC)
     priority = models.CharField(max_length=16, choices=PRIORITY_CHOICES, default=PRIORITY_NORMAL)
     created_by = models.ForeignKey(
