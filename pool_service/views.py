@@ -6195,6 +6195,37 @@ def task_edit(request, task_id):
     return render(request, template_name, context, status=status_code)
 
 
+@login_required
+def task_delete(request, task_id):
+    if request.method != "POST":
+        return redirect("task_edit", task_id=task_id)
+
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+
+    task = get_object_or_404(ServiceTask, pk=task_id)
+    if not _task_can_edit(task, request.user):
+        return HttpResponseForbidden()
+
+    next_url = request.POST.get("next") or ""
+    if next_url and not next_url.startswith("/"):
+        next_url = ""
+
+    task.delete()
+    messages.success(request, "Р—Р°РґР°С‡Р° СѓРґР°Р»РµРЅР°.")
+
+    if request.POST.get("modal") == "1":
+        return JsonResponse({"ok": True, "deleted": True})
+
+    if next_url:
+        return redirect(next_url)
+    return redirect("readings_all")
+
+
 @csrf_protect
 @login_required
 def task_move(request):

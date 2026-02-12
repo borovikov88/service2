@@ -123,6 +123,30 @@
   </div>
 </form>
 
+{% if task %}
+  <div class="d-flex flex-wrap gap-2 mt-2">
+    <form method="post" action="{% url 'task_delete' task.id %}" class="d-inline">
+      {% csrf_token %}
+      {% if next_url %}
+        <input type="hidden" name="next" value="{{ next_url }}">
+      {% endif %}
+      {% if is_modal %}
+        <input type="hidden" name="modal" value="1">
+      {% endif %}
+      <button
+        type="submit"
+        class="btn btn-outline-danger rounded-3 js-confirm-action"
+        data-confirm-title="РЈРґР°Р»РёС‚СЊ Р·Р°РґР°С‡Сѓ?"
+        data-confirm-body="Р—Р°РґР°С‡Р° Р±СѓРґРµС‚ СѓРґР°Р»РµРЅР° Р±РµР· РІРѕР·РјРѕР¶РЅРѕСЃС‚Рё РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅРёСЏ."
+        data-confirm-confirm="РЈРґР°Р»РёС‚СЊ"
+        data-confirm-variant="danger"
+      >
+        РЈРґР°Р»РёС‚СЊ
+      </button>
+    </form>
+  </div>
+{% endif %}
+
 {% if show_history and history %}
   <details class="task-history mt-3">
     <summary class="task-history__summary">История изменений</summary>

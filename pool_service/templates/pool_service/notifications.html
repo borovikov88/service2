@@ -56,6 +56,9 @@
     }
     .tg-actions .btn {
         border-radius: 999px;
+        padding: 6px 12px;
+        font-size: 13px;
+        box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
     }
     .tg-list {
         display: flex;
@@ -63,10 +66,10 @@
         gap: 4px;
     }
     .tg-item {
+        position: relative;
         display: flex;
-        justify-content: space-between;
         gap: 16px;
-        padding: 10px 12px;
+        padding: 12px 64px 28px 12px;
         border-radius: 14px;
         background: #f7f8fa;
     }
@@ -87,16 +90,35 @@
         line-height: 1.3;
     }
     .tg-subtitle {
-        font-size: 13px;
-        color: #6b7280;
+        font-size: 14px;
+        color: #1f2a37;
         line-height: 1.3;
     }
     .tg-time {
+        position: absolute;
+        right: 12px;
+        bottom: 8px;
         font-size: 12px;
         color: #9aa1a9;
         white-space: nowrap;
-        flex: 0 0 auto;
-        align-self: flex-start;
+    }
+    .tg-close {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        border: none;
+        background: transparent;
+        color: #9aa1a9;
+        width: 24px;
+        height: 24px;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .tg-close:hover {
+        background: rgba(15, 23, 42, 0.08);
+        color: #6b7280;
     }
     .tg-link {
         color: #1a73e8;
@@ -137,14 +159,35 @@
             <form method="post" action="{% url 'notifications_resolve_all' %}">
                 {% csrf_token %}
                 <input type="hidden" name="kind" value="task">
-                <button type="submit" class="btn btn-outline-danger btn-sm" {% if not task_notifications %}disabled{% endif %}>
+                <button
+                    type="submit"
+                    class="btn btn-outline-danger btn-sm js-confirm-action"
+                    data-confirm-title="&#1057;&#1082;&#1088;&#1099;&#1090;&#1100; &#1074;&#1089;&#1077;?"
+                    data-confirm-body="&#1042;&#1089;&#1077; &#1091;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103; &#1086; &#1079;&#1072;&#1076;&#1072;&#1095;&#1072;&#1093; &#1073;&#1091;&#1076;&#1091;&#1090; &#1089;&#1082;&#1088;&#1099;&#1090;&#1099;."
+                    data-confirm-confirm="&#1057;&#1082;&#1088;&#1099;&#1090;&#1100;"
+                    data-confirm-variant="danger"
+                    {% if not task_notifications %}disabled{% endif %}
+                >
                     &#1057;&#1082;&#1088;&#1099;&#1090;&#1100; &#1074;&#1089;&#1077;
                 </button>
             </form>
         </div>
+        {% now "Y-m-d" as today_str %}
         <div class="tg-list">
             {% for note in task_notifications %}
             <div class="tg-item {% if not note.is_read %}is-unread{% endif %}">
+                <form method="post" action="{% url 'notification_resolve' note.id %}">
+                    {% csrf_token %}
+                    <button
+                        type="submit"
+                        class="tg-close js-confirm-action"
+                        aria-label="&#1057;&#1082;&#1088;&#1099;&#1090;&#1100;"
+                        data-confirm-title="&#1057;&#1082;&#1088;&#1099;&#1090;&#1100; &#1091;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1077;?"
+                        data-confirm-body="&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1077; &#1073;&#1091;&#1076;&#1077;&#1090; &#1089;&#1082;&#1088;&#1099;&#1090;&#1086; &#1080;&#1079; &#1089;&#1087;&#1080;&#1089;&#1082;&#1072;."
+                        data-confirm-confirm="&#1057;&#1082;&#1088;&#1099;&#1090;&#1100;"
+                        data-confirm-variant="danger"
+                    >&times;</button>
+                </form>
                 <div class="tg-item-main">
                     <div class="tg-title">
                         &#1042;&#1072;&#1089; &#1076;&#1086;&#1073;&#1072;&#1074;&#1080;&#1083;&#1080; &#1091;&#1095;&#1072;&#1089;&#1090;&#1085;&#1080;&#1082;&#1086;&#1084; &#1074; &#1079;&#1072;&#1076;&#1072;&#1095;&#1091;
@@ -158,7 +201,15 @@
                     <div class="tg-subtitle">{{ note.task_details }}</div>
                     {% endif %}
                 </div>
-                <div class="tg-time">{{ note.display_time|date:"d.m.Y H:i" }}</div>
+                <div class="tg-time">
+                    {% with note_date=note.display_time|date:"Y-m-d" %}
+                        {% if note_date == today_str %}
+                            {{ note.display_time|date:"H:i" }}
+                        {% else %}
+                            {{ note.display_time|date:"d.m.Y H:i" }}
+                        {% endif %}
+                    {% endwith %}
+                </div>
             </div>
             {% empty %}
             <div class="tg-empty">&#1053;&#1077;&#1090; &#1091;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1081; &#1086; &#1079;&#1072;&#1076;&#1072;&#1095;&#1072;&#1093;</div>
@@ -178,14 +229,35 @@
             <form method="post" action="{% url 'notifications_resolve_all' %}">
                 {% csrf_token %}
                 <input type="hidden" name="kind" value="service">
-                <button type="submit" class="btn btn-outline-danger btn-sm" {% if not deviation_notifications %}disabled{% endif %}>
+                <button
+                    type="submit"
+                    class="btn btn-outline-danger btn-sm js-confirm-action"
+                    data-confirm-title="&#1057;&#1082;&#1088;&#1099;&#1090;&#1100; &#1074;&#1089;&#1077;?"
+                    data-confirm-body="&#1042;&#1089;&#1077; &#1091;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103; &#1086;&#1073; &#1086;&#1090;&#1082;&#1083;&#1086;&#1085;&#1077;&#1085;&#1080;&#1103;&#1093; &#1073;&#1091;&#1076;&#1091;&#1090; &#1089;&#1082;&#1088;&#1099;&#1090;&#1099;."
+                    data-confirm-confirm="&#1057;&#1082;&#1088;&#1099;&#1090;&#1100;"
+                    data-confirm-variant="danger"
+                    {% if not deviation_notifications %}disabled{% endif %}
+                >
                     &#1057;&#1082;&#1088;&#1099;&#1090;&#1100; &#1074;&#1089;&#1077;
                 </button>
             </form>
         </div>
+        {% now "Y-m-d" as today_str %}
         <div class="tg-list">
             {% for note in deviation_notifications %}
             <div class="tg-item {% if not note.is_read %}is-unread{% endif %}">
+                <form method="post" action="{% url 'notification_resolve' note.id %}">
+                    {% csrf_token %}
+                    <button
+                        type="submit"
+                        class="tg-close js-confirm-action"
+                        aria-label="&#1057;&#1082;&#1088;&#1099;&#1090;&#1100;"
+                        data-confirm-title="&#1057;&#1082;&#1088;&#1099;&#1090;&#1100; &#1091;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1077;?"
+                        data-confirm-body="&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1077; &#1073;&#1091;&#1076;&#1077;&#1090; &#1089;&#1082;&#1088;&#1099;&#1090;&#1086; &#1080;&#1079; &#1089;&#1087;&#1080;&#1089;&#1082;&#1072;."
+                        data-confirm-confirm="&#1057;&#1082;&#1088;&#1099;&#1090;&#1100;"
+                        data-confirm-variant="danger"
+                    >&times;</button>
+                </form>
                 <div class="tg-item-main">
                     <div class="tg-title">
                         {% if note.deviation_prefix %}
@@ -201,7 +273,15 @@
                         {% endif %}
                     </div>
                 </div>
-                <div class="tg-time">{{ note.display_time|date:"d.m.Y H:i" }}</div>
+                <div class="tg-time">
+                    {% with note_date=note.display_time|date:"Y-m-d" %}
+                        {% if note_date == today_str %}
+                            {{ note.display_time|date:"H:i" }}
+                        {% else %}
+                            {{ note.display_time|date:"d.m.Y H:i" }}
+                        {% endif %}
+                    {% endwith %}
+                </div>
             </div>
             {% empty %}
             <div class="tg-empty">&#1053;&#1077;&#1090; &#1091;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1081; &#1086; &#1086;&#1090;&#1082;&#1083;&#1086;&#1085;&#1077;&#1085;&#1080;&#1103;&#1093;</div>
