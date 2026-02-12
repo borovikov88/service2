@@ -41,34 +41,36 @@ def send_push_to_users(users, *, title, message, action_url=""):
         "url": action_url,
         "icon": icon_url,
     }
+    active_users = [user for user in users if user and user.is_active]
+    if not active_users:
+        return 0
     sent = 0
-    for user in users:
-        subscriptions = PushSubscription.objects.filter(user=user)
-        for sub in subscriptions:
-            if not sub.endpoint or not sub.p256dh or not sub.auth:
+    subscriptions = PushSubscription.objects.filter(user__in=active_users).select_related("user")
+    for sub in subscriptions:
+        if not sub.endpoint or not sub.p256dh or not sub.auth:
+            sub.delete()
+            continue
+        subscription_info = {
+            "endpoint": sub.endpoint,
+            "keys": {"p256dh": sub.p256dh, "auth": sub.auth},
+        }
+        try:
+            webpush(
+                subscription_info=subscription_info,
+                data=json.dumps(payload),
+                vapid_private_key=config["private_key"],
+                vapid_claims={"sub": f"mailto:{config['email']}" if config["email"] else "mailto:admin@localhost"},
+                ttl=3600,
+            )
+            sent += 1
+        except WebPushException as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status in {404, 410}:
                 sub.delete()
-                continue
-            subscription_info = {
-                "endpoint": sub.endpoint,
-                "keys": {"p256dh": sub.p256dh, "auth": sub.auth},
-            }
-            try:
-                webpush(
-                    subscription_info=subscription_info,
-                    data=json.dumps(payload),
-                    vapid_private_key=config["private_key"],
-                    vapid_claims={"sub": f"mailto:{config['email']}" if config["email"] else "mailto:admin@localhost"},
-                    ttl=3600,
-                )
-                sent += 1
-            except WebPushException as exc:
-                status = getattr(getattr(exc, "response", None), "status_code", None)
-                if status in {404, 410}:
-                    sub.delete()
-                else:
-                    logger.warning("Web push failed for user %s: %s", user.id, exc)
-                continue
-            except Exception:
-                logger.exception("Web push failed for user %s", user.id)
-                continue
+            else:
+                logger.warning("Web push failed for user %s: %s", sub.user_id, exc)
+            continue
+        except Exception:
+            logger.exception("Web push failed for user %s", sub.user_id)
+            continue
     return sent

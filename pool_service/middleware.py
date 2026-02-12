@@ -10,8 +10,11 @@ class TimezoneMiddleware:
 
     def __call__(self, request):
         if request.user.is_authenticated:
-            profile, _ = Profile.objects.get_or_create(user=request.user, defaults={"timezone": "Europe/Moscow"})
-            timezone.activate(profile.timezone)
+            try:
+                profile = request.user.profile
+            except Profile.DoesNotExist:
+                profile = Profile.objects.create(user=request.user, timezone="Europe/Moscow")
+            timezone.activate(profile.timezone or "Europe/Moscow")
         else:
             timezone.deactivate()
         return self.get_response(request)

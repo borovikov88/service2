@@ -570,10 +570,6 @@
             {% endwith %}
           {% endif %}
           <a class="text-decoration-none {% if active_tab == 'profile' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'profile' %}">&#1055;&#1088;&#1086;&#1092;&#1080;&#1083;&#1100;</a>
-          <form method="post" action="{% url 'logout' %}" class="d-inline">
-            {% csrf_token %}
-            <button type="submit" class="nav-link-button text-muted">&#1042;&#1099;&#1081;&#1090;&#1080;</button>
-          </form>
           <a class="text-decoration-none d-inline-flex align-items-center justify-content-center position-relative {% if active_tab == 'notifications' %}text-primary{% else %}text-muted{% endif %}" href="{% url 'notifications' %}" aria-label="&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;" title="&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;">
             <i class="bi bi-bell fs-5"></i>
             {% if notifications_unread_count %}
@@ -706,12 +702,6 @@
             {% endwith %}
           {% endif %}
           <a href="{% url 'profile' %}" class="list-group-item list-group-item-action">&#1055;&#1088;&#1086;&#1092;&#1080;&#1083;&#1100;</a>
-          {% if user.is_authenticated %}
-          <form method="post" action="{% url 'logout' %}">
-              {% csrf_token %}
-              <button type="submit" class="list-group-item list-group-item-action w-100 text-start">&#1042;&#1099;&#1081;&#1090;&#1080;</button>
-          </form>
-          {% endif %}
       </div>
   </div>
   {% endif %}

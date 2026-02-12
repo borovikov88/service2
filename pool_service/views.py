@@ -924,13 +924,20 @@ def pool_list(request):
 
             return redirect(redirect_url)
 
+    org_access = None
+    client_access = None
+
     if request.user.is_superuser:
 
         pools = Pool.objects.all()
 
-    elif OrganizationAccess.objects.filter(user=request.user).exists():
+    else:
 
-        org_access = OrganizationAccess.objects.filter(user=request.user).first()
+        org_access = (
+            OrganizationAccess.objects.filter(user=request.user)
+            .select_related("organization")
+            .first()
+        )
 
         if org_access:
 
@@ -942,17 +949,15 @@ def pool_list(request):
 
         else:
 
-            pools = Pool.objects.none()
+            client_access = _client_access_for_user(request.user)
 
-    elif ClientAccess.objects.filter(user=request.user).exists():
+            if client_access:
 
-        client_access = _client_access_for_user(request.user)
+                pools = Pool.objects.filter(client=client_access.client)
 
-        pools = Pool.objects.filter(client=client_access.client) if client_access else Pool.objects.none()
+            else:
 
-    else:
-
-        pools = Pool.objects.filter(accesses__user=request.user)
+                pools = Pool.objects.filter(accesses__user=request.user)
 
 
 
@@ -1063,8 +1068,6 @@ def pool_list(request):
 
 
     personal_user = is_personal_user(request.user)
-
-    client_access = _client_access_for_user(request.user)
 
     personal_pool_count = 0
 
@@ -7610,9 +7613,7 @@ def notifications_list(request):
             try:
                 current_tz = ZoneInfo(tz_name)
             except Exception:
-                current_tz = default_tz
-        else:
-            current_tz = default_tz
+                current_tz = timezone.get_current_timezone()
 
     for note in notifications:
         created_at = note.created_at
@@ -7620,8 +7621,68 @@ def notifications_list(request):
             created_at = timezone.make_aware(created_at, default_tz)
         note.display_time = created_at.astimezone(current_tz)
 
-    task_notifications = [note for note in notifications if note.kind == "task_assignment"]
-    service_notifications = [note for note in notifications if note.kind != "task_assignment"]
+    def _parse_task_message(message):
+        if not message:
+            return "", ""
+        base = message
+        details = ""
+        if message.endswith(")") and " (" in message:
+            head, _, tail = message.rpartition(" (")
+            if head and tail.endswith(")"):
+                base = head
+                details = tail[:-1]
+        return base, details
+
+    def _parse_limits_message(message):
+        if not message:
+            return "", ""
+        object_name = ""
+        details = message
+        if ":" in message:
+            object_name, _, details = message.partition(":")
+            object_name = object_name.strip()
+            details = details.strip()
+        parts = [part.strip() for part in details.split(";") if part.strip()]
+        converted = []
+        for part in parts:
+            if ":" not in part:
+                converted.append(part)
+                continue
+            label, _, expr = part.partition(":")
+            label = label.strip()
+            expr = expr.strip()
+            if "<" in expr:
+                converted.append(f"низкий уровень {label} ({expr})")
+            elif ">" in expr:
+                converted.append(f"высокий уровень {label} ({expr})")
+            else:
+                converted.append(f"{label}: {expr}")
+        detail_text = "; ".join(converted) if converted else details
+        return object_name, detail_text
+
+    object_kinds = {"limits", "missed_visit", "daily_missing"}
+    task_notifications = []
+    deviation_notifications = []
+    for note in notifications:
+        if note.kind == "task_assignment":
+            title, details = _parse_task_message(note.message or note.title)
+            note.task_title = title or note.title or ""
+            note.task_details = details
+            task_notifications.append(note)
+        else:
+            if note.kind in object_kinds:
+                obj_name, detail_text = _parse_limits_message(note.message)
+                note.deviation_prefix = "\u041d\u0430 \u043e\u0431\u044a\u0435\u043a\u0442\u0435"
+                note.object_name = obj_name or note.title or ""
+                note.deviation_details = detail_text
+            else:
+                note.deviation_prefix = ""
+                note.object_name = note.title or ""
+                note.deviation_details = note.message or ""
+            deviation_notifications.append(note)
+
+    task_unread_count = sum(1 for note in task_notifications if not note.is_read)
+    deviation_unread_count = sum(1 for note in deviation_notifications if not note.is_read)
 
     return render(
         request,
@@ -7629,9 +7690,11 @@ def notifications_list(request):
         {
             "notifications": notifications,
             "task_notifications": task_notifications,
-            "service_notifications": service_notifications,
-            "page_title": "\u0423\u0432\u0435\u0434\u043e\u043c\u043b\u0435\u043d\u0438\u044f",
-            "page_subtitle": "\u0412\u0441\u0435 \u0432\u0430\u0436\u043d\u044b\u0435 \u0441\u043e\u0431\u044b\u0442\u0438\u044f \u0438 \u043d\u0430\u043f\u043e\u043c\u0438\u043d\u0430\u043d\u0438\u044f",
+            "deviation_notifications": deviation_notifications,
+            "task_unread_count": task_unread_count,
+            "deviation_unread_count": deviation_unread_count,
+            "page_title": None,
+            "page_subtitle": None,
             "active_tab": "notifications",
             "show_search": False,
             "show_add_button": False,
@@ -7667,7 +7730,13 @@ def notifications_mark_all(request):
 
     if request.method == "POST":
 
-        Notification.objects.filter(user=request.user, is_read=False).update(is_read=True)
+        kind = (request.POST.get("kind") or "").strip()
+        qs = Notification.objects.filter(user=request.user, is_read=False)
+        if kind == "task":
+            qs = qs.filter(kind="task_assignment")
+        elif kind == "service":
+            qs = qs.exclude(kind="task_assignment")
+        qs.update(is_read=True)
 
     return redirect("notifications")
 
@@ -7682,7 +7751,13 @@ def notifications_resolve_all(request):
         return redirect("notifications")
 
     now = timezone.now()
-    Notification.objects.filter(user=request.user, is_resolved=False).update(
+    kind = (request.POST.get("kind") or "").strip()
+    qs = Notification.objects.filter(user=request.user, is_resolved=False)
+    if kind == "task":
+        qs = qs.filter(kind="task_assignment")
+    elif kind == "service":
+        qs = qs.exclude(kind="task_assignment")
+    qs.update(
         is_resolved=True,
         is_read=True,
         resolved_at=now,
