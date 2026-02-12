@@ -997,6 +997,8 @@
       for (const part of parts) {
         if (part.startsWith(name)) return part.substring(name.length);
       }
+      const input = document.querySelector('input[name="csrfmiddlewaretoken"]');
+      if (input && input.value) return input.value;
       return "";
     }
 
@@ -1016,16 +1018,35 @@
       if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return;
       try {
         const reg = await navigator.serviceWorker.ready;
+        const subscribeOptions = {
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(pushPublicKey),
+        };
+
         let sub = await reg.pushManager.getSubscription();
+        if (sub) {
+          try {
+            const existing = await reg.pushManager.subscribe(subscribeOptions);
+            if (existing) sub = existing;
+          } catch (err) {
+            if (err && err.name === "InvalidStateError") {
+              try {
+                await sub.unsubscribe();
+              } catch (_) {}
+              sub = null;
+            } else {
+              throw err;
+            }
+          }
+        }
+
         if (!sub) {
+          if (Notification.permission === "denied") return;
           const permission = await Notification.requestPermission();
           if (permission !== "granted") return;
-          sub = await reg.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey: urlBase64ToUint8Array(pushPublicKey),
-          });
+          sub = await reg.pushManager.subscribe(subscribeOptions);
         }
-        await fetch("/api/push/subscribe/", {
+        const response = await fetch("/api/push/subscribe/", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -1034,6 +1055,9 @@
           body: JSON.stringify(sub),
           credentials: "same-origin",
         });
+        if (!response.ok) {
+          console.warn("Push subscribe API failed", response.status);
+        }
       } catch (err) {
         console.warn("Push subscription failed", err);
       }
