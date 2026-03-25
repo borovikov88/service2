@@ -1,10 +1,10 @@
 import json
 import logging
+from contextlib import contextmanager
 
 from django.conf import settings
 from django.templatetags.static import static
 import pywebpush
-from cryptography.hazmat.primitives.asymmetric import ec
 from pywebpush import WebPushException, webpush
 
 from pool_service.models import PushSubscription
@@ -12,12 +12,20 @@ from pool_service.models import PushSubscription
 logger = logging.getLogger(__name__)
 
 
-def _patch_pywebpush_curve():
-    # pywebpush 1.14.0 passes the curve class to cryptography, but newer
-    # cryptography versions require a curve instance.
-    curve = getattr(pywebpush.ec, "SECP256R1", None)
-    if isinstance(curve, type):
-        pywebpush.ec.SECP256R1 = ec.SECP256R1()
+@contextmanager
+def _patch_pywebpush_generate_private_key():
+    original = pywebpush.ec.generate_private_key
+
+    def _compat_generate_private_key(curve, backend=None):
+        if isinstance(curve, type):
+            curve = curve()
+        return original(curve, backend)
+
+    pywebpush.ec.generate_private_key = _compat_generate_private_key
+    try:
+        yield
+    finally:
+        pywebpush.ec.generate_private_key = original
 
 
 def _push_config():
@@ -44,7 +52,6 @@ def send_push_to_users(users, *, title, message, action_url=""):
     config = _push_config()
     if not config:
         return 0
-    _patch_pywebpush_curve()
     icon_url = _icon_url()
     payload = {
         "title": title,
@@ -66,13 +73,14 @@ def send_push_to_users(users, *, title, message, action_url=""):
             "keys": {"p256dh": sub.p256dh, "auth": sub.auth},
         }
         try:
-            webpush(
-                subscription_info=subscription_info,
-                data=json.dumps(payload),
-                vapid_private_key=config["private_key"],
-                vapid_claims={"sub": f"mailto:{config['email']}" if config["email"] else "mailto:admin@localhost"},
-                ttl=3600,
-            )
+            with _patch_pywebpush_generate_private_key():
+                webpush(
+                    subscription_info=subscription_info,
+                    data=json.dumps(payload),
+                    vapid_private_key=config["private_key"],
+                    vapid_claims={"sub": f"mailto:{config['email']}" if config["email"] else "mailto:admin@localhost"},
+                    ttl=3600,
+                )
             sent += 1
         except WebPushException as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
