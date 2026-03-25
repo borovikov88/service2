@@ -220,7 +220,7 @@
 {% else %}
 <div class="calendar-list">
   {% for section in list_sections %}
-    <details class="calendar-list-section" {% if section.open %}open{% endif %}>
+    <details class="calendar-list-section" data-calendar-section-key="{{ section.key }}" {% if section.open %}open{% endif %}>
       <summary class="calendar-list-section__summary">
         <span>{{ section.title }}</span>
         <span class="calendar-list-section__count">{{ section.days|length }}</span>
@@ -1101,6 +1101,37 @@
         if (!searchRoot.contains(event.target)) {
           setDropdownOpen(false);
         }
+      });
+    }
+
+    const listSections = document.querySelectorAll(".calendar-list-section[data-calendar-section-key]");
+    if (listSections.length) {
+      function getCurrentSection() {
+        return document.querySelector('.calendar-list-section[data-calendar-section-key="current"]');
+      }
+
+      listSections.forEach((section) => {
+        const summary = section.querySelector(".calendar-list-section__summary");
+        if (!summary) return;
+
+        summary.addEventListener("click", (event) => {
+          if (section.dataset.calendarSectionKey !== "past") return;
+          event.preventDefault();
+
+          const currentSection = getCurrentSection();
+          if (!currentSection) return;
+
+          const anchorTop = currentSection.getBoundingClientRect().top;
+          const root = document.documentElement;
+          const previousScrollBehavior = root.style.scrollBehavior;
+          root.style.scrollBehavior = "auto";
+          section.open = !section.open;
+          const delta = currentSection.getBoundingClientRect().top - anchorTop;
+          if (Math.abs(delta) > 1) {
+            window.scrollBy(0, delta);
+          }
+          root.style.scrollBehavior = previousScrollBehavior;
+        });
       });
     }
   });
