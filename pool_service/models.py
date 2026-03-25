@@ -27,8 +27,11 @@ class Organization(models.Model):
     trial_started_at = models.DateTimeField(blank=True, null=True)
     paid_until = models.DateTimeField(blank=True, null=True)
     notify_limits = models.BooleanField(default=True)
+    notify_limits_push = models.BooleanField(default=True)
     notify_missed_visits = models.BooleanField(default=True)
+    notify_missed_visits_push = models.BooleanField(default=True)
     notify_pool_staff_daily = models.BooleanField(default=True)
+    notify_pool_staff_daily_push = models.BooleanField(default=True)
 
     def __str__(self):
         return self.name

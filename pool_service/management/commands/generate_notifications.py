@@ -152,6 +152,7 @@ class Command(BaseCommand):
                 action_url=action_url,
                 pool=pool,
                 dedupe_key=dedupe_key,
+                send_push=pool.organization.notify_missed_visits_push,
             )
 
     def _generate_daily_missing(self, today):
@@ -180,4 +181,5 @@ class Command(BaseCommand):
                 action_url=action_url,
                 pool=pool,
                 dedupe_key=dedupe_key,
+                send_push=pool.organization.notify_pool_staff_daily_push if pool.organization else True,
             )

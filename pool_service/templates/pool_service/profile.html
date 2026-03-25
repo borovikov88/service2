@@ -4,221 +4,293 @@
 
 {% block content %}
 <section class="pt-2">
-
-        <style>
-            .verify-icon {
-                width: 22px;
-                height: 22px;
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                border-radius: 50%;
-                font-size: 12px;
-                line-height: 1;
+    <style>
+        .verify-icon {
+            width: 22px;
+            height: 22px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            font-size: 12px;
+            line-height: 1;
+        }
+        .verify-icon.ok {
+            color: #0f5132;
+            background: #d1e7dd;
+            border: 1px solid #badbcc;
+        }
+        .verify-icon.warn {
+            color: #664d03;
+            background: #fff3cd;
+            border: 1px solid #ffecb5;
+        }
+        .notification-matrix {
+            display: grid;
+            gap: 14px;
+        }
+        .notification-matrix__header,
+        .notification-matrix__row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 120px 88px;
+            gap: 12px;
+            align-items: start;
+        }
+        .notification-matrix__header {
+            color: #6b7a90;
+            font-size: 0.9rem;
+            font-weight: 600;
+        }
+        .notification-matrix__row {
+            padding: 14px 16px;
+            border: 1px solid #e2eaf6;
+            border-radius: 16px;
+            background: #f9fbff;
+        }
+        .notification-matrix__title {
+            font-weight: 600;
+            color: #20324d;
+        }
+        .notification-matrix__hint {
+            font-size: 0.9rem;
+            color: #6b7a90;
+            margin-top: 4px;
+        }
+        .notification-matrix__check {
+            display: flex;
+            justify-content: center;
+            padding-top: 2px;
+        }
+        @media (max-width: 767.98px) {
+            .notification-matrix__header {
+                display: none;
             }
-            .verify-icon.ok {
-                color: #0f5132;
-                background: #d1e7dd;
-                border: 1px solid #badbcc;
+            .notification-matrix__row {
+                grid-template-columns: 1fr;
+                gap: 10px;
             }
-            .verify-icon.warn {
-                color: #664d03;
-                background: #fff3cd;
-                border: 1px solid #ffecb5;
+            .notification-matrix__check {
+                justify-content: flex-start;
+                gap: 8px;
             }
-        </style>
-        <div class="row g-4">
+            .notification-matrix__check label {
+                font-size: 0.95rem;
+                color: #41516b;
+            }
+        }
+    </style>
 
-            <div class="col-lg-4">
-                <div class="card card-soft h-100">
-                    <div class="card-body">
-                        <p class="text-muted mb-1">&#1042;&#1072;&#1096; &#1087;&#1088;&#1086;&#1092;&#1080;&#1083;&#1100;</p>
-                        <h3 class="card-title mb-3">{{ user_full_name }}</h3>
+    <div class="row g-4">
+        <div class="col-lg-4">
+            <div class="card card-soft h-100">
+                <div class="card-body">
+                    <p class="text-muted mb-1">&#1042;&#1072;&#1096; &#1087;&#1088;&#1086;&#1092;&#1080;&#1083;&#1100;</p>
+                    <h3 class="card-title mb-3">{{ user_full_name }}</h3>
 
-                        <div class="list-group list-group-flush">
+                    <div class="list-group list-group-flush">
+                        <div class="list-group-item px-0 d-flex justify-content-between">
+                            <span class="text-muted">&#1051;&#1086;&#1075;&#1080;&#1085;</span>
+                            <span class="fw-semibold">{{ username }}</span>
+                        </div>
+                        <div class="list-group-item px-0 d-flex justify-content-between align-items-center">
+                            <span class="text-muted">&#1058;&#1077;&#1083;&#1077;&#1092;&#1086;&#1085;</span>
+                            <div class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
+                                <span class="fw-semibold">{{ phone|default:"&#1053;&#1077; &#1091;&#1082;&#1072;&#1079;&#1072;&#1085;" }}</span>
+                                {% if phone_confirmed %}
+                                    <span class="verify-icon ok" title="&#1058;&#1077;&#1083;&#1077;&#1092;&#1086;&#1085; &#1087;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1078;&#1076;&#1077;&#1085;">&#10003;</span>
+                                {% else %}
+                                    <span class="verify-icon warn" title="&#1058;&#1077;&#1083;&#1077;&#1092;&#1086;&#1085; &#1085;&#1077; &#1087;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1078;&#1076;&#1077;&#1085;">&#33;</span>
+                                    {% if confirm_phone_url %}
+                                        <a class="btn btn-sm btn-outline-primary" href="{{ confirm_phone_url }}">&#1055;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1076;&#1080;&#1090;&#1100;</a>
+                                    {% endif %}
+                                {% endif %}
+                            </div>
+                        </div>
+                        <div class="list-group-item px-0 d-flex justify-content-between align-items-center">
+                            <span class="text-muted">Email</span>
+                            <div class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
+                                <span class="fw-semibold">{{ email|default:"&#1053;&#1077; &#1091;&#1082;&#1072;&#1079;&#1072;&#1085;" }}</span>
+                                {% if email_confirmed %}
+                                    <span class="verify-icon ok" title="Email &#1087;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1078;&#1076;&#1077;&#1085;">&#10003;</span>
+                                {% else %}
+                                    <span class="verify-icon warn" title="Email &#1085;&#1077; &#1087;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1078;&#1076;&#1077;&#1085;">&#33;</span>
+                                    {% if email %}
+                                        <form method="post" action="{% url 'resend_email_confirmation' %}" class="d-inline">
+                                            {% csrf_token %}
+                                            <button type="submit" class="btn btn-sm btn-outline-primary">&#1054;&#1090;&#1087;&#1088;&#1072;&#1074;&#1080;&#1090;&#1100;</button>
+                                        </form>
+                                    {% endif %}
+                                {% endif %}
+                            </div>
+                        </div>
+
+                        {% if plan_badge %}
                             <div class="list-group-item px-0 d-flex justify-content-between">
-                                <span class="text-muted">&#1051;&#1086;&#1075;&#1080;&#1085;</span>
-                                <span class="fw-semibold">{{ username }}</span>
-                            </div>
-                            
-<div class="list-group-item px-0 d-flex justify-content-between align-items-center">
-                                <span class="text-muted">&#1058;&#1077;&#1083;&#1077;&#1092;&#1086;&#1085;</span>
-                                <div class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
-                                    <span class="fw-semibold">{{ phone|default:"&#1053;&#1077; &#1091;&#1082;&#1072;&#1079;&#1072;&#1085;" }}</span>
-                                    {% if phone_confirmed %}
-                                        <span class="verify-icon ok" title="&#1058;&#1077;&#1083;&#1077;&#1092;&#1086;&#1085; &#1087;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1078;&#1076;&#1077;&#1085;">&#10003;</span>
-                                    {% else %}
-                                        <span class="verify-icon warn" title="&#1058;&#1077;&#1083;&#1077;&#1092;&#1086;&#1085; &#1085;&#1077; &#1087;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1078;&#1076;&#1077;&#1085;">&#33;</span>
-                                        {% if confirm_phone_url %}
-                                            <a class="btn btn-sm btn-outline-primary" href="{{ confirm_phone_url }}">&#1055;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1076;&#1080;&#1090;&#1100;</a>
-                                        {% endif %}
+                                <span class="text-muted">&#1058;&#1072;&#1088;&#1080;&#1092;</span>
+                                <span class="fw-semibold">
+                                    {% if plan_badge.type == 'personal_free' %}
+                                        Free (1 &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;)
+                                    {% elif plan_badge.type == 'company_trial' %}
+                                        Trial: {{ plan_badge.days_left }} &#1076;&#1085;&#1077;&#1081;
+                                    {% elif plan_badge.type == 'company_paid' %}
+                                        Paid &#1076;&#1086; {{ plan_badge.paid_until|date:"d.m.Y" }}
+                                    {% elif plan_badge.type == 'company_expired' %}
+                                        Trial &#1080;&#1089;&#1090;&#1077;&#1082;
                                     {% endif %}
-                                </div>
+                                </span>
                             </div>
-                            <div class="list-group-item px-0 d-flex justify-content-between align-items-center">
-                                <span class="text-muted">Email</span>
-                                <div class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
-                                    <span class="fw-semibold">{{ email|default:"&#1053;&#1077; &#1091;&#1082;&#1072;&#1079;&#1072;&#1085;" }}</span>
-                                    {% if email_confirmed %}
-                                        <span class="verify-icon ok" title="Email &#1087;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1078;&#1076;&#1077;&#1085;">&#10003;</span>
-                                    {% else %}
-                                        <span class="verify-icon warn" title="Email &#1085;&#1077; &#1087;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1078;&#1076;&#1077;&#1085;">&#33;</span>
-                                        {% if email %}
-                                            <form method="post" action="{% url 'resend_email_confirmation' %}" class="d-inline">
-                                                {% csrf_token %}
-                                                <button type="submit" class="btn btn-sm btn-outline-primary">&#1054;&#1090;&#1087;&#1088;&#1072;&#1074;&#1080;&#1090;&#1100;</button>
-                                            </form>
-                                        {% endif %}
-                                    {% endif %}
-                                </div>
-                            </div>
-                            
-{% if plan_badge %}
-                                <div class="list-group-item px-0 d-flex justify-content-between">
-                                    <span class="text-muted">&#1058;&#1072;&#1088;&#1080;&#1092;</span>
-                                    <span class="fw-semibold">
-                                        {% if plan_badge.type == 'personal_free' %}
-                                            Free (1 &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;)
-                                        {% elif plan_badge.type == 'company_trial' %}
-                                            Trial: {{ plan_badge.days_left }} &#1076;&#1085;&#1077;&#1081;
-                                        {% elif plan_badge.type == 'company_paid' %}
-                                            Paid &#1076;&#1086; {{ plan_badge.paid_until|date:"d.m.Y" }}
-                                        {% elif plan_badge.type == 'company_expired' %}
-                                            Trial &#1080;&#1089;&#1090;&#1077;&#1082;
-                                        {% endif %}
-                                    </span>
-                                </div>
-                            {% endif %}
-                        </div>
+                        {% endif %}
                     </div>
-                    <div class="card-footer bg-white border-0 pt-0">
-                        <div class="small text-muted">&#1044;&#1072;&#1090;&#1072; &#1088;&#1077;&#1075;&#1080;&#1089;&#1090;&#1088;&#1072;&#1094;&#1080;&#1080;</div>
-                        <div class="fw-semibold">
-                            {% if date_joined %}{{ date_joined|date:"d.m.Y H:i" }}{% else %}-{% endif %}
-                        </div>
-                        <div class="small text-muted mt-2">&#1055;&#1086;&#1089;&#1083;&#1077;&#1076;&#1085;&#1080;&#1081; &#1074;&#1093;&#1086;&#1076;</div>
-                        <div class="fw-semibold">
-                            {% if last_login %}{{ last_login|date:"d.m.Y H:i" }}{% else %}-{% endif %}
-                        </div>
+                </div>
+                <div class="card-footer bg-white border-0 pt-0">
+                    <div class="small text-muted">&#1044;&#1072;&#1090;&#1072; &#1088;&#1077;&#1075;&#1080;&#1089;&#1090;&#1088;&#1072;&#1094;&#1080;&#1080;</div>
+                    <div class="fw-semibold">
+                        {% if date_joined %}{{ date_joined|date:"d.m.Y H:i" }}{% else %}-{% endif %}
                     </div>
-                    <div class="card-footer bg-white border-0 pt-0">
-                        <button type="button" class="btn btn-outline-primary w-100 rounded-3 mb-2" data-bs-toggle="modal" data-bs-target="#passwordModal">&#1057;&#1084;&#1077;&#1085;&#1080;&#1090;&#1100; &#1087;&#1072;&#1088;&#1086;&#1083;&#1100;</button>
-                        <form method="post" action="{% url 'logout' %}">
-                            {% csrf_token %}
-                            <button class="btn btn-outline-danger w-100 rounded-3">&#1042;&#1099;&#1081;&#1090;&#1080; &#1080;&#1079; &#1089;&#1080;&#1089;&#1090;&#1077;&#1084;&#1099;</button>
-                        </form>
+                    <div class="small text-muted mt-2">&#1055;&#1086;&#1089;&#1083;&#1077;&#1076;&#1085;&#1080;&#1081; &#1074;&#1093;&#1086;&#1076;</div>
+                    <div class="fw-semibold">
+                        {% if last_login %}{{ last_login|date:"d.m.Y H:i" }}{% else %}-{% endif %}
                     </div>
+                </div>
+                <div class="card-footer bg-white border-0 pt-0">
+                    <button type="button" class="btn btn-outline-primary w-100 rounded-3 mb-2" data-bs-toggle="modal" data-bs-target="#passwordModal">&#1057;&#1084;&#1077;&#1085;&#1080;&#1090;&#1100; &#1087;&#1072;&#1088;&#1086;&#1083;&#1100;</button>
+                    <form method="post" action="{% url 'logout' %}">
+                        {% csrf_token %}
+                        <button class="btn btn-outline-danger w-100 rounded-3">&#1042;&#1099;&#1081;&#1090;&#1080; &#1080;&#1079; &#1089;&#1080;&#1089;&#1090;&#1077;&#1084;&#1099;</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-8">
+            <div class="card card-soft mb-4">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h4 class="card-title mb-0">&#1059;&#1088;&#1086;&#1074;&#1077;&#1085;&#1100; &#1076;&#1086;&#1089;&#1090;&#1091;&#1087;&#1072;</h4>
+                        <span class="badge bg-primary fs-6">{{ role_level }}</span>
+                    </div>
+                    <p class="text-muted mb-0">&#1056;&#1086;&#1083;&#1100;, &#1082;&#1086;&#1090;&#1086;&#1088;&#1072;&#1103; &#1086;&#1087;&#1088;&#1077;&#1076;&#1077;&#1083;&#1103;&#1077;&#1090; &#1074;&#1072;&#1096;&#1080; &#1087;&#1088;&#1072;&#1074;&#1072; &#1074; &#1089;&#1080;&#1089;&#1090;&#1077;&#1084;&#1077;.</p>
                 </div>
             </div>
 
-            <div class="col-lg-8">
-                <div class="card card-soft mb-4">
-                    <div class="card-body">
-                        <div class="d-flex justify-content-between align-items-center mb-2">
-                            <h4 class="card-title mb-0">&#1059;&#1088;&#1086;&#1074;&#1077;&#1085;&#1100; &#1076;&#1086;&#1089;&#1090;&#1091;&#1087;&#1072;</h4>
-                            <span class="badge bg-primary fs-6">{{ role_level }}</span>
+            <div class="card card-soft mb-4">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-2">
+                        <div>
+                            <h5 class="card-title mb-1">&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;</h5>
+                            <p class="text-muted mb-0">Для push на iPhone включайте разрешение из веб-приложения на экране Домой.</p>
                         </div>
-                        <p class="text-muted mb-0">&#1056;&#1086;&#1083;&#1100;, &#1082;&#1086;&#1090;&#1086;&#1088;&#1072;&#1103; &#1086;&#1087;&#1088;&#1077;&#1076;&#1077;&#1083;&#1103;&#1077;&#1090; &#1074;&#1072;&#1096;&#1080; &#1087;&#1088;&#1072;&#1074;&#1072; &#1074; &#1089;&#1080;&#1089;&#1090;&#1077;&#1084;&#1077;.</p>
+                        <span class="badge bg-secondary text-white border-0" id="push-status-badge">Проверка...</span>
                     </div>
-                </div>
+                    <p class="small text-muted mb-3" id="push-status-text">Проверяем состояние push-подписки на этом устройстве.</p>
+                    <div class="d-flex flex-wrap gap-2 align-items-center mb-4">
+                        <button type="button" class="btn btn-outline-primary rounded-3" id="enable-push-btn">Включить push на устройстве</button>
+                    </div>
 
-                <div class="card card-soft mb-4">
-                    <div class="card-body">
-                        <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-2">
-                            <div>
-                                <h5 class="card-title mb-1">&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;</h5>
-                                <p class="text-muted mb-0">Настройте показ уведомлений внутри приложения и доставку push на текущее устройство.</p>
-                            </div>
-                            <span class="badge bg-secondary text-white border-0" id="push-status-badge">Проверка...</span>
-                        </div>
-                        <p class="small text-muted mb-3" id="push-status-text">Проверяем состояние подписки на уведомления.</p>
+                    {% if can_manage_notifications %}
                         <form method="post">
                             {% csrf_token %}
                             <input type="hidden" name="notification_settings" value="1">
-                            <div class="form-check mb-2">
-                                <input class="form-check-input" type="checkbox" id="in_app_notifications_enabled" name="in_app_notifications_enabled" {% if in_app_notifications_enabled %}checked{% endif %}>
-                                <label class="form-check-label" for="in_app_notifications_enabled">Уведомления внутри приложения</label>
+                            {% if notification_org %}
+                                <p class="text-muted mb-3">&#1054;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;: {{ notification_org.name }}</p>
+                            {% endif %}
+
+                            <div class="notification-matrix">
+                                <div class="notification-matrix__header">
+                                    <div>Тип уведомления</div>
+                                    <div class="text-center">В шапке</div>
+                                    <div class="text-center">Push</div>
+                                </div>
+
+                                <div class="notification-matrix__row">
+                                    <div>
+                                        <div class="notification-matrix__title">Уведомления об отклонении от нормы (<a href="{% url 'organization_norms' %}">нормативы</a>)</div>
+                                    </div>
+                                    <div class="notification-matrix__check">
+                                        <input class="form-check-input" type="checkbox" id="notify_limits" name="notify_limits" {% if notify_limits %}checked{% endif %}>
+                                        <label class="d-md-none" for="notify_limits">В шапке</label>
+                                    </div>
+                                    <div class="notification-matrix__check">
+                                        <input class="form-check-input" type="checkbox" id="notify_limits_push" name="notify_limits_push" {% if notify_limits_push %}checked{% endif %}>
+                                        <label class="d-md-none" for="notify_limits_push">Push</label>
+                                    </div>
+                                </div>
+
+                                <div class="notification-matrix__row">
+                                    <div>
+                                        <div class="notification-matrix__title">Уведомления о необходимости посещения объектов</div>
+                                    </div>
+                                    <div class="notification-matrix__check">
+                                        <input class="form-check-input" type="checkbox" id="notify_missed_visits" name="notify_missed_visits" {% if notify_missed_visits %}checked{% endif %}>
+                                        <label class="d-md-none" for="notify_missed_visits">В шапке</label>
+                                    </div>
+                                    <div class="notification-matrix__check">
+                                        <input class="form-check-input" type="checkbox" id="notify_missed_visits_push" name="notify_missed_visits_push" {% if notify_missed_visits_push %}checked{% endif %}>
+                                        <label class="d-md-none" for="notify_missed_visits_push">Push</label>
+                                    </div>
+                                </div>
+
+                                <div class="notification-matrix__row">
+                                    <div>
+                                        <div class="notification-matrix__title">Уведомления для сотрудников бассейна о необходимости измерять параметры воды</div>
+                                    </div>
+                                    <div class="notification-matrix__check">
+                                        <input class="form-check-input" type="checkbox" id="notify_pool_staff_daily" name="notify_pool_staff_daily" {% if notify_pool_staff_daily %}checked{% endif %}>
+                                        <label class="d-md-none" for="notify_pool_staff_daily">В шапке</label>
+                                    </div>
+                                    <div class="notification-matrix__check">
+                                        <input class="form-check-input" type="checkbox" id="notify_pool_staff_daily_push" name="notify_pool_staff_daily_push" {% if notify_pool_staff_daily_push %}checked{% endif %}>
+                                        <label class="d-md-none" for="notify_pool_staff_daily_push">Push</label>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="form-check mb-3">
-                                <input class="form-check-input" type="checkbox" id="push_notifications_enabled" name="push_notifications_enabled" {% if push_notifications_enabled %}checked{% endif %}>
-                                <label class="form-check-label" for="push_notifications_enabled">Push-уведомления для этого пользователя</label>
-                            </div>
-                            <div class="d-flex flex-wrap gap-2 align-items-center mb-4">
-                                <button type="button" class="btn btn-outline-primary rounded-3" id="enable-push-btn">
-                                    Включить push на устройстве
-                                </button>
-                                <span class="small text-muted">Для iPhone включайте push из веб-приложения на экране Домой.</span>
-                            </div>
-                        {% if can_manage_notifications %}
-                        {% if notification_org %}
-                            <p class="text-muted mb-3">&#1054;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;: {{ notification_org.name }}</p>
-                        {% endif %}
-                            <div class="form-check mb-2">
-                                <input class="form-check-input" type="checkbox" id="notify_limits" name="notify_limits" {% if notify_limits %}checked{% endif %}>
-                                <label class="form-check-label" for="notify_limits">
-                                    &#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103; &#1086;&#1073; &#1086;&#1090;&#1082;&#1083;&#1086;&#1085;&#1077;&#1085;&#1080;&#1080; &#1086;&#1090; &#1085;&#1086;&#1088;&#1084;&#1099;
-                                    (<a href="{% url 'organization_norms' %}">&#1085;&#1086;&#1088;&#1084;&#1072;&#1090;&#1080;&#1074;&#1099;</a>)
-                                </label>
-                            </div>
-                            <div class="form-check mb-2">
-                                <input class="form-check-input" type="checkbox" id="notify_missed_visits" name="notify_missed_visits" {% if notify_missed_visits %}checked{% endif %}>
-                                <label class="form-check-label" for="notify_missed_visits">
-                                    &#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103; &#1086; &#1085;&#1077;&#1086;&#1073;&#1093;&#1086;&#1076;&#1080;&#1084;&#1086;&#1089;&#1090;&#1080; &#1087;&#1086;&#1089;&#1077;&#1097;&#1077;&#1085;&#1080;&#1103; &#1086;&#1073;&#1098;&#1077;&#1082;&#1090;&#1086;&#1074;
-                                </label>
-                            </div>
-                            <div class="form-check mb-3">
-                                <input class="form-check-input" type="checkbox" id="notify_pool_staff_daily" name="notify_pool_staff_daily" {% if notify_pool_staff_daily %}checked{% endif %}>
-                                <label class="form-check-label" for="notify_pool_staff_daily">
-                                    &#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103; &#1076;&#1083;&#1103; &#1089;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1086;&#1074; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1072; &#1086; &#1085;&#1077;&#1086;&#1073;&#1093;&#1086;&#1076;&#1080;&#1084;&#1086;&#1089;&#1090;&#1080; &#1080;&#1079;&#1084;&#1077;&#1088;&#1103;&#1090;&#1100; &#1087;&#1072;&#1088;&#1072;&#1084;&#1077;&#1090;&#1088;&#1099; &#1074;&#1086;&#1076;&#1099;
-                                </label>
-                            </div>
-                        {% endif %}
-                            <button type="submit" class="btn btn-primary btn-sm">&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;</button>
+
+                            <button type="submit" class="btn btn-primary btn-sm mt-4">&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;</button>
                         </form>
-                    </div>
-                </div>
-
-                <div class="card card-soft mb-4">
-                    <div class="card-body pb-0">
-                        <h5 class="card-title">&#1044;&#1086;&#1089;&#1090;&#1091;&#1087;&#1099; &#1082; &#1086;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;&#1084;</h5>
-                        <p class="text-muted">&#1054;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1080;, &#1082; &#1082;&#1086;&#1090;&#1086;&#1088;&#1099;&#1084; &#1091; &#1074;&#1072;&#1089; &#1077;&#1089;&#1090;&#1100; &#1076;&#1086;&#1089;&#1090;&#1091;&#1087;.</p>
-                    </div>
-                    <div class="list-group list-group-flush">
-                        {% for access in org_accesses %}
-                            <div class="list-group-item d-flex justify-content-between align-items-start">
-                                <div>
-                                    <div class="fw-semibold">{{ access.organization.name }}</div>
-                                    <div class="small text-muted">&#1056;&#1086;&#1083;&#1100;: {{ access.get_role_display }}</div>
-                                </div>
-                            </div>
-                        {% empty %}
-                            <div class="list-group-item text-muted">&#1053;&#1077;&#1090; &#1076;&#1086;&#1089;&#1090;&#1091;&#1087;&#1085;&#1099;&#1093; &#1086;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1081;.</div>
-                        {% endfor %}
-                    </div>
-                </div>
-
-                <div class="card card-soft">
-                    <div class="card-body pb-0">
-                        <h5 class="card-title">&#1044;&#1086;&#1089;&#1090;&#1091;&#1087;&#1099; &#1082; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1072;&#1084;</h5>
-                        <p class="text-muted">&#1057;&#1087;&#1080;&#1089;&#1086;&#1082; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;, &#1082; &#1082;&#1086;&#1090;&#1086;&#1088;&#1099;&#1084; &#1091; &#1074;&#1072;&#1089; &#1077;&#1089;&#1090;&#1100; &#1076;&#1086;&#1089;&#1090;&#1091;&#1087;.</p>
-                    </div>
-                    <div class="list-group list-group-flush">
-                        {% for access in pool_accesses %}
-                            <div class="list-group-item d-flex justify-content-between align-items-start">
-                                <div>
-                                    <div class="fw-semibold">{{ access.pool.client.name }}</div>
-                                    <div class="small text-muted">{{ access.pool.address }}</div>
-                                </div>
-                                <span class="badge bg-light text-dark border">{{ access.get_role_display }}</span>
-                            </div>
-                        {% empty %}
-                            <div class="list-group-item text-muted">&#1053;&#1077;&#1090; &#1076;&#1086;&#1089;&#1090;&#1091;&#1087;&#1085;&#1099;&#1093; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;.</div>
-                        {% endfor %}
-                    </div>
+                    {% endif %}
                 </div>
             </div>
 
+            <div class="card card-soft mb-4">
+                <div class="card-body pb-0">
+                    <h5 class="card-title">&#1044;&#1086;&#1089;&#1090;&#1091;&#1087;&#1099; &#1082; &#1086;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;&#1084;</h5>
+                    <p class="text-muted">&#1054;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1080;, &#1082; &#1082;&#1086;&#1090;&#1086;&#1088;&#1099;&#1084; &#1091; &#1074;&#1072;&#1089; &#1077;&#1089;&#1090;&#1100; &#1076;&#1086;&#1089;&#1090;&#1091;&#1087;.</p>
+                </div>
+                <div class="list-group list-group-flush">
+                    {% for access in org_accesses %}
+                        <div class="list-group-item d-flex justify-content-between align-items-start">
+                            <div>
+                                <div class="fw-semibold">{{ access.organization.name }}</div>
+                                <div class="small text-muted">&#1056;&#1086;&#1083;&#1100;: {{ access.get_role_display }}</div>
+                            </div>
+                        </div>
+                    {% empty %}
+                        <div class="list-group-item text-muted">&#1053;&#1077;&#1090; &#1076;&#1086;&#1089;&#1090;&#1091;&#1087;&#1085;&#1099;&#1093; &#1086;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1081;.</div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <div class="card card-soft">
+                <div class="card-body pb-0">
+                    <h5 class="card-title">&#1044;&#1086;&#1089;&#1090;&#1091;&#1087;&#1099; &#1082; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1072;&#1084;</h5>
+                    <p class="text-muted">&#1057;&#1087;&#1080;&#1089;&#1086;&#1082; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;, &#1082; &#1082;&#1086;&#1090;&#1086;&#1088;&#1099;&#1084; &#1091; &#1074;&#1072;&#1089; &#1077;&#1089;&#1090;&#1100; &#1076;&#1086;&#1089;&#1090;&#1091;&#1087;.</p>
+                </div>
+                <div class="list-group list-group-flush">
+                    {% for access in pool_accesses %}
+                        <div class="list-group-item d-flex justify-content-between align-items-start">
+                            <div>
+                                <div class="fw-semibold">{{ access.pool.client.name }}</div>
+                                <div class="small text-muted">{{ access.pool.address }}</div>
+                            </div>
+                            <span class="badge bg-light text-dark border">{{ access.get_role_display }}</span>
+                        </div>
+                    {% empty %}
+                        <div class="list-group-item text-muted">&#1053;&#1077;&#1090; &#1076;&#1086;&#1089;&#1090;&#1091;&#1087;&#1085;&#1099;&#1093; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1086;&#1074;.</div>
+                    {% endfor %}
+                </div>
+            </div>
         </div>
+    </div>
 </section>
 
 <div class="modal fade" id="passwordModal" tabindex="-1" aria-hidden="true">
@@ -295,7 +367,7 @@
       }
       if (state.permission === "denied") {
         setBadge("bg-danger text-white border-0", "Запрещено");
-        text.textContent = "Разрешение на уведомления запрещено. Включите его в настройках iPhone для этого веб-приложения.";
+        text.textContent = "Разрешение на уведомления запрещено. Включите его в настройках устройства для этого веб-приложения.";
         button.disabled = false;
         button.textContent = "Повторно проверить";
         return;
