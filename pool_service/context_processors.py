@@ -6,10 +6,10 @@ def brand_context(request):
 
     default_brand = {
         "name": "RovikPool",
-        "logo": "pool_service/img/logo.png",
-        "favicon": "assets/images/favicon.png",
-        "icon_192": "assets/images/rovikpool-192.png",
-        "icon_512": "assets/images/rovikpool-512.png",
+        "logo": "assets/images/rovikpool-logo.png",
+        "favicon": "assets/images/rovikpool-favicon.png",
+        "icon_192": "assets/images/rovikpool-app-192.png",
+        "icon_512": "assets/images/rovikpool-app-512.png",
         "hide_text_mobile": False,
         "logo_wide": False,
     }
