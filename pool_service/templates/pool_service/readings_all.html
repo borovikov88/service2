@@ -1,18 +1,47 @@
-{% extends "pool_service/base.html" %}
+﻿{% extends "pool_service/base.html" %}
 
 {% block title %}&#1050;&#1072;&#1083;&#1077;&#1085;&#1076;&#1072;&#1088;&#1100; &#1079;&#1072;&#1076;&#1072;&#1095;{% endblock %}
 
 {% block content %}
 <div class="calendar-toolbar d-flex flex-wrap align-items-center justify-content-between gap-3 mb-3">
   <div class="d-flex flex-wrap align-items-center gap-3 calendar-toolbar__main">
-    <div class="d-flex align-items-center gap-2">
+    <div class="d-flex align-items-center gap-2 calendar-toolbar__month-nav">
       <a class="btn btn-light btn-sm" href="?{{ prev_month_query }}" aria-label="&#1055;&#1088;&#1077;&#1076;&#1099;&#1076;&#1091;&#1097;&#1080;&#1081; &#1084;&#1077;&#1089;&#1103;&#1094;">
         <i class="bi bi-chevron-left"></i>
       </a>
-      <div class="calendar-month-label fw-semibold">{{ month_label }}</div>
+      <div class="calendar-month-label">{{ month_label }}</div>
       <a class="btn btn-light btn-sm" href="?{{ next_month_query }}" aria-label="&#1057;&#1083;&#1077;&#1076;&#1091;&#1102;&#1097;&#1080;&#1081; &#1084;&#1077;&#1089;&#1103;&#1094;">
         <i class="bi bi-chevron-right"></i>
       </a>
+      {% if show_today_button %}
+        <a class="btn btn-light btn-sm calendar-toolbar__today-inline" href="?{{ today_month_query }}">
+          <i class="bi bi-arrow-counterclockwise"></i>
+          <span>Сегодня</span>
+        </a>
+      {% endif %}
+      <details class="calendar-view-dropdown calendar-view-dropdown--mobile">
+        <summary class="calendar-view-dropdown__summary">
+          <span class="calendar-view-dropdown__value">
+            {% if view_mode == 'grid' %}
+              <i class="bi bi-grid-3x3-gap"></i>
+              <span>Календарь</span>
+            {% else %}
+              <i class="bi bi-list-ul"></i>
+              <span>Список</span>
+            {% endif %}
+          </span>
+        </summary>
+        <div class="calendar-view-dropdown__menu">
+          <a class="calendar-view-dropdown__item {% if view_mode == 'grid' %}is-active{% endif %}" href="?{{ grid_view_query }}">
+            <i class="bi bi-grid-3x3-gap"></i>
+            <span>Календарь</span>
+          </a>
+          <a class="calendar-view-dropdown__item {% if view_mode == 'list' %}is-active{% endif %}" href="?{{ list_view_query }}">
+            <i class="bi bi-list-ul"></i>
+            <span>Список</span>
+          </a>
+        </div>
+      </details>
     </div>
     <div class="calendar-search" data-calendar-search data-current-month="{{ current_month }}">
       <div class="calendar-search__field">
@@ -45,20 +74,30 @@
       </div>
     </div>
   </div>
-  <div class="d-flex align-items-center gap-2 flex-wrap">
-    <div class="calendar-view-switch d-inline-flex align-items-center">
-      <a class="calendar-view-switch__btn {% if view_mode == 'grid' %}is-active{% endif %}" href="?{{ grid_view_query }}">
-        <i class="bi bi-grid-3x3-gap"></i>
-        <span>Календарь</span>
-      </a>
-      <a class="calendar-view-switch__btn {% if view_mode == 'list' %}is-active{% endif %}" href="?{{ list_view_query }}">
-        <i class="bi bi-list-ul"></i>
-        <span>Список</span>
-      </a>
-    </div>
-    <a class="btn btn-outline-secondary btn-sm" href="?{{ today_month_query }}">
-      &#1057;&#1077;&#1075;&#1086;&#1076;&#1085;&#1103;
-    </a>
+  <div class="d-flex align-items-center gap-2 flex-wrap calendar-toolbar__actions">
+    <details class="calendar-view-dropdown">
+      <summary class="calendar-view-dropdown__summary">
+        <span class="calendar-view-dropdown__value">
+          {% if view_mode == 'grid' %}
+            <i class="bi bi-grid-3x3-gap"></i>
+            <span>Календарь</span>
+          {% else %}
+            <i class="bi bi-list-ul"></i>
+            <span>Список</span>
+          {% endif %}
+        </span>
+      </summary>
+      <div class="calendar-view-dropdown__menu">
+        <a class="calendar-view-dropdown__item {% if view_mode == 'grid' %}is-active{% endif %}" href="?{{ grid_view_query }}">
+          <i class="bi bi-grid-3x3-gap"></i>
+          <span>Календарь</span>
+        </a>
+        <a class="calendar-view-dropdown__item {% if view_mode == 'list' %}is-active{% endif %}" href="?{{ list_view_query }}">
+          <i class="bi bi-list-ul"></i>
+          <span>Список</span>
+        </a>
+      </div>
+    </details>
   </div>
 </div>
 
@@ -188,7 +227,7 @@
       </summary>
       <div class="calendar-list-section__body">
         {% for day in section.days %}
-          <section class="calendar-list-day">
+          <section class="calendar-list-day {% if day.is_today %}calendar-list-day--today{% endif %}">
             <div class="calendar-list-day__header">
               <div class="calendar-list-day__heading">
                 <div class="calendar-list-day__date">{{ day.date|date:"d.m.Y" }}</div>
@@ -203,6 +242,7 @@
               {% endif %}
             </div>
             <div class="calendar-list-day__items">
+              {% if day.items %}
               {% for item in day.items %}
                 {% if item.item_type == "task_continuation" %}
                   <div class="calendar-list-item calendar-list-item--{{ item.status }} calendar-list-item--task">
@@ -254,15 +294,14 @@
                   </div>
                 {% endif %}
               {% endfor %}
+              {% else %}
+                <div class="calendar-list-empty-day">Нет задач и выездов</div>
+              {% endif %}
             </div>
           </section>
         {% endfor %}
       </div>
     </details>
-  {% empty %}
-    <div class="calendar-list-empty">
-      В этом месяце нет записей по выбранному фильтру.
-    </div>
   {% endfor %}
 </div>
 {% endif %}
@@ -1079,12 +1118,24 @@
     flex: 1;
     min-width: 0;
   }
+  .calendar-toolbar__month-nav {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
   .calendar-month-label {
-    background: #f1f5ff;
-    border: 1px solid #dbe5f5;
+    display: inline-flex;
+    align-items: center;
+    min-height: 36px;
+    background: #fff;
+    border: 1px solid #e2e8f3;
     border-radius: 999px;
     padding: 6px 12px;
-    color: #1f2d3d;
+    color: #132238;
+    font-size: 0.88rem;
+    font-weight: 600;
+    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
   }
   .calendar-search {
     position: relative;
@@ -1250,28 +1301,101 @@
     padding: 6px 12px;
     font-weight: 600;
   }
-  .calendar-view-switch {
-    padding: 4px;
-    border-radius: 999px;
-    background: #eef4fb;
-    gap: 4px;
+  .calendar-toolbar__actions {
+    flex: 0 0 auto;
   }
-  .calendar-view-switch__btn {
+  .calendar-toolbar__today-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 36px;
+    padding: 0 12px;
+    border-radius: 999px;
+    border-color: #e2e8f3;
+    background: #fff;
+    color: #516076;
+    font-size: 0.88rem;
+    font-weight: 600;
+    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+    white-space: nowrap;
+  }
+  .calendar-toolbar__today-inline:hover {
+    color: #1d4ed8;
+    border-color: #cfe0ff;
+    background: #f8fbff;
+  }
+  .calendar-view-dropdown {
+    position: relative;
+    flex: 0 0 auto;
+  }
+  .calendar-view-dropdown--mobile {
+    display: none;
+  }
+  .calendar-view-dropdown__summary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-height: 36px;
+    padding: 0 10px;
+    border-radius: 999px;
+    border: 1px solid #e2e8f3;
+    background: #fff;
+    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+    cursor: pointer;
+    list-style: none;
+  }
+  .calendar-view-dropdown__summary::-webkit-details-marker {
+    display: none;
+  }
+  .calendar-view-dropdown__summary::after {
+    content: "\F282";
+    font-family: bootstrap-icons;
+    font-size: 0.72rem;
+    color: #7b8aa0;
+  }
+  .calendar-view-dropdown__value {
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 12px;
-    border-radius: 999px;
-    color: #5d6b82;
-    text-decoration: none;
-    font-size: 0.92rem;
+    font-size: 0.88rem;
     font-weight: 600;
-    transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+    color: #132238;
   }
-  .calendar-view-switch__btn.is-active {
+  .calendar-view-dropdown__menu {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    min-width: 180px;
+    padding: 8px;
+    border-radius: 16px;
     background: #fff;
+    border: 1px solid #e2e8f3;
+    box-shadow: 0 18px 36px rgba(15, 23, 42, 0.12);
+    z-index: 30;
+    display: none;
+  }
+  .calendar-view-dropdown[open] .calendar-view-dropdown__menu {
+    display: block;
+  }
+  .calendar-view-dropdown__item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    text-decoration: none;
+    color: #516076;
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+  .calendar-view-dropdown__item:hover {
+    background: #f5f8fd;
     color: #1d4ed8;
-    box-shadow: 0 6px 18px rgba(29, 78, 216, 0.12);
+  }
+  .calendar-view-dropdown__item.is-active {
+    background: #eef4ff;
+    color: #1d4ed8;
   }
   .calendar-filter {
     background: #ffffff;
@@ -1607,6 +1731,17 @@
     border: 1px solid rgba(15, 23, 42, 0.06);
     box-shadow: 0 10px 30px rgba(15, 23, 42, 0.05);
   }
+  .calendar-list-day--today {
+    background: #eaf2ff;
+    border-color: #cfe0ff;
+  }
+  .calendar-list-day--today .calendar-list-day__date {
+    color: #1d4f9c;
+  }
+  .calendar-list-day--today .calendar-list-day__meta {
+    color: #2c7be5;
+    font-weight: 600;
+  }
   .calendar-list-day__header {
     display: flex;
     align-items: center;
@@ -1744,20 +1879,38 @@
     border-radius: 18px;
     background: rgba(255, 255, 255, 0.7);
   }
+  .calendar-list-empty-day {
+    padding: 10px 12px;
+    border: 1px dashed #d5e1f0;
+    border-radius: 12px;
+    color: #7b8aa0;
+    font-size: 0.85rem;
+    background: rgba(248, 251, 255, 0.9);
+  }
   @media (max-width: 768px) {
     .calendar-toolbar {
       align-items: stretch;
     }
     .calendar-toolbar__main {
       width: 100%;
+      order: 1;
     }
-    .calendar-view-switch {
+    .calendar-toolbar__actions {
+      width: auto;
+      justify-content: flex-end;
+      order: 1;
+    }
+    .calendar-view-dropdown {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .calendar-view-dropdown__summary {
       width: 100%;
-      justify-content: space-between;
     }
-    .calendar-view-switch__btn {
-      flex: 1 1 0;
-      justify-content: center;
+    .calendar-view-dropdown__menu {
+      left: 0;
+      right: auto;
+      min-width: 100%;
     }
     .calendar-list-day {
       padding: 10px;
@@ -1777,9 +1930,73 @@
     }
     .calendar-search {
       width: 100%;
+      order: 2;
     }
   }
   @media (max-width: 576px) {
+    .calendar-toolbar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: start;
+      gap: 10px !important;
+    }
+    .calendar-toolbar__main {
+      display: contents;
+    }
+    .calendar-toolbar__month-nav {
+      grid-column: 1;
+      grid-row: 1;
+      min-width: 0;
+      flex-wrap: nowrap !important;
+      justify-content: flex-start;
+    }
+    .calendar-toolbar__month-nav .calendar-view-dropdown--mobile {
+      margin-left: auto;
+    }
+    .calendar-toolbar__actions {
+      grid-column: 2;
+      grid-row: 1;
+      width: auto;
+      flex-wrap: nowrap !important;
+      align-items: center;
+      justify-content: flex-end;
+      order: 1;
+    }
+    .calendar-view-dropdown {
+      flex: 0 0 auto;
+      min-width: 0;
+    }
+    .calendar-toolbar__actions {
+      display: none !important;
+    }
+    .calendar-view-dropdown--mobile {
+      display: block;
+    }
+    .calendar-search {
+      grid-column: 1 / -1;
+      grid-row: 2;
+      order: 2;
+      width: 100%;
+    }
+    .calendar-month-label {
+      font-size: 0.82rem;
+      padding-inline: 10px;
+    }
+    .calendar-toolbar__today-inline {
+      min-height: 36px;
+      padding: 0 10px;
+      font-size: 0.82rem;
+      margin-left: 2px;
+    }
+    .calendar-view-dropdown__summary {
+      min-height: 36px;
+      padding: 0 10px;
+      width: auto;
+    }
+    .calendar-view-dropdown__value {
+      gap: 6px;
+      font-size: 0.82rem;
+    }
     .calendar-scroll {
       margin: 0 -12px;
       padding: 0 12px 8px;

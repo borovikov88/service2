@@ -1,4 +1,4 @@
-from zoneinfo import ZoneInfo
+﻿from zoneinfo import ZoneInfo
 
 from django.contrib import messages
 
@@ -6225,7 +6225,7 @@ def task_delete(request, task_id):
         next_url = ""
 
     task.delete()
-    messages.success(request, "Р—Р°РґР°С‡Р° СѓРґР°Р»РµРЅР°.")
+    messages.success(request, "Задача удалена.")
 
     if request.POST.get("modal") == "1":
         return JsonResponse({"ok": True, "deleted": True})
@@ -7061,8 +7061,6 @@ def readings_all(request):
     for day in calendar_days:
         if not day["is_current_month"]:
             continue
-        if not day["items"]:
-            continue
         list_days.append(day)
 
     current_week_end = min(today + timedelta(days=(6 - today.weekday())), last_day)
@@ -7108,6 +7106,7 @@ def readings_all(request):
             "next_month_query": next_month_query,
             "today_month_query": today_month_query,
             "current_month": target_month_value,
+            "show_today_button": target_month_value != today_month_value,
             "view_mode": view_mode,
             "grid_view_query": grid_view_query,
             "list_view_query": list_view_query,
