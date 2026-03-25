@@ -1189,6 +1189,11 @@
         return false;
       }
     }
+    function clearStoredInstalled() {
+      try {
+        localStorage.removeItem("pwaInstalled");
+      } catch (e) {}
+    }
     function setStoredInstalled() {
       try {
         localStorage.setItem("pwaInstalled", "1");
@@ -1199,9 +1204,6 @@
         setStoredInstalled();
         return true;
       }
-      if (getStoredInstalled()) {
-        return true;
-      }
       if ("getInstalledRelatedApps" in navigator) {
         try {
           const related = await navigator.getInstalledRelatedApps();
@@ -1210,6 +1212,9 @@
             return true;
           }
         } catch (e) {}
+      }
+      if (getStoredInstalled()) {
+        clearStoredInstalled();
       }
       return false;
     }
