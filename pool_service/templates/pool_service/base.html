@@ -1051,9 +1051,45 @@
       return outputArray;
     }
 
-    async function syncPushSubscription() {
-      if (!pushEnabled || !pushPublicKey) return;
-      if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return;
+    function isPushSupported() {
+      return pushEnabled && pushPublicKey && "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+    }
+
+    function isStandaloneMode() {
+      return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+    }
+
+    async function getPushSubscriptionState() {
+      const state = {
+        enabled: pushEnabled && !!pushPublicKey,
+        supported: isPushSupported(),
+        permission: "Notification" in window ? Notification.permission : "unsupported",
+        subscribed: false,
+        standalone: isStandaloneMode(),
+      };
+      if (!state.supported) {
+        return state;
+      }
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        state.subscribed = !!(await reg.pushManager.getSubscription());
+      } catch (err) {
+        console.warn("Push state check failed", err);
+      }
+      return state;
+    }
+
+    function notifyPushState(result) {
+      window.dispatchEvent(new CustomEvent("rovikpush:updated", { detail: result || {} }));
+    }
+
+    async function syncPushSubscription(options = {}) {
+      const { promptForPermission = false } = options;
+      if (!isPushSupported()) {
+        const result = { ok: false, reason: "unsupported" };
+        notifyPushState(result);
+        return result;
+      }
       try {
         const reg = await navigator.serviceWorker.ready;
         const subscribeOptions = {
@@ -1079,9 +1115,24 @@
         }
 
         if (!sub) {
-          if (Notification.permission === "denied") return;
-          const permission = await Notification.requestPermission();
-          if (permission !== "granted") return;
+          if (Notification.permission === "denied") {
+            const result = { ok: false, reason: "denied" };
+            notifyPushState(result);
+            return result;
+          }
+          if (Notification.permission !== "granted") {
+            if (!promptForPermission) {
+              const result = { ok: false, reason: "prompt_required" };
+              notifyPushState(result);
+              return result;
+            }
+            const permission = await Notification.requestPermission();
+            if (permission !== "granted") {
+              const result = { ok: false, reason: permission === "denied" ? "denied" : "permission_not_granted" };
+              notifyPushState(result);
+              return result;
+            }
+          }
           sub = await reg.pushManager.subscribe(subscribeOptions);
         }
         const response = await fetch("/api/push/subscribe/", {
@@ -1095,15 +1146,34 @@
         });
         if (!response.ok) {
           console.warn("Push subscribe API failed", response.status);
+          const result = { ok: false, reason: "api_failed", status: response.status };
+          notifyPushState(result);
+          return result;
         }
+        const result = { ok: true, reason: "subscribed" };
+        notifyPushState(result);
+        return result;
       } catch (err) {
         console.warn("Push subscription failed", err);
+        const result = { ok: false, reason: "error", error: err };
+        notifyPushState(result);
+        return result;
       }
     }
 
     window.addEventListener("load", () => {
-      syncPushSubscription();
+      syncPushSubscription({ promptForPermission: false });
     });
+
+    window.RovikPush = {
+      getState: getPushSubscriptionState,
+      syncSubscription() {
+        return syncPushSubscription({ promptForPermission: false });
+      },
+      requestSubscription() {
+        return syncPushSubscription({ promptForPermission: true });
+      },
+    };
 
     // PWA: собственный промпт установки
     let deferredPrompt = null;
@@ -1339,10 +1409,8 @@
 
       if (promptEl) promptEl.textContent = installPromptFired ? "fired" : "not fired";
 
-      const isStandaloneMode =
-        window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
-      if (displayEl) displayEl.textContent = isStandaloneMode ? "standalone" : "browser";
-    }
+        if (displayEl) displayEl.textContent = isStandaloneMode() ? "standalone" : "browser";
+      }
   </script>
   <script>
     function formatPhoneMask(value) {

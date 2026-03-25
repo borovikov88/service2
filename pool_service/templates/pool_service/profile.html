@@ -122,6 +122,22 @@
                     </div>
                 </div>
 
+                <div class="card card-soft mb-4">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-2">
+                            <div>
+                                <h5 class="card-title mb-1">Push-уведомления</h5>
+                                <p class="text-muted mb-0">Для iPhone разрешение нужно включать по кнопке из веб-приложения на экране Домой.</p>
+                            </div>
+                            <span class="badge bg-light text-dark border" id="push-status-badge">Проверка...</span>
+                        </div>
+                        <p class="small text-muted mb-3" id="push-status-text">Проверяем состояние подписки на уведомления.</p>
+                        <button type="button" class="btn btn-primary rounded-3" id="enable-push-btn">
+                            Включить уведомления
+                        </button>
+                    </div>
+                </div>
+
                 {% if can_manage_notifications %}
                 <div class="card card-soft mb-4">
                     <div class="card-body">
@@ -227,4 +243,89 @@
     </div>
   </div>
 </div>
+<script>
+  (function () {
+    const pushApi = window.RovikPush;
+    const button = document.getElementById("enable-push-btn");
+    const badge = document.getElementById("push-status-badge");
+    const text = document.getElementById("push-status-text");
+
+    if (!button || !badge || !text) return;
+
+    function setBadge(className, label) {
+      badge.className = "badge border " + className;
+      badge.textContent = label;
+    }
+
+    function renderState(state) {
+      if (!pushApi) {
+        setBadge("bg-light text-dark", "Недоступно");
+        text.textContent = "На этой странице недоступен модуль push-уведомлений.";
+        button.disabled = true;
+        return;
+      }
+      if (!state.enabled) {
+        setBadge("bg-light text-dark", "Выключено");
+        text.textContent = "Push-уведомления отключены в настройках сайта.";
+        button.disabled = true;
+        return;
+      }
+      if (!state.supported) {
+        setBadge("bg-warning-subtle text-warning-emphasis", "Не поддерживается");
+        text.textContent = "На этом устройстве или в этом режиме браузера web push не поддерживается.";
+        button.disabled = true;
+        return;
+      }
+      if (state.subscribed) {
+        setBadge("bg-success-subtle text-success-emphasis", "Подключено");
+        text.textContent = "Устройство уже подписано на push-уведомления.";
+        button.disabled = false;
+        button.textContent = "Повторно проверить";
+        return;
+      }
+      if (state.permission === "denied") {
+        setBadge("bg-danger-subtle text-danger-emphasis", "Запрещено");
+        text.textContent = "Разрешение на уведомления запрещено. Включите его в настройках iPhone для этого веб-приложения.";
+        button.disabled = false;
+        button.textContent = "Повторно проверить";
+        return;
+      }
+      if (!state.standalone) {
+        setBadge("bg-warning-subtle text-warning-emphasis", "Нужен ярлык");
+        text.textContent = "На iPhone откройте Аквалайн с экрана Домой. Из обычной вкладки Safari push не включится.";
+        button.disabled = false;
+        button.textContent = "Включить уведомления";
+        return;
+      }
+      setBadge("bg-light text-dark", "Не подключено");
+      text.textContent = "Нажмите кнопку, чтобы запросить разрешение и подключить push-уведомления на этом устройстве.";
+      button.disabled = false;
+      button.textContent = "Включить уведомления";
+    }
+
+    async function refreshState() {
+      if (!pushApi) {
+        renderState({ enabled: false });
+        return;
+      }
+      const state = await pushApi.getState();
+      renderState(state);
+    }
+
+    button.addEventListener("click", async function () {
+      if (!pushApi) return;
+      button.disabled = true;
+      text.textContent = "Запрашиваем разрешение и сохраняем подписку...";
+      await pushApi.requestSubscription();
+      await refreshState();
+    });
+
+    window.addEventListener("rovikpush:updated", refreshState);
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", refreshState, { once: true });
+    } else {
+      refreshState();
+    }
+  })();
+</script>
 {% endblock %}
