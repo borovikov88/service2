@@ -7328,8 +7328,6 @@ def water_reading_create(request, pool_uuid):
 
             reading.save()
 
-            notify_reading_out_of_range(reading)
-
             if is_water_object:
                 messages.success(request, "Запись добавлена")
             else:
@@ -7421,8 +7419,6 @@ def water_reading_edit(request, reading_uuid):
             updated.added_by = reading.added_by
 
             updated.save()
-
-            notify_reading_out_of_range(updated)
 
             if is_water_object:
                 messages.success(request, "Запись обновлена.")

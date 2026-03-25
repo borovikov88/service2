@@ -41,9 +41,18 @@ class LimitsNotificationTests(TestCase):
             ph=6.4,
         )
 
-        created = notify_reading_out_of_range(reading)
+        notify_reading_out_of_range(reading)
 
-        self.assertTrue(created)
+        self.assertTrue(Notification.objects.filter(user=self.org_admin, kind="limits", pool=self.pool).exists())
+
+    def test_out_of_range_reading_create_signal_notifies_org_admin(self):
+        WaterReading.objects.create(
+            pool=self.pool,
+            added_by=self.service_user,
+            date=timezone.now(),
+            ph=6.4,
+        )
+
         self.assertTrue(Notification.objects.filter(user=self.org_admin, kind="limits", pool=self.pool).exists())
 
     def test_out_of_range_reading_from_pool_staff_notifies_org_admin(self):
@@ -54,9 +63,8 @@ class LimitsNotificationTests(TestCase):
             ph=6.4,
         )
 
-        created = notify_reading_out_of_range(reading)
+        notify_reading_out_of_range(reading)
 
-        self.assertTrue(created)
         self.assertTrue(Notification.objects.filter(user=self.org_admin, kind="limits", pool=self.pool).exists())
 
     def test_service_staff_limits_can_be_disabled_separately(self):
