@@ -114,7 +114,7 @@ class Command(BaseCommand):
         for pool in pools:
             if pool.service_suspended:
                 continue
-            if not pool.organization.notify_missed_visits:
+            if not pool.organization.notify_missed_visits and not pool.organization.notify_missed_visits_push:
                 continue
             frequency = pool.service_frequency or self._map_interval_to_frequency(pool.service_interval_days)
             if not frequency:
@@ -152,6 +152,7 @@ class Command(BaseCommand):
                 action_url=action_url,
                 pool=pool,
                 dedupe_key=dedupe_key,
+                send_in_app=pool.organization.notify_missed_visits,
                 send_push=pool.organization.notify_missed_visits_push,
             )
 
@@ -161,7 +162,7 @@ class Command(BaseCommand):
             "organization",
         )
         for pool in pools:
-            if pool.organization and not pool.organization.notify_pool_staff_daily:
+            if pool.organization and not pool.organization.notify_pool_staff_daily and not pool.organization.notify_pool_staff_daily_push:
                 continue
             has_reading = WaterReading.objects.filter(pool=pool, date__date=today).exists()
             if has_reading:
@@ -181,5 +182,6 @@ class Command(BaseCommand):
                 action_url=action_url,
                 pool=pool,
                 dedupe_key=dedupe_key,
+                send_in_app=pool.organization.notify_pool_staff_daily if pool.organization else True,
                 send_push=pool.organization.notify_pool_staff_daily_push if pool.organization else True,
             )

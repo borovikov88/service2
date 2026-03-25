@@ -1,6 +1,7 @@
 import json
 import logging
 from contextlib import contextmanager
+from urllib.parse import urlparse
 
 from django.conf import settings
 from django.templatetags.static import static
@@ -45,6 +46,9 @@ def _icon_url():
     base = getattr(settings, "SITE_URL", "").rstrip("/")
     if not base:
         return ""
+    host = urlparse(base).hostname or ""
+    if host in {"service2.aqualine22.ru", "www.service2.aqualine22.ru"}:
+        return f"{base}{static('assets/images/aqualine-favicon.png')}"
     return f"{base}{static('assets/images/favicon.png')}"
 
 

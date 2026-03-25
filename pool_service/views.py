@@ -7818,6 +7818,19 @@ def notification_mark_read(request, notification_id):
     return redirect(request.POST.get("next") or "notifications")
 
 
+@login_required
+def notification_push_open(request, notification_id):
+    note = get_object_or_404(Notification, id=notification_id, user=request.user)
+    if not note.is_read:
+        note.is_read = True
+        note.save(update_fields=["is_read"])
+
+    target = (note.action_url or "").strip()
+    if not target.startswith("/"):
+        target = reverse("notifications")
+    return redirect(target)
+
+
 
 
 
