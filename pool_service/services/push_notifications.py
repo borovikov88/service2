@@ -3,11 +3,21 @@ import logging
 
 from django.conf import settings
 from django.templatetags.static import static
+import pywebpush
+from cryptography.hazmat.primitives.asymmetric import ec
 from pywebpush import WebPushException, webpush
 
 from pool_service.models import PushSubscription
 
 logger = logging.getLogger(__name__)
+
+
+def _patch_pywebpush_curve():
+    # pywebpush 1.14.0 passes the curve class to cryptography, but newer
+    # cryptography versions require a curve instance.
+    curve = getattr(pywebpush.ec, "SECP256R1", None)
+    if isinstance(curve, type):
+        pywebpush.ec.SECP256R1 = ec.SECP256R1()
 
 
 def _push_config():
@@ -34,6 +44,7 @@ def send_push_to_users(users, *, title, message, action_url=""):
     config = _push_config()
     if not config:
         return 0
+    _patch_pywebpush_curve()
     icon_url = _icon_url()
     payload = {
         "title": title,
