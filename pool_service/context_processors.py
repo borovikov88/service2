@@ -19,7 +19,7 @@ def brand_context(request):
         "service2.aqualine22.ru": {
             "name": "\u0410\u043a\u0432\u0430\u043b\u0430\u0439\u043d",
             "logo": "assets/images/aqualine.png",
-            "favicon": "assets/images/aqualine-app.png",
+            "favicon": "assets/images/aqualine-favicon.png",
             "icon_192": "assets/images/aqualine-app-192.png",
             "icon_512": "assets/images/aqualine-app-512.png",
             "hide_text_mobile": True,
@@ -28,7 +28,7 @@ def brand_context(request):
         "www.service2.aqualine22.ru": {
             "name": "\u0410\u043a\u0432\u0430\u043b\u0430\u0439\u043d",
             "logo": "assets/images/aqualine.png",
-            "favicon": "assets/images/aqualine-app.png",
+            "favicon": "assets/images/aqualine-favicon.png",
             "icon_192": "assets/images/aqualine-app-192.png",
             "icon_512": "assets/images/aqualine-app-512.png",
             "hide_text_mobile": True,
