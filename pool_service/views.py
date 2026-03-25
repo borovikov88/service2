@@ -6197,6 +6197,7 @@ def task_edit(request, task_id):
         "is_modal": is_modal,
         "required_responsible_id": required_responsible_id,
         "has_time": has_time,
+        "can_delete_task": task.created_by_id == request.user.id,
         "modal_title": modal_title,
     }
     template_name = "pool_service/task_form_modal.html" if is_modal else "pool_service/task_form.html"
@@ -7476,32 +7477,32 @@ def profile_view(request):
 
 
     if request.method == "POST" and request.POST.get("notification_settings") == "1":
+        profile.in_app_notifications_enabled = bool(request.POST.get("in_app_notifications_enabled"))
+        profile.push_notifications_enabled = bool(request.POST.get("push_notifications_enabled"))
+        profile.save(update_fields=["in_app_notifications_enabled", "push_notifications_enabled"])
 
-        if not notification_access:
+        if notification_access:
+            organization = notification_access.organization
 
-            return render(request, "403.html")
+            organization.notify_limits = bool(request.POST.get("notify_limits"))
 
-        organization = notification_access.organization
+            organization.notify_missed_visits = bool(request.POST.get("notify_missed_visits"))
 
-        organization.notify_limits = bool(request.POST.get("notify_limits"))
+            organization.notify_pool_staff_daily = bool(request.POST.get("notify_pool_staff_daily"))
 
-        organization.notify_missed_visits = bool(request.POST.get("notify_missed_visits"))
+            organization.save(
 
-        organization.notify_pool_staff_daily = bool(request.POST.get("notify_pool_staff_daily"))
+                update_fields=[
 
-        organization.save(
+                    "notify_limits",
 
-            update_fields=[
+                    "notify_missed_visits",
 
-                "notify_limits",
+                    "notify_pool_staff_daily",
 
-                "notify_missed_visits",
+                ]
 
-                "notify_pool_staff_daily",
-
-            ]
-
-        )
+            )
 
         messages.success(request, "\u041d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438 \u0443\u0432\u0435\u0434\u043e\u043c\u043b\u0435\u043d\u0438\u0439 \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u044b.")
 
@@ -7594,6 +7595,10 @@ def profile_view(request):
         "phone_confirmed": phone_confirmed,
 
         "confirm_phone_url": confirm_phone_url,
+
+        "in_app_notifications_enabled": profile.in_app_notifications_enabled,
+
+        "push_notifications_enabled": profile.push_notifications_enabled,
 
         "can_manage_notifications": bool(notification_access),
 

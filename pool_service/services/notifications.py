@@ -2,7 +2,7 @@ from django.conf import settings
 from django.contrib.auth.models import User
 from django.urls import reverse
 
-from pool_service.models import Notification, OrganizationAccess, OrganizationWaterNorms
+from pool_service.models import Notification, OrganizationAccess, OrganizationWaterNorms, Profile
 from pool_service.services.push_notifications import send_push_to_users
 
 
@@ -81,6 +81,14 @@ def _create_notification(user, *, title, message, kind, level="info", action_url
     return Notification.objects.create(user=user, **payload), True
 
 
+def _notification_preferences(user):
+    profile, _ = Profile.objects.get_or_create(user=user)
+    return {
+        "in_app": profile.in_app_notifications_enabled,
+        "push": profile.push_notifications_enabled,
+    }
+
+
 def notify_users(
     users,
     *,
@@ -96,27 +104,30 @@ def notify_users(
     send_push=True,
 ):
     created = []
-    created_users = {}
+    push_users = {}
     for user in users:
         if not user or not user.is_active:
             continue
-        obj, was_created = _create_notification(
-            user,
-            title=title,
-            message=message,
-            kind=kind,
-            level=level,
-            action_url=action_url,
-            organization=organization,
-            client=client,
-            pool=pool,
-            dedupe_key=dedupe_key,
-        )
-        if was_created:
-            created.append(obj)
-            created_users[user.id] = user
-    if send_push and created_users:
-        send_push_to_users(created_users.values(), title=title, message=message, action_url=action_url)
+        prefs = _notification_preferences(user)
+        if prefs["in_app"]:
+            obj, was_created = _create_notification(
+                user,
+                title=title,
+                message=message,
+                kind=kind,
+                level=level,
+                action_url=action_url,
+                organization=organization,
+                client=client,
+                pool=pool,
+                dedupe_key=dedupe_key,
+            )
+            if was_created:
+                created.append(obj)
+        if send_push and prefs["push"]:
+            push_users[user.id] = user
+    if send_push and push_users:
+        send_push_to_users(push_users.values(), title=title, message=message, action_url=action_url)
     return created
 
 

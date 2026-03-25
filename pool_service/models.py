@@ -58,6 +58,8 @@ class Profile(models.Model):
         default="Europe/Moscow",
         help_text="Часовой пояс пользователя, например, Europe/Moscow",
     )
+    in_app_notifications_enabled = models.BooleanField(default=True)
+    push_notifications_enabled = models.BooleanField(default=True)
     email_confirmed_at = models.DateTimeField(null=True, blank=True)
     phone_confirmed_at = models.DateTimeField(null=True, blank=True)
     phone_verification_required = models.BooleanField(default=False)

@@ -126,28 +126,33 @@
                     <div class="card-body">
                         <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-2">
                             <div>
-                                <h5 class="card-title mb-1">Push-уведомления</h5>
-                                <p class="text-muted mb-0">Для iPhone разрешение нужно включать по кнопке из веб-приложения на экране Домой.</p>
+                                <h5 class="card-title mb-1">&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;</h5>
+                                <p class="text-muted mb-0">Настройте показ уведомлений внутри приложения и доставку push на текущее устройство.</p>
                             </div>
-                            <span class="badge bg-light text-dark border" id="push-status-badge">Проверка...</span>
+                            <span class="badge bg-secondary text-white border-0" id="push-status-badge">Проверка...</span>
                         </div>
                         <p class="small text-muted mb-3" id="push-status-text">Проверяем состояние подписки на уведомления.</p>
-                        <button type="button" class="btn btn-primary rounded-3" id="enable-push-btn">
-                            Включить уведомления
-                        </button>
-                    </div>
-                </div>
-
-                {% if can_manage_notifications %}
-                <div class="card card-soft mb-4">
-                    <div class="card-body">
-                        <h5 class="card-title">&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;</h5>
-                        {% if notification_org %}
-                            <p class="text-muted mb-3">&#1054;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;: {{ notification_org.name }}</p>
-                        {% endif %}
                         <form method="post">
                             {% csrf_token %}
                             <input type="hidden" name="notification_settings" value="1">
+                            <div class="form-check mb-2">
+                                <input class="form-check-input" type="checkbox" id="in_app_notifications_enabled" name="in_app_notifications_enabled" {% if in_app_notifications_enabled %}checked{% endif %}>
+                                <label class="form-check-label" for="in_app_notifications_enabled">Уведомления внутри приложения</label>
+                            </div>
+                            <div class="form-check mb-3">
+                                <input class="form-check-input" type="checkbox" id="push_notifications_enabled" name="push_notifications_enabled" {% if push_notifications_enabled %}checked{% endif %}>
+                                <label class="form-check-label" for="push_notifications_enabled">Push-уведомления для этого пользователя</label>
+                            </div>
+                            <div class="d-flex flex-wrap gap-2 align-items-center mb-4">
+                                <button type="button" class="btn btn-outline-primary rounded-3" id="enable-push-btn">
+                                    Включить push на устройстве
+                                </button>
+                                <span class="small text-muted">Для iPhone включайте push из веб-приложения на экране Домой.</span>
+                            </div>
+                        {% if can_manage_notifications %}
+                        {% if notification_org %}
+                            <p class="text-muted mb-3">&#1054;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;: {{ notification_org.name }}</p>
+                        {% endif %}
                             <div class="form-check mb-2">
                                 <input class="form-check-input" type="checkbox" id="notify_limits" name="notify_limits" {% if notify_limits %}checked{% endif %}>
                                 <label class="form-check-label" for="notify_limits">
@@ -167,11 +172,11 @@
                                     &#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103; &#1076;&#1083;&#1103; &#1089;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1086;&#1074; &#1073;&#1072;&#1089;&#1089;&#1077;&#1081;&#1085;&#1072; &#1086; &#1085;&#1077;&#1086;&#1073;&#1093;&#1086;&#1076;&#1080;&#1084;&#1086;&#1089;&#1090;&#1080; &#1080;&#1079;&#1084;&#1077;&#1088;&#1103;&#1090;&#1100; &#1087;&#1072;&#1088;&#1072;&#1084;&#1077;&#1090;&#1088;&#1099; &#1074;&#1086;&#1076;&#1099;
                                 </label>
                             </div>
+                        {% endif %}
                             <button type="submit" class="btn btn-primary btn-sm">&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;</button>
                         </form>
                     </div>
                 </div>
-                {% endif %}
 
                 <div class="card card-soft mb-4">
                     <div class="card-body pb-0">
@@ -276,27 +281,27 @@
         return;
       }
       if (!state.supported) {
-        setBadge("bg-warning-subtle text-warning-emphasis", "Не поддерживается");
+        setBadge("bg-warning text-dark border-0", "Не поддерживается");
         text.textContent = "На этом устройстве или в этом режиме браузера web push не поддерживается.";
         button.disabled = true;
         return;
       }
       if (state.subscribed) {
-        setBadge("bg-success-subtle text-success-emphasis", "Подключено");
+        setBadge("bg-success text-white border-0", "Подключено");
         text.textContent = "Устройство уже подписано на push-уведомления.";
         button.disabled = false;
         button.textContent = "Повторно проверить";
         return;
       }
       if (state.permission === "denied") {
-        setBadge("bg-danger-subtle text-danger-emphasis", "Запрещено");
+        setBadge("bg-danger text-white border-0", "Запрещено");
         text.textContent = "Разрешение на уведомления запрещено. Включите его в настройках iPhone для этого веб-приложения.";
         button.disabled = false;
         button.textContent = "Повторно проверить";
         return;
       }
       if (!state.standalone) {
-        setBadge("bg-warning-subtle text-warning-emphasis", "Нужен ярлык");
+        setBadge("bg-warning text-dark border-0", "Нужен ярлык");
         text.textContent = "На iPhone откройте Аквалайн с экрана Домой. Из обычной вкладки Safari push не включится.";
         button.disabled = false;
         button.textContent = "Включить уведомления";
