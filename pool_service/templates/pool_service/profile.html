@@ -245,12 +245,15 @@
 </div>
 <script>
   (function () {
-    const pushApi = window.RovikPush;
     const button = document.getElementById("enable-push-btn");
     const badge = document.getElementById("push-status-badge");
     const text = document.getElementById("push-status-text");
 
     if (!button || !badge || !text) return;
+
+    function getPushApi() {
+      return window.RovikPush || null;
+    }
 
     function setBadge(className, label) {
       badge.className = "badge border " + className;
@@ -258,10 +261,12 @@
     }
 
     function renderState(state) {
+      const pushApi = getPushApi();
       if (!pushApi) {
         setBadge("bg-light text-dark", "Недоступно");
-        text.textContent = "На этой странице недоступен модуль push-уведомлений.";
-        button.disabled = true;
+        text.textContent = "Модуль push-уведомлений ещё загружается. Подождите секунду и попробуйте снова.";
+        button.disabled = false;
+        button.textContent = "Повторно проверить";
         return;
       }
       if (!state.enabled) {
@@ -304,8 +309,9 @@
     }
 
     async function refreshState() {
+      const pushApi = getPushApi();
       if (!pushApi) {
-        renderState({ enabled: false });
+        renderState({});
         return;
       }
       const state = await pushApi.getState();
@@ -313,6 +319,7 @@
     }
 
     button.addEventListener("click", async function () {
+      const pushApi = getPushApi();
       if (!pushApi) return;
       button.disabled = true;
       text.textContent = "Запрашиваем разрешение и сохраняем подписку...";
@@ -326,6 +333,8 @@
     } else {
       refreshState();
     }
+    window.addEventListener("load", refreshState);
+    setTimeout(refreshState, 300);
   })();
 </script>
 {% endblock %}
