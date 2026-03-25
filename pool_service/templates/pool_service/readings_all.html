@@ -45,7 +45,17 @@
       </div>
     </div>
   </div>
-  <div class="d-flex align-items-center gap-2">
+  <div class="d-flex align-items-center gap-2 flex-wrap">
+    <div class="calendar-view-switch d-inline-flex align-items-center">
+      <a class="calendar-view-switch__btn {% if view_mode == 'grid' %}is-active{% endif %}" href="?{{ grid_view_query }}">
+        <i class="bi bi-grid-3x3-gap"></i>
+        <span>Календарь</span>
+      </a>
+      <a class="calendar-view-switch__btn {% if view_mode == 'list' %}is-active{% endif %}" href="?{{ list_view_query }}">
+        <i class="bi bi-list-ul"></i>
+        <span>Список</span>
+      </a>
+    </div>
     <a class="btn btn-outline-secondary btn-sm" href="?{{ today_month_query }}">
       &#1057;&#1077;&#1075;&#1086;&#1076;&#1085;&#1103;
     </a>
@@ -72,6 +82,7 @@
   <div class="calendar-search-results__list" data-calendar-search-list></div>
 </div>
 
+{% if view_mode == 'grid' %}
 <div class="calendar-scroll">
   <div class="calendar-grid calendar-grid--header">
     <div class="calendar-weekday">&#1055;&#1085;</div>
@@ -167,6 +178,94 @@
     {% endfor %}
   </div>
 </div>
+{% else %}
+<div class="calendar-list">
+  {% for section in list_sections %}
+    <details class="calendar-list-section" {% if section.open %}open{% endif %}>
+      <summary class="calendar-list-section__summary">
+        <span>{{ section.title }}</span>
+        <span class="calendar-list-section__count">{{ section.days|length }}</span>
+      </summary>
+      <div class="calendar-list-section__body">
+        {% for day in section.days %}
+          <section class="calendar-list-day">
+            <div class="calendar-list-day__header">
+              <div class="calendar-list-day__heading">
+                <div class="calendar-list-day__date">{{ day.date|date:"d.m.Y" }}</div>
+                <div class="calendar-list-day__meta">
+                  {% if day.is_today %}Сегодня{% else %}{{ day.date|date:"l" }}{% endif %}
+                </div>
+              </div>
+              {% if can_create_tasks %}
+                <a class="calendar-list-day__add" href="{% url 'task_create' %}?date={{ day.date|date:'Y-m-d' }}&next={{ calendar_return_url|urlencode }}" data-task-modal-url="{% url 'task_create' %}?date={{ day.date|date:'Y-m-d' }}&next={{ calendar_return_url|urlencode }}">
+                  <i class="bi bi-plus-lg"></i>
+                </a>
+              {% endif %}
+            </div>
+            <div class="calendar-list-day__items">
+              {% for item in day.items %}
+                {% if item.item_type == "task_continuation" %}
+                  <div class="calendar-list-item calendar-list-item--{{ item.status }} calendar-list-item--task">
+                    <div class="calendar-list-item__main">
+                      <div class="calendar-list-item__title">&#8594; {{ item.display_name }}</div>
+                    </div>
+                  </div>
+                {% elif item.item_type == "task" %}
+                  {% if item.edit_url %}
+                    <a class="calendar-list-item calendar-list-item--{{ item.status }} calendar-list-item--task calendar-list-item--link" href="{{ item.edit_url }}" data-task-modal-url="{{ item.edit_url }}">
+                  {% else %}
+                    <div class="calendar-list-item calendar-list-item--{{ item.status }} calendar-list-item--task">
+                  {% endif %}
+                    <div class="calendar-list-item__icon">
+                      <i class="bi bi-list-check"></i>
+                    </div>
+                    <div class="calendar-list-item__main">
+                      <div class="calendar-list-item__title">
+                        <span>{{ item.display_name }}</span>
+                        {% if item.priority == "high" %}
+                          <span class="calendar-list-item__priority"><i class="bi bi-fire"></i></span>
+                        {% endif %}
+                      </div>
+                    </div>
+                    {% if item.start_time or item.end_time %}
+                      <div class="calendar-list-item__side">
+                        <span class="calendar-list-item__time">
+                          {% if item.start_time %}{{ item.start_time|time:"H:i" }}{% endif %}{% if item.start_time and item.end_time %} - {% endif %}{% if item.end_time %}{{ item.end_time|time:"H:i" }}{% endif %}
+                        </span>
+                      </div>
+                    {% endif %}
+                  {% if item.edit_url %}
+                    </a>
+                  {% else %}
+                    </div>
+                  {% endif %}
+                {% else %}
+                  <div class="calendar-list-item calendar-list-item--{{ item.status }}">
+                    <div class="calendar-list-item__icon">
+                      {% if item.object_type == 'water' %}
+                        <i class="bi bi-funnel"></i>
+                      {% else %}
+                        <i class="bi bi-water"></i>
+                      {% endif %}
+                    </div>
+                    <div class="calendar-list-item__main">
+                      <div class="calendar-list-item__title">{{ item.display_name }}</div>
+                    </div>
+                  </div>
+                {% endif %}
+              {% endfor %}
+            </div>
+          </section>
+        {% endfor %}
+      </div>
+    </details>
+  {% empty %}
+    <div class="calendar-list-empty">
+      В этом месяце нет записей по выбранному фильтру.
+    </div>
+  {% endfor %}
+</div>
+{% endif %}
 
 {% if paused_pools or unscheduled_pools %}
   <details class="calendar-details mt-3">
@@ -213,7 +312,7 @@
 {% endif %}
 
 <div class="modal fade" id="taskModal" tabindex="-1" aria-labelledby="taskModalTitle" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+  <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable task-modal__dialog">
     <div class="modal-content task-modal__content">
       <div class="modal-header">
         <h5 class="modal-title" id="taskModalTitle"></h5>
@@ -359,6 +458,37 @@
 
     if (taskModalEl && taskModal) {
       taskModalEl.addEventListener("submit", (event) => {
+        const deleteForm = event.target.closest("[data-task-delete-form]");
+        if (deleteForm) {
+          event.preventDefault();
+          const formData = new FormData(deleteForm);
+          if (!formData.has("modal")) {
+            formData.append("modal", "1");
+          }
+          fetch(deleteForm.action, {
+            method: "POST",
+            headers: {
+              "X-Requested-With": "XMLHttpRequest",
+              "X-CSRFToken": getCookie("csrftoken"),
+            },
+            body: formData,
+            credentials: "same-origin",
+          })
+            .then(async (resp) => {
+              const data = await resp.json().catch(() => ({}));
+              if (!resp.ok || !data.ok || !data.deleted) {
+                throw new Error(data.error || "delete_failed");
+              }
+              taskModal.hide();
+              window.location.reload();
+            })
+            .catch((error) => {
+              const details = error.message ? `: ${error.message}` : "";
+              showMessage(`Не удалось удалить задачу${details}.`);
+            });
+          return;
+        }
+
         const form = event.target.closest("[data-task-form]");
         if (!form) return;
         event.preventDefault();
@@ -791,6 +921,7 @@
       const searchHint = searchResults ? searchResults.querySelector("[data-calendar-search-hint]") : null;
       const calendarSummary = document.querySelector(".calendar-summary");
       const calendarScroll = document.querySelector(".calendar-scroll");
+      const calendarList = document.querySelector(".calendar-list");
       const calendarDetails = document.querySelector(".calendar-details");
       const dataEl = document.getElementById("task-search-data");
       let searchData = [];
@@ -811,6 +942,7 @@
         if (searchResults) searchResults.classList.toggle("d-none", !isVisible);
         if (calendarSummary) calendarSummary.classList.toggle("d-none", isVisible);
         if (calendarScroll) calendarScroll.classList.toggle("d-none", isVisible);
+        if (calendarList) calendarList.classList.toggle("d-none", isVisible);
         if (calendarDetails) calendarDetails.classList.toggle("d-none", isVisible);
       }
 
@@ -1118,6 +1250,29 @@
     padding: 6px 12px;
     font-weight: 600;
   }
+  .calendar-view-switch {
+    padding: 4px;
+    border-radius: 999px;
+    background: #eef4fb;
+    gap: 4px;
+  }
+  .calendar-view-switch__btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 999px;
+    color: #5d6b82;
+    text-decoration: none;
+    font-size: 0.92rem;
+    font-weight: 600;
+    transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+  }
+  .calendar-view-switch__btn.is-active {
+    background: #fff;
+    color: #1d4ed8;
+    box-shadow: 0 6px 18px rgba(29, 78, 216, 0.12);
+  }
   .calendar-filter {
     background: #ffffff;
     border: 1px solid #e6eef5;
@@ -1396,7 +1551,224 @@
     padding-bottom: 6px;
     -webkit-overflow-scrolling: touch;
   }
+  .calendar-list {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .calendar-list-section {
+    border-radius: 20px;
+    background: rgba(255, 255, 255, 0.78);
+    border: 1px solid rgba(15, 23, 42, 0.06);
+    box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
+    overflow: hidden;
+  }
+  .calendar-list-section__summary {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 16px;
+    font-weight: 700;
+    color: #132238;
+    cursor: pointer;
+  }
+  .calendar-list-section__summary::-webkit-details-marker {
+    display: none;
+  }
+  .calendar-list-section__summary::after {
+    content: "▾";
+    color: #7b8aa0;
+    margin-left: auto;
+    transition: transform 0.18s ease;
+  }
+  .calendar-list-section[open] .calendar-list-section__summary::after {
+    transform: rotate(180deg);
+  }
+  .calendar-list-section__count {
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #eef4fb;
+    color: #5d6b82;
+    font-size: 0.78rem;
+    font-weight: 700;
+  }
+  .calendar-list-section__body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 0 12px 12px;
+  }
+  .calendar-list-day {
+    padding: 12px;
+    border-radius: 16px;
+    background: #fff;
+    border: 1px solid rgba(15, 23, 42, 0.06);
+    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.05);
+  }
+  .calendar-list-day__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .calendar-list-day__heading {
+    min-width: 0;
+    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: nowrap;
+  }
+  .calendar-list-day__date {
+    font-size: 0.96rem;
+    font-weight: 700;
+    color: #132238;
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+  .calendar-list-day__meta {
+    font-size: 0.8rem;
+    color: #7b8aa0;
+    text-transform: capitalize;
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+  .calendar-list-day__add {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 999px;
+    background: #eff6ff;
+    color: #1d4ed8;
+    text-decoration: none;
+    font-weight: 600;
+    flex: 0 0 auto;
+    font-size: 0.82rem;
+  }
+  .calendar-list-day__items {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .calendar-list-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 14px;
+    background: #f8fbff;
+    border: 1px solid #e4edf8;
+  }
+  .calendar-list-item--link {
+    color: inherit;
+    text-decoration: none;
+  }
+  .calendar-list-item__icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(29, 78, 216, 0.08);
+    color: #1d4ed8;
+    flex: 0 0 auto;
+    font-size: 0.82rem;
+  }
+  .calendar-list-item__main {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+  .calendar-list-item__side {
+    margin-left: auto;
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    align-self: center;
+  }
+  .calendar-list-item__title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 700;
+    color: #132238;
+    line-height: 1.3;
+    flex-wrap: wrap;
+    font-size: 0.92rem;
+  }
+  .calendar-list-item__time {
+    color: #7b8797;
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.78rem;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .calendar-list-item__subtitle {
+    margin-top: 4px;
+    font-size: 0.88rem;
+    color: #6b7b90;
+    line-height: 1.4;
+    word-break: break-word;
+  }
+  .calendar-list-item__priority {
+    display: inline-flex;
+    align-items: center;
+    color: #dc2626;
+  }
+  .calendar-list-item--overdue {
+    border-color: rgba(220, 38, 38, 0.2);
+    background: #fff7f7;
+  }
+  .calendar-list-item--planned {
+    border-color: rgba(37, 99, 235, 0.15);
+  }
+  .calendar-list-item--done {
+    border-color: rgba(22, 163, 74, 0.18);
+    background: #f5fff8;
+  }
+  .calendar-list-item--done .calendar-list-item__title,
+  .calendar-list-item--done .calendar-list-item__subtitle {
+    opacity: 0.78;
+  }
+  .calendar-list-empty {
+    padding: 28px 20px;
+    text-align: center;
+    color: #6b7b90;
+    border: 1px dashed #c9d7eb;
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.7);
+  }
   @media (max-width: 768px) {
+    .calendar-toolbar {
+      align-items: stretch;
+    }
+    .calendar-toolbar__main {
+      width: 100%;
+    }
+    .calendar-view-switch {
+      width: 100%;
+      justify-content: space-between;
+    }
+    .calendar-view-switch__btn {
+      flex: 1 1 0;
+      justify-content: center;
+    }
+    .calendar-list-day {
+      padding: 10px;
+      border-radius: 14px;
+    }
+    .calendar-list-day__header {
+      align-items: center;
+    }
+    .calendar-list-day__add {
+      margin-left: auto;
+    }
     .calendar-day {
       min-height: 110px;
     }

@@ -83,10 +83,12 @@ def plan_status_context(request):
         "payment_url": reverse("billing"),
         "access_blocked": False,
         "personal_pool_url": None,
+        "show_plan_badge": False,
     }
 
     if personal_free:
         context["plan_badge"] = {"type": "personal_free"}
+        context["show_plan_badge"] = True
     if personal_user:
         pool = personal_pool(user)
         if pool:
@@ -103,6 +105,7 @@ def plan_status_context(request):
 
     if org.paid_until and org.paid_until >= now:
         context["plan_badge"] = {"type": "company_paid", "paid_until": org.paid_until}
+        context["show_plan_badge"] = (org.paid_until - now).days < 30
         return context
 
     trial_end = trial_ends_at(org)
@@ -111,14 +114,17 @@ def plan_status_context(request):
             "type": "company_trial",
             "days_left": company_trial_days_left(org, now=now),
         }
+        context["show_plan_badge"] = True
         return context
 
     if trial_end and trial_end <= now:
         context["plan_badge"] = {"type": "company_expired", "days_left": 0}
+        context["show_plan_badge"] = True
         return context
 
     if not company_has_access(org, now=now):
         context["plan_badge"] = {"type": "company_expired", "days_left": 0}
+        context["show_plan_badge"] = True
         return context
 
     return context

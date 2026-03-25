@@ -479,8 +479,40 @@
       border-bottom: none;
       padding-bottom: 0;
     }
+    .task-modal__dialog {
+      width: min(1040px, calc(100vw - 2rem));
+      max-width: min(1040px, calc(100vw - 2rem));
+      margin: 1rem auto;
+    }
+    .task-modal__content {
+      max-height: calc(100vh - 2rem);
+      overflow: hidden;
+    }
+    .task-modal__body {
+      padding-top: 1rem;
+      padding-bottom: 1.25rem;
+    }
+    .task-modal__body .task-form {
+      padding-bottom: 0.25rem;
+    }
+    .task-modal__body .multi-select__dropdown {
+      max-height: min(320px, 42vh);
+    }
     .task-modal__content .modal-title:empty {
       display: none;
+    }
+    @media (max-width: 768px) {
+      .task-modal__dialog {
+        width: calc(100vw - 1rem);
+        max-width: calc(100vw - 1rem);
+        margin: 0.5rem auto;
+      }
+      .task-modal__content {
+        max-height: calc(100vh - 1rem);
+      }
+      .task-modal__body .multi-select__dropdown {
+        max-height: min(240px, 38vh);
+      }
     }
 
     .task-history {
@@ -583,7 +615,7 @@
           </a>
           </nav>
 
-          {% if plan_badge %}
+          {% if plan_badge and show_plan_badge %}
             <div class="d-none d-lg-flex align-items-center">
               {% if plan_badge.type == 'company_expired' %}
                 <a href="{{ payment_url|default:'/billing/' }}" class="plan-badge plan-badge--company_expired text-decoration-none">
@@ -661,7 +693,7 @@
               <i class="bi bi-x-lg"></i>
           </button>
       </div>
-      {% if plan_badge %}
+      {% if plan_badge and show_plan_badge %}
       <div class="mb-3">
           {% if plan_badge.type == 'company_expired' %}
           <a href="{{ payment_url|default:'/billing/' }}" class="plan-badge plan-badge--company_expired text-decoration-none">
@@ -1462,9 +1494,12 @@
         const dropdown = root.querySelector("[data-multi-select-list]");
         if (!dropdown) return;
         const rect = root.getBoundingClientRect();
-        const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
-        const spaceBelow = viewportHeight - rect.bottom;
-        const spaceAbove = rect.top;
+        const modalBody = root.closest(".modal-body");
+        const boundaryRect = modalBody
+          ? modalBody.getBoundingClientRect()
+          : { top: 0, bottom: window.innerHeight || document.documentElement.clientHeight };
+        const spaceBelow = boundaryRect.bottom - rect.bottom - 12;
+        const spaceAbove = rect.top - boundaryRect.top - 12;
         const computed = window.getComputedStyle(dropdown);
         const maxHeight = parseInt(computed.maxHeight, 10) || 260;
         const needed = Math.min(dropdown.scrollHeight || maxHeight, maxHeight);

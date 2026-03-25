@@ -3254,7 +3254,7 @@ def users_view(request):
 
             "page_title": "Пользователи",
 
-            "page_subtitle": "?????????? ????????? ???????? ? ???? ?? ????????",
+            "page_subtitle": "Управление сотрудниками и доступом по объектам",
 
             "org_staff": org_staff,
 
@@ -6383,6 +6383,9 @@ def readings_all(request):
             continue
 
     month_label = f"{month_labels.get(target_month.month, target_month.month)} {target_month.year}"
+    view_mode = (request.GET.get("view") or "grid").strip().lower()
+    if view_mode not in {"grid", "list"}:
+        view_mode = "grid"
     prev_month_date = _add_month(target_month, -1)
     next_month_date = _add_month(target_month, 1)
     target_month_value = f"{target_month.year}-{target_month.month:02d}"
@@ -6391,11 +6394,14 @@ def readings_all(request):
     today_month_value = f"{today.year}-{today.month:02d}"
 
     responsible_params = [("responsible", str(rid)) for rid in selected_responsible_ids]
+    view_params = [("view", view_mode)]
     responsible_filter_set = set(selected_responsible_ids)
-    prev_month_query = urlencode([("month", prev_month_value), *responsible_params])
-    next_month_query = urlencode([("month", next_month_value), *responsible_params])
-    today_month_query = urlencode([("month", today_month_value), *responsible_params])
-    current_query = urlencode([("month", target_month_value), *responsible_params])
+    prev_month_query = urlencode([("month", prev_month_value), *responsible_params, *view_params])
+    next_month_query = urlencode([("month", next_month_value), *responsible_params, *view_params])
+    today_month_query = urlencode([("month", today_month_value), *responsible_params, *view_params])
+    current_query = urlencode([("month", target_month_value), *responsible_params, *view_params])
+    grid_view_query = urlencode([("month", target_month_value), *responsible_params, ("view", "grid")])
+    list_view_query = urlencode([("month", target_month_value), *responsible_params, ("view", "list")])
 
     first_day = target_month
     last_day = date(target_month.year, target_month.month, calendar.monthrange(target_month.year, target_month.month)[1])
@@ -7051,6 +7057,47 @@ def readings_all(request):
         )
         day["items"] = items
 
+    list_days = []
+    for day in calendar_days:
+        if not day["is_current_month"]:
+            continue
+        if not day["items"]:
+            continue
+        list_days.append(day)
+
+    current_week_end = min(today + timedelta(days=(6 - today.weekday())), last_day)
+    past_days = [day for day in list_days if day["date"] < today]
+    current_days = [day for day in list_days if today <= day["date"] <= current_week_end]
+    future_days = [day for day in list_days if day["date"] > current_week_end]
+    list_sections = []
+    if past_days:
+        list_sections.append(
+            {
+                "key": "past",
+                "title": f"Прошедшие дни месяца ({len(past_days)})",
+                "days": past_days,
+                "open": False,
+            }
+        )
+    if current_days:
+        list_sections.append(
+            {
+                "key": "current",
+                "title": "Сегодня и эта неделя",
+                "days": current_days,
+                "open": True,
+            }
+        )
+    if future_days:
+        list_sections.append(
+            {
+                "key": "future",
+                "title": f"Оставшиеся дни месяца ({len(future_days)})",
+                "days": future_days,
+                "open": False,
+            }
+        )
+
     return render(
         request,
         "pool_service/readings_all.html",
@@ -7061,6 +7108,9 @@ def readings_all(request):
             "next_month_query": next_month_query,
             "today_month_query": today_month_query,
             "current_month": target_month_value,
+            "view_mode": view_mode,
+            "grid_view_query": grid_view_query,
+            "list_view_query": list_view_query,
             "calendar_return_url": calendar_return_url,
             "page_title": "\u041a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u044c \u0437\u0430\u0434\u0430\u0447",
             "page_subtitle": "\u0412\u044b\u0435\u0437\u0434\u044b \u0438 \u0440\u0443\u0447\u043d\u044b\u0435 \u0437\u0430\u0434\u0430\u0447\u0438 \u043a\u043e\u043c\u0430\u043d\u0434\u044b",
@@ -7075,6 +7125,8 @@ def readings_all(request):
             "selected_responsible_label": selected_responsible_label,
             "can_create_tasks": can_create_tasks,
             "task_search_index": task_search_index,
+            "list_days": list_days,
+            "list_sections": list_sections,
         },
     )
 

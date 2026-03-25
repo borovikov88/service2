@@ -125,7 +125,7 @@
 
 {% if task %}
   <div class="d-flex flex-wrap gap-2 mt-2">
-    <form method="post" action="{% url 'task_delete' task.id %}" class="d-inline">
+    <form method="post" action="{% url 'task_delete' task.id %}" class="d-inline" data-task-delete-form>
       {% csrf_token %}
       {% if next_url %}
         <input type="hidden" name="next" value="{{ next_url }}">
@@ -136,12 +136,12 @@
       <button
         type="submit"
         class="btn btn-outline-danger rounded-3 js-confirm-action"
-        data-confirm-title="РЈРґР°Р»РёС‚СЊ Р·Р°РґР°С‡Сѓ?"
-        data-confirm-body="Р—Р°РґР°С‡Р° Р±СѓРґРµС‚ СѓРґР°Р»РµРЅР° Р±РµР· РІРѕР·РјРѕР¶РЅРѕСЃС‚Рё РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅРёСЏ."
-        data-confirm-confirm="РЈРґР°Р»РёС‚СЊ"
+        data-confirm-title="Удалить задачу?"
+        data-confirm-body="Задача будет удалена без возможности восстановления."
+        data-confirm-confirm="Удалить"
         data-confirm-variant="danger"
       >
-        РЈРґР°Р»РёС‚СЊ
+        Удалить
       </button>
     </form>
   </div>
