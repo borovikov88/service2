@@ -2,7 +2,7 @@ from django.conf import settings
 from django.contrib.auth.models import User
 from django.urls import reverse
 
-from pool_service.models import Notification, OrganizationAccess, OrganizationWaterNorms
+from pool_service.models import ClientAccess, Notification, OrganizationAccess, OrganizationWaterNorms
 from pool_service.services.push_notifications import send_push_to_users
 
 
@@ -197,7 +197,30 @@ def notify_reading_out_of_range(reading):
     organization = pool.organization
     if not organization:
         return []
-    if not organization.notify_limits and not organization.notify_limits_push:
+    is_service_staff = bool(
+        reading.added_by_id
+        and OrganizationAccess.objects.filter(
+            user_id=reading.added_by_id,
+            organization=organization,
+        ).exists()
+    )
+    is_pool_staff = bool(
+        reading.added_by_id
+        and (
+            (pool.client and pool.client.user_id == reading.added_by_id)
+            or (pool.client and ClientAccess.objects.filter(user_id=reading.added_by_id, client=pool.client).exists())
+        )
+    )
+    if is_service_staff:
+        send_in_app = organization.notify_limits_service_staff
+        send_push = organization.notify_limits_service_staff_push
+    elif is_pool_staff:
+        send_in_app = organization.notify_limits_pool_staff
+        send_push = organization.notify_limits_pool_staff_push
+    else:
+        send_in_app = organization.notify_limits_service_staff
+        send_push = organization.notify_limits_service_staff_push
+    if not send_in_app and not send_push:
         return []
     limits = _limits_for_org(organization)
     violations = _reading_violations(reading, limits)
@@ -217,8 +240,8 @@ def notify_reading_out_of_range(reading):
         action_url=action_url,
         pool=pool,
         dedupe_key=dedupe_key,
-        send_in_app=organization.notify_limits,
-        send_push=organization.notify_limits_push,
+        send_in_app=send_in_app,
+        send_push=send_push,
     )
     return created
 

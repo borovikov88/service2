@@ -7480,8 +7480,10 @@ def profile_view(request):
         if notification_access:
             organization = notification_access.organization
 
-            organization.notify_limits = bool(request.POST.get("notify_limits"))
-            organization.notify_limits_push = bool(request.POST.get("notify_limits_push"))
+            organization.notify_limits_pool_staff = bool(request.POST.get("notify_limits_pool_staff"))
+            organization.notify_limits_pool_staff_push = bool(request.POST.get("notify_limits_pool_staff_push"))
+            organization.notify_limits_service_staff = bool(request.POST.get("notify_limits_service_staff"))
+            organization.notify_limits_service_staff_push = bool(request.POST.get("notify_limits_service_staff_push"))
 
             organization.notify_missed_visits = bool(request.POST.get("notify_missed_visits"))
             organization.notify_missed_visits_push = bool(request.POST.get("notify_missed_visits_push"))
@@ -7493,8 +7495,10 @@ def profile_view(request):
 
                 update_fields=[
 
-                    "notify_limits",
-                    "notify_limits_push",
+                    "notify_limits_pool_staff",
+                    "notify_limits_pool_staff_push",
+                    "notify_limits_service_staff",
+                    "notify_limits_service_staff_push",
 
                     "notify_missed_visits",
                     "notify_missed_visits_push",
@@ -7602,8 +7606,10 @@ def profile_view(request):
 
         "notification_org": notification_access.organization if notification_access else None,
 
-        "notify_limits": notification_access.organization.notify_limits if notification_access else False,
-        "notify_limits_push": notification_access.organization.notify_limits_push if notification_access else False,
+        "notify_limits_pool_staff": notification_access.organization.notify_limits_pool_staff if notification_access else False,
+        "notify_limits_pool_staff_push": notification_access.organization.notify_limits_pool_staff_push if notification_access else False,
+        "notify_limits_service_staff": notification_access.organization.notify_limits_service_staff if notification_access else False,
+        "notify_limits_service_staff_push": notification_access.organization.notify_limits_service_staff_push if notification_access else False,
 
         "notify_missed_visits": notification_access.organization.notify_missed_visits if notification_access else False,
         "notify_missed_visits_push": notification_access.organization.notify_missed_visits_push if notification_access else False,

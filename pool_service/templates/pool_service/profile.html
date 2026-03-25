@@ -223,11 +223,11 @@
                                         <div class="notification-matrix__title">Уведомления об отклонении от нормы (<a href="{% url 'organization_norms' %}">нормативы</a>)</div>
                                     </div>
                                     <div class="notification-matrix__check">
-                                        <input class="form-check-input" type="checkbox" id="notify_limits" name="notify_limits" {% if notify_limits %}checked{% endif %}>
+                                        <input class="form-check-input" type="checkbox" id="notify_limits_pool_staff" name="notify_limits_pool_staff" {% if notify_limits_pool_staff %}checked{% endif %}>
                                         <label class="d-md-none" for="notify_limits">В шапке</label>
                                     </div>
                                     <div class="notification-matrix__check">
-                                        <input class="form-check-input" type="checkbox" id="notify_limits_push" name="notify_limits_push" {% if notify_limits_push %}checked{% endif %}>
+                                        <input class="form-check-input" type="checkbox" id="notify_limits_pool_staff_push" name="notify_limits_pool_staff_push" {% if notify_limits_pool_staff_push %}checked{% endif %}>
                                         <label class="d-md-none" for="notify_limits_push">Push</label>
                                     </div>
                                 </div>
@@ -428,6 +428,82 @@
     }
     window.addEventListener("load", refreshState);
     setTimeout(refreshState, 300);
+  })();
+
+  (function () {
+    function setupLimitsRows() {
+      const poolInApp = document.getElementById("notify_limits_pool_staff");
+      const poolPush = document.getElementById("notify_limits_pool_staff_push");
+      if (!poolInApp || !poolPush) return;
+
+      const poolRow = poolInApp.closest(".notification-matrix__row");
+      if (!poolRow) return;
+
+      const poolTitle = poolRow.querySelector(".notification-matrix__title");
+      if (poolTitle) {
+        poolTitle.innerHTML = 'Уведомления об отклонении от нормы от сотрудников бассейнов (<a href="{% url "organization_norms" %}">нормативы</a>)';
+      }
+
+      const poolInAppLabel = poolRow.querySelector('label[for="notify_limits"]');
+      if (poolInAppLabel) {
+        poolInAppLabel.setAttribute("for", "notify_limits_pool_staff");
+        poolInAppLabel.textContent = "В шапке";
+      }
+      const poolPushLabel = poolRow.querySelector('label[for="notify_limits_push"]');
+      if (poolPushLabel) {
+        poolPushLabel.setAttribute("for", "notify_limits_pool_staff_push");
+        poolPushLabel.textContent = "Push";
+      }
+
+      if (document.getElementById("notify_limits_service_staff")) return;
+
+      const serviceRow = poolRow.cloneNode(true);
+      const serviceTitle = serviceRow.querySelector(".notification-matrix__title");
+      if (serviceTitle) {
+        serviceTitle.innerHTML = 'Уведомления об отклонении от нормы от сотрудников сервисной компании (<a href="{% url "organization_norms" %}">нормативы</a>)';
+      }
+
+      const serviceInApp = serviceRow.querySelector("input.form-check-input");
+      if (serviceInApp) {
+        serviceInApp.id = "notify_limits_service_staff";
+        serviceInApp.name = "notify_limits_service_staff";
+        {% if notify_limits_service_staff %}
+        serviceInApp.checked = true;
+        {% else %}
+        serviceInApp.checked = false;
+        {% endif %}
+      }
+
+      const servicePush = serviceRow.querySelectorAll("input.form-check-input")[1];
+      if (servicePush) {
+        servicePush.id = "notify_limits_service_staff_push";
+        servicePush.name = "notify_limits_service_staff_push";
+        {% if notify_limits_service_staff_push %}
+        servicePush.checked = true;
+        {% else %}
+        servicePush.checked = false;
+        {% endif %}
+      }
+
+      const serviceInAppLabel = serviceRow.querySelector('label[for="notify_limits_pool_staff"], label[for="notify_limits"]');
+      if (serviceInAppLabel) {
+        serviceInAppLabel.setAttribute("for", "notify_limits_service_staff");
+        serviceInAppLabel.textContent = "В шапке";
+      }
+      const servicePushLabel = serviceRow.querySelector('label[for="notify_limits_pool_staff_push"], label[for="notify_limits_push"]');
+      if (servicePushLabel) {
+        servicePushLabel.setAttribute("for", "notify_limits_service_staff_push");
+        servicePushLabel.textContent = "Push";
+      }
+
+      poolRow.insertAdjacentElement("afterend", serviceRow);
+    }
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", setupLimitsRows, { once: true });
+    } else {
+      setupLimitsRows();
+    }
   })();
 </script>
 {% endblock %}
