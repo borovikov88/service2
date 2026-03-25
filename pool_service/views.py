@@ -1309,6 +1309,15 @@ def billing_request(request):
 
     )
 
+    requested_by_label = request.user.get_full_name() or request.user.username
+    notify_superusers(
+        title="Запрос на продление тарифа",
+        message=f"{organization.name}: {months} мес. Запросил {requested_by_label}.",
+        kind="billing_request",
+        level="info",
+        action_url=reverse("billing_admin"),
+    )
+
     messages.success(request, "\u0417\u0430\u044f\u0432\u043a\u0430 \u043d\u0430 \u043f\u0440\u043e\u0434\u043b\u0435\u043d\u0438\u0435 \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0430.")
 
     return redirect("billing")
