@@ -69,12 +69,21 @@
         position: relative;
         display: flex;
         gap: 16px;
-        padding: 12px 64px 28px 12px;
+        padding: 12px 64px 12px 12px;
         border-radius: 14px;
         background: #f7f8fa;
+        transition: background-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
     }
     .tg-item.is-unread {
         background: #eef6ff;
+    }
+    .tg-item:hover {
+        background: #edf4ff;
+        box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+        transform: translateY(-1px);
+    }
+    .tg-item.is-unread:hover {
+        background: #e3f0ff;
     }
     .tg-item-main {
         display: flex;
@@ -82,6 +91,8 @@
         gap: 4px;
         flex: 1 1 auto;
         min-width: 0;
+        position: relative;
+        z-index: 2;
     }
     .tg-title {
         font-weight: 600;
@@ -97,10 +108,11 @@
     .tg-time {
         position: absolute;
         right: 12px;
-        bottom: 8px;
+        top: 34px;
         font-size: 12px;
         color: #9aa1a9;
         white-space: nowrap;
+        z-index: 2;
     }
     .tg-close {
         position: absolute;
@@ -115,17 +127,20 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
+        z-index: 3;
     }
     .tg-close:hover {
         background: rgba(15, 23, 42, 0.08);
         color: #6b7280;
     }
-    .tg-link {
-        color: #1a73e8;
-        text-decoration: none;
+    .tg-item-link {
+        position: absolute;
+        inset: 0;
+        border-radius: 14px;
+        z-index: 1;
     }
-    .tg-link:hover {
-        text-decoration: underline;
+    .tg-link-text {
+        color: #1a73e8;
     }
     .tg-empty {
         padding: 24px 12px;
@@ -176,6 +191,13 @@
         <div class="tg-list">
             {% for note in task_notifications %}
             <div class="tg-item {% if not note.is_read %}is-unread{% endif %}">
+                {% if note.action_url %}
+                <a
+                    class="tg-item-link"
+                    href="{{ note.action_url }}"
+                    aria-label="{{ note.task_title }}"
+                ></a>
+                {% endif %}
                 <form method="post" action="{% url 'notification_resolve' note.id %}">
                     {% csrf_token %}
                     <button
@@ -186,12 +208,7 @@
                 </form>
                 <div class="tg-item-main">
                     <div class="tg-title">
-                        &#1042;&#1072;&#1089; &#1076;&#1086;&#1073;&#1072;&#1074;&#1080;&#1083;&#1080; &#1091;&#1095;&#1072;&#1089;&#1090;&#1085;&#1080;&#1082;&#1086;&#1084; &#1074; &#1079;&#1072;&#1076;&#1072;&#1095;&#1091;
-                        {% if note.action_url %}
-                        <a class="tg-link" href="{{ note.action_url }}">"{{ note.task_title }}"</a>
-                        {% else %}
-                        "{{ note.task_title }}"
-                        {% endif %}
+                        {{ note.task_title }}
                     </div>
                     {% if note.task_details %}
                     <div class="tg-subtitle">{{ note.task_details }}</div>
@@ -242,6 +259,13 @@
         <div class="tg-list">
             {% for note in deviation_notifications %}
             <div class="tg-item {% if not note.is_read %}is-unread{% endif %}">
+                {% if note.action_url %}
+                <a
+                    class="tg-item-link"
+                    href="{{ note.action_url }}"
+                    aria-label='{{ note.deviation_prefix }} {{ note.object_name|default:note.title }} {{ note.deviation_details }}'
+                ></a>
+                {% endif %}
                 <form method="post" action="{% url 'notification_resolve' note.id %}">
                     {% csrf_token %}
                     <button
@@ -252,18 +276,11 @@
                 </form>
                 <div class="tg-item-main">
                     <div class="tg-title">
-                        {% if note.deviation_prefix %}
-                        {{ note.deviation_prefix }}
-                        {% endif %}
-                        {% if note.action_url %}
-                        <a class="tg-link" href="{{ note.action_url }}">"{{ note.object_name|default:note.title }}"</a>
-                        {% else %}
-                        "{{ note.object_name|default:note.title }}"
-                        {% endif %}
-                        {% if note.deviation_details %}
-                        {{ note.deviation_details }}
-                        {% endif %}
+                        {{ note.deviation_title }}
                     </div>
+                    {% if note.deviation_details %}
+                    <div class="tg-subtitle">{{ note.deviation_details }}</div>
+                    {% endif %}
                 </div>
                 <div class="tg-time">
                     {% with note_date=note.display_time|date:"Y-m-d" %}

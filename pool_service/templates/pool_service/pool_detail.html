@@ -3,6 +3,59 @@
 
 {% block title %}{{ pool.client.name }}{% endblock %}
 
+{% block extra_head %}
+{{ block.super }}
+<style>
+  .service-task-pill {
+    width: 30px;
+    height: 30px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid transparent;
+    text-decoration: none;
+    font-size: 0.95rem;
+    font-weight: 700;
+    line-height: 1;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  }
+  .service-task-pill:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 18px rgba(15, 23, 42, 0.1);
+  }
+  .service-task-pill--open {
+    background: rgba(255, 243, 205, 0.9);
+    color: #d97706;
+    border-color: rgba(217, 119, 6, 0.22);
+  }
+  .service-task-pill--done {
+    background: rgba(220, 252, 231, 0.92);
+    color: #15803d;
+    border-color: rgba(21, 128, 61, 0.2);
+  }
+  .service-task-pill--inline {
+    width: 22px;
+    height: 22px;
+    font-size: 0.72rem;
+  }
+  .materials-task-link {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+  }
+  .materials-task-text {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+  .materials-task-icon {
+    flex: 0 0 auto;
+  }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
     {% if not is_personal_user or pool.client.user_id != user.id or pool.client.pool_set.count != 1 %}
@@ -302,7 +355,31 @@
                         <td class="dosing-cell">{% if reading.redox_dosing_station is not None %}{{ reading.redox_dosing_station|floatformat:"0" }}{% else %}-{% endif %}</td>
                         {% endif %}
                         <td>{{ reading.comment|default:"-" }}</td>
-                        <td>{{ reading.required_materials|default:"—" }}</td>
+                        <td>
+                            <div>{{ reading.required_materials|default:"—" }}</div>
+                            {% if reading.linked_supply_tasks %}
+                                <div class="mt-2 d-flex flex-column gap-2">
+                                    {% for linked_task in reading.linked_supply_tasks %}
+                                        <div class="materials-task-link">
+                                            <div class="materials-task-text"></div>
+                                            <a
+                                                class="service-task-pill service-task-pill--inline materials-task-icon {% if linked_task.is_done %}service-task-pill--done{% else %}service-task-pill--open{% endif %}"
+                                                href="{% url 'task_edit' linked_task.id %}"
+                                                data-task-modal-url="{% url 'task_edit' linked_task.id %}"
+                                                title="Открыть задачу"
+                                                aria-label="Открыть задачу"
+                                            >
+                                                {% if linked_task.is_done %}
+                                                    <span aria-hidden="true">&#10003;</span>
+                                                {% else %}
+                                                    <span aria-hidden="true">&#8599;</span>
+                                                {% endif %}
+                                            </a>
+                                        </div>
+                                    {% endfor %}
+                                </div>
+                            {% endif %}
+                        </td>
                         <td>{{ reading.performed_works|default:"-" }}</td>
                         <td class="text-end">
                             {% if reading.id in editable_reading_ids %}
@@ -337,6 +414,66 @@
     <div class="card card-soft p-4 text-center text-muted">
         {% if is_water_object %}Пока нет записей{% else %}Пока нет показаний{% endif %}
     </div>
+{% endif %}
+
+{% if supply_tasks %}
+<div class="card card-soft p-4 mb-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <div>
+            <h3 class="fw-bold h5 mb-1">Задачи по материалам</h3>
+            <div class="text-muted small">Автоматически созданы из записей посещения</div>
+        </div>
+    </div>
+
+    <div class="table-responsive">
+        <table class="table align-middle">
+            <thead class="small text-muted">
+                <tr>
+                    <th>Создана</th>
+                    <th>Задача</th>
+                    <th>Статус</th>
+                    <th>Ответственный</th>
+                    <th>Срок</th>
+                    <th class="text-end"></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for task in supply_tasks %}
+                    <tr>
+                        <td>{{ task.created_at|date:"d.m.Y H:i" }}</td>
+                        <td>
+                            <div class="fw-semibold">{{ task.title }}</div>
+                            {% if task.water_reading %}
+                                <div class="small text-muted">По записи {{ task.water_reading.date|date:"d.m.Y H:i" }}</div>
+                            {% endif %}
+                        </td>
+                        <td><span class="badge bg-light text-dark border">{{ task.get_status_display_label }}</span></td>
+                        <td>{{ task.responsible_label|default:"—" }}</td>
+                        <td>{% if task.due_at %}{{ task.due_at|date:"d.m.Y H:i" }}{% else %}—{% endif %}</td>
+                        <td class="text-end">
+                            <a
+                                class="service-task-pill {% if task.is_done %}service-task-pill--done{% else %}service-task-pill--open{% endif %}"
+                                href="{{ task.modal_edit_url }}"
+                                data-task-modal-url="{{ task.modal_edit_url }}"
+                                title="{% if task.is_done %}Задача выполнена{% else %}Открыть задачу{% endif %}"
+                                aria-label="{% if task.is_done %}Задача выполнена{% else %}Открыть задачу{% endif %}"
+                            >
+                                {% if task.is_done %}
+                                    <span aria-hidden="true">✓</span>
+                                {% else %}
+                                    <span aria-hidden="true">&#8599;</span>
+                                {% endif %}
+                            </a>
+                            {% if task.crm_edit_url %}
+                                <a class="btn btn-outline-primary btn-sm ms-1" href="{{ task.crm_edit_url }}">CRM</a>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
 {% endif %}
 
 {% if show_service_issues %}
@@ -480,6 +617,23 @@
   })();
 </script>
 
+<div class="modal fade" id="poolTaskModal" tabindex="-1" aria-labelledby="poolTaskModalTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable task-modal__dialog">
+    <div class="modal-content task-modal__content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="poolTaskModalTitle"></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+      </div>
+      <div class="modal-body task-modal__body">
+        <div class="task-modal__loading d-flex align-items-center gap-2 text-muted">
+          <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+          <span>Загрузка...</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal fade" id="issuePhotoModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered modal-lg">
     <div class="modal-content">
@@ -500,6 +654,166 @@
     </div>
   </div>
 </div>
+
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    const taskModalEl = document.getElementById("poolTaskModal");
+    if (!taskModalEl) return;
+    const taskModalTitle = taskModalEl.querySelector("#poolTaskModalTitle");
+    const taskModalBody = taskModalEl.querySelector(".task-modal__body");
+    const taskModal = window.bootstrap && typeof window.bootstrap.Modal === "function"
+      ? new bootstrap.Modal(taskModalEl)
+      : null;
+
+    function getCookie(name) {
+      const match = document.cookie.match(new RegExp("(^| )" + name + "=([^;]+)"));
+      return match ? decodeURIComponent(match[2]) : "";
+    }
+
+    function showTaskLoading() {
+      if (taskModalTitle) taskModalTitle.textContent = "";
+      taskModalBody.innerHTML = `
+        <div class="task-modal__loading d-flex align-items-center gap-2 text-muted">
+          <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+          <span>Загрузка...</span>
+        </div>
+      `;
+    }
+
+    function appendModalParam(url) {
+      if (!url) return url;
+      if (url.includes("modal=1")) return url;
+      return `${url}${url.includes("?") ? "&" : "?"}modal=1`;
+    }
+
+    function openTaskModal(url) {
+      if (!url || !taskModal) {
+        window.location.href = url;
+        return;
+      }
+      showTaskLoading();
+      taskModal.show();
+      fetch(appendModalParam(url), {
+        headers: { "X-Requested-With": "XMLHttpRequest" },
+        cache: "no-store",
+        credentials: "same-origin",
+      })
+        .then((resp) => resp.text())
+        .then((html) => {
+          taskModalBody.innerHTML = html;
+          const root = taskModalBody.querySelector(".task-modal");
+          if (root && root.dataset.modalTitle && taskModalTitle) {
+            taskModalTitle.textContent = root.dataset.modalTitle;
+          }
+          if (window.initAllMultiSelects) {
+            window.initAllMultiSelects(taskModalBody);
+          }
+          if (window.initTaskForms) {
+            window.initTaskForms(taskModalBody);
+          }
+        })
+        .catch(() => {
+          taskModalBody.innerHTML = `<div class="text-danger">Не удалось загрузить форму.</div>`;
+        });
+    }
+
+    document.addEventListener("click", (event) => {
+      const trigger = event.target.closest("[data-task-modal-url]");
+      if (!trigger) return;
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      if (typeof event.button === "number" && event.button !== 0) return;
+      event.preventDefault();
+      openTaskModal(trigger.dataset.taskModalUrl || trigger.getAttribute("href"));
+    });
+
+    taskModalEl.addEventListener("submit", (event) => {
+      const deleteForm = event.target.closest("[data-task-delete-form]");
+      if (deleteForm) {
+        event.preventDefault();
+        const formData = new FormData(deleteForm);
+        if (!formData.has("modal")) {
+          formData.append("modal", "1");
+        }
+        fetch(deleteForm.action, {
+          method: "POST",
+          headers: {
+            "X-Requested-With": "XMLHttpRequest",
+            "X-CSRFToken": getCookie("csrftoken"),
+          },
+          body: formData,
+          credentials: "same-origin",
+        })
+          .then(async (resp) => {
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || !data.ok || !data.deleted) {
+              throw new Error(data.error || "delete_failed");
+            }
+            taskModal.hide();
+            window.location.reload();
+          })
+          .catch(() => {
+            alert("Не удалось удалить задачу.");
+          });
+        return;
+      }
+
+      const form = event.target.closest("[data-task-form]");
+      if (!form) return;
+      event.preventDefault();
+      const formData = new FormData(form);
+      if (!formData.has("modal")) {
+        formData.append("modal", "1");
+      }
+      fetch(form.action, {
+        method: "POST",
+        headers: {
+          "X-Requested-With": "XMLHttpRequest",
+          "X-CSRFToken": getCookie("csrftoken"),
+        },
+        body: formData,
+        credentials: "same-origin",
+      })
+        .then(async (resp) => {
+          const contentType = resp.headers.get("content-type") || "";
+          if (contentType.includes("application/json")) {
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || !data.ok) {
+              throw new Error(data.error || "save_failed");
+            }
+            return { ok: true };
+          }
+          const html = await resp.text();
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(html, "text/html");
+          const formNode = doc.querySelector("[data-task-form]");
+          if (formNode) {
+            taskModalBody.innerHTML = html;
+            if (window.initAllMultiSelects) {
+              window.initAllMultiSelects(taskModalBody);
+            }
+            if (window.initTaskForms) {
+              window.initTaskForms(taskModalBody);
+            }
+            return { ok: false };
+          }
+          throw new Error("save_failed");
+        })
+        .then((result) => {
+          if (result && result.ok) {
+            taskModal.hide();
+            window.location.reload();
+          }
+        })
+        .catch(() => {
+          alert("Не удалось сохранить задачу.");
+        });
+    });
+
+    taskModalEl.addEventListener("hidden.bs.modal", () => {
+      showTaskLoading();
+    });
+  });
+</script>
 
 {% if can_manage_service_issues %}
 <script>

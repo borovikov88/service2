@@ -130,6 +130,7 @@ from .services.phone_verification import (
 )
 
 from .services.notifications import notify_reading_out_of_range, notify_superusers, notify_task_assignment
+from .services.task_generation import sync_crm_item_for_task, sync_task_with_crm_item
 
 
 
@@ -349,7 +350,7 @@ ADMIN_ROLES = ["owner", "admin"]
 
 ORG_STAFF_ROLES = ["owner", "admin", "service", "manager"]
 
-CRM_ALLOWED_ROLES = {"owner", "admin", "service"}
+CRM_ALLOWED_ROLES = {"owner", "admin", "service", "manager"}
 
 
 
@@ -3974,7 +3975,10 @@ def crm_edit(request, direction, item_id):
 
         if form.is_valid():
 
-            form.save()
+            item = form.save()
+            linked_tasks = list(item.service_tasks.all())
+            for linked_task in linked_tasks:
+                sync_task_with_crm_item(linked_task)
 
             messages.success(request, "Запись CRM обновлена.")
 
@@ -5583,6 +5587,42 @@ def pool_detail(request, pool_uuid):
 
                 service_issue_form = CrmServiceIssueForm()
 
+    reading_task_map = {}
+    supply_tasks = []
+    reading_ids = list(readings_list.values_list("id", flat=True))
+    if reading_ids:
+        supply_tasks = list(
+            ServiceTask.objects.filter(
+                water_reading_id__in=reading_ids,
+                task_type=ServiceTask.TYPE_SUPPLY_REQUEST,
+            )
+            .select_related("primary_responsible", "crm_item", "water_reading")
+            .prefetch_related("responsibles")
+            .order_by("-created_at")
+        )
+        for task in supply_tasks:
+            task.responsible_label = (
+                _task_user_label(task.primary_responsible)
+                if task.primary_responsible
+                else ", ".join(
+                    filter(None, (_task_user_label(user) for user in task.responsibles.all()))
+                )
+            )
+            task.is_done = (
+                bool(task.completed_at)
+                or task.status == ServiceTask.STATUS_DONE
+                or (task.crm_item_id and task.crm_item.stage == CrmItem.STAGE_SERVICE_DONE)
+            )
+            task.modal_edit_url = reverse("task_edit", kwargs={"task_id": task.id})
+            task.crm_edit_url = (
+                reverse("crm_edit", kwargs={"direction": task.crm_item.direction, "item_id": task.crm_item.id})
+                if task.crm_item_id
+                else ""
+            )
+            reading_task_map.setdefault(task.water_reading_id, []).append(task)
+    for reading in readings:
+        reading.linked_supply_tasks = reading_task_map.get(reading.id, [])
+
 
 
     context = {
@@ -5615,6 +5655,10 @@ def pool_detail(request, pool_uuid):
         "active_tab": "pools",
 
         "editable_reading_ids": editable_reading_ids,
+
+        "reading_task_map": reading_task_map,
+
+        "supply_tasks": supply_tasks,
 
         "show_service_issues": show_service_issues,
 
@@ -5904,10 +5948,26 @@ def _is_org_owner(user, organization):
     return OrganizationAccess.objects.filter(user=user, organization=organization, role="owner").exists()
 
 
+def _is_org_admin_or_owner(user, organization):
+    if not user or not organization:
+        return False
+    if user.is_superuser:
+        return True
+    return OrganizationAccess.objects.filter(
+        user=user,
+        organization=organization,
+        role__in=["owner", "admin"],
+    ).exists()
+
+
 def _task_can_edit(task, user):
     if not user or not user.is_authenticated:
         return False
     if user.is_superuser:
+        return True
+    if task.created_by_id == user.id:
+        return True
+    if _is_org_admin_or_owner(user, task.organization):
         return True
     return task.responsibles.filter(id=user.id).exists()
 
@@ -6138,12 +6198,16 @@ def task_edit(request, task_id):
                 task.completed_at = timezone.now()
                 task.completed_by = request.user
                 task.save(update_fields=["completed_at", "completed_by", "updated_at"])
+                sync_crm_item_for_task(task)
                 _record_task_change(task, request.user, ServiceTaskChange.ACTION_COMPLETED)
             elif not is_completed and old_completed:
                 task.completed_at = None
                 task.completed_by = None
                 task.save(update_fields=["completed_at", "completed_by", "updated_at"])
+                sync_crm_item_for_task(task)
                 _record_task_change(task, request.user, ServiceTaskChange.ACTION_REOPENED)
+            else:
+                sync_crm_item_for_task(task)
 
             if is_modal:
                 return JsonResponse({"ok": True})
@@ -6432,10 +6496,16 @@ def readings_all(request):
     org_ids = {pool.organization_id for pool in pool_list if pool.organization_id}
 
     task_org = organization_for_user(request.user)
+    can_view_all_org_tasks = False
     responsible_options = []
     can_create_tasks = False
     selected_responsible_label = None
     if task_org:
+        can_view_all_org_tasks = request.user.is_superuser or OrganizationAccess.objects.filter(
+            user=request.user,
+            organization=task_org,
+            role__in=["owner", "admin"],
+        ).exists()
         task_staff = (
             User.objects.filter(
                 organizationaccess__organization=task_org,
@@ -6915,7 +6985,7 @@ def readings_all(request):
 
     if task_org:
         task_qs = ServiceTask.objects.filter(organization=task_org)
-        if not request.user.is_superuser:
+        if not can_view_all_org_tasks:
             task_qs = task_qs.filter(responsibles=request.user)
         if responsible_filter_set:
             task_qs = task_qs.filter(responsibles__in=responsible_filter_set)
@@ -7748,25 +7818,58 @@ def notifications_list(request):
             created_at = timezone.make_aware(created_at, default_tz)
         note.display_time = created_at.astimezone(current_tz)
 
+    def _capitalize_first(text):
+        text = (text or "").strip()
+        if not text:
+            return ""
+        return text[:1].upper() + text[1:]
+
     def _parse_task_message(message):
         if not message:
             return "", ""
-        base = message
+        base = (message or "").strip()
         details = ""
-        if message.endswith(")") and " (" in message:
-            head, _, tail = message.rpartition(" (")
+        legacy_prefix = 'Вас добавили участником в задачу '
+        if base.startswith(legacy_prefix):
+            base = base[len(legacy_prefix):].strip()
+        if len(base) >= 2 and base[0] == '"' and base[-1] == '"':
+            base = base[1:-1].strip()
+        if base.endswith(")") and " (" in base:
+            head, _, tail = base.rpartition(" (")
             if head and tail.endswith(")"):
-                base = head
-                details = tail[:-1]
+                base = head.strip()
+                details = tail[:-1].strip()
+        if base.startswith("Заявка ") and ":" in base:
+            object_name, _, payload = base[len("Заявка "):].partition(":")
+            return f"Новая заявка {object_name.strip()}", _capitalize_first(payload)
         return base, details
 
-    def _parse_limits_message(message):
-        if not message:
-            return "", ""
+    def _parse_limits_message(message, pool_object_name=""):
+        text = (message or "").strip()
+        if not text:
+            return "", "", ""
+
+        for prefix in [f'"{pool_object_name}" ', f"{pool_object_name} "] if pool_object_name else []:
+            if text.startswith(prefix):
+                text = text[len(prefix):].strip()
+                break
+
+        if text.startswith('В "') and '" ' in text[3:]:
+            object_name, _, details = text[3:].partition('" ')
+            return "В", object_name.strip(), details.strip()
+        if text.startswith('На объекте "') and '" ' in text[11:]:
+            object_name, _, details = text[11:].partition('" ')
+            return "На объекте", object_name.strip(), details.strip()
+
+        if text.startswith('"') and '" ' in text[1:]:
+            _, _, remainder = text.partition('" ')
+            if remainder:
+                return _parse_limits_message(remainder, pool_object_name=pool_object_name)
+
         object_name = ""
-        details = message
-        if ":" in message:
-            object_name, _, details = message.partition(":")
+        details = text
+        if ":" in text:
+            object_name, _, details = text.partition(":")
             object_name = object_name.strip()
             details = details.strip()
         parts = [part.strip() for part in details.split(";") if part.strip()]
@@ -7785,7 +7888,7 @@ def notifications_list(request):
             else:
                 converted.append(f"{label}: {expr}")
         detail_text = "; ".join(converted) if converted else details
-        return object_name, detail_text
+        return "", object_name, detail_text
 
     object_kinds = {"limits", "missed_visit", "daily_missing"}
     task_notifications = []
@@ -7798,14 +7901,42 @@ def notifications_list(request):
             task_notifications.append(note)
         else:
             if note.kind in object_kinds:
-                obj_name, detail_text = _parse_limits_message(note.message)
-                note.deviation_prefix = "\u041d\u0430 \u043e\u0431\u044a\u0435\u043a\u0442\u0435"
-                note.object_name = obj_name or note.title or ""
-                note.deviation_details = detail_text
+                pool_object_name = ""
+                if note.pool_id:
+                    pool_object_name = note.pool.client.name if note.pool.client_id and note.pool.client else note.pool.address
+                deviation_prefix, obj_name, detail_text = _parse_limits_message(
+                    note.message,
+                    pool_object_name=pool_object_name,
+                )
+                if obj_name and deviation_prefix:
+                    note.deviation_prefix = deviation_prefix
+                    note.object_name = obj_name
+                    note.deviation_details = _capitalize_first(detail_text)
+                elif obj_name:
+                    note.deviation_prefix = "\u041d\u0430 \u043e\u0431\u044a\u0435\u043a\u0442\u0435"
+                    note.object_name = obj_name
+                    note.deviation_details = _capitalize_first(detail_text)
+                else:
+                    note.deviation_prefix = ""
+                    note.object_name = pool_object_name
+                    location_prefix = ""
+                    if pool_object_name:
+                        if pool_object_name.startswith("Школа "):
+                            location_prefix = f'В {pool_object_name.replace("Школа ", "Школе ", 1)} '
+                        elif pool_object_name.startswith("Детский сад "):
+                            location_prefix = f'В {pool_object_name.replace("Детский сад ", "Детском саду ", 1)} '
+                        else:
+                            location_prefix = f'На объекте {pool_object_name} '
+                    detail_text = (detail_text or "").strip()
+                    if location_prefix and detail_text.startswith(location_prefix):
+                        detail_text = detail_text[len(location_prefix):].strip()
+                    note.deviation_details = _capitalize_first(detail_text)
+                note.deviation_title = (pool_object_name or note.object_name).strip()
             else:
                 note.deviation_prefix = ""
                 note.object_name = note.title or ""
-                note.deviation_details = note.message or ""
+                note.deviation_details = _capitalize_first(note.message or "")
+                note.deviation_title = note.object_name
             deviation_notifications.append(note)
 
     task_unread_count = sum(1 for note in task_notifications if not note.is_read)

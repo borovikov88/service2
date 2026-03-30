@@ -632,6 +632,43 @@ class WaterReading(models.Model):
 
 
 class ServiceTask(models.Model):
+    TYPE_SCHEDULED_VISIT = "scheduled_visit"
+    TYPE_MANUAL = "manual"
+    TYPE_SUPPLY_REQUEST = "supply_request"
+    TYPE_CRM_FOLLOWUP = "crm_followup"
+    TYPE_ISSUE_RESOLUTION = "issue_resolution"
+    TYPE_CHOICES = [
+        (TYPE_SCHEDULED_VISIT, "Плановый выезд"),
+        (TYPE_MANUAL, "Ручная задача"),
+        (TYPE_SUPPLY_REQUEST, "Поставка материалов"),
+        (TYPE_CRM_FOLLOWUP, "CRM-сопровождение"),
+        (TYPE_ISSUE_RESOLUTION, "Решение проблемы"),
+    ]
+
+    SOURCE_SYSTEM = "system"
+    SOURCE_SERVICE_STAFF = "service_staff"
+    SOURCE_POOL_STAFF = "pool_staff"
+    SOURCE_MANAGER = "manager"
+    SOURCE_CHOICES = [
+        (SOURCE_SYSTEM, "Система"),
+        (SOURCE_SERVICE_STAFF, "Сотрудник сервисной компании"),
+        (SOURCE_POOL_STAFF, "Сотрудник бассейна"),
+        (SOURCE_MANAGER, "Менеджер"),
+    ]
+
+    STATUS_NEW = "new"
+    STATUS_IN_PROGRESS = "in_progress"
+    STATUS_WAITING = "waiting"
+    STATUS_DONE = "done"
+    STATUS_CANCELLED = "cancelled"
+    STATUS_CHOICES = [
+        (STATUS_NEW, "Новая"),
+        (STATUS_IN_PROGRESS, "В работе"),
+        (STATUS_WAITING, "Ожидание"),
+        (STATUS_DONE, "Выполнена"),
+        (STATUS_CANCELLED, "Отменена"),
+    ]
+
     VISIBILITY_PUBLIC = "public"
     VISIBILITY_PRIVATE = "private"
     VISIBILITY_CHOICES = [
@@ -659,8 +696,39 @@ class ServiceTask(models.Model):
     end_date = models.DateField(null=True, blank=True)
     start_time = models.TimeField(null=True, blank=True)
     end_time = models.TimeField(null=True, blank=True)
+    task_type = models.CharField(max_length=32, choices=TYPE_CHOICES, default=TYPE_MANUAL)
+    source_type = models.CharField(max_length=32, choices=SOURCE_CHOICES, default=SOURCE_SERVICE_STAFF)
+    status = models.CharField(max_length=24, choices=STATUS_CHOICES, default=STATUS_NEW)
     visibility = models.CharField(max_length=16, choices=VISIBILITY_CHOICES, default=VISIBILITY_PUBLIC)
     priority = models.CharField(max_length=16, choices=PRIORITY_CHOICES, default=PRIORITY_NORMAL)
+    pool = models.ForeignKey(
+        Pool,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="service_tasks_by_pool",
+    )
+    client = models.ForeignKey(
+        Client,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="service_tasks_by_client",
+    )
+    water_reading = models.ForeignKey(
+        WaterReading,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="service_tasks",
+    )
+    crm_item = models.ForeignKey(
+        CrmItem,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="service_tasks",
+    )
     created_by = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
@@ -668,7 +736,25 @@ class ServiceTask(models.Model):
         blank=True,
         related_name="created_service_tasks",
     )
+    primary_responsible = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="primary_service_tasks",
+    )
     responsibles = models.ManyToManyField(User, related_name="service_tasks")
+    auto_created = models.BooleanField(default=False)
+    is_editable = models.BooleanField(default=True)
+    due_at = models.DateTimeField(null=True, blank=True)
+    payload_json = models.JSONField(default=dict, blank=True)
+    parent_task = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="child_tasks",
+    )
     completed_at = models.DateTimeField(null=True, blank=True)
     completed_by = models.ForeignKey(
         User,
@@ -684,6 +770,11 @@ class ServiceTask(models.Model):
         indexes = [
             models.Index(fields=["organization", "start_date"], name="task_org_start_idx"),
             models.Index(fields=["organization", "end_date"], name="task_org_end_idx"),
+            models.Index(fields=["organization", "task_type"], name="task_org_type_idx"),
+            models.Index(fields=["organization", "status"], name="task_org_status_idx"),
+            models.Index(fields=["pool", "status"], name="task_pool_status_idx"),
+            models.Index(fields=["water_reading", "task_type"], name="task_reading_type_idx"),
+            models.Index(fields=["primary_responsible", "status"], name="task_primary_status_idx"),
         ]
 
     def __str__(self):
@@ -695,6 +786,9 @@ class ServiceTask(models.Model):
 
     def get_end_date(self):
         return self.end_date or self.start_date
+
+    def get_status_display_label(self):
+        return dict(self.STATUS_CHOICES).get(self.status, self.status)
 
 
 class ServiceTaskChange(models.Model):

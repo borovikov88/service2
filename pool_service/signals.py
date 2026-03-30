@@ -3,6 +3,7 @@ from django.dispatch import receiver
 from django.contrib.auth.models import User
 from .models import Profile, WaterReading
 from .services.notifications import notify_reading_out_of_range
+from .services.task_generation import create_supply_task_from_reading
 
 @receiver(post_save, sender=User)
 def create_user_profile(sender, instance, created, **kwargs):
@@ -11,8 +12,10 @@ def create_user_profile(sender, instance, created, **kwargs):
 
 
 @receiver(post_save, sender=WaterReading)
-def notify_out_of_range_on_reading_save(sender, instance, **kwargs):
+def notify_out_of_range_on_reading_save(sender, instance, created, **kwargs):
     notify_reading_out_of_range(instance)
+    if created:
+        create_supply_task_from_reading(instance)
 
 #@receiver(post_save, sender=User)
 #def save_user_profile(sender, instance, **kwargs):

@@ -12,6 +12,12 @@ READING_LABELS = {
     "cl_total": "\u041e\u0431\u0449\u0438\u0439 \u0445\u043b\u043e\u0440",
 }
 
+READING_LABELS_GENITIVE = {
+    "ph": "pH",
+    "cl_free": "\u0441\u0432\u043e\u0431\u043e\u0434\u043d\u043e\u0433\u043e \u0445\u043b\u043e\u0440\u0430",
+    "cl_total": "\u043e\u0431\u0449\u0435\u0433\u043e \u0445\u043b\u043e\u0440\u0430",
+}
+
 
 def _limits_for_org(organization):
     base = getattr(settings, "WATER_READING_LIMITS", {})
@@ -57,6 +63,35 @@ def _reading_violations(reading, limits):
         elif max_value is not None and value > max_value:
             violations.append(f"{label}: {value} > {max_value}")
     return violations
+
+
+def _object_location_phrase(name):
+    if not name:
+        return "\u041d\u0430 \u043e\u0431\u044a\u0435\u043a\u0442\u0435"
+    if name.startswith("\u0428\u043a\u043e\u043b\u0430 "):
+        return f'\u0412 "{name.replace("\u0428\u043a\u043e\u043b\u0430 ", "\u0428\u043a\u043e\u043b\u0435 ", 1)}"'
+    if name.startswith("\u0414\u0435\u0442\u0441\u043a\u0438\u0439 \u0441\u0430\u0434 "):
+        return f'\u0412 "{name.replace("\u0414\u0435\u0442\u0441\u043a\u0438\u0439 \u0441\u0430\u0434 ", "\u0414\u0435\u0442\u0441\u043a\u043e\u043c \u0441\u0430\u0434\u0443 ", 1)}"'
+    return f'\u041d\u0430 \u043e\u0431\u044a\u0435\u043a\u0442\u0435 "{name}"'
+
+
+def _reading_violation_messages(reading, limits):
+    messages = []
+    for field in READING_LABELS:
+        value = getattr(reading, field, None)
+        if value is None:
+            continue
+        limit = limits.get(field) if limits else None
+        if not limit:
+            continue
+        min_value = limit.get("min")
+        max_value = limit.get("max")
+        label = READING_LABELS_GENITIVE.get(field, READING_LABELS.get(field, field).lower())
+        if min_value is not None and value < min_value:
+            messages.append(f"\u043d\u0438\u0437\u043a\u0438\u0439 \u0443\u0440\u043e\u0432\u0435\u043d\u044c {label} - {value}")
+        elif max_value is not None and value > max_value:
+            messages.append(f"\u0432\u044b\u0441\u043e\u043a\u0438\u0439 \u0443\u0440\u043e\u0432\u0435\u043d\u044c {label} - {value}")
+    return messages
 
 
 def _create_notification(user, *, title, message, kind, level="info", action_url="", organization=None, client=None, pool=None, dedupe_key=""):
@@ -238,7 +273,11 @@ def notify_reading_out_of_range(reading):
         return []
     title = "\u041f\u043e\u043a\u0430\u0437\u0430\u0442\u0435\u043b\u0438 \u0432\u043d\u0435 \u043d\u043e\u0440\u043c\u044b"
     client_label = pool.client.name if pool.client else pool.address
-    message = f"{client_label}: " + "; ".join(violations)
+    human_violations = _reading_violation_messages(reading, limits)
+    if human_violations:
+        message = f"{_object_location_phrase(client_label)} " + "; ".join(human_violations)
+    else:
+        message = f"{client_label}: " + "; ".join(violations)
     action_url = reverse("pool_detail", kwargs={"pool_uuid": pool.uuid})
     dedupe_key = f"limits:{reading.uuid}"
     created = notify_org_users(
@@ -257,25 +296,38 @@ def notify_reading_out_of_range(reading):
 
 
 def notify_task_assignment(task, users, *, added_by=None, send_push=True):
-    title = "Добавили в задачу"
+    title = "\u041d\u043e\u0432\u0430\u044f \u0437\u0430\u044f\u0432\u043a\u0430"
     date_label = ""
     if task.start_date and task.end_date:
         if task.start_date == task.end_date:
             date_label = task.start_date.strftime("%d.%m.%Y")
         else:
-            date_label = f"{task.start_date:%d.%m.%Y} — {task.end_date:%d.%m.%Y}"
+            date_label = f"{task.start_date:%d.%m.%Y} \u2014 {task.end_date:%d.%m.%Y}"
     time_label = ""
     if task.start_time and task.end_time:
-        time_label = f"{task.start_time:%H:%M} — {task.end_time:%H:%M}"
+        time_label = f"{task.start_time:%H:%M} \u2014 {task.end_time:%H:%M}"
     elif task.start_time:
         time_label = f"{task.start_time:%H:%M}"
     elif task.end_time:
         time_label = f"{task.end_time:%H:%M}"
 
     details = " | ".join([part for part in [date_label, time_label] if part])
-    message = task.title
-    if details:
-        message = f"{message} ({details})"
+    if task.task_type == getattr(task, "TYPE_SUPPLY_REQUEST", "supply_request"):
+        object_name = ""
+        if task.client_id and task.client:
+            object_name = task.client.name
+        elif task.pool_id and task.pool:
+            object_name = task.pool.address
+        materials = ""
+        if isinstance(task.payload_json, dict):
+            materials = (task.payload_json.get("required_materials") or "").strip()
+        if not materials and task.water_reading_id and task.water_reading:
+            materials = (task.water_reading.required_materials or "").strip()
+        message = f"Заявка {object_name}: {materials}".strip(": ")
+    else:
+        message = task.title
+        if details:
+            message = f"{message} ({details})"
 
     action_url = reverse("task_edit", kwargs={"task_id": task.id})
     recipients = []
