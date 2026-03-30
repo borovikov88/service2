@@ -78,10 +78,9 @@ def _absolute_url_for_host(host, path):
     return f"{base}{path}"
 
 
-def _notification_open_url(notification, host):
+def _notification_open_url(notification):
     token = signing.dumps({"notification_id": notification.id, "user_id": notification.user_id})
-    path = reverse("notification_push_open_token", kwargs={"token": token})
-    return _absolute_url_for_host(host, path)
+    return reverse("notification_push_open_token", kwargs={"token": token})
 
 
 def send_push_to_users(users, *, title, message, action_url="", notification=None):
@@ -105,7 +104,7 @@ def send_push_to_users(users, *, title, message, action_url="", notification=Non
         payload = {
             "title": title,
             "body": message,
-            "url": _notification_open_url(notification, host) if notification else _absolute_url_for_host(host, action_url),
+            "url": _notification_open_url(notification) if notification else action_url,
             "icon": _absolute_url_for_host(host, _icon_path_for_host(host)),
         }
         try:

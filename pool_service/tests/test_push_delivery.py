@@ -76,8 +76,8 @@ class PushDeliveryTests(TestCase):
         payloads = [json.loads(call.kwargs["data"]) for call in webpush_mock.call_args_list]
         urls = {payload["url"] for payload in payloads}
         icons = {payload["icon"] for payload in payloads}
-        self.assertTrue(any(url.startswith("https://service2.aqualine22.ru/notifications/open/") for url in urls))
-        self.assertTrue(any(url.startswith("https://rovikpool.ru/notifications/open/") for url in urls))
+        self.assertEqual(len(urls), 1)
+        self.assertTrue(next(iter(urls)).startswith("/notifications/open/"))
         self.assertIn("https://service2.aqualine22.ru/static/assets/images/aqualine-favicon.png", icons)
         self.assertIn("https://rovikpool.ru/static/assets/images/rovikpool-favicon.png", icons)
 
