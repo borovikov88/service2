@@ -52,6 +52,33 @@ class WaterReadingForm(forms.ModelForm):
                 field.widget.attrs.setdefault("rows", 3)
             field.widget.attrs["class"] = f"{classes} {extra}".strip()
 
+    def clean(self):
+        cleaned = super().clean()
+        content_fields = [
+            "temperature",
+            "ph",
+            "cl_free",
+            "cl_total",
+            "ph_dosing_station",
+            "cl_free_dosing_station",
+            "redox_dosing_station",
+            "comment",
+            "required_materials",
+            "performed_works",
+            "consumables_replaced",
+        ]
+        has_content = False
+        for field_name in content_fields:
+            value = cleaned.get(field_name)
+            if isinstance(value, str):
+                value = value.strip()
+            if value not in (None, ""):
+                has_content = True
+                break
+        if not has_content:
+            raise forms.ValidationError("Заполните хотя бы одно поле записи.")
+        return cleaned
+
 
 class ServiceTaskForm(forms.ModelForm):
     responsibles = forms.ModelMultipleChoiceField(

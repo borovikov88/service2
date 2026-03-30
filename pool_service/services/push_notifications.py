@@ -4,7 +4,9 @@ from contextlib import contextmanager
 from urllib.parse import urlparse
 
 from django.conf import settings
+from django.core import signing
 from django.templatetags.static import static
+from django.urls import reverse
 import pywebpush
 from pywebpush import WebPushException, webpush
 
@@ -42,27 +44,50 @@ def _push_config():
     }
 
 
-def _icon_url():
-    base = getattr(settings, "SITE_URL", "").rstrip("/")
-    if not base:
+def _normalize_host(host):
+    return (host or "").split(":", 1)[0].strip().lower()
+
+
+def _base_url_for_host(host):
+    host = _normalize_host(host)
+    if not host:
+        configured = getattr(settings, "SITE_URL", "").rstrip("/")
+        if configured:
+            return configured
         return ""
-    host = urlparse(base).hostname or ""
+    return f"https://{host}"
+
+
+def _icon_path_for_host(host):
+    host = _normalize_host(host)
     if host in {"service2.aqualine22.ru", "www.service2.aqualine22.ru"}:
-        return f"{base}{static('assets/images/aqualine-favicon.png')}"
-    return f"{base}{static('assets/images/favicon.png')}"
+        return static("assets/images/aqualine-favicon.png")
+    return static("assets/images/rovikpool-favicon.png")
 
 
-def send_push_to_users(users, *, title, message, action_url=""):
+def _absolute_url_for_host(host, path):
+    base = _base_url_for_host(host)
+    if not base:
+        return path or ""
+    if not path:
+        return base
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return f"{base}{path}"
+
+
+def _notification_open_url(notification, host):
+    token = signing.dumps({"notification_id": notification.id, "user_id": notification.user_id})
+    path = reverse("notification_push_open_token", kwargs={"token": token})
+    return _absolute_url_for_host(host, path)
+
+
+def send_push_to_users(users, *, title, message, action_url="", notification=None):
     config = _push_config()
     if not config:
         return 0
-    icon_url = _icon_url()
-    payload = {
-        "title": title,
-        "body": message,
-        "url": action_url,
-        "icon": icon_url,
-    }
     active_users = [user for user in users if user and user.is_active]
     if not active_users:
         return 0
@@ -75,6 +100,13 @@ def send_push_to_users(users, *, title, message, action_url=""):
         subscription_info = {
             "endpoint": sub.endpoint,
             "keys": {"p256dh": sub.p256dh, "auth": sub.auth},
+        }
+        host = _normalize_host(sub.host) or (urlparse(getattr(settings, "SITE_URL", "")).hostname or "")
+        payload = {
+            "title": title,
+            "body": message,
+            "url": _notification_open_url(notification, host) if notification else _absolute_url_for_host(host, action_url),
+            "icon": _absolute_url_for_host(host, _icon_path_for_host(host)),
         }
         try:
             with _patch_pywebpush_generate_private_key():

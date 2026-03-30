@@ -2,7 +2,7 @@ from django.conf import settings
 from django.contrib.auth.models import User
 from django.urls import reverse
 
-from pool_service.models import ClientAccess, Notification, OrganizationAccess, OrganizationWaterNorms
+from pool_service.models import ClientAccess, Notification, OrganizationAccess, OrganizationWaterNorms, WaterReading
 from pool_service.services.push_notifications import send_push_to_users
 
 
@@ -118,10 +118,13 @@ def notify_users(
             if was_created:
                 created.append(obj)
         if send_push:
-            push_action_url = action_url
-            if obj:
-                push_action_url = reverse("notification_push_open", kwargs={"notification_id": obj.id})
-            send_push_to_users([user], title=title, message=message, action_url=push_action_url)
+            send_push_to_users(
+                [user],
+                title=title,
+                message=message,
+                action_url=action_url,
+                notification=obj,
+            )
     return created
 
 
@@ -191,6 +194,13 @@ def notify_client_users(
 
 
 def notify_reading_out_of_range(reading):
+    if getattr(reading, "pk", None):
+        reading = (
+            WaterReading.objects.select_related("pool__client", "pool__organization", "added_by")
+            .filter(pk=reading.pk)
+            .first()
+            or reading
+        )
     pool = reading.pool
     if getattr(pool, "service_suspended", False):
         return []

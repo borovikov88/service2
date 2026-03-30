@@ -13,6 +13,7 @@ from django.contrib.auth.hashers import check_password, make_password
 from django.contrib.auth.password_validation import validate_password
 
 from django.core.mail import send_mail
+from django.core import signing
 
 from django.contrib.auth.decorators import login_required
 
@@ -7326,6 +7327,33 @@ def water_reading_create(request, pool_uuid):
 
             reading.added_by = request.user
 
+            duplicate_fields = [
+                "temperature",
+                "ph",
+                "cl_free",
+                "cl_total",
+                "ph_dosing_station",
+                "cl_free_dosing_station",
+                "redox_dosing_station",
+                "comment",
+                "required_materials",
+                "performed_works",
+                "consumables_replaced",
+            ]
+            duplicate_filters = {
+                "pool": pool,
+                "added_by": request.user,
+                "date": reading.date,
+            }
+            for field_name in duplicate_fields:
+                duplicate_filters[field_name] = getattr(reading, field_name)
+            if WaterReading.objects.filter(**duplicate_filters).exists():
+                if is_water_object:
+                    messages.info(request, "Такая запись уже сохранена.")
+                else:
+                    messages.info(request, "Такие показания уже сохранены.")
+                return redirect("pool_detail", pool_uuid=pool.uuid)
+
             reading.save()
 
             if is_water_object:
@@ -7833,6 +7861,29 @@ def notification_push_open(request, notification_id):
     return redirect(target)
 
 
+@login_required
+def notification_push_open_token(request, token):
+    try:
+        payload = signing.loads(token, max_age=60 * 60 * 24 * 30)
+    except signing.BadSignature:
+        return redirect("notifications")
+
+    notification_id = payload.get("notification_id")
+    user_id = payload.get("user_id")
+    if not notification_id or user_id != request.user.id:
+        return redirect("notifications")
+
+    note = get_object_or_404(Notification, id=notification_id, user=request.user)
+    if not note.is_read:
+        note.is_read = True
+        note.save(update_fields=["is_read"])
+
+    target = (note.action_url or "").strip()
+    if not target.startswith("/"):
+        target = reverse("notifications")
+    return redirect(target)
+
+
 
 
 
@@ -7933,6 +7984,7 @@ def push_subscribe(request):
 
 
     user_agent = request.META.get("HTTP_USER_AGENT", "")[:255]
+    host = request.get_host().split(":", 1)[0].lower()
 
     PushSubscription.objects.update_or_create(
 
@@ -7941,6 +7993,7 @@ def push_subscribe(request):
         defaults={
 
             "user": request.user,
+            "host": host,
 
             "p256dh": p256dh,
 

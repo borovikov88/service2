@@ -165,12 +165,22 @@
         const form = document.querySelector("form");
         if (form) {
             let dirty = false;
+            let submitting = false;
             const markDirty = () => {
                 dirty = true;
             };
             form.addEventListener("input", markDirty);
             form.addEventListener("change", markDirty);
-            form.addEventListener("submit", () => {
+            form.addEventListener("submit", (event) => {
+                if (submitting) {
+                    event.preventDefault();
+                    return;
+                }
+                submitting = true;
+                const submitButton = form.querySelector('button[type="submit"]');
+                if (submitButton) {
+                    submitButton.disabled = true;
+                }
                 dirty = false;
             });
             window.addEventListener("beforeunload", (event) => {
