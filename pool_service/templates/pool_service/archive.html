@@ -1,0 +1,298 @@
+{% extends 'pool_service/base.html' %}
+
+{% block title %}{{ page_title }}{% endblock %}
+
+{% block content %}
+<style>
+    .archive-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-bottom: 20px;
+    }
+    .archive-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 16px;
+        border-radius: 999px;
+        border: 1px solid #dbe5f5;
+        background: #fff;
+        color: #334155;
+        text-decoration: none;
+        font-weight: 600;
+    }
+    .archive-chip.is-active {
+        background: #eaf3ff;
+        border-color: #bfdbfe;
+        color: #1d4ed8;
+    }
+    .archive-grid {
+        display: grid;
+        gap: 20px;
+    }
+    .archive-card {
+        border-radius: 28px;
+        border: 1px solid #e7eef8;
+        background: #fff;
+        box-shadow: 0 16px 36px rgba(15, 23, 42, 0.05);
+        overflow: hidden;
+    }
+    .archive-card__header {
+        padding: 20px 24px 12px;
+        border-bottom: 1px solid #edf2f8;
+    }
+    .archive-card__body {
+        padding: 8px 24px 24px;
+    }
+    .archive-list {
+        display: grid;
+        gap: 14px;
+    }
+    .archive-item {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        gap: 16px;
+        align-items: start;
+        padding: 18px 0;
+        border-bottom: 1px solid #edf2f8;
+    }
+    .archive-item:last-child {
+        border-bottom: 0;
+        padding-bottom: 0;
+    }
+    .archive-item__title {
+        font-weight: 700;
+        color: #1f2d3d;
+        margin-bottom: 6px;
+    }
+    .archive-item__meta {
+        color: #7b8aa0;
+        font-size: 0.92rem;
+    }
+    .archive-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 6px 12px;
+        border-radius: 999px;
+        font-size: 0.85rem;
+        font-weight: 700;
+        margin-bottom: 8px;
+    }
+    .archive-badge--completed {
+        background: #ecfdf3;
+        color: #166534;
+    }
+    .archive-badge--deleted {
+        background: #fff1f2;
+        color: #be123c;
+    }
+    .archive-check {
+        width: 18px;
+        height: 18px;
+        margin-top: 6px;
+    }
+    .archive-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: flex-end;
+    }
+    .archive-bulkbar {
+        position: sticky;
+        bottom: 16px;
+        z-index: 15;
+        display: none;
+        margin-top: 16px;
+        padding: 14px 18px;
+        border-radius: 20px;
+        border: 1px solid #dbe5f5;
+        background: rgba(255, 255, 255, 0.96);
+        box-shadow: 0 16px 36px rgba(15, 23, 42, 0.12);
+        backdrop-filter: blur(12px);
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+    }
+    .archive-bulkbar.is-visible {
+        display: flex;
+    }
+    .archive-bulkbar__count {
+        font-weight: 700;
+        color: #1f2d3d;
+        margin-right: 8px;
+    }
+    @media (max-width: 768px) {
+        .archive-item {
+            grid-template-columns: auto minmax(0, 1fr);
+        }
+        .archive-actions {
+            grid-column: 1 / -1;
+            justify-content: flex-start;
+            margin-left: 34px;
+        }
+    }
+</style>
+
+<div class="archive-toolbar">
+    <a href="{% url 'archive_list' %}" class="archive-chip {% if kind == 'all' %}is-active{% endif %}">Все {{ archive_total_count }}</a>
+    <a href="{% url 'archive_list' %}?kind=tasks" class="archive-chip {% if kind == 'tasks' %}is-active{% endif %}">Задачи {{ archive_task_count }}</a>
+    <a href="{% url 'archive_list' %}?kind=crm" class="archive-chip {% if kind == 'crm' %}is-active{% endif %}">CRM {{ archive_crm_count }}</a>
+    <a href="{% url 'archive_list' %}{% if kind != 'all' %}?kind={{ kind }}&{% else %}?{% endif %}reason=completed" class="archive-chip {% if reason == 'completed' %}is-active{% endif %}">Выполненные</a>
+    <a href="{% url 'archive_list' %}{% if kind != 'all' %}?kind={{ kind }}&{% else %}?{% endif %}reason=deleted" class="archive-chip {% if reason == 'deleted' %}is-active{% endif %}">Удалённые</a>
+</div>
+
+<form method="post" action="{% url 'archive_bulk_update' %}" id="archive-bulk-form">
+    {% csrf_token %}
+    <input type="hidden" name="archive_action" id="archive-action" value="">
+
+    <div class="archive-grid">
+        {% if show_tasks %}
+        <section class="archive-card">
+            <div class="archive-card__header">
+                <h3 class="h5 fw-bold mb-1">Архив задач</h3>
+                <div class="text-muted small">Выполненные и удалённые задачи</div>
+            </div>
+            <div class="archive-card__body">
+                <div class="archive-list">
+                    {% for task in archived_tasks %}
+                    <article class="archive-item">
+                        <div>
+                            <input class="form-check-input archive-check archive-row-select" type="checkbox" name="task_ids" value="{{ task.id }}" aria-label="Выбрать задачу {{ task.title }}">
+                        </div>
+                        <div>
+                            <div class="archive-badge {% if task.archived_reason == 'completed' %}archive-badge--completed{% else %}archive-badge--deleted{% endif %}">
+                                {{ task.get_archived_reason_display|default:task.archived_reason }}
+                            </div>
+                            <div class="archive-item__title">{{ task.title }}</div>
+                            <div class="archive-item__meta">
+                                {% if task.pool %}{{ task.pool.address }}{% elif task.client %}{{ task.client.name }}{% else %}Без объекта{% endif %}
+                                · Архив {{ task.archived_at|date:"d.m.Y H:i" }}
+                                {% if task.primary_responsible %}· {{ task.primary_responsible.get_full_name|default:task.primary_responsible.username }}{% endif %}
+                            </div>
+                        </div>
+                        <div class="archive-actions">
+                            <button type="submit" class="btn btn-outline-primary btn-sm archive-single-action" data-action="restore" data-target-name="task_ids" data-target-id="{{ task.id }}">Восстановить</button>
+                            {% if task.archived_reason == 'deleted' %}
+                            <button type="submit" class="btn btn-outline-danger btn-sm archive-single-action" data-action="delete_forever" data-target-name="task_ids" data-target-id="{{ task.id }}">Удалить навсегда</button>
+                            {% endif %}
+                        </div>
+                    </article>
+                    {% empty %}
+                    <div class="text-muted">В архиве задач пока пусто.</div>
+                    {% endfor %}
+                </div>
+            </div>
+        </section>
+        {% endif %}
+
+        {% if show_crm %}
+        <section class="archive-card">
+            <div class="archive-card__header">
+                <h3 class="h5 fw-bold mb-1">Архив CRM</h3>
+                <div class="text-muted small">Архивные записи по всем направлениям</div>
+            </div>
+            <div class="archive-card__body">
+                <div class="archive-list">
+                    {% for item in archived_crm_items %}
+                    <article class="archive-item">
+                        <div>
+                            <input class="form-check-input archive-check archive-row-select" type="checkbox" name="item_ids" value="{{ item.id }}" aria-label="Выбрать CRM {{ item.title }}">
+                        </div>
+                        <div>
+                            <div class="archive-badge {% if item.archived_reason == 'completed' %}archive-badge--completed{% else %}archive-badge--deleted{% endif %}">
+                                {{ item.get_archived_reason_display|default:item.archived_reason }}
+                            </div>
+                            <div class="archive-item__title">{{ item.title }}</div>
+                            <div class="archive-item__meta">
+                                {{ item.get_direction_display|default:item.direction }}
+                                {% if item.pool %}· {{ item.pool.address }}{% elif item.client %}· {{ item.client.name }}{% endif %}
+                                · Архив {{ item.archived_at|date:"d.m.Y H:i" }}
+                                {% if item.responsible %}· {{ item.responsible.get_full_name|default:item.responsible.username }}{% endif %}
+                            </div>
+                        </div>
+                        <div class="archive-actions">
+                            <button type="submit" class="btn btn-outline-primary btn-sm archive-single-action" data-action="restore" data-target-name="item_ids" data-target-id="{{ item.id }}">Восстановить</button>
+                            {% if item.archived_reason == 'deleted' %}
+                            <button type="submit" class="btn btn-outline-danger btn-sm archive-single-action" data-action="delete_forever" data-target-name="item_ids" data-target-id="{{ item.id }}">Удалить навсегда</button>
+                            {% endif %}
+                        </div>
+                    </article>
+                    {% empty %}
+                    <div class="text-muted">В архиве CRM пока пусто.</div>
+                    {% endfor %}
+                </div>
+            </div>
+        </section>
+        {% endif %}
+    </div>
+
+    <div class="archive-bulkbar" id="archive-bulkbar">
+        <span class="archive-bulkbar__count">Выбрано: <span id="archive-selected-count">0</span></span>
+        <button type="submit" class="btn btn-outline-primary" data-archive-bulk-action="restore">Восстановить</button>
+        <button type="submit" class="btn btn-outline-danger" data-archive-bulk-action="delete_forever">Удалить навсегда</button>
+        <button type="button" class="btn btn-outline-secondary" id="archive-clear-selection">Снять выделение</button>
+    </div>
+</form>
+
+<script>
+    (function () {
+        const form = document.getElementById("archive-bulk-form");
+        const actionInput = document.getElementById("archive-action");
+        const bulkbar = document.getElementById("archive-bulkbar");
+        const countEl = document.getElementById("archive-selected-count");
+        const clearBtn = document.getElementById("archive-clear-selection");
+        const checkboxes = Array.from(document.querySelectorAll(".archive-row-select"));
+        if (!form || !actionInput || !bulkbar || !countEl || !checkboxes.length) return;
+
+        const syncState = () => {
+            const checked = checkboxes.filter((item) => item.checked);
+            countEl.textContent = String(checked.length);
+            bulkbar.classList.toggle("is-visible", checked.length > 0);
+        };
+
+        clearBtn?.addEventListener("click", () => {
+            checkboxes.forEach((item) => {
+                item.checked = false;
+            });
+            syncState();
+        });
+
+        checkboxes.forEach((checkbox) => {
+            checkbox.addEventListener("change", syncState);
+        });
+
+        document.querySelectorAll("[data-archive-bulk-action]").forEach((button) => {
+            button.addEventListener("click", (event) => {
+                const action = button.getAttribute("data-archive-bulk-action") || "";
+                actionInput.value = action;
+                if (action === "delete_forever" && !window.confirm("Удалить выбранные записи из архива навсегда?")) {
+                    event.preventDefault();
+                }
+            });
+        });
+
+        document.querySelectorAll(".archive-single-action").forEach((button) => {
+            button.addEventListener("click", (event) => {
+                checkboxes.forEach((item) => {
+                    item.checked = false;
+                });
+                const name = button.getAttribute("data-target-name");
+                const id = button.getAttribute("data-target-id");
+                const action = button.getAttribute("data-action");
+                const target = form.querySelector(`input[name="${name}"][value="${id}"]`);
+                if (!target) return;
+                target.checked = true;
+                actionInput.value = action;
+                if (action === "delete_forever" && !window.confirm("Удалить запись из архива навсегда?")) {
+                    event.preventDefault();
+                    target.checked = false;
+                }
+                syncState();
+            });
+        });
+
+        syncState();
+    })();
+</script>
+{% endblock %}
