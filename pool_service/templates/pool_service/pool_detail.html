@@ -447,7 +447,18 @@
                                 <div class="small text-muted">По записи {{ task.water_reading.date|date:"d.m.Y H:i" }}</div>
                             {% endif %}
                         </td>
-                        <td><span class="badge bg-light text-dark border">{{ task.get_status_display_label }}</span></td>
+                        <td>
+                            {% if task.is_done %}
+                                <span class="badge bg-success-subtle text-success border border-success-subtle">Выполнено</span>
+                                {% if task.completed_at %}
+                                    <div class="small text-muted mt-1">{{ task.completed_at|date:"d.m.Y H:i" }}</div>
+                                {% elif task.archived_at and task.archived_reason == "completed" %}
+                                    <div class="small text-muted mt-1">{{ task.archived_at|date:"d.m.Y H:i" }}</div>
+                                {% endif %}
+                            {% else %}
+                                <span class="badge bg-light text-dark border">{{ task.get_status_display_label }}</span>
+                            {% endif %}
+                        </td>
                         <td>{{ task.responsible_label|default:"—" }}</td>
                         <td>{% if task.due_at %}{{ task.due_at|date:"d.m.Y H:i" }}{% else %}—{% endif %}</td>
                         <td class="text-end">

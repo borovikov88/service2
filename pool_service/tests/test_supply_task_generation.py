@@ -4,6 +4,8 @@ from django.urls import reverse
 from django.utils import timezone
 
 from pool_service.models import Client, CrmItem, Notification, Organization, OrganizationAccess, Pool, ServiceTask, WaterReading
+from pool_service.services.notifications import notify_task_assignment
+from pool_service.services.task_archive import archive_task, restore_task
 from pool_service.services.task_generation import (
     create_supply_task_from_reading,
     sync_crm_item_for_task,
@@ -156,17 +158,22 @@ class SupplyTaskGenerationTests(TestCase):
         )
         task = ServiceTask.objects.get(water_reading=reading, task_type=ServiceTask.TYPE_SUPPLY_REQUEST)
 
-        task.completed_at = timezone.now()
-        task.save(update_fields=["completed_at", "updated_at"])
-        sync_crm_item_for_task(task)
+        archive_task(task, ServiceTask.ARCHIVE_REASON_COMPLETED, self.manager)
         task.crm_item.refresh_from_db()
         self.assertEqual(task.crm_item.stage, CrmItem.STAGE_SERVICE_DONE)
+        self.assertTrue(task.crm_item.is_archived)
+        self.assertEqual(task.crm_item.archived_reason, CrmItem.ARCHIVE_REASON_COMPLETED)
+        task.refresh_from_db()
+        self.assertTrue(task.is_archived)
+        self.assertEqual(task.archived_reason, ServiceTask.ARCHIVE_REASON_COMPLETED)
 
         task.completed_at = None
         task.save(update_fields=["completed_at", "updated_at"])
+        restore_task(task, self.manager)
         sync_crm_item_for_task(task)
         task.crm_item.refresh_from_db()
         self.assertEqual(task.crm_item.stage, CrmItem.STAGE_SERVICE_IN_PROGRESS)
+        self.assertFalse(task.crm_item.is_archived)
 
     def test_sync_task_completion_from_crm_stage(self):
         reading = WaterReading.objects.create(
@@ -182,9 +189,108 @@ class SupplyTaskGenerationTests(TestCase):
         sync_task_with_crm_item(task)
         task.refresh_from_db()
         self.assertIsNotNone(task.completed_at)
+        self.assertTrue(task.is_archived)
+        self.assertEqual(task.archived_reason, ServiceTask.ARCHIVE_REASON_COMPLETED)
 
         task.crm_item.stage = CrmItem.STAGE_SERVICE_IN_PROGRESS
         task.crm_item.save(update_fields=["stage", "updated_at"])
         sync_task_with_crm_item(task)
         task.refresh_from_db()
         self.assertIsNone(task.completed_at)
+        self.assertFalse(task.is_archived)
+
+    def test_manual_task_assignment_notification_uses_new_task_title(self):
+        today = timezone.now().date()
+        task = ServiceTask.objects.create(
+            organization=self.organization,
+            title="Позвонить клиенту",
+            created_by=self.service_user,
+            start_date=today,
+            end_date=today,
+        )
+        task.responsibles.add(self.manager)
+
+        notify_task_assignment(task, [self.manager], added_by=self.service_user, send_push=False)
+
+        note = Notification.objects.filter(user=self.manager, kind="task_assignment").latest("id")
+        self.assertEqual(note.title, "Новая задача")
+        self.assertEqual(note.message, f"Позвонить клиенту ({today:%d.%m.%Y})")
+
+    def test_task_page_defaults_to_view_mode_and_edit_opens_form(self):
+        today = timezone.now().date()
+        task = ServiceTask.objects.create(
+            organization=self.organization,
+            title="Проверить фильтр",
+            description="Нужно осмотреть фильтр на объекте",
+            created_by=self.service_user,
+            start_date=today,
+            end_date=today,
+        )
+        task.responsibles.add(self.manager)
+
+        self.client.force_login(self.manager)
+
+        response = self.client.get(reverse("task_edit", kwargs={"task_id": task.id}))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Редактировать")
+        self.assertTemplateUsed(response, "pool_service/task_view.html")
+
+        edit_response = self.client.get(f'{reverse("task_edit", kwargs={"task_id": task.id})}?edit=1')
+        self.assertEqual(edit_response.status_code, 200)
+        self.assertTemplateUsed(edit_response, "pool_service/task_form.html")
+
+    def test_deleted_task_is_archived_and_disappears_from_pool_history(self):
+        reading = WaterReading.objects.create(
+            pool=self.pool,
+            added_by=self.service_user,
+            date=timezone.now(),
+            required_materials="Форсунка",
+        )
+        task = ServiceTask.objects.get(water_reading=reading, task_type=ServiceTask.TYPE_SUPPLY_REQUEST)
+
+        self.client.force_login(self.service_user)
+        response = self.client.post(reverse("task_delete", kwargs={"task_id": task.id}), {"next": "/"})
+        self.assertEqual(response.status_code, 302)
+
+        task.refresh_from_db()
+        self.assertTrue(task.is_archived)
+        self.assertEqual(task.archived_reason, ServiceTask.ARCHIVE_REASON_DELETED)
+
+        pool_response = self.client.get(reverse("pool_detail", kwargs={"pool_uuid": self.pool.uuid}))
+        self.assertEqual(pool_response.status_code, 200)
+        self.assertNotContains(pool_response, 'data-task-modal-url="/tasks/%s/"' % task.id, html=False)
+
+    def test_completed_task_hidden_from_calendar_but_visible_in_pool_history(self):
+        reading = WaterReading.objects.create(
+            pool=self.pool,
+            added_by=self.service_user,
+            date=timezone.now(),
+            required_materials="Насос",
+        )
+        task = ServiceTask.objects.get(water_reading=reading, task_type=ServiceTask.TYPE_SUPPLY_REQUEST)
+        archive_task(task, ServiceTask.ARCHIVE_REASON_COMPLETED, self.manager)
+
+        self.client.force_login(self.admin)
+        calendar_response = self.client.get(reverse("readings_all"))
+        self.assertEqual(calendar_response.status_code, 200)
+        self.assertNotContains(calendar_response, task.title)
+
+        pool_response = self.client.get(reverse("pool_detail", kwargs={"pool_uuid": self.pool.uuid}))
+        self.assertEqual(pool_response.status_code, 200)
+        self.assertContains(pool_response, "Выполнено")
+
+    def test_archived_deleted_task_opens_read_only_view(self):
+        reading = WaterReading.objects.create(
+            pool=self.pool,
+            added_by=self.service_user,
+            date=timezone.now(),
+            required_materials="Датчик",
+        )
+        task = ServiceTask.objects.get(water_reading=reading, task_type=ServiceTask.TYPE_SUPPLY_REQUEST)
+        archive_task(task, ServiceTask.ARCHIVE_REASON_DELETED, self.service_user)
+
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("task_edit", kwargs={"task_id": task.id}))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Задача в архиве")
+        self.assertNotContains(response, "Редактировать")

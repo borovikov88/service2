@@ -1,0 +1,274 @@
+<style>
+    .crm-view-shell {
+        display: grid;
+        gap: 20px;
+    }
+    .crm-view-hero,
+    .crm-view-card {
+        border-radius: 28px;
+        border: 1px solid #e7eef8;
+        background:
+            radial-gradient(circle at top right, rgba(59, 130, 246, 0.08), transparent 32%),
+            linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+        box-shadow: 0 16px 36px rgba(15, 23, 42, 0.06);
+    }
+    .crm-view-hero {
+        padding: 28px;
+    }
+    .crm-view-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.9fr);
+        gap: 20px;
+    }
+    .crm-view-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 18px;
+    }
+    .crm-view-badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 38px;
+        padding: 0 16px;
+        border-radius: 999px;
+        background: #eef4ff;
+        color: #1d4ed8;
+        font-size: 0.9rem;
+        font-weight: 700;
+    }
+    .crm-view-badge--success {
+        background: #ecfdf3;
+        color: #166534;
+    }
+    .crm-view-badge--warning {
+        background: #fff5e8;
+        color: #d97706;
+    }
+    .crm-view-side {
+        display: grid;
+        gap: 16px;
+    }
+    .crm-view-card {
+        padding: 22px 24px;
+    }
+    .crm-view-meta {
+        display: grid;
+        gap: 14px;
+    }
+    .crm-view-meta-row {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+    }
+    .crm-view-meta-label {
+        color: #7b8aa0;
+        font-size: 0.88rem;
+    }
+    .crm-view-meta-value {
+        color: #132238;
+        font-weight: 600;
+        text-align: right;
+    }
+    .crm-view-section-title {
+        font-size: 1rem;
+        font-weight: 800;
+        margin-bottom: 14px;
+        color: #132238;
+    }
+    .crm-view-empty {
+        color: #7b8aa0;
+    }
+    .crm-view-list {
+        display: grid;
+        gap: 10px;
+    }
+    .crm-view-list a {
+        text-decoration: none;
+    }
+    .crm-view-list-item {
+        border-radius: 18px;
+        border: 1px solid #e7eef8;
+        background: #fff;
+        padding: 14px 16px;
+        color: #132238;
+    }
+    .crm-view-archive {
+        border-radius: 18px;
+        border: 1px solid #fde68a;
+        background: #fffbeb;
+        color: #92400e;
+        padding: 14px 16px;
+        margin-bottom: 16px;
+    }
+    @media (max-width: 992px) {
+        .crm-view-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+
+<div class="crm-view-shell">
+    <section class="crm-view-hero">
+        {% if archive_state %}
+            <div class="crm-view-archive">
+                <div class="fw-bold">{{ archive_state.label }}</div>
+                <div class="small">{{ archive_state.description }}</div>
+            </div>
+        {% endif %}
+        <div class="d-flex flex-wrap align-items-start justify-content-between gap-3">
+            <div>
+                <div class="text-muted small mb-2">{{ direction_label }}</div>
+                <h1 class="h3 fw-bold mb-2">{{ item.title }}</h1>
+                {% if item.description %}
+                    <div class="text-muted">{{ item.description|linebreaksbr }}</div>
+                {% endif %}
+            </div>
+            <div class="d-flex align-items-center gap-2">
+                {% if not item.is_archived %}
+                    <a href="{{ crm_edit_url }}" class="ui-pill-btn ui-pill-btn--primary">
+                        <i class="bi bi-pencil-square"></i>
+                        <span>Редактировать</span>
+                    </a>
+                {% endif %}
+                <a href="{% url 'crm_list' direction=direction %}" class="ui-pill-btn">К списку</a>
+            </div>
+        </div>
+        <div class="crm-view-badges">
+            <span class="crm-view-badge">{{ item.stage_label|default:item.stage }}</span>
+            {% if item.amount_display and item.amount_display != "-" %}
+                <span class="crm-view-badge crm-view-badge--warning">{{ item.amount_display }}</span>
+            {% endif %}
+            {% if item.is_archived and item.archived_reason == 'completed' %}
+                <span class="crm-view-badge crm-view-badge--success">Завершено</span>
+            {% endif %}
+        </div>
+    </section>
+
+    <div class="crm-view-grid">
+        <div class="crm-view-side">
+            <section class="crm-view-card">
+                <div class="crm-view-section-title">Связи</div>
+                <div class="crm-view-meta">
+                    <div class="crm-view-meta-row">
+                        <div class="crm-view-meta-label">Клиент</div>
+                        <div class="crm-view-meta-value">
+                            {% if item.client %}
+                                <a href="{% url 'clients_list' %}">{{ item.client.name }}</a>
+                            {% else %}
+                                <span class="crm-view-empty">Не указан</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="crm-view-meta-row">
+                        <div class="crm-view-meta-label">Объект</div>
+                        <div class="crm-view-meta-value">
+                            {% if item.pool %}
+                                <a href="{% url 'pool_detail' pool_uuid=item.pool.uuid %}">{{ item.pool.client.name|default:item.pool.address }}</a>
+                            {% else %}
+                                <span class="crm-view-empty">Не указан</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="crm-view-meta-row">
+                        <div class="crm-view-meta-label">Организация</div>
+                        <div class="crm-view-meta-value">{{ item.organization.name|default:"-" }}</div>
+                    </div>
+                </div>
+            </section>
+
+            {% if item.service_works or item.equipment_replacement or item.photo_url or item_photo_urls %}
+                <section class="crm-view-card">
+                    <div class="crm-view-section-title">Детали</div>
+                    <div class="crm-view-meta">
+                        {% if item.service_works %}
+                            <div>
+                                <div class="crm-view-meta-label mb-1">Произведённые работы</div>
+                                <div>{{ item.service_works|linebreaksbr }}</div>
+                            </div>
+                        {% endif %}
+                        {% if item.equipment_replacement %}
+                            <div>
+                                <div class="crm-view-meta-label mb-1">Замена оборудования</div>
+                                <div>{{ item.equipment_replacement|linebreaksbr }}</div>
+                            </div>
+                        {% endif %}
+                        {% if item.photo_url %}
+                            <div>
+                                <div class="crm-view-meta-label mb-1">Ссылка на фото</div>
+                                <div><a href="{{ item.photo_url }}" target="_blank" rel="noopener">{{ item.photo_url }}</a></div>
+                            </div>
+                        {% endif %}
+                        {% if item_photo_urls %}
+                            <div>
+                                <div class="crm-view-meta-label mb-2">Фотографии</div>
+                                <div class="d-flex flex-wrap gap-2">
+                                    {% for photo_url in item_photo_urls %}
+                                        <a href="{{ photo_url }}" target="_blank" rel="noopener">
+                                            <img src="{{ photo_url }}" alt="" style="width:72px;height:72px;object-fit:cover;border-radius:14px;border:1px solid #e7eef8;">
+                                        </a>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                        {% endif %}
+                    </div>
+                </section>
+            {% endif %}
+        </div>
+
+        <div class="crm-view-side">
+            <section class="crm-view-card">
+                <div class="crm-view-section-title">Статус и сроки</div>
+                <div class="crm-view-meta">
+                    <div class="crm-view-meta-row">
+                        <div class="crm-view-meta-label">Этап</div>
+                        <div class="crm-view-meta-value">{{ item.stage_label|default:item.stage }}</div>
+                    </div>
+                    <div class="crm-view-meta-row">
+                        <div class="crm-view-meta-label">Дата создания</div>
+                        <div class="crm-view-meta-value">{{ item.created_at|date:"d.m.Y H:i" }}</div>
+                    </div>
+                    <div class="crm-view-meta-row">
+                        <div class="crm-view-meta-label">Обновлено</div>
+                        <div class="crm-view-meta-value">{{ item.updated_at|date:"d.m.Y H:i" }}</div>
+                    </div>
+                    <div class="crm-view-meta-row">
+                        <div class="crm-view-meta-label">Ответственный</div>
+                        <div class="crm-view-meta-value">
+                            {% if item.responsible %}
+                                {{ item.responsible.get_full_name|default:item.responsible.username }}
+                            {% else %}
+                                <span class="crm-view-empty">Не назначен</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="crm-view-card">
+                <div class="crm-view-section-title">Связанные задачи</div>
+                {% if related_tasks %}
+                    <div class="crm-view-list">
+                        {% for task in related_tasks %}
+                            <a href="{% url 'task_edit' task_id=task.id %}">
+                                <div class="crm-view-list-item">
+                                    <div class="fw-bold">{{ task.title }}</div>
+                                    <div class="text-muted small mt-1">
+                                        {% if task.primary_responsible %}
+                                            {{ task.primary_responsible.get_full_name|default:task.primary_responsible.username }}
+                                        {% else %}
+                                            Без ответственного
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </a>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <div class="crm-view-empty">Нет связанных задач.</div>
+                {% endif %}
+            </section>
+        </div>
+    </div>
+</div>

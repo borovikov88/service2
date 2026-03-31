@@ -3,336 +3,707 @@
 {% block title %}{{ page_title }}{% endblock %}
 
 {% block content %}
-<div class="card card-soft p-4">
-    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
-        <form method="get" class="d-flex flex-wrap align-items-center gap-2">
-            <div class="input-group input-group-sm">
-                <span class="input-group-text"><i class="bi bi-search"></i></span>
-                <input type="search" name="q" class="form-control" placeholder="&#1055;&#1086;&#1080;&#1089;&#1082; &#1087;&#1086; &#1079;&#1072;&#1076;&#1072;&#1095;&#1072;&#1084;" value="{{ search_query|default:'' }}" autocomplete="off">
-            </div>
-            {% if current_sort %}
-                <input type="hidden" name="sort" value="{{ current_sort }}">
-                <input type="hidden" name="dir" value="{{ current_dir }}">
-            {% endif %}
-            <button type="submit" class="btn btn-outline-secondary btn-sm">&#1053;&#1072;&#1081;&#1090;&#1080;</button>
-        </form>
-        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#crm-table-settings" aria-label="&#1053;&#1072;&#1089;&#1090;&#1088;&#1086;&#1081;&#1082;&#1080; &#1090;&#1072;&#1073;&#1083;&#1080;&#1094;&#1099;" title="&#1053;&#1072;&#1089;&#1090;&#1088;&#1086;&#1081;&#1082;&#1080; &#1090;&#1072;&#1073;&#1083;&#1080;&#1094;&#1099;">
-            <i class="bi bi-gear"></i>
-        </button>
-    </div>
-    <div class="table-responsive">
-        <table class="table align-middle" id="crm-table" data-crm-direction="{{ direction }}">
-            <thead class="small text-muted">
-                <tr>
-                    <th data-col="title">
-                        <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=title&dir={% if current_sort == 'title' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
-                            <span>&#1053;&#1072;&#1079;&#1074;&#1072;&#1085;&#1080;&#1077;</span>
-                            {% if current_sort == 'title' %}
-                                <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
-                            {% else %}
-                                <span class="text-muted small">&#8597;</span>
-                            {% endif %}
-                        </a>
-                    </th>
-                    <th data-col="client">
-                        <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=client&dir={% if current_sort == 'client' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
-                            <span>&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;</span>
-                            {% if current_sort == 'client' %}
-                                <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
-                            {% else %}
-                                <span class="text-muted small">&#8597;</span>
-                            {% endif %}
-                        </a>
-                    </th>
-                    <th data-col="pool">
-                        <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=pool&dir={% if current_sort == 'pool' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
-                            <span>&#1054;&#1073;&#1098;&#1077;&#1082;&#1090;</span>
-                            {% if current_sort == 'pool' %}
-                                <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
-                            {% else %}
-                                <span class="text-muted small">&#8597;</span>
-                            {% endif %}
-                        </a>
-                    </th>
-                    <th data-col="stage">
-                        <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=stage&dir={% if current_sort == 'stage' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
-                            <span>&#1069;&#1090;&#1072;&#1087;</span>
-                            {% if current_sort == 'stage' %}
-                                <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
-                            {% else %}
-                                <span class="text-muted small">&#8597;</span>
-                            {% endif %}
-                        </a>
-                    </th>
-                    {% if direction == "service" %}
-                        <th data-col="urgency">
-                            <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=urgency&dir={% if current_sort == 'urgency' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
-                                <span>&#1057;&#1088;&#1086;&#1095;&#1085;&#1086;&#1089;&#1090;&#1100;</span>
-                                {% if current_sort == 'urgency' %}
-                                    <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
-                                {% else %}
-                                    <span class="text-muted small">&#8597;</span>
-                                {% endif %}
-                            </a>
-                        </th>
-                    {% endif %}
-                    <th data-col="amount">
-                        <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=amount&dir={% if current_sort == 'amount' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
-                            <span>&#1057;&#1091;&#1084;&#1084;&#1072;, &#8381;</span>
-                            {% if current_sort == 'amount' %}
-                                <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
-                            {% else %}
-                                <span class="text-muted small">&#8597;</span>
-                            {% endif %}
-                        </a>
-                    </th>
-                    <th data-col="responsible">
-                        <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=responsible&dir={% if current_sort == 'responsible' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
-                            <span>&#1054;&#1090;&#1074;&#1077;&#1090;&#1089;&#1090;&#1074;&#1077;&#1085;&#1085;&#1099;&#1081;</span>
-                            {% if current_sort == 'responsible' %}
-                                <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
-                            {% else %}
-                                <span class="text-muted small">&#8597;</span>
-                            {% endif %}
-                        </a>
-                    </th>
-                    <th data-col="description">
-                        <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=description&dir={% if current_sort == 'description' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
-                            <span>&#1054;&#1087;&#1080;&#1089;&#1072;&#1085;&#1080;&#1077;</span>
-                            {% if current_sort == 'description' %}
-                                <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
-                            {% else %}
-                                <span class="text-muted small">&#8597;</span>
-                            {% endif %}
-                        </a>
-                    </th>
-                    {% if direction == "service" %}
-                        <th data-col="service_works">
-                            <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=service_works&dir={% if current_sort == 'service_works' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
-                                <span>&#1042;&#1099;&#1087;&#1086;&#1083;&#1085;&#1077;&#1085;&#1085;&#1099;&#1077; &#1088;&#1072;&#1073;&#1086;&#1090;&#1099;</span>
-                                {% if current_sort == 'service_works' %}
-                                    <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
-                                {% else %}
-                                    <span class="text-muted small">&#8597;</span>
-                                {% endif %}
-                            </a>
-                        </th>
-                        <th data-col="equipment_replacement">
-                            <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=equipment_replacement&dir={% if current_sort == 'equipment_replacement' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
-                                <span>&#1047;&#1072;&#1084;&#1077;&#1085;&#1072; &#1086;&#1073;&#1086;&#1088;&#1091;&#1076;&#1086;&#1074;&#1072;&#1085;&#1080;&#1103;</span>
-                                {% if current_sort == 'equipment_replacement' %}
-                                    <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
-                                {% else %}
-                                    <span class="text-muted small">&#8597;</span>
-                                {% endif %}
-                            </a>
-                        </th>
-                        <th data-col="photo_url">
-                            <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=photo_url&dir={% if current_sort == 'photo_url' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
-                                <span>&#1060;&#1086;&#1090;&#1086; (&#1089;&#1089;&#1099;&#1083;&#1082;&#1072;)</span>
-                                {% if current_sort == 'photo_url' %}
-                                    <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
-                                {% else %}
-                                    <span class="text-muted small">&#8597;</span>
-                                {% endif %}
-                            </a>
-                        </th>
-                    {% endif %}
-                    {% if user.is_superuser %}
-                        <th data-col="organization">
-                            <a class="text-decoration-none text-muted d-inline-flex align-items-center gap-1" href="?sort=organization&dir={% if current_sort == 'organization' and current_dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_query %}&{{ base_query }}{% endif %}">
-                                <span>&#1054;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;</span>
-                                {% if current_sort == 'organization' %}
-                                    <span>{% if current_dir == 'asc' %}&#8593;{% else %}&#8595;{% endif %}</span>
-                                {% else %}
-                                    <span class="text-muted small">&#8597;</span>
-                                {% endif %}
-                            </a>
-                        </th>
-                    {% endif %}
-                    <th data-col="actions" class="text-end"></th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for item in items %}
-                    <tr class="{% if service_done_stage and item.stage == service_done_stage %}text-muted{% endif %}">
-                        <td data-col="title" class="fw-semibold">{{ item.title }}</td>
-                        <td data-col="client">{{ item.client.name|default:"-" }}</td>
-                        <td data-col="pool">
-                            {% if item.pool %}
-                                {{ item.pool.address }}
-                            {% elif item.client %}
-                                {{ item.client.name }}
-                            {% else %}
-                                -
-                            {% endif %}
-                        </td>
-                        <td data-col="stage">{{ item.stage_label|default:item.stage }}</td>
-                        {% if direction == "service" %}
-                            <td data-col="urgency">
-                                {% if item.urgency %}
-                                    <span class="urgency-badge urgency-{{ item.urgency }}" title="{{ item.get_urgency_display }}" aria-label="{{ item.get_urgency_display }}"></span>
-                                {% else %}
-                                    <span class="urgency-badge urgency-low" title="&#1053;&#1077; &#1089;&#1088;&#1086;&#1095;&#1085;&#1086;" aria-label="&#1053;&#1077; &#1089;&#1088;&#1086;&#1095;&#1085;&#1086;"></span>
-                                {% endif %}
-                            </td>
-                        {% endif %}
-                        <td data-col="amount">
-                            {% if item.amount %}
-                                {{ item.amount|floatformat:2 }} &#8381;
-                            {% else %}
-                                -
-                            {% endif %}
-                        </td>
-                        <td data-col="responsible">
-                            {% if item.responsible %}
-                                {{ item.responsible.get_full_name|default:item.responsible.username }}
-                            {% else %}
-                                -
-                            {% endif %}
-                        </td>
-                        <td data-col="description">
-                            {% if item.description %}
-                                {{ item.description|truncatechars:120 }}
-                            {% else %}
-                                -
-                            {% endif %}
-                        </td>
-                        {% if direction == "service" %}
-                            <td data-col="service_works">
-                                {% if item.service_works %}
-                                    {{ item.service_works|truncatechars:120 }}
-                                {% else %}
-                                    -
-                                {% endif %}
-                            </td>
-                            <td data-col="equipment_replacement">
-                                {% if item.equipment_replacement %}
-                                    {{ item.equipment_replacement|truncatechars:120 }}
-                                {% else %}
-                                    -
-                                {% endif %}
-                            </td>
-                            <td data-col="photo_url">
-                                {% if item.photo_url %}
-                                    <a href="{{ item.photo_url }}" class="text-decoration-none" target="_blank" rel="noopener">{{ item.photo_url|truncatechars:40 }}</a>
-                                {% else %}
-                                    -
-                                {% endif %}
-                            </td>
-                        {% endif %}
-                        {% if user.is_superuser %}
-                            <td data-col="organization">
-                                {% if item.organization %}
-                                    {{ item.organization.name }}
-                                {% else %}
-                                    -
-                                {% endif %}
-                            </td>
-                        {% endif %}
-                        <td data-col="actions" class="text-end">
-                            <a class="btn btn-outline-secondary btn-sm" href="{% url 'crm_edit' direction=direction item_id=item.id %}" aria-label="&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;">
-                                <i class="bi bi-pencil"></i>
-                            </a>
-                        </td>
-                    </tr>
-                {% empty %}
-                    <tr>
-                        <td data-crm-empty colspan="{{ crm_table_colspan }}" class="text-center text-muted py-3">&#1055;&#1086;&#1082;&#1072; &#1085;&#1077;&#1090; &#1079;&#1072;&#1076;&#1072;&#1095;</td>
-                    </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</div>
-
-<div class="modal fade" id="crm-table-settings" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">&#1053;&#1072;&#1089;&#1090;&#1088;&#1086;&#1081;&#1082;&#1080; &#1090;&#1072;&#1073;&#1083;&#1080;&#1094;&#1099;</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <div class="row g-2">
-                    <div class="col-12 col-sm-6">
-                        <label class="form-check">
-                            <input class="form-check-input crm-column-toggle" type="checkbox" value="title" checked>
-                            <span class="form-check-label">&#1053;&#1072;&#1079;&#1074;&#1072;&#1085;&#1080;&#1077;</span>
-                        </label>
-                        <label class="form-check">
-                            <input class="form-check-input crm-column-toggle" type="checkbox" value="client" checked>
-                            <span class="form-check-label">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;</span>
-                        </label>
-                        <label class="form-check">
-                            <input class="form-check-input crm-column-toggle" type="checkbox" value="pool" checked>
-                            <span class="form-check-label">&#1054;&#1073;&#1098;&#1077;&#1082;&#1090;</span>
-                        </label>
-                        <label class="form-check">
-                            <input class="form-check-input crm-column-toggle" type="checkbox" value="stage" checked>
-                            <span class="form-check-label">&#1069;&#1090;&#1072;&#1087;</span>
-                        </label>
-                        {% if direction == "service" %}
-                        <label class="form-check">
-                            <input class="form-check-input crm-column-toggle" type="checkbox" value="urgency" checked>
-                            <span class="form-check-label">&#1057;&#1088;&#1086;&#1095;&#1085;&#1086;&#1089;&#1090;&#1100;</span>
-                        </label>
-                        {% endif %}
-                        <label class="form-check">
-                            <input class="form-check-input crm-column-toggle" type="checkbox" value="amount" checked>
-                            <span class="form-check-label">&#1057;&#1091;&#1084;&#1084;&#1072;, &#8381;</span>
-                        </label>
-                        <label class="form-check">
-                            <input class="form-check-input crm-column-toggle" type="checkbox" value="responsible" checked>
-                            <span class="form-check-label">&#1054;&#1090;&#1074;&#1077;&#1090;&#1089;&#1090;&#1074;&#1077;&#1085;&#1085;&#1099;&#1081;</span>
-                        </label>
-                        {% if user.is_superuser %}
-                        <label class="form-check">
-                            <input class="form-check-input crm-column-toggle" type="checkbox" value="organization" checked>
-                            <span class="form-check-label">&#1054;&#1088;&#1075;&#1072;&#1085;&#1080;&#1079;&#1072;&#1094;&#1080;&#1103;</span>
-                        </label>
-                        {% endif %}
-                    </div>
-                    <div class="col-12 col-sm-6">
-                        <label class="form-check">
-                            <input class="form-check-input crm-column-toggle" type="checkbox" value="description">
-                            <span class="form-check-label">&#1054;&#1087;&#1080;&#1089;&#1072;&#1085;&#1080;&#1077;</span>
-                        </label>
-                        {% if direction == "service" %}
-                        <label class="form-check">
-                            <input class="form-check-input crm-column-toggle" type="checkbox" value="service_works">
-                            <span class="form-check-label">&#1042;&#1099;&#1087;&#1086;&#1083;&#1085;&#1077;&#1085;&#1085;&#1099;&#1077; &#1088;&#1072;&#1073;&#1086;&#1090;&#1099;</span>
-                        </label>
-                        <label class="form-check">
-                            <input class="form-check-input crm-column-toggle" type="checkbox" value="equipment_replacement">
-                            <span class="form-check-label">&#1047;&#1072;&#1084;&#1077;&#1085;&#1072; &#1086;&#1073;&#1086;&#1088;&#1091;&#1076;&#1086;&#1074;&#1072;&#1085;&#1080;&#1103;</span>
-                        </label>
-                        <label class="form-check">
-                            <input class="form-check-input crm-column-toggle" type="checkbox" value="photo_url">
-                            <span class="form-check-label">&#1060;&#1086;&#1090;&#1086; (&#1089;&#1089;&#1099;&#1083;&#1082;&#1072;)</span>
-                        </label>
-                        {% endif %}
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-outline-secondary btn-sm" id="crm-columns-reset">&#1057;&#1073;&#1088;&#1086;&#1089;&#1080;&#1090;&#1100;</button>
-                <button type="button" class="btn btn-primary btn-sm" data-bs-dismiss="modal">&#1043;&#1086;&#1090;&#1086;&#1074;&#1086;</button>
-            </div>
-        </div>
-    </div>
-</div>
-
 <style>
+    .crm-toolbar-card {
+        border-radius: 28px;
+        border: 1px solid #e7eef8;
+        background:
+            radial-gradient(circle at top right, rgba(59, 130, 246, 0.08), transparent 32%),
+            linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+        box-shadow: 0 18px 42px rgba(15, 23, 42, 0.06);
+    }
+    .crm-toolbar-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 12px;
+        align-items: center;
+    }
+    .crm-toolbar-main {
+        min-width: 0;
+        max-width: 760px;
+    }
+    .crm-toolbar-actions {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 12px;
+        flex-wrap: wrap;
+    }
+    .crm-calendar-search {
+        position: relative;
+        min-width: 0;
+    }
+    .crm-calendar-search__field {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 58px;
+        padding: 10px 16px;
+        border-radius: 22px;
+        border: 1px solid #dbe5f5;
+        background: rgba(255, 255, 255, 0.95);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.82);
+    }
+    .crm-calendar-search__field > i {
+        color: #0f172a;
+        font-size: 1.35rem;
+        flex: 0 0 auto;
+    }
+    .crm-calendar-search__input {
+        border: 0;
+        outline: 0;
+        box-shadow: none;
+        background: transparent;
+        padding: 0;
+        width: 100%;
+        min-width: 0;
+        color: #0f172a;
+        font-size: 1rem;
+    }
+    .crm-calendar-search__input::placeholder {
+        color: #94a3b8;
+    }
+    .crm-calendar-search__input::-webkit-search-cancel-button,
+    .crm-calendar-search__input::-webkit-search-decoration {
+        -webkit-appearance: none;
+        appearance: none;
+    }
+    .crm-calendar-search__clear {
+        border: 0;
+        background: transparent;
+        color: #94a3b8;
+        width: 28px;
+        height: 28px;
+        border-radius: 999px;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+    }
+    .crm-calendar-search__clear.is-visible {
+        display: inline-flex;
+    }
+    .crm-calendar-search__tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: #eaf3ff;
+        color: #1d4ed8;
+        font-size: 0.88rem;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 240px;
+        flex: 0 0 auto;
+    }
+    .crm-calendar-search__tag-clear {
+        border: 0;
+        background: transparent;
+        color: inherit;
+        padding: 0;
+        line-height: 1;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .crm-calendar-search__dropdown {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: calc(100% + 10px);
+        z-index: 50;
+        display: none;
+        border-radius: 18px;
+        border: 1px solid #dbe5f5;
+        background: rgba(255, 255, 255, 0.98);
+        box-shadow: 0 16px 36px rgba(15, 23, 42, 0.12);
+        overflow: hidden;
+    }
+    .ui-search--open .ui-search__dropdown {
+        display: block;
+    }
+    .crm-calendar-search__dropdown-title {
+        padding: 14px 16px 8px;
+        font-size: 0.8rem;
+        font-weight: 700;
+        color: #64748b;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+    .crm-calendar-search__option {
+        width: 100%;
+        border: 0;
+        background: transparent;
+        text-align: left;
+        padding: 12px 16px;
+        color: #0f172a;
+        font-weight: 500;
+        transition: background-color .15s ease, color .15s ease;
+    }
+    .crm-calendar-search__option + .crm-calendar-search__option {
+        border-top: 1px solid #eef2f7;
+    }
+    .crm-calendar-search__option:hover,
+    .crm-calendar-search__option.is-active {
+        background: #eff6ff;
+        color: #1d4ed8;
+    }
+    .crm-filter-chipbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+    }
+    .crm-filter-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 18px;
+        border-radius: 999px;
+        font-weight: 600;
+        background: #eaf3ff;
+        color: #1d4ed8;
+    }
+    .crm-filter-chip--green {
+        background: #eafaf1;
+        color: #1f9254;
+    }
+    .crm-filter-chip--orange {
+        background: #fff5e8;
+        color: #d97706;
+    }
+    .crm-table-wrap {
+        border: 1px solid #e7eef8;
+        border-radius: 28px;
+        background: #fff;
+        box-shadow: 0 16px 36px rgba(15, 23, 42, 0.05);
+        overflow: hidden;
+    }
+    .crm-table-wrap .table {
+        margin-bottom: 0;
+    }
+    .crm-table-wrap tbody tr {
+        transition: background-color .18s ease;
+    }
+    .crm-table-wrap tbody tr:hover {
+        background: #f8fbff;
+    }
+    .crm-table-wrap tbody tr.crm-row-selected {
+        background: #f4fbdd;
+    }
+    .crm-table-row {
+        cursor: pointer;
+    }
+    .crm-row-title {
+        font-weight: 700;
+        color: #1f2d3d;
+    }
+    .crm-row-subtitle {
+        color: #7b8aa0;
+        font-size: 0.88rem;
+        margin-top: 4px;
+    }
+    .crm-stage-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 14px;
+        border-radius: 999px;
+        border: 1px solid #dbe5f5;
+        background: #f8fbff;
+        color: #334155;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+    .crm-stage-pill--done {
+        background: #ecfdf3;
+        border-color: #ccebd7;
+        color: #166534;
+    }
+    .crm-settings-btn {
+        width: 52px;
+        height: 52px;
+        border-radius: 18px;
+    }
+    .crm-action-btn {
+        min-height: 52px;
+        padding-inline: 18px;
+        border-radius: 18px;
+        font-weight: 600;
+    }
+    .crm-empty-state {
+        padding: 44px 16px;
+        color: #7b8aa0;
+    }
+    .crm-table-wrap thead th {
+        background: #fff;
+        white-space: nowrap;
+    }
+    .crm-select-col {
+        width: 44px;
+    }
+    .crm-select-checkbox {
+        width: 18px;
+        height: 18px;
+        cursor: pointer;
+    }
+    .crm-bulkbar {
+        position: fixed;
+        left: 50%;
+        bottom: 16px;
+        transform: translateX(-50%);
+        z-index: 1050;
+        display: none;
+        width: fit-content;
+        max-width: min(1180px, calc(100vw - 28px));
+        padding: 8px 12px;
+        border-radius: 18px;
+        border: 1px solid #dbe5f5;
+        background: rgba(255, 255, 255, 0.96);
+        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
+        backdrop-filter: blur(12px);
+    }
+    .crm-bulkbar.is-visible {
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: center;
+        gap: 8px;
+        overflow-x: auto;
+        overflow-y: hidden;
+    }
+    .crm-bulkbar__count {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 38px;
+        padding: 0 12px;
+        border-radius: 999px;
+        background: #eff6ff;
+        color: #1d4ed8;
+        font-weight: 700;
+        white-space: nowrap;
+    }
+    .crm-bulkbar__count-label {
+        display: inline;
+    }
+    .crm-bulkbar__spacer {
+        flex: 1 1 auto;
+        min-width: 12px;
+    }
+    .crm-bulkbar .ui-select {
+        min-width: 160px;
+    }
+    .crm-bulkbar .ui-select__control {
+        min-width: 160px;
+        border-radius: 12px;
+        min-height: 38px;
+        font-size: 0.95rem;
+    }
+    .crm-bulkbar .btn {
+        min-height: 38px;
+        border-radius: 12px;
+        font-weight: 600;
+        white-space: nowrap;
+        padding-inline: 14px;
+    }
+    .crm-bulkbar__icon-btn {
+        display: none;
+    }
     .crm-col-hidden {
         display: none !important;
     }
     .crm-column-toggle {
         cursor: pointer;
     }
+    @media (max-width: 992px) {
+        .crm-toolbar-grid {
+            grid-template-columns: 1fr;
+        }
+        .crm-toolbar-actions {
+            justify-content: stretch;
+        }
+        .crm-toolbar-main {
+            max-width: 100%;
+        }
+    }
+    @media (max-width: 768px) {
+        .crm-toolbar-actions .crm-action-btn,
+        .crm-toolbar-actions .crm-settings-btn {
+            flex: 1 1 calc(50% - 6px);
+            min-height: 46px;
+        }
+        .crm-calendar-search__field {
+            min-height: 50px;
+            padding: 7px 12px;
+            border-radius: 18px;
+        }
+        .crm-calendar-search__tag {
+            max-width: 150px;
+            padding: 5px 10px;
+            font-size: 0.82rem;
+        }
+        .crm-bulkbar {
+            bottom: calc(10px + env(safe-area-inset-bottom));
+            max-width: calc(100vw - 12px);
+            padding: 6px 8px;
+            border-radius: 12px;
+            gap: 4px;
+        }
+        .crm-bulkbar.is-visible {
+            flex-wrap: nowrap;
+        }
+        .crm-bulkbar__count {
+            min-height: 28px;
+            min-width: 28px;
+            padding: 0 8px;
+            font-size: 0.78rem;
+        }
+        .crm-bulkbar .ui-select__control,
+        .crm-bulkbar .btn {
+            min-height: 28px;
+            font-size: 0.76rem;
+            border-radius: 9px;
+        }
+        .crm-bulkbar .ui-select {
+            min-width: 94px;
+            max-width: 106px;
+        }
+        .crm-bulkbar .ui-select__control {
+            min-width: 94px;
+            max-width: 106px;
+            padding-left: 10px;
+            padding-right: 26px;
+        }
+        .crm-bulkbar__count-label {
+            display: none;
+        }
+        .crm-bulkbar__spacer {
+            display: none;
+        }
+        .crm-bulkbar [data-crm-bulk-submit="set_stage"],
+        .crm-bulkbar [data-crm-bulk-submit="set_responsible"],
+        .crm-bulkbar [data-crm-bulk-submit="archive"],
+        .crm-bulkbar #crm-clear-selection {
+            min-width: 28px;
+            width: 28px;
+            min-height: 28px;
+            padding-inline: 0;
+        }
+        .crm-bulkbar [data-crm-bulk-submit="set_stage"] .crm-bulkbar__btn-text,
+        .crm-bulkbar [data-crm-bulk-submit="set_responsible"] .crm-bulkbar__btn-text,
+        .crm-bulkbar [data-crm-bulk-submit="archive"] .crm-bulkbar__btn-text,
+        .crm-bulkbar #crm-clear-selection .crm-bulkbar__btn-text {
+            display: none;
+        }
+        .crm-bulkbar__icon-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8rem;
+        }
+    }
 </style>
 
+<div class="card ui-toolbar-card p-4 mb-4">
+    <form method="get" class="ui-toolbar-grid" id="crm-toolbar-form">
+        {% if current_sort %}
+            <input type="hidden" name="sort" value="{{ current_sort }}">
+            <input type="hidden" name="dir" value="{{ current_dir }}">
+        {% endif %}
+        <input type="hidden" name="responsible" id="crm-responsible-input" value="{{ responsible_input_value }}">
+        <div class="ui-toolbar-main">
+            <div class="ui-search" data-crm-search>
+                <div class="ui-search__field">
+                    <i class="bi bi-search"></i>
+                    <input type="search" name="q" class="ui-search__input" placeholder="Фильтр + поиск" value="{{ search_query|default:'' }}" autocomplete="off" data-crm-search-input>
+                    {% if selected_responsible_label %}
+                        <span class="ui-search__tag" data-crm-filter-tag>
+                            {{ selected_responsible_label }}
+                            <button type="button" class="ui-search__tag-clear" data-crm-filter-clear aria-label="Сбросить фильтр">
+                                <i class="bi bi-x"></i>
+                            </button>
+                        </span>
+                    {% endif %}
+                    <button type="button" class="ui-search__clear {% if search_query %}is-visible{% endif %}" data-crm-search-clear aria-label="Сбросить поиск">
+                        <i class="bi bi-x-lg"></i>
+                    </button>
+                </div>
+                <div class="ui-search__dropdown" data-crm-search-dropdown>
+                    <div class="ui-search__dropdown-title">Сотрудники</div>
+                    <button type="button" class="ui-search__option {% if not responsible_query %}is-active{% endif %}" data-crm-filter-option data-responsible-id="__all__">
+                        Все сотрудники
+                    </button>
+                    {% for option in responsible_options %}
+                        <button type="button" class="ui-search__option {% if responsible_query == option.id %}is-active{% endif %}" data-crm-filter-option data-responsible-id="{{ option.id }}">
+                            {{ option.name }}
+                        </button>
+                    {% empty %}
+                        <div class="px-3 py-2 text-muted small">Нет доступных сотрудников.</div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+        <div class="ui-toolbar-actions">
+            <details class="ui-dropdown">
+                <summary class="ui-dropdown__summary">
+                    <span class="ui-dropdown__value">
+                        <i class="bi {% if direction == 'service' %}bi-wrench-adjustable{% elif direction == 'project' %}bi-building{% elif direction == 'sales' %}bi-graph-up{% elif direction == 'tender' %}bi-journal-check{% else %}bi-folder{% endif %}"></i>
+                        <span>{{ direction_label }}</span>
+                    </span>
+                </summary>
+                <div class="ui-dropdown__menu">
+                    {% for menu_item in crm_menu_items %}
+                        <a href="{{ menu_item.url }}" class="ui-dropdown__item {% if menu_item.is_active %}is-active{% endif %}">
+                            <i class="bi {{ menu_item.icon }}"></i>
+                            <span>{{ menu_item.label }}</span>
+                        </a>
+                    {% endfor %}
+                </div>
+            </details>
+            <button type="submit" class="ui-pill-btn ui-pill-btn--primary">Найти</button>
+            <a href="{% url 'crm_list' direction=direction %}" class="ui-pill-btn">Сбросить</a>
+        </div>
+    </form>
+</div>
+
+<div class="ui-chipbar mb-4">
+    <span class="ui-chip">Всего: {{ crm_total_count }}</span>
+    <span class="ui-chip ui-chip--green">Активные: {{ crm_active_count }}</span>
+    {% if direction == "service" %}
+        <span class="ui-chip ui-chip--orange">Завершённые: {{ crm_done_count }}</span>
+    {% endif %}
+    <a href="{{ archive_url }}" class="ui-chip">Архив: {{ crm_archived_count }}</a>
+</div>
+
+<div class="crm-table-wrap">
+    <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 px-4 pt-4 pb-2">
+        <div>
+            <h3 class="fw-bold h5 mb-1">{{ direction_label }}</h3>
+            <div class="text-muted small">{{ page_subtitle }}</div>
+        </div>
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <a href="{{ page_action_url }}" class="ui-pill-btn ui-pill-btn--primary">{{ page_action_label }}</a>
+            <a href="{{ archive_url }}" class="ui-pill-btn">Архив</a>
+            <button type="button" class="ui-pill-btn" data-bs-toggle="modal" data-bs-target="#crm-table-settings" aria-label="Настройки таблицы" title="Настройки таблицы">
+                <i class="bi bi-gear"></i>
+            </button>
+        </div>
+    </div>
+
+    <form method="post" action="{% url 'crm_bulk_update' direction=direction %}" id="crm-bulk-form">
+        {% csrf_token %}
+        <input type="hidden" name="return_query" value="{{ request.GET.urlencode }}">
+        <input type="hidden" name="bulk_action" id="crm-bulk-action" value="">
+        <div class="table-responsive px-4 pb-4">
+            <table class="table align-middle" id="crm-table" data-crm-direction="{{ direction }}">
+                <thead class="small text-muted">
+                    <tr>
+                        <th class="crm-select-col">
+                            <input type="checkbox" class="form-check-input crm-select-checkbox" id="crm-select-all" aria-label="Выбрать все">
+                        </th>
+                        {% for column in crm_columns %}
+                            <th data-col="{{ column.key }}">{{ column.label }}</th>
+                        {% endfor %}
+                        <th data-col="actions" class="text-end"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in items %}
+                        <tr class="crm-table-row {% if service_done_stage and item.stage == service_done_stage %}text-muted{% endif %}" data-crm-selectable-row data-crm-row-url="{% url 'crm_view' direction=direction item_id=item.id %}">
+                            <td class="crm-select-col">
+                                <input type="checkbox" class="form-check-input crm-select-checkbox crm-row-select" name="item_ids" value="{{ item.id }}" aria-label="Выбрать запись {{ item.title }}">
+                            </td>
+                            {% for column in crm_columns %}
+                                {% if column.key == "title" %}
+                                    <td data-col="title">
+                                        <div class="crm-row-title">{{ item.title }}</div>
+                                        {% if item.updated_at %}
+                                            <div class="crm-row-subtitle">Обновлено {{ item.updated_at|date:"d.m.Y H:i" }}</div>
+                                        {% endif %}
+                                    </td>
+                                {% elif column.key == "date" %}
+                                    <td data-col="date">{{ item.date_display }}</td>
+                                {% elif column.key == "client" %}
+                                    <td data-col="client">{{ item.client.name|default:"-" }}</td>
+                                {% elif column.key == "pool" %}
+                                    <td data-col="pool">
+                                        {% if item.pool %}
+                                            {{ item.pool.address }}
+                                        {% elif item.client %}
+                                            {{ item.client.name }}
+                                        {% else %}
+                                            -
+                                        {% endif %}
+                                    </td>
+                                {% elif column.key == "stage" %}
+                                    <td data-col="stage">
+                                        <span class="crm-stage-pill {% if service_done_stage and item.stage == service_done_stage %}crm-stage-pill--done{% endif %}">{{ item.stage_label|default:item.stage }}</span>
+                                    </td>
+                                {% elif column.key == "urgency" %}
+                                    <td data-col="urgency">
+                                        {% if item.urgency %}
+                                            <span class="urgency-badge urgency-{{ item.urgency }}" title="{{ item.get_urgency_display }}" aria-label="{{ item.get_urgency_display }}"></span>
+                                        {% else %}
+                                            <span class="urgency-badge urgency-low" title="Не срочно" aria-label="Не срочно"></span>
+                                        {% endif %}
+                                    </td>
+                                {% elif column.key == "amount" %}
+                                    <td data-col="amount">{{ item.amount_display }}</td>
+                                {% elif column.key == "responsible" %}
+                                    <td data-col="responsible">{% if item.responsible %}{{ item.responsible.get_full_name|default:item.responsible.username }}{% else %}-{% endif %}</td>
+                                {% elif column.key == "description" %}
+                                    <td data-col="description">{% if item.description %}{{ item.description|truncatechars:120 }}{% else %}-{% endif %}</td>
+                                {% elif column.key == "service_works" %}
+                                    <td data-col="service_works">{% if item.service_works %}{{ item.service_works|truncatechars:120 }}{% else %}-{% endif %}</td>
+                                {% elif column.key == "equipment_replacement" %}
+                                    <td data-col="equipment_replacement">{% if item.equipment_replacement %}{{ item.equipment_replacement|truncatechars:120 }}{% else %}-{% endif %}</td>
+                                {% elif column.key == "photo_url" %}
+                                    <td data-col="photo_url">
+                                        {% if item.photo_url %}
+                                            <a href="{{ item.photo_url }}" class="text-decoration-none" target="_blank" rel="noopener">{{ item.photo_url|truncatechars:40 }}</a>
+                                        {% else %}
+                                            -
+                                        {% endif %}
+                                    </td>
+                                {% elif column.key == "organization" %}
+                                    <td data-col="organization">{% if item.organization %}{{ item.organization.name }}{% else %}-{% endif %}</td>
+                                {% endif %}
+                            {% endfor %}
+                            <td data-col="actions" class="text-end text-muted">
+                                <i class="bi bi-chevron-right"></i>
+                            </td>
+                        </tr>
+                    {% empty %}
+                        <tr>
+                            <td data-crm-empty colspan="{{ crm_table_colspan|add:1 }}" class="crm-empty-state text-center">Пока нет записей</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <div class="crm-bulkbar" id="crm-bulkbar">
+            <span class="crm-bulkbar__count"><span class="crm-bulkbar__count-label">Выбрано: </span><span id="crm-selected-count">0</span></span>
+
+            <div class="ui-select"><select class="ui-select__control" id="crm-bulk-stage" name="bulk_stage">
+                <option value="">Изменить этап...</option>
+                {% for value, label in bulk_stage_choices %}
+                    <option value="{{ value }}">{{ label }}</option>
+                {% endfor %}
+            </select></div>
+            <button type="submit" class="btn btn-outline-primary" data-crm-bulk-submit="set_stage" aria-label="Применить этап" title="Применить этап">
+                <i class="bi bi-check2-circle crm-bulkbar__icon-btn"></i>
+                <span class="crm-bulkbar__btn-text">Применить этап</span>
+            </button>
+
+            <div class="ui-select"><select class="ui-select__control" id="crm-bulk-responsible" name="bulk_responsible">
+                <option value="">Назначить ответственного...</option>
+                {% for option in responsible_options %}
+                    <option value="{{ option.id }}">{{ option.name }}</option>
+                {% endfor %}
+            </select></div>
+            <button type="submit" class="btn btn-outline-primary" data-crm-bulk-submit="set_responsible" aria-label="Назначить ответственного" title="Назначить ответственного">
+                <i class="bi bi-person-check crm-bulkbar__icon-btn"></i>
+                <span class="crm-bulkbar__btn-text">Назначить</span>
+            </button>
+            <span class="crm-bulkbar__spacer"></span>
+            <button type="submit" class="btn btn-outline-danger" data-crm-bulk-submit="archive" aria-label="В архив" title="В архив">
+                <i class="bi bi-archive crm-bulkbar__icon-btn"></i>
+                <span class="crm-bulkbar__btn-text">В архив</span>
+            </button>
+            <button type="button" class="btn btn-outline-secondary" id="crm-clear-selection" aria-label="Снять выделение" title="Снять выделение">
+                <i class="bi bi-x-lg crm-bulkbar__icon-btn"></i>
+                <span class="crm-bulkbar__btn-text">Снять выделение</span>
+            </button>
+        </div>
+    </form>
+</div>
+
+<div class="modal fade" id="crm-table-settings" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Настройки таблицы</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-2">
+                    <div class="col-12 col-sm-6">
+                        {% for column in crm_columns %}
+                            {% if forloop.counter0 < 4 %}
+                                <label class="form-check"><input class="form-check-input crm-column-toggle" type="checkbox" value="{{ column.key }}" checked><span class="form-check-label">{{ column.label }}</span></label>
+                            {% endif %}
+                        {% endfor %}
+                    </div>
+                    <div class="col-12 col-sm-6">
+                        {% for column in crm_columns %}
+                            {% if forloop.counter0 >= 4 %}
+                                <label class="form-check"><input class="form-check-input crm-column-toggle" type="checkbox" value="{{ column.key }}" checked><span class="form-check-label">{{ column.label }}</span></label>
+                            {% endif %}
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="crm-columns-reset">Сбросить</button>
+                <button type="button" class="btn btn-primary btn-sm" data-bs-dismiss="modal">Готово</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
+    (function () {
+        const searchRoot = document.querySelector("[data-crm-search]");
+        const searchForm = document.getElementById("crm-toolbar-form");
+        if (!searchRoot || !searchForm) return;
+
+        const searchInput = searchRoot.querySelector("[data-crm-search-input]");
+        const searchClear = searchRoot.querySelector("[data-crm-search-clear]");
+        const filterClear = searchRoot.querySelector("[data-crm-filter-clear]");
+        const responsibleInput = document.getElementById("crm-responsible-input");
+
+        function setOpen(isOpen) {
+            searchRoot.classList.toggle("ui-search--open", isOpen);
+        }
+
+        searchInput?.addEventListener("focus", () => setOpen(true));
+        searchInput?.addEventListener("click", () => setOpen(true));
+        searchInput?.addEventListener("input", () => {
+            if (searchClear) {
+                searchClear.classList.toggle("is-visible", !!searchInput.value);
+            }
+        });
+
+        searchClear?.addEventListener("click", () => {
+            if (!searchInput) return;
+            searchInput.value = "";
+            searchClear.classList.remove("is-visible");
+            searchInput.focus();
+        });
+
+        filterClear?.addEventListener("click", () => {
+            if (!responsibleInput) return;
+            responsibleInput.value = "__all__";
+            searchForm.submit();
+        });
+
+        searchRoot.querySelectorAll("[data-crm-filter-option]").forEach((option) => {
+            option.addEventListener("click", () => {
+                if (!responsibleInput) return;
+                responsibleInput.value = option.dataset.responsibleId || "";
+                searchForm.submit();
+            });
+        });
+
+        document.addEventListener("click", (event) => {
+            if (!searchRoot.contains(event.target)) {
+                setOpen(false);
+            }
+        });
+    })();
+
     (function () {
         const table = document.getElementById("crm-table");
         if (!table) return;
@@ -347,7 +718,7 @@
             const emptyCell = table.querySelector("[data-crm-empty]");
             if (!emptyCell) return;
             const headers = table.querySelectorAll("thead [data-col]");
-            let count = 0;
+            let count = 1;
             headers.forEach((header) => {
                 if (active.has(header.dataset.col)) {
                     count += 1;
@@ -405,6 +776,114 @@
         }
 
         loadColumns();
+    })();
+
+    (function () {
+        const form = document.getElementById("crm-bulk-form");
+        const selectAll = document.getElementById("crm-select-all");
+        const rowCheckboxes = Array.from(document.querySelectorAll(".crm-row-select"));
+        const bulkbar = document.getElementById("crm-bulkbar");
+        const countEl = document.getElementById("crm-selected-count");
+        const clearBtn = document.getElementById("crm-clear-selection");
+        const actionInput = document.getElementById("crm-bulk-action");
+        if (!form || !selectAll || !rowCheckboxes.length || !bulkbar || !countEl || !actionInput) return;
+
+        let longPressTimer = null;
+        let selectionMode = false;
+
+        const isInteractiveTarget = (target) => {
+            return !!target.closest("a, button, input, select, textarea, label");
+        };
+
+        const markRowState = () => {
+            rowCheckboxes.forEach((checkbox) => {
+                const row = checkbox.closest("tr");
+                if (row) {
+                    row.classList.toggle("crm-row-selected", checkbox.checked);
+                }
+            });
+        };
+
+        const syncState = () => {
+            const checked = rowCheckboxes.filter((item) => item.checked);
+            countEl.textContent = String(checked.length);
+            bulkbar.classList.toggle("is-visible", checked.length > 0);
+            selectionMode = checked.length > 0;
+            selectAll.checked = checked.length === rowCheckboxes.length;
+            selectAll.indeterminate = checked.length > 0 && checked.length < rowCheckboxes.length;
+            markRowState();
+        };
+
+        selectAll.addEventListener("change", () => {
+            rowCheckboxes.forEach((item) => {
+                item.checked = selectAll.checked;
+            });
+            syncState();
+        });
+
+        rowCheckboxes.forEach((checkbox) => {
+            checkbox.addEventListener("change", syncState);
+
+            const row = checkbox.closest("tr");
+            if (!row) return;
+            const rowUrl = row.dataset.crmRowUrl;
+
+            row.addEventListener("click", (event) => {
+                if (isInteractiveTarget(event.target)) return;
+                if (selectionMode) {
+                    checkbox.checked = !checkbox.checked;
+                    syncState();
+                    return;
+                }
+                if (rowUrl) {
+                    window.location.href = rowUrl;
+                }
+            });
+
+            row.addEventListener("touchstart", (event) => {
+                if (isInteractiveTarget(event.target)) return;
+                longPressTimer = window.setTimeout(() => {
+                    checkbox.checked = !checkbox.checked;
+                    syncState();
+                }, 420);
+            }, { passive: true });
+
+            ["touchend", "touchmove", "touchcancel"].forEach((eventName) => {
+                row.addEventListener(eventName, () => {
+                    if (longPressTimer) {
+                        window.clearTimeout(longPressTimer);
+                        longPressTimer = null;
+                    }
+                }, { passive: true });
+            });
+        });
+
+        clearBtn?.addEventListener("click", () => {
+            rowCheckboxes.forEach((item) => {
+                item.checked = false;
+            });
+            selectAll.checked = false;
+            selectAll.indeterminate = false;
+            syncState();
+        });
+
+        form.querySelectorAll("[data-crm-bulk-submit]").forEach((button) => {
+            button.addEventListener("click", (event) => {
+                const action = button.getAttribute("data-crm-bulk-submit") || "";
+                actionInput.value = action;
+                if (action === "set_stage" && !document.getElementById("crm-bulk-stage").value) {
+                    event.preventDefault();
+                }
+                if (action === "set_responsible" && !document.getElementById("crm-bulk-responsible").value) {
+                    event.preventDefault();
+                }
+                if (action === "archive" && !window.confirm("Отправить выбранные записи CRM в архив?")) {
+                    event.preventDefault();
+                }
+            });
+        });
+
+        syncState();
     })();
 </script>
 {% endblock %}

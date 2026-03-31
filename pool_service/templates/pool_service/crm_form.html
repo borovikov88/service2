@@ -27,125 +27,15 @@
         {% csrf_token %}
 
         <div class="row g-3">
-
-            <div class="col-12 col-md-8">
-
-                <label class="form-label">&#1053;&#1072;&#1079;&#1074;&#1072;&#1085;&#1080;&#1077;</label>
-
-                {{ form.title }}
-
-                {% if form.title.errors %}<div class="text-danger small">{{ form.title.errors.0 }}</div>{% endif %}
-
-            </div>
-
-            <div class="col-12 col-md-4">
-
-                <label class="form-label">&#1057;&#1091;&#1084;&#1084;&#1072;, &#8381;</label>
-
-                {{ form.amount }}
-
-                {% if form.amount.errors %}<div class="text-danger small">{{ form.amount.errors.0 }}</div>{% endif %}
-
-            </div>
-
-            <div class="col-12 col-md-6">
-
-                <label class="form-label">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;</label>
-
-                {{ form.client }}
-
-                {% if form.client.errors %}<div class="text-danger small">{{ form.client.errors.0 }}</div>{% endif %}
-
-            </div>
-
-            <div class="col-12 col-md-6">
-
-                <label class="form-label">&#1054;&#1073;&#1098;&#1077;&#1082;&#1090;</label>
-
-                {{ form.pool }}
-
-                {% if form.pool.errors %}<div class="text-danger small">{{ form.pool.errors.0 }}</div>{% endif %}
-
-            </div>
-
-            <div class="col-12 col-md-6">
-
-                <label class="form-label">&#1069;&#1090;&#1072;&#1087;</label>
-
-                {{ form.stage }}
-
-                {% if form.stage.errors %}<div class="text-danger small">{{ form.stage.errors.0 }}</div>{% endif %}
-
-            </div>
-
-            {% if direction == "service" %}
-
-            <div class="col-12 col-md-6">
-
-                <label class="form-label">&#1057;&#1088;&#1086;&#1095;&#1085;&#1086;&#1089;&#1090;&#1100;</label>
-
-                {{ form.urgency }}
-
-                {% if form.urgency.errors %}<div class="text-danger small">{{ form.urgency.errors.0 }}</div>{% endif %}
-
-            </div>
-
-            {% endif %}
-
-            <div class="col-12 col-md-6">
-
-                <label class="form-label">&#1054;&#1090;&#1074;&#1077;&#1090;&#1089;&#1090;&#1074;&#1077;&#1085;&#1085;&#1099;&#1081;</label>
-
-                {{ form.responsible }}
-
-                {% if form.responsible.errors %}<div class="text-danger small">{{ form.responsible.errors.0 }}</div>{% endif %}
-
-            </div>
-
-            <div class="col-12">
-
-                <label class="form-label">&#1054;&#1087;&#1080;&#1089;&#1072;&#1085;&#1080;&#1077;</label>
-
-                {{ form.description }}
-
-                {% if form.description.errors %}<div class="text-danger small">{{ form.description.errors.0 }}</div>{% endif %}
-
-            </div>
-
-            {% if direction == "service" %}
-
-                <div class="col-12">
-
-                    <label class="form-label">&#1042;&#1099;&#1087;&#1086;&#1083;&#1085;&#1077;&#1085;&#1085;&#1099;&#1077; &#1088;&#1072;&#1073;&#1086;&#1090;&#1099;</label>
-
-                    {{ form.service_works }}
-
-                    {% if form.service_works.errors %}<div class="text-danger small">{{ form.service_works.errors.0 }}</div>{% endif %}
-
-                </div>
-
-                <div class="col-12">
-
-                    <label class="form-label">&#1047;&#1072;&#1084;&#1077;&#1085;&#1072; &#1086;&#1073;&#1086;&#1088;&#1091;&#1076;&#1086;&#1074;&#1072;&#1085;&#1080;&#1103;</label>
-
-                    {{ form.equipment_replacement }}
-
-                    {% if form.equipment_replacement.errors %}<div class="text-danger small">{{ form.equipment_replacement.errors.0 }}</div>{% endif %}
-
-                </div>
-
-                <div class="col-12">
-
-                    <label class="form-label">&#1060;&#1086;&#1090;&#1086; (&#1089;&#1089;&#1099;&#1083;&#1082;&#1072;)</label>
-
-                    {{ form.photo_url }}
-
-                    {% if form.photo_url.errors %}<div class="text-danger small">{{ form.photo_url.errors.0 }}</div>{% endif %}
-
-                </div>
-
-            {% endif %}
-
+            {% for row in crm_form_layout %}
+                {% for cell in row %}
+                    <div class="{{ cell.width }}">
+                        <label class="form-label">{{ cell.label }}</label>
+                        {{ cell.bound_field }}
+                        {% if cell.bound_field.errors %}<div class="text-danger small">{{ cell.bound_field.errors.0 }}</div>{% endif %}
+                    </div>
+                {% endfor %}
+            {% endfor %}
         </div>
 
             <div class="d-flex gap-2 mt-3">

@@ -11,6 +11,7 @@ from pool_service.models import (
     ServiceTask,
     ServiceTaskChange,
 )
+from pool_service.services.task_archive import archive_task, restore_task
 from pool_service.services.notifications import notify_task_assignment, notify_users
 
 
@@ -181,18 +182,16 @@ def sync_task_with_crm_item(task):
     if not task or not task.crm_item_id:
         return task
     crm_item = task.crm_item
-    changed = []
     if crm_item.direction == CrmItem.DIRECTION_SERVICE:
-        if crm_item.stage == CrmItem.STAGE_SERVICE_DONE and not task.completed_at:
-            task.completed_at = timezone.now()
-            task.completed_by = crm_item.responsible or task.completed_by
-            changed.extend(["completed_at", "completed_by"])
-        elif crm_item.stage != CrmItem.STAGE_SERVICE_DONE and task.completed_at:
-            task.completed_at = None
-            task.completed_by = None
-            changed.extend(["completed_at", "completed_by"])
-    if changed:
-        task.save(update_fields=[*changed, "updated_at"])
+        if crm_item.stage == CrmItem.STAGE_SERVICE_DONE:
+            archive_task(task, ServiceTask.ARCHIVE_REASON_COMPLETED, crm_item.responsible or task.completed_by)
+        else:
+            if task.completed_at:
+                task.completed_at = None
+                task.completed_by = None
+                task.save(update_fields=["completed_at", "completed_by", "updated_at"])
+            if task.is_archived and task.archived_reason == ServiceTask.ARCHIVE_REASON_COMPLETED:
+                restore_task(task)
     return task
 
 
@@ -208,6 +207,7 @@ def create_supply_task_from_reading(reading):
         ServiceTask.objects.filter(
             water_reading=reading,
             task_type=ServiceTask.TYPE_SUPPLY_REQUEST,
+            is_archived=False,
             status__in=[
                 ServiceTask.STATUS_NEW,
                 ServiceTask.STATUS_IN_PROGRESS,

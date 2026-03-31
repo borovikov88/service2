@@ -163,6 +163,464 @@
       background: #fff;
     }
 
+    .ui-toolbar-card {
+      border-radius: 28px;
+      border: 1px solid #e7eef8;
+      background:
+        radial-gradient(circle at top right, rgba(59, 130, 246, 0.08), transparent 32%),
+        linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+      box-shadow: 0 18px 42px rgba(15, 23, 42, 0.06);
+    }
+    .ui-toolbar-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+    }
+    .ui-toolbar-main {
+      min-width: 0;
+    }
+    .ui-toolbar-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .ui-search {
+      position: relative;
+      min-width: 0;
+    }
+    .ui-search__field {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 36px;
+      padding: 6px 12px;
+      background: #ffffff;
+      border: 1px solid #e2e8f3;
+      border-radius: 999px;
+      box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.02);
+    }
+    .ui-search__field > i {
+      color: #0f172a;
+      font-size: 1rem;
+      flex: 0 0 auto;
+    }
+    .ui-search__input {
+      border: none;
+      background: transparent;
+      outline: none;
+      width: 100%;
+      flex: 1 1 160px;
+      min-width: 140px;
+      font-size: 0.85rem;
+      color: #1f2d3d;
+      padding: 0;
+      box-shadow: none;
+    }
+    .ui-search__input::-webkit-search-cancel-button,
+    .ui-search__input::-webkit-search-decoration {
+      -webkit-appearance: none;
+      appearance: none;
+    }
+    .ui-search__input[type="search"] {
+      appearance: textfield;
+    }
+    .ui-search__input::placeholder {
+      color: #94a3b8;
+    }
+    .ui-search__clear {
+      border: none;
+      background: transparent;
+      color: #9aa6b2;
+      font-size: 0.85rem;
+      padding: 0;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+      width: 20px;
+      height: 20px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+    }
+    .ui-search__clear.is-visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .ui-search__tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #e7f0ff;
+      color: #1d4f9c;
+      font-size: 0.7rem;
+      white-space: nowrap;
+      max-width: 200px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex: 0 0 auto;
+    }
+    .ui-search__tag-clear {
+      border: none;
+      background: transparent;
+      color: inherit;
+      font-size: 0.7rem;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .ui-search__dropdown {
+      position: absolute;
+      top: calc(100% + 8px);
+      left: 0;
+      right: 0;
+      background: #ffffff;
+      border: 1px solid #e6eef5;
+      border-radius: 14px;
+      padding: 8px;
+      box-shadow: 0 14px 30px rgba(15, 23, 42, 0.12);
+      display: none;
+      z-index: 30;
+    }
+    .ui-search--open .ui-search__dropdown {
+      display: block;
+    }
+    .ui-search__dropdown-title {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: #94a3b8;
+      margin-bottom: 6px;
+    }
+    .ui-search__option {
+      width: 100%;
+      border: none;
+      background: #f7f9fc;
+      border-radius: 10px;
+      padding: 8px 10px;
+      text-align: left;
+      font-size: 0.82rem;
+      color: #1f2d3d;
+      margin-bottom: 6px;
+    }
+    .ui-search__option:last-child {
+      margin-bottom: 0;
+    }
+    .ui-search__option.is-active {
+      background: #e7f0ff;
+      color: #1d4f9c;
+      font-weight: 600;
+    }
+    .ui-search__empty {
+      padding: 8px;
+      font-size: 0.8rem;
+      color: #94a3b8;
+    }
+    .ui-chipbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .ui-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-weight: 600;
+      font-size: 0.88rem;
+      background: #eaf3ff;
+      color: #1d4ed8;
+      text-decoration: none;
+      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+    }
+    .ui-chip--green {
+      background: #eafaf1;
+      color: #1f9254;
+    }
+    .ui-chip--orange {
+      background: #fff5e8;
+      color: #d97706;
+    }
+    .ui-pill-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-height: 36px;
+      padding: 0 12px;
+      border-radius: 999px;
+      border: 1px solid #e2e8f3;
+      background: #fff;
+      color: #516076;
+      font-size: 0.88rem;
+      font-weight: 600;
+      text-decoration: none;
+      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+      white-space: nowrap;
+    }
+    .ui-pill-btn:hover {
+      color: #1d4ed8;
+      border-color: #cfe0ff;
+      background: #f8fbff;
+    }
+    .ui-pill-btn--primary {
+      background: #0d6efd;
+      border-color: #0d6efd;
+      color: #fff;
+    }
+    .ui-pill-btn--primary:hover {
+      color: #fff;
+      background: #0b5ed7;
+      border-color: #0b5ed7;
+    }
+    .ui-pill-btn--danger {
+      color: #dc3545;
+      border-color: rgba(220, 53, 69, 0.28);
+    }
+    .ui-pill-btn--danger:hover {
+      color: #b42318;
+      border-color: rgba(220, 53, 69, 0.45);
+      background: #fff5f5;
+    }
+    .ui-dropdown {
+      position: relative;
+      flex: 0 0 auto;
+    }
+    .ui-dropdown__summary {
+      display: inline-flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-height: 36px;
+      padding: 0 10px;
+      border-radius: 999px;
+      border: 1px solid #e2e8f3;
+      background: #fff;
+      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+      cursor: pointer;
+      list-style: none;
+    }
+    .ui-dropdown__summary::-webkit-details-marker {
+      display: none;
+    }
+    .ui-dropdown__summary::after {
+      content: "\F282";
+      font-family: bootstrap-icons;
+      font-size: 0.72rem;
+      color: #7b8aa0;
+    }
+    .ui-dropdown__value {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: #132238;
+    }
+    .ui-dropdown__menu {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      min-width: 200px;
+      padding: 8px;
+      border-radius: 16px;
+      background: #fff;
+      border: 1px solid #e2e8f3;
+      box-shadow: 0 18px 36px rgba(15, 23, 42, 0.12);
+      z-index: 30;
+      display: none;
+    }
+    .ui-dropdown[open] .ui-dropdown__menu {
+      display: block;
+    }
+    .ui-dropdown__item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      text-decoration: none;
+      color: #516076;
+      font-size: 0.9rem;
+      font-weight: 600;
+      border: none;
+      background: transparent;
+      width: 100%;
+      text-align: left;
+    }
+    .ui-dropdown__item:hover {
+      background: #f5f8fd;
+      color: #1d4ed8;
+    }
+    .ui-dropdown__item.is-active {
+      background: #eef4ff;
+      color: #1d4ed8;
+    }
+    .crm-nav {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding-bottom: 10px;
+      margin-bottom: -10px;
+    }
+    .crm-nav__link {
+      text-decoration: none;
+      color: inherit;
+    }
+    .crm-nav__toggle {
+      display: inline-flex;
+      align-items: center;
+      color: #7b8aa0;
+      font-size: 0.78rem;
+      transition: color 0.2s ease, transform 0.2s ease;
+    }
+    .crm-nav__menu {
+      position: absolute;
+      top: calc(100% - 2px);
+      left: 0;
+      min-width: 220px;
+      padding: 8px;
+      border-radius: 16px;
+      background: #fff;
+      border: 1px solid #e2e8f3;
+      box-shadow: 0 18px 36px rgba(15, 23, 42, 0.12);
+      z-index: 40;
+      display: none;
+    }
+    .crm-nav:hover .crm-nav__menu,
+    .crm-nav:focus-within .crm-nav__menu {
+      display: block;
+    }
+    .crm-nav:hover .crm-nav__toggle,
+    .crm-nav:focus-within .crm-nav__toggle {
+      color: #1d4ed8;
+      transform: rotate(180deg);
+    }
+    .mobile-submenu {
+      border-radius: 20px;
+      overflow: hidden;
+      border: 1px solid #e2e8f3;
+      background: rgba(255, 255, 255, 0.78);
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+    }
+    .mobile-submenu__summary {
+      list-style: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 16px;
+      cursor: pointer;
+      color: #1f2d3d;
+      font-weight: 600;
+    }
+    .mobile-submenu__summary::-webkit-details-marker {
+      display: none;
+    }
+    .mobile-submenu__summary i {
+      transition: transform 0.2s ease;
+      color: #7b8aa0;
+    }
+    .mobile-submenu[open] .mobile-submenu__summary i {
+      transform: rotate(180deg);
+    }
+    .mobile-submenu__body {
+      display: flex;
+      flex-direction: column;
+      padding: 0 10px 10px;
+      gap: 6px;
+    }
+    .mobile-submenu__item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: 14px;
+      text-decoration: none;
+      color: #516076;
+      font-weight: 600;
+      background: rgba(255, 255, 255, 0.8);
+    }
+    .mobile-submenu__item:hover,
+    .mobile-submenu__item.is-active {
+      background: #eef4ff;
+      color: #1d4ed8;
+    }
+    .ui-select {
+      position: relative;
+      flex: 0 0 auto;
+      min-width: 0;
+    }
+    .ui-select::after {
+      content: "\F282";
+      font-family: bootstrap-icons;
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 0.72rem;
+      color: #7b8aa0;
+      pointer-events: none;
+    }
+    .ui-select__control {
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      min-height: 36px;
+      padding: 0 34px 0 12px;
+      border-radius: 999px;
+      border: 1px solid #e2e8f3;
+      background: #fff;
+      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+      color: #132238;
+      font-size: 0.88rem;
+      font-weight: 600;
+      line-height: 1.2;
+    }
+    .ui-select__control:focus {
+      outline: none;
+      border-color: #cfe0ff;
+      box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.12);
+    }
+    @media (max-width: 992px) {
+      .ui-toolbar-grid {
+        grid-template-columns: 1fr;
+      }
+      .ui-toolbar-actions {
+        justify-content: stretch;
+      }
+    }
+    @media (max-width: 768px) {
+      .ui-toolbar-actions {
+        gap: 8px;
+      }
+      .ui-search__tag {
+        max-width: 150px;
+      }
+      .ui-chipbar {
+        gap: 8px;
+      }
+      .ui-chip,
+      .ui-pill-btn,
+      .ui-dropdown__summary,
+      .ui-select__control {
+        min-height: 34px;
+        font-size: 0.82rem;
+      }
+      .ui-chip {
+        padding: 6px 10px;
+      }
+    }
+
     .mobile-bottom-nav {
       position: fixed;
       left: 12px;
@@ -578,8 +1036,39 @@
             <i class="bi bi-list fs-4"></i>
           </button>
           <nav class="d-none d-lg-flex align-items-center gap-3">
-          {% if can_access_crm %}
-            <a class="text-decoration-none {% if active_tab == 'crm' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'crm_index' %}">CRM</a>
+{% if can_access_crm %}
+            <div class="crm-nav">
+              <a class="crm-nav__link text-decoration-none {% if active_tab == 'crm' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'crm_index' %}">CRM</a>
+              <span class="crm-nav__toggle" aria-hidden="true"><i class="bi bi-chevron-down"></i></span>
+              <div class="crm-nav__menu">
+                <a href="{% url 'crm_tasks' %}" class="ui-dropdown__item {% if request.resolver_match.url_name == 'crm_tasks' %}is-active{% endif %}">
+                  <i class="bi bi-list-task"></i>
+                  <span>Задачи</span>
+                </a>
+                <a href="{% url 'crm_list' direction='service' %}" class="ui-dropdown__item {% if request.resolver_match.kwargs.direction == 'service' %}is-active{% endif %}">
+                  <i class="bi bi-wrench-adjustable"></i>
+                  <span>Сервис</span>
+                </a>
+                {% if not crm_service_only %}
+                <a href="{% url 'crm_list' direction='project' %}" class="ui-dropdown__item {% if request.resolver_match.kwargs.direction == 'project' %}is-active{% endif %}">
+                  <i class="bi bi-building"></i>
+                  <span>Проекты</span>
+                </a>
+                <a href="{% url 'crm_list' direction='sales' %}" class="ui-dropdown__item {% if request.resolver_match.kwargs.direction == 'sales' %}is-active{% endif %}">
+                  <i class="bi bi-graph-up"></i>
+                  <span>Продажи</span>
+                </a>
+                <a href="{% url 'crm_list' direction='tender' %}" class="ui-dropdown__item {% if request.resolver_match.kwargs.direction == 'tender' %}is-active{% endif %}">
+                  <i class="bi bi-journal-check"></i>
+                  <span>Торги</span>
+                </a>
+                <a href="{% url 'clients_list' %}" class="ui-dropdown__item {% if active_tab == 'clients' %}is-active{% endif %}">
+                  <i class="bi bi-people"></i>
+                  <span>Клиенты</span>
+                </a>
+                {% endif %}
+              </div>
+            </div>
           {% endif %}
           {% if not is_personal_user %}
           <a class="text-decoration-none {% if active_tab == 'readings' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="/readings/all">&#1050;&#1072;&#1083;&#1077;&#1085;&#1076;&#1072;&#1088;&#1100;</a>
@@ -714,7 +1203,40 @@
       {% endif %}
       <div class="list-group list-group-flush">
           {% if can_access_crm %}
-          <a href="{% url 'crm_index' %}" class="list-group-item list-group-item-action">CRM</a>
+          <details class="mobile-submenu mb-2">
+            <summary class="mobile-submenu__summary">
+              <span>CRM</span>
+              <i class="bi bi-chevron-down"></i>
+            </summary>
+            <div class="mobile-submenu__body">
+              <a href="{% url 'crm_index' %}" class="mobile-submenu__item {% if request.resolver_match.url_name == 'crm_index' %}is-active{% endif %}">
+                <i class="bi bi-grid-1x2"></i>
+                <span>CRM</span>
+              </a>
+              <a href="{% url 'crm_tasks' %}" class="mobile-submenu__item {% if request.resolver_match.url_name == 'crm_tasks' %}is-active{% endif %}">
+                <i class="bi bi-list-task"></i>
+                <span>Задачи</span>
+              </a>
+              <a href="{% url 'crm_list' direction='service' %}" class="mobile-submenu__item {% if request.resolver_match.kwargs.direction == 'service' %}is-active{% endif %}">
+                <i class="bi bi-wrench-adjustable"></i>
+                <span>Сервис</span>
+              </a>
+              {% if not crm_service_only %}
+              <a href="{% url 'crm_list' direction='project' %}" class="mobile-submenu__item {% if request.resolver_match.kwargs.direction == 'project' %}is-active{% endif %}">
+                <i class="bi bi-building"></i>
+                <span>Проекты</span>
+              </a>
+              <a href="{% url 'crm_list' direction='sales' %}" class="mobile-submenu__item {% if request.resolver_match.kwargs.direction == 'sales' %}is-active{% endif %}">
+                <i class="bi bi-graph-up"></i>
+                <span>Продажи</span>
+              </a>
+              <a href="{% url 'crm_list' direction='tender' %}" class="mobile-submenu__item {% if request.resolver_match.kwargs.direction == 'tender' %}is-active{% endif %}">
+                <i class="bi bi-journal-check"></i>
+                <span>Торги</span>
+              </a>
+              {% endif %}
+            </div>
+          </details>
           {% endif %}
           {% if not is_personal_user %}
           <a href="/readings/all" class="list-group-item list-group-item-action">&#1050;&#1072;&#1083;&#1077;&#1085;&#1076;&#1072;&#1088;&#1100;</a>
@@ -1184,7 +1706,11 @@
     let installPromptFired = false;
     function getStoredInstalled() {
       try {
-        return localStorage.getItem("pwaInstalled") === "1";
+        if (localStorage.getItem("pwaInstalled") === "1") return true;
+      } catch (e) {
+      }
+      try {
+        return document.cookie.split("; ").some((part) => part === "pwaInstalled=1");
       } catch (e) {
         return false;
       }
@@ -1193,10 +1719,16 @@
       try {
         localStorage.removeItem("pwaInstalled");
       } catch (e) {}
+      try {
+        document.cookie = "pwaInstalled=; Max-Age=0; Path=/; SameSite=Lax";
+      } catch (e) {}
     }
     function setStoredInstalled() {
       try {
         localStorage.setItem("pwaInstalled", "1");
+      } catch (e) {}
+      try {
+        document.cookie = "pwaInstalled=1; Max-Age=31536000; Path=/; SameSite=Lax";
       } catch (e) {}
     }
     async function isAppInstalled() {
@@ -1214,7 +1746,7 @@
         } catch (e) {}
       }
       if (getStoredInstalled()) {
-        clearStoredInstalled();
+        return true;
       }
       return false;
     }

@@ -14,6 +14,7 @@ from django.contrib.auth.password_validation import validate_password
 
 from django.core.mail import send_mail
 from django.core import signing
+from django.core.exceptions import PermissionDenied
 
 from django.contrib.auth.decorators import login_required
 
@@ -39,7 +40,7 @@ from django.db.models import Count, Q, Max, Case, When, Value, IntegerField
 
 from django.http import HttpResponse, HttpResponseForbidden, HttpResponseNotFound, JsonResponse
 
-from django.utils import timezone
+from django.utils import timezone, formats
 
 from django.utils.crypto import get_random_string
 
@@ -109,7 +110,11 @@ from .forms import (
 
     CrmServiceIssueForm,
 
+    CRM_DIRECTION_CONFIG,
+
     CRM_STAGE_CHOICES_BY_DIRECTION,
+
+    get_crm_direction_config,
 
     ServiceTaskForm,
 
@@ -130,6 +135,8 @@ from .services.phone_verification import (
 )
 
 from .services.notifications import notify_reading_out_of_range, notify_superusers, notify_task_assignment
+from .services.task_archive import archive_task, restore_task
+from .services.crm_archive import archive_crm_item, restore_crm_item, sync_crm_archive_state
 from .services.task_generation import sync_crm_item_for_task, sync_task_with_crm_item
 
 
@@ -351,54 +358,81 @@ ADMIN_ROLES = ["owner", "admin"]
 ORG_STAFF_ROLES = ["owner", "admin", "service", "manager"]
 
 CRM_ALLOWED_ROLES = {"owner", "admin", "service", "manager"}
+CRM_SERVICE_ONLY_DIRECTIONS = {"service"}
 
 
 
 CRM_DIRECTION_META = {
+    direction: {
+        "label": config["label"],
+        "subtitle": config["subtitle"],
+        "icon": config["icon"],
+    }
+    for direction, config in CRM_DIRECTION_CONFIG.items()
+}
 
-    CrmItem.DIRECTION_SERVICE: {
-
-        "label": "Сервис",
-
-        "subtitle": "Работы, замены и контроль объектов",
-
-        "icon": "bi-wrench-adjustable",
-
-    },
-
-    CrmItem.DIRECTION_PROJECT: {
-
-        "label": "Проекты",
-
-        "subtitle": "Проектные и строительные объекты",
-
-        "icon": "bi-building",
-
-    },
-
-    CrmItem.DIRECTION_SALES: {
-
-        "label": "Продажи",
-
-        "subtitle": "Воронка продаж и сделки",
-
-        "icon": "bi-graph-up",
-
-    },
-
-    CrmItem.DIRECTION_TENDER: {
-
-        "label": "Торги",
-
-        "subtitle": "Конкурсы и тендеры",
-
-        "icon": "bi-journal-check",
-
-    },
-
+CRM_COLUMN_DEFINITIONS = {
+    "title": {"label": "Название"},
+    "date": {"label": "Дата"},
+    "client": {"label": "Клиент"},
+    "pool": {"label": "Объект"},
+    "stage": {"label": "Этап"},
+    "urgency": {"label": "Срочность"},
+    "amount": {"label": "Сумма, ₽"},
+    "responsible": {"label": "Ответственный"},
+    "description": {"label": "Описание"},
+    "service_works": {"label": "Выполненные работы"},
+    "equipment_replacement": {"label": "Замена оборудования"},
+    "photo_url": {"label": "Фото"},
+    "organization": {"label": "Организация"},
 }
 
 CRM_STAGE_LABELS = {value: label for direction in CRM_STAGE_CHOICES_BY_DIRECTION.values() for value, label in direction}
+
+
+def _crm_list_columns(direction, is_superuser=False):
+    config = get_crm_direction_config(direction)
+    columns = []
+    for key in config.get("list_columns", []):
+        definition = CRM_COLUMN_DEFINITIONS.get(key)
+        if definition:
+            columns.append({"key": key, **definition})
+    if is_superuser:
+        columns.append({"key": "organization", **CRM_COLUMN_DEFINITIONS["organization"]})
+    return columns
+
+
+def _crm_form_layout(form, direction):
+    config = get_crm_direction_config(direction)
+    layout = []
+    for row in config.get("form_rows", []):
+        cells = []
+        for field_name, width in row:
+            if field_name not in form.fields:
+                continue
+            cells.append(
+                {
+                    "name": field_name,
+                    "width": width,
+                    "bound_field": form[field_name],
+                    "label": form.fields[field_name].label or field_name.replace("_", " ").capitalize(),
+                }
+            )
+        if cells:
+            layout.append(cells)
+    return layout
+
+
+def _crm_get_item_for_user(request, direction, item_id, include_archived=False):
+    queryset = CrmItem.objects.filter(pk=item_id, direction=direction)
+    if not include_archived:
+        queryset = queryset.filter(is_archived=False)
+    item = get_object_or_404(queryset)
+    if not request.user.is_superuser:
+        org = organization_for_user(request.user)
+        if not org or item.organization_id != org.id:
+            raise PermissionDenied
+    return item
 
 ISSUE_PHOTO_MAX_SIZE = 1600
 ISSUE_PHOTO_JPEG_QUALITY = 82
@@ -443,6 +477,27 @@ def _can_access_crm(user):
     roles = OrganizationAccess.objects.filter(user=user).values_list("role", flat=True)
 
     return any(role in CRM_ALLOWED_ROLES for role in roles)
+
+
+def _crm_user_roles(user):
+    if not user or not user.is_authenticated:
+        return set()
+    if user.is_superuser:
+        return {"superuser"}
+    return set(OrganizationAccess.objects.filter(user=user).values_list("role", flat=True))
+
+
+def _crm_is_service_only(user):
+    roles = _crm_user_roles(user)
+    if "superuser" in roles:
+        return False
+    return "service" in roles and not any(role in {"owner", "admin", "manager"} for role in roles)
+
+
+def _crm_allowed_directions(user):
+    if _crm_is_service_only(user):
+        return set(CRM_SERVICE_ONLY_DIRECTIONS)
+    return set(CRM_DIRECTION_META.keys())
 
 
 
@@ -3446,9 +3501,12 @@ def crm_index(request):
 
 
 
+    allowed_directions = _crm_allowed_directions(request.user)
     primary_cards = []
 
     for key, meta in CRM_DIRECTION_META.items():
+        if key not in allowed_directions:
+            continue
 
         primary_cards.append(
 
@@ -3470,33 +3528,24 @@ def crm_index(request):
 
 
 
-    secondary_cards = [
-
+    secondary_cards = []
+    if not _crm_is_service_only(request.user):
+        secondary_cards.append(
+            {
+                "label": "Клиенты",
+                "subtitle": "Контакты и объекты",
+                "url": reverse("clients_list"),
+                "icon": "bi-people",
+            }
+        )
+    secondary_cards.append(
         {
-
-            "label": "Клиенты",
-
-            "subtitle": "Контакты и объекты",
-
-            "url": reverse("clients_list"),
-
-            "icon": "bi-people",
-
-        },
-
-        {
-
             "label": "Задачи",
-
             "subtitle": "Планирование работ",
-
             "url": reverse("crm_tasks"),
-
             "icon": "bi-list-check",
-
-        },
-
-    ]
+        }
+    )
 
 
 
@@ -3540,30 +3589,125 @@ def crm_tasks(request):
 
         return HttpResponseForbidden()
 
+    org = _crm_get_org_for_request(request)
+    if not org:
+        messages.error(request, "Не найдена организация для задач.")
+        return redirect("crm_index")
 
+    q = (request.GET.get("q") or "").strip()
+    responsible_raw = (request.GET.get("responsible") or "").strip()
+    responsible_query = ""
+    if responsible_raw and responsible_raw != "__all__":
+        responsible_query = responsible_raw
+    elif "responsible" not in request.GET:
+        responsible_query = str(request.user.id)
+    responsible_input_value = responsible_query or "__all__"
+
+    task_qs = (
+        ServiceTask.objects.filter(organization=org)
+        .exclude(is_archived=True, archived_reason=ServiceTask.ARCHIVE_REASON_DELETED)
+        .select_related("client", "pool", "primary_responsible", "created_by")
+        .prefetch_related("responsibles")
+        .order_by("-updated_at", "-id")
+    )
+
+    if not _is_org_admin_or_owner(request.user, org):
+        task_qs = task_qs.filter(
+            Q(created_by=request.user) | Q(primary_responsible=request.user) | Q(responsibles=request.user)
+        ).distinct()
+
+    visible_tasks = list(task_qs)
+    if q:
+        q_lower = q.lower()
+        filtered_tasks = []
+        for task in visible_tasks:
+            haystack = " ".join(
+                filter(
+                    None,
+                    [
+                        task.title,
+                        task.description,
+                        getattr(task.client, "name", ""),
+                        getattr(task.pool, "address", ""),
+                        getattr(task.pool.client, "name", "") if task.pool_id and task.pool and task.pool.client_id else "",
+                    ],
+                )
+            ).lower()
+            if q_lower in haystack:
+                filtered_tasks.append(task)
+        visible_tasks = filtered_tasks
+
+    if responsible_query:
+        try:
+            responsible_id = int(responsible_query)
+        except (TypeError, ValueError):
+            responsible_id = None
+        if responsible_id:
+            visible_tasks = [
+                task
+                for task in visible_tasks
+                if task.primary_responsible_id == responsible_id
+                or any(user.id == responsible_id for user in task.responsibles.all())
+            ]
+
+    active_tasks = [task for task in visible_tasks if not task.is_archived]
+    completed_tasks = [task for task in visible_tasks if task.is_completed_archive]
+
+    type_labels = dict(ServiceTask.TYPE_CHOICES)
+    status_labels = dict(ServiceTask.STATUS_CHOICES)
+    for task in visible_tasks:
+        task.type_label = type_labels.get(task.task_type, task.task_type)
+        task.status_label = status_labels.get(task.status, task.status)
+        task.responsible_label = (
+            task.primary_responsible.get_full_name()
+            if task.primary_responsible and task.primary_responsible.get_full_name()
+            else getattr(task.primary_responsible, "username", "")
+        ) or "Не назначен"
+        task.object_label = (
+            getattr(task.client, "name", "")
+            or (task.pool.client.name if task.pool_id and task.pool and task.pool.client_id else "")
+            or getattr(task.pool, "address", "")
+            or "-"
+        )
+        task.start_display = formats.date_format(task.start_date, "d.m.Y")
+        if task.completed_at:
+            completed_at = timezone.localtime(task.completed_at) if timezone.is_aware(task.completed_at) else task.completed_at
+            task.completed_display = formats.date_format(completed_at, "d.m.Y H:i")
+        else:
+            task.completed_display = ""
+
+    responsible_users_qs = User.objects.filter(
+        organizationaccess__organization=org,
+        organizationaccess__role__in=ORG_STAFF_ROLES,
+    ).distinct().order_by("first_name", "last_name", "username")
+    responsible_options = [{"id": user.id, "name": _task_user_label(user)} for user in responsible_users_qs]
+    selected_responsible_label = next(
+        (option["name"] for option in responsible_options if str(option["id"]) == responsible_query),
+        "",
+    )
 
     return render(
-
         request,
-
         "pool_service/crm_tasks.html",
-
         {
-
-            "page_title": "\u0417\u0430\u0434\u0430\u0447\u0438",
-
-            "page_subtitle": "\u041f\u043b\u0430\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u0438 \u043a\u043e\u043d\u0442\u0440\u043e\u043b\u044c \u0440\u0430\u0431\u043e\u0442",
-
+            "page_title": "Задачи",
+            "page_subtitle": "Планирование и контроль работ",
             "active_tab": "crm",
-
             "show_search": False,
-
             "show_add_button": False,
-
             "add_url": None,
-
+            "page_action_url": reverse("task_create"),
+            "page_action_label": "Создать",
+            "tasks": active_tasks,
+            "tasks_total_count": len(visible_tasks),
+            "tasks_active_count": len(active_tasks),
+            "tasks_completed_count": len(completed_tasks),
+            "search_query": q,
+            "responsible_query": responsible_query,
+            "responsible_input_value": responsible_input_value,
+            "responsible_options": responsible_options,
+            "selected_responsible_label": selected_responsible_label,
         },
-
     )
 
 
@@ -3585,8 +3729,7 @@ def _crm_get_org_for_request(request):
     org_id = request.GET.get("org_id") or request.POST.get("org_id")
 
     if not org_id:
-
-        return None
+        return Organization.objects.order_by("id").first()
 
     return Organization.objects.filter(id=org_id).first()
 
@@ -3606,15 +3749,19 @@ def crm_list(request, direction):
 
         return HttpResponseNotFound("Unknown CRM direction")
 
+    if direction not in _crm_allowed_directions(request.user):
+
+        return HttpResponseForbidden()
+
 
 
     org = _crm_get_org_for_request(request)
 
-    items = CrmItem.objects.filter(direction=direction)
+    base_items = CrmItem.objects.filter(direction=direction)
 
     if org:
 
-        items = items.filter(organization=org)
+        base_items = base_items.filter(organization=org)
 
     elif not request.user.is_superuser:
 
@@ -3622,9 +3769,53 @@ def crm_list(request, direction):
 
 
 
-    items = items.select_related("client", "pool", "responsible", "organization")
+    archived_items = base_items.filter(is_archived=True)
+    items = base_items.filter(is_archived=False).select_related("client", "pool", "responsible", "organization")
 
     search_query = (request.GET.get("q") or "").strip()
+    responsible_raw = (request.GET.get("responsible") or "").strip()
+    responsible_query = ""
+    if responsible_raw and responsible_raw != "__all__":
+        responsible_query = responsible_raw
+    responsible_options = []
+    selected_responsible_label = None
+
+    if org:
+        responsible_users = list(
+            User.objects.filter(
+                is_active=True,
+                organizationaccess__organization=org,
+                organizationaccess__role__in=ORG_STAFF_ROLES,
+            )
+            .distinct()
+            .order_by("last_name", "first_name", "username")
+        )
+        responsible_options = [
+            {
+                "id": str(user.id),
+                "name": (user.get_full_name() or user.username).strip(),
+            }
+            for user in responsible_users
+        ]
+        if "responsible" not in request.GET and not responsible_raw:
+            current_option = next(
+                (option for option in responsible_options if option["id"] == str(request.user.id)),
+                None,
+            )
+            if current_option:
+                responsible_query = current_option["id"]
+                responsible_raw = current_option["id"]
+        if responsible_query:
+            try:
+                responsible_id = int(responsible_query)
+            except (TypeError, ValueError):
+                responsible_id = None
+            if responsible_id:
+                items = items.filter(responsible_id=responsible_id)
+                for option in responsible_options:
+                    if option["id"] == str(responsible_id):
+                        selected_responsible_label = option["name"]
+                        break
 
     if search_query:
 
@@ -3677,6 +3868,8 @@ def crm_list(request, direction):
     sort_fields = {
 
         "title": ["title"],
+
+        "date": ["created_at"],
 
         "client": ["client__name"],
 
@@ -3750,9 +3943,25 @@ def crm_list(request, direction):
 
     items = items.order_by(*order_fields)
 
+    total_count = items.count()
+    archived_count = archived_items.count()
+    done_count = 0
+    if service_done_stage:
+        done_count = archived_items.filter(archived_reason=CrmItem.ARCHIVE_REASON_COMPLETED).count()
+    active_count = total_count
+
     for item in items:
 
         item.stage_label = CRM_STAGE_LABELS.get(item.stage, item.stage)
+        item.date_display = item.created_at.strftime("%d.%m.%Y") if item.created_at else "-"
+        item.amount_display = "-"
+        if item.amount is not None:
+            amount = f"{item.amount:,.2f}".replace(",", " ")
+            if amount.endswith(".00"):
+                amount = amount[:-3]
+            else:
+                amount = amount.replace(".", ",")
+            item.amount_display = f"{amount} ₽"
 
 
 
@@ -3764,33 +3973,36 @@ def crm_list(request, direction):
 
     base_query = query_params.urlencode()
 
-    table_columns = [
-
-        "title",
-
-        "client",
-
-        "pool",
-
-        "stage",
-
-        "amount",
-
-        "responsible",
-
-        "description",
-
-    ]
-
-    if direction == CrmItem.DIRECTION_SERVICE:
-
-        table_columns.extend(["urgency", "service_works", "equipment_replacement", "photo_url"])
-
-    if request.user.is_superuser:
-
-        table_columns.append("organization")
-
+    table_columns = _crm_list_columns(direction, is_superuser=request.user.is_superuser)
     crm_table_colspan = len(table_columns) + 1
+    allowed_directions = _crm_allowed_directions(request.user)
+    crm_menu_items = [
+        {
+            "label": "Задачи",
+            "icon": "bi-list-check",
+            "url": reverse("crm_tasks"),
+            "is_active": False,
+        },
+        *[
+            {
+                "label": direction_meta["label"],
+                "icon": direction_meta["icon"],
+                "url": reverse("crm_list", kwargs={"direction": direction_key}),
+                "is_active": direction_key == direction,
+            }
+            for direction_key, direction_meta in CRM_DIRECTION_META.items()
+            if direction_key in allowed_directions
+        ],
+    ]
+    if not _crm_is_service_only(request.user):
+        crm_menu_items.append(
+            {
+                "label": "Клиенты",
+                "icon": "bi-people",
+                "url": reverse("clients_list"),
+                "is_active": False,
+            }
+        )
 
 
 
@@ -3812,6 +4024,8 @@ def crm_list(request, direction):
 
             "direction_label": CRM_DIRECTION_META[direction]["label"],
 
+            "crm_menu_items": crm_menu_items,
+
             "items": items,
 
             "page_action_label": "\u0421\u043e\u0437\u0434\u0430\u0442\u044c",
@@ -3821,16 +4035,228 @@ def crm_list(request, direction):
 
             "search_query": search_query,
 
+            "responsible_query": responsible_query,
+
+            "responsible_input_value": responsible_raw,
+
+            "responsible_options": responsible_options,
+
+            "selected_responsible_label": selected_responsible_label,
+
             "current_sort": sort_key,
 
             "current_dir": sort_dir,
 
             "base_query": base_query,
 
+            "crm_columns": table_columns,
+
             "crm_table_colspan": crm_table_colspan,
+
+            "crm_total_count": total_count,
+
+            "crm_active_count": active_count,
+
+            "crm_done_count": done_count,
+
+            "crm_archived_count": archived_count,
+
+            "bulk_stage_choices": CRM_STAGE_CHOICES_BY_DIRECTION.get(direction, []),
+
+            "archive_url": reverse("archive_list"),
 
         },
 
+    )
+
+
+@login_required
+def crm_bulk_update(request, direction):
+    if request.method != "POST":
+        return redirect("crm_list", direction=direction)
+
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+    if not _can_access_crm(request.user):
+        return HttpResponseForbidden()
+    if direction not in CRM_DIRECTION_META:
+        return HttpResponseNotFound("Unknown CRM direction")
+    if direction not in _crm_allowed_directions(request.user):
+        return HttpResponseForbidden()
+
+    org = _crm_get_org_for_request(request)
+    if not org and not request.user.is_superuser:
+        return HttpResponseForbidden()
+
+    selected_ids = []
+    for raw_id in request.POST.getlist("item_ids"):
+        try:
+            selected_ids.append(int(raw_id))
+        except (TypeError, ValueError):
+            continue
+    if not selected_ids:
+        messages.warning(request, "Не выбраны записи CRM.")
+        return redirect(_crm_bulk_redirect_url(request, direction))
+
+    items = CrmItem.objects.filter(id__in=selected_ids, direction=direction, is_archived=False)
+    if org:
+        items = items.filter(organization=org)
+
+    items = list(items.select_related("responsible"))
+    if not items:
+        messages.warning(request, "Подходящие записи CRM не найдены.")
+        return redirect(_crm_bulk_redirect_url(request, direction))
+
+    action = (request.POST.get("bulk_action") or "").strip()
+    changed = 0
+
+    if action == "set_stage":
+        stage = (request.POST.get("bulk_stage") or "").strip()
+        allowed = {choice[0] for choice in CRM_STAGE_CHOICES_BY_DIRECTION.get(direction, [])}
+        if stage not in allowed:
+            messages.error(request, "Выберите корректный этап.")
+            return redirect(_crm_bulk_redirect_url(request, direction))
+        for item in items:
+            if item.stage == stage:
+                continue
+            item.stage = stage
+            item.save(update_fields=["stage", "updated_at"])
+            sync_crm_archive_state(item, request.user)
+            if not item.is_archived:
+                for linked_task in item.service_tasks.all():
+                    sync_task_with_crm_item(linked_task)
+            changed += 1
+        messages.success(request, f"Этап обновлён у записей: {changed}.")
+        return redirect(_crm_bulk_redirect_url(request, direction))
+
+    if action == "set_responsible":
+        responsible_raw = (request.POST.get("bulk_responsible") or "").strip()
+        if not responsible_raw:
+            messages.error(request, "Выберите ответственного.")
+            return redirect(_crm_bulk_redirect_url(request, direction))
+        try:
+            responsible_id = int(responsible_raw)
+        except (TypeError, ValueError):
+            messages.error(request, "Выберите корректного ответственного.")
+            return redirect(_crm_bulk_redirect_url(request, direction))
+
+        if org:
+            responsible = User.objects.filter(
+                id=responsible_id,
+                is_active=True,
+                organizationaccess__organization=org,
+                organizationaccess__role__in=ORG_STAFF_ROLES,
+            ).distinct().first()
+        else:
+            responsible = User.objects.filter(id=responsible_id, is_active=True).first()
+        if not responsible:
+            messages.error(request, "Ответственный не найден.")
+            return redirect(_crm_bulk_redirect_url(request, direction))
+
+        for item in items:
+            if item.responsible_id == responsible.id:
+                continue
+            item.responsible = responsible
+            item.save(update_fields=["responsible", "updated_at"])
+            for linked_task in item.service_tasks.all():
+                linked_task.primary_responsible = responsible
+                linked_task.save(update_fields=["primary_responsible", "updated_at"])
+                sync_crm_item_for_task(linked_task)
+            changed += 1
+        messages.success(request, f"Ответственный обновлён у записей: {changed}.")
+        return redirect(_crm_bulk_redirect_url(request, direction))
+
+    if action == "archive":
+        for item in items:
+            archive_crm_item(item, CrmItem.ARCHIVE_REASON_DELETED, request.user)
+            changed += 1
+        messages.success(request, f"В архив отправлено записей: {changed}.")
+        return redirect(_crm_bulk_redirect_url(request, direction))
+
+    messages.warning(request, "Не выбрано действие для массового изменения.")
+    return redirect(_crm_bulk_redirect_url(request, direction))
+
+
+def _crm_bulk_redirect_url(request, direction):
+    query = (request.POST.get("return_query") or "").strip()
+    base_url = reverse("crm_list", kwargs={"direction": direction})
+    if query:
+        return f"{base_url}?{query}"
+    return base_url
+
+
+@login_required
+def crm_view(request, direction, item_id):
+    if not _can_access_crm(request.user):
+        return HttpResponseForbidden()
+    if direction not in CRM_DIRECTION_META:
+        return HttpResponseNotFound("Unknown CRM direction")
+    if direction not in _crm_allowed_directions(request.user):
+        return HttpResponseForbidden()
+    if request.GET.get("edit") == "1":
+        return redirect("crm_edit", direction=direction, item_id=item_id)
+
+    item = _crm_get_item_for_user(request, direction, item_id, include_archived=True)
+    item.stage_label = CRM_STAGE_LABELS.get(item.stage, item.stage)
+    item.amount_display = "-"
+    if item.amount is not None:
+        amount = f"{item.amount:,.2f}".replace(",", " ")
+        if amount.endswith(".00"):
+            amount = amount[:-3]
+        else:
+            amount = amount.replace(".", ",")
+        item.amount_display = f"{amount} ₽"
+
+    item_photo_urls = []
+    for photo in item.photos.all():
+        if photo.image:
+            item_photo_urls.append(photo.image.url)
+    if item.photo:
+        item_photo_urls.append(item.photo.url)
+    if item.photo_url:
+        item_photo_urls.append(item.photo_url)
+
+    related_tasks = list(
+        item.service_tasks.select_related("pool", "client", "primary_responsible").order_by("-updated_at")
+    )
+
+    archive_state = None
+    if item.is_archived:
+        archive_state = {
+            "label": "В архиве",
+            "description": "CRM-запись находится в архиве и доступна только для просмотра.",
+        }
+        if item.archived_reason == CrmItem.ARCHIVE_REASON_COMPLETED:
+            archive_state = {
+                "label": "Завершено",
+                "description": "CRM-запись завершена и перемещена в архив.",
+            }
+        elif item.archived_reason == CrmItem.ARCHIVE_REASON_DELETED:
+            archive_state = {
+                "label": "Удалено",
+                "description": "CRM-запись архивирована как удалённая.",
+            }
+
+    return render(
+        request,
+        "pool_service/crm_view.html",
+        {
+            "page_title": item.title,
+            "page_subtitle": CRM_DIRECTION_META[direction]["subtitle"],
+            "active_tab": "crm",
+            "direction": direction,
+            "direction_label": CRM_DIRECTION_META[direction]["label"],
+            "item": item,
+            "archive_state": archive_state,
+            "crm_edit_url": reverse("crm_edit", kwargs={"direction": direction, "item_id": item.id}),
+            "archive_url": reverse("archive_list"),
+            "item_photo_urls": item_photo_urls,
+            "related_tasks": related_tasks,
+        },
     )
 
 @login_required
@@ -3856,6 +4282,10 @@ def crm_create(request, direction):
     if direction not in CRM_DIRECTION_META:
 
         return HttpResponseNotFound("Unknown CRM direction")
+
+    if direction not in _crm_allowed_directions(request.user):
+
+        return HttpResponseForbidden()
 
 
 
@@ -3888,6 +4318,7 @@ def crm_create(request, direction):
                 item.stage = CRM_STAGE_CHOICES_BY_DIRECTION[direction][0][0]
 
             item.save()
+            sync_crm_archive_state(item, request.user)
 
             messages.success(request, "Запись CRM создана.")
 
@@ -3918,6 +4349,8 @@ def crm_create(request, direction):
             "direction_label": CRM_DIRECTION_META[direction]["label"],
 
             "form": form,
+
+            "crm_form_layout": _crm_form_layout(form, direction),
 
         },
 
@@ -3951,9 +4384,13 @@ def crm_edit(request, direction, item_id):
 
         return HttpResponseNotFound("Unknown CRM direction")
 
+    if direction not in _crm_allowed_directions(request.user):
+
+        return HttpResponseForbidden()
 
 
-    item = get_object_or_404(CrmItem, pk=item_id, direction=direction)
+
+    item = get_object_or_404(CrmItem, pk=item_id, direction=direction, is_archived=False)
 
     if not request.user.is_superuser:
 
@@ -3976,9 +4413,11 @@ def crm_edit(request, direction, item_id):
         if form.is_valid():
 
             item = form.save()
-            linked_tasks = list(item.service_tasks.all())
-            for linked_task in linked_tasks:
-                sync_task_with_crm_item(linked_task)
+            sync_crm_archive_state(item, request.user)
+            if not item.is_archived:
+                linked_tasks = list(item.service_tasks.all())
+                for linked_task in linked_tasks:
+                    sync_task_with_crm_item(linked_task)
 
             messages.success(request, "Запись CRM обновлена.")
 
@@ -4030,6 +4469,8 @@ def crm_edit(request, direction, item_id):
 
             "item": item,
 
+            "crm_form_layout": _crm_form_layout(form, direction),
+
             "item_photo_urls": item_photo_urls,
 
             "item_photo_urls_json": json.dumps(item_photo_urls, ensure_ascii=False),
@@ -4037,6 +4478,222 @@ def crm_edit(request, direction, item_id):
         },
 
     )
+
+
+@login_required
+def archive_list(request):
+    org = _crm_get_org_for_request(request)
+    if not org and not request.user.is_superuser:
+        return HttpResponseForbidden()
+
+    kind = (request.GET.get("kind") or "all").strip()
+    reason = (request.GET.get("reason") or "").strip()
+
+    archived_tasks = ServiceTask.objects.filter(is_archived=True).select_related(
+        "organization", "pool", "client", "archived_by", "primary_responsible"
+    )
+    archived_crm_items = CrmItem.objects.filter(is_archived=True).select_related(
+        "organization", "pool", "client", "archived_by", "responsible"
+    )
+
+    if org:
+        archived_tasks = archived_tasks.filter(organization=org)
+        archived_crm_items = archived_crm_items.filter(organization=org)
+
+    if reason:
+        archived_tasks = archived_tasks.filter(archived_reason=reason)
+        archived_crm_items = archived_crm_items.filter(archived_reason=reason)
+
+    archived_tasks = archived_tasks.order_by("-archived_at", "-updated_at")
+    archived_crm_items = archived_crm_items.order_by("-archived_at", "-updated_at")
+
+    return render(
+        request,
+        "pool_service/archive.html",
+        {
+            "page_title": "Архив",
+            "page_subtitle": "Завершённые и удалённые задачи и CRM-записи",
+            "active_tab": "crm",
+            "kind": kind,
+            "reason": reason,
+            "show_tasks": kind in {"all", "tasks"},
+            "show_crm": kind in {"all", "crm"},
+            "archived_tasks": archived_tasks,
+            "archived_crm_items": archived_crm_items,
+            "archive_total_count": archived_tasks.count() + archived_crm_items.count(),
+            "archive_task_count": archived_tasks.count(),
+            "archive_crm_count": archived_crm_items.count(),
+        },
+    )
+
+
+@login_required
+@require_POST
+def archive_restore_task(request, task_id):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+
+    task = get_object_or_404(ServiceTask, pk=task_id, is_archived=True)
+    if not _task_can_view(task, request.user):
+        return HttpResponseForbidden()
+
+    if task.archived_reason == ServiceTask.ARCHIVE_REASON_COMPLETED and task.completed_at:
+        task.completed_at = None
+        task.completed_by = None
+        task.save(update_fields=["completed_at", "completed_by", "updated_at"])
+    restore_task(task, request.user)
+    messages.success(request, "Задача восстановлена из архива.")
+    return redirect("archive_list")
+
+
+@login_required
+@require_POST
+def archive_restore_crm_item(request, item_id):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+    if not _can_access_crm(request.user):
+        return HttpResponseForbidden()
+
+    item = get_object_or_404(CrmItem, pk=item_id, is_archived=True)
+    if not request.user.is_superuser:
+        org = organization_for_user(request.user)
+        if not org or item.organization_id != org.id:
+            return HttpResponseForbidden()
+
+    restore_crm_item(item, request.user)
+    messages.success(request, "CRM-запись восстановлена из архива.")
+    return redirect("archive_list")
+
+
+@login_required
+@require_POST
+def archive_bulk_update(request):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+
+    org = _crm_get_org_for_request(request)
+    if not org and not request.user.is_superuser:
+        return HttpResponseForbidden()
+
+    action = (request.POST.get("archive_action") or "").strip()
+    task_ids = []
+    item_ids = []
+    for raw_id in request.POST.getlist("task_ids"):
+        try:
+            task_ids.append(int(raw_id))
+        except (TypeError, ValueError):
+            continue
+    for raw_id in request.POST.getlist("item_ids"):
+        try:
+            item_ids.append(int(raw_id))
+        except (TypeError, ValueError):
+            continue
+
+    tasks = ServiceTask.objects.filter(id__in=task_ids, is_archived=True)
+    items = CrmItem.objects.filter(id__in=item_ids, is_archived=True)
+    if org:
+        tasks = tasks.filter(organization=org)
+        items = items.filter(organization=org)
+
+    tasks = list(tasks)
+    items = list(items)
+    if not tasks and not items:
+        messages.warning(request, "Не выбраны архивные записи.")
+        return redirect("archive_list")
+
+    changed = 0
+    if action == "restore":
+        for task in tasks:
+            if task.archived_reason == ServiceTask.ARCHIVE_REASON_COMPLETED and task.completed_at:
+                task.completed_at = None
+                task.completed_by = None
+                task.save(update_fields=["completed_at", "completed_by", "updated_at"])
+            restore_task(task, request.user)
+            changed += 1
+        for item in items:
+            restore_crm_item(item, request.user)
+            changed += 1
+        messages.success(request, f"Восстановлено записей: {changed}.")
+        return redirect("archive_list")
+
+    if action == "delete_forever":
+        for task in tasks:
+            if task.archived_reason != ServiceTask.ARCHIVE_REASON_DELETED:
+                continue
+            task.delete()
+            changed += 1
+        for item in items:
+            if item.archived_reason != CrmItem.ARCHIVE_REASON_DELETED:
+                continue
+            item.delete()
+            changed += 1
+        messages.success(request, f"Удалено навсегда записей: {changed}.")
+        return redirect("archive_list")
+
+    messages.warning(request, "Не выбрано действие архива.")
+    return redirect("archive_list")
+
+
+@login_required
+@require_POST
+def archive_delete_task_forever(request, task_id):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+
+    task = get_object_or_404(
+        ServiceTask,
+        pk=task_id,
+        is_archived=True,
+        archived_reason=ServiceTask.ARCHIVE_REASON_DELETED,
+    )
+    if not _task_can_view(task, request.user):
+        return HttpResponseForbidden()
+    task.delete()
+    messages.success(request, "Задача удалена навсегда.")
+    return redirect("archive_list")
+
+
+@login_required
+@require_POST
+def archive_delete_crm_item_forever(request, item_id):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+    if not _can_access_crm(request.user):
+        return HttpResponseForbidden()
+
+    item = get_object_or_404(
+        CrmItem,
+        pk=item_id,
+        is_archived=True,
+        archived_reason=CrmItem.ARCHIVE_REASON_DELETED,
+    )
+    if not request.user.is_superuser:
+        org = organization_for_user(request.user)
+        if not org or item.organization_id != org.id:
+            return HttpResponseForbidden()
+    item.delete()
+    messages.success(request, "CRM-запись удалена навсегда.")
+    return redirect("archive_list")
 
 
 
@@ -5595,7 +6252,7 @@ def pool_detail(request, pool_uuid):
             ServiceTask.objects.filter(
                 water_reading_id__in=reading_ids,
                 task_type=ServiceTask.TYPE_SUPPLY_REQUEST,
-            )
+            ).filter(_task_history_visibility_filter())
             .select_related("primary_responsible", "crm_item", "water_reading")
             .prefetch_related("responsibles")
             .order_by("-created_at")
@@ -5972,6 +6629,17 @@ def _task_can_edit(task, user):
     return task.responsibles.filter(id=user.id).exists()
 
 
+def _task_can_view(task, user):
+    return _task_can_edit(task, user)
+
+
+def _task_history_visibility_filter():
+    return Q(is_archived=False) | Q(
+        is_archived=True,
+        archived_reason=ServiceTask.ARCHIVE_REASON_COMPLETED,
+    )
+
+
 def _record_task_change(task, user, action, field_name="", old_value="", new_value=""):
     ServiceTaskChange.objects.create(
         task=task,
@@ -6053,9 +6721,7 @@ def task_create(request):
                 new_value=task.title,
             )
             if form.cleaned_data.get("is_completed"):
-                task.completed_at = timezone.now()
-                task.completed_by = request.user
-                task.save(update_fields=["completed_at", "completed_by", "updated_at"])
+                archive_task(task, ServiceTask.ARCHIVE_REASON_COMPLETED, request.user)
                 _record_task_change(
                     task,
                     request.user,
@@ -6106,10 +6772,13 @@ def task_edit(request, task_id):
         return blocked
 
     is_modal = _is_modal_request(request)
+    is_edit_mode = request.method == "POST" or request.GET.get("edit") == "1"
 
     task = get_object_or_404(ServiceTask, pk=task_id)
-    if not _task_can_edit(task, request.user):
+    if not _task_can_view(task, request.user):
         return HttpResponseForbidden()
+    if task.is_archived:
+        is_edit_mode = False
 
     next_url = request.GET.get("next") or request.POST.get("next") or ""
     allowed_responsible_ids = set(
@@ -6137,6 +6806,11 @@ def task_edit(request, task_id):
     old_responsibles = list(task.responsibles.all())
     old_responsible_ids = {user.id for user in old_responsibles}
     old_completed = bool(task.completed_at)
+
+    if request.method == "POST" and task.is_archived:
+        if is_modal:
+            return JsonResponse({"ok": False, "error": "archived_task"}, status=403)
+        return HttpResponseForbidden()
 
     if request.method == "POST":
         post_data = request.POST.copy()
@@ -6195,16 +6869,16 @@ def task_edit(request, task_id):
 
             is_completed = bool(form.cleaned_data.get("is_completed"))
             if is_completed and not old_completed:
-                task.completed_at = timezone.now()
-                task.completed_by = request.user
-                task.save(update_fields=["completed_at", "completed_by", "updated_at"])
-                sync_crm_item_for_task(task)
+                archive_task(task, ServiceTask.ARCHIVE_REASON_COMPLETED, request.user)
                 _record_task_change(task, request.user, ServiceTaskChange.ACTION_COMPLETED)
             elif not is_completed and old_completed:
                 task.completed_at = None
                 task.completed_by = None
                 task.save(update_fields=["completed_at", "completed_by", "updated_at"])
-                sync_crm_item_for_task(task)
+                if task.is_archived and task.archived_reason == ServiceTask.ARCHIVE_REASON_COMPLETED:
+                    restore_task(task, request.user)
+                else:
+                    sync_crm_item_for_task(task)
                 _record_task_change(task, request.user, ServiceTaskChange.ACTION_REOPENED)
             else:
                 sync_crm_item_for_task(task)
@@ -6246,6 +6920,113 @@ def task_edit(request, task_id):
     if required_responsible_id and str(required_responsible_id) not in selected_responsibles:
         selected_responsibles.append(str(required_responsible_id))
     has_time = bool(form["start_time"].value() or form["end_time"].value())
+    task_edit_url = f'{reverse("task_edit", kwargs={"task_id": task.id})}?edit=1'
+    if not is_edit_mode:
+        participants = list(task.responsibles.all())
+        is_completed = bool(task.completed_at)
+        if task.crm_item_id and task.crm_item and task.crm_item.stage == CrmItem.STAGE_SERVICE_DONE:
+            is_completed = True
+        status_text = "Выполнена" if is_completed else dict(ServiceTask.STATUS_CHOICES).get(task.status, "Открыта")
+        status_variant = "done" if is_completed else "open"
+        if not is_completed and task.status == ServiceTask.STATUS_WAITING:
+            status_variant = "waiting"
+        elif not is_completed and task.status == ServiceTask.STATUS_CANCELLED:
+            status_variant = "cancelled"
+        elif not is_completed and task.status == ServiceTask.STATUS_IN_PROGRESS:
+            status_variant = "progress"
+
+        priority_text = dict(ServiceTask.PRIORITY_CHOICES).get(task.priority, "Обычный")
+        priority_variant = "high" if task.priority == ServiceTask.PRIORITY_HIGH else "normal"
+
+        type_text = dict(ServiceTask.TYPE_CHOICES).get(task.task_type, "Задача")
+
+        period_text = task.start_date.strftime("%d.%m.%Y") if task.start_date else "-"
+        if task.end_date and task.end_date != task.start_date:
+            period_text = f"{period_text} — {task.end_date:%d.%m.%Y}"
+
+        time_text = "-"
+        if task.start_time or task.end_time:
+            start_time = task.start_time.strftime("%H:%M") if task.start_time else "--:--"
+            end_time = task.end_time.strftime("%H:%M") if task.end_time else ""
+            time_text = f"{start_time} — {end_time}" if end_time else start_time
+
+        due_text = "-"
+        due_variant = "muted"
+        if task.due_at:
+            due_value = timezone.localtime(task.due_at) if timezone.is_aware(task.due_at) else task.due_at
+            due_text = due_value.strftime("%d.%m.%Y %H:%M")
+            now_value = timezone.now()
+            now_local = timezone.localtime(now_value) if timezone.is_aware(now_value) else now_value
+            if task.due_at < now_value and not is_completed:
+                due_variant = "danger"
+            elif due_value.date() == now_local.date():
+                due_variant = "warning"
+            else:
+                due_variant = "info"
+
+        object_name = ""
+        object_url = ""
+        if task.pool_id and task.pool:
+            object_name = task.client.name if task.client_id and task.client else task.pool.address
+            object_url = reverse("pool_detail", kwargs={"pool_uuid": task.pool.uuid})
+
+        client_name = task.client.name if task.client_id and task.client else "-"
+        crm_url = ""
+        if task.crm_item_id and task.crm_item:
+            crm_url = reverse("crm_edit", kwargs={"direction": task.crm_item.direction, "item_id": task.crm_item.id})
+
+        reading_url = ""
+        reading_title = ""
+        if task.water_reading_id and task.water_reading:
+            reading_url = reverse("water_reading_edit", kwargs={"reading_uuid": task.water_reading.uuid})
+            reading_title = task.water_reading.date.strftime("%d.%m.%Y %H:%M") if task.water_reading.date else "Открыть запись"
+
+        creator_text = "-"
+        if task.created_by_id and task.created_by:
+            creator_text = task.created_by.get_full_name() or task.created_by.username
+
+        primary_responsible_text = "-"
+        if task.primary_responsible_id and task.primary_responsible:
+            primary_responsible_text = task.primary_responsible.get_full_name() or task.primary_responsible.username
+
+        context = {
+            "task": task,
+            "page_title": task.title,
+            "page_subtitle": "\u041f\u0440\u043e\u0441\u043c\u043e\u0442\u0440 \u0437\u0430\u0434\u0430\u0447\u0438",
+            "active_tab": "readings",
+            "next_url": next_url,
+            "show_history": True,
+            "history": history,
+            "is_modal": is_modal,
+            "can_delete_task": task.created_by_id == request.user.id and not task.is_archived,
+            "can_edit_task": _task_can_edit(task, request.user) and not task.is_archived,
+            "task_edit_url": task_edit_url,
+            "task_is_completed": is_completed,
+            "task_is_archived": task.is_archived,
+            "task_archive_reason": task.archived_reason,
+            "task_archive_at": task.archived_at,
+            "participants": participants,
+            "task_status_text": status_text,
+            "task_status_variant": status_variant,
+            "task_priority_text": priority_text,
+            "task_priority_variant": priority_variant,
+            "task_type_text": type_text,
+            "task_period_text": period_text,
+            "task_time_text": time_text,
+            "task_due_text": due_text,
+            "task_due_variant": due_variant,
+            "task_object_name": object_name,
+            "task_object_url": object_url,
+            "task_client_name": client_name,
+            "task_crm_url": crm_url,
+            "task_reading_url": reading_url,
+            "task_reading_title": reading_title,
+            "task_creator_text": creator_text,
+            "task_primary_responsible_text": primary_responsible_text,
+        }
+        template_name = "pool_service/task_view_modal.html" if is_modal else "pool_service/task_view.html"
+        return render(request, template_name, context)
+
     modal_title = "" if is_modal else "\u0420\u0435\u0434\u0430\u043a\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u0437\u0430\u0434\u0430\u0447\u0438"
     context = {
         "form": form,
@@ -6262,8 +7043,9 @@ def task_edit(request, task_id):
         "is_modal": is_modal,
         "required_responsible_id": required_responsible_id,
         "has_time": has_time,
-        "can_delete_task": task.created_by_id == request.user.id,
+        "can_delete_task": task.created_by_id == request.user.id and not task.is_archived,
         "modal_title": modal_title,
+        "task_edit_url": task_edit_url,
     }
     template_name = "pool_service/task_form_modal.html" if is_modal else "pool_service/task_form.html"
     status_code = 400 if request.method == "POST" and not form.is_valid() and is_modal else 200
@@ -6290,8 +7072,8 @@ def task_delete(request, task_id):
     if next_url and not next_url.startswith("/"):
         next_url = ""
 
-    task.delete()
-    messages.success(request, "Задача удалена.")
+    archive_task(task, ServiceTask.ARCHIVE_REASON_DELETED, request.user)
+    messages.success(request, "Задача отправлена в архив.")
 
     if request.POST.get("modal") == "1":
         return JsonResponse({"ok": True, "deleted": True})
@@ -6330,6 +7112,8 @@ def task_move(request):
     task = get_object_or_404(ServiceTask, pk=task_id)
     if not _task_can_edit(task, request.user):
         return JsonResponse({"ok": False, "error": "forbidden"}, status=403)
+    if task.is_archived:
+        return JsonResponse({"ok": False, "error": "archived_task"}, status=400)
     if task.completed_at:
         return JsonResponse({"ok": False, "error": "completed_task"}, status=400)
 
@@ -6984,7 +7768,7 @@ def readings_all(request):
     task_search_index = []
 
     if task_org:
-        task_qs = ServiceTask.objects.filter(organization=task_org)
+        task_qs = ServiceTask.objects.filter(organization=task_org, is_archived=False)
         if not can_view_all_org_tasks:
             task_qs = task_qs.filter(responsibles=request.user)
         if responsible_filter_set:

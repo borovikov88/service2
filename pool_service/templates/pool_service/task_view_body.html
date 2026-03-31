@@ -1,0 +1,377 @@
+<style>
+  .task-view {
+    gap: 1rem;
+  }
+  .task-view__hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 16px;
+    padding: 20px;
+    border: 1px solid #e6eef5;
+    border-radius: 20px;
+    background:
+      radial-gradient(circle at top right, rgba(59, 130, 246, 0.08), transparent 36%),
+      linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+    box-shadow: 0 14px 32px rgba(15, 23, 42, 0.06);
+  }
+  .task-view__hero-title {
+    margin: 0 0 6px;
+    font-size: 1.5rem;
+    font-weight: 700;
+    line-height: 1.2;
+    color: #1f2d3d;
+  }
+  .task-view__hero-desc {
+    color: #607087;
+    line-height: 1.5;
+    max-width: 72ch;
+  }
+  .task-view__hero-side {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 12px;
+  }
+  .task-view__badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .task-view__pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 12px;
+    border-radius: 999px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    border: 1px solid transparent;
+    white-space: nowrap;
+  }
+  .task-view__pill--open {
+    background: #eff6ff;
+    color: #1d4ed8;
+    border-color: rgba(37, 99, 235, 0.18);
+  }
+  .task-view__pill--progress {
+    background: #eef4ff;
+    color: #3158c9;
+    border-color: rgba(49, 88, 201, 0.16);
+  }
+  .task-view__pill--waiting {
+    background: #fff7ed;
+    color: #c2410c;
+    border-color: rgba(194, 65, 12, 0.18);
+  }
+  .task-view__pill--done {
+    background: #ecfdf3;
+    color: #15803d;
+    border-color: rgba(21, 128, 61, 0.18);
+  }
+  .task-view__pill--cancelled {
+    background: #fef2f2;
+    color: #b42318;
+    border-color: rgba(180, 35, 24, 0.18);
+  }
+  .task-view__pill--high {
+    background: #fff1f2;
+    color: #be123c;
+    border-color: rgba(190, 18, 60, 0.18);
+  }
+  .task-view__pill--normal {
+    background: #f3f4f6;
+    color: #475467;
+    border-color: rgba(71, 84, 103, 0.14);
+  }
+  .task-view__pill--danger {
+    background: #fef2f2;
+    color: #dc2626;
+    border-color: rgba(220, 38, 38, 0.16);
+  }
+  .task-view__pill--warning {
+    background: #fff7ed;
+    color: #d97706;
+    border-color: rgba(217, 119, 6, 0.16);
+  }
+  .task-view__pill--info {
+    background: #eff6ff;
+    color: #2563eb;
+    border-color: rgba(37, 99, 235, 0.16);
+  }
+  .task-view__pill--muted {
+    background: #f8fafc;
+    color: #64748b;
+    border-color: rgba(100, 116, 139, 0.14);
+  }
+  .task-view__section-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+  }
+  .task-view__card {
+    border: 1px solid #e6eef5;
+    border-radius: 18px;
+    background: #fff;
+    box-shadow: 0 10px 26px rgba(15, 23, 42, 0.05);
+    padding: 18px;
+  }
+  .task-view__card-title {
+    margin: 0 0 14px;
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #1f2d3d;
+  }
+  .task-view__meta {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 18px;
+  }
+  .task-view__meta-item {
+    min-width: 0;
+  }
+  .task-view__label {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #8a97a8;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 6px;
+  }
+  .task-view__value {
+    color: #1f2d3d;
+    line-height: 1.45;
+    word-break: break-word;
+  }
+  .task-view__value a {
+    color: #1a73e8;
+    text-decoration: none;
+  }
+  .task-view__value a:hover {
+    text-decoration: underline;
+  }
+  .task-view__participants {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .task-view__participant {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    border-radius: 999px;
+    background: #f8fbff;
+    border: 1px solid #dbe5f5;
+    color: #324154;
+    font-size: 0.9rem;
+  }
+  .task-view__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: flex-end;
+  }
+  .task-view__archive-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 16px;
+    border-radius: 16px;
+    border: 1px solid #dbe6f3;
+    background: #f8fbff;
+    color: #31445a;
+  }
+  .task-view__archive-banner--deleted {
+    background: #fff5f5;
+    border-color: #fed7d7;
+    color: #9b1c1c;
+  }
+  .task-view__archive-banner--completed {
+    background: #f0fdf4;
+    border-color: #ccebd7;
+    color: #166534;
+  }
+  @media (max-width: 768px) {
+    .task-view__hero,
+    .task-view__section-grid,
+    .task-view__meta {
+      grid-template-columns: 1fr;
+    }
+    .task-view__hero-side {
+      align-items: stretch;
+    }
+    .task-view__actions {
+      justify-content: flex-start;
+    }
+  }
+</style>
+
+<div class="task-view d-flex flex-column" data-task-view>
+  {% if task_is_archived %}
+    <div class="task-view__archive-banner {% if task_archive_reason == 'deleted' %}task-view__archive-banner--deleted{% elif task_archive_reason == 'completed' %}task-view__archive-banner--completed{% endif %}">
+      <i class="bi {% if task_archive_reason == 'deleted' %}bi-archive{% else %}bi-check-circle{% endif %}"></i>
+      <div>
+        {% if task_archive_reason == 'deleted' %}
+          <strong>Задача в архиве</strong>
+          <div>Удалена{% if task_archive_at %} {{ task_archive_at|date:"d.m.Y H:i" }}{% endif %}.</div>
+        {% elif task_archive_reason == 'completed' %}
+          <strong>Задача завершена</strong>
+          <div>Архивирована как выполненная{% if task_archive_at %} {{ task_archive_at|date:"d.m.Y H:i" }}{% endif %}.</div>
+        {% else %}
+          <strong>Задача в архиве</strong>
+        {% endif %}
+      </div>
+    </div>
+  {% endif %}
+  <section class="task-view__hero">
+    <div>
+      <div class="task-view__badges mb-3">
+        <span class="task-view__pill task-view__pill--{{ task_status_variant }}">{{ task_status_text }}</span>
+        <span class="task-view__pill task-view__pill--{{ task_priority_variant }}">{{ task_priority_text }}</span>
+        <span class="task-view__pill task-view__pill--muted">{{ task_type_text }}</span>
+      </div>
+      <h2 class="task-view__hero-title">{{ task.title }}</h2>
+      {% if task.description %}
+        <div class="task-view__hero-desc">{{ task.description|linebreaksbr }}</div>
+      {% else %}
+        <div class="task-view__hero-desc">Описание задачи не заполнено.</div>
+      {% endif %}
+    </div>
+    <div class="task-view__hero-side">
+      <span class="task-view__pill task-view__pill--{{ task_due_variant }}">
+        <i class="bi bi-calendar2-check"></i>
+        Срок: {{ task_due_text }}
+      </span>
+      {% if can_edit_task %}
+        <a
+          href="{{ task_edit_url }}"
+          class="btn btn-outline-primary rounded-3 d-inline-flex align-items-center gap-2"
+          {% if is_modal %}data-task-modal-url="{{ task_edit_url }}"{% endif %}
+        >
+          <i class="bi bi-pencil"></i>
+          <span>Редактировать</span>
+        </a>
+      {% endif %}
+    </div>
+  </section>
+
+  <div class="task-view__section-grid">
+    <section class="task-view__card">
+      <h3 class="task-view__card-title">Статус и сроки</h3>
+      <div class="task-view__meta">
+        <div class="task-view__meta-item">
+          <div class="task-view__label">Период</div>
+          <div class="task-view__value">{{ task_period_text }}</div>
+        </div>
+        <div class="task-view__meta-item">
+          <div class="task-view__label">Время</div>
+          <div class="task-view__value">{{ task_time_text }}</div>
+        </div>
+        <div class="task-view__meta-item">
+          <div class="task-view__label">Создатель</div>
+          <div class="task-view__value">{{ task_creator_text }}</div>
+        </div>
+        <div class="task-view__meta-item">
+          <div class="task-view__label">Главный ответственный</div>
+          <div class="task-view__value">{{ task_primary_responsible_text }}</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="task-view__card">
+      <h3 class="task-view__card-title">Связи</h3>
+      <div class="task-view__meta">
+        <div class="task-view__meta-item">
+          <div class="task-view__label">Объект</div>
+          <div class="task-view__value">
+            {% if task_object_url %}
+              <a href="{{ task_object_url }}">{{ task_object_name }}</a>
+            {% else %}
+              {{ task_object_name|default:"-" }}
+            {% endif %}
+          </div>
+        </div>
+        <div class="task-view__meta-item">
+          <div class="task-view__label">Клиент</div>
+          <div class="task-view__value">{{ task_client_name }}</div>
+        </div>
+        <div class="task-view__meta-item">
+          <div class="task-view__label">CRM</div>
+          <div class="task-view__value">
+            {% if task_crm_url %}
+              <a href="{{ task_crm_url }}">Открыть CRM</a>
+            {% else %}
+              -
+            {% endif %}
+          </div>
+        </div>
+        <div class="task-view__meta-item">
+          <div class="task-view__label">Запись показаний</div>
+          <div class="task-view__value">
+            {% if task_reading_url %}
+              <a href="{{ task_reading_url }}">{{ task_reading_title }}</a>
+            {% else %}
+              -
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <section class="task-view__card">
+    <h3 class="task-view__card-title">Участники</h3>
+    <div class="task-view__participants">
+      {% for user in participants %}
+        <span class="task-view__participant">
+          <i class="bi bi-person-circle"></i>
+          {{ user.get_full_name|default:user.username }}
+        </span>
+      {% empty %}
+        <div class="task-view__value">Участники не назначены.</div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <div class="task-view__actions">
+    {% if is_modal %}
+      <button type="button" class="btn btn-outline-secondary rounded-3" data-bs-dismiss="modal">Закрыть</button>
+    {% elif next_url %}
+      <a class="btn btn-outline-secondary rounded-3" href="{{ next_url }}">Назад</a>
+    {% else %}
+      <a class="btn btn-outline-secondary rounded-3" href="{% url 'readings_all' %}">Назад к календарю</a>
+    {% endif %}
+  </div>
+
+  {% if show_history and history %}
+    <details class="task-history mt-2">
+      <summary class="task-history__summary">История изменений</summary>
+      <div class="table-responsive mt-3">
+        <table class="table table-sm align-middle">
+          <thead>
+            <tr>
+              <th>Дата</th>
+              <th>Кто</th>
+              <th>Действие</th>
+              <th>Поле</th>
+              <th>Было</th>
+              <th>Стало</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in history %}
+              <tr>
+                <td>{{ row.created_at|date:"d.m.Y H:i" }}</td>
+                <td>{{ row.user|default:"-" }}</td>
+                <td>{{ row.action }}</td>
+                <td>{{ row.field|default:"-" }}</td>
+                <td class="text-muted">{{ row.old_value|default:"-" }}</td>
+                <td>{{ row.new_value|default:"-" }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  {% endif %}
+</div>

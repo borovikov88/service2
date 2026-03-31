@@ -431,8 +431,11 @@ class CrmItem(models.Model):
 
     STAGE_SERVICE_NEW = "srv_new"
     STAGE_SERVICE_IN_PROGRESS = "srv_in_progress"
+    STAGE_SERVICE_WAITING_SUPPLIER = "srv_blocked"
+    STAGE_SERVICE_WAITING_STOCK = "srv_wait_stock"
+    STAGE_SERVICE_SENT_TO_POOL = "srv_sent_pool"
     STAGE_SERVICE_DONE = "srv_done"
-    STAGE_SERVICE_BLOCKED = "srv_blocked"
+    STAGE_SERVICE_BLOCKED = STAGE_SERVICE_WAITING_SUPPLIER
     STAGE_PROJECT_IDEA = "prj_idea"
     STAGE_PROJECT_DESIGN = "prj_design"
     STAGE_PROJECT_BUILD = "prj_build"
@@ -457,8 +460,10 @@ class CrmItem(models.Model):
     STAGE_CHOICES = [
         (STAGE_SERVICE_NEW, "service_new"),
         (STAGE_SERVICE_IN_PROGRESS, "service_in_progress"),
+        (STAGE_SERVICE_WAITING_SUPPLIER, "service_waiting_supplier"),
+        (STAGE_SERVICE_WAITING_STOCK, "service_waiting_stock"),
+        (STAGE_SERVICE_SENT_TO_POOL, "service_sent_to_pool"),
         (STAGE_SERVICE_DONE, "service_done"),
-        (STAGE_SERVICE_BLOCKED, "service_blocked"),
         (STAGE_PROJECT_IDEA, "project_idea"),
         (STAGE_PROJECT_DESIGN, "project_design"),
         (STAGE_PROJECT_BUILD, "project_build"),
@@ -482,6 +487,14 @@ class CrmItem(models.Model):
         (URGENCY_LOW, "\u041d\u0435\u0441\u0440\u043e\u0447\u043d\u043e"),
         (URGENCY_REQUIRED, "\u0422\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044f"),
         (URGENCY_CRITICAL, "\u041a\u0440\u0438\u0442\u0438\u0447\u043d\u043e"),
+    ]
+    ARCHIVE_REASON_COMPLETED = "completed"
+    ARCHIVE_REASON_DELETED = "deleted"
+    ARCHIVE_REASON_MANUAL = "manual"
+    ARCHIVE_REASON_CHOICES = [
+        (ARCHIVE_REASON_COMPLETED, "Выполнено"),
+        (ARCHIVE_REASON_DELETED, "Удалено"),
+        (ARCHIVE_REASON_MANUAL, "В архиве"),
     ]
 
     organization = models.ForeignKey(
@@ -527,16 +540,35 @@ class CrmItem(models.Model):
         blank=True,
         related_name="crm_created_items",
     )
+    is_archived = models.BooleanField(default=False)
+    archived_at = models.DateTimeField(null=True, blank=True)
+    archived_reason = models.CharField(max_length=24, choices=ARCHIVE_REASON_CHOICES, blank=True)
+    archived_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="archived_crm_items",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         indexes = [
             models.Index(fields=["organization", "direction"], name="crm_org_dir_idx"),
+            models.Index(fields=["organization", "is_archived"], name="crm_org_archived_idx"),
         ]
 
     def __str__(self):
         return f"{self.title} ({self.direction})"
+
+    @property
+    def is_deleted_archive(self):
+        return self.is_archived and self.archived_reason == self.ARCHIVE_REASON_DELETED
+
+    @property
+    def is_completed_archive(self):
+        return self.is_archived and self.archived_reason == self.ARCHIVE_REASON_COMPLETED
 
 
 class CrmItemPhoto(models.Model):
@@ -668,6 +700,14 @@ class ServiceTask(models.Model):
         (STATUS_DONE, "Выполнена"),
         (STATUS_CANCELLED, "Отменена"),
     ]
+    ARCHIVE_REASON_COMPLETED = "completed"
+    ARCHIVE_REASON_DELETED = "deleted"
+    ARCHIVE_REASON_MANUAL = "manual"
+    ARCHIVE_REASON_CHOICES = [
+        (ARCHIVE_REASON_COMPLETED, "Выполнена"),
+        (ARCHIVE_REASON_DELETED, "Удалена"),
+        (ARCHIVE_REASON_MANUAL, "В архиве"),
+    ]
 
     VISIBILITY_PUBLIC = "public"
     VISIBILITY_PRIVATE = "private"
@@ -746,6 +786,16 @@ class ServiceTask(models.Model):
     responsibles = models.ManyToManyField(User, related_name="service_tasks")
     auto_created = models.BooleanField(default=False)
     is_editable = models.BooleanField(default=True)
+    is_archived = models.BooleanField(default=False)
+    archived_at = models.DateTimeField(null=True, blank=True)
+    archived_reason = models.CharField(max_length=24, choices=ARCHIVE_REASON_CHOICES, blank=True)
+    archived_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="archived_service_tasks",
+    )
     due_at = models.DateTimeField(null=True, blank=True)
     payload_json = models.JSONField(default=dict, blank=True)
     parent_task = models.ForeignKey(
@@ -772,6 +822,7 @@ class ServiceTask(models.Model):
             models.Index(fields=["organization", "end_date"], name="task_org_end_idx"),
             models.Index(fields=["organization", "task_type"], name="task_org_type_idx"),
             models.Index(fields=["organization", "status"], name="task_org_status_idx"),
+            models.Index(fields=["organization", "is_archived"], name="task_org_archived_idx"),
             models.Index(fields=["pool", "status"], name="task_pool_status_idx"),
             models.Index(fields=["water_reading", "task_type"], name="task_reading_type_idx"),
             models.Index(fields=["primary_responsible", "status"], name="task_primary_status_idx"),
@@ -783,6 +834,14 @@ class ServiceTask(models.Model):
     @property
     def is_completed(self):
         return bool(self.completed_at)
+
+    @property
+    def is_deleted_archive(self):
+        return self.is_archived and self.archived_reason == self.ARCHIVE_REASON_DELETED
+
+    @property
+    def is_completed_archive(self):
+        return self.is_archived and self.archived_reason == self.ARCHIVE_REASON_COMPLETED
 
     def get_end_date(self):
         return self.end_date or self.start_date

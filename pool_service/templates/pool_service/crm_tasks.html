@@ -3,8 +3,205 @@
 {% block title %}Задачи{% endblock %}
 
 {% block content %}
-<div class="card card-soft p-4">
-    <h4 class="fw-bold mb-2">Задачи</h4>
-    <p class="text-muted mb-0">Раздел в разработке. Здесь появятся планирование, контроль и история задач.</p>
+<style>
+    .crm-tasks-toolbar {
+        border-radius: 28px;
+        border: 1px solid #e7eef8;
+        background:
+            radial-gradient(circle at top right, rgba(59, 130, 246, 0.08), transparent 32%),
+            linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+        box-shadow: 0 18px 42px rgba(15, 23, 42, 0.06);
+    }
+    .crm-tasks-table {
+        border: 1px solid #e7eef8;
+        border-radius: 28px;
+        background: #fff;
+        box-shadow: 0 16px 36px rgba(15, 23, 42, 0.05);
+        overflow: hidden;
+    }
+    .crm-tasks-table .table {
+        margin-bottom: 0;
+    }
+    .crm-tasks-table tbody tr {
+        transition: background-color .18s ease;
+    }
+    .crm-tasks-table tbody tr:hover {
+        background: #f8fbff;
+    }
+    .crm-tasks-row {
+        cursor: pointer;
+    }
+    .crm-tasks-row-title {
+        font-weight: 700;
+        color: #132238;
+    }
+    .crm-tasks-row-subtitle {
+        color: #7b8aa0;
+        font-size: 0.88rem;
+        margin-top: 4px;
+    }
+    .crm-tasks-empty {
+        padding: 44px 16px;
+        color: #7b8aa0;
+        text-align: center;
+    }
+    @media (max-width: 768px) {
+        .crm-tasks-toolbar {
+            border-radius: 22px;
+        }
+    }
+</style>
+
+<div class="card ui-toolbar-card p-4 mb-4 crm-tasks-toolbar">
+    <form method="get" class="ui-toolbar-grid" id="crm-tasks-toolbar-form">
+        <input type="hidden" name="responsible" id="crm-tasks-responsible-input" value="{{ responsible_input_value }}">
+        <div class="ui-toolbar-main">
+            <div class="ui-search" data-crm-tasks-search>
+                <div class="ui-search__field">
+                    <i class="bi bi-search"></i>
+                    <input type="search" name="q" class="ui-search__input" placeholder="Фильтр + поиск" value="{{ search_query|default:'' }}" autocomplete="off" data-crm-tasks-search-input>
+                    {% if selected_responsible_label %}
+                        <span class="ui-search__tag" data-crm-tasks-filter-tag>
+                            {{ selected_responsible_label }}
+                            <button type="button" class="ui-search__tag-clear" data-crm-tasks-filter-clear aria-label="Сбросить фильтр">
+                                <i class="bi bi-x"></i>
+                            </button>
+                        </span>
+                    {% endif %}
+                    <button type="button" class="ui-search__clear {% if search_query %}is-visible{% endif %}" data-crm-tasks-search-clear aria-label="Сбросить поиск">
+                        <i class="bi bi-x-lg"></i>
+                    </button>
+                </div>
+                <div class="ui-search__dropdown" data-crm-tasks-search-dropdown>
+                    <div class="ui-search__dropdown-title">Сотрудники</div>
+                    <button type="button" class="ui-search__option {% if not responsible_query %}is-active{% endif %}" data-crm-tasks-filter-option data-responsible-id="__all__">
+                        Все сотрудники
+                    </button>
+                    {% for option in responsible_options %}
+                        <button type="button" class="ui-search__option {% if responsible_query == option.id|stringformat:'s' %}is-active{% endif %}" data-crm-tasks-filter-option data-responsible-id="{{ option.id }}">
+                            {{ option.name }}
+                        </button>
+                    {% empty %}
+                        <div class="px-3 py-2 text-muted small">Нет доступных сотрудников.</div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+        <div class="ui-toolbar-actions">
+            <button type="submit" class="ui-pill-btn ui-pill-btn--primary">Найти</button>
+            <a href="{% url 'crm_tasks' %}" class="ui-pill-btn">Сбросить</a>
+        </div>
+    </form>
 </div>
+
+<div class="ui-chipbar mb-4">
+    <span class="ui-chip">Всего: {{ tasks_total_count }}</span>
+    <span class="ui-chip ui-chip--green">Активные: {{ tasks_active_count }}</span>
+    <span class="ui-chip ui-chip--orange">Завершённые: {{ tasks_completed_count }}</span>
+</div>
+
+<div class="crm-tasks-table">
+    <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 px-4 pt-4 pb-2">
+        <div>
+            <h3 class="fw-bold h5 mb-1">Задачи</h3>
+            <div class="text-muted small">Общие повседневные задачи команды</div>
+        </div>
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <a href="{{ page_action_url }}" class="ui-pill-btn ui-pill-btn--primary">{{ page_action_label }}</a>
+            <a href="{% url 'archive_list' %}?kind=tasks" class="ui-pill-btn">Архив</a>
+        </div>
+    </div>
+
+    <div class="table-responsive px-4 pb-4">
+        <table class="table align-middle">
+            <thead class="small text-muted">
+                <tr>
+                    <th>Название</th>
+                    <th>Объект</th>
+                    <th>Тип</th>
+                    <th>Статус</th>
+                    <th>Ответственный</th>
+                    <th>Дата</th>
+                    <th class="text-end"></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for task in tasks %}
+                    <tr class="crm-tasks-row" onclick="window.location.href='{% url 'task_edit' task_id=task.id %}'">
+                        <td>
+                            <div class="crm-tasks-row-title">{{ task.title }}</div>
+                            <div class="crm-tasks-row-subtitle">Обновлено {{ task.updated_at|date:"d.m.Y H:i" }}</div>
+                        </td>
+                        <td>{{ task.object_label }}</td>
+                        <td>{{ task.type_label }}</td>
+                        <td>
+                            <span class="crm-stage-pill {% if task.is_completed %}crm-stage-pill--done{% endif %}">
+                                {{ task.status_label }}
+                            </span>
+                        </td>
+                        <td>{{ task.responsible_label }}</td>
+                        <td>{{ task.start_display }}</td>
+                        <td class="text-end text-muted"><i class="bi bi-chevron-right"></i></td>
+                    </tr>
+                {% empty %}
+                    <tr>
+                        <td colspan="7" class="crm-tasks-empty">Пока нет задач</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+    (function () {
+        const searchRoot = document.querySelector("[data-crm-tasks-search]");
+        const searchForm = document.getElementById("crm-tasks-toolbar-form");
+        if (!searchRoot || !searchForm) return;
+
+        const searchInput = searchRoot.querySelector("[data-crm-tasks-search-input]");
+        const searchClear = searchRoot.querySelector("[data-crm-tasks-search-clear]");
+        const filterClear = searchRoot.querySelector("[data-crm-tasks-filter-clear]");
+        const responsibleInput = document.getElementById("crm-tasks-responsible-input");
+
+        function setOpen(isOpen) {
+            searchRoot.classList.toggle("ui-search--open", isOpen);
+        }
+
+        searchInput?.addEventListener("focus", () => setOpen(true));
+        searchInput?.addEventListener("click", () => setOpen(true));
+        searchInput?.addEventListener("input", () => {
+            if (searchClear) {
+                searchClear.classList.toggle("is-visible", !!searchInput.value);
+            }
+        });
+
+        searchClear?.addEventListener("click", () => {
+            if (!searchInput) return;
+            searchInput.value = "";
+            searchClear.classList.remove("is-visible");
+            searchInput.focus();
+        });
+
+        filterClear?.addEventListener("click", () => {
+            if (!responsibleInput) return;
+            responsibleInput.value = "__all__";
+            searchForm.submit();
+        });
+
+        searchRoot.querySelectorAll("[data-crm-tasks-filter-option]").forEach((option) => {
+            option.addEventListener("click", () => {
+                if (!responsibleInput) return;
+                responsibleInput.value = option.dataset.responsibleId || "";
+                searchForm.submit();
+            });
+        });
+
+        document.addEventListener("click", (event) => {
+            if (!searchRoot.contains(event.target)) {
+                setOpen(false);
+            }
+        });
+    })();
+</script>
 {% endblock %}

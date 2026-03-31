@@ -296,7 +296,8 @@ def notify_reading_out_of_range(reading):
 
 
 def notify_task_assignment(task, users, *, added_by=None, send_push=True):
-    title = "\u041d\u043e\u0432\u0430\u044f \u0437\u0430\u044f\u0432\u043a\u0430"
+    is_supply_request = task.task_type == getattr(task, "TYPE_SUPPLY_REQUEST", "supply_request")
+    title = "\u041d\u043e\u0432\u0430\u044f \u0437\u0430\u044f\u0432\u043a\u0430" if is_supply_request else "\u041d\u043e\u0432\u0430\u044f \u0437\u0430\u0434\u0430\u0447\u0430"
     date_label = ""
     if task.start_date and task.end_date:
         if task.start_date == task.end_date:
@@ -312,7 +313,7 @@ def notify_task_assignment(task, users, *, added_by=None, send_push=True):
         time_label = f"{task.end_time:%H:%M}"
 
     details = " | ".join([part for part in [date_label, time_label] if part])
-    if task.task_type == getattr(task, "TYPE_SUPPLY_REQUEST", "supply_request"):
+    if is_supply_request:
         object_name = ""
         if task.client_id and task.client:
             object_name = task.client.name

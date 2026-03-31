@@ -72,6 +72,7 @@ def plan_status_context(request):
     org_roles = list(OrganizationAccess.objects.filter(user=user).values_list("role", flat=True))
     is_org_admin = "admin" in org_roles or "owner" in org_roles or user.is_superuser
     can_access_crm = is_org_admin or "service" in org_roles or "manager" in org_roles or user.is_superuser
+    crm_service_only = ("service" in org_roles and not is_org_admin and "manager" not in org_roles and not user.is_superuser)
     is_org_staff = bool(org_roles)
     personal_free = is_personal_free(user)
     context = {
@@ -80,6 +81,7 @@ def plan_status_context(request):
         "is_org_admin": is_org_admin,
         "is_org_staff": is_org_staff,
         "can_access_crm": can_access_crm,
+        "crm_service_only": crm_service_only,
         "payment_url": reverse("billing"),
         "access_blocked": False,
         "personal_pool_url": None,
