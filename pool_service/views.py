@@ -3707,8 +3707,117 @@ def crm_tasks(request):
             "responsible_input_value": responsible_input_value,
             "responsible_options": responsible_options,
             "selected_responsible_label": selected_responsible_label,
+            "bulk_status_choices": ServiceTask.STATUS_CHOICES,
         },
     )
+
+
+@login_required
+def crm_tasks_bulk_update(request):
+    if request.method != "POST":
+        return redirect("crm_tasks")
+
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+    if not _can_access_crm(request.user):
+        return HttpResponseForbidden()
+
+    org = _crm_get_org_for_request(request)
+    if not org and not request.user.is_superuser:
+        return HttpResponseForbidden()
+
+    selected_ids = []
+    for raw_id in request.POST.getlist("task_ids"):
+        try:
+            selected_ids.append(int(raw_id))
+        except (TypeError, ValueError):
+            continue
+    if not selected_ids:
+        messages.warning(request, "Не выбраны задачи.")
+        return redirect(reverse("crm_tasks"))
+
+    tasks_qs = ServiceTask.objects.filter(id__in=selected_ids, organization=org)
+    if not _is_org_admin_or_owner(request.user, org):
+        tasks_qs = tasks_qs.filter(
+            Q(created_by=request.user) | Q(primary_responsible=request.user) | Q(responsibles=request.user)
+        ).distinct()
+
+    tasks = list(tasks_qs.select_related("primary_responsible", "crm_item"))
+    if not tasks:
+        messages.warning(request, "Подходящие задачи не найдены.")
+        return redirect(reverse("crm_tasks"))
+
+    action = (request.POST.get("bulk_action") or "").strip()
+    changed = 0
+
+    if action == "set_status":
+        status = (request.POST.get("bulk_status") or "").strip()
+        allowed = {choice[0] for choice in ServiceTask.STATUS_CHOICES}
+        if status not in allowed:
+            messages.error(request, "Выберите корректный статус.")
+            return redirect(reverse("crm_tasks"))
+
+        for task in tasks:
+            if task.status == status and not (status == ServiceTask.STATUS_DONE and not task.is_completed_archive):
+                continue
+            task.status = status
+            if status == ServiceTask.STATUS_DONE:
+                archive_task(task, ServiceTask.ARCHIVE_REASON_COMPLETED, request.user)
+            else:
+                if task.is_completed_archive:
+                    restore_task(task, request.user)
+                task.save(update_fields=["status", "updated_at"])
+                sync_crm_item_for_task(task)
+            changed += 1
+        messages.success(request, f"Статус обновлён у задач: {changed}.")
+        return redirect(reverse("crm_tasks"))
+
+    if action == "set_responsible":
+        responsible_raw = (request.POST.get("bulk_responsible") or "").strip()
+        if not responsible_raw:
+            messages.error(request, "Выберите ответственного.")
+            return redirect(reverse("crm_tasks"))
+        try:
+            responsible_id = int(responsible_raw)
+        except (TypeError, ValueError):
+            messages.error(request, "Выберите корректного ответственного.")
+            return redirect(reverse("crm_tasks"))
+
+        responsible = User.objects.filter(
+            id=responsible_id,
+            is_active=True,
+            organizationaccess__organization=org,
+            organizationaccess__role__in=ORG_STAFF_ROLES,
+        ).distinct().first()
+        if not responsible:
+            messages.error(request, "Ответственный не найден.")
+            return redirect(reverse("crm_tasks"))
+
+        for task in tasks:
+            if task.primary_responsible_id == responsible.id:
+                continue
+            task.primary_responsible = responsible
+            task.save(update_fields=["primary_responsible", "updated_at"])
+            sync_crm_item_for_task(task)
+            changed += 1
+        messages.success(request, f"Ответственный обновлён у задач: {changed}.")
+        return redirect(reverse("crm_tasks"))
+
+    if action == "archive":
+        for task in tasks:
+            if task.is_deleted_archive:
+                continue
+            archive_task(task, ServiceTask.ARCHIVE_REASON_DELETED, request.user)
+            changed += 1
+        messages.success(request, f"В архив отправлено задач: {changed}.")
+        return redirect(reverse("crm_tasks"))
+
+    messages.error(request, "Неизвестное массовое действие.")
+    return redirect(reverse("crm_tasks"))
 
 
 

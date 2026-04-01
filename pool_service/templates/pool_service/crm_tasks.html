@@ -1,17 +1,9 @@
 {% extends 'pool_service/base.html' %}
 
-{% block title %}Задачи{% endblock %}
+{% block title %}{{ page_title }}{% endblock %}
 
 {% block content %}
 <style>
-    .crm-tasks-toolbar {
-        border-radius: 28px;
-        border: 1px solid #e7eef8;
-        background:
-            radial-gradient(circle at top right, rgba(59, 130, 246, 0.08), transparent 32%),
-            linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
-        box-shadow: 0 18px 42px rgba(15, 23, 42, 0.06);
-    }
     .crm-tasks-table {
         border: 1px solid #e7eef8;
         border-radius: 28px;
@@ -27,6 +19,9 @@
     }
     .crm-tasks-table tbody tr:hover {
         background: #f8fbff;
+    }
+    .crm-tasks-table tbody tr.crm-row-selected {
+        background: #f4fbdd;
     }
     .crm-tasks-row {
         cursor: pointer;
@@ -45,14 +40,129 @@
         color: #7b8aa0;
         text-align: center;
     }
+    .crm-select-col {
+        width: 44px;
+    }
+    .crm-select-checkbox {
+        width: 18px;
+        height: 18px;
+        cursor: pointer;
+    }
+    .crm-bulkbar {
+        position: fixed;
+        left: 50%;
+        bottom: 16px;
+        transform: translateX(-50%);
+        z-index: 1050;
+        display: none;
+        width: fit-content;
+        max-width: min(1180px, calc(100vw - 28px));
+        padding: 8px 12px;
+        border-radius: 18px;
+        border: 1px solid #dbe5f5;
+        background: rgba(255, 255, 255, 0.96);
+        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
+        backdrop-filter: blur(12px);
+    }
+    .crm-bulkbar.is-visible {
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: center;
+        gap: 8px;
+        overflow-x: auto;
+        overflow-y: hidden;
+    }
+    .crm-bulkbar__count {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 38px;
+        padding: 0 12px;
+        border-radius: 999px;
+        background: #eff6ff;
+        color: #1d4ed8;
+        font-weight: 700;
+        white-space: nowrap;
+    }
+    .crm-bulkbar__count-label {
+        display: inline;
+    }
+    .crm-bulkbar__spacer {
+        flex: 1 1 auto;
+        min-width: 12px;
+    }
+    .crm-bulkbar .ui-select {
+        min-width: 160px;
+    }
+    .crm-bulkbar .ui-select__control {
+        min-width: 160px;
+        border-radius: 12px;
+        min-height: 38px;
+        font-size: 0.95rem;
+    }
+    .crm-bulkbar .btn {
+        min-height: 38px;
+        border-radius: 12px;
+        font-weight: 600;
+        white-space: nowrap;
+        padding-inline: 14px;
+    }
+    .crm-bulkbar__icon-btn {
+        display: none;
+    }
     @media (max-width: 768px) {
-        .crm-tasks-toolbar {
-            border-radius: 22px;
+        .crm-bulkbar {
+            bottom: calc(10px + env(safe-area-inset-bottom));
+            max-width: calc(100vw - 12px);
+            padding: 6px 8px;
+            border-radius: 12px;
+            gap: 4px;
+        }
+        .crm-bulkbar__count {
+            min-height: 28px;
+            min-width: 28px;
+            padding: 0 8px;
+            font-size: 0.78rem;
+        }
+        .crm-bulkbar__count-label,
+        .crm-bulkbar__spacer {
+            display: none;
+        }
+        .crm-bulkbar .ui-select {
+            min-width: 94px;
+            max-width: 106px;
+        }
+        .crm-bulkbar .ui-select__control,
+        .crm-bulkbar .btn {
+            min-height: 28px;
+            font-size: 0.76rem;
+            border-radius: 9px;
+        }
+        .crm-bulkbar .ui-select__control {
+            min-width: 94px;
+            max-width: 106px;
+            padding-left: 10px;
+            padding-right: 26px;
+        }
+        .crm-bulkbar [data-task-bulk-submit] {
+            min-width: 28px;
+            width: 28px;
+            min-height: 28px;
+            padding-inline: 0;
+        }
+        .crm-bulkbar [data-task-bulk-submit] .crm-bulkbar__btn-text {
+            display: none;
+        }
+        .crm-bulkbar__icon-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8rem;
         }
     }
 </style>
 
-<div class="card ui-toolbar-card p-4 mb-4 crm-tasks-toolbar">
+<div class="card ui-toolbar-card p-4 mb-4">
     <form method="get" class="ui-toolbar-grid" id="crm-tasks-toolbar-form">
         <input type="hidden" name="responsible" id="crm-tasks-responsible-input" value="{{ responsible_input_value }}">
         <div class="ui-toolbar-main">
@@ -112,96 +222,249 @@
         </div>
     </div>
 
-    <div class="table-responsive px-4 pb-4">
-        <table class="table align-middle">
-            <thead class="small text-muted">
-                <tr>
-                    <th>Название</th>
-                    <th>Объект</th>
-                    <th>Тип</th>
-                    <th>Статус</th>
-                    <th>Ответственный</th>
-                    <th>Дата</th>
-                    <th class="text-end"></th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for task in tasks %}
-                    <tr class="crm-tasks-row" onclick="window.location.href='{% url 'task_edit' task_id=task.id %}'">
-                        <td>
-                            <div class="crm-tasks-row-title">{{ task.title }}</div>
-                            <div class="crm-tasks-row-subtitle">Обновлено {{ task.updated_at|date:"d.m.Y H:i" }}</div>
-                        </td>
-                        <td>{{ task.object_label }}</td>
-                        <td>{{ task.type_label }}</td>
-                        <td>
-                            <span class="crm-stage-pill {% if task.is_completed %}crm-stage-pill--done{% endif %}">
-                                {{ task.status_label }}
-                            </span>
-                        </td>
-                        <td>{{ task.responsible_label }}</td>
-                        <td>{{ task.start_display }}</td>
-                        <td class="text-end text-muted"><i class="bi bi-chevron-right"></i></td>
-                    </tr>
-                {% empty %}
+    <form method="post" action="{% url 'crm_tasks_bulk_update' %}" id="crm-tasks-bulk-form">
+        {% csrf_token %}
+        <div class="table-responsive px-4 pb-4">
+            <table class="table align-middle" id="crm-tasks-table">
+                <thead class="small text-muted">
                     <tr>
-                        <td colspan="7" class="crm-tasks-empty">Пока нет задач</td>
+                        <th class="crm-select-col">
+                            <input type="checkbox" class="form-check-input crm-select-checkbox" id="crm-tasks-select-all" aria-label="Выбрать все">
+                        </th>
+                        <th>Название</th>
+                        <th>Объект</th>
+                        <th>Тип</th>
+                        <th>Статус</th>
+                        <th>Ответственный</th>
+                        <th>Дата</th>
+                        <th class="text-end"></th>
                     </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
+                </thead>
+                <tbody>
+                    {% for task in tasks %}
+                        <tr class="crm-tasks-row" data-task-row-url="{% url 'task_edit' task_id=task.id %}">
+                            <td class="crm-select-col">
+                                <input type="checkbox" class="form-check-input crm-select-checkbox crm-task-row-select" name="task_ids" value="{{ task.id }}" aria-label="Выбрать задачу {{ task.title }}">
+                            </td>
+                            <td>
+                                <div class="crm-tasks-row-title">{{ task.title }}</div>
+                                <div class="crm-tasks-row-subtitle">Обновлено {{ task.updated_at|date:'d.m.Y H:i' }}</div>
+                            </td>
+                            <td>{{ task.object_label }}</td>
+                            <td>{{ task.type_label }}</td>
+                            <td>
+                                <span class="crm-stage-pill {% if task.is_completed %}crm-stage-pill--done{% endif %}">{{ task.status_label }}</span>
+                            </td>
+                            <td>{{ task.responsible_label }}</td>
+                            <td>{{ task.start_display }}</td>
+                            <td class="text-end text-muted"><i class="bi bi-chevron-right"></i></td>
+                        </tr>
+                    {% empty %}
+                        <tr>
+                            <td colspan="8" class="crm-tasks-empty">Пока нет задач</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <input type="hidden" name="bulk_action" id="crm-tasks-bulk-action" value="">
+        <div class="crm-bulkbar" id="crm-tasks-bulkbar">
+            <span class="crm-bulkbar__count"><span class="crm-bulkbar__count-label">Выбрано: </span><span id="crm-tasks-selected-count">0</span></span>
+
+            <div class="ui-select">
+                <select class="ui-select__control" id="crm-tasks-bulk-status" name="bulk_status">
+                    <option value="">Изменить статус...</option>
+                    {% for value, label in bulk_status_choices %}
+                        <option value="{{ value }}">{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <button type="submit" class="btn btn-outline-primary" data-task-bulk-submit="set_status" aria-label="Применить статус" title="Применить статус">
+                <i class="bi bi-check2-circle crm-bulkbar__icon-btn"></i>
+                <span class="crm-bulkbar__btn-text">Применить статус</span>
+            </button>
+
+            <div class="ui-select">
+                <select class="ui-select__control" id="crm-tasks-bulk-responsible" name="bulk_responsible">
+                    <option value="">Назначить ответственного...</option>
+                    {% for option in responsible_options %}
+                        <option value="{{ option.id }}">{{ option.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <button type="submit" class="btn btn-outline-primary" data-task-bulk-submit="set_responsible" aria-label="Назначить ответственного" title="Назначить ответственного">
+                <i class="bi bi-person-check crm-bulkbar__icon-btn"></i>
+                <span class="crm-bulkbar__btn-text">Назначить</span>
+            </button>
+
+            <span class="crm-bulkbar__spacer"></span>
+            <button type="submit" class="btn btn-outline-danger" data-task-bulk-submit="archive" aria-label="В архив" title="В архив">
+                <i class="bi bi-archive crm-bulkbar__icon-btn"></i>
+                <span class="crm-bulkbar__btn-text">В архив</span>
+            </button>
+            <button type="button" class="btn btn-outline-secondary" id="crm-tasks-clear-selection" aria-label="Снять выделение" title="Снять выделение">
+                <i class="bi bi-x-lg crm-bulkbar__icon-btn"></i>
+                <span class="crm-bulkbar__btn-text">Снять выделение</span>
+            </button>
+        </div>
+    </form>
 </div>
 
 <script>
     (function () {
-        const searchRoot = document.querySelector("[data-crm-tasks-search]");
-        const searchForm = document.getElementById("crm-tasks-toolbar-form");
+        const searchRoot = document.querySelector('[data-crm-tasks-search]');
+        const searchForm = document.getElementById('crm-tasks-toolbar-form');
         if (!searchRoot || !searchForm) return;
 
-        const searchInput = searchRoot.querySelector("[data-crm-tasks-search-input]");
-        const searchClear = searchRoot.querySelector("[data-crm-tasks-search-clear]");
-        const filterClear = searchRoot.querySelector("[data-crm-tasks-filter-clear]");
-        const responsibleInput = document.getElementById("crm-tasks-responsible-input");
+        const searchInput = searchRoot.querySelector('[data-crm-tasks-search-input]');
+        const searchClear = searchRoot.querySelector('[data-crm-tasks-search-clear]');
+        const filterClear = searchRoot.querySelector('[data-crm-tasks-filter-clear]');
+        const responsibleInput = document.getElementById('crm-tasks-responsible-input');
 
         function setOpen(isOpen) {
-            searchRoot.classList.toggle("ui-search--open", isOpen);
+            searchRoot.classList.toggle('ui-search--open', isOpen);
         }
 
-        searchInput?.addEventListener("focus", () => setOpen(true));
-        searchInput?.addEventListener("click", () => setOpen(true));
-        searchInput?.addEventListener("input", () => {
+        searchInput?.addEventListener('focus', () => setOpen(true));
+        searchInput?.addEventListener('click', () => setOpen(true));
+        searchInput?.addEventListener('input', () => {
             if (searchClear) {
-                searchClear.classList.toggle("is-visible", !!searchInput.value);
+                searchClear.classList.toggle('is-visible', !!searchInput.value);
             }
         });
 
-        searchClear?.addEventListener("click", () => {
+        searchClear?.addEventListener('click', () => {
             if (!searchInput) return;
-            searchInput.value = "";
-            searchClear.classList.remove("is-visible");
+            searchInput.value = '';
+            searchClear.classList.remove('is-visible');
             searchInput.focus();
         });
 
-        filterClear?.addEventListener("click", () => {
+        filterClear?.addEventListener('click', () => {
             if (!responsibleInput) return;
-            responsibleInput.value = "__all__";
+            responsibleInput.value = '__all__';
             searchForm.submit();
         });
 
-        searchRoot.querySelectorAll("[data-crm-tasks-filter-option]").forEach((option) => {
-            option.addEventListener("click", () => {
+        searchRoot.querySelectorAll('[data-crm-tasks-filter-option]').forEach((option) => {
+            option.addEventListener('click', () => {
                 if (!responsibleInput) return;
-                responsibleInput.value = option.dataset.responsibleId || "";
+                responsibleInput.value = option.dataset.responsibleId || '';
                 searchForm.submit();
             });
         });
 
-        document.addEventListener("click", (event) => {
+        document.addEventListener('click', (event) => {
             if (!searchRoot.contains(event.target)) {
                 setOpen(false);
             }
         });
+    })();
+
+    (function () {
+        const form = document.getElementById('crm-tasks-bulk-form');
+        const selectAll = document.getElementById('crm-tasks-select-all');
+        const rowCheckboxes = Array.from(document.querySelectorAll('.crm-task-row-select'));
+        const bulkbar = document.getElementById('crm-tasks-bulkbar');
+        const countEl = document.getElementById('crm-tasks-selected-count');
+        const clearBtn = document.getElementById('crm-tasks-clear-selection');
+        const actionInput = document.getElementById('crm-tasks-bulk-action');
+        if (!form || !selectAll || !rowCheckboxes.length || !bulkbar || !countEl || !actionInput) return;
+
+        let selectionMode = false;
+        let longPressTimer = null;
+
+        const isInteractiveTarget = (target) => !!target.closest('a, button, input, select, textarea, label');
+
+        const markRowState = () => {
+            rowCheckboxes.forEach((checkbox) => {
+                const row = checkbox.closest('tr');
+                if (row) {
+                    row.classList.toggle('crm-row-selected', checkbox.checked);
+                }
+            });
+        };
+
+        const syncState = () => {
+            const checked = rowCheckboxes.filter((item) => item.checked);
+            countEl.textContent = String(checked.length);
+            bulkbar.classList.toggle('is-visible', checked.length > 0);
+            selectionMode = checked.length > 0;
+            selectAll.checked = checked.length === rowCheckboxes.length;
+            selectAll.indeterminate = checked.length > 0 && checked.length < rowCheckboxes.length;
+            markRowState();
+        };
+
+        selectAll.addEventListener('change', () => {
+            rowCheckboxes.forEach((item) => {
+                item.checked = selectAll.checked;
+            });
+            syncState();
+        });
+
+        rowCheckboxes.forEach((checkbox) => {
+            checkbox.addEventListener('change', syncState);
+            const row = checkbox.closest('tr');
+            if (!row) return;
+            const rowUrl = row.dataset.taskRowUrl;
+
+            row.addEventListener('click', (event) => {
+                if (isInteractiveTarget(event.target)) return;
+                if (selectionMode) {
+                    checkbox.checked = !checkbox.checked;
+                    syncState();
+                    return;
+                }
+                if (rowUrl) {
+                    window.location.href = rowUrl;
+                }
+            });
+
+            row.addEventListener('touchstart', (event) => {
+                if (isInteractiveTarget(event.target)) return;
+                longPressTimer = window.setTimeout(() => {
+                    checkbox.checked = !checkbox.checked;
+                    syncState();
+                }, 420);
+            }, { passive: true });
+
+            ['touchend', 'touchmove', 'touchcancel'].forEach((eventName) => {
+                row.addEventListener(eventName, () => {
+                    if (longPressTimer) {
+                        window.clearTimeout(longPressTimer);
+                        longPressTimer = null;
+                    }
+                }, { passive: true });
+            });
+        });
+
+        clearBtn?.addEventListener('click', () => {
+            rowCheckboxes.forEach((item) => {
+                item.checked = false;
+            });
+            selectAll.checked = false;
+            selectAll.indeterminate = false;
+            syncState();
+        });
+
+        form.querySelectorAll('[data-task-bulk-submit]').forEach((button) => {
+            button.addEventListener('click', (event) => {
+                const action = button.getAttribute('data-task-bulk-submit') || '';
+                actionInput.value = action;
+                if (action === 'set_status' && !document.getElementById('crm-tasks-bulk-status').value) {
+                    event.preventDefault();
+                }
+                if (action === 'set_responsible' && !document.getElementById('crm-tasks-bulk-responsible').value) {
+                    event.preventDefault();
+                }
+                if (action === 'archive' && !window.confirm('Отправить выбранные задачи в архив?')) {
+                    event.preventDefault();
+                }
+            });
+        });
+
+        syncState();
     })();
 </script>
 {% endblock %}
