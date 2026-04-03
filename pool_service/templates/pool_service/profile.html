@@ -191,6 +191,28 @@
 
             <div class="card card-soft mb-4">
                 <div class="card-body">
+                    <h5 class="card-title mb-1">Часовой пояс</h5>
+                    <p class="text-muted mb-3">Указывается для уведомлений, календаря, задач, CRM и архива.</p>
+                    <form method="post" class="row g-3 align-items-end">
+                        {% csrf_token %}
+                        <input type="hidden" name="profile_settings" value="1">
+                        <div class="col-12 col-md-8">
+                            <label for="profile-timezone" class="form-label text-muted small">Ваш часовой пояс</label>
+                            <select id="profile-timezone" name="timezone" class="form-select">
+                                {% for value, label in timezone_choices %}
+                                    <option value="{{ value }}" {% if timezone_value == value %}selected{% endif %}>{{ label }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-12 col-md-4">
+                            <button type="submit" class="btn btn-primary w-100">Сохранить пояс</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <div class="card card-soft mb-4">
+                <div class="card-body">
                     <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-2">
                         <div>
                             <h5 class="card-title mb-1">&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;</h5>

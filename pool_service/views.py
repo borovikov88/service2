@@ -77,6 +77,35 @@ from datetime import date, timedelta, time
 from calendar import monthrange
 
 
+PROFILE_TIMEZONE_CHOICES = [
+    ("Europe/Kaliningrad", "Калининград (UTC+2)"),
+    ("Europe/Moscow", "Москва (UTC+3)"),
+    ("Europe/Kirov", "Киров (UTC+3)"),
+    ("Europe/Volgograd", "Волгоград (UTC+3)"),
+    ("Europe/Samara", "Самара (UTC+4)"),
+    ("Europe/Astrakhan", "Астрахань (UTC+4)"),
+    ("Europe/Saratov", "Саратов (UTC+4)"),
+    ("Europe/Ulyanovsk", "Ульяновск (UTC+4)"),
+    ("Asia/Yekaterinburg", "Екатеринбург (UTC+5)"),
+    ("Asia/Omsk", "Омск (UTC+6)"),
+    ("Asia/Novosibirsk", "Новосибирск (UTC+7)"),
+    ("Asia/Barnaul", "Барнаул (UTC+7)"),
+    ("Asia/Tomsk", "Томск (UTC+7)"),
+    ("Asia/Novokuznetsk", "Новокузнецк (UTC+7)"),
+    ("Asia/Krasnoyarsk", "Красноярск (UTC+7)"),
+    ("Asia/Irkutsk", "Иркутск (UTC+8)"),
+    ("Asia/Chita", "Чита (UTC+9)"),
+    ("Asia/Yakutsk", "Якутск (UTC+9)"),
+    ("Asia/Khandyga", "Хандыга (UTC+9)"),
+    ("Asia/Vladivostok", "Владивосток (UTC+10)"),
+    ("Asia/Ust-Nera", "Усть-Нера (UTC+10)"),
+    ("Asia/Sakhalin", "Сахалин (UTC+11)"),
+    ("Asia/Magadan", "Магадан (UTC+11)"),
+    ("Asia/Srednekolymsk", "Среднеколымск (UTC+11)"),
+    ("Asia/Kamchatka", "Камчатка (UTC+12)"),
+    ("Asia/Anadyr", "Анадырь (UTC+12)"),
+]
+
 
 from .forms import (
 
@@ -8463,6 +8492,22 @@ def profile_view(request):
 
 
 
+    if request.method == "POST" and request.POST.get("profile_settings") == "1":
+        timezone_name = (request.POST.get("timezone") or "").strip()
+        allowed_timezones = {value for value, _ in PROFILE_TIMEZONE_CHOICES}
+        if timezone_name not in allowed_timezones:
+            messages.error(request, "Выберите корректный часовой пояс.")
+            return redirect("profile")
+
+        if profile.timezone != timezone_name:
+            profile.timezone = timezone_name
+            profile.save(update_fields=["timezone"])
+            timezone.activate(profile.timezone or "Europe/Moscow")
+            messages.success(request, "Часовой пояс сохранён.")
+        else:
+            messages.info(request, "Часовой пояс не изменился.")
+        return redirect("profile")
+
     if request.method == "POST" and request.POST.get("notification_settings") == "1":
         if notification_access:
             organization = notification_access.organization
@@ -8603,6 +8648,8 @@ def profile_view(request):
 
         "notify_pool_staff_daily": notification_access.organization.notify_pool_staff_daily if notification_access else False,
         "notify_pool_staff_daily_push": notification_access.organization.notify_pool_staff_daily_push if notification_access else False,
+        "timezone_value": profile.timezone or "Europe/Moscow",
+        "timezone_choices": PROFILE_TIMEZONE_CHOICES,
 
     }
 

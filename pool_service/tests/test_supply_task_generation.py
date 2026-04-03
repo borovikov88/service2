@@ -71,6 +71,24 @@ class SupplyTaskGenerationTests(TestCase):
         self.assertEqual(task.crm_item.responsible, self.manager)
         self.assertEqual(task.crm_item.title, f'Заявка: "{reading.required_materials}"')
 
+    def test_supply_task_does_not_notify_author(self):
+        reading = WaterReading.objects.create(
+            pool=self.pool,
+            added_by=self.service_user,
+            date=timezone.now(),
+            required_materials="РҐР»РѕСЂ",
+        )
+
+        task = ServiceTask.objects.get(water_reading=reading, task_type=ServiceTask.TYPE_SUPPLY_REQUEST)
+
+        self.assertFalse(
+            Notification.objects.filter(
+                user=self.service_user,
+                kind="task_assignment",
+                action_url=f"/tasks/{task.id}/",
+            ).exists()
+        )
+
     def test_pool_staff_reading_assigns_all_managers(self):
         reading = WaterReading.objects.create(
             pool=self.pool,
@@ -89,6 +107,13 @@ class SupplyTaskGenerationTests(TestCase):
         self.assertTrue(
             Notification.objects.filter(
                 user=self.admin,
+                kind="task_assignment",
+                action_url=f"/tasks/{task.id}/",
+            ).exists()
+        )
+        self.assertFalse(
+            Notification.objects.filter(
+                user=self.client_user,
                 kind="task_assignment",
                 action_url=f"/tasks/{task.id}/",
             ).exists()

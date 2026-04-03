@@ -280,13 +280,21 @@ def notify_reading_out_of_range(reading):
         message = f"{client_label}: " + "; ".join(violations)
     action_url = reverse("pool_detail", kwargs={"pool_uuid": pool.uuid})
     dedupe_key = f"limits:{reading.uuid}"
-    created = notify_org_users(
-        organization,
+    recipients = User.objects.filter(
+        organizationaccess__organization=organization,
+        is_active=True,
+    ).distinct()
+    if reading.added_by_id:
+        recipients = recipients.exclude(id=reading.added_by_id)
+
+    created = notify_users(
+        recipients,
         title=title,
         message=message,
         kind="limits",
         level="warning",
         action_url=action_url,
+        organization=organization,
         pool=pool,
         dedupe_key=dedupe_key,
         send_in_app=send_in_app,

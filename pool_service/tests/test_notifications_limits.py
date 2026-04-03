@@ -45,6 +45,7 @@ class LimitsNotificationTests(TestCase):
         notify_reading_out_of_range(reading)
 
         self.assertTrue(Notification.objects.filter(user=self.org_admin, kind="limits", pool=self.pool).exists())
+        self.assertFalse(Notification.objects.filter(user=self.service_user, kind="limits", pool=self.pool).exists())
 
     def test_out_of_range_reading_create_signal_notifies_org_admin(self):
         WaterReading.objects.create(
@@ -67,6 +68,7 @@ class LimitsNotificationTests(TestCase):
         notify_reading_out_of_range(reading)
 
         self.assertTrue(Notification.objects.filter(user=self.org_admin, kind="limits", pool=self.pool).exists())
+        self.assertFalse(Notification.objects.filter(user=self.pool_staff_user, kind="limits", pool=self.pool).exists())
 
     def test_limits_notification_uses_human_readable_message(self):
         self.client.name = "Школа № 137"
