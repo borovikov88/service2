@@ -1,0 +1,95 @@
+{% extends "pool_service/base.html" %}
+
+{% block title %}Расход {{ expense.amount|floatformat:2 }} ₽{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-4">
+  <div>
+    <div class="d-flex align-items-center gap-2 mb-1">
+      <h1 class="h3 fw-bold mb-0">{{ expense.amount|floatformat:2 }} ₽</h1>
+      {% if expense.status == "approved" %}<span class="badge bg-success-subtle text-success border">Подтверждён</span>
+      {% elif expense.status == "rejected" %}<span class="badge bg-danger-subtle text-danger border">Отклонён</span>
+      {% else %}<span class="badge bg-warning-subtle text-warning border">На проверке</span>{% endif %}
+    </div>
+    <div class="text-muted">{{ expense.spent_on|date:"d.m.Y" }} · {{ expense.destination_name }}</div>
+  </div>
+  <div class="d-flex gap-2">
+    {% if can_edit %}<a href="{% url 'finance_expense_edit' expense.uuid %}" class="btn btn-primary">Изменить</a>{% endif %}
+    <a href="{% url 'finance_dashboard' %}" class="btn btn-outline-secondary">К финансам</a>
+  </div>
+</div>
+
+{% if expense.status == "rejected" and expense.review_comment %}
+  <div class="alert alert-danger"><strong>Причина отклонения:</strong> {{ expense.review_comment }}</div>
+{% endif %}
+
+<div class="row g-4">
+  <div class="col-12 col-lg-7">
+    <div class="card card-soft p-3 p-lg-4 mb-4">
+      <h2 class="h5 fw-bold mb-3">Данные расхода</h2>
+      <div class="row g-3">
+        <div class="col-6"><div class="text-muted small">Сотрудник</div><div class="fw-semibold">{{ expense.employee.get_full_name|default:expense.employee.username }}</div></div>
+        <div class="col-6"><div class="text-muted small">Источник</div><div class="fw-semibold">{{ expense.get_source_display }}</div></div>
+        <div class="col-6"><div class="text-muted small">Категория</div><div class="fw-semibold">{{ expense.category.name }}</div></div>
+        <div class="col-6"><div class="text-muted small">Назначение</div><div class="fw-semibold">{{ expense.destination_name }}</div></div>
+        {% if expense.pool %}<div class="col-12"><div class="text-muted small">Объект</div><div class="fw-semibold">{{ expense.pool.address }}</div></div>{% endif %}
+        {% if expense.vendor %}<div class="col-12"><div class="text-muted small">Поставщик</div><div>{{ expense.vendor }}</div></div>{% endif %}
+        {% if expense.description %}<div class="col-12"><div class="text-muted small">Описание</div><div>{{ expense.description|linebreaksbr }}</div></div>{% endif %}
+      </div>
+    </div>
+
+    <div class="card card-soft p-3 p-lg-4">
+      <h2 class="h5 fw-bold mb-3">Чеки</h2>
+      <div class="row g-3">
+        {% for receipt in expense.receipts.all %}
+          <div class="col-12 col-sm-6">
+            <a href="{% url 'finance_receipt_download' receipt.id %}" target="_blank" rel="noopener" class="text-decoration-none">
+              <div class="border rounded-3 p-3 h-100 d-flex align-items-center gap-3">
+                {% if receipt.content_type == "application/pdf" %}
+                  <i class="bi bi-file-earmark-pdf fs-2 text-danger"></i>
+                {% else %}
+                  <img src="{% url 'finance_receipt_download' receipt.id %}" alt="Чек" class="rounded-2 object-fit-cover" style="width:64px;height:64px;">
+                {% endif %}
+                <div class="min-w-0">
+                  <div class="fw-semibold text-truncate">{{ receipt.original_name }}</div>
+                  <div class="small text-muted">Открыть файл</div>
+                </div>
+              </div>
+            </a>
+          </div>
+        {% empty %}
+          <div class="col-12 text-muted">Чек не приложен</div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-12 col-lg-5">
+    {% if can_review %}
+      <form method="post" action="{% url 'finance_expense_review' expense.uuid %}" class="card card-soft p-3 p-lg-4 mb-4">
+        {% csrf_token %}
+        <h2 class="h5 fw-bold mb-3">Согласование</h2>
+        <div class="d-flex flex-column gap-2 mb-3">
+          {% for radio in review_form.decision %}<label class="form-check">{{ radio.tag }} <span class="form-check-label">{{ radio.choice_label }}</span></label>{% endfor %}
+        </div>
+        <label class="form-label" for="{{ review_form.review_comment.id_for_label }}">{{ review_form.review_comment.label }}</label>
+        {{ review_form.review_comment }}
+        <button type="submit" class="btn btn-primary mt-3">Сохранить решение</button>
+      </form>
+    {% endif %}
+
+    <div class="card card-soft p-3 p-lg-4">
+      <h2 class="h5 fw-bold mb-3">История</h2>
+      <div class="d-flex flex-column gap-3">
+        {% for change in expense.changes.all %}
+          <div class="border-bottom pb-3">
+            <div class="fw-semibold">{{ change.get_action_display }}</div>
+            <div class="small text-muted">{{ change.actor.get_full_name|default:change.actor.username }} · {{ change.created_at|date:"d.m.Y H:i" }}</div>
+            {% if change.note %}<div class="small mt-1">{{ change.note }}</div>{% endif %}
+          </div>
+        {% empty %}<div class="text-muted">История пуста</div>{% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

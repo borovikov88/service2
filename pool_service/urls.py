@@ -76,6 +76,20 @@ from .views import (
     push_unsubscribe,
 )
 from . import views
+from .finance_views import (
+    finance_dashboard,
+    finance_expense_create,
+    finance_expense_detail,
+    finance_expense_edit,
+    finance_expense_review,
+    finance_period_close,
+    finance_period_reopen,
+    finance_receipt_download,
+    finance_report,
+    finance_report_export,
+    finance_transaction_create,
+    finance_transaction_void,
+)
 
 urlpatterns = [
     path('', home, name='home'),
@@ -150,6 +164,18 @@ urlpatterns = [
     path("api/smsru/callback/", smsru_callback, name="smsru_callback"),
     path("api/push/subscribe/", push_subscribe, name="push_subscribe"),
     path("api/push/unsubscribe/", push_unsubscribe, name="push_unsubscribe"),
+    path("finance/", finance_dashboard, name="finance_dashboard"),
+    path("finance/accountable/new/", finance_transaction_create, name="finance_transaction_create"),
+    path("finance/accountable/<int:transaction_id>/void/", finance_transaction_void, name="finance_transaction_void"),
+    path("finance/expenses/new/", finance_expense_create, name="finance_expense_create"),
+    path("finance/expenses/<uuid:expense_uuid>/", finance_expense_detail, name="finance_expense_detail"),
+    path("finance/expenses/<uuid:expense_uuid>/edit/", finance_expense_edit, name="finance_expense_edit"),
+    path("finance/expenses/<uuid:expense_uuid>/review/", finance_expense_review, name="finance_expense_review"),
+    path("finance/receipts/<int:receipt_id>/", finance_receipt_download, name="finance_receipt_download"),
+    path("finance/reports/", finance_report, name="finance_report"),
+    path("finance/reports/export/", finance_report_export, name="finance_report_export"),
+    path("finance/period/close/", finance_period_close, name="finance_period_close"),
+    path("finance/period/reopen/", finance_period_reopen, name="finance_period_reopen"),
     path("clients/create/", client_create, name="client_create"),
     path("clients/<int:client_id>/edit/", client_edit, name="client_edit"),
     path("clients/<int:client_id>/delete/", client_delete, name="client_delete"),

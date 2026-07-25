@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'v7';
+const CACHE_VERSION = 'v8';
 const STATIC_CACHE = `pwa-static-${CACHE_VERSION}`;
 const RUNTIME_CACHE = `pwa-runtime-${CACHE_VERSION}`;
 const OFFLINE_URLS = ['/'];
@@ -36,6 +36,9 @@ self.addEventListener('fetch', (event) => {
     return;
   }
   if (requestUrl.pathname.startsWith('/media/')) {
+    return;
+  }
+  if (requestUrl.pathname.startsWith('/finance/receipts/')) {
     return;
   }
 

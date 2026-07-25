@@ -384,9 +384,9 @@ INVITE_EXPIRY_HOURS = 24
 
 ADMIN_ROLES = ["owner", "admin"]
 
-ORG_STAFF_ROLES = ["owner", "admin", "service", "manager"]
+ORG_STAFF_ROLES = ["owner", "admin", "service", "installer", "manager"]
 
-CRM_ALLOWED_ROLES = {"owner", "admin", "service", "manager"}
+CRM_ALLOWED_ROLES = {"owner", "admin", "service", "installer", "manager"}
 CRM_SERVICE_ONLY_DIRECTIONS = {"service"}
 
 
@@ -520,7 +520,7 @@ def _crm_is_service_only(user):
     roles = _crm_user_roles(user)
     if "superuser" in roles:
         return False
-    return "service" in roles and not any(role in {"owner", "admin", "manager"} for role in roles)
+    return bool(roles & {"service", "installer"}) and not any(role in {"owner", "admin", "manager"} for role in roles)
 
 
 def _crm_allowed_directions(user):
@@ -664,7 +664,7 @@ def _pool_role_for_user(user, pool):
 
             org_role = "admin"
 
-        elif "service" in org_roles:
+        elif "service" in org_roles or "installer" in org_roles:
 
             org_role = "service"
 
@@ -2010,7 +2010,7 @@ def invite_accept(request, token):
 
                     roles = [invite.role]
 
-                allowed_roles = {"admin", "service", "manager"}
+                allowed_roles = {"admin", "service", "installer", "manager"}
 
                 roles = [role for role in roles if role in allowed_roles] or ["service"]
 
@@ -3042,7 +3042,7 @@ def staff_change_role(request, access_id):
 
 
 
-    allowed_roles = ["admin", "service", "manager"]
+    allowed_roles = ["admin", "service", "installer", "manager"]
 
     roles = request.POST.getlist("roles")
 
@@ -3240,7 +3240,7 @@ def users_view(request):
 
         role_labels = dict(OrganizationAccess.ROLE_CHOICES)
 
-        role_order = ["owner", "admin", "manager", "service"]
+        role_order = ["owner", "admin", "manager", "service", "installer"]
 
         grouped = {}
 

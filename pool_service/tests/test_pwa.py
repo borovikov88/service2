@@ -23,7 +23,8 @@ class PwaTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "application/javascript")
-        self.assertContains(response, "CACHE_VERSION = 'v7'")
+        self.assertContains(response, "CACHE_VERSION = 'v8'")
+        self.assertContains(response, "/finance/receipts/")
         self.assertContains(response, "self.addEventListener('fetch'")
 
     def test_profile_contains_install_button_and_install_api(self):

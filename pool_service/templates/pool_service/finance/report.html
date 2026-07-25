@@ -1,0 +1,84 @@
+{% extends "pool_service/base.html" %}
+
+{% block title %}Отчёт по расходам{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-4">
+  <div>
+    <h1 class="h3 fw-bold mb-1">Отчёт по расходам</h1>
+    <div class="text-muted">{{ start|date:"F Y" }}</div>
+  </div>
+  <div class="d-flex flex-wrap gap-2">
+    <a href="{% url 'finance_report_export' %}?{{ request.GET.urlencode }}" class="btn btn-success"><i class="bi bi-file-earmark-excel me-2"></i>Excel</a>
+    <a href="{% url 'finance_dashboard' %}" class="btn btn-outline-secondary">К финансам</a>
+    {% if can_close_finance %}
+      {% if period.is_closed %}
+        <form method="post" action="{% url 'finance_period_reopen' %}?month={{ month_value }}">{% csrf_token %}<button class="btn btn-outline-warning" type="submit">Открыть месяц</button></form>
+      {% else %}
+        <form method="post" action="{% url 'finance_period_close' %}?month={{ month_value }}">{% csrf_token %}<button class="btn btn-outline-danger" type="submit">Закрыть месяц</button></form>
+      {% endif %}
+    {% endif %}
+  </div>
+</div>
+
+{% if period.is_closed %}<div class="alert alert-secondary"><i class="bi bi-lock me-2"></i>Месяц закрыт. Изменения финансовых записей запрещены.</div>{% endif %}
+
+<form method="get" class="card card-soft p-3 mb-4">
+  <div class="row g-2 align-items-end">
+    <div class="col-6 col-lg-2"><label class="form-label small">Месяц</label><input type="month" name="month" value="{{ month_value }}" class="form-control"></div>
+    <div class="col-6 col-lg-2"><label class="form-label small">Сотрудник</label><select name="employee" class="form-select"><option value="">Все</option>{% for item in employees %}<option value="{{ item.id }}" {% if filters.employee == item.id %}selected{% endif %}>{{ item.get_full_name|default:item.username }}</option>{% endfor %}</select></div>
+    <div class="col-6 col-lg-2"><label class="form-label small">Категория</label><select name="category" class="form-select"><option value="">Все</option>{% for item in categories %}<option value="{{ item.id }}" {% if filters.category == item.id %}selected{% endif %}>{{ item.name }}</option>{% endfor %}</select></div>
+    <div class="col-6 col-lg-2"><label class="form-label small">Клиент</label><select name="client" class="form-select"><option value="">Все</option>{% for item in clients %}<option value="{{ item.id }}" {% if filters.client == item.id %}selected{% endif %}>{{ item.name }}</option>{% endfor %}</select></div>
+    <div class="col-6 col-lg-2"><label class="form-label small">Статус</label><select name="status" class="form-select"><option value="">Все</option><option value="approved" {% if filters.status == "approved" %}selected{% endif %}>Подтверждён</option><option value="pending" {% if filters.status == "pending" %}selected{% endif %}>На проверке</option><option value="rejected" {% if filters.status == "rejected" %}selected{% endif %}>Отклонён</option></select></div>
+    <div class="col-6 col-lg-2"><button type="submit" class="btn btn-primary w-100">Показать</button></div>
+  </div>
+</form>
+
+<div class="row g-3 mb-4">
+  <div class="col-6 col-lg-3"><div class="card card-soft p-3 h-100"><div class="small text-muted">Подтверждено</div><div class="h4 fw-bold text-success mb-0">{{ approved_total|floatformat:2 }} ₽</div></div></div>
+  <div class="col-6 col-lg-3"><div class="card card-soft p-3 h-100"><div class="small text-muted">На проверке</div><div class="h4 fw-bold text-warning mb-0">{{ pending_total|floatformat:2 }} ₽</div></div></div>
+  <div class="col-6 col-lg-3"><div class="card card-soft p-3 h-100"><div class="small text-muted">Офис</div><div class="h4 fw-bold mb-0">{{ office_total|floatformat:2 }} ₽</div></div></div>
+  <div class="col-6 col-lg-3"><div class="card card-soft p-3 h-100"><div class="small text-muted">Клиенты</div><div class="h4 fw-bold mb-0">{{ client_total|floatformat:2 }} ₽</div></div></div>
+</div>
+
+<div class="card card-soft p-3 p-lg-4 mb-4">
+  <h2 class="h5 fw-bold mb-3">Подотчёт сотрудников</h2>
+  <div class="table-responsive">
+    <table class="table align-middle mb-0">
+      <thead class="small text-muted"><tr><th>Сотрудник</th><th class="text-end">На начало</th><th class="text-end">Выдано</th><th class="text-end">Возврат</th><th class="text-end">Расход</th><th class="text-end">На проверке</th><th class="text-end">На конец</th></tr></thead>
+      <tbody>
+        {% for row in employee_rows %}
+          <tr><td class="fw-semibold">{{ row.employee.get_full_name|default:row.employee.username }}</td><td class="text-end">{{ row.opening|floatformat:2 }}</td><td class="text-end">{{ row.issued|floatformat:2 }}</td><td class="text-end">{{ row.returned|floatformat:2 }}</td><td class="text-end">{{ row.approved|floatformat:2 }}</td><td class="text-end">{{ row.pending|floatformat:2 }}</td><td class="text-end fw-bold {% if row.closing < 0 %}text-danger{% endif %}">{{ row.closing|floatformat:2 }} ₽</td></tr>
+        {% empty %}<tr><td colspan="7" class="text-center text-muted py-4">Движений подотчёта нет</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="row g-4 mb-4">
+  <div class="col-12 col-lg-6"><div class="card card-soft p-3 p-lg-4 h-100"><h2 class="h5 fw-bold mb-3">По категориям</h2>{% for name, total in category_totals %}<div class="d-flex justify-content-between border-bottom py-2"><span>{{ name }}</span><strong>{{ total|floatformat:2 }} ₽</strong></div>{% empty %}<div class="text-muted">Нет данных</div>{% endfor %}</div></div>
+  <div class="col-12 col-lg-6"><div class="card card-soft p-3 p-lg-4 h-100"><h2 class="h5 fw-bold mb-3">По клиентам и офису</h2>{% for name, total in client_totals %}<div class="d-flex justify-content-between border-bottom py-2"><span>{{ name }}</span><strong>{{ total|floatformat:2 }} ₽</strong></div>{% empty %}<div class="text-muted">Нет данных</div>{% endfor %}</div></div>
+</div>
+
+<div class="card card-soft p-3 p-lg-4">
+  <h2 class="h5 fw-bold mb-3">Все расходы</h2>
+  <div class="table-responsive">
+    <table class="table align-middle mb-0">
+      <thead class="small text-muted"><tr><th>Дата</th><th>Сотрудник</th><th>Назначение</th><th>Категория</th><th>Чек</th><th>Статус</th><th class="text-end">Сумма</th></tr></thead>
+      <tbody>
+        {% for expense in expenses %}
+          <tr>
+            <td><a href="{% url 'finance_expense_detail' expense.uuid %}">{{ expense.spent_on|date:"d.m.Y" }}</a></td>
+            <td>{{ expense.employee.get_full_name|default:expense.employee.username }}</td>
+            <td>{{ expense.destination_name }}{% if expense.pool %}<div class="small text-muted">{{ expense.pool.address }}</div>{% endif %}</td>
+            <td>{{ expense.category.name }}</td>
+            <td>{% if expense.receipts.all %}<span class="text-success"><i class="bi bi-check-circle"></i></span>{% else %}<span class="text-danger">Нет</span>{% endif %}</td>
+            <td>{% if expense.status == "approved" %}<span class="badge bg-success-subtle text-success border">Подтверждён</span>{% elif expense.status == "rejected" %}<span class="badge bg-danger-subtle text-danger border">Отклонён</span>{% else %}<span class="badge bg-warning-subtle text-warning border">На проверке</span>{% endif %}</td>
+            <td class="text-end fw-semibold">{{ expense.amount|floatformat:2 }} ₽</td>
+          </tr>
+        {% empty %}<tr><td colspan="7" class="text-center text-muted py-4">Расходов за период нет</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

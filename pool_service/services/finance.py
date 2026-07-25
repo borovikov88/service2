@@ -1,0 +1,347 @@
+from calendar import monthrange
+from datetime import date
+from decimal import Decimal
+
+from django.contrib.auth.models import User
+from django.db.models import Q
+from django.urls import reverse
+
+from pool_service.models import (
+    AccountableTransaction,
+    Client,
+    Expense,
+    ExpenseCategory,
+    ExpensePeriod,
+    OrganizationAccess,
+)
+from pool_service.services.notifications import notify_users
+
+
+DEFAULT_EXPENSE_CATEGORIES = [
+    "Материалы",
+    "Доставка",
+    "Вода",
+    "Инструмент",
+    "Транспорт",
+    "Прочее",
+]
+
+FINANCE_ACCESS_ROLES = {"owner", "admin", "manager", "service", "installer"}
+FINANCE_MANAGE_ROLES = {"owner", "admin", "manager"}
+FINANCE_CLOSE_ROLES = {"owner", "admin"}
+
+
+def organization_roles(user, organization):
+    if not user or not user.is_authenticated or not organization:
+        return set()
+    return set(
+        OrganizationAccess.objects.filter(
+            user=user,
+            organization=organization,
+        ).values_list("role", flat=True)
+    )
+
+
+def can_access_finance(user, organization):
+    if user.is_superuser:
+        return bool(organization)
+    return bool(organization_roles(user, organization) & FINANCE_ACCESS_ROLES)
+
+
+def can_manage_finance(user, organization):
+    if user.is_superuser:
+        return bool(organization)
+    return bool(organization_roles(user, organization) & FINANCE_MANAGE_ROLES)
+
+
+def can_close_finance_period(user, organization):
+    if user.is_superuser:
+        return bool(organization)
+    return bool(organization_roles(user, organization) & FINANCE_CLOSE_ROLES)
+
+
+def can_review_expense(user, expense):
+    if not can_manage_finance(user, expense.organization):
+        return False
+    roles = organization_roles(user, expense.organization)
+    if "owner" in roles or user.is_superuser:
+        return True
+    return user.id not in {expense.employee_id, expense.created_by_id}
+
+
+def can_view_expense(user, expense):
+    if can_manage_finance(user, expense.organization):
+        return True
+    if not can_access_finance(user, expense.organization):
+        return False
+    return user.id in {expense.employee_id, expense.created_by_id}
+
+
+def can_edit_expense(user, expense):
+    if expense.status not in {Expense.STATUS_PENDING, Expense.STATUS_REJECTED}:
+        return False
+    if can_manage_finance(user, expense.organization):
+        return True
+    return can_access_finance(user, expense.organization) and user.id == expense.employee_id
+
+
+def finance_staff(organization):
+    return (
+        User.objects.filter(
+            organizationaccess__organization=organization,
+            organizationaccess__role__in=FINANCE_ACCESS_ROLES,
+            is_active=True,
+        )
+        .distinct()
+        .order_by("last_name", "first_name", "username")
+    )
+
+
+def user_display_name(user):
+    return user.get_full_name().strip() or user.email or user.username
+
+
+def find_client_by_name(organization, name):
+    normalized_name = " ".join((name or "").split()).casefold()
+    if not normalized_name:
+        return None
+    for client in Client.objects.filter(organization=organization).only("id", "name", "organization_id"):
+        if " ".join(client.name.split()).casefold() == normalized_name:
+            return client
+    return None
+
+
+def ensure_default_categories(organization):
+    categories = []
+    for sort_order, name in enumerate(DEFAULT_EXPENSE_CATEGORIES, start=1):
+        category, _ = ExpenseCategory.objects.get_or_create(
+            organization=organization,
+            name=name,
+            defaults={"sort_order": sort_order},
+        )
+        categories.append(category)
+    return categories
+
+
+def month_bounds(month_value):
+    if isinstance(month_value, str):
+        year_value, month_number = [int(part) for part in month_value.split("-", 1)]
+    else:
+        year_value, month_number = month_value.year, month_value.month
+    start = date(year_value, month_number, 1)
+    end = date(year_value, month_number, monthrange(year_value, month_number)[1])
+    return start, end
+
+
+def period_is_closed(organization, value):
+    month = date(value.year, value.month, 1)
+    return ExpensePeriod.objects.filter(
+        organization=organization,
+        month=month,
+        closed_at__isnull=False,
+    ).exists()
+
+
+def transaction_effect(transaction_type, amount):
+    if transaction_type in {
+        AccountableTransaction.TYPE_ISSUE,
+        AccountableTransaction.TYPE_ADJUSTMENT_IN,
+    }:
+        return amount
+    return -amount
+
+
+def accountable_balance(organization, employee, through=None):
+    transactions = AccountableTransaction.objects.filter(
+        organization=organization,
+        employee=employee,
+        is_voided=False,
+    )
+    expenses = Expense.objects.filter(
+        organization=organization,
+        employee=employee,
+        source=Expense.SOURCE_ACCOUNTABLE,
+    )
+    if through:
+        transactions = transactions.filter(occurred_on__lte=through)
+        expenses = expenses.filter(spent_on__lte=through)
+
+    funds = Decimal("0.00")
+    issued = Decimal("0.00")
+    returned = Decimal("0.00")
+    for transaction in transactions.only("transaction_type", "amount"):
+        funds += transaction_effect(transaction.transaction_type, transaction.amount)
+        if transaction.transaction_type == AccountableTransaction.TYPE_ISSUE:
+            issued += transaction.amount
+        elif transaction.transaction_type == AccountableTransaction.TYPE_RETURN:
+            returned += transaction.amount
+
+    approved = Decimal("0.00")
+    pending = Decimal("0.00")
+    for expense in expenses.only("status", "amount"):
+        if expense.status == Expense.STATUS_APPROVED:
+            approved += expense.amount
+        elif expense.status == Expense.STATUS_PENDING:
+            pending += expense.amount
+
+    return {
+        "issued": issued,
+        "returned": returned,
+        "approved": approved,
+        "pending": pending,
+        "confirmed_balance": funds - approved,
+        "operational_balance": funds - approved - pending,
+    }
+
+
+def accountable_rows(organization, through=None, users=None):
+    employees = users if users is not None else finance_staff(organization)
+    rows = []
+    for employee in employees:
+        balance = accountable_balance(organization, employee, through=through)
+        if not any(balance.values()) and users is None:
+            continue
+        rows.append({"employee": employee, **balance})
+    return rows
+
+
+def report_employee_rows(organization, start, end):
+    rows = []
+    for employee in finance_staff(organization):
+        opening_day = date.fromordinal(start.toordinal() - 1)
+        opening = accountable_balance(organization, employee, through=opening_day)
+        closing = accountable_balance(organization, employee, through=end)
+        transactions = AccountableTransaction.objects.filter(
+            organization=organization,
+            employee=employee,
+            occurred_on__range=(start, end),
+            is_voided=False,
+        )
+        expenses = Expense.objects.filter(
+            organization=organization,
+            employee=employee,
+            source=Expense.SOURCE_ACCOUNTABLE,
+            spent_on__range=(start, end),
+        )
+        issued = sum(
+            (item.amount for item in transactions if item.transaction_type == AccountableTransaction.TYPE_ISSUE),
+            Decimal("0.00"),
+        )
+        returned = sum(
+            (item.amount for item in transactions if item.transaction_type == AccountableTransaction.TYPE_RETURN),
+            Decimal("0.00"),
+        )
+        approved = sum(
+            (item.amount for item in expenses if item.status == Expense.STATUS_APPROVED),
+            Decimal("0.00"),
+        )
+        pending = sum(
+            (item.amount for item in expenses if item.status == Expense.STATUS_PENDING),
+            Decimal("0.00"),
+        )
+        if not any([opening["operational_balance"], issued, returned, approved, pending, closing["operational_balance"]]):
+            continue
+        rows.append(
+            {
+                "employee": employee,
+                "opening": opening["operational_balance"],
+                "issued": issued,
+                "returned": returned,
+                "approved": approved,
+                "pending": pending,
+                "closing": closing["operational_balance"],
+            }
+        )
+    return rows
+
+
+def report_expenses(organization, start, end, filters=None):
+    filters = filters or {}
+    queryset = (
+        Expense.objects.filter(
+            organization=organization,
+            spent_on__range=(start, end),
+        )
+        .select_related("employee", "category", "client", "pool", "reviewed_by")
+        .prefetch_related("receipts")
+    )
+    if filters.get("employee"):
+        queryset = queryset.filter(employee_id=filters["employee"])
+    if filters.get("category"):
+        queryset = queryset.filter(category_id=filters["category"])
+    if filters.get("client"):
+        queryset = queryset.filter(client_id=filters["client"])
+    if filters.get("source"):
+        queryset = queryset.filter(source=filters["source"])
+    if filters.get("status"):
+        queryset = queryset.filter(status=filters["status"])
+    search = (filters.get("search") or "").strip()
+    if search:
+        queryset = queryset.filter(
+            Q(destination_name__icontains=search)
+            | Q(vendor__icontains=search)
+            | Q(description__icontains=search)
+        )
+    return queryset.order_by("-spent_on", "-id")
+
+
+def notify_advance(transaction):
+    if transaction.employee_id == transaction.created_by_id:
+        return []
+    title = "Выдан подотчёт" if transaction.transaction_type == AccountableTransaction.TYPE_ISSUE else "Возврат подотчёта"
+    message = f"{transaction.get_transaction_type_display()}: {transaction.amount:.2f} ₽"
+    return notify_users(
+        [transaction.employee],
+        title=title,
+        message=message,
+        kind="finance",
+        action_url=reverse("finance_dashboard"),
+        organization=transaction.organization,
+    )
+
+
+def finance_reviewers(organization, exclude_user=None):
+    queryset = User.objects.filter(
+        organizationaccess__organization=organization,
+        organizationaccess__role__in=FINANCE_MANAGE_ROLES,
+        is_active=True,
+    ).distinct()
+    if exclude_user:
+        queryset = queryset.exclude(id=exclude_user.id)
+    return queryset
+
+
+def notify_expense_submitted(expense):
+    return notify_users(
+        finance_reviewers(expense.organization, exclude_user=expense.created_by),
+        title="Новый расход на проверке",
+        message=f"{user_display_name(expense.employee)}: {expense.amount:.2f} ₽ — {expense.destination_name}",
+        kind="finance",
+        action_url=reverse("finance_expense_detail", kwargs={"expense_uuid": expense.uuid}),
+        organization=expense.organization,
+        client=expense.client,
+    )
+
+
+def notify_expense_reviewed(expense):
+    if expense.status == Expense.STATUS_APPROVED:
+        title = "Расход подтверждён"
+        message = f"Расход {expense.amount:.2f} ₽ подтверждён."
+        level = "info"
+    else:
+        title = "Расход отклонён"
+        message = expense.review_comment or f"Расход {expense.amount:.2f} ₽ отклонён."
+        level = "warning"
+    recipients = {expense.employee, expense.created_by}
+    if expense.reviewed_by in recipients:
+        recipients.remove(expense.reviewed_by)
+    return notify_users(
+        recipients,
+        title=title,
+        message=message,
+        kind="finance",
+        level=level,
+        action_url=reverse("finance_expense_detail", kwargs={"expense_uuid": expense.uuid}),
+        organization=expense.organization,
+        client=expense.client,
+    )

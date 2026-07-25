@@ -1,0 +1,160 @@
+{% extends "pool_service/base.html" %}
+
+{% block title %}{% if expense %}Изменить расход{% else %}Новый расход{% endif %}{% endblock %}
+
+{% block content %}
+<div class="mx-auto" style="max-width:900px;">
+  <div class="d-flex align-items-center justify-content-between gap-3 mb-4">
+    <div>
+      <h1 class="h3 fw-bold mb-1">{% if expense %}Изменить расход{% else %}Новый расход{% endif %}</h1>
+      <div class="text-muted">Укажите назначение и приложите чек</div>
+    </div>
+    <a href="{% if expense %}{% url 'finance_expense_detail' expense.uuid %}{% else %}{% url 'finance_dashboard' %}{% endif %}" class="btn btn-outline-secondary">Назад</a>
+  </div>
+
+  <div id="finance-offline-status" class="alert alert-warning d-none"></div>
+
+  <form method="post" enctype="multipart/form-data" class="card card-soft p-3 p-lg-4" id="finance-expense-form" data-finance-offline-form="{% if expense %}0{% else %}1{% endif %}" data-receipt-required="{% if expense %}0{% else %}1{% endif %}">
+    {% csrf_token %}
+    {{ form.request_id }}
+    {{ form.client_id }}
+    {% if form.source.is_hidden %}{{ form.source }}{% endif %}
+    {% if form.employee.is_hidden %}{{ form.employee }}{% endif %}
+
+    <div class="row g-3">
+      {% if not form.source.is_hidden %}
+      <div class="col-12 col-md-6">
+        <label class="form-label" for="{{ form.source.id_for_label }}">{{ form.source.label }}</label>
+        {{ form.source }}
+        {% for error in form.source.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+      {% endif %}
+      {% if not form.employee.is_hidden %}
+      <div class="col-12 col-md-6">
+        <label class="form-label" for="{{ form.employee.id_for_label }}">{{ form.employee.label }}</label>
+        {{ form.employee }}
+        {% for error in form.employee.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+      {% endif %}
+      <div class="col-12 col-md-6">
+        <label class="form-label" for="{{ form.category.id_for_label }}">{{ form.category.label }}</label>
+        {{ form.category }}
+        {% for error in form.category.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+      <div class="col-7 col-md-3">
+        <label class="form-label" for="{{ form.amount.id_for_label }}">{{ form.amount.label }}</label>
+        {{ form.amount }}
+        {% for error in form.amount.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+      <div class="col-5 col-md-3">
+        <label class="form-label" for="{{ form.spent_on.id_for_label }}">{{ form.spent_on.label }}</label>
+        {{ form.spent_on }}
+        {% for error in form.spent_on.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+      <div class="col-12 col-md-6">
+        <label class="form-label" for="{{ form.destination_type.id_for_label }}">{{ form.destination_type.label }}</label>
+        {{ form.destination_type }}
+        {% for error in form.destination_type.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+      <div class="col-12 col-md-6" data-client-field>
+        <label class="form-label" for="{{ form.destination_query.id_for_label }}">{{ form.destination_query.label }}</label>
+        {{ form.destination_query }}
+        <datalist id="finance-client-options">
+          {% for option in client_options %}<option value="{{ option.name }}" label="{{ option.label }}"></option>{% endfor %}
+        </datalist>
+        <div class="form-text" data-client-hint>Если клиента нет, он будет создан при сохранении.</div>
+        {% for error in form.destination_query.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+      <div class="col-12 col-md-6" data-pool-field>
+        <label class="form-label" for="{{ form.pool.id_for_label }}">{{ form.pool.label }}</label>
+        {{ form.pool }}
+        {% for error in form.pool.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+      <div class="col-12 col-md-6">
+        <label class="form-label" for="{{ form.vendor.id_for_label }}">{{ form.vendor.label }}</label>
+        {{ form.vendor }}
+        {% for error in form.vendor.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+      <div class="col-12">
+        <label class="form-label" for="{{ form.description.id_for_label }}">{{ form.description.label }}</label>
+        {{ form.description }}
+        {% for error in form.description.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+      <div class="col-12">
+        <label class="form-label" for="{{ form.receipts.id_for_label }}">{{ form.receipts.label }}</label>
+        {{ form.receipts }}
+        <div class="form-text">До 5 файлов JPG, PNG, WEBP или PDF, каждый до 10 МБ.</div>
+        <div class="d-flex flex-wrap gap-2 mt-2" data-receipt-preview></div>
+        {% for error in form.receipts.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+    </div>
+    {% for error in form.non_field_errors %}<div class="alert alert-danger mt-3 mb-0">{{ error }}</div>{% endfor %}
+    <div class="d-flex flex-wrap gap-2 mt-4">
+      <button type="submit" class="btn btn-primary" data-finance-submit>Сохранить расход</button>
+      <a href="{% if expense %}{% url 'finance_expense_detail' expense.uuid %}{% else %}{% url 'finance_dashboard' %}{% endif %}" class="btn btn-outline-secondary">Отмена</a>
+    </div>
+  </form>
+</div>
+
+{{ client_options|json_script:"finance-client-data" }}
+{{ pool_options|json_script:"finance-pool-data" }}
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    const destination = document.querySelector("[data-destination-type]");
+    const clientField = document.querySelector("[data-client-field]");
+    const poolField = document.querySelector("[data-pool-field]");
+    const clientQuery = document.querySelector("[data-client-query]");
+    const clientId = document.querySelector("[data-client-id]");
+    const poolSelect = document.querySelector("[data-pool-select]");
+    const clientData = JSON.parse(document.getElementById("finance-client-data").textContent || "[]");
+    const poolData = JSON.parse(document.getElementById("finance-pool-data").textContent || "[]");
+
+    function selectedClient() {
+      const query = (clientQuery.value || "").trim().toLocaleLowerCase("ru");
+      return clientData.find(function (client) { return client.name.toLocaleLowerCase("ru") === query; }) || null;
+    }
+
+    function syncClient() {
+      const client = selectedClient();
+      clientId.value = client ? client.id : "";
+      const selectedPool = poolSelect.value;
+      Array.from(poolSelect.options).forEach(function (option) {
+        if (!option.value) return;
+        const pool = poolData.find(function (item) { return String(item.id) === option.value; });
+        option.hidden = Boolean(client && pool && String(pool.client_id) !== String(client.id));
+      });
+      if (selectedPool && poolSelect.selectedOptions[0] && poolSelect.selectedOptions[0].hidden) poolSelect.value = "";
+    }
+
+    function syncDestination() {
+      const isClient = destination.value === "client";
+      clientField.classList.toggle("d-none", !isClient);
+      poolField.classList.toggle("d-none", !isClient);
+      clientQuery.required = isClient;
+      if (!isClient) {
+        clientId.value = "";
+        poolSelect.value = "";
+      } else {
+        syncClient();
+      }
+    }
+
+    destination.addEventListener("change", syncDestination);
+    clientQuery.addEventListener("input", syncClient);
+    clientQuery.addEventListener("change", syncClient);
+    syncDestination();
+
+    const receipts = document.querySelector("[data-finance-receipts]");
+    const preview = document.querySelector("[data-receipt-preview]");
+    receipts.addEventListener("change", function () {
+      preview.innerHTML = "";
+      Array.from(receipts.files).forEach(function (file) {
+        const badge = document.createElement("span");
+        badge.className = "badge bg-light text-dark border";
+        badge.textContent = file.name;
+        preview.appendChild(badge);
+      });
+    });
+  });
+</script>
+{% endblock %}

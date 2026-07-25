@@ -1,0 +1,32 @@
+{% extends "pool_service/base.html" %}
+
+{% block title %}Операция подотчёта{% endblock %}
+
+{% block content %}
+<div class="mx-auto" style="max-width:760px;">
+  <div class="d-flex align-items-center justify-content-between gap-3 mb-4">
+    <div>
+      <h1 class="h3 fw-bold mb-1">Операция подотчёта</h1>
+      <div class="text-muted">Выдача средств сотруднику или возврат остатка</div>
+    </div>
+    <a href="{% url 'finance_dashboard' %}" class="btn btn-outline-secondary">Назад</a>
+  </div>
+  <form method="post" class="card card-soft p-3 p-lg-4">
+    {% csrf_token %}
+    <div class="row g-3">
+      {% for field in form %}
+        <div class="{% if field.name == 'note' %}col-12{% else %}col-12 col-md-6{% endif %}">
+          <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+          {{ field }}
+          {% for error in field.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+        </div>
+      {% endfor %}
+    </div>
+    {% for error in form.non_field_errors %}<div class="alert alert-danger mt-3 mb-0">{{ error }}</div>{% endfor %}
+    <div class="d-flex gap-2 mt-4">
+      <button type="submit" class="btn btn-primary">Сохранить</button>
+      <a href="{% url 'finance_dashboard' %}" class="btn btn-outline-secondary">Отмена</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

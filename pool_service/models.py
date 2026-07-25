@@ -1,11 +1,14 @@
 import hashlib
 import uuid
+from pathlib import Path
 
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.contrib.auth.models import User
 from django_ckeditor_5.fields import CKEditor5Field
 from django.utils import timezone
+
+from pool_service.storage import private_media_storage
 
 
 class Organization(models.Model):
@@ -259,6 +262,7 @@ class OrganizationAccess(models.Model):
         ("owner", "Владелец"),
         ("manager", "Менеджер"),
         ("service", "Сервис"),
+        ("installer", "Монтажник"),
         ("admin", "Администратор"),
     ]
 
@@ -597,6 +601,7 @@ class Notification(models.Model):
         ("new_company", "new_company"),
         ("new_personal", "new_personal"),
         ("task_assignment", "task_assignment"),
+        ("finance", "finance"),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="notifications")
@@ -893,3 +898,298 @@ class ServiceTaskChange(models.Model):
 
     def __str__(self):
         return f"{self.task_id} {self.action}"
+
+
+class ExpenseCategory(models.Model):
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="expense_categories",
+    )
+    name = models.CharField(max_length=120)
+    is_active = models.BooleanField(default=True)
+    sort_order = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["sort_order", "name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "name"],
+                name="unique_expense_category_name",
+            )
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class AccountableTransaction(models.Model):
+    TYPE_ISSUE = "issue"
+    TYPE_RETURN = "return"
+    TYPE_ADJUSTMENT_IN = "adjustment_in"
+    TYPE_ADJUSTMENT_OUT = "adjustment_out"
+    TYPE_CHOICES = [
+        (TYPE_ISSUE, "Выдача"),
+        (TYPE_RETURN, "Возврат"),
+        (TYPE_ADJUSTMENT_IN, "Увеличение остатка"),
+        (TYPE_ADJUSTMENT_OUT, "Уменьшение остатка"),
+    ]
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="accountable_transactions",
+    )
+    employee = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="accountable_transactions",
+    )
+    transaction_type = models.CharField(max_length=24, choices=TYPE_CHOICES)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    occurred_on = models.DateField()
+    note = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="created_accountable_transactions",
+    )
+    is_voided = models.BooleanField(default=False)
+    voided_at = models.DateTimeField(null=True, blank=True)
+    voided_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="voided_accountable_transactions",
+    )
+    void_reason = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-occurred_on", "-id"]
+        indexes = [
+            models.Index(fields=["organization", "occurred_on"], name="acct_org_date_idx"),
+            models.Index(fields=["employee", "occurred_on"], name="acct_user_date_idx"),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.amount is not None and self.amount <= 0:
+            raise ValidationError({"amount": "Сумма должна быть больше нуля."})
+        if self.employee_id and self.organization_id:
+            has_access = OrganizationAccess.objects.filter(
+                user_id=self.employee_id,
+                organization_id=self.organization_id,
+            ).exists()
+            if not has_access:
+                raise ValidationError({"employee": "Сотрудник не состоит в этой организации."})
+
+    def __str__(self):
+        return f"{self.get_transaction_type_display()}: {self.amount}"
+
+
+class Expense(models.Model):
+    SOURCE_ACCOUNTABLE = "accountable"
+    SOURCE_COMPANY_CASH = "company_cash"
+    SOURCE_CHOICES = [
+        (SOURCE_ACCOUNTABLE, "Подотчёт"),
+        (SOURCE_COMPANY_CASH, "Касса компании"),
+    ]
+
+    DESTINATION_OFFICE = "office"
+    DESTINATION_CLIENT = "client"
+    DESTINATION_CHOICES = [
+        (DESTINATION_OFFICE, "Офисные расходы"),
+        (DESTINATION_CLIENT, "Клиент"),
+    ]
+
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "На проверке"),
+        (STATUS_APPROVED, "Подтверждён"),
+        (STATUS_REJECTED, "Отклонён"),
+    ]
+
+    uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="expenses",
+    )
+    source = models.CharField(max_length=24, choices=SOURCE_CHOICES)
+    employee = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="expenses",
+    )
+    category = models.ForeignKey(
+        ExpenseCategory,
+        on_delete=models.PROTECT,
+        related_name="expenses",
+    )
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    spent_on = models.DateField()
+    destination_type = models.CharField(max_length=16, choices=DESTINATION_CHOICES)
+    client = models.ForeignKey(
+        Client,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="expenses",
+    )
+    pool = models.ForeignKey(
+        Pool,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="expenses",
+    )
+    destination_name = models.CharField(max_length=255)
+    vendor = models.CharField(max_length=255, blank=True)
+    description = models.TextField(blank=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="created_expenses",
+    )
+    reviewed_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="reviewed_expenses",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_comment = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-spent_on", "-id"]
+        indexes = [
+            models.Index(fields=["organization", "spent_on"], name="expense_org_date_idx"),
+            models.Index(fields=["organization", "status"], name="expense_org_status_idx"),
+            models.Index(fields=["employee", "status"], name="expense_user_status_idx"),
+            models.Index(fields=["client", "spent_on"], name="expense_client_date_idx"),
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.amount is not None and self.amount <= 0:
+            errors["amount"] = "Сумма должна быть больше нуля."
+        if self.employee_id and self.organization_id:
+            has_access = OrganizationAccess.objects.filter(
+                user_id=self.employee_id,
+                organization_id=self.organization_id,
+            ).exists()
+            if not has_access:
+                errors["employee"] = "Сотрудник не состоит в этой организации."
+        if self.category_id and self.organization_id and self.category.organization_id != self.organization_id:
+            errors["category"] = "Категория относится к другой организации."
+        if self.destination_type == self.DESTINATION_CLIENT:
+            if not self.client_id:
+                if not getattr(self, "_allow_unresolved_client", False):
+                    errors["client"] = "Выберите или создайте клиента."
+            elif self.organization_id and self.client.organization_id != self.organization_id:
+                errors["client"] = "Клиент относится к другой организации."
+        elif self.client_id:
+            errors["client"] = "Для офисного расхода клиент не указывается."
+        if self.pool_id:
+            if not self.client_id or self.pool.client_id != self.client_id:
+                errors["pool"] = "Объект должен принадлежать выбранному клиенту."
+            elif self.organization_id and self.pool.organization_id != self.organization_id:
+                errors["pool"] = "Объект относится к другой организации."
+        if errors:
+            raise ValidationError(errors)
+
+    def __str__(self):
+        return f"{self.destination_name}: {self.amount}"
+
+
+def expense_receipt_upload_to(instance, filename):
+    suffix = Path(filename).suffix.lower()[:10]
+    return f"finance_receipts/{instance.expense.organization_id}/{instance.expense.uuid}/{uuid.uuid4().hex}{suffix}"
+
+
+class ExpenseReceipt(models.Model):
+    expense = models.ForeignKey(Expense, on_delete=models.CASCADE, related_name="receipts")
+    file = models.FileField(storage=private_media_storage, upload_to=expense_receipt_upload_to)
+    original_name = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=100, blank=True)
+    size = models.PositiveIntegerField(default=0)
+    uploaded_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="uploaded_expense_receipts",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.original_name
+
+
+class ExpensePeriod(models.Model):
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="expense_periods",
+    )
+    month = models.DateField()
+    closed_at = models.DateTimeField(null=True, blank=True)
+    closed_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="closed_expense_periods",
+    )
+
+    class Meta:
+        ordering = ["-month"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "month"],
+                name="unique_expense_period_month",
+            )
+        ]
+
+    @property
+    def is_closed(self):
+        return bool(self.closed_at)
+
+    def __str__(self):
+        return f"{self.organization}: {self.month:%m.%Y}"
+
+
+class ExpenseChange(models.Model):
+    ACTION_CREATED = "created"
+    ACTION_UPDATED = "updated"
+    ACTION_APPROVED = "approved"
+    ACTION_REJECTED = "rejected"
+    ACTION_CHOICES = [
+        (ACTION_CREATED, "Создан"),
+        (ACTION_UPDATED, "Изменён"),
+        (ACTION_APPROVED, "Подтверждён"),
+        (ACTION_REJECTED, "Отклонён"),
+    ]
+
+    expense = models.ForeignKey(Expense, on_delete=models.CASCADE, related_name="changes")
+    actor = models.ForeignKey(User, on_delete=models.PROTECT, related_name="expense_changes")
+    action = models.CharField(max_length=16, choices=ACTION_CHOICES)
+    note = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["expense", "created_at"], name="expense_change_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.expense_id}: {self.action}"
