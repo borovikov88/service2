@@ -211,6 +211,37 @@
                 </div>
             </div>
 
+            <div class="card card-soft mb-4" id="pwa-install-card">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-2">
+                        <div class="d-flex align-items-center gap-3">
+                            <span class="bg-primary bg-opacity-10 text-primary rounded-3 d-inline-flex align-items-center justify-content-center" style="width:48px;height:48px;font-size:1.4rem;">
+                                <i class="bi bi-phone"></i>
+                            </span>
+                            <div>
+                                <h5 class="card-title mb-1">Приложение {{ brand_name }}</h5>
+                                <p class="text-muted mb-0">Быстрый запуск с главного экрана и push-уведомления.</p>
+                            </div>
+                        </div>
+                        <span class="badge bg-secondary text-white border-0" id="pwa-install-status">Проверка...</span>
+                    </div>
+                    <p class="small text-muted my-3" id="pwa-install-text">Проверяем возможность установки на этом устройстве.</p>
+                    <button type="button" class="btn btn-primary rounded-3" id="pwa-install-profile-btn">
+                        <i class="bi bi-download me-2"></i>Установить приложение
+                    </button>
+                    <div class="alert alert-light border mt-3 mb-0 d-none" id="pwa-install-instructions">
+                        <div class="d-none" data-pwa-ios-instructions>
+                            Откройте сайт в Safari, нажмите <strong>«Поделиться»</strong>
+                            <i class="bi bi-box-arrow-up mx-1"></i> и выберите <strong>«На экран Домой»</strong>.
+                        </div>
+                        <div class="d-none" data-pwa-browser-instructions>
+                            Откройте меню браузера <strong>⋮</strong> и выберите
+                            <strong>«Установить приложение»</strong> или <strong>«Добавить на главный экран»</strong>.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="card card-soft mb-4">
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-2">
@@ -359,6 +390,109 @@
   </div>
 </div>
 <script>
+  (function () {
+    const button = document.getElementById("pwa-install-profile-btn");
+    const badge = document.getElementById("pwa-install-status");
+    const text = document.getElementById("pwa-install-text");
+    const instructions = document.getElementById("pwa-install-instructions");
+    const iosInstructions = instructions?.querySelector("[data-pwa-ios-instructions]");
+    const browserInstructions = instructions?.querySelector("[data-pwa-browser-instructions]");
+
+    if (!button || !badge || !text || !instructions) return;
+
+    function setBadge(className, label) {
+      badge.className = "badge border " + className;
+      badge.textContent = label;
+    }
+
+    function showInstructions(ios) {
+      instructions.classList.remove("d-none");
+      iosInstructions?.classList.toggle("d-none", !ios);
+      browserInstructions?.classList.toggle("d-none", ios);
+    }
+
+    function hideInstructions() {
+      instructions.classList.add("d-none");
+    }
+
+    function renderState(state) {
+      if (!state.supported) {
+        setBadge("bg-warning text-dark border-0", "Не поддерживается");
+        text.textContent = "Установка доступна только через современный браузер и защищённое HTTPS-соединение.";
+        button.disabled = true;
+        return;
+      }
+      if (state.installed || state.standalone || state.status === "installed") {
+        setBadge("bg-success text-white border-0", "Установлено");
+        text.textContent = "Приложение уже установлено и запущено с главного экрана.";
+        button.disabled = true;
+        button.innerHTML = '<i class="bi bi-check2 me-2"></i>Приложение установлено';
+        hideInstructions();
+        return;
+      }
+      if (state.promptAvailable) {
+        setBadge("bg-primary text-white border-0", "Можно установить");
+        text.textContent = "Браузер готов установить приложение на главный экран.";
+        button.disabled = false;
+        button.innerHTML = '<i class="bi bi-download me-2"></i>Установить приложение';
+        hideInstructions();
+        return;
+      }
+      if (state.ios) {
+        setBadge("bg-warning text-dark border-0", "iPhone / iPad");
+        text.textContent = "На iPhone установка выполняется через меню Safari.";
+        button.disabled = false;
+        button.innerHTML = '<i class="bi bi-box-arrow-up me-2"></i>Показать инструкцию';
+        return;
+      }
+      setBadge("bg-light text-dark", "Через меню браузера");
+      text.textContent = "Если системное окно не появилось, установите приложение через меню браузера.";
+      button.disabled = false;
+      button.innerHTML = '<i class="bi bi-download me-2"></i>Установить приложение';
+    }
+
+    async function refreshState() {
+      const installApi = window.RovikPWA;
+      if (!installApi) {
+        setBadge("bg-light text-dark", "Загрузка...");
+        return;
+      }
+      renderState(await installApi.getState());
+    }
+
+    button.addEventListener("click", async () => {
+      const installApi = window.RovikPWA;
+      if (!installApi) return;
+      const state = await installApi.getState();
+      if (!state.promptAvailable) {
+        showInstructions(state.ios);
+      }
+      const result = await installApi.requestInstall();
+      if (result.status === "ios_manual" || result.status === "manual") {
+        showInstructions(result.ios);
+        renderState(result);
+      } else if (result.status === "accepted") {
+        setBadge("bg-success text-white border-0", "Устанавливается");
+        text.textContent = "Установка подтверждена. Ярлык появится на главном экране.";
+        button.disabled = true;
+      } else if (result.status === "dismissed") {
+        renderState(result);
+        text.textContent = "Установка отменена. Вы сможете повторить её этой кнопкой.";
+      } else {
+        renderState(result);
+      }
+    });
+
+    window.addEventListener("rovikpwa:updated", (event) => renderState(event.detail || {}));
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", refreshState, { once: true });
+    } else {
+      refreshState();
+    }
+    window.addEventListener("load", refreshState);
+    setTimeout(refreshState, 500);
+  })();
+
   (function () {
     const button = document.getElementById("enable-push-btn");
     const badge = document.getElementById("push-status-badge");

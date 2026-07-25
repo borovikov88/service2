@@ -1,7 +1,10 @@
 {% load static %}
 {
+  "id": "/",
   "name": "{{ brand_name }}",
   "short_name": "{{ brand_name }}",
+  "description": "Контроль объектов, показаний, задач и уведомлений",
+  "lang": "ru",
   "scope": "/",
   "start_url": "/",
   "display": "standalone",

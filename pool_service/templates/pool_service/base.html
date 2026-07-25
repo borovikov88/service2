@@ -1704,18 +1704,7 @@
     const installDismiss = document.getElementById("install-dismiss");
     const installText = document.getElementById("install-banner-text");
     let installPromptFired = false;
-    function getStoredInstalled() {
-      try {
-        if (localStorage.getItem("pwaInstalled") === "1") return true;
-      } catch (e) {
-      }
-      try {
-        return document.cookie.split("; ").some((part) => part === "pwaInstalled=1");
-      } catch (e) {
-        return false;
-      }
-    }
-    function clearStoredInstalled() {
+    function clearLegacyInstalledMarker() {
       try {
         localStorage.removeItem("pwaInstalled");
       } catch (e) {}
@@ -1723,33 +1712,67 @@
         document.cookie = "pwaInstalled=; Max-Age=0; Path=/; SameSite=Lax";
       } catch (e) {}
     }
-    function setStoredInstalled() {
-      try {
-        localStorage.setItem("pwaInstalled", "1");
-      } catch (e) {}
-      try {
-        document.cookie = "pwaInstalled=1; Max-Age=31536000; Path=/; SameSite=Lax";
-      } catch (e) {}
-    }
     async function isAppInstalled() {
-      if (isStandalone()) {
-        setStoredInstalled();
-        return true;
-      }
+      if (isStandalone()) return true;
       if ("getInstalledRelatedApps" in navigator) {
         try {
           const related = await navigator.getInstalledRelatedApps();
-          if (Array.isArray(related) && related.length) {
-            setStoredInstalled();
-            return true;
-          }
+          if (Array.isArray(related) && related.length) return true;
         } catch (e) {}
-      }
-      if (getStoredInstalled()) {
-        return true;
       }
       return false;
     }
+
+    function installBannerDismissed() {
+      try {
+        return sessionStorage.getItem("installBannerDismissed") === "1";
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function setInstallBannerDismissed() {
+      try {
+        sessionStorage.setItem("installBannerDismissed", "1");
+      } catch (e) {}
+    }
+
+    async function getInstallState() {
+      return {
+        installed: await isAppInstalled(),
+        promptAvailable: !!deferredPrompt,
+        ios: isIosDevice(),
+        standalone: isStandalone(),
+        supported: window.isSecureContext && "serviceWorker" in navigator,
+      };
+    }
+
+    async function notifyInstallState(extra = {}) {
+      const state = { ...(await getInstallState()), ...extra };
+      window.dispatchEvent(new CustomEvent("rovikpwa:updated", { detail: state }));
+      return state;
+    }
+
+    async function requestAppInstall() {
+      if (await isAppInstalled()) {
+        return notifyInstallState({ status: "installed" });
+      }
+      if (!deferredPrompt) {
+        return notifyInstallState({ status: isIosDevice() ? "ios_manual" : "manual" });
+      }
+
+      const prompt = deferredPrompt;
+      deferredPrompt = null;
+      hideInstallBanner();
+      await prompt.prompt();
+      const choice = await prompt.userChoice;
+      return notifyInstallState({ status: choice.outcome, outcome: choice.outcome });
+    }
+
+    window.RovikPWA = {
+      getState: getInstallState,
+      requestInstall: requestAppInstall,
+    };
 
     function setInstallBannerPrompt() {
       if (installText) {
@@ -1779,7 +1802,8 @@
       deferredPrompt = e;
       installPromptFired = true;
       setInstallBannerPrompt();
-      showInstallBanner();
+      if (!installBannerDismissed()) showInstallBanner();
+      notifyInstallState({ status: "ready" });
       const swEl = document.getElementById("pwa-sw");
       const scopeEl = document.getElementById("pwa-scope");
       const controllerEl = document.getElementById("pwa-controller");
@@ -1799,17 +1823,11 @@
       }, 1500);
     });
 
-    installBtn?.addEventListener("click", async () => {
-      if (!deferredPrompt) return;
-      hideInstallBanner();
-      deferredPrompt.prompt();
-      await deferredPrompt.userChoice;
-      deferredPrompt = null;
-    });
+    installBtn?.addEventListener("click", requestAppInstall);
 
     installDismiss?.addEventListener("click", () => {
       hideInstallBanner();
-      deferredPrompt = null;
+      setInstallBannerDismissed();
     });
 
 
@@ -1817,13 +1835,14 @@
       if (installPromptFired) return;
       if (await isAppInstalled()) return;
       if (isIosDevice()) return;
+      if (installBannerDismissed()) return;
       setInstallBannerManual();
       showInstallBanner();
     }, 2000);
     window.addEventListener("appinstalled", () => {
-      setStoredInstalled();
       hideInstallBanner();
       deferredPrompt = null;
+      notifyInstallState({ status: "installed", installed: true });
       const promptEl = document.getElementById("pwa-prompt");
       if (promptEl) promptEl.textContent = "installed";
     });
@@ -1840,6 +1859,7 @@
     function isStandalone() {
       return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
     }
+    if (!isStandalone()) clearLegacyInstalledMarker();
     function showIosBanner() {
       if (!iosBanner) return;
       iosBanner.style.display = "block";
@@ -1860,7 +1880,7 @@
         sessionStorage.setItem("iosInstallDismissed", "1");
       } catch (e) {}
     }
-    if (isIosDevice() && !isStandalone() && !getStoredInstalled() && !iosDismissed()) {
+    if (isIosDevice() && !isStandalone() && !iosDismissed()) {
       showIosBanner();
     }
     iosDismiss?.addEventListener("click", () => {
