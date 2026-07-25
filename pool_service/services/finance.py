@@ -26,9 +26,9 @@ DEFAULT_EXPENSE_CATEGORIES = [
     "Прочее",
 ]
 
-FINANCE_ACCESS_ROLES = {"owner", "admin", "manager", "service", "installer"}
-FINANCE_MANAGE_ROLES = {"owner", "admin", "manager"}
-FINANCE_CLOSE_ROLES = {"owner", "admin"}
+FINANCE_ACCESS_ROLES = {"owner", "admin", "manager", "service", "installer", "accountant"}
+FINANCE_MANAGE_ROLES = {"owner", "admin", "manager", "accountant"}
+FINANCE_CLOSE_ROLES = {"owner", "admin", "accountant"}
 
 
 def organization_roles(user, organization):

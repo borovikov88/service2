@@ -2010,7 +2010,7 @@ def invite_accept(request, token):
 
                     roles = [invite.role]
 
-                allowed_roles = {"admin", "service", "installer", "manager"}
+                allowed_roles = {"admin", "service", "installer", "manager", "accountant"}
 
                 roles = [role for role in roles if role in allowed_roles] or ["service"]
 
@@ -3042,7 +3042,7 @@ def staff_change_role(request, access_id):
 
 
 
-    allowed_roles = ["admin", "service", "installer", "manager"]
+    allowed_roles = ["admin", "service", "installer", "manager", "accountant"]
 
     roles = request.POST.getlist("roles")
 
@@ -3240,7 +3240,7 @@ def users_view(request):
 
         role_labels = dict(OrganizationAccess.ROLE_CHOICES)
 
-        role_order = ["owner", "admin", "manager", "service", "installer"]
+        role_order = ["owner", "admin", "manager", "accountant", "service", "installer"]
 
         grouped = {}
 

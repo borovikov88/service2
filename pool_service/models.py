@@ -263,6 +263,7 @@ class OrganizationAccess(models.Model):
         ("manager", "Менеджер"),
         ("service", "Сервис"),
         ("installer", "Монтажник"),
+        ("accountant", "Бухгалтер"),
         ("admin", "Администратор"),
     ]
 

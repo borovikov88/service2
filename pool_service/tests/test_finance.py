@@ -46,10 +46,12 @@ class FinanceTests(TestCase):
         self.manager = User.objects.create_user(username="finance-manager", password="pass", first_name="Manager")
         self.service = User.objects.create_user(username="finance-service", password="pass", first_name="Service")
         self.installer = User.objects.create_user(username="finance-installer", password="pass", first_name="Installer")
+        self.accountant = User.objects.create_user(username="finance-accountant", password="pass", first_name="Accountant")
         OrganizationAccess.objects.create(user=self.owner, organization=self.organization, role="owner")
         OrganizationAccess.objects.create(user=self.manager, organization=self.organization, role="manager")
         OrganizationAccess.objects.create(user=self.service, organization=self.organization, role="service")
         OrganizationAccess.objects.create(user=self.installer, organization=self.organization, role="installer")
+        OrganizationAccess.objects.create(user=self.accountant, organization=self.organization, role="accountant")
         ensure_default_categories(self.organization)
         self.category = ExpenseCategory.objects.get(organization=self.organization, name="Материалы")
 
@@ -95,6 +97,75 @@ class FinanceTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Добавить расход")
         self.assertIn(("installer", "Монтажник"), OrganizationAccess.ROLE_CHOICES)
+
+    def test_accountant_has_full_finance_access(self):
+        self.client.force_login(self.accountant)
+
+        dashboard = self.client.get(reverse("finance_dashboard"))
+        report = self.client.get(reverse("finance_report"))
+        transaction = self.client.post(
+            reverse("finance_transaction_create"),
+            {
+                "employee": self.service.id,
+                "transaction_type": AccountableTransaction.TYPE_ISSUE,
+                "amount": "10000.00",
+                "occurred_on": date.today().isoformat(),
+                "note": "Подотчёт",
+            },
+        )
+
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertEqual(report.status_code, 200)
+        self.assertEqual(transaction.status_code, 302)
+        self.assertIn(("accountant", "Бухгалтер"), OrganizationAccess.ROLE_CHOICES)
+
+        self.create_expense()
+        expense = Expense.objects.get()
+        self.client.force_login(self.accountant)
+        review = self.client.post(
+            reverse("finance_expense_review", kwargs={"expense_uuid": expense.uuid}),
+            {"decision": Expense.STATUS_APPROVED, "review_comment": ""},
+        )
+        close_period = self.client.post(
+            f"{reverse('finance_period_close')}?month={date.today():%Y-%m}"
+        )
+
+        expense.refresh_from_db()
+        self.assertEqual(review.status_code, 302)
+        self.assertEqual(expense.status, Expense.STATUS_APPROVED)
+        self.assertEqual(close_period.status_code, 302)
+        self.assertTrue(ExpensePeriod.objects.get(organization=self.organization).is_closed)
+
+    def test_accountant_only_user_is_restricted_to_finance(self):
+        self.client.force_login(self.accountant)
+        finance_url = reverse("finance_dashboard")
+
+        for route_name in ("pool_list", "readings_all", "clients_list", "crm_index", "users"):
+            response = self.client.get(reverse(route_name))
+            self.assertRedirects(response, finance_url, fetch_redirect_response=False)
+
+        forbidden_post = self.client.post(reverse("client_create"), {})
+        dashboard = self.client.get(finance_url)
+
+        self.assertEqual(forbidden_post.status_code, 403)
+        self.assertTrue(dashboard.context["finance_only_user"])
+        self.assertNotContains(dashboard, f'href="{reverse("crm_index")}"')
+        self.assertNotContains(dashboard, 'href="/readings/all"')
+        self.assertNotContains(dashboard, 'href="/pools')
+        self.assertNotContains(dashboard, f'href="{reverse("clients_list")}"')
+
+    def test_accountant_with_operational_role_keeps_operational_access(self):
+        OrganizationAccess.objects.create(
+            user=self.accountant,
+            organization=self.organization,
+            role="service",
+        )
+        self.client.force_login(self.accountant)
+
+        response = self.client.get(reverse("pool_list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context["finance_only_user"])
 
     def test_issue_expense_and_approval_update_balance_without_double_counting(self):
         self.client.force_login(self.manager)
