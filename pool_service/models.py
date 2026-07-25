@@ -1,7 +1,8 @@
+import hashlib
 import uuid
 
+from django.core.exceptions import ValidationError
 from django.db import models
-from django.db.models import Q
 from django.contrib.auth.models import User
 from django_ckeditor_5.fields import CKEditor5Field
 from django.utils import timezone
@@ -265,14 +266,17 @@ class OrganizationAccess(models.Model):
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="accesses", verbose_name="Организация")
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, verbose_name="Роль")
 
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(
-                fields=["organization"],
-                condition=Q(role="owner"),
-                name="unique_owner_per_org",
+    def save(self, *args, **kwargs):
+        if self.role == "owner" and self.organization_id:
+            owners = type(self).objects.filter(
+                organization_id=self.organization_id,
+                role="owner",
             )
-        ]
+            if self.pk:
+                owners = owners.exclude(pk=self.pk)
+            if owners.exists():
+                raise ValidationError("У организации уже есть владелец")
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.user.get_full_name()} - {self.organization.name} ({self.role})"
@@ -604,7 +608,7 @@ class Notification(models.Model):
     title = models.CharField(max_length=200)
     message = models.TextField(blank=True)
     action_url = models.CharField(max_length=400, blank=True)
-    dedupe_key = models.CharField(max_length=120, blank=True, db_index=True)
+    dedupe_key = models.CharField(max_length=120, blank=True, null=True)
     is_read = models.BooleanField(default=False)
     is_resolved = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -618,7 +622,6 @@ class Notification(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=["user", "dedupe_key"],
-                condition=~Q(dedupe_key=""),
                 name="unique_notification_dedupe",
             )
         ]
@@ -629,13 +632,24 @@ class Notification(models.Model):
 
 class PushSubscription(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="push_subscriptions")
-    endpoint = models.CharField(max_length=512, unique=True)
+    endpoint = models.CharField(max_length=512)
+    endpoint_hash = models.CharField(max_length=64, unique=True, editable=False)
     host = models.CharField(max_length=255, blank=True, default="")
     p256dh = models.CharField(max_length=255)
     auth = models.CharField(max_length=255)
     user_agent = models.CharField(max_length=255, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    @staticmethod
+    def hash_endpoint(endpoint):
+        return hashlib.sha256(endpoint.encode("utf-8")).hexdigest()
+
+    def save(self, *args, **kwargs):
+        self.endpoint_hash = self.hash_endpoint(self.endpoint)
+        if kwargs.get("update_fields") is not None:
+            kwargs["update_fields"] = set(kwargs["update_fields"]) | {"endpoint_hash"}
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"Push subscription {self.user_id}"

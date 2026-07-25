@@ -9056,14 +9056,16 @@ def push_subscribe(request):
 
     user_agent = request.META.get("HTTP_USER_AGENT", "")[:255]
     host = request.get_host().split(":", 1)[0].lower()
+    endpoint_hash = PushSubscription.hash_endpoint(endpoint)
 
     PushSubscription.objects.update_or_create(
 
-        endpoint=endpoint,
+        endpoint_hash=endpoint_hash,
 
         defaults={
 
             "user": request.user,
+            "endpoint": endpoint,
             "host": host,
 
             "p256dh": p256dh,
@@ -9106,7 +9108,10 @@ def push_unsubscribe(request):
 
 
 
-    PushSubscription.objects.filter(user=request.user, endpoint=endpoint).delete()
+    PushSubscription.objects.filter(
+        user=request.user,
+        endpoint_hash=PushSubscription.hash_endpoint(endpoint),
+    ).delete()
 
     return JsonResponse({"ok": True})
 

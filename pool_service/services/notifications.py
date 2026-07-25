@@ -104,7 +104,7 @@ def _create_notification(user, *, title, message, kind, level="info", action_url
         "organization": organization,
         "client": client,
         "pool": pool,
-        "dedupe_key": dedupe_key or "",
+        "dedupe_key": dedupe_key or None,
     }
     if dedupe_key:
         obj, created = Notification.objects.get_or_create(
