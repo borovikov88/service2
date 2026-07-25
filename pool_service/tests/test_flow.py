@@ -63,6 +63,7 @@ class PoolServiceFlowTests(TestCase):
             "client": str(self.client_profile.id),
             "address": "г. Москва, ул. Тестовая 1",
             "description": "",
+            "object_type": Pool.OBJECT_TYPE_POOL,
             "shape": "rect",
             "pool_type": "skimmer",
         }
@@ -94,6 +95,7 @@ class PoolServiceFlowTests(TestCase):
             "client": str(solo_client.id),
             "address": "Адрес клиента",
             "description": "",
+            "object_type": Pool.OBJECT_TYPE_POOL,
             "shape": "rect",
             "pool_type": "skimmer",
         }
