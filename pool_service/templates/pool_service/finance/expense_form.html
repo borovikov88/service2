@@ -112,11 +112,14 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
       </div>
       <div class="modal-body">
-        Добавьте фото или PDF чека. Если чека нет, нажмите «Пропустить», и расход уйдёт на проверку с отметкой без чека.
+        Добавьте фото или PDF чека. Если чека нет, можно пропустить, но расход уйдёт на проверку с отметкой без чека.
       </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Вернуться</button>
-        <button type="button" class="btn btn-primary" data-receipt-skip>Пропустить</button>
+      <div class="modal-footer justify-content-between">
+        <button type="button" class="btn btn-link text-muted text-decoration-none px-0" data-receipt-skip>Пропустить без чека</button>
+        <div class="d-flex gap-2">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Вернуться</button>
+          <button type="button" class="btn btn-primary" data-receipt-add-photo>Добавить фото</button>
+        </div>
       </div>
     </div>
   </div>
@@ -164,15 +167,10 @@
     const receiptModalElement = document.getElementById("receiptRequiredModal");
     const receiptModal = receiptModalElement && typeof bootstrap !== "undefined" ? bootstrap.Modal.getOrCreateInstance(receiptModalElement) : null;
     const skipButton = document.querySelector("[data-receipt-skip]");
+    const addReceiptButton = document.querySelector("[data-receipt-add-photo]");
     receipts.addEventListener("change", function () {
       preview.innerHTML = "";
       if (skipReceipt && receipts.files.length) skipReceipt.value = "";
-      Array.from(receipts.files).forEach(function (file) {
-        const badge = document.createElement("span");
-        badge.className = "badge bg-light text-dark border";
-        badge.textContent = file.name;
-        preview.appendChild(badge);
-      });
     });
 
     form.addEventListener("submit", function (event) {
@@ -190,6 +188,11 @@
       if (skipReceipt) skipReceipt.value = "1";
       if (receiptModal) receiptModal.hide();
       form.requestSubmit();
+    });
+
+    addReceiptButton?.addEventListener("click", function () {
+      if (receiptModal) receiptModal.hide();
+      document.dispatchEvent(new CustomEvent("rovik:open-photo-picker", { detail: { input: receipts } }));
     });
   });
 </script>

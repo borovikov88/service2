@@ -1,7 +1,7 @@
-const CACHE_VERSION = 'v8';
+const CACHE_VERSION = 'v9';
 const STATIC_CACHE = `pwa-static-${CACHE_VERSION}`;
 const RUNTIME_CACHE = `pwa-runtime-${CACHE_VERSION}`;
-const OFFLINE_URLS = ['/'];
+const OFFLINE_URLS = [];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -46,18 +46,25 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       (async () => {
         try {
-          const response = await fetch(event.request);
-          if (response && response.ok) {
-            const cache = await caches.open(RUNTIME_CACHE);
-            cache.put(event.request, response.clone());
-          }
-          return response;
+          return await fetch(event.request);
         } catch (err) {
-          const cached = await caches.match(event.request);
-          return cached || caches.match('/');
+          return new Response('Нет соединения. Откройте уже загруженную страницу или повторите попытку позже.', {
+            status: 503,
+            statusText: 'Offline',
+            headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+          });
         }
       })()
     );
+    return;
+  }
+
+  const cacheableDestinations = ['style', 'script', 'image', 'font', 'manifest'];
+  const isCacheableAsset =
+    cacheableDestinations.includes(event.request.destination) ||
+    requestUrl.pathname.startsWith('/static/') ||
+    requestUrl.pathname === '/manifest.webmanifest';
+  if (!isCacheableAsset) {
     return;
   }
 

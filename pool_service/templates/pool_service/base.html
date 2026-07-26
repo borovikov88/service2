@@ -1629,6 +1629,199 @@
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js"></script>
   <script src="{% static 'assets/js/finance-offline.js' %}"></script>
   <script>
+    (function () {
+      const pickerState = new WeakMap();
+      let activeInput = null;
+      let sheet = null;
+
+      function acceptsImages(input) {
+        const accept = (input.getAttribute("accept") || "").toLowerCase();
+        return !accept || accept.includes("image") || /\.(jpe?g|png|webp)/i.test(accept);
+      }
+
+      function acceptsFiles(input) {
+        const accept = (input.getAttribute("accept") || "").toLowerCase();
+        return accept.includes("pdf") || accept.split(",").some((item) => item.trim() && !item.includes("image"));
+      }
+
+      function imageAccept(input) {
+        const imageTypes = (input.getAttribute("accept") || "")
+          .split(",")
+          .map((item) => item.trim())
+          .filter((item) => item && (item.includes("image") || /\.(jpe?g|png|webp)$/i.test(item)));
+        return imageTypes.length ? imageTypes.join(",") : "image/*";
+      }
+
+      function createSheet() {
+        const element = document.createElement("div");
+        element.className = "photo-picker-sheet";
+        element.innerHTML = `
+          <div class="photo-picker-sheet__panel" role="dialog" aria-modal="true" aria-label="Добавить фото">
+            <div class="photo-picker-sheet__handle"></div>
+            <div class="photo-picker-sheet__actions" data-photo-picker-actions></div>
+            <button type="button" class="photo-picker-sheet__close" data-photo-picker-close>Отмена</button>
+          </div>
+        `;
+        element.addEventListener("click", (event) => {
+          if (event.target === element || event.target.closest("[data-photo-picker-close]")) {
+            closeSheet();
+          }
+        });
+        document.addEventListener("keydown", (event) => {
+          if (event.key === "Escape") closeSheet();
+        });
+        document.body.appendChild(element);
+        return element;
+      }
+
+      function closeSheet() {
+        if (sheet) sheet.classList.remove("is-open");
+        document.body.classList.remove("photo-picker-open");
+      }
+
+      function setFiles(input, fileList, append) {
+        const incoming = Array.from(fileList || []);
+        if (!incoming.length) return;
+        if (typeof DataTransfer === "undefined") {
+          input.click();
+          return;
+        }
+        const transfer = new DataTransfer();
+        const existing = append && input.multiple ? Array.from(input.files || []) : [];
+        existing.concat(incoming).forEach((file) => transfer.items.add(file));
+        input.files = transfer.files;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+
+      function openNativePicker(input, mode) {
+        const nativeInput = document.createElement("input");
+        nativeInput.type = "file";
+        nativeInput.multiple = input.multiple;
+        nativeInput.accept = mode === "file" ? (input.getAttribute("accept") || "") : imageAccept(input);
+        nativeInput.className = "photo-picker-native";
+        if (mode === "camera") nativeInput.setAttribute("capture", "environment");
+        nativeInput.addEventListener("change", () => {
+          setFiles(input, nativeInput.files, true);
+          nativeInput.remove();
+        });
+        document.body.appendChild(nativeInput);
+        closeSheet();
+        nativeInput.click();
+      }
+
+      function openSheet(input) {
+        activeInput = input;
+        if (!sheet) sheet = createSheet();
+        const actions = sheet.querySelector("[data-photo-picker-actions]");
+        actions.innerHTML = "";
+
+        if (acceptsImages(input)) {
+          actions.insertAdjacentHTML(
+            "beforeend",
+            `<button type="button" class="photo-picker-sheet__action photo-picker-sheet__action--primary" data-photo-action="gallery"><i class="bi bi-images"></i><span>Галерея</span></button>
+             <button type="button" class="photo-picker-sheet__action" data-photo-action="camera"><i class="bi bi-camera"></i><span>Камера</span></button>`
+          );
+        }
+        if (acceptsFiles(input)) {
+          actions.insertAdjacentHTML(
+            "beforeend",
+            `<button type="button" class="photo-picker-sheet__action" data-photo-action="file"><i class="bi bi-file-earmark"></i><span>Файл</span></button>`
+          );
+        }
+        actions.querySelectorAll("[data-photo-action]").forEach((button) => {
+          button.addEventListener("click", () => openNativePicker(activeInput, button.dataset.photoAction));
+        });
+        sheet.classList.add("is-open");
+        document.body.classList.add("photo-picker-open");
+      }
+
+      function removeFile(input, index) {
+        if (typeof DataTransfer === "undefined") return;
+        const transfer = new DataTransfer();
+        Array.from(input.files || []).forEach((file, fileIndex) => {
+          if (fileIndex !== index) transfer.items.add(file);
+        });
+        input.files = transfer.files;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+
+      function renderPreview(input) {
+        const state = pickerState.get(input);
+        if (!state) return;
+        state.urls.forEach((url) => URL.revokeObjectURL(url));
+        state.urls = [];
+        state.preview.innerHTML = "";
+
+        Array.from(input.files || []).forEach((file, index) => {
+          const thumb = document.createElement("div");
+          thumb.className = "photo-picker__thumb";
+          thumb.title = file.name || "Файл";
+          if ((file.type || "").startsWith("image/")) {
+            const url = URL.createObjectURL(file);
+            state.urls.push(url);
+            const img = document.createElement("img");
+            img.src = url;
+            img.alt = "Фото";
+            thumb.appendChild(img);
+          } else {
+            const icon = document.createElement("div");
+            icon.className = "photo-picker__file";
+            icon.innerHTML = '<i class="bi bi-file-earmark-pdf"></i>';
+            thumb.appendChild(icon);
+          }
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.className = "photo-picker__remove";
+          remove.setAttribute("aria-label", "Удалить файл");
+          remove.innerHTML = "&times;";
+          remove.addEventListener("click", () => removeFile(input, index));
+          thumb.appendChild(remove);
+          state.preview.appendChild(thumb);
+        });
+      }
+
+      function enhanceInput(input) {
+        if (!input || input.dataset.photoPickerReady === "1") return;
+        const accept = (input.getAttribute("accept") || "").toLowerCase();
+        if (input.dataset.photoPicker !== "1" && !accept.includes("image")) return;
+        input.dataset.photoPickerReady = "1";
+        input.classList.add("photo-picker-native");
+
+        const wrapper = document.createElement("div");
+        wrapper.className = "photo-picker";
+        const trigger = document.createElement("button");
+        trigger.type = "button";
+        trigger.className = "photo-picker__button";
+        trigger.innerHTML = '<i class="bi bi-camera"></i><span>Добавить фото</span>';
+        const preview = document.createElement("div");
+        preview.className = "photo-picker__preview";
+        wrapper.appendChild(trigger);
+        wrapper.appendChild(preview);
+        input.insertAdjacentElement("afterend", wrapper);
+
+        pickerState.set(input, { wrapper, preview, urls: [] });
+        trigger.addEventListener("click", () => openSheet(input));
+        input.addEventListener("change", () => renderPreview(input));
+        renderPreview(input);
+      }
+
+      function init(root) {
+        const scope = root || document;
+        scope.querySelectorAll("input[type='file']").forEach(enhanceInput);
+      }
+
+      document.addEventListener("rovik:open-photo-picker", (event) => {
+        const input = event.detail && event.detail.input;
+        if (!input) return;
+        enhanceInput(input);
+        openSheet(input);
+      });
+
+      window.RovikPhotoPicker = { init, open: openSheet };
+      document.addEventListener("DOMContentLoaded", () => init(document));
+    })();
+  </script>
+  <script>
     document.addEventListener("DOMContentLoaded", function () {
       document.querySelectorAll(".toast").forEach(function (el) {
         const toast = new bootstrap.Toast(el, { delay: 4000 });

@@ -23,8 +23,12 @@ class PwaTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "application/javascript")
-        self.assertContains(response, "CACHE_VERSION = 'v8'")
+        self.assertContains(response, "CACHE_VERSION = 'v9'")
+        self.assertContains(response, "const OFFLINE_URLS = []")
         self.assertContains(response, "/finance/receipts/")
+        self.assertContains(response, "event.request.mode === 'navigate'")
+        self.assertContains(response, "return await fetch(event.request)")
+        self.assertNotContains(response, "return cached || caches.match('/')")
         self.assertContains(response, "self.addEventListener('fetch'")
 
     def test_profile_contains_install_button_and_install_api(self):

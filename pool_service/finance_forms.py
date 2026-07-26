@@ -212,8 +212,8 @@ class ExpenseForm(forms.ModelForm):
             attrs={
                 "class": "form-control",
                 "accept": "image/jpeg,image/png,image/webp,application/pdf",
-                "capture": "environment",
                 "data-finance-receipts": "1",
+                "data-photo-picker": "1",
             }
         ),
     )
