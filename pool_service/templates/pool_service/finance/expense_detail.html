@@ -44,18 +44,14 @@
       <h2 class="h5 fw-bold mb-3">Чеки</h2>
       <div class="row g-3">
         {% for receipt in expense.receipts.all %}
-          <div class="col-12 col-sm-6">
+          <div class="col-auto">
             <a href="{% url 'finance_receipt_download' receipt.id %}" target="_blank" rel="noopener" class="text-decoration-none" data-receipt-modal data-receipt-name="{{ receipt.original_name }}">
-              <div class="border rounded-3 p-3 h-100 d-flex align-items-center gap-3">
+              <div class="border rounded-3 p-2 h-100 d-inline-flex align-items-center justify-content-center bg-light">
                 {% if receipt.content_type == "application/pdf" %}
-                  <i class="bi bi-file-earmark-pdf fs-2 text-danger"></i>
+                  <i class="bi bi-file-earmark-pdf fs-2 text-danger" style="width:64px;height:64px;display:inline-flex;align-items:center;justify-content:center;"></i>
                 {% else %}
                   <img src="{% url 'finance_receipt_download' receipt.id %}" alt="Чек" class="rounded-2 object-fit-cover" style="width:64px;height:64px;">
                 {% endif %}
-                <div class="min-w-0">
-                  <div class="fw-semibold text-truncate">{{ receipt.original_name }}</div>
-                  <div class="small text-muted">Открыть файл</div>
-                </div>
               </div>
             </a>
           </div>

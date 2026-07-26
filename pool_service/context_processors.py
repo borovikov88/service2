@@ -6,8 +6,8 @@ def brand_context(request):
 
     default_brand = {
         "name": "RovikPool",
-        "logo": "assets/images/rovikpool-logo.png",
-        "favicon": "assets/images/rovikpool-favicon.png",
+        "logo": "assets/images/rovikpool-app-192.png",
+        "favicon": "assets/images/rovikpool-app-192.png",
         "icon_192": "assets/images/rovikpool-app-192.png",
         "icon_512": "assets/images/rovikpool-app-512.png",
         "hide_text_mobile": False,
@@ -18,21 +18,21 @@ def brand_context(request):
         "www.rovikpool.ru": default_brand,
         "service2.aqualine22.ru": {
             "name": "\u0410\u043a\u0432\u0430\u043b\u0430\u0439\u043d",
-            "logo": "assets/images/aqualine.png",
-            "favicon": "assets/images/aqualine-favicon.png",
+            "logo": "assets/images/aqualine-app-192.png",
+            "favicon": "assets/images/aqualine-app-192.png",
             "icon_192": "assets/images/aqualine-app-192.png",
             "icon_512": "assets/images/aqualine-app-512.png",
-            "hide_text_mobile": True,
-            "logo_wide": True,
+            "hide_text_mobile": False,
+            "logo_wide": False,
         },
         "www.service2.aqualine22.ru": {
             "name": "\u0410\u043a\u0432\u0430\u043b\u0430\u0439\u043d",
-            "logo": "assets/images/aqualine.png",
-            "favicon": "assets/images/aqualine-favicon.png",
+            "logo": "assets/images/aqualine-app-192.png",
+            "favicon": "assets/images/aqualine-app-192.png",
             "icon_192": "assets/images/aqualine-app-192.png",
             "icon_512": "assets/images/aqualine-app-512.png",
-            "hide_text_mobile": True,
-            "logo_wide": True,
+            "hide_text_mobile": False,
+            "logo_wide": False,
         },
     }
 

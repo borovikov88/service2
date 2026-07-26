@@ -66,6 +66,7 @@
   {% endif %}
 </div>
 
+{% if can_manage_finance %}
 <div class="card card-soft p-3 p-lg-4 mb-4">
   <div class="d-flex align-items-center justify-content-between gap-3 mb-3">
     <div>
@@ -107,6 +108,8 @@
   </div>
 </div>
 
+{% endif %}
+
 <div class="row g-4">
   <div class="col-12 col-xl-8">
     <div class="card card-soft p-3 p-lg-4 h-100">
@@ -114,26 +117,32 @@
       <div class="table-responsive">
         <table class="table align-middle mb-0">
           <thead class="small text-muted">
-            <tr><th>Дата</th><th>Сотрудник</th><th>Назначение</th><th>Статус</th><th class="text-end">Сумма</th></tr>
+            <tr>
+              <th>Дата</th>
+              {% if can_manage_finance %}<th>Сотрудник</th>{% endif %}
+              <th>Назначение</th>
+              <th class="text-end">Сумма</th>
+              <th class="text-end">Статус</th>
+            </tr>
           </thead>
           <tbody>
             {% for expense in latest_expenses %}
               <tr data-row-href="{% url 'finance_expense_detail' expense.uuid %}">
-                <td><a href="{% url 'finance_expense_detail' expense.uuid %}" class="text-decoration-none">{{ expense.spent_on|date:"d.m.Y" }}</a></td>
-                <td>{{ expense.employee|finance_employee_name }}</td>
+                <td class="date-cell"><a href="{% url 'finance_expense_detail' expense.uuid %}" class="text-decoration-none"><span>{{ expense.spent_on|date:"d.m" }}</span><span class="date-cell__year">{{ expense.spent_on|date:"Y" }}</span></a></td>
+                {% if can_manage_finance %}<td>{{ expense.employee|finance_employee_name }}</td>{% endif %}
                 <td>
                   <div>{{ expense.destination_name }}</div>
                   <div class="small text-muted">{{ expense.category.name }}</div>
                 </td>
-                <td>
+                <td class="text-end fw-semibold">{{ expense.amount|money }}</td>
+                <td class="text-end">
                   {% if expense.status == "approved" %}<span class="badge bg-success-subtle text-success border status-badge" title="Подтверждён"><i class="bi bi-check-circle"></i><span class="status-text">Подтверждён</span></span>
                   {% elif expense.status == "rejected" %}<span class="badge bg-danger-subtle text-danger border status-badge" title="Отклонён"><i class="bi bi-x-circle"></i><span class="status-text">Отклонён</span></span>
                   {% else %}<span class="badge bg-warning-subtle text-warning border status-badge" title="На проверке"><i class="bi bi-hourglass-split"></i><span class="status-text">На проверке</span></span>{% endif %}
                 </td>
-                <td class="text-end fw-semibold">{{ expense.amount|money }}</td>
               </tr>
             {% empty %}
-              <tr><td colspan="5" class="text-center text-muted py-4">Расходов пока нет</td></tr>
+              <tr><td colspan="{% if can_manage_finance %}5{% else %}4{% endif %}" class="text-center text-muted py-4">Расходов пока нет</td></tr>
             {% endfor %}
           </tbody>
         </table>

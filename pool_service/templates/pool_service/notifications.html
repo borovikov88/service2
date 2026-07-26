@@ -73,6 +73,7 @@
         border-radius: 14px;
         background: #f7f8fa;
         transition: background-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+        touch-action: pan-y;
     }
     .tg-item.is-unread {
         background: #eef6ff;
@@ -84,6 +85,13 @@
     }
     .tg-item.is-unread:hover {
         background: #e3f0ff;
+    }
+    .tg-item.is-swiping {
+        transition: none;
+    }
+    .tg-item.is-resolving {
+        opacity: 0;
+        transform: translateX(100%);
     }
     .tg-item-main {
         display: flex;
@@ -153,17 +161,85 @@
 
 <div class="tg-notifications" data-tabs="notifications">
     <div class="tg-tabs">
-        <button type="button" class="tg-tab active" data-tab="tasks">
+        <button type="button" class="tg-tab active" data-tab="limits">
+            Уведомления
+            <span class="tg-count">{{ deviation_unread_count|default:0 }}</span>
+        </button>
+        <button type="button" class="tg-tab" data-tab="tasks">
             &#1047;&#1072;&#1076;&#1072;&#1095;&#1080;
             <span class="tg-count">{{ task_unread_count|default:0 }}</span>
         </button>
-        <button type="button" class="tg-tab" data-tab="limits">
-            &#1054;&#1090;&#1082;&#1083;&#1086;&#1085;&#1077;&#1085;&#1080;&#1103; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1090;&#1077;&#1083;&#1077;&#1081;
-            <span class="tg-count">{{ deviation_unread_count|default:0 }}</span>
-        </button>
     </div>
 
-    <div class="tg-panel" data-panel="tasks">
+    <div class="tg-panel" data-panel="limits">
+        <div class="tg-actions">
+            <form method="post" action="{% url 'notifications_mark_all' %}">
+                {% csrf_token %}
+                <input type="hidden" name="kind" value="service">
+                <button type="submit" class="btn btn-outline-secondary btn-sm" {% if not deviation_notifications %}disabled{% endif %}>
+                    &#1055;&#1088;&#1086;&#1095;&#1080;&#1090;&#1072;&#1090;&#1100; &#1074;&#1089;&#1077;
+                </button>
+            </form>
+            <form method="post" action="{% url 'notifications_resolve_all' %}">
+                {% csrf_token %}
+                <input type="hidden" name="kind" value="service">
+                <button
+                    type="submit"
+                    class="btn btn-outline-danger btn-sm js-confirm-action"
+                    data-confirm-title="&#1057;&#1082;&#1088;&#1099;&#1090;&#1100; &#1074;&#1089;&#1077;?"
+                    data-confirm-body="Все уведомления будут скрыты."
+                    data-confirm-confirm="&#1057;&#1082;&#1088;&#1099;&#1090;&#1100;"
+                    data-confirm-variant="danger"
+                    {% if not deviation_notifications %}disabled{% endif %}
+                >
+                    &#1057;&#1082;&#1088;&#1099;&#1090;&#1100; &#1074;&#1089;&#1077;
+                </button>
+            </form>
+        </div>
+        {% now "Y-m-d" as today_str %}
+        <div class="tg-list">
+            {% for note in deviation_notifications %}
+            <div class="tg-item {% if not note.is_read %}is-unread{% endif %}">
+                {% if note.action_url %}
+                <a
+                    class="tg-item-link"
+                    href="{{ note.action_url }}"
+                    aria-label='{{ note.deviation_prefix }} {{ note.object_name|default:note.title }} {{ note.deviation_details }}'
+                ></a>
+                {% endif %}
+                <form method="post" action="{% url 'notification_resolve' note.id %}" data-swipe-resolve>
+                    {% csrf_token %}
+                    <button
+                        type="submit"
+                        class="tg-close"
+                        aria-label="&#1057;&#1082;&#1088;&#1099;&#1090;&#1100;"
+                    >&times;</button>
+                </form>
+                <div class="tg-item-main">
+                    <div class="tg-title">
+                        {{ note.deviation_title }}
+                    </div>
+                    {% if note.deviation_details %}
+                    <div class="tg-subtitle">{{ note.deviation_details }}</div>
+                    {% endif %}
+                </div>
+                <div class="tg-time">
+                    {% with note_date=note.display_time|date:"Y-m-d" %}
+                        {% if note_date == today_str %}
+                            {{ note.display_time|date:"H:i" }}
+                        {% else %}
+                            {{ note.display_time|date:"d.m.Y H:i" }}
+                        {% endif %}
+                    {% endwith %}
+                </div>
+            </div>
+            {% empty %}
+            <div class="tg-empty">Нет уведомлений</div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="tg-panel" data-panel="tasks" hidden>
         <div class="tg-actions">
             <form method="post" action="{% url 'notifications_mark_all' %}">
                 {% csrf_token %}
@@ -199,7 +275,7 @@
                     aria-label="{{ note.task_title }}"
                 ></a>
                 {% endif %}
-                <form method="post" action="{% url 'notification_resolve' note.id %}">
+                <form method="post" action="{% url 'notification_resolve' note.id %}" data-swipe-resolve>
                     {% csrf_token %}
                     <button
                         type="submit"
@@ -230,74 +306,6 @@
             {% endfor %}
         </div>
     </div>
-
-    <div class="tg-panel" data-panel="limits" hidden>
-        <div class="tg-actions">
-            <form method="post" action="{% url 'notifications_mark_all' %}">
-                {% csrf_token %}
-                <input type="hidden" name="kind" value="service">
-                <button type="submit" class="btn btn-outline-secondary btn-sm" {% if not deviation_notifications %}disabled{% endif %}>
-                    &#1055;&#1088;&#1086;&#1095;&#1080;&#1090;&#1072;&#1090;&#1100; &#1074;&#1089;&#1077;
-                </button>
-            </form>
-            <form method="post" action="{% url 'notifications_resolve_all' %}">
-                {% csrf_token %}
-                <input type="hidden" name="kind" value="service">
-                <button
-                    type="submit"
-                    class="btn btn-outline-danger btn-sm js-confirm-action"
-                    data-confirm-title="&#1057;&#1082;&#1088;&#1099;&#1090;&#1100; &#1074;&#1089;&#1077;?"
-                    data-confirm-body="&#1042;&#1089;&#1077; &#1091;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103; &#1086;&#1073; &#1086;&#1090;&#1082;&#1083;&#1086;&#1085;&#1077;&#1085;&#1080;&#1103;&#1093; &#1073;&#1091;&#1076;&#1091;&#1090; &#1089;&#1082;&#1088;&#1099;&#1090;&#1099;."
-                    data-confirm-confirm="&#1057;&#1082;&#1088;&#1099;&#1090;&#1100;"
-                    data-confirm-variant="danger"
-                    {% if not deviation_notifications %}disabled{% endif %}
-                >
-                    &#1057;&#1082;&#1088;&#1099;&#1090;&#1100; &#1074;&#1089;&#1077;
-                </button>
-            </form>
-        </div>
-        {% now "Y-m-d" as today_str %}
-        <div class="tg-list">
-            {% for note in deviation_notifications %}
-            <div class="tg-item {% if not note.is_read %}is-unread{% endif %}">
-                {% if note.action_url %}
-                <a
-                    class="tg-item-link"
-                    href="{{ note.action_url }}"
-                    aria-label='{{ note.deviation_prefix }} {{ note.object_name|default:note.title }} {{ note.deviation_details }}'
-                ></a>
-                {% endif %}
-                <form method="post" action="{% url 'notification_resolve' note.id %}">
-                    {% csrf_token %}
-                    <button
-                        type="submit"
-                        class="tg-close"
-                        aria-label="&#1057;&#1082;&#1088;&#1099;&#1090;&#1100;"
-                    >&times;</button>
-                </form>
-                <div class="tg-item-main">
-                    <div class="tg-title">
-                        {{ note.deviation_title }}
-                    </div>
-                    {% if note.deviation_details %}
-                    <div class="tg-subtitle">{{ note.deviation_details }}</div>
-                    {% endif %}
-                </div>
-                <div class="tg-time">
-                    {% with note_date=note.display_time|date:"Y-m-d" %}
-                        {% if note_date == today_str %}
-                            {{ note.display_time|date:"H:i" }}
-                        {% else %}
-                            {{ note.display_time|date:"d.m.Y H:i" }}
-                        {% endif %}
-                    {% endwith %}
-                </div>
-            </div>
-            {% empty %}
-            <div class="tg-empty">&#1053;&#1077;&#1090; &#1091;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1081; &#1086; &#1086;&#1090;&#1082;&#1083;&#1086;&#1085;&#1077;&#1085;&#1080;&#1103;&#1093;</div>
-            {% endfor %}
-        </div>
-    </div>
 </div>
 
 <script>
@@ -315,7 +323,46 @@
         tabs.forEach((tab) => {
             tab.addEventListener("click", () => activate(tab.dataset.tab));
         });
-        activate("tasks");
+        activate("limits");
+
+        root.querySelectorAll(".tg-item").forEach((item) => {
+            let startX = 0;
+            let startY = 0;
+            let currentX = 0;
+            let swiping = false;
+            const resolveForm = item.querySelector("[data-swipe-resolve]");
+            if (!resolveForm) return;
+
+            item.addEventListener("touchstart", (event) => {
+                const touch = event.touches[0];
+                startX = touch.clientX;
+                startY = touch.clientY;
+                currentX = 0;
+                swiping = false;
+            }, { passive: true });
+
+            item.addEventListener("touchmove", (event) => {
+                const touch = event.touches[0];
+                const deltaX = touch.clientX - startX;
+                const deltaY = touch.clientY - startY;
+                if (deltaX <= 0 || Math.abs(deltaY) > Math.abs(deltaX)) return;
+                swiping = true;
+                currentX = Math.min(deltaX, item.offsetWidth);
+                item.classList.add("is-swiping");
+                item.style.transform = `translateX(${currentX}px)`;
+            }, { passive: true });
+
+            item.addEventListener("touchend", () => {
+                item.classList.remove("is-swiping");
+                if (swiping && currentX > Math.min(120, item.offsetWidth * 0.35)) {
+                    item.style.transform = "";
+                    item.classList.add("is-resolving");
+                    window.setTimeout(() => resolveForm.submit(), 120);
+                    return;
+                }
+                item.style.transform = "";
+            });
+        });
     })();
 </script>
 {% endblock %}
