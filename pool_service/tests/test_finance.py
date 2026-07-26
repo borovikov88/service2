@@ -465,6 +465,23 @@ class FinanceTests(TestCase):
         expense.refresh_from_db()
         self.assertEqual(expense.status, Expense.STATUS_APPROVED)
 
+    def test_only_expense_creator_can_delete_expense(self):
+        self.create_expense()
+        expense = Expense.objects.get()
+        receipt = expense.receipts.get()
+        receipt_name = receipt.file.name
+
+        self.client.force_login(self.manager)
+        forbidden = self.client.post(reverse("finance_expense_delete", kwargs={"expense_uuid": expense.uuid}))
+        self.client.force_login(self.service)
+        deleted = self.client.post(reverse("finance_expense_delete", kwargs={"expense_uuid": expense.uuid}))
+
+        self.assertEqual(forbidden.status_code, 403)
+        self.assertEqual(deleted.status_code, 302)
+        self.assertEqual(Expense.objects.count(), 0)
+        self.assertEqual(ExpenseReceipt.objects.count(), 0)
+        self.assertFalse(self.receipt_storage.exists(receipt_name))
+
     def test_receipts_are_protected_between_organizations(self):
         self.create_expense()
         receipt = ExpenseReceipt.objects.get()

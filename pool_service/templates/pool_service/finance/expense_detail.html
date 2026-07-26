@@ -14,8 +14,14 @@
     </div>
     <div class="text-muted">{{ expense.spent_on|date:"d.m.Y" }} · {{ expense.destination_name }}</div>
   </div>
-  <div class="d-flex gap-2">
+  <div class="d-flex flex-wrap gap-2">
     {% if can_edit %}<a href="{% url 'finance_expense_edit' expense.uuid %}" class="btn btn-primary">Изменить</a>{% endif %}
+    {% if can_delete %}
+      <form method="post" action="{% url 'finance_expense_delete' expense.uuid %}">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-outline-danger js-confirm-action" data-confirm-title="Удалить расход" data-confirm-body="Запись расхода и прикреплённые чеки будут удалены без восстановления." data-confirm-confirm="Удалить" data-confirm-variant="danger">Удалить</button>
+      </form>
+    {% endif %}
     <a href="{% url 'finance_dashboard' %}" class="btn btn-outline-secondary">К финансам</a>
   </div>
 </div>
@@ -45,7 +51,7 @@
       <div class="row g-3">
         {% for receipt in expense.receipts.all %}
           <div class="col-auto">
-            <a href="{% url 'finance_receipt_download' receipt.id %}" target="_blank" rel="noopener" class="text-decoration-none" data-receipt-modal data-receipt-name="{{ receipt.original_name }}">
+            <a href="{% url 'finance_receipt_download' receipt.id %}" target="_blank" rel="noopener" class="text-decoration-none" data-receipt-modal data-receipt-name="{{ receipt.original_name }}" data-receipt-kind="{% if receipt.content_type == 'application/pdf' %}pdf{% else %}image{% endif %}">
               <div class="border rounded-3 p-2 h-100 d-inline-flex align-items-center justify-content-center bg-light">
                 {% if receipt.content_type == "application/pdf" %}
                   <i class="bi bi-file-earmark-pdf fs-2 text-danger" style="width:64px;height:64px;display:inline-flex;align-items:center;justify-content:center;"></i>
@@ -91,18 +97,56 @@
   </div>
 </div>
 
+<style>
+  .receipt-image-stage {
+    height: min(78vh, calc(100vh - 11rem));
+    overflow: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+    overscroll-behavior: contain;
+  }
+  .receipt-image-stage.d-none {
+    display: none !important;
+  }
+  .receipt-image {
+    max-width: 100%;
+    max-height: 100%;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    transform-origin: center center;
+    user-select: none;
+    -webkit-user-drag: none;
+  }
+  @media (max-width: 576px) {
+    .receipt-image-stage {
+      height: calc(100vh - 8.5rem);
+    }
+  }
+</style>
+
 <div class="modal fade" id="receiptViewerModal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered modal-xl">
+  <div class="modal-dialog modal-dialog-centered modal-xl modal-fullscreen-sm-down">
     <div class="modal-content overflow-hidden">
       <div class="modal-header">
-        <h2 class="modal-title h5 mb-0" data-receipt-viewer-title>Чек</h2>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+        <h2 class="modal-title h5 mb-0" data-receipt-viewer-title>&#1063;&#1077;&#1082;</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="&#1047;&#1072;&#1082;&#1088;&#1099;&#1090;&#1100;"></button>
       </div>
-      <div class="modal-body p-0">
-        <iframe src="about:blank" title="Чек" class="d-block w-100 border-0" style="height:min(760px, calc(100vh - 8rem));" data-receipt-viewer-frame></iframe>
+      <div class="modal-body p-0 bg-dark">
+        <div class="d-none align-items-center justify-content-center gap-2 p-2 bg-light border-bottom" data-receipt-image-tools>
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-receipt-zoom-out aria-label="&#1059;&#1084;&#1077;&#1085;&#1100;&#1096;&#1080;&#1090;&#1100;"><i class="bi bi-zoom-out"></i></button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-receipt-zoom-reset>100%</button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-receipt-zoom-in aria-label="&#1059;&#1074;&#1077;&#1083;&#1080;&#1095;&#1080;&#1090;&#1100;"><i class="bi bi-zoom-in"></i></button>
+        </div>
+        <div class="receipt-image-stage d-none" data-receipt-image-stage>
+          <img src="" alt="&#1063;&#1077;&#1082;" class="receipt-image" data-receipt-viewer-image>
+        </div>
+        <iframe src="about:blank" title="&#1063;&#1077;&#1082;" class="d-block w-100 border-0" style="height:min(760px, calc(100vh - 8rem));" data-receipt-viewer-frame></iframe>
       </div>
       <div class="modal-footer d-lg-none">
-        <button type="button" class="btn btn-outline-secondary w-100" data-bs-dismiss="modal">Закрыть</button>
+        <button type="button" class="btn btn-outline-secondary w-100" data-bs-dismiss="modal">&#1047;&#1072;&#1082;&#1088;&#1099;&#1090;&#1100;</button>
       </div>
     </div>
   </div>
@@ -112,21 +156,78 @@
   document.addEventListener("DOMContentLoaded", function () {
     const modalElement = document.getElementById("receiptViewerModal");
     const frame = modalElement && modalElement.querySelector("[data-receipt-viewer-frame]");
+    const image = modalElement && modalElement.querySelector("[data-receipt-viewer-image]");
+    const imageStage = modalElement && modalElement.querySelector("[data-receipt-image-stage]");
+    const imageTools = modalElement && modalElement.querySelector("[data-receipt-image-tools]");
     const title = modalElement && modalElement.querySelector("[data-receipt-viewer-title]");
-    if (!modalElement || !frame || !title || typeof bootstrap === "undefined") return;
+    const zoomIn = modalElement && modalElement.querySelector("[data-receipt-zoom-in]");
+    const zoomOut = modalElement && modalElement.querySelector("[data-receipt-zoom-out]");
+    const zoomReset = modalElement && modalElement.querySelector("[data-receipt-zoom-reset]");
+    if (!modalElement || !frame || !image || !imageStage || !imageTools || !title || typeof bootstrap === "undefined") return;
     const modal = bootstrap.Modal.getOrCreateInstance(modalElement);
+    let zoom = 1;
+
+    function setZoom(value) {
+      zoom = Math.min(4, Math.max(1, value));
+      if (zoom === 1) {
+        image.style.maxWidth = "100%";
+        image.style.maxHeight = "100%";
+        image.style.width = "";
+      } else {
+        image.style.maxWidth = "none";
+        image.style.maxHeight = "none";
+        image.style.width = Math.round(image.naturalWidth * zoom) + "px";
+      }
+      image.style.cursor = zoom > 1 ? "zoom-out" : "zoom-in";
+      zoomReset.textContent = Math.round(zoom * 100) + "%";
+    }
+
+    function showImage(url) {
+      frame.classList.add("d-none");
+      frame.src = "about:blank";
+      imageStage.classList.remove("d-none");
+      imageTools.classList.remove("d-none");
+      imageTools.classList.add("d-flex");
+      image.src = url;
+      setZoom(1);
+    }
+
+    function showFrame(url) {
+      image.src = "";
+      imageStage.classList.add("d-none");
+      imageTools.classList.add("d-none");
+      imageTools.classList.remove("d-flex");
+      frame.classList.remove("d-none");
+      frame.src = url;
+    }
 
     document.querySelectorAll("[data-receipt-modal]").forEach(function (link) {
       link.addEventListener("click", function (event) {
         event.preventDefault();
-        title.textContent = link.dataset.receiptName || "Чек";
-        frame.src = link.href;
+        title.textContent = link.dataset.receiptName || "\u0427\u0435\u043a";
+        if (link.dataset.receiptKind === "image") {
+          showImage(link.href);
+        } else {
+          showFrame(link.href);
+        }
         modal.show();
       });
     });
 
+    zoomIn.addEventListener("click", function () { setZoom(zoom + 0.25); });
+    zoomOut.addEventListener("click", function () { setZoom(zoom - 0.25); });
+    zoomReset.addEventListener("click", function () { setZoom(1); });
+    image.addEventListener("click", function () { setZoom(zoom > 1 ? 1 : 2); });
+    imageStage.addEventListener("wheel", function (event) {
+      if (!event.ctrlKey && Math.abs(event.deltaY) < 40) return;
+      event.preventDefault();
+      setZoom(zoom + (event.deltaY < 0 ? 0.25 : -0.25));
+    }, { passive: false });
+
     modalElement.addEventListener("hidden.bs.modal", function () {
       frame.src = "about:blank";
+      image.src = "";
+      setZoom(1);
     });
   });
 </script>

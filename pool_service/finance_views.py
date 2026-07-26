@@ -767,6 +767,7 @@ def finance_expense_detail(request, expense_uuid):
     expense = _expense_for_user(request, expense_uuid)
     if not expense:
         return HttpResponseForbidden("Недостаточно прав.")
+    can_delete = request.user.id == expense.created_by_id and not period_is_closed(expense.organization, expense.spent_on)
     return render(
         request,
         "pool_service/finance/expense_detail.html",
@@ -775,10 +776,32 @@ def finance_expense_detail(request, expense_uuid):
             "review_form": ExpenseReviewForm(),
             "can_review": can_review_expense(request.user, expense) and expense.status == Expense.STATUS_PENDING,
             "can_edit": can_edit_expense(request.user, expense) and not period_is_closed(expense.organization, expense.spent_on),
+            "can_delete": can_delete,
             "active_tab": "finance",
             "show_add_button": False,
         },
     )
+
+
+@require_POST
+@login_required
+def finance_expense_delete(request, expense_uuid):
+    expense = _expense_for_user(request, expense_uuid)
+    if not expense:
+        return HttpResponseForbidden("Недостаточно прав.")
+    if request.user.id != expense.created_by_id:
+        return HttpResponseForbidden("Удалить расход может только тот, кто его добавил.")
+    if period_is_closed(expense.organization, expense.spent_on):
+        messages.error(request, "Расход из закрытого месяца удалить нельзя.")
+        return redirect("finance_expense_detail", expense_uuid=expense.uuid)
+
+    receipts = list(expense.receipts.all())
+    with transaction.atomic():
+        expense.delete()
+    for receipt in receipts:
+        receipt.file.delete(save=False)
+    messages.success(request, "Расход удалён.")
+    return redirect("finance_dashboard")
 
 
 @require_POST

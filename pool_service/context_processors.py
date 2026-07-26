@@ -1,7 +1,7 @@
 from .seo import is_indexable_host
 
 
-BRAND_TAGLINE = "Система управления объектами и финансами"
+BRAND_TAGLINE = "Система управления"
 
 
 def brand_context(request):
