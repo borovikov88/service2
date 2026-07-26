@@ -722,6 +722,9 @@
           if (window.initTaskForms) {
             window.initTaskForms(taskModalBody);
           }
+          if (window.RovikPhotoPicker) {
+            window.RovikPhotoPicker.init(taskModalBody);
+          }
         })
         .catch(() => {
           taskModalBody.innerHTML = `<div class="text-danger">Не удалось загрузить форму.</div>`;
@@ -805,6 +808,9 @@
             if (window.initTaskForms) {
               window.initTaskForms(taskModalBody);
             }
+            if (window.RovikPhotoPicker) {
+              window.RovikPhotoPicker.init(taskModalBody);
+            }
             return { ok: false };
           }
           throw new Error("save_failed");
@@ -834,27 +840,6 @@
 
     const MAX_SIZE = 1600;
     const QUALITY = 0.8;
-    const isMobile =
-      /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "") ||
-      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-    let skipPrompt = false;
-
-    input.addEventListener("click", (event) => {
-      if (!isMobile) return;
-      if (skipPrompt) {
-        skipPrompt = false;
-        return;
-      }
-      event.preventDefault();
-      const useCamera = window.confirm("Сделать фото? OK - камера, Отмена - галерея.");
-      if (useCamera) {
-        input.setAttribute("capture", "environment");
-      } else {
-        input.removeAttribute("capture");
-      }
-      skipPrompt = true;
-      input.click();
-    });
 
     function compressImage(file) {
       return new Promise((resolve, reject) => {

@@ -1679,34 +1679,34 @@
         document.body.classList.remove("photo-picker-open");
       }
 
-      function setFiles(input, fileList, append) {
-        const incoming = Array.from(fileList || []);
-        if (!incoming.length) return;
-        if (typeof DataTransfer === "undefined") {
-          input.click();
-          return;
+      function openNativePicker(input, mode) {
+        const originalAccept = input.getAttribute("accept");
+        const originalCapture = input.getAttribute("capture");
+        if (mode === "camera" || mode === "gallery") {
+          input.setAttribute("accept", imageAccept(input));
+        } else if (originalAccept !== null) {
+          input.setAttribute("accept", originalAccept);
         }
-        const transfer = new DataTransfer();
-        const existing = append && input.multiple ? Array.from(input.files || []) : [];
-        existing.concat(incoming).forEach((file) => transfer.items.add(file));
-        input.files = transfer.files;
-        input.dispatchEvent(new Event("change", { bubbles: true }));
+        if (mode === "camera") {
+          input.setAttribute("capture", "environment");
+        } else {
+          input.removeAttribute("capture");
+        }
+        input.click();
+        closeSheet();
+        setTimeout(() => {
+          if (originalAccept === null) input.removeAttribute("accept");
+          else input.setAttribute("accept", originalAccept);
+          if (originalCapture === null) input.removeAttribute("capture");
+          else input.setAttribute("capture", originalCapture);
+        }, 1000);
       }
 
-      function openNativePicker(input, mode) {
-        const nativeInput = document.createElement("input");
-        nativeInput.type = "file";
-        nativeInput.multiple = input.multiple;
-        nativeInput.accept = mode === "file" ? (input.getAttribute("accept") || "") : imageAccept(input);
-        nativeInput.className = "photo-picker-native";
-        if (mode === "camera") nativeInput.setAttribute("capture", "environment");
-        nativeInput.addEventListener("change", () => {
-          setFiles(input, nativeInput.files, true);
-          nativeInput.remove();
-        });
-        document.body.appendChild(nativeInput);
-        closeSheet();
-        nativeInput.click();
+      function isMobileDevice() {
+        return (
+          /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "") ||
+          (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+        );
       }
 
       function openSheet(input) {
@@ -1786,6 +1786,17 @@
         if (input.dataset.photoPicker !== "1" && !accept.includes("image")) return;
         input.dataset.photoPickerReady = "1";
         input.classList.add("photo-picker-native");
+        Object.assign(input.style, {
+          position: "absolute",
+          width: "1px",
+          height: "1px",
+          padding: "0",
+          margin: "-1px",
+          overflow: "hidden",
+          clip: "rect(0, 0, 0, 0)",
+          whiteSpace: "nowrap",
+          border: "0",
+        });
 
         const wrapper = document.createElement("div");
         wrapper.className = "photo-picker";
@@ -1800,7 +1811,13 @@
         input.insertAdjacentElement("afterend", wrapper);
 
         pickerState.set(input, { wrapper, preview, urls: [] });
-        trigger.addEventListener("click", () => openSheet(input));
+        trigger.addEventListener("click", () => {
+          if (isMobileDevice()) {
+            openSheet(input);
+          } else {
+            openNativePicker(input, "file");
+          }
+        });
         input.addEventListener("change", () => renderPreview(input));
         renderPreview(input);
       }

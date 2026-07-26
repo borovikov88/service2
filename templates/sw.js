@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'v9';
+const CACHE_VERSION = 'v10';
 const STATIC_CACHE = `pwa-static-${CACHE_VERSION}`;
 const RUNTIME_CACHE = `pwa-runtime-${CACHE_VERSION}`;
 const OFFLINE_URLS = [];

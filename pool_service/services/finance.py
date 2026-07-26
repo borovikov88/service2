@@ -19,12 +19,12 @@ from pool_service.services.notifications import notify_users
 
 DEFAULT_EXPENSE_CATEGORIES = [
     "Материалы",
-    "Доставка",
-    "Вода",
-    "Инструмент",
+    "Работы",
     "Транспорт",
+    "Инструмент",
     "Прочее",
 ]
+LEGACY_EXPENSE_CATEGORIES = ["Доставка", "Вода"]
 
 FINANCE_ACCESS_ROLES = {"owner", "admin", "manager", "service", "installer", "accountant"}
 FINANCE_MANAGE_ROLES = {"owner", "admin", "manager", "accountant"}
@@ -136,7 +136,21 @@ def ensure_default_categories(organization):
             name=name,
             defaults={"sort_order": sort_order},
         )
+        changed_fields = []
+        if category.sort_order != sort_order:
+            category.sort_order = sort_order
+            changed_fields.append("sort_order")
+        if not category.is_active:
+            category.is_active = True
+            changed_fields.append("is_active")
+        if changed_fields:
+            category.save(update_fields=changed_fields)
         categories.append(category)
+    ExpenseCategory.objects.filter(
+        organization=organization,
+        name__in=LEGACY_EXPENSE_CATEGORIES,
+        is_active=True,
+    ).update(is_active=False)
     return categories
 
 

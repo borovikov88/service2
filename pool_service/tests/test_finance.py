@@ -104,6 +104,24 @@ class FinanceTests(TestCase):
         self.assertContains(response, "Добавить расход")
         self.assertIn(("installer", "Монтажник"), OrganizationAccess.ROLE_CHOICES)
 
+    def test_default_expense_categories_are_limited_to_current_list(self):
+        ExpenseCategory.objects.create(organization=self.organization, name="Вода", sort_order=30)
+        ExpenseCategory.objects.create(organization=self.organization, name="Доставка", sort_order=31)
+
+        ensure_default_categories(self.organization)
+
+        active_categories = list(
+            ExpenseCategory.objects.filter(organization=self.organization, is_active=True).values_list("name", flat=True)
+        )
+        self.assertEqual(active_categories, ["Материалы", "Работы", "Транспорт", "Инструмент", "Прочее"])
+        self.assertFalse(
+            ExpenseCategory.objects.filter(
+                organization=self.organization,
+                name__in=["Вода", "Доставка"],
+                is_active=True,
+            ).exists()
+        )
+
     def test_finance_forms_show_employee_names_without_contacts(self):
         unnamed = User.objects.create_user(username="9236540444", password="pass")
         OrganizationAccess.objects.create(
@@ -147,6 +165,8 @@ class FinanceTests(TestCase):
 
         response = self.client.get(reverse("finance_expense_create"))
 
+        self.assertContains(response, 'data-photo-picker="1"')
+        self.assertNotContains(response, 'capture="environment"')
         self.assertNotIn("pool", response.context["form"].fields)
         self.assertNotContains(response, "Объект клиента")
         self.assertNotContains(response, "data-pool-select")
