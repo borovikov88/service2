@@ -167,6 +167,7 @@ class FinanceTests(TestCase):
 
         self.assertContains(response, 'data-photo-picker="1"')
         self.assertNotContains(response, 'capture="environment"')
+        self.assertContains(response, 'mode: "file"')
         self.assertNotIn("pool", response.context["form"].fields)
         self.assertNotContains(response, "Объект клиента")
         self.assertNotContains(response, "data-pool-select")

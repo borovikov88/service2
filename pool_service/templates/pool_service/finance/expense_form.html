@@ -192,7 +192,7 @@
 
     addReceiptButton?.addEventListener("click", function () {
       if (receiptModal) receiptModal.hide();
-      document.dispatchEvent(new CustomEvent("rovik:open-photo-picker", { detail: { input: receipts } }));
+      document.dispatchEvent(new CustomEvent("rovik:open-photo-picker", { detail: { input: receipts, mode: "file" } }));
     });
   });
 </script>

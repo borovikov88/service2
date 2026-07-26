@@ -12049,3 +12049,15 @@ textarea.form-control-lg {
         width: min(420px, 100% - 2rem);
     }
 }
+
+.expense-purpose-cell {
+    max-width: clamp(180px, 38vw, 520px);
+}
+
+.expense-purpose-cell__main,
+.expense-purpose-cell__sub {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}

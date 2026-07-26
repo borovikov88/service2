@@ -130,9 +130,9 @@
               <tr data-row-href="{% url 'finance_expense_detail' expense.uuid %}">
                 <td class="date-cell"><a href="{% url 'finance_expense_detail' expense.uuid %}" class="text-decoration-none"><span>{{ expense.spent_on|date:"d.m" }}</span><span class="date-cell__year">{{ expense.spent_on|date:"Y" }}</span></a></td>
                 {% if can_manage_finance %}<td>{{ expense.employee|finance_employee_name }}</td>{% endif %}
-                <td>
-                  <div>{{ expense.destination_name }}</div>
-                  <div class="small text-muted">{{ expense.category.name }}</div>
+                <td class="expense-purpose-cell">
+                  <div class="expense-purpose-cell__main">{% if expense.description %}{{ expense.description }}{% elif expense.vendor %}{{ expense.vendor }}{% else %}—{% endif %}</div>
+                  <div class="expense-purpose-cell__sub small text-muted">{{ expense.destination_name }}</div>
                 </td>
                 <td class="text-end fw-semibold">{{ expense.amount|money }}</td>
                 <td class="text-end">

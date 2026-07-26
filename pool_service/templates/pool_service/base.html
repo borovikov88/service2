@@ -18,7 +18,7 @@
   <meta name="apple-mobile-web-app-title" content="{{ brand_name }}" />
   <meta name="application-name" content="{{ brand_name }}" />
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" />
-  <link href="{% static 'assets/css/style.css' %}" rel="stylesheet" />
+  <link href="{% static 'assets/css/style.css' %}?v=11" rel="stylesheet" />
 
   <!-- Yandex.Metrika counter -->
   <script type="text/javascript">
@@ -1655,6 +1655,16 @@
       function createSheet() {
         const element = document.createElement("div");
         element.className = "photo-picker-sheet";
+        Object.assign(element.style, {
+          position: "fixed",
+          inset: "0",
+          zIndex: "5000",
+          display: "none",
+          alignItems: "flex-end",
+          justifyContent: "center",
+          background: "rgba(15, 23, 42, 0.38)",
+          backdropFilter: "blur(2px)",
+        });
         element.innerHTML = `
           <div class="photo-picker-sheet__panel" role="dialog" aria-modal="true" aria-label="Добавить фото">
             <div class="photo-picker-sheet__handle"></div>
@@ -1671,11 +1681,54 @@
           if (event.key === "Escape") closeSheet();
         });
         document.body.appendChild(element);
+        const panel = element.querySelector(".photo-picker-sheet__panel");
+        const handle = element.querySelector(".photo-picker-sheet__handle");
+        const actions = element.querySelector(".photo-picker-sheet__actions");
+        const close = element.querySelector(".photo-picker-sheet__close");
+        if (panel) {
+          Object.assign(panel.style, {
+            width: "min(100% - 1rem, 520px)",
+            margin: "0.5rem",
+            padding: "0.65rem",
+            borderRadius: "28px",
+            background: "rgba(255, 255, 255, 0.98)",
+            boxShadow: "0 24px 70px rgba(15, 23, 42, 0.25)",
+          });
+        }
+        if (handle) {
+          Object.assign(handle.style, {
+            width: "44px",
+            height: "5px",
+            margin: "0.25rem auto 0.8rem",
+            borderRadius: "999px",
+            background: "#dbe3ef",
+          });
+        }
+        if (actions) {
+          Object.assign(actions.style, {
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(92px, 1fr))",
+            gap: "0.5rem",
+          });
+        }
+        if (close) {
+          Object.assign(close.style, {
+            width: "100%",
+            marginTop: "0.5rem",
+            border: "0",
+            borderRadius: "20px",
+            background: "transparent",
+            color: "#64748b",
+            fontWeight: "700",
+            padding: "0.75rem",
+          });
+        }
         return element;
       }
 
       function closeSheet() {
         if (sheet) sheet.classList.remove("is-open");
+        if (sheet) sheet.style.display = "none";
         document.body.classList.remove("photo-picker-open");
       }
 
@@ -1729,9 +1782,23 @@
           );
         }
         actions.querySelectorAll("[data-photo-action]").forEach((button) => {
+          Object.assign(button.style, {
+            display: "grid",
+            placeItems: "center",
+            gap: "0.35rem",
+            minHeight: "84px",
+            padding: "0.75rem 0.5rem",
+            border: "0",
+            borderRadius: "22px",
+            background: button.dataset.photoAction === "gallery" ? "#e8f2ff" : "#f1f5f9",
+            color: button.dataset.photoAction === "gallery" ? "#0d6efd" : "#0f172a",
+            fontWeight: "700",
+          });
           button.addEventListener("click", () => openNativePicker(activeInput, button.dataset.photoAction));
         });
         sheet.classList.add("is-open");
+        sheet.style.display = "flex";
+        sheet.style.alignItems = isMobileDevice() ? "flex-end" : "center";
         document.body.classList.add("photo-picker-open");
       }
 
@@ -1804,6 +1871,20 @@
         trigger.type = "button";
         trigger.className = "photo-picker__button";
         trigger.innerHTML = '<i class="bi bi-camera"></i><span>Добавить фото</span>';
+        Object.assign(trigger.style, {
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: "0.5rem",
+          width: "fit-content",
+          minHeight: "44px",
+          padding: "0.65rem 1rem",
+          border: "1px dashed #86b7fe",
+          borderRadius: "16px",
+          background: "linear-gradient(135deg, rgba(13, 110, 253, 0.08), rgba(13, 110, 253, 0.02))",
+          color: "#0d6efd",
+          fontWeight: "700",
+        });
         const preview = document.createElement("div");
         preview.className = "photo-picker__preview";
         wrapper.appendChild(trigger);
@@ -1831,10 +1912,16 @@
         const input = event.detail && event.detail.input;
         if (!input) return;
         enhanceInput(input);
-        openSheet(input);
+        if (event.detail && event.detail.mode) {
+          openNativePicker(input, event.detail.mode);
+        } else if (isMobileDevice()) {
+          openSheet(input);
+        } else {
+          openNativePicker(input, "file");
+        }
       });
 
-      window.RovikPhotoPicker = { init, open: openSheet };
+      window.RovikPhotoPicker = { init, open: openSheet, openNative: openNativePicker };
       document.addEventListener("DOMContentLoaded", () => init(document));
     })();
   </script>
