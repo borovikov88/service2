@@ -98,7 +98,7 @@ def finance_staff(organization):
 
 
 def user_display_name(user):
-    return user.get_full_name().strip() or user.email or user.username
+    return user.get_full_name().strip() or "Имя не указано"
 
 
 def find_client_by_name(organization, name):

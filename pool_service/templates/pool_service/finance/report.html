@@ -1,4 +1,5 @@
 {% extends "pool_service/base.html" %}
+{% load finance_tags %}
 
 {% block title %}Отчёт по расходам{% endblock %}
 
@@ -26,7 +27,7 @@
 <form method="get" class="card card-soft p-3 mb-4">
   <div class="row g-2 align-items-end">
     <div class="col-6 col-lg-2"><label class="form-label small">Месяц</label><input type="month" name="month" value="{{ month_value }}" class="form-control"></div>
-    <div class="col-6 col-lg-2"><label class="form-label small">Сотрудник</label><select name="employee" class="form-select"><option value="">Все</option>{% for item in employees %}<option value="{{ item.id }}" {% if filters.employee == item.id %}selected{% endif %}>{{ item.get_full_name|default:item.username }}</option>{% endfor %}</select></div>
+    <div class="col-6 col-lg-2"><label class="form-label small">Сотрудник</label><select name="employee" class="form-select"><option value="">Все</option>{% for item in employees %}<option value="{{ item.id }}" {% if filters.employee == item.id %}selected{% endif %}>{{ item|finance_employee_name }}</option>{% endfor %}</select></div>
     <div class="col-6 col-lg-2"><label class="form-label small">Категория</label><select name="category" class="form-select"><option value="">Все</option>{% for item in categories %}<option value="{{ item.id }}" {% if filters.category == item.id %}selected{% endif %}>{{ item.name }}</option>{% endfor %}</select></div>
     <div class="col-6 col-lg-2"><label class="form-label small">Клиент</label><select name="client" class="form-select"><option value="">Все</option>{% for item in clients %}<option value="{{ item.id }}" {% if filters.client == item.id %}selected{% endif %}>{{ item.name }}</option>{% endfor %}</select></div>
     <div class="col-6 col-lg-2"><label class="form-label small">Статус</label><select name="status" class="form-select"><option value="">Все</option><option value="approved" {% if filters.status == "approved" %}selected{% endif %}>Подтверждён</option><option value="pending" {% if filters.status == "pending" %}selected{% endif %}>На проверке</option><option value="rejected" {% if filters.status == "rejected" %}selected{% endif %}>Отклонён</option></select></div>
@@ -48,7 +49,7 @@
       <thead class="small text-muted"><tr><th>Сотрудник</th><th class="text-end">На начало</th><th class="text-end">Выдано</th><th class="text-end">Возврат</th><th class="text-end">Расход</th><th class="text-end">На проверке</th><th class="text-end">На конец</th></tr></thead>
       <tbody>
         {% for row in employee_rows %}
-          <tr><td class="fw-semibold">{{ row.employee.get_full_name|default:row.employee.username }}</td><td class="text-end">{{ row.opening|floatformat:2 }}</td><td class="text-end">{{ row.issued|floatformat:2 }}</td><td class="text-end">{{ row.returned|floatformat:2 }}</td><td class="text-end">{{ row.approved|floatformat:2 }}</td><td class="text-end">{{ row.pending|floatformat:2 }}</td><td class="text-end fw-bold {% if row.closing < 0 %}text-danger{% endif %}">{{ row.closing|floatformat:2 }} ₽</td></tr>
+          <tr><td class="fw-semibold">{{ row.employee|finance_employee_name }}</td><td class="text-end">{{ row.opening|floatformat:2 }}</td><td class="text-end">{{ row.issued|floatformat:2 }}</td><td class="text-end">{{ row.returned|floatformat:2 }}</td><td class="text-end">{{ row.approved|floatformat:2 }}</td><td class="text-end">{{ row.pending|floatformat:2 }}</td><td class="text-end fw-bold {% if row.closing < 0 %}text-danger{% endif %}">{{ row.closing|floatformat:2 }} ₽</td></tr>
         {% empty %}<tr><td colspan="7" class="text-center text-muted py-4">Движений подотчёта нет</td></tr>{% endfor %}
       </tbody>
     </table>
@@ -69,7 +70,7 @@
         {% for expense in expenses %}
           <tr>
             <td><a href="{% url 'finance_expense_detail' expense.uuid %}">{{ expense.spent_on|date:"d.m.Y" }}</a></td>
-            <td>{{ expense.employee.get_full_name|default:expense.employee.username }}</td>
+            <td>{{ expense.employee|finance_employee_name }}</td>
             <td>{{ expense.destination_name }}{% if expense.pool %}<div class="small text-muted">{{ expense.pool.address }}</div>{% endif %}</td>
             <td>{{ expense.category.name }}</td>
             <td>{% if expense.receipts.all %}<span class="text-success"><i class="bi bi-check-circle"></i></span>{% else %}<span class="text-danger">Нет</span>{% endif %}</td>

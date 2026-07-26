@@ -9,9 +9,13 @@ from pool_service.models import (
     Client,
     Expense,
     ExpenseCategory,
-    Pool,
 )
-from pool_service.services.finance import finance_staff, find_client_by_name, period_is_closed
+from pool_service.services.finance import (
+    finance_staff,
+    find_client_by_name,
+    period_is_closed,
+    user_display_name,
+)
 
 
 ALLOWED_RECEIPT_CONTENT_TYPES = {
@@ -84,6 +88,7 @@ class AccountableTransactionForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         self.organization = organization
         self.fields["employee"].queryset = finance_staff(organization)
+        self.fields["employee"].label_from_instance = user_display_name
         self.fields["transaction_type"].choices = [
             (AccountableTransaction.TYPE_ISSUE, "Выдать под отчёт"),
             (AccountableTransaction.TYPE_RETURN, "Принять возврат"),
@@ -135,7 +140,6 @@ class ExpenseForm(forms.ModelForm):
             "amount",
             "spent_on",
             "destination_type",
-            "pool",
             "vendor",
             "description",
         ]
@@ -146,7 +150,6 @@ class ExpenseForm(forms.ModelForm):
             "amount": "Сумма, ₽",
             "spent_on": "Дата расхода",
             "destination_type": "Отнести расход на",
-            "pool": "Объект клиента",
             "vendor": "Магазин или поставщик",
             "description": "Что приобретено или оплачено",
         }
@@ -157,7 +160,6 @@ class ExpenseForm(forms.ModelForm):
             "amount": forms.NumberInput(attrs={"class": "form-control", "min": "0.01", "step": "0.01"}),
             "spent_on": forms.DateInput(attrs={"class": "form-control", "type": "date"}, format="%Y-%m-%d"),
             "destination_type": forms.Select(attrs={"class": "form-select", "data-destination-type": "1"}),
-            "pool": forms.Select(attrs={"class": "form-select", "data-pool-select": "1"}),
             "vendor": forms.TextInput(attrs={"class": "form-control", "placeholder": "Например, Леруа Мерлен"}),
             "description": forms.Textarea(attrs={"class": "form-control", "rows": 4}),
         }
@@ -170,12 +172,10 @@ class ExpenseForm(forms.ModelForm):
         self.resolved_client = None
         self.new_client_name = ""
         self.fields["employee"].queryset = finance_staff(organization)
+        self.fields["employee"].label_from_instance = user_display_name
         self.fields["category"].queryset = ExpenseCategory.objects.filter(
             organization=organization,
             is_active=True,
-        )
-        self.fields["pool"].queryset = Pool.objects.filter(organization=organization).select_related("client").order_by(
-            "client__name", "address"
         )
         self.fields["spent_on"].input_formats = ["%Y-%m-%d"]
         if self.instance.pk:
@@ -212,7 +212,6 @@ class ExpenseForm(forms.ModelForm):
         destination_type = cleaned.get("destination_type")
         destination_query = (cleaned.get("destination_query") or "").strip()
         client_id = cleaned.get("client_id")
-        selected_pool = cleaned.get("pool")
         if destination_type == Expense.DESTINATION_CLIENT:
             if client_id:
                 self.resolved_client = Client.objects.filter(
@@ -227,12 +226,7 @@ class ExpenseForm(forms.ModelForm):
                     self.new_client_name = destination_query[:255]
             else:
                 self.add_error("destination_query", "Выберите или укажите нового клиента.")
-            if selected_pool and self.resolved_client and selected_pool.client_id != self.resolved_client.id:
-                self.add_error("pool", "Объект не принадлежит выбранному клиенту.")
-            if selected_pool and self.new_client_name:
-                self.add_error("pool", "Для нового клиента объект пока выбрать нельзя.")
         else:
-            cleaned["pool"] = None
             self.resolved_client = None
             self.new_client_name = ""
         return cleaned
@@ -240,6 +234,7 @@ class ExpenseForm(forms.ModelForm):
     def _post_clean(self):
         self.instance.organization = self.organization
         self.instance.client = self.resolved_client
+        self.instance.pool = None
         self.instance.destination_name = self.new_client_name or (
             self.resolved_client.name if self.resolved_client else "Офисные расходы"
         )

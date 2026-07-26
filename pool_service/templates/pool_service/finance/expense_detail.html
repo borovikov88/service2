@@ -1,4 +1,5 @@
 {% extends "pool_service/base.html" %}
+{% load finance_tags %}
 
 {% block title %}Расход {{ expense.amount|floatformat:2 }} ₽{% endblock %}
 
@@ -28,7 +29,7 @@
     <div class="card card-soft p-3 p-lg-4 mb-4">
       <h2 class="h5 fw-bold mb-3">Данные расхода</h2>
       <div class="row g-3">
-        <div class="col-6"><div class="text-muted small">Сотрудник</div><div class="fw-semibold">{{ expense.employee.get_full_name|default:expense.employee.username }}</div></div>
+        <div class="col-6"><div class="text-muted small">Сотрудник</div><div class="fw-semibold">{{ expense.employee|finance_employee_name }}</div></div>
         <div class="col-6"><div class="text-muted small">Источник</div><div class="fw-semibold">{{ expense.get_source_display }}</div></div>
         <div class="col-6"><div class="text-muted small">Категория</div><div class="fw-semibold">{{ expense.category.name }}</div></div>
         <div class="col-6"><div class="text-muted small">Назначение</div><div class="fw-semibold">{{ expense.destination_name }}</div></div>
@@ -84,7 +85,7 @@
         {% for change in expense.changes.all %}
           <div class="border-bottom pb-3">
             <div class="fw-semibold">{{ change.get_action_display }}</div>
-            <div class="small text-muted">{{ change.actor.get_full_name|default:change.actor.username }} · {{ change.created_at|date:"d.m.Y H:i" }}</div>
+            <div class="small text-muted">{{ change.actor|finance_employee_name }} · {{ change.created_at|date:"d.m.Y H:i" }}</div>
             {% if change.note %}<div class="small mt-1">{{ change.note }}</div>{% endif %}
           </div>
         {% empty %}<div class="text-muted">История пуста</div>{% endfor %}

@@ -25,7 +25,6 @@ from pool_service.models import (
     ExpenseChange,
     ExpensePeriod,
     ExpenseReceipt,
-    Pool,
 )
 from pool_service.services.finance import (
     accountable_rows,
@@ -74,6 +73,15 @@ def _finance_guard(request, *, manage=False, close=False):
 
 def _is_offline_request(request):
     return request.headers.get("X-Finance-Offline") == "1"
+
+
+def _finance_modal_context(request):
+    is_modal = request.GET.get("modal") == "1"
+    return {
+        "finance_modal": is_modal,
+        "hide_header": is_modal,
+        "hide_bottom_nav": is_modal,
+    }
 
 
 def _post_success(request, expense, message):
@@ -150,17 +158,6 @@ def _client_options(organization):
         label = f"{client.name} — {details}" if details else client.name
         options.append({"id": client.id, "name": client.name, "label": label})
     return options
-
-
-def _pool_options(organization):
-    return [
-        {
-            "id": pool.id,
-            "client_id": pool.client_id,
-            "label": pool.address,
-        }
-        for pool in Pool.objects.filter(organization=organization).select_related("client").order_by("client__name", "address")
-    ]
 
 
 @login_required
@@ -243,15 +240,13 @@ def finance_transaction_create(request):
         notify_advance(movement)
         messages.success(request, "Операция подотчёта сохранена.")
         return redirect("finance_dashboard")
-    return render(
-        request,
-        "pool_service/finance/transaction_form.html",
-        {
-            "form": form,
-            "active_tab": "finance",
-            "show_add_button": False,
-        },
-    )
+    context = {
+        "form": form,
+        "active_tab": "finance",
+        "show_add_button": False,
+    }
+    context.update(_finance_modal_context(request))
+    return render(request, "pool_service/finance/transaction_form.html", context)
 
 
 @require_POST
@@ -280,18 +275,15 @@ def finance_transaction_void(request, transaction_id):
 
 
 def _expense_form_response(request, organization, form, expense=None):
-    return render(
-        request,
-        "pool_service/finance/expense_form.html",
-        {
-            "form": form,
-            "expense": expense,
-            "client_options": _client_options(organization),
-            "pool_options": _pool_options(organization),
-            "active_tab": "finance",
-            "show_add_button": False,
-        },
-    )
+    context = {
+        "form": form,
+        "expense": expense,
+        "client_options": _client_options(organization),
+        "active_tab": "finance",
+        "show_add_button": False,
+    }
+    context.update(_finance_modal_context(request))
+    return render(request, "pool_service/finance/expense_form.html", context)
 
 
 @login_required
@@ -336,6 +328,7 @@ def finance_expense_create(request):
         expense.organization = organization
         expense.created_by = request.user
         expense.client = client
+        expense.pool = None
         if expense.destination_type == Expense.DESTINATION_OFFICE:
             expense.destination_name = "Офисные расходы"
             expense.client = None
@@ -401,6 +394,7 @@ def finance_expense_edit(request, expense_uuid):
                 )
         updated = form.save(commit=False)
         updated.client = client
+        updated.pool = None
         updated.status = Expense.STATUS_PENDING
         updated.reviewed_by = None
         updated.reviewed_at = None

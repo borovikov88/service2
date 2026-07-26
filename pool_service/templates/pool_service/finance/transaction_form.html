@@ -2,8 +2,19 @@
 
 {% block title %}Операция подотчёта{% endblock %}
 
+{% block extra_head %}
+  {% if finance_modal %}
+  <style>
+    body { background: #fff; }
+    .page-shell { min-height: 0; padding: 0; }
+    .page-shell > .container { max-width: none; padding: 0; }
+  </style>
+  {% endif %}
+{% endblock %}
+
 {% block content %}
-<div class="mx-auto" style="max-width:760px;">
+<div class="{% if finance_modal %}p-3 p-lg-4{% else %}mx-auto{% endif %}"{% if not finance_modal %} style="max-width:760px;"{% endif %}>
+  {% if not finance_modal %}
   <div class="d-flex align-items-center justify-content-between gap-3 mb-4">
     <div>
       <h1 class="h3 fw-bold mb-1">Операция подотчёта</h1>
@@ -11,7 +22,8 @@
     </div>
     <a href="{% url 'finance_dashboard' %}" class="btn btn-outline-secondary">Назад</a>
   </div>
-  <form method="post" class="card card-soft p-3 p-lg-4">
+  {% endif %}
+  <form method="post" class="{% if not finance_modal %}card card-soft p-3 p-lg-4{% endif %}">
     {% csrf_token %}
     <div class="row g-3">
       {% for field in form %}

@@ -44,7 +44,12 @@ class FinanceTests(TestCase):
         )
         self.owner = User.objects.create_user(username="finance-owner", password="pass", first_name="Owner")
         self.manager = User.objects.create_user(username="finance-manager", password="pass", first_name="Manager")
-        self.service = User.objects.create_user(username="finance-service", password="pass", first_name="Service")
+        self.service = User.objects.create_user(
+            username="finance-service",
+            password="pass",
+            first_name="Service",
+            last_name="Employee",
+        )
         self.installer = User.objects.create_user(username="finance-installer", password="pass", first_name="Installer")
         self.accountant = User.objects.create_user(username="finance-accountant", password="pass", first_name="Accountant")
         OrganizationAccess.objects.create(user=self.owner, organization=self.organization, role="owner")
@@ -97,6 +102,50 @@ class FinanceTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Добавить расход")
         self.assertIn(("installer", "Монтажник"), OrganizationAccess.ROLE_CHOICES)
+
+    def test_finance_forms_show_employee_names_without_contacts(self):
+        unnamed = User.objects.create_user(username="9236540444", password="pass")
+        OrganizationAccess.objects.create(
+            user=unnamed,
+            organization=self.organization,
+            role="service",
+        )
+        self.client.force_login(self.manager)
+
+        transaction_response = self.client.get(reverse("finance_transaction_create"))
+        expense_response = self.client.get(reverse("finance_expense_create"))
+        transaction_labels = [label for _, label in transaction_response.context["form"].fields["employee"].choices]
+        expense_labels = [label for _, label in expense_response.context["form"].fields["employee"].choices]
+
+        self.assertIn("Service Employee", transaction_labels)
+        self.assertIn("Service Employee", expense_labels)
+        self.assertIn("Имя не указано", transaction_labels)
+        self.assertNotIn(self.service.username, transaction_labels)
+        self.assertNotIn(unnamed.username, transaction_labels)
+
+    def test_finance_create_forms_support_desktop_modal(self):
+        self.client.force_login(self.manager)
+
+        dashboard = self.client.get(reverse("finance_dashboard"))
+        transaction = self.client.get(reverse("finance_transaction_create"), {"modal": "1"})
+        expense = self.client.get(reverse("finance_expense_create"), {"modal": "1"})
+
+        self.assertContains(dashboard, 'id="financeFormModal"')
+        self.assertContains(dashboard, 'class="btn btn-primary" data-finance-modal', count=1)
+        self.assertContains(dashboard, 'class="btn btn-outline-primary" data-finance-modal', count=1)
+        for response in (transaction, expense):
+            self.assertTrue(response.context["finance_modal"])
+            self.assertTrue(response.context["hide_header"])
+            self.assertTrue(response.context["hide_bottom_nav"])
+
+    def test_new_expense_does_not_offer_client_object(self):
+        self.client.force_login(self.manager)
+
+        response = self.client.get(reverse("finance_expense_create"))
+
+        self.assertNotIn("pool", response.context["form"].fields)
+        self.assertNotContains(response, "Объект клиента")
+        self.assertNotContains(response, "data-pool-select")
 
     def test_accountant_has_full_finance_access(self):
         self.client.force_login(self.accountant)
