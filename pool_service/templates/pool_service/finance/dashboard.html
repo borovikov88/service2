@@ -11,6 +11,7 @@
   </div>
   <div class="d-flex flex-wrap gap-2">
     <a href="{% url 'finance_expense_create' %}" class="btn btn-primary" data-finance-modal data-modal-title="Новый расход" data-modal-size="xl"><i class="bi bi-receipt me-2"></i>Добавить расход</a>
+    <a href="{% url 'finance_income_create' %}" class="btn btn-outline-success" data-finance-modal data-modal-title="Приход денег" data-modal-size="lg"><i class="bi bi-wallet2 me-2"></i>Приход денег</a>
     {% if can_manage_finance %}
       <a href="{% url 'finance_transaction_create' %}" class="btn btn-outline-primary" data-finance-modal data-modal-title="Операция подотчёта" data-modal-size="lg"><i class="bi bi-cash-stack me-2"></i>Выдать подотчёт</a>
       <a href="{% url 'finance_report' %}" class="btn btn-outline-secondary"><i class="bi bi-bar-chart me-2"></i>Отчёт</a>
@@ -21,24 +22,48 @@
 <div id="finance-sync-status" class="alert alert-info d-none mb-4"></div>
 
 <div class="row g-3 mb-4">
+  {% if can_manage_finance %}
   <div class="col-12 col-md-4">
     <div class="card card-soft p-4 h-100">
       <div class="text-muted small mb-1">Подтверждено за {{ month_label }}</div>
-      <div class="fs-3 fw-bold text-success">{{ approved_total|floatformat:2 }} ₽</div>
+      <div class="fs-3 fw-bold text-success">{{ approved_total|money }}</div>
     </div>
   </div>
   <div class="col-12 col-md-4">
     <div class="card card-soft p-4 h-100">
       <div class="text-muted small mb-1">На проверке</div>
-      <div class="fs-3 fw-bold text-warning">{{ pending_total|floatformat:2 }} ₽</div>
+      <div class="fs-3 fw-bold text-warning">{{ pending_total|money }}</div>
     </div>
   </div>
   <div class="col-12 col-md-4">
     <div class="card card-soft p-4 h-100">
       <div class="text-muted small mb-1">Из кассы компании</div>
-      <div class="fs-3 fw-bold">{{ company_cash_total|floatformat:2 }} ₽</div>
+      <div class="fs-3 fw-bold">{{ company_cash_total|money }}</div>
     </div>
   </div>
+  {% else %}
+  {% for row in balance_rows %}
+  <div class="col-12 col-md-6">
+    <div class="card card-soft p-4 h-100">
+      <div class="text-muted small mb-1">Остаток на подотчёте</div>
+      <div class="fs-3 fw-bold {% if row.operational_balance < 0 %}text-danger{% else %}text-success{% endif %}">{{ row.operational_balance|money }}</div>
+    </div>
+  </div>
+  <div class="col-12 col-md-6">
+    <div class="card card-soft p-4 h-100">
+      <div class="text-muted small mb-1">Чеки на проверке</div>
+      <div class="fs-3 fw-bold text-warning">{{ pending_total|money }}</div>
+    </div>
+  </div>
+  {% empty %}
+  <div class="col-12">
+    <div class="card card-soft p-4 h-100">
+      <div class="text-muted small mb-1">Остаток на подотчёте</div>
+      <div class="fs-3 fw-bold text-success">0,00 ₽</div>
+    </div>
+  </div>
+  {% endfor %}
+  {% endif %}
 </div>
 
 <div class="card card-soft p-3 p-lg-4 mb-4">
@@ -54,7 +79,9 @@
         <tr>
           <th>Сотрудник</th>
           <th class="text-end">Выдано</th>
+          {% if can_manage_finance %}
           <th class="text-end">Подтверждено</th>
+          {% endif %}
           <th class="text-end">На проверке</th>
           <th class="text-end">Остаток</th>
         </tr>
@@ -63,15 +90,17 @@
         {% for row in balance_rows %}
           <tr>
             <td class="fw-semibold">{{ row.employee|finance_employee_name }}</td>
-            <td class="text-end">{{ row.issued|floatformat:2 }} ₽</td>
-            <td class="text-end">{{ row.approved|floatformat:2 }} ₽</td>
-            <td class="text-end">{{ row.pending|floatformat:2 }} ₽</td>
+            <td class="text-end">{{ row.issued|money }}</td>
+            {% if can_manage_finance %}
+            <td class="text-end">{{ row.approved|money }}</td>
+            {% endif %}
+            <td class="text-end">{{ row.pending|money }}</td>
             <td class="text-end fw-bold {% if row.operational_balance < 0 %}text-danger{% else %}text-success{% endif %}">
-              {{ row.operational_balance|floatformat:2 }} ₽
+              {{ row.operational_balance|money }}
             </td>
           </tr>
         {% empty %}
-          <tr><td colspan="5" class="text-center text-muted py-4">Операций пока нет</td></tr>
+          <tr><td colspan="{% if can_manage_finance %}5{% else %}4{% endif %}" class="text-center text-muted py-4">Операций пока нет</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -79,7 +108,7 @@
 </div>
 
 <div class="row g-4">
-  <div class="col-12 {% if can_manage_finance %}col-xl-8{% endif %}">
+  <div class="col-12 col-xl-8">
     <div class="card card-soft p-3 p-lg-4 h-100">
       <h2 class="h5 fw-bold mb-3">Последние расходы</h2>
       <div class="table-responsive">
@@ -89,7 +118,7 @@
           </thead>
           <tbody>
             {% for expense in latest_expenses %}
-              <tr>
+              <tr data-row-href="{% url 'finance_expense_detail' expense.uuid %}">
                 <td><a href="{% url 'finance_expense_detail' expense.uuid %}" class="text-decoration-none">{{ expense.spent_on|date:"d.m.Y" }}</a></td>
                 <td>{{ expense.employee|finance_employee_name }}</td>
                 <td>
@@ -97,11 +126,11 @@
                   <div class="small text-muted">{{ expense.category.name }}</div>
                 </td>
                 <td>
-                  {% if expense.status == "approved" %}<span class="badge bg-success-subtle text-success border">Подтверждён</span>
-                  {% elif expense.status == "rejected" %}<span class="badge bg-danger-subtle text-danger border">Отклонён</span>
-                  {% else %}<span class="badge bg-warning-subtle text-warning border">На проверке</span>{% endif %}
+                  {% if expense.status == "approved" %}<span class="badge bg-success-subtle text-success border status-badge" title="Подтверждён"><i class="bi bi-check-circle"></i><span class="status-text">Подтверждён</span></span>
+                  {% elif expense.status == "rejected" %}<span class="badge bg-danger-subtle text-danger border status-badge" title="Отклонён"><i class="bi bi-x-circle"></i><span class="status-text">Отклонён</span></span>
+                  {% else %}<span class="badge bg-warning-subtle text-warning border status-badge" title="На проверке"><i class="bi bi-hourglass-split"></i><span class="status-text">На проверке</span></span>{% endif %}
                 </td>
-                <td class="text-end fw-semibold">{{ expense.amount|floatformat:2 }} ₽</td>
+                <td class="text-end fw-semibold">{{ expense.amount|money }}</td>
               </tr>
             {% empty %}
               <tr><td colspan="5" class="text-center text-muted py-4">Расходов пока нет</td></tr>
@@ -112,7 +141,6 @@
     </div>
   </div>
 
-  {% if can_manage_finance %}
   <div class="col-12 col-xl-4">
     <div class="card card-soft p-3 p-lg-4 h-100">
       <h2 class="h5 fw-bold mb-3">Движения подотчёта</h2>
@@ -124,8 +152,27 @@
                 <div class="fw-semibold">{{ movement.employee|finance_employee_name }}</div>
                 <div class="small text-muted">{{ movement.get_transaction_type_display }} · {{ movement.occurred_on|date:"d.m.Y" }}</div>
               </div>
-              <div class="fw-bold">{{ movement.amount|floatformat:2 }} ₽</div>
+              <div class="text-end">
+                <div class="fw-bold">{{ movement.amount|money }}</div>
+                {% if movement.status == "pending" %}<span class="badge bg-warning-subtle text-warning border status-badge" title="На проверке"><i class="bi bi-hourglass-split"></i><span class="status-text">На проверке</span></span>
+                {% elif movement.status == "rejected" %}<span class="badge bg-danger-subtle text-danger border status-badge" title="Отклонён"><i class="bi bi-x-circle"></i><span class="status-text">Отклонён</span></span>{% endif %}
+              </div>
             </div>
+            {% if movement.transaction_type == "client_payment" and movement.status == "pending" and can_close_finance %}
+              <form method="post" action="{% url 'finance_transaction_review' movement.id %}" class="d-flex flex-wrap gap-2 mt-2">
+                {% csrf_token %}
+                <input type="hidden" name="decision" value="approved">
+                <input type="text" name="review_comment" class="form-control form-control-sm" placeholder="Комментарий">
+                <button class="btn btn-success btn-sm js-confirm-action" type="submit" data-confirm-title="Подтвердить приход" data-confirm-body="После подтверждения сумма попадёт в остаток подотчёта сотрудника." data-confirm-confirm="Подтвердить" data-confirm-variant="success">Подтвердить</button>
+              </form>
+              <form method="post" action="{% url 'finance_transaction_review' movement.id %}" class="d-flex flex-wrap gap-2 mt-2">
+                {% csrf_token %}
+                <input type="hidden" name="decision" value="rejected">
+                <input type="text" name="review_comment" class="form-control form-control-sm" placeholder="Причина">
+                <button class="btn btn-outline-danger btn-sm js-confirm-action" type="submit" data-confirm-title="Отклонить приход" data-confirm-body="Операция останется в истории, но не попадёт в баланс." data-confirm-confirm="Отклонить" data-confirm-variant="danger">Отклонить</button>
+              </form>
+            {% endif %}
+            {% if can_manage_finance %}
             <details class="mt-2">
               <summary class="small text-danger" role="button">Аннулировать</summary>
               <form method="post" action="{% url 'finance_transaction_void' movement.id %}" class="d-flex gap-2 mt-2">
@@ -134,6 +181,7 @@
                 <button class="btn btn-outline-danger btn-sm" type="submit">ОК</button>
               </form>
             </details>
+            {% endif %}
           </div>
         {% empty %}
           <div class="text-muted">Операций пока нет</div>
@@ -141,7 +189,6 @@
       </div>
     </div>
   </div>
-  {% endif %}
 </div>
 
 <div class="modal fade" id="financeFormModal" tabindex="-1" aria-hidden="true">

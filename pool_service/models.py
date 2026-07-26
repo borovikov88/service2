@@ -930,11 +930,22 @@ class AccountableTransaction(models.Model):
     TYPE_RETURN = "return"
     TYPE_ADJUSTMENT_IN = "adjustment_in"
     TYPE_ADJUSTMENT_OUT = "adjustment_out"
+    TYPE_CLIENT_PAYMENT = "client_payment"
     TYPE_CHOICES = [
         (TYPE_ISSUE, "Выдача"),
         (TYPE_RETURN, "Возврат"),
         (TYPE_ADJUSTMENT_IN, "Увеличение остатка"),
         (TYPE_ADJUSTMENT_OUT, "Уменьшение остатка"),
+        (TYPE_CLIENT_PAYMENT, "Приход от клиента"),
+    ]
+
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "На проверке"),
+        (STATUS_APPROVED, "Подтверждён"),
+        (STATUS_REJECTED, "Отклонён"),
     ]
 
     organization = models.ForeignKey(
@@ -951,11 +962,21 @@ class AccountableTransaction(models.Model):
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     occurred_on = models.DateField()
     note = models.TextField(blank=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_APPROVED)
     created_by = models.ForeignKey(
         User,
         on_delete=models.PROTECT,
         related_name="created_accountable_transactions",
     )
+    reviewed_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="reviewed_accountable_transactions",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_comment = models.TextField(blank=True)
     is_voided = models.BooleanField(default=False)
     voided_at = models.DateTimeField(null=True, blank=True)
     voided_by = models.ForeignKey(
@@ -973,6 +994,7 @@ class AccountableTransaction(models.Model):
         indexes = [
             models.Index(fields=["organization", "occurred_on"], name="acct_org_date_idx"),
             models.Index(fields=["employee", "occurred_on"], name="acct_user_date_idx"),
+            models.Index(fields=["organization", "status"], name="acct_org_status_idx"),
         ]
 
     def clean(self):
@@ -1052,6 +1074,7 @@ class Expense(models.Model):
     destination_name = models.CharField(max_length=255)
     vendor = models.CharField(max_length=255, blank=True)
     description = models.TextField(blank=True)
+    receipt_missing_confirmed = models.BooleanField(default=False)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
     created_by = models.ForeignKey(
         User,

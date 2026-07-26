@@ -29,6 +29,7 @@
   <form method="post" enctype="multipart/form-data" class="{% if not finance_modal %}card card-soft p-3 p-lg-4{% endif %}" id="finance-expense-form" data-finance-offline-form="{% if expense %}0{% else %}1{% endif %}" data-receipt-required="{% if expense %}0{% else %}1{% endif %}">
     {% csrf_token %}
     {{ form.request_id }}
+    {{ form.receipt_missing_confirmed }}
     {{ form.client_id }}
     {% if form.source.is_hidden %}{{ form.source }}{% endif %}
     {% if form.employee.is_hidden %}{{ form.employee }}{% endif %}
@@ -103,6 +104,24 @@
   </form>
 </div>
 
+<div class="modal fade" id="receiptRequiredModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title h5 mb-0">Прикрепите фото чека</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+      </div>
+      <div class="modal-body">
+        Добавьте фото или PDF чека. Если чека нет, нажмите «Пропустить», и расход уйдёт на проверку с отметкой без чека.
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Вернуться</button>
+        <button type="button" class="btn btn-primary" data-receipt-skip>Пропустить</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 {{ client_options|json_script:"finance-client-data" }}
 <script>
   document.addEventListener("DOMContentLoaded", function () {
@@ -140,14 +159,37 @@
 
     const receipts = document.querySelector("[data-finance-receipts]");
     const preview = document.querySelector("[data-receipt-preview]");
+    const form = document.getElementById("finance-expense-form");
+    const skipReceipt = document.querySelector("[name='receipt_missing_confirmed']");
+    const receiptModalElement = document.getElementById("receiptRequiredModal");
+    const receiptModal = receiptModalElement && typeof bootstrap !== "undefined" ? bootstrap.Modal.getOrCreateInstance(receiptModalElement) : null;
+    const skipButton = document.querySelector("[data-receipt-skip]");
     receipts.addEventListener("change", function () {
       preview.innerHTML = "";
+      if (skipReceipt && receipts.files.length) skipReceipt.value = "";
       Array.from(receipts.files).forEach(function (file) {
         const badge = document.createElement("span");
         badge.className = "badge bg-light text-dark border";
         badge.textContent = file.name;
         preview.appendChild(badge);
       });
+    });
+
+    form.addEventListener("submit", function (event) {
+      if (form.dataset.receiptRequired !== "1") return;
+      if ((skipReceipt && skipReceipt.value === "1") || (receipts && receipts.files.length)) return;
+      event.preventDefault();
+      if (receiptModal) {
+        receiptModal.show();
+      } else {
+        alert("Добавьте фото или PDF чека либо нажмите «Пропустить».");
+      }
+    });
+
+    skipButton?.addEventListener("click", function () {
+      if (skipReceipt) skipReceipt.value = "1";
+      if (receiptModal) receiptModal.hide();
+      form.requestSubmit();
     });
   });
 </script>

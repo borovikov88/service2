@@ -184,12 +184,15 @@
       requestInput.value = newRequestId();
     }
     form.addEventListener("submit", async function (event) {
+      if (event.defaultPrevented) return;
       if (navigator.onLine) return;
       event.preventDefault();
       if (!form.reportValidity()) return;
       const receiptInput = form.querySelector("[data-finance-receipts]");
-      if (form.dataset.receiptRequired === "1" && (!receiptInput || !receiptInput.files.length)) {
-        showStatus("Добавьте фотографию или PDF чека.", "danger");
+      const skipReceipt = form.querySelector("[name='receipt_missing_confirmed']");
+      const receiptSkipped = skipReceipt && skipReceipt.value === "1";
+      if (form.dataset.receiptRequired === "1" && !receiptSkipped && (!receiptInput || !receiptInput.files.length)) {
+        showStatus("Добавьте фотографию/PDF чека или нажмите «Пропустить».", "danger");
         return;
       }
       if (!("indexedDB" in window)) {

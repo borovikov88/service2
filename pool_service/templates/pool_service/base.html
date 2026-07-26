@@ -780,6 +780,39 @@
       transform: translateY(-1px);
     }
 
+    .table tbody tr[data-row-href],
+    .table tbody tr.clickable-row {
+      cursor: pointer;
+      transition: background-color 0.15s ease;
+    }
+    .table tbody tr[data-row-href]:hover > *,
+    .table tbody tr.clickable-row:hover > * {
+      background-color: #f4f8ff;
+    }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      white-space: nowrap;
+    }
+    @media (max-width: 576px) {
+      .status-badge .status-text {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+      .status-badge {
+        min-width: 1.75rem;
+        justify-content: center;
+      }
+    }
+
     .dosing-head,
     .dosing-cell {
       background: #eef5ff !important;
@@ -2013,6 +2046,32 @@
 
     document.addEventListener("DOMContentLoaded", function () {
       applyPhoneMasks();
+    });
+  </script>
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+      const interactiveSelector = "a, button, input, select, textarea, label, summary, details, form";
+      document.querySelectorAll("tr[data-row-href]").forEach((row) => {
+        if (row.dataset.clickableRowReady === "1") return;
+        row.dataset.clickableRowReady = "1";
+        row.addEventListener("click", (event) => {
+          if (event.target.closest(interactiveSelector)) return;
+          window.location.assign(row.dataset.rowHref);
+        });
+      });
+
+      document.querySelectorAll("tbody tr").forEach((row) => {
+        if (row.dataset.clickableRowReady === "1" || row.dataset.rowHref) return;
+        if (row.querySelector("button, input, select, textarea, form, details")) return;
+        const link = row.querySelector("td a[href]");
+        if (!link) return;
+        row.classList.add("clickable-row");
+        row.dataset.clickableRowReady = "1";
+        row.addEventListener("click", (event) => {
+          if (event.target.closest(interactiveSelector)) return;
+          window.location.assign(link.href);
+        });
+      });
     });
   </script>
   <script>

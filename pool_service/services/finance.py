@@ -85,6 +85,17 @@ def can_edit_expense(user, expense):
     return can_access_finance(user, expense.organization) and user.id == expense.employee_id
 
 
+def can_review_accountable_transaction(user, movement):
+    if user.is_superuser:
+        return True
+    roles = organization_roles(user, movement.organization)
+    if not roles & FINANCE_CLOSE_ROLES:
+        return False
+    if roles & {"owner", "admin"}:
+        return True
+    return user.id not in {movement.employee_id, movement.created_by_id}
+
+
 def finance_staff(organization):
     return (
         User.objects.filter(
@@ -99,6 +110,12 @@ def finance_staff(organization):
 
 def user_display_name(user):
     return user.get_full_name().strip() or "Имя не указано"
+
+
+def format_money(value, *, currency=True):
+    amount = Decimal(value or 0)
+    formatted = f"{amount:,.2f}".replace(",", " ").replace(".", ",")
+    return f"{formatted} ₽" if currency else formatted
 
 
 def find_client_by_name(organization, name):
@@ -146,6 +163,7 @@ def transaction_effect(transaction_type, amount):
     if transaction_type in {
         AccountableTransaction.TYPE_ISSUE,
         AccountableTransaction.TYPE_ADJUSTMENT_IN,
+        AccountableTransaction.TYPE_CLIENT_PAYMENT,
     }:
         return amount
     return -amount
@@ -156,6 +174,7 @@ def accountable_balance(organization, employee, through=None):
         organization=organization,
         employee=employee,
         is_voided=False,
+        status=AccountableTransaction.STATUS_APPROVED,
     )
     expenses = Expense.objects.filter(
         organization=organization,
@@ -172,6 +191,8 @@ def accountable_balance(organization, employee, through=None):
     for transaction in transactions.only("transaction_type", "amount"):
         funds += transaction_effect(transaction.transaction_type, transaction.amount)
         if transaction.transaction_type == AccountableTransaction.TYPE_ISSUE:
+            issued += transaction.amount
+        elif transaction.transaction_type == AccountableTransaction.TYPE_CLIENT_PAYMENT:
             issued += transaction.amount
         elif transaction.transaction_type == AccountableTransaction.TYPE_RETURN:
             returned += transaction.amount
@@ -216,6 +237,7 @@ def report_employee_rows(organization, start, end):
             employee=employee,
             occurred_on__range=(start, end),
             is_voided=False,
+            status=AccountableTransaction.STATUS_APPROVED,
         )
         expenses = Expense.objects.filter(
             organization=organization,
@@ -225,6 +247,10 @@ def report_employee_rows(organization, start, end):
         )
         issued = sum(
             (item.amount for item in transactions if item.transaction_type == AccountableTransaction.TYPE_ISSUE),
+            Decimal("0.00"),
+        )
+        client_payments = sum(
+            (item.amount for item in transactions if item.transaction_type == AccountableTransaction.TYPE_CLIENT_PAYMENT),
             Decimal("0.00"),
         )
         returned = sum(
@@ -239,13 +265,23 @@ def report_employee_rows(organization, start, end):
             (item.amount for item in expenses if item.status == Expense.STATUS_PENDING),
             Decimal("0.00"),
         )
-        if not any([opening["operational_balance"], issued, returned, approved, pending, closing["operational_balance"]]):
+        if not any(
+            [
+                opening["operational_balance"],
+                issued,
+                client_payments,
+                returned,
+                approved,
+                pending,
+                closing["operational_balance"],
+            ]
+        ):
             continue
         rows.append(
             {
                 "employee": employee,
                 "opening": opening["operational_balance"],
-                "issued": issued,
+                "issued": issued + client_payments,
                 "returned": returned,
                 "approved": approved,
                 "pending": pending,
@@ -288,8 +324,8 @@ def report_expenses(organization, start, end, filters=None):
 def notify_advance(transaction):
     if transaction.employee_id == transaction.created_by_id:
         return []
-    title = "Выдан подотчёт" if transaction.transaction_type == AccountableTransaction.TYPE_ISSUE else "Возврат подотчёта"
-    message = f"{transaction.get_transaction_type_display()}: {transaction.amount:.2f} ₽"
+    title = "Выдан подотчёт" if transaction.transaction_type == AccountableTransaction.TYPE_ISSUE else transaction.get_transaction_type_display()
+    message = f"{transaction.get_transaction_type_display()}: {format_money(transaction.amount)}"
     return notify_users(
         [transaction.employee],
         title=title,
@@ -315,7 +351,7 @@ def notify_expense_submitted(expense):
     return notify_users(
         finance_reviewers(expense.organization, exclude_user=expense.created_by),
         title="Новый расход на проверке",
-        message=f"{user_display_name(expense.employee)}: {expense.amount:.2f} ₽ — {expense.destination_name}",
+        message=f"{user_display_name(expense.employee)}: {format_money(expense.amount)} — {expense.destination_name}",
         kind="finance",
         action_url=reverse("finance_expense_detail", kwargs={"expense_uuid": expense.uuid}),
         organization=expense.organization,
@@ -326,11 +362,11 @@ def notify_expense_submitted(expense):
 def notify_expense_reviewed(expense):
     if expense.status == Expense.STATUS_APPROVED:
         title = "Расход подтверждён"
-        message = f"Расход {expense.amount:.2f} ₽ подтверждён."
+        message = f"Расход {format_money(expense.amount)} подтверждён."
         level = "info"
     else:
         title = "Расход отклонён"
-        message = expense.review_comment or f"Расход {expense.amount:.2f} ₽ отклонён."
+        message = expense.review_comment or f"Расход {format_money(expense.amount)} отклонён."
         level = "warning"
     recipients = {expense.employee, expense.created_by}
     if expense.reviewed_by in recipients:

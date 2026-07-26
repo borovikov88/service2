@@ -63,6 +63,8 @@ from django.conf import settings
 
 from django.contrib.sitemaps.views import sitemap as sitemap_view
 
+from pool_service.services.finance import format_money
+
 import uuid
 
 from urllib.parse import urlencode
@@ -4094,12 +4096,7 @@ def crm_list(request, direction):
         item.date_display = item.created_at.strftime("%d.%m.%Y") if item.created_at else "-"
         item.amount_display = "-"
         if item.amount is not None:
-            amount = f"{item.amount:,.2f}".replace(",", " ")
-            if amount.endswith(".00"):
-                amount = amount[:-3]
-            else:
-                amount = amount.replace(".", ",")
-            item.amount_display = f"{amount} ₽"
+            item.amount_display = format_money(item.amount)
 
 
 
@@ -4342,12 +4339,7 @@ def crm_view(request, direction, item_id):
     item.stage_label = CRM_STAGE_LABELS.get(item.stage, item.stage)
     item.amount_display = "-"
     if item.amount is not None:
-        amount = f"{item.amount:,.2f}".replace(",", " ")
-        if amount.endswith(".00"):
-            amount = amount[:-3]
-        else:
-            amount = amount.replace(".", ",")
-        item.amount_display = f"{amount} ₽"
+        item.amount_display = format_money(item.amount)
 
     item_photo_urls = []
     for photo in item.photos.all():

@@ -1,16 +1,16 @@
 {% extends "pool_service/base.html" %}
 {% load finance_tags %}
 
-{% block title %}Расход {{ expense.amount|floatformat:2 }} ₽{% endblock %}
+{% block title %}Расход {{ expense.amount|money }}{% endblock %}
 
 {% block content %}
 <div class="d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-4">
   <div>
     <div class="d-flex align-items-center gap-2 mb-1">
-      <h1 class="h3 fw-bold mb-0">{{ expense.amount|floatformat:2 }} ₽</h1>
-      {% if expense.status == "approved" %}<span class="badge bg-success-subtle text-success border">Подтверждён</span>
-      {% elif expense.status == "rejected" %}<span class="badge bg-danger-subtle text-danger border">Отклонён</span>
-      {% else %}<span class="badge bg-warning-subtle text-warning border">На проверке</span>{% endif %}
+      <h1 class="h3 fw-bold mb-0">{{ expense.amount|money }}</h1>
+      {% if expense.status == "approved" %}<span class="badge bg-success-subtle text-success border status-badge" title="Подтверждён"><i class="bi bi-check-circle"></i><span class="status-text">Подтверждён</span></span>
+      {% elif expense.status == "rejected" %}<span class="badge bg-danger-subtle text-danger border status-badge" title="Отклонён"><i class="bi bi-x-circle"></i><span class="status-text">Отклонён</span></span>
+      {% else %}<span class="badge bg-warning-subtle text-warning border status-badge" title="На проверке"><i class="bi bi-hourglass-split"></i><span class="status-text">На проверке</span></span>{% endif %}
     </div>
     <div class="text-muted">{{ expense.spent_on|date:"d.m.Y" }} · {{ expense.destination_name }}</div>
   </div>
@@ -36,6 +36,7 @@
         {% if expense.pool %}<div class="col-12"><div class="text-muted small">Объект</div><div class="fw-semibold">{{ expense.pool.address }}</div></div>{% endif %}
         {% if expense.vendor %}<div class="col-12"><div class="text-muted small">Поставщик</div><div>{{ expense.vendor }}</div></div>{% endif %}
         {% if expense.description %}<div class="col-12"><div class="text-muted small">Описание</div><div>{{ expense.description|linebreaksbr }}</div></div>{% endif %}
+        {% if expense.receipt_missing_confirmed %}<div class="col-12"><span class="badge bg-warning-subtle text-warning border"><i class="bi bi-exclamation-circle me-1"></i>Чек отсутствует</span></div>{% endif %}
       </div>
     </div>
 
@@ -44,7 +45,7 @@
       <div class="row g-3">
         {% for receipt in expense.receipts.all %}
           <div class="col-12 col-sm-6">
-            <a href="{% url 'finance_receipt_download' receipt.id %}" target="_blank" rel="noopener" class="text-decoration-none">
+            <a href="{% url 'finance_receipt_download' receipt.id %}" target="_blank" rel="noopener" class="text-decoration-none" data-receipt-modal data-receipt-name="{{ receipt.original_name }}">
               <div class="border rounded-3 p-3 h-100 d-flex align-items-center gap-3">
                 {% if receipt.content_type == "application/pdf" %}
                   <i class="bi bi-file-earmark-pdf fs-2 text-danger"></i>
@@ -93,4 +94,44 @@
     </div>
   </div>
 </div>
+
+<div class="modal fade" id="receiptViewerModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-xl">
+    <div class="modal-content overflow-hidden">
+      <div class="modal-header">
+        <h2 class="modal-title h5 mb-0" data-receipt-viewer-title>Чек</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+      </div>
+      <div class="modal-body p-0">
+        <iframe src="about:blank" title="Чек" class="d-block w-100 border-0" style="height:min(760px, calc(100vh - 8rem));" data-receipt-viewer-frame></iframe>
+      </div>
+      <div class="modal-footer d-lg-none">
+        <button type="button" class="btn btn-outline-secondary w-100" data-bs-dismiss="modal">Закрыть</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    const modalElement = document.getElementById("receiptViewerModal");
+    const frame = modalElement && modalElement.querySelector("[data-receipt-viewer-frame]");
+    const title = modalElement && modalElement.querySelector("[data-receipt-viewer-title]");
+    if (!modalElement || !frame || !title || typeof bootstrap === "undefined") return;
+    const modal = bootstrap.Modal.getOrCreateInstance(modalElement);
+
+    document.querySelectorAll("[data-receipt-modal]").forEach(function (link) {
+      link.addEventListener("click", function (event) {
+        event.preventDefault();
+        title.textContent = link.dataset.receiptName || "Чек";
+        frame.src = link.href;
+        modal.show();
+      });
+    });
+
+    modalElement.addEventListener("hidden.bs.modal", function () {
+      frame.src = "about:blank";
+    });
+  });
+</script>
 {% endblock %}

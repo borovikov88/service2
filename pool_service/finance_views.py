@@ -16,7 +16,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
-from pool_service.finance_forms import AccountableTransactionForm, ExpenseForm, ExpenseReviewForm
+from pool_service.finance_forms import AccountableTransactionForm, ClientPaymentForm, ExpenseForm, ExpenseReviewForm
 from pool_service.models import (
     AccountableTransaction,
     Client,
@@ -32,6 +32,7 @@ from pool_service.services.finance import (
     can_close_finance_period,
     can_edit_expense,
     can_manage_finance,
+    can_review_accountable_transaction,
     can_review_expense,
     can_view_expense,
     ensure_default_categories,
@@ -235,6 +236,9 @@ def finance_transaction_create(request):
         movement = form.save(commit=False)
         movement.organization = organization
         movement.created_by = request.user
+        movement.status = AccountableTransaction.STATUS_APPROVED
+        movement.reviewed_by = request.user
+        movement.reviewed_at = timezone.now()
         movement.full_clean()
         movement.save()
         notify_advance(movement)
@@ -247,6 +251,68 @@ def finance_transaction_create(request):
     }
     context.update(_finance_modal_context(request))
     return render(request, "pool_service/finance/transaction_form.html", context)
+
+
+@login_required
+def finance_income_create(request):
+    organization, denied = _finance_guard(request)
+    if denied:
+        return denied
+    manage = can_manage_finance(request.user, organization)
+    form = ClientPaymentForm(
+        request.POST or None,
+        organization=organization,
+        user=request.user,
+        can_manage=manage,
+        initial={"occurred_on": date.today()},
+    )
+    if request.method == "POST" and form.is_valid():
+        movement = form.save(commit=False)
+        movement.organization = organization
+        movement.created_by = request.user
+        movement.transaction_type = AccountableTransaction.TYPE_CLIENT_PAYMENT
+        movement.status = AccountableTransaction.STATUS_PENDING
+        movement.full_clean()
+        movement.save()
+        messages.success(request, "Приход денег сохранён и отправлен на подтверждение.")
+        return redirect("finance_dashboard")
+    context = {
+        "form": form,
+        "active_tab": "finance",
+        "show_add_button": False,
+    }
+    context.update(_finance_modal_context(request))
+    return render(request, "pool_service/finance/income_form.html", context)
+
+
+@require_POST
+@login_required
+def finance_transaction_review(request, transaction_id):
+    organization, denied = _finance_guard(request, close=True)
+    if denied:
+        return denied
+    movement = get_object_or_404(AccountableTransaction, id=transaction_id, organization=organization)
+    if movement.transaction_type != AccountableTransaction.TYPE_CLIENT_PAYMENT:
+        return HttpResponseForbidden("Эта операция не требует подтверждения.")
+    if not can_review_accountable_transaction(request.user, movement):
+        return HttpResponseForbidden("Нельзя подтвердить собственный приход.")
+    if movement.status != AccountableTransaction.STATUS_PENDING:
+        messages.error(request, "Эта операция уже рассмотрена.")
+        return redirect("finance_dashboard")
+    if period_is_closed(organization, movement.occurred_on):
+        messages.error(request, "Месяц закрыт.")
+        return redirect("finance_dashboard")
+    decision = request.POST.get("decision")
+    if decision not in {AccountableTransaction.STATUS_APPROVED, AccountableTransaction.STATUS_REJECTED}:
+        messages.error(request, "Выберите решение.")
+        return redirect("finance_dashboard")
+    movement.status = decision
+    movement.reviewed_by = request.user
+    movement.reviewed_at = timezone.now()
+    movement.review_comment = (request.POST.get("review_comment") or "").strip()
+    movement.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_comment"])
+    messages.success(request, "Решение по приходу денег сохранено.")
+    return redirect("finance_dashboard")
 
 
 @require_POST
@@ -329,6 +395,7 @@ def finance_expense_create(request):
         expense.created_by = request.user
         expense.client = client
         expense.pool = None
+        expense.receipt_missing_confirmed = not bool(form.cleaned_data["receipts"])
         if expense.destination_type == Expense.DESTINATION_OFFICE:
             expense.destination_name = "Офисные расходы"
             expense.client = None
@@ -395,6 +462,8 @@ def finance_expense_edit(request, expense_uuid):
         updated = form.save(commit=False)
         updated.client = client
         updated.pool = None
+        if form.cleaned_data["receipts"]:
+            updated.receipt_missing_confirmed = False
         updated.status = Expense.STATUS_PENDING
         updated.reviewed_by = None
         updated.reviewed_at = None

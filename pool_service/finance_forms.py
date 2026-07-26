@@ -102,8 +102,56 @@ class AccountableTransactionForm(forms.ModelForm):
         return occurred_on
 
 
+class ClientPaymentForm(forms.ModelForm):
+    class Meta:
+        model = AccountableTransaction
+        fields = ["employee", "amount", "occurred_on", "note"]
+        labels = {
+            "employee": "Кто получил деньги",
+            "amount": "Сумма, ₽",
+            "occurred_on": "Дата прихода",
+            "note": "Клиент и комментарий",
+        }
+        widgets = {
+            "employee": forms.Select(attrs={"class": "form-select"}),
+            "amount": forms.NumberInput(attrs={"class": "form-control", "min": "0.01", "step": "0.01"}),
+            "occurred_on": forms.DateInput(attrs={"class": "form-control", "type": "date"}, format="%Y-%m-%d"),
+            "note": forms.Textarea(
+                attrs={
+                    "class": "form-control",
+                    "rows": 3,
+                    "placeholder": "Например: клиент Иванов, оплата диагностики",
+                }
+            ),
+        }
+
+    def __init__(self, *args, organization, user, can_manage, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.organization = organization
+        self.current_user = user
+        self.can_manage = can_manage
+        self.fields["employee"].queryset = finance_staff(organization)
+        self.fields["employee"].label_from_instance = user_display_name
+        self.fields["occurred_on"].input_formats = ["%Y-%m-%d"]
+        if not can_manage:
+            self.fields["employee"].widget = forms.HiddenInput()
+            self.fields["employee"].initial = user
+
+    def clean_employee(self):
+        if self.can_manage:
+            return self.cleaned_data["employee"]
+        return self.current_user
+
+    def clean_occurred_on(self):
+        occurred_on = self.cleaned_data["occurred_on"]
+        if period_is_closed(self.organization, occurred_on):
+            raise forms.ValidationError("Этот месяц закрыт. Новые операции запрещены.")
+        return occurred_on
+
+
 class ExpenseForm(forms.ModelForm):
     request_id = forms.UUIDField(widget=forms.HiddenInput)
+    receipt_missing_confirmed = forms.BooleanField(required=False, widget=forms.HiddenInput)
     destination_query = forms.CharField(
         required=False,
         label="Клиент",
@@ -142,6 +190,7 @@ class ExpenseForm(forms.ModelForm):
             "destination_type",
             "vendor",
             "description",
+            "receipt_missing_confirmed",
         ]
         labels = {
             "source": "Источник денег",
@@ -194,8 +243,9 @@ class ExpenseForm(forms.ModelForm):
 
     def clean_receipts(self):
         files = self.cleaned_data.get("receipts") or []
-        if not files and not self.instance.pk:
-            raise forms.ValidationError("Добавьте фотографию или PDF чека.")
+        skip_receipt = self.data.get("receipt_missing_confirmed") in {"1", "true", "True", "on"}
+        if not files and not self.instance.pk and not skip_receipt:
+            raise forms.ValidationError("Добавьте фотографию/PDF чека или нажмите «Пропустить».")
         return validate_receipts(files)
 
     def clean_spent_on(self):

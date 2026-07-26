@@ -21,7 +21,7 @@ from pool_service.models import (
     Organization,
     OrganizationAccess,
 )
-from pool_service.services.finance import accountable_balance, ensure_default_categories
+from pool_service.services.finance import accountable_balance, ensure_default_categories, format_money
 
 
 @override_settings(
@@ -184,6 +184,58 @@ class FinanceTests(TestCase):
         self.assertEqual(expense.status, Expense.STATUS_APPROVED)
         self.assertEqual(close_period.status_code, 302)
         self.assertTrue(ExpensePeriod.objects.get(organization=self.organization).is_closed)
+
+    def test_expense_without_receipt_requires_explicit_skip(self):
+        self.client.force_login(self.service)
+        payload = self.expense_payload()
+        payload.pop("receipts")
+
+        blocked = self.client.post(reverse("finance_expense_create"), payload)
+        payload["receipt_missing_confirmed"] = "1"
+        skipped = self.client.post(reverse("finance_expense_create"), payload)
+
+        self.assertEqual(blocked.status_code, 200)
+        self.assertContains(blocked, "Добавьте фотографию/PDF чека или нажмите")
+        self.assertEqual(skipped.status_code, 302)
+        expense = Expense.objects.get()
+        self.assertTrue(expense.receipt_missing_confirmed)
+        self.assertEqual(expense.receipts.count(), 0)
+
+    def test_client_payment_waits_for_admin_approval_before_balance(self):
+        self.client.force_login(self.service)
+
+        created = self.client.post(
+            reverse("finance_income_create"),
+            {
+                "employee": self.service.id,
+                "amount": "1234564.00",
+                "occurred_on": date.today().isoformat(),
+                "note": "Клиент оплатил сервиснику",
+            },
+        )
+        movement = AccountableTransaction.objects.get(transaction_type=AccountableTransaction.TYPE_CLIENT_PAYMENT)
+        before = accountable_balance(self.organization, self.service)
+
+        self.client.force_login(self.manager)
+        manager_review = self.client.post(
+            reverse("finance_transaction_review", kwargs={"transaction_id": movement.id}),
+            {"decision": AccountableTransaction.STATUS_APPROVED, "review_comment": ""},
+        )
+        self.client.force_login(self.owner)
+        owner_review = self.client.post(
+            reverse("finance_transaction_review", kwargs={"transaction_id": movement.id}),
+            {"decision": AccountableTransaction.STATUS_APPROVED, "review_comment": ""},
+        )
+        movement.refresh_from_db()
+        after = accountable_balance(self.organization, self.service)
+
+        self.assertEqual(created.status_code, 302)
+        self.assertEqual(movement.status, AccountableTransaction.STATUS_APPROVED)
+        self.assertEqual(manager_review.status_code, 403)
+        self.assertEqual(owner_review.status_code, 302)
+        self.assertEqual(before["operational_balance"], 0)
+        self.assertEqual(after["operational_balance"], 1234564)
+        self.assertEqual(format_money(movement.amount), "1 234 564,00 ₽")
 
     def test_accountant_only_user_is_restricted_to_finance(self):
         self.client.force_login(self.accountant)
