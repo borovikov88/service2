@@ -4437,6 +4437,7 @@ def crm_view(request, direction, item_id):
             "crm_edit_url": reverse("crm_edit", kwargs={"direction": direction, "item_id": item.id}),
             "archive_url": reverse("archive_list"),
             "item_photo_urls": item_photo_urls,
+            "item_photo_urls_json": json.dumps(item_photo_urls, ensure_ascii=False),
             "related_tasks": related_tasks,
         },
     )

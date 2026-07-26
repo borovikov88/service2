@@ -76,6 +76,7 @@ class PoolIssueTests(TestCase):
         self.assertContains(detail_response, f'data-row-href="{detail_url}"', html=False)
         self.assertContains(detail_response, "issue-photo-thumb")
         self.assertContains(detail_response, photo_url)
+        self.assertContains(detail_response, "globalPhotoViewerModal")
         self.assertContains(detail_response, 'input.dataset.photoPicker = "1";', html=False)
 
         photo_response = self.client.get(photo_url)

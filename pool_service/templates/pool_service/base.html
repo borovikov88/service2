@@ -1628,6 +1628,114 @@
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js"></script>
   <script src="{% static 'assets/js/finance-offline.js' %}"></script>
+  <style>
+    .global-photo-viewer .modal-dialog {
+      margin: 0;
+      max-width: none;
+    }
+    .global-photo-viewer .modal-content {
+      height: 100vh;
+      border: 0;
+      border-radius: 0;
+      background: #111827;
+      box-shadow: none;
+    }
+    .global-photo-viewer__stage {
+      position: relative;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #111827;
+      touch-action: none;
+      overscroll-behavior: contain;
+    }
+    .global-photo-viewer__image {
+      max-width: 100%;
+      max-height: 100%;
+      width: auto;
+      height: auto;
+      object-fit: contain;
+      transform-origin: center center;
+      user-select: none;
+      -webkit-user-drag: none;
+      touch-action: none;
+      will-change: transform;
+    }
+    .global-photo-viewer__btn {
+      position: absolute;
+      z-index: 2;
+      border: 0;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.45);
+      color: #fff;
+      width: 44px;
+      height: 44px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(6px);
+    }
+    .global-photo-viewer__btn:hover,
+    .global-photo-viewer__btn:focus {
+      background: rgba(15, 23, 42, 0.72);
+      color: #fff;
+    }
+    .global-photo-viewer__close {
+      top: max(12px, env(safe-area-inset-top));
+      right: max(12px, env(safe-area-inset-right));
+    }
+    .global-photo-viewer__prev,
+    .global-photo-viewer__next {
+      top: 50%;
+      transform: translateY(-50%);
+    }
+    .global-photo-viewer__prev {
+      left: max(12px, env(safe-area-inset-left));
+    }
+    .global-photo-viewer__next {
+      right: max(12px, env(safe-area-inset-right));
+    }
+    .global-photo-viewer__counter {
+      position: absolute;
+      z-index: 2;
+      left: 50%;
+      bottom: max(14px, env(safe-area-inset-bottom));
+      transform: translateX(-50%);
+      border-radius: 999px;
+      padding: 0.35rem 0.7rem;
+      background: rgba(15, 23, 42, 0.5);
+      color: #fff;
+      font-size: 0.88rem;
+      backdrop-filter: blur(6px);
+    }
+    @media (max-width: 576px) {
+      .global-photo-viewer__btn {
+        width: 40px;
+        height: 40px;
+      }
+      .global-photo-viewer__prev {
+        left: 8px;
+      }
+      .global-photo-viewer__next {
+        right: 8px;
+      }
+    }
+  </style>
+  <div class="modal fade global-photo-viewer" id="globalPhotoViewerModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-fullscreen">
+      <div class="modal-content">
+        <div class="global-photo-viewer__stage" data-global-photo-stage>
+          <button type="button" class="global-photo-viewer__btn global-photo-viewer__close" data-bs-dismiss="modal" aria-label="Закрыть"><i class="bi bi-x-lg"></i></button>
+          <button type="button" class="global-photo-viewer__btn global-photo-viewer__prev" data-global-photo-prev aria-label="Предыдущее фото"><i class="bi bi-chevron-left"></i></button>
+          <img src="" alt="Фото" class="global-photo-viewer__image" data-global-photo-image>
+          <button type="button" class="global-photo-viewer__btn global-photo-viewer__next" data-global-photo-next aria-label="Следующее фото"><i class="bi bi-chevron-right"></i></button>
+          <div class="global-photo-viewer__counter" data-global-photo-counter></div>
+        </div>
+      </div>
+    </div>
+  </div>
   <script>
     (function () {
       const pickerState = new WeakMap();
@@ -1925,6 +2033,252 @@
 
       window.RovikPhotoPicker = { init, open: openSheet, openNative: openNativePicker };
       document.addEventListener("DOMContentLoaded", () => init(document));
+    })();
+  </script>
+  <script>
+    (function () {
+      const modalElement = document.getElementById("globalPhotoViewerModal");
+      if (!modalElement) return;
+      const stage = modalElement.querySelector("[data-global-photo-stage]");
+      const image = modalElement.querySelector("[data-global-photo-image]");
+      const prevButton = modalElement.querySelector("[data-global-photo-prev]");
+      const nextButton = modalElement.querySelector("[data-global-photo-next]");
+      const counter = modalElement.querySelector("[data-global-photo-counter]");
+      if (!stage || !image || !prevButton || !nextButton || !counter) return;
+
+      const modal = typeof bootstrap !== "undefined" ? bootstrap.Modal.getOrCreateInstance(modalElement) : null;
+      const viewportMeta = document.querySelector("meta[name='viewport']");
+      const originalViewport = viewportMeta ? viewportMeta.getAttribute("content") : "";
+      let urls = [];
+      let index = 0;
+      let zoom = 1;
+      let panX = 0;
+      let panY = 0;
+      let lastTouchDistance = 0;
+      let lastTouchCenter = null;
+      let lastPointer = null;
+      let pointerId = null;
+      let suppressClick = false;
+
+      function lockViewportZoom() {
+        if (viewportMeta) {
+          viewportMeta.setAttribute("content", "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no");
+        }
+      }
+
+      function unlockViewportZoom() {
+        if (viewportMeta) {
+          viewportMeta.setAttribute("content", originalViewport || "width=device-width, initial-scale=1");
+        }
+      }
+
+      function resetZoom() {
+        zoom = 1;
+        panX = 0;
+        panY = 0;
+        applyTransform();
+      }
+
+      function applyTransform() {
+        if (zoom <= 1) {
+          zoom = 1;
+          panX = 0;
+          panY = 0;
+        }
+        image.style.transform = `translate(${Math.round(panX)}px, ${Math.round(panY)}px) scale(${zoom})`;
+        image.style.cursor = zoom > 1 ? "grab" : "zoom-in";
+      }
+
+      function setZoom(value) {
+        zoom = Math.min(5, Math.max(1, value));
+        applyTransform();
+      }
+
+      function distanceBetween(touches) {
+        const first = touches[0];
+        const second = touches[1];
+        return Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY);
+      }
+
+      function centerBetween(touches) {
+        const first = touches[0];
+        const second = touches[1];
+        return {
+          x: (first.clientX + second.clientX) / 2,
+          y: (first.clientY + second.clientY) / 2,
+        };
+      }
+
+      function render() {
+        if (!urls.length) return;
+        image.src = urls[index];
+        resetZoom();
+        const hasMany = urls.length > 1;
+        prevButton.classList.toggle("d-none", !hasMany);
+        nextButton.classList.toggle("d-none", !hasMany);
+        counter.classList.toggle("d-none", !hasMany);
+        counter.textContent = `${index + 1} / ${urls.length}`;
+      }
+
+      function openGallery(nextUrls, startIndex) {
+        if (!modal || !nextUrls || !nextUrls.length) return;
+        urls = nextUrls.filter(Boolean);
+        if (!urls.length) return;
+        index = Math.min(Math.max(Number(startIndex) || 0, 0), urls.length - 1);
+        render();
+        modal.show();
+      }
+
+      function changeImage(delta) {
+        if (urls.length <= 1) return;
+        index = (index + delta + urls.length) % urls.length;
+        render();
+      }
+
+      function urlsFromContainer(container) {
+        if (!container) return [];
+        try {
+          return JSON.parse(container.dataset.photos || "[]");
+        } catch (error) {
+          return [];
+        }
+      }
+
+      function imageReceiptLinks() {
+        return Array.from(document.querySelectorAll("[data-receipt-modal][data-receipt-kind='image']"));
+      }
+
+      document.addEventListener("click", (event) => {
+        const issueButton = event.target.closest(".issue-photo-thumb");
+        if (issueButton) {
+          const container = issueButton.closest(".issue-photo-thumbs");
+          const galleryUrls = urlsFromContainer(container);
+          if (galleryUrls.length) {
+            event.preventDefault();
+            event.stopPropagation();
+            openGallery(galleryUrls, Number(issueButton.dataset.index || 0));
+          }
+          return;
+        }
+
+        const receiptLink = event.target.closest("[data-receipt-modal][data-receipt-kind='image']");
+        if (receiptLink) {
+          const links = imageReceiptLinks();
+          event.preventDefault();
+          event.stopPropagation();
+          openGallery(links.map((link) => link.href), links.indexOf(receiptLink));
+          return;
+        }
+
+        const photoLink = event.target.closest("[data-photo-viewer]");
+        if (photoLink) {
+          const container = photoLink.closest("[data-photo-gallery]");
+          const galleryUrls = urlsFromContainer(container);
+          event.preventDefault();
+          event.stopPropagation();
+          openGallery(galleryUrls.length ? galleryUrls : [photoLink.href], Number(photoLink.dataset.index || 0));
+        }
+      }, true);
+
+      prevButton.addEventListener("click", () => changeImage(-1));
+      nextButton.addEventListener("click", () => changeImage(1));
+      image.addEventListener("click", () => {
+        if (suppressClick) {
+          suppressClick = false;
+          return;
+        }
+        setZoom(zoom > 1 ? 1 : 2);
+      });
+      stage.addEventListener("wheel", (event) => {
+        if (!event.ctrlKey && Math.abs(event.deltaY) < 40) return;
+        event.preventDefault();
+        setZoom(zoom + (event.deltaY < 0 ? 0.25 : -0.25));
+      }, { passive: false });
+      ["gesturestart", "gesturechange", "gestureend"].forEach((eventName) => {
+        stage.addEventListener(eventName, (event) => event.preventDefault(), { passive: false });
+        modalElement.addEventListener(eventName, (event) => event.preventDefault(), { passive: false });
+      });
+      stage.addEventListener("touchstart", (event) => {
+        if (event.touches.length >= 2) {
+          const touches = Array.from(event.touches).slice(0, 2);
+          lastTouchDistance = distanceBetween(touches);
+          lastTouchCenter = centerBetween(touches);
+        } else if (event.touches.length === 1) {
+          const touch = event.touches[0];
+          lastTouchDistance = 0;
+          lastTouchCenter = { x: touch.clientX, y: touch.clientY };
+        }
+      }, { passive: false });
+      stage.addEventListener("touchmove", (event) => {
+        if (!event.touches.length) return;
+        event.preventDefault();
+        suppressClick = true;
+        if (event.touches.length >= 2) {
+          const touches = Array.from(event.touches).slice(0, 2);
+          const distance = distanceBetween(touches);
+          const center = centerBetween(touches);
+          if (lastTouchDistance) {
+            zoom = Math.min(5, Math.max(1, zoom * (distance / lastTouchDistance)));
+            if (lastTouchCenter && zoom > 1) {
+              panX += center.x - lastTouchCenter.x;
+              panY += center.y - lastTouchCenter.y;
+            }
+            applyTransform();
+          }
+          lastTouchDistance = distance;
+          lastTouchCenter = center;
+          return;
+        }
+        if (zoom <= 1) return;
+        const touch = event.touches[0];
+        if (lastTouchCenter) {
+          panX += touch.clientX - lastTouchCenter.x;
+          panY += touch.clientY - lastTouchCenter.y;
+          applyTransform();
+        }
+        lastTouchCenter = { x: touch.clientX, y: touch.clientY };
+      }, { passive: false });
+      stage.addEventListener("touchend", () => {
+        lastTouchDistance = 0;
+        lastTouchCenter = null;
+      }, { passive: false });
+      stage.addEventListener("pointerdown", (event) => {
+        if (event.pointerType === "touch" || zoom <= 1) return;
+        pointerId = event.pointerId;
+        lastPointer = { x: event.clientX, y: event.clientY };
+        stage.setPointerCapture?.(event.pointerId);
+        image.style.cursor = "grabbing";
+        event.preventDefault();
+      });
+      stage.addEventListener("pointermove", (event) => {
+        if (event.pointerType === "touch" || zoom <= 1 || pointerId !== event.pointerId || !lastPointer) return;
+        suppressClick = true;
+        panX += event.clientX - lastPointer.x;
+        panY += event.clientY - lastPointer.y;
+        lastPointer = { x: event.clientX, y: event.clientY };
+        applyTransform();
+        event.preventDefault();
+      });
+      ["pointerup", "pointercancel", "pointerleave"].forEach((eventName) => {
+        stage.addEventListener(eventName, () => {
+          pointerId = null;
+          lastPointer = null;
+          image.style.cursor = zoom > 1 ? "grab" : "zoom-in";
+        });
+      });
+      document.addEventListener("keydown", (event) => {
+        if (!modalElement.classList.contains("show")) return;
+        if (event.key === "ArrowLeft") changeImage(-1);
+        if (event.key === "ArrowRight") changeImage(1);
+      });
+      modalElement.addEventListener("shown.bs.modal", lockViewportZoom);
+      modalElement.addEventListener("hidden.bs.modal", () => {
+        image.src = "";
+        urls = [];
+        index = 0;
+        resetZoom();
+        unlockViewportZoom();
+      });
     })();
   </script>
   <script>
