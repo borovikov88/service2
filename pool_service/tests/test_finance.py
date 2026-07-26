@@ -590,7 +590,9 @@ class FinanceTests(TestCase):
         self.assertContains(response, 'expense-employee-cell__last')
         self.assertContains(response, 'expense-purpose-cell__main')
         self.assertContains(response, 'data-expense-checkbox')
-        self.assertContains(response, 'expense-state-icon')
+        self.assertContains(response, 'expense-inline-icon')
+        self.assertContains(response, 'expense-status-icon')
+        self.assertContains(response, 'value="pending"')
         self.assertContains(response, reverse("finance_expense_bulk_review"))
         self.assertEqual(response.context["approved_total"], 3000)
         self.assertEqual(response.context["office_total"], 500)
@@ -621,6 +623,20 @@ class FinanceTests(TestCase):
         expense.refresh_from_db()
         self.assertEqual(expense.status, Expense.STATUS_APPROVED)
         self.assertEqual(expense.review_comment, "bulk ok")
+
+        response = self.client.post(
+            reverse("finance_expense_bulk_review"),
+            {
+                "expense_ids": [str(expense.uuid)],
+                "decision": Expense.STATUS_PENDING,
+                "review_comment": "back to review",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        expense.refresh_from_db()
+        self.assertEqual(expense.status, Expense.STATUS_PENDING)
+        self.assertIsNone(expense.reviewed_by)
 
     def test_closed_month_blocks_new_expenses(self):
         self.client.force_login(self.owner)

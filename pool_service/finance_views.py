@@ -845,29 +845,41 @@ def finance_expense_bulk_review(request):
     organization, denied = _finance_guard(request, manage=True)
     if denied:
         return denied
-    form = ExpenseReviewForm(request.POST)
     expense_ids = [value for value in request.POST.getlist("expense_ids") if value]
-    if not form.is_valid() or not expense_ids:
+    decision = request.POST.get("decision", "").strip()
+    if decision not in {Expense.STATUS_PENDING, Expense.STATUS_APPROVED, Expense.STATUS_REJECTED} or not expense_ids:
         messages.error(request, "Выберите расходы и решение.")
         return redirect(request.META.get("HTTP_REFERER") or reverse("finance_report"))
-
-    decision = form.cleaned_data["decision"]
-    review_comment = (form.cleaned_data["review_comment"] or "").strip()
+    review_comment = (request.POST.get("review_comment") or "").strip()
+    if decision == Expense.STATUS_REJECTED and not review_comment:
+        messages.error(request, "Для отклонения укажите причину.")
+        return redirect(request.META.get("HTTP_REFERER") or reverse("finance_report"))
     expenses = list(
         Expense.objects.select_related("organization", "employee", "created_by")
-        .filter(organization=organization, uuid__in=expense_ids, status=Expense.STATUS_PENDING)
+        .filter(organization=organization, uuid__in=expense_ids)
     )
     reviewed_count = 0
     with transaction.atomic():
         for expense in expenses:
+            if expense.status == decision:
+                continue
             if not can_review_expense(request.user, expense) or period_is_closed(expense.organization, expense.spent_on):
                 continue
             expense.status = decision
             expense.review_comment = review_comment
-            expense.reviewed_by = request.user
-            expense.reviewed_at = timezone.now()
+            if decision == Expense.STATUS_PENDING:
+                expense.reviewed_by = None
+                expense.reviewed_at = None
+            else:
+                expense.reviewed_by = request.user
+                expense.reviewed_at = timezone.now()
             expense.save(update_fields=["status", "review_comment", "reviewed_by", "reviewed_at", "updated_at"])
-            action = ExpenseChange.ACTION_APPROVED if decision == Expense.STATUS_APPROVED else ExpenseChange.ACTION_REJECTED
+            if decision == Expense.STATUS_APPROVED:
+                action = ExpenseChange.ACTION_APPROVED
+            elif decision == Expense.STATUS_REJECTED:
+                action = ExpenseChange.ACTION_REJECTED
+            else:
+                action = ExpenseChange.ACTION_UPDATED
             ExpenseChange.objects.create(
                 expense=expense,
                 actor=request.user,
@@ -875,7 +887,8 @@ def finance_expense_bulk_review(request):
                 note=review_comment,
             )
             reviewed_count += 1
-            notify_expense_reviewed(expense)
+            if decision != Expense.STATUS_PENDING:
+                notify_expense_reviewed(expense)
 
     if reviewed_count:
         messages.success(request, f"Обработано расходов: {reviewed_count}.")

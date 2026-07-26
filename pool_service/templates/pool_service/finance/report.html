@@ -71,6 +71,7 @@
       {% csrf_token %}
       <span class="badge bg-primary-subtle text-primary border" data-expense-bulk-count>0 выбрано</span>
       <input type="text" name="review_comment" class="form-control form-control-sm expense-bulk-comment" placeholder="Комментарий">
+      <button type="submit" name="decision" value="pending" class="btn btn-outline-warning btn-sm">На проверке</button>
       <button type="submit" name="decision" value="approved" class="btn btn-success btn-sm">Подтвердить</button>
       <button type="submit" name="decision" value="rejected" class="btn btn-outline-danger btn-sm">Отклонить</button>
     </form>
@@ -82,9 +83,7 @@
         {% for expense in expenses %}
           <tr data-row-href="{% url 'finance_expense_detail' expense.uuid %}" data-expense-bulk-row>
             <td class="expense-select-cell">
-              {% if expense.status == "pending" %}
-                <input type="checkbox" name="expense_ids" value="{{ expense.uuid }}" class="form-check-input expense-bulk-checkbox" form="expense-bulk-hidden-form" data-expense-checkbox>
-              {% endif %}
+              <input type="checkbox" name="expense_ids" value="{{ expense.uuid }}" class="form-check-input expense-bulk-checkbox" form="expense-bulk-hidden-form" data-expense-checkbox>
             </td>
             <td class="date-cell"><a href="{% url 'finance_expense_detail' expense.uuid %}" class="text-decoration-none"><span>{{ expense.spent_on|date:"d.m" }}</span><span class="date-cell__year">{{ expense.spent_on|date:"Y" }}</span></a></td>
             <td class="expense-employee-cell">
@@ -102,8 +101,8 @@
               <div class="expense-purpose-cell__main">{% if expense.description %}{{ expense.description }}{% elif expense.vendor %}{{ expense.vendor }}{% else %}—{% endif %}</div>
               <div class="expense-purpose-cell__sub small text-muted">{{ expense.destination_name }}</div>
             </td>
-            <td>{% if expense.receipts.all %}<span class="expense-state-icon expense-state-icon--success" title="Чек приложен"><i class="bi bi-check-circle"></i></span>{% elif expense.receipt_missing_confirmed %}<span class="expense-state-icon expense-state-icon--warning" title="Чек отсутствует"><i class="bi bi-exclamation-circle"></i></span>{% else %}<span class="expense-state-icon expense-state-icon--danger" title="Нет чека"><i class="bi bi-x-circle"></i></span>{% endif %}</td>
-            <td>{% if expense.status == "approved" %}<span class="expense-state-icon expense-state-icon--success" title="Подтверждён"><i class="bi bi-check-circle"></i></span>{% elif expense.status == "rejected" %}<span class="expense-state-icon expense-state-icon--danger" title="Отклонён"><i class="bi bi-x-circle"></i></span>{% else %}<span class="expense-state-icon expense-state-icon--warning" title="На проверке"><i class="bi bi-hourglass-split"></i></span>{% endif %}</td>
+            <td>{% if expense.receipts.all %}<span class="expense-inline-icon text-success" title="Чек приложен"><i class="bi bi-check-circle"></i></span>{% elif expense.receipt_missing_confirmed %}<span class="expense-inline-icon text-warning" title="Чек отсутствует"><i class="bi bi-exclamation-circle"></i></span>{% else %}<span class="expense-inline-icon text-danger" title="Нет чека"><i class="bi bi-x-circle"></i></span>{% endif %}</td>
+            <td>{% if expense.status == "approved" %}<button type="button" class="expense-inline-icon expense-status-icon text-success" data-bs-toggle="tooltip" data-bs-trigger="manual" data-bs-title="Подтверждён" aria-label="Подтверждён"><i class="bi bi-check-circle"></i></button>{% elif expense.status == "rejected" %}<button type="button" class="expense-inline-icon expense-status-icon text-danger" data-bs-toggle="tooltip" data-bs-trigger="manual" data-bs-title="Отклонён" aria-label="Отклонён"><i class="bi bi-x-circle"></i></button>{% else %}<button type="button" class="expense-inline-icon expense-status-icon text-warning" data-bs-toggle="tooltip" data-bs-trigger="manual" data-bs-title="На проверке" aria-label="На проверке"><i class="bi bi-hourglass-split"></i></button>{% endif %}</td>
             <td class="text-end fw-semibold">{{ expense.amount|money }}</td>
           </tr>
         {% empty %}<tr><td colspan="7" class="text-center text-muted py-4">Расходов за период нет</td></tr>{% endfor %}
@@ -206,6 +205,17 @@
       comment.value = toolbar.querySelector("[name='review_comment']")?.value || "";
       hiddenForm.appendChild(comment);
       hiddenForm.submit();
+    });
+
+    root.querySelectorAll(".expense-status-icon").forEach((button) => {
+      if (typeof bootstrap === "undefined") return;
+      const tooltip = bootstrap.Tooltip.getOrCreateInstance(button, { trigger: "manual", placement: "top" });
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        tooltip.show();
+        window.setTimeout(() => tooltip.hide(), 1600);
+      });
     });
 
     syncToolbar();

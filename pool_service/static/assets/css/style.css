@@ -12120,32 +12120,22 @@ textarea.form-control-lg {
     width: min(260px, 100%);
 }
 
-.expense-state-icon {
+.expense-inline-icon {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 30px;
-    height: 30px;
-    border: 1px solid currentColor;
-    border-radius: 10px;
+    width: 22px;
+    height: 22px;
+    border: 0;
+    padding: 0;
+    background: transparent;
     font-size: 1rem;
     line-height: 1;
-    background: #fff;
+    vertical-align: middle;
 }
 
-.expense-state-icon--success {
-    color: #198754;
-    background: rgba(25, 135, 84, 0.08);
-}
-
-.expense-state-icon--warning {
-    color: #f0ad00;
-    background: rgba(255, 193, 7, 0.12);
-}
-
-.expense-state-icon--danger {
-    color: #dc3545;
-    background: rgba(220, 53, 69, 0.08);
+.expense-status-icon {
+    cursor: pointer;
 }
 
 @media (min-width: 992px) {
