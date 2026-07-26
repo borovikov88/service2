@@ -14,6 +14,7 @@ from django.http import FileResponse, HttpResponse, HttpResponseForbidden, JsonR
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.views.decorators.clickjacking import xframe_options_sameorigin
 from django.views.decorators.http import require_POST
 
 from pool_service.finance_forms import AccountableTransactionForm, ClientPaymentForm, ExpenseForm, ExpenseReviewForm
@@ -162,6 +163,7 @@ def _client_options(organization):
 
 
 @login_required
+@xframe_options_sameorigin
 def finance_dashboard(request):
     organization, denied = _finance_guard(request)
     if denied:
@@ -223,6 +225,7 @@ def finance_dashboard(request):
 
 
 @login_required
+@xframe_options_sameorigin
 def finance_transaction_create(request):
     organization, denied = _finance_guard(request, manage=True)
     if denied:
@@ -254,6 +257,7 @@ def finance_transaction_create(request):
 
 
 @login_required
+@xframe_options_sameorigin
 def finance_income_create(request):
     organization, denied = _finance_guard(request)
     if denied:
@@ -353,6 +357,7 @@ def _expense_form_response(request, organization, form, expense=None):
 
 
 @login_required
+@xframe_options_sameorigin
 def finance_expense_create(request):
     organization, denied = _finance_guard(request)
     if denied:
@@ -428,6 +433,7 @@ def finance_expense_create(request):
 
 
 @login_required
+@xframe_options_sameorigin
 def finance_expense_edit(request, expense_uuid):
     expense = _expense_for_user(request, expense_uuid)
     if not expense:
@@ -488,6 +494,7 @@ def finance_expense_edit(request, expense_uuid):
 
 
 @login_required
+@xframe_options_sameorigin
 def finance_expense_detail(request, expense_uuid):
     expense = _expense_for_user(request, expense_uuid)
     if not expense:
@@ -542,6 +549,7 @@ def finance_expense_review(request, expense_uuid):
 
 
 @login_required
+@xframe_options_sameorigin
 def finance_receipt_download(request, receipt_id):
     receipt = get_object_or_404(
         ExpenseReceipt.objects.select_related("expense__organization", "expense__employee", "expense__created_by"),

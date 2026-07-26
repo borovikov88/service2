@@ -128,15 +128,18 @@ class FinanceTests(TestCase):
 
         dashboard = self.client.get(reverse("finance_dashboard"))
         transaction = self.client.get(reverse("finance_transaction_create"), {"modal": "1"})
+        income = self.client.get(reverse("finance_income_create"), {"modal": "1"})
         expense = self.client.get(reverse("finance_expense_create"), {"modal": "1"})
 
         self.assertContains(dashboard, 'id="financeFormModal"')
         self.assertContains(dashboard, 'class="btn btn-primary" data-finance-modal', count=1)
         self.assertContains(dashboard, 'class="btn btn-outline-primary" data-finance-modal', count=1)
-        for response in (transaction, expense):
+        self.assertContains(dashboard, 'class="btn btn-outline-success" data-finance-modal', count=1)
+        for response in (transaction, income, expense):
             self.assertTrue(response.context["finance_modal"])
             self.assertTrue(response.context["hide_header"])
             self.assertTrue(response.context["hide_bottom_nav"])
+            self.assertEqual(response.headers["X-Frame-Options"], "SAMEORIGIN")
 
     def test_new_expense_does_not_offer_client_object(self):
         self.client.force_login(self.manager)
@@ -235,7 +238,7 @@ class FinanceTests(TestCase):
         self.assertEqual(owner_review.status_code, 302)
         self.assertEqual(before["operational_balance"], 0)
         self.assertEqual(after["operational_balance"], 1234564)
-        self.assertEqual(format_money(movement.amount), "1 234 564,00 ₽")
+        self.assertEqual(format_money(movement.amount), "1\u00a0234\u00a0564,00\u00a0₽")
 
     def test_accountant_only_user_is_restricted_to_finance(self):
         self.client.force_login(self.accountant)
@@ -378,6 +381,7 @@ class FinanceTests(TestCase):
         response = self.client.get(reverse("finance_receipt_download", kwargs={"receipt_id": receipt.id}))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Cache-Control"], "private, no-store")
+        self.assertEqual(response.headers["X-Frame-Options"], "SAMEORIGIN")
 
     def test_invalid_receipt_is_rejected(self):
         invalid_file = SimpleUploadedFile("receipt.jpg", b"not-an-image", content_type="image/jpeg")

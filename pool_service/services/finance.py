@@ -114,8 +114,8 @@ def user_display_name(user):
 
 def format_money(value, *, currency=True):
     amount = Decimal(value or 0)
-    formatted = f"{amount:,.2f}".replace(",", " ").replace(".", ",")
-    return f"{formatted} ₽" if currency else formatted
+    formatted = f"{amount:,.2f}".replace(",", "\u00a0").replace(".", ",")
+    return f"{formatted}\u00a0₽" if currency else formatted
 
 
 def find_client_by_name(organization, name):
