@@ -586,6 +586,7 @@ class FinanceTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'data-expense-bulk-root')
+        self.assertContains(response, 'data-expense-bulk-clear')
         self.assertContains(response, 'class="date-cell"')
         self.assertContains(response, 'expense-employee-cell__last')
         self.assertContains(response, 'expense-purpose-cell__main')

@@ -74,6 +74,7 @@
       <button type="submit" name="decision" value="pending" class="btn btn-outline-warning btn-sm">На проверке</button>
       <button type="submit" name="decision" value="approved" class="btn btn-success btn-sm">Подтвердить</button>
       <button type="submit" name="decision" value="rejected" class="btn btn-outline-danger btn-sm">Отклонить</button>
+      <button type="button" class="btn btn-outline-secondary btn-sm" data-expense-bulk-clear>Отменить выделение</button>
     </form>
   </div>
   <div class="table-responsive">
@@ -117,6 +118,7 @@
     if (!root) return;
     const toolbar = root.querySelector("[data-expense-bulk-toolbar]");
     const count = root.querySelector("[data-expense-bulk-count]");
+    const clearSelectionButton = root.querySelector("[data-expense-bulk-clear]");
     const checkboxes = Array.from(root.querySelectorAll("[data-expense-checkbox]"));
     const hiddenForm = document.getElementById("expense-bulk-hidden-form");
     let selectionMode = false;
@@ -152,6 +154,14 @@
       longPressTimer = null;
     }
 
+    function clearSelection() {
+      selectionMode = false;
+      checkboxes.forEach((checkbox) => {
+        checkbox.checked = false;
+      });
+      syncToolbar();
+    }
+
     root.querySelectorAll("[data-expense-bulk-row]").forEach((row) => {
       const checkbox = row.querySelector("[data-expense-checkbox]");
       const startLongPress = (event) => {
@@ -160,22 +170,14 @@
         longPressTimer = window.setTimeout(() => enableSelection(checkbox), 550);
       };
       row.addEventListener("pointerdown", startLongPress);
-      row.addEventListener("touchstart", (event) => {
-        if (!checkbox || event.target.closest("a, button, input, select, textarea")) return;
-        event.preventDefault();
-        startLongPress(event);
-      }, { passive: false });
       row.addEventListener("pointermove", clearTimer);
       row.addEventListener("pointerup", clearTimer);
       row.addEventListener("pointercancel", clearTimer);
-      row.addEventListener("touchmove", clearTimer, { passive: true });
-      row.addEventListener("touchend", clearTimer, { passive: true });
-      row.addEventListener("touchcancel", clearTimer, { passive: true });
       row.addEventListener("click", (event) => {
         if (!selectionMode) return;
+        if (!checkbox || event.target.closest("input, button, select, textarea")) return;
         event.preventDefault();
         event.stopImmediatePropagation();
-        if (!checkbox || event.target.closest("input, button, select, textarea")) return;
         checkbox.checked = !checkbox.checked;
         syncToolbar();
       });
@@ -206,6 +208,8 @@
       hiddenForm.appendChild(comment);
       hiddenForm.submit();
     });
+
+    clearSelectionButton?.addEventListener("click", clearSelection);
 
     root.querySelectorAll(".expense-status-icon").forEach((button) => {
       if (typeof bootstrap === "undefined") return;

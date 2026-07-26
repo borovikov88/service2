@@ -12072,6 +12072,7 @@ textarea.form-control-lg {
     -webkit-touch-callout: none;
     -webkit-user-select: none;
     user-select: none;
+    touch-action: pan-x pan-y;
 }
 
 .expense-select-cell {
