@@ -361,6 +361,21 @@ class FinanceTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.context["finance_only_user"])
 
+    def test_authenticated_home_redirects_by_role(self):
+        cases = [
+            (self.service, reverse("readings_all")),
+            (self.installer, reverse("finance_dashboard")),
+            (self.manager, reverse("finance_dashboard")),
+            (self.accountant, reverse("finance_dashboard")),
+        ]
+
+        for user, expected_url in cases:
+            with self.subTest(user=user.username):
+                self.client.force_login(user)
+                response = self.client.get(reverse("home"))
+                self.assertRedirects(response, expected_url, fetch_redirect_response=False)
+                self.client.logout()
+
     def test_issue_expense_and_approval_update_balance_without_double_counting(self):
         self.client.force_login(self.manager)
         response = self.client.post(

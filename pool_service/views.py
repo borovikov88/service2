@@ -518,6 +518,18 @@ def _crm_user_roles(user):
     return set(OrganizationAccess.objects.filter(user=user).values_list("role", flat=True))
 
 
+def _default_authenticated_url(user):
+    personal_url = _personal_pool_redirect(user)
+    if personal_url:
+        return personal_url
+    roles = _crm_user_roles(user)
+    if "service" in roles:
+        return reverse("readings_all")
+    if roles & {"owner", "admin", "manager", "installer", "accountant"}:
+        return reverse("finance_dashboard")
+    return reverse("pool_list")
+
+
 def _crm_is_service_only(user):
     roles = _crm_user_roles(user)
     if "superuser" in roles:
@@ -956,9 +968,7 @@ def index(request):
 
     if request.user.is_authenticated:
 
-        redirect_url = _personal_pool_redirect(request.user) or reverse("pool_list")
-
-        return redirect(redirect_url)
+        return redirect(_default_authenticated_url(request.user))
 
     return render(request, "pool_service/index.html")
 
@@ -5393,7 +5403,7 @@ def home(request):
 
     if request.user.is_authenticated:
 
-        return redirect("pool_list")
+        return redirect(_default_authenticated_url(request.user))
 
 
 
@@ -5415,9 +5425,7 @@ def home(request):
 
             )
 
-            redirect_url = _personal_pool_redirect(user) or reverse("pool_list")
-
-            return redirect(redirect_url)
+            return redirect(_default_authenticated_url(user))
 
         messages.error(
 
@@ -9115,7 +9123,7 @@ class CustomLoginView(LoginView):
 
     template_name = "registration/login.html"
 
-    success_url = reverse_lazy("pool_list")
+    success_url = reverse_lazy("finance_dashboard")
 
     extra_context = {"hide_header": True}
 
@@ -9132,14 +9140,7 @@ class CustomLoginView(LoginView):
 
 
     def get_success_url(self):
-
-        personal_url = _personal_pool_redirect(self.request.user)
-
-        if personal_url:
-
-            return personal_url
-
-        return super().get_success_url()
+        return _default_authenticated_url(self.request.user)
 
 
 

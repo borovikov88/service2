@@ -119,6 +119,7 @@
       object-fit: contain;
       display: block;
       flex: 0 0 auto;
+      mix-blend-mode: multiply;
     }
 
     .app-logo--compact {
@@ -650,19 +651,23 @@
 
     .mobile-bottom-nav {
       position: fixed;
-      left: 12px;
-      right: 12px;
-      bottom: 12px;
+      left: 50%;
+      right: auto;
+      bottom: max(10px, env(safe-area-inset-bottom));
+      width: min(420px, calc(100vw - 20px));
+      max-width: calc(100vw - 20px);
+      transform: translateX(-50%);
       display: flex;
       justify-content: space-around;
       align-items: center;
       background: var(--bottom-nav-bg);
       border: 1px solid rgba(15, 23, 42, 0.08);
       border-radius: 22px;
-      padding: 6px 8px;
+      padding: 6px 8px calc(6px + env(safe-area-inset-bottom) * 0.35);
       box-shadow: 0 12px 26px rgba(15, 23, 42, 0.14);
       backdrop-filter: blur(12px);
-      z-index: 900;
+      z-index: 1045;
+      box-sizing: border-box;
     }
 
     .mobile-bottom-nav .bottom-item {
@@ -674,10 +679,18 @@
       align-items: center;
       gap: 4px;
       flex: 1;
+      min-width: 0;
+      white-space: nowrap;
     }
 
     .mobile-bottom-nav .bottom-item .bottom-icon {
       font-size: 18px;
+    }
+
+    .mobile-bottom-nav .bottom-item span {
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .mobile-bottom-nav .bottom-item.active {
@@ -688,6 +701,31 @@
     @media (min-width: 992px) {
       .mobile-bottom-nav {
         display: none;
+      }
+    }
+
+    @media (max-width: 991px) {
+      html,
+      body {
+        overflow-x: hidden;
+      }
+      .page-shell {
+        overflow-x: hidden;
+      }
+    }
+
+    @media (max-width: 576px) {
+      .mobile-bottom-nav {
+        border-radius: 20px;
+        padding-left: 6px;
+        padding-right: 6px;
+      }
+      .mobile-bottom-nav .bottom-item {
+        font-size: 11px;
+        gap: 3px;
+      }
+      .mobile-bottom-nav .bottom-item .bottom-icon {
+        font-size: 17px;
       }
     }
 
@@ -1203,11 +1241,11 @@
   <header class="app-header py-2" {% if hide_header %}style="display:none"{% endif %}>
     <div class="container">
       <div class="app-header__row d-flex flex-wrap justify-content-between align-items-center gap-3">
-        <a href="{% if finance_only_user %}{% url 'finance_dashboard' %}{% elif not is_personal_user %}{% url 'readings_all' %}{% else %}{{ personal_pool_url|default:'/pools' }}{% endif %}" class="app-header__brand d-flex align-items-center gap-3 text-decoration-none">
+        <a href="{{ home_url|default:'/pools/' }}" class="app-header__brand d-flex align-items-center gap-3 text-decoration-none">
           <img src="{% static brand_logo %}" class="app-logo{% if brand_logo_wide %} app-logo--wide{% endif %}" alt="{{ brand_name }}">
           <div class="app-header__brand-text {% if brand_hide_text_on_mobile %}d-none d-md-block{% endif %}">
             <div class="fw-bold text-dark">{{ brand_name }}</div>
-            <div class="text-muted small">&#1057;&#1080;&#1089;&#1090;&#1077;&#1084;&#1072; &#1086;&#1073;&#1089;&#1083;&#1091;&#1078;&#1080;&#1074;&#1072;&#1085;&#1080;&#1103; &#1086;&#1073;&#1098;&#1077;&#1082;&#1090;&#1086;&#1074;</div>
+            <div class="text-muted small">{{ brand_tagline }}</div>
           </div>
         </a>
 

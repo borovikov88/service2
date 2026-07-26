@@ -1,13 +1,16 @@
 from .seo import is_indexable_host
 
 
+BRAND_TAGLINE = "Система управления объектами и финансами"
+
+
 def brand_context(request):
     host = request.get_host().split(":", 1)[0].lower()
 
     default_brand = {
         "name": "RovikPool",
-        "logo": "assets/images/rovikpool-app-192.png",
-        "favicon": "assets/images/rovikpool-app-192.png",
+        "logo": "assets/images/rovikpool-favicon.png",
+        "favicon": "assets/images/rovikpool-favicon.png",
         "icon_192": "assets/images/rovikpool-app-192.png",
         "icon_512": "assets/images/rovikpool-app-512.png",
         "hide_text_mobile": False,
@@ -18,8 +21,8 @@ def brand_context(request):
         "www.rovikpool.ru": default_brand,
         "service2.aqualine22.ru": {
             "name": "\u0410\u043a\u0432\u0430\u043b\u0430\u0439\u043d",
-            "logo": "assets/images/aqualine-app-192.png",
-            "favicon": "assets/images/aqualine-app-192.png",
+            "logo": "assets/images/aqualine-favicon.png",
+            "favicon": "assets/images/aqualine-favicon.png",
             "icon_192": "assets/images/aqualine-app-192.png",
             "icon_512": "assets/images/aqualine-app-512.png",
             "hide_text_mobile": False,
@@ -27,8 +30,8 @@ def brand_context(request):
         },
         "www.service2.aqualine22.ru": {
             "name": "\u0410\u043a\u0432\u0430\u043b\u0430\u0439\u043d",
-            "logo": "assets/images/aqualine-app-192.png",
-            "favicon": "assets/images/aqualine-app-192.png",
+            "logo": "assets/images/aqualine-favicon.png",
+            "favicon": "assets/images/aqualine-favicon.png",
             "icon_192": "assets/images/aqualine-app-192.png",
             "icon_512": "assets/images/aqualine-app-512.png",
             "hide_text_mobile": False,
@@ -39,6 +42,7 @@ def brand_context(request):
     brand = brands_by_host.get(host, default_brand)
     return {
         "brand_name": brand["name"],
+        "brand_tagline": BRAND_TAGLINE,
         "brand_logo": brand["logo"],
         "brand_favicon": brand["favicon"],
         "brand_icon_192": brand.get("icon_192", default_brand["icon_192"]),
@@ -101,6 +105,7 @@ def plan_status_context(request):
         "payment_url": reverse("billing"),
         "access_blocked": False,
         "personal_pool_url": None,
+        "home_url": reverse("pool_list"),
         "show_plan_badge": False,
     }
 
@@ -113,10 +118,16 @@ def plan_status_context(request):
             context["personal_pool_url"] = reverse("pool_detail", kwargs={"pool_uuid": pool.uuid})
         else:
             context["personal_pool_url"] = reverse("pool_create")
+        context["home_url"] = context["personal_pool_url"]
 
     org = organization_for_user(user)
     if not org:
         return context
+
+    if "service" in org_roles:
+        context["home_url"] = reverse("readings_all")
+    elif can_access_finance:
+        context["home_url"] = reverse("finance_dashboard")
 
     now = timezone.now()
     context["access_blocked"] = is_org_access_blocked(user, now=now)
