@@ -88,7 +88,7 @@
       </thead>
       <tbody>
         {% for row in balance_rows %}
-          <tr>
+          <tr data-row-href="{% url 'finance_employee_detail' row.employee.id %}">
             <td class="fw-semibold">{{ row.employee|finance_employee_name }}</td>
             <td class="text-end">{{ row.issued|money }}</td>
             {% if can_manage_finance %}
@@ -150,15 +150,32 @@
             <div class="d-flex justify-content-between gap-3">
               <div>
                 <div class="fw-semibold">{{ movement.employee|finance_employee_name }}</div>
-                <div class="small text-muted">{{ movement.get_transaction_type_display }} · {{ movement.occurred_on|date:"d.m.Y" }}</div>
+                <div class="small text-muted">
+                  {{ movement.get_transaction_type_display }} · {{ movement.occurred_on|date:"d.m.Y" }}
+                  {% if movement.client %}· {{ movement.client.name }}{% endif %}
+                </div>
               </div>
               <div class="text-end">
                 <div class="fw-bold">{{ movement.amount|money }}</div>
-                {% if movement.status == "pending" %}<span class="badge bg-warning-subtle text-warning border status-badge" title="На проверке"><i class="bi bi-hourglass-split"></i><span class="status-text">На проверке</span></span>
+                {% if movement.pending_action %}<span class="badge bg-warning-subtle text-warning border status-badge" title="Заявка на правку"><i class="bi bi-pencil-square"></i><span class="status-text">Заявка на правку</span></span>
+                {% elif movement.status == "pending" %}<span class="badge bg-warning-subtle text-warning border status-badge" title="На проверке"><i class="bi bi-hourglass-split"></i><span class="status-text">На проверке</span></span>
                 {% elif movement.status == "rejected" %}<span class="badge bg-danger-subtle text-danger border status-badge" title="Отклонён"><i class="bi bi-x-circle"></i><span class="status-text">Отклонён</span></span>{% endif %}
               </div>
             </div>
-            {% if movement.transaction_type == "client_payment" and movement.status == "pending" and can_close_finance %}
+            {% if movement.transaction_type == "client_payment" and movement.pending_action and can_close_finance %}
+              <form method="post" action="{% url 'finance_transaction_review' movement.id %}" class="d-flex flex-wrap gap-2 mt-2">
+                {% csrf_token %}
+                <input type="hidden" name="decision" value="approved">
+                <input type="text" name="review_comment" class="form-control form-control-sm" placeholder="Комментарий">
+                <button class="btn btn-success btn-sm js-confirm-action" type="submit" data-confirm-title="Подтвердить заявку" data-confirm-body="Изменение или удаление прихода будет применено после подтверждения." data-confirm-confirm="Подтвердить" data-confirm-variant="success">Подтвердить</button>
+              </form>
+              <form method="post" action="{% url 'finance_transaction_review' movement.id %}" class="d-flex flex-wrap gap-2 mt-2">
+                {% csrf_token %}
+                <input type="hidden" name="decision" value="rejected">
+                <input type="text" name="review_comment" class="form-control form-control-sm" placeholder="Причина">
+                <button class="btn btn-outline-danger btn-sm js-confirm-action" type="submit" data-confirm-title="Отклонить заявку" data-confirm-body="Операция останется без изменений." data-confirm-confirm="Отклонить" data-confirm-variant="danger">Отклонить</button>
+              </form>
+            {% elif movement.transaction_type == "client_payment" and movement.status == "pending" and can_close_finance %}
               <form method="post" action="{% url 'finance_transaction_review' movement.id %}" class="d-flex flex-wrap gap-2 mt-2">
                 {% csrf_token %}
                 <input type="hidden" name="decision" value="approved">

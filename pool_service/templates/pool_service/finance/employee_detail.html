@@ -1,0 +1,167 @@
+{% extends "pool_service/base.html" %}
+{% load finance_tags %}
+
+{% block title %}Подотчёт сотрудника{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-4">
+  <div>
+    <h1 class="h3 fw-bold mb-1">{{ employee|finance_employee_name }}</h1>
+    <div class="text-muted">История операций, приходов денег и расходов сотрудника</div>
+  </div>
+  <a href="{% url 'finance_dashboard' %}" class="btn btn-outline-secondary">Назад</a>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-6 col-lg-3">
+    <div class="card card-soft p-3 h-100">
+      <div class="text-muted small mb-1">Остаток</div>
+      <div class="fs-4 fw-bold {% if balance.operational_balance < 0 %}text-danger{% else %}text-success{% endif %}">{{ balance.operational_balance|money }}</div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="card card-soft p-3 h-100">
+      <div class="text-muted small mb-1">Выдано и получено</div>
+      <div class="fs-4 fw-bold">{{ balance.issued|money }}</div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="card card-soft p-3 h-100">
+      <div class="text-muted small mb-1">Чеки на проверке</div>
+      <div class="fs-4 fw-bold text-warning">{{ balance.pending|money }}</div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="card card-soft p-3 h-100">
+      <div class="text-muted small mb-1">Возврат</div>
+      <div class="fs-4 fw-bold">{{ balance.returned|money }}</div>
+    </div>
+  </div>
+</div>
+
+<div class="card card-soft p-3 p-lg-4 mb-4">
+  <h2 class="h5 fw-bold mb-3">Движения подотчёта</h2>
+  <div class="table-responsive">
+    <table class="table align-middle mb-0">
+      <thead class="small text-muted">
+        <tr>
+          <th>Дата</th>
+          <th>Операция</th>
+          <th>Клиент</th>
+          <th>Статус</th>
+          <th class="text-end">Сумма</th>
+          <th class="text-end">Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for movement in movements %}
+          <tr class="{% if movement.is_voided %}text-muted{% endif %}">
+            <td>{{ movement.occurred_on|date:"d.m.Y" }}</td>
+            <td>
+              <div class="fw-semibold">{{ movement.get_transaction_type_display }}</div>
+              {% if movement.note %}<div class="small text-muted">{{ movement.note }}</div>{% endif %}
+            </td>
+            <td>{% if movement.client %}{{ movement.client.name }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
+            <td>
+              {% if movement.is_voided %}
+                <span class="badge bg-secondary-subtle text-secondary border status-badge" title="Аннулировано"><i class="bi bi-slash-circle"></i><span class="status-text">Аннулировано</span></span>
+              {% elif movement.pending_action == "edit" %}
+                <span class="badge bg-warning-subtle text-warning border status-badge" title="Изменение на проверке"><i class="bi bi-pencil-square"></i><span class="status-text">Изменение на проверке</span></span>
+              {% elif movement.pending_action == "delete" %}
+                <span class="badge bg-warning-subtle text-warning border status-badge" title="Удаление на проверке"><i class="bi bi-trash"></i><span class="status-text">Удаление на проверке</span></span>
+              {% elif movement.status == "approved" %}
+                <span class="badge bg-success-subtle text-success border status-badge" title="Проведено"><i class="bi bi-check-circle"></i><span class="status-text">Проведено</span></span>
+              {% elif movement.status == "rejected" %}
+                <span class="badge bg-danger-subtle text-danger border status-badge" title="Отклонено"><i class="bi bi-x-circle"></i><span class="status-text">Отклонено</span></span>
+              {% else %}
+                <span class="badge bg-warning-subtle text-warning border status-badge" title="На проверке"><i class="bi bi-hourglass-split"></i><span class="status-text">На проверке</span></span>
+              {% endif %}
+            </td>
+            <td class="text-end fw-semibold">{{ movement.amount|money }}</td>
+            <td class="text-end">
+              {% if movement.can_request_change %}
+                <div class="d-flex flex-wrap justify-content-end gap-2">
+                  <a href="{% url 'finance_income_edit' movement.id %}" class="btn btn-outline-primary btn-sm">Изменить</a>
+                  <form method="post" action="{% url 'finance_income_delete' movement.id %}" class="d-inline">
+                    {% csrf_token %}
+                    <input type="hidden" name="reason" value="Запрос сотрудника">
+                    <button type="submit" class="btn btn-outline-danger btn-sm js-confirm-action" data-confirm-title="Запросить удаление" data-confirm-body="Удаление применится только после подтверждения администратором или бухгалтером." data-confirm-confirm="Отправить" data-confirm-variant="danger">Удалить</button>
+                  </form>
+                </div>
+              {% elif movement.pending_action and can_close_finance %}
+                <div class="d-flex flex-wrap justify-content-end gap-2">
+                  <form method="post" action="{% url 'finance_transaction_review' movement.id %}" class="d-inline">
+                    {% csrf_token %}
+                    <input type="hidden" name="decision" value="approved">
+                    <button class="btn btn-success btn-sm" type="submit">Подтвердить</button>
+                  </form>
+                  <form method="post" action="{% url 'finance_transaction_review' movement.id %}" class="d-inline">
+                    {% csrf_token %}
+                    <input type="hidden" name="decision" value="rejected">
+                    <button class="btn btn-outline-danger btn-sm" type="submit">Отклонить</button>
+                  </form>
+                </div>
+              {% else %}
+                <span class="text-muted">—</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="6" class="text-center text-muted py-4">Операций пока нет</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card card-soft p-3 p-lg-4 mb-4">
+  <h2 class="h5 fw-bold mb-3">Последние расходы</h2>
+  <div class="table-responsive">
+    <table class="table align-middle mb-0">
+      <thead class="small text-muted">
+        <tr><th>Дата</th><th>Назначение</th><th>Статус</th><th class="text-end">Сумма</th></tr>
+      </thead>
+      <tbody>
+        {% for expense in recent_expenses %}
+          <tr data-row-href="{% url 'finance_expense_detail' expense.uuid %}">
+            <td>{{ expense.spent_on|date:"d.m.Y" }}</td>
+            <td>
+              <div>{{ expense.destination_name }}</div>
+              <div class="small text-muted">{{ expense.category.name }}</div>
+            </td>
+            <td>{{ expense.get_status_display }}</td>
+            <td class="text-end fw-semibold">{{ expense.amount|money }}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="4" class="text-center text-muted py-4">Расходов пока нет</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% if can_close_finance %}
+<div class="card card-soft p-3 p-lg-4">
+  <h2 class="h5 fw-bold mb-3">История правок и удалений</h2>
+  <div class="table-responsive">
+    <table class="table align-middle mb-0">
+      <thead class="small text-muted">
+        <tr><th>Дата</th><th>Действие</th><th>Кто</th><th>Комментарий</th></tr>
+      </thead>
+      <tbody>
+        {% for change in change_history %}
+          <tr>
+            <td>{{ change.created_at|date:"d.m.Y H:i" }}</td>
+            <td>{{ change.get_action_display }}</td>
+            <td>{{ change.actor|finance_employee_name }}</td>
+            <td>{% if change.note %}{{ change.note }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="4" class="text-center text-muted py-4">Истории пока нет</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

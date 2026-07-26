@@ -948,6 +948,13 @@ class AccountableTransaction(models.Model):
         (STATUS_REJECTED, "Отклонён"),
     ]
 
+    PENDING_EDIT = "edit"
+    PENDING_DELETE = "delete"
+    PENDING_ACTION_CHOICES = [
+        (PENDING_EDIT, "Изменение"),
+        (PENDING_DELETE, "Удаление"),
+    ]
+
     organization = models.ForeignKey(
         Organization,
         on_delete=models.CASCADE,
@@ -959,6 +966,13 @@ class AccountableTransaction(models.Model):
         related_name="accountable_transactions",
     )
     transaction_type = models.CharField(max_length=24, choices=TYPE_CHOICES)
+    client = models.ForeignKey(
+        Client,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="accountable_transactions",
+    )
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     occurred_on = models.DateField()
     note = models.TextField(blank=True)
@@ -977,6 +991,16 @@ class AccountableTransaction(models.Model):
     )
     reviewed_at = models.DateTimeField(null=True, blank=True)
     review_comment = models.TextField(blank=True)
+    pending_action = models.CharField(max_length=16, choices=PENDING_ACTION_CHOICES, blank=True)
+    pending_payload = models.JSONField(default=dict, blank=True)
+    pending_requested_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="requested_accountable_transaction_changes",
+    )
+    pending_requested_at = models.DateTimeField(null=True, blank=True)
     is_voided = models.BooleanField(default=False)
     voided_at = models.DateTimeField(null=True, blank=True)
     voided_by = models.ForeignKey(
@@ -995,6 +1019,7 @@ class AccountableTransaction(models.Model):
             models.Index(fields=["organization", "occurred_on"], name="acct_org_date_idx"),
             models.Index(fields=["employee", "occurred_on"], name="acct_user_date_idx"),
             models.Index(fields=["organization", "status"], name="acct_org_status_idx"),
+            models.Index(fields=["organization", "pending_action"], name="acct_org_pending_idx"),
         ]
 
     def clean(self):
@@ -1008,9 +1033,46 @@ class AccountableTransaction(models.Model):
             ).exists()
             if not has_access:
                 raise ValidationError({"employee": "Сотрудник не состоит в этой организации."})
+        if self.client_id and self.organization_id and self.client.organization_id != self.organization_id:
+            raise ValidationError({"client": "Клиент относится к другой организации."})
 
     def __str__(self):
         return f"{self.get_transaction_type_display()}: {self.amount}"
+
+
+class AccountableTransactionChange(models.Model):
+    ACTION_CREATED = "created"
+    ACTION_EDIT_REQUESTED = "edit_requested"
+    ACTION_DELETE_REQUESTED = "delete_requested"
+    ACTION_UPDATED = "updated"
+    ACTION_DELETED = "deleted"
+    ACTION_REJECTED = "rejected"
+    ACTION_VOIDED = "voided"
+    ACTION_CHOICES = [
+        (ACTION_CREATED, "Создан"),
+        (ACTION_EDIT_REQUESTED, "Запрошено изменение"),
+        (ACTION_DELETE_REQUESTED, "Запрошено удаление"),
+        (ACTION_UPDATED, "Изменён"),
+        (ACTION_DELETED, "Удалён"),
+        (ACTION_REJECTED, "Отклонён"),
+        (ACTION_VOIDED, "Аннулирован"),
+    ]
+
+    transaction = models.ForeignKey(AccountableTransaction, on_delete=models.CASCADE, related_name="changes")
+    actor = models.ForeignKey(User, on_delete=models.PROTECT, related_name="accountable_transaction_changes")
+    action = models.CharField(max_length=24, choices=ACTION_CHOICES)
+    note = models.TextField(blank=True)
+    payload = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["transaction", "created_at"], name="acct_change_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.transaction_id}: {self.action}"
 
 
 class Expense(models.Model):

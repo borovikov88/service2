@@ -13,6 +13,7 @@ from django.utils import timezone
 
 from pool_service.models import (
     AccountableTransaction,
+    AccountableTransactionChange,
     Client,
     Expense,
     ExpenseCategory,
@@ -204,41 +205,130 @@ class FinanceTests(TestCase):
         self.assertTrue(expense.receipt_missing_confirmed)
         self.assertEqual(expense.receipts.count(), 0)
 
-    def test_client_payment_waits_for_admin_approval_before_balance(self):
+    def test_client_payment_is_approved_on_create_with_client(self):
         self.client.force_login(self.service)
 
         created = self.client.post(
             reverse("finance_income_create"),
             {
                 "employee": self.service.id,
+                "destination_query": "Клиент Иванов",
                 "amount": "1234564.00",
                 "occurred_on": date.today().isoformat(),
                 "note": "Клиент оплатил сервиснику",
             },
         )
         movement = AccountableTransaction.objects.get(transaction_type=AccountableTransaction.TYPE_CLIENT_PAYMENT)
-        before = accountable_balance(self.organization, self.service)
+        balance = accountable_balance(self.organization, self.service)
 
         self.client.force_login(self.manager)
         manager_review = self.client.post(
             reverse("finance_transaction_review", kwargs={"transaction_id": movement.id}),
             {"decision": AccountableTransaction.STATUS_APPROVED, "review_comment": ""},
         )
-        self.client.force_login(self.owner)
-        owner_review = self.client.post(
-            reverse("finance_transaction_review", kwargs={"transaction_id": movement.id}),
-            {"decision": AccountableTransaction.STATUS_APPROVED, "review_comment": ""},
-        )
         movement.refresh_from_db()
-        after = accountable_balance(self.organization, self.service)
 
         self.assertEqual(created.status_code, 302)
         self.assertEqual(movement.status, AccountableTransaction.STATUS_APPROVED)
+        self.assertEqual(movement.client.name, "Клиент Иванов")
         self.assertEqual(manager_review.status_code, 403)
-        self.assertEqual(owner_review.status_code, 302)
-        self.assertEqual(before["operational_balance"], 0)
-        self.assertEqual(after["operational_balance"], 1234564)
+        self.assertEqual(balance["operational_balance"], 1234564)
         self.assertEqual(format_money(movement.amount), "1\u00a0234\u00a0564,00\u00a0₽")
+        self.assertTrue(
+            movement.changes.filter(action=AccountableTransactionChange.ACTION_CREATED).exists()
+        )
+
+    def test_client_payment_edit_and_delete_require_close_role_approval(self):
+        client = Client.objects.create(organization=self.organization, name="Клиент А", client_type="private")
+        movement = AccountableTransaction.objects.create(
+            organization=self.organization,
+            employee=self.service,
+            created_by=self.service,
+            transaction_type=AccountableTransaction.TYPE_CLIENT_PAYMENT,
+            client=client,
+            amount="1000.00",
+            occurred_on=date.today(),
+            status=AccountableTransaction.STATUS_APPROVED,
+            reviewed_by=self.service,
+            reviewed_at=timezone.now(),
+        )
+        self.client.force_login(self.service)
+
+        edit_requested = self.client.post(
+            reverse("finance_income_edit", kwargs={"transaction_id": movement.id}),
+            {
+                "employee": self.service.id,
+                "client_id": client.id,
+                "destination_query": client.name,
+                "amount": "2000.00",
+                "occurred_on": date.today().isoformat(),
+                "note": "Исправленная сумма",
+            },
+        )
+        movement.refresh_from_db()
+        before_review = accountable_balance(self.organization, self.service)
+
+        self.client.force_login(self.accountant)
+        edit_reviewed = self.client.post(
+            reverse("finance_transaction_review", kwargs={"transaction_id": movement.id}),
+            {"decision": AccountableTransaction.STATUS_APPROVED, "review_comment": "Ок"},
+        )
+        movement.refresh_from_db()
+        after_edit = accountable_balance(self.organization, self.service)
+
+        self.client.force_login(self.service)
+        delete_requested = self.client.post(
+            reverse("finance_income_delete", kwargs={"transaction_id": movement.id}),
+            {"reason": "Дубль"},
+        )
+        movement.refresh_from_db()
+        before_delete_review = accountable_balance(self.organization, self.service)
+
+        self.client.force_login(self.accountant)
+        delete_reviewed = self.client.post(
+            reverse("finance_transaction_review", kwargs={"transaction_id": movement.id}),
+            {"decision": AccountableTransaction.STATUS_APPROVED, "review_comment": "Удалить"},
+        )
+        movement.refresh_from_db()
+        after_delete = accountable_balance(self.organization, self.service)
+
+        self.assertEqual(edit_requested.status_code, 302)
+        self.assertEqual(before_review["operational_balance"], 1000)
+        self.assertEqual(edit_reviewed.status_code, 302)
+        self.assertEqual(movement.amount, 2000)
+        self.assertEqual(after_edit["operational_balance"], 2000)
+        self.assertEqual(delete_requested.status_code, 302)
+        self.assertEqual(before_delete_review["operational_balance"], 2000)
+        self.assertEqual(delete_reviewed.status_code, 302)
+        self.assertTrue(movement.is_voided)
+        self.assertEqual(after_delete["operational_balance"], 0)
+        self.assertTrue(
+            movement.changes.filter(action=AccountableTransactionChange.ACTION_UPDATED).exists()
+        )
+        self.assertTrue(
+            movement.changes.filter(action=AccountableTransactionChange.ACTION_DELETED).exists()
+        )
+
+    def test_accountable_rows_open_employee_detail_with_history(self):
+        AccountableTransaction.objects.create(
+            organization=self.organization,
+            employee=self.service,
+            created_by=self.owner,
+            transaction_type=AccountableTransaction.TYPE_ISSUE,
+            amount="500.00",
+            occurred_on=date.today(),
+        )
+        self.client.force_login(self.owner)
+
+        dashboard = self.client.get(reverse("finance_dashboard"))
+        detail = self.client.get(reverse("finance_employee_detail", kwargs={"employee_id": self.service.id}))
+
+        self.assertContains(
+            dashboard,
+            f'data-row-href="{reverse("finance_employee_detail", kwargs={"employee_id": self.service.id})}"',
+        )
+        self.assertContains(detail, "Движения подотчёта")
+        self.assertContains(detail, "История правок и удалений")
 
     def test_accountant_only_user_is_restricted_to_finance(self):
         self.client.force_login(self.accountant)

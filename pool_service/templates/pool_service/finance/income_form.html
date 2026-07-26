@@ -38,11 +38,40 @@
         {% endif %}
       {% endfor %}
     </div>
+    <datalist id="finance-client-options">
+      {% for option in client_options %}<option value="{{ option.name }}" label="{{ option.label }}"></option>{% endfor %}
+    </datalist>
     {% for error in form.non_field_errors %}<div class="alert alert-danger mt-3 mb-0">{{ error }}</div>{% endfor %}
     <div class="d-flex gap-2 mt-4">
-      <button type="submit" class="btn btn-primary">Отправить на подтверждение</button>
+      <button type="submit" class="btn btn-primary">{{ submit_label|default:"Сохранить приход" }}</button>
       <a href="{% url 'finance_dashboard' %}" class="btn btn-outline-secondary">Отмена</a>
     </div>
   </form>
 </div>
+{{ client_options|json_script:"finance-client-data" }}
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    const clientQuery = document.querySelector("[data-client-query]");
+    const clientId = document.querySelector("[data-client-id]");
+    const clientDataElement = document.getElementById("finance-client-data");
+    if (!clientQuery || !clientId || !clientDataElement) return;
+    const clientData = JSON.parse(clientDataElement.textContent || "[]");
+
+    function selectedClient() {
+      const query = (clientQuery.value || "").trim().toLocaleLowerCase("ru");
+      return clientData.find(function (client) {
+        return (client.name || "").trim().toLocaleLowerCase("ru") === query;
+      });
+    }
+
+    function syncClientId() {
+      const client = selectedClient();
+      clientId.value = client ? client.id : "";
+    }
+
+    clientQuery.addEventListener("input", syncClientId);
+    clientQuery.addEventListener("change", syncClientId);
+    syncClientId();
+  });
+</script>
 {% endblock %}

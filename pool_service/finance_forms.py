@@ -103,6 +103,21 @@ class AccountableTransactionForm(forms.ModelForm):
 
 
 class ClientPaymentForm(forms.ModelForm):
+    destination_query = forms.CharField(
+        required=True,
+        label="Клиент",
+        widget=forms.TextInput(
+            attrs={
+                "class": "form-control",
+                "list": "finance-client-options",
+                "autocomplete": "off",
+                "placeholder": "Начните вводить имя или название",
+                "data-client-query": "1",
+            }
+        ),
+    )
+    client_id = forms.IntegerField(required=False, widget=forms.HiddenInput(attrs={"data-client-id": "1"}))
+
     class Meta:
         model = AccountableTransaction
         fields = ["employee", "amount", "occurred_on", "note"]
@@ -110,7 +125,7 @@ class ClientPaymentForm(forms.ModelForm):
             "employee": "Кто получил деньги",
             "amount": "Сумма, ₽",
             "occurred_on": "Дата прихода",
-            "note": "Клиент и комментарий",
+            "note": "Комментарий",
         }
         widgets = {
             "employee": forms.Select(attrs={"class": "form-select"}),
@@ -120,7 +135,7 @@ class ClientPaymentForm(forms.ModelForm):
                 attrs={
                     "class": "form-control",
                     "rows": 3,
-                    "placeholder": "Например: клиент Иванов, оплата диагностики",
+                    "placeholder": "Например: оплата диагностики",
                 }
             ),
         }
@@ -130,9 +145,14 @@ class ClientPaymentForm(forms.ModelForm):
         self.organization = organization
         self.current_user = user
         self.can_manage = can_manage
+        self.resolved_client = None
+        self.new_client_name = ""
         self.fields["employee"].queryset = finance_staff(organization)
         self.fields["employee"].label_from_instance = user_display_name
         self.fields["occurred_on"].input_formats = ["%Y-%m-%d"]
+        if self.instance.pk and self.instance.client_id:
+            self.fields["client_id"].initial = self.instance.client_id
+            self.fields["destination_query"].initial = self.instance.client.name
         if not can_manage:
             self.fields["employee"].widget = forms.HiddenInput()
             self.fields["employee"].initial = user
@@ -147,6 +167,25 @@ class ClientPaymentForm(forms.ModelForm):
         if period_is_closed(self.organization, occurred_on):
             raise forms.ValidationError("Этот месяц закрыт. Новые операции запрещены.")
         return occurred_on
+
+    def clean(self):
+        cleaned = super().clean()
+        client_id = cleaned.get("client_id")
+        destination_query = (cleaned.get("destination_query") or "").strip()
+        if client_id:
+            self.resolved_client = Client.objects.filter(
+                id=client_id,
+                organization=self.organization,
+            ).first()
+            if not self.resolved_client:
+                self.add_error("destination_query", "Клиент не найден.")
+        elif destination_query:
+            self.resolved_client = find_client_by_name(self.organization, destination_query)
+            if not self.resolved_client:
+                self.new_client_name = destination_query[:255]
+        else:
+            self.add_error("destination_query", "Выберите или укажите нового клиента.")
+        return cleaned
 
 
 class ExpenseForm(forms.ModelForm):

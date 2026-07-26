@@ -8,6 +8,7 @@ import tablib
 from PIL import Image, ImageOps
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
 from django.db import transaction
 from django.http import FileResponse, HttpResponse, HttpResponseForbidden, JsonResponse
@@ -20,6 +21,7 @@ from django.views.decorators.http import require_POST
 from pool_service.finance_forms import AccountableTransactionForm, ClientPaymentForm, ExpenseForm, ExpenseReviewForm
 from pool_service.models import (
     AccountableTransaction,
+    AccountableTransactionChange,
     Client,
     Expense,
     ExpenseCategory,
@@ -28,6 +30,7 @@ from pool_service.models import (
     ExpenseReceipt,
 )
 from pool_service.services.finance import (
+    accountable_balance,
     accountable_rows,
     can_access_finance,
     can_close_finance_period,
@@ -162,6 +165,78 @@ def _client_options(organization):
     return options
 
 
+def _resolve_income_client(organization, form):
+    client = form.resolved_client
+    if form.new_client_name:
+        client = find_client_by_name(organization, form.new_client_name)
+        if not client:
+            client = Client.objects.create(
+                organization=organization,
+                name=form.new_client_name,
+                client_type="private",
+            )
+    return client
+
+
+def _income_payload(form, client):
+    return {
+        "employee_id": form.cleaned_data["employee"].id,
+        "client_id": client.id if client else None,
+        "amount": str(form.cleaned_data["amount"]),
+        "occurred_on": form.cleaned_data["occurred_on"].isoformat(),
+        "note": (form.cleaned_data.get("note") or "").strip(),
+    }
+
+
+def _apply_income_payload(movement, payload):
+    movement.employee_id = payload["employee_id"]
+    movement.client_id = payload.get("client_id")
+    movement.amount = Decimal(payload["amount"])
+    movement.occurred_on = date.fromisoformat(payload["occurred_on"])
+    movement.note = payload.get("note", "")
+
+
+def _clear_pending_movement(movement):
+    movement.pending_action = ""
+    movement.pending_payload = {}
+    movement.pending_requested_by = None
+    movement.pending_requested_at = None
+
+
+def _movement_for_user(request, transaction_id):
+    movement = get_object_or_404(
+        AccountableTransaction.objects.select_related(
+            "organization",
+            "employee",
+            "client",
+            "created_by",
+            "pending_requested_by",
+        ),
+        id=transaction_id,
+    )
+    if can_manage_finance(request.user, movement.organization):
+        return movement
+    if can_access_finance(request.user, movement.organization) and request.user.id in {
+        movement.employee_id,
+        movement.created_by_id,
+    }:
+        return movement
+    return None
+
+
+def _can_request_income_change(user, movement):
+    return (
+        movement
+        and movement.transaction_type == AccountableTransaction.TYPE_CLIENT_PAYMENT
+        and movement.status == AccountableTransaction.STATUS_APPROVED
+        and not movement.is_voided
+        and not movement.pending_action
+        and can_access_finance(user, movement.organization)
+        and user.id in {movement.employee_id, movement.created_by_id}
+        and not period_is_closed(movement.organization, movement.occurred_on)
+    )
+
+
 @login_required
 @xframe_options_sameorigin
 def finance_dashboard(request):
@@ -180,7 +255,7 @@ def finance_dashboard(request):
     transactions = AccountableTransaction.objects.filter(
         organization=organization,
         is_voided=False,
-    ).select_related("employee", "created_by")
+    ).select_related("employee", "created_by", "client", "pending_requested_by")
     if manage:
         balance_rows = accountable_rows(organization)
     else:
@@ -271,22 +346,119 @@ def finance_income_create(request):
         initial={"occurred_on": date.today()},
     )
     if request.method == "POST" and form.is_valid():
+        client = _resolve_income_client(organization, form)
         movement = form.save(commit=False)
         movement.organization = organization
         movement.created_by = request.user
+        movement.client = client
         movement.transaction_type = AccountableTransaction.TYPE_CLIENT_PAYMENT
-        movement.status = AccountableTransaction.STATUS_PENDING
+        movement.status = AccountableTransaction.STATUS_APPROVED
+        movement.reviewed_by = request.user
+        movement.reviewed_at = timezone.now()
         movement.full_clean()
         movement.save()
-        messages.success(request, "Приход денег сохранён и отправлен на подтверждение.")
+        AccountableTransactionChange.objects.create(
+            transaction=movement,
+            actor=request.user,
+            action=AccountableTransactionChange.ACTION_CREATED,
+            payload=_income_payload(form, client),
+        )
+        messages.success(request, "Приход денег сохранён.")
         return redirect("finance_dashboard")
     context = {
         "form": form,
+        "client_options": _client_options(organization),
         "active_tab": "finance",
         "show_add_button": False,
     }
     context.update(_finance_modal_context(request))
     return render(request, "pool_service/finance/income_form.html", context)
+
+
+@login_required
+@xframe_options_sameorigin
+def finance_income_edit(request, transaction_id):
+    movement = _movement_for_user(request, transaction_id)
+    if not movement:
+        return HttpResponseForbidden("Недостаточно прав.")
+    if not _can_request_income_change(request.user, movement):
+        messages.error(request, "Изменение прихода денег недоступно.")
+        return redirect("finance_employee_detail", employee_id=movement.employee_id)
+
+    form = ClientPaymentForm(
+        request.POST or None,
+        organization=movement.organization,
+        user=request.user,
+        can_manage=can_manage_finance(request.user, movement.organization),
+        instance=movement,
+    )
+    if request.method == "POST" and form.is_valid():
+        client = _resolve_income_client(movement.organization, form)
+        payload = _income_payload(form, client)
+        movement.pending_action = AccountableTransaction.PENDING_EDIT
+        movement.pending_payload = payload
+        movement.pending_requested_by = request.user
+        movement.pending_requested_at = timezone.now()
+        movement.save(
+            update_fields=[
+                "pending_action",
+                "pending_payload",
+                "pending_requested_by",
+                "pending_requested_at",
+            ]
+        )
+        AccountableTransactionChange.objects.create(
+            transaction=movement,
+            actor=request.user,
+            action=AccountableTransactionChange.ACTION_EDIT_REQUESTED,
+            payload=payload,
+        )
+        messages.success(request, "Изменение отправлено на подтверждение.")
+        return redirect("finance_employee_detail", employee_id=movement.employee_id)
+
+    context = {
+        "form": form,
+        "movement": movement,
+        "client_options": _client_options(movement.organization),
+        "submit_label": "Отправить изменение",
+        "active_tab": "finance",
+        "show_add_button": False,
+    }
+    context.update(_finance_modal_context(request))
+    return render(request, "pool_service/finance/income_form.html", context)
+
+
+@require_POST
+@login_required
+def finance_income_delete(request, transaction_id):
+    movement = _movement_for_user(request, transaction_id)
+    if not movement:
+        return HttpResponseForbidden("Недостаточно прав.")
+    if not _can_request_income_change(request.user, movement):
+        messages.error(request, "Удаление прихода денег недоступно.")
+        return redirect("finance_employee_detail", employee_id=movement.employee_id)
+    reason = (request.POST.get("reason") or "").strip()
+    movement.pending_action = AccountableTransaction.PENDING_DELETE
+    movement.pending_payload = {"reason": reason}
+    movement.pending_requested_by = request.user
+    movement.pending_requested_at = timezone.now()
+    movement.save(
+        update_fields=[
+            "pending_action",
+            "pending_payload",
+            "pending_requested_by",
+            "pending_requested_at",
+        ]
+    )
+    AccountableTransactionChange.objects.create(
+        transaction=movement,
+        actor=request.user,
+        action=AccountableTransactionChange.ACTION_DELETE_REQUESTED,
+        note=reason,
+        payload={"reason": reason},
+    )
+    messages.success(request, "Удаление отправлено на подтверждение.")
+    return redirect("finance_employee_detail", employee_id=movement.employee_id)
 
 
 @require_POST
@@ -299,10 +471,7 @@ def finance_transaction_review(request, transaction_id):
     if movement.transaction_type != AccountableTransaction.TYPE_CLIENT_PAYMENT:
         return HttpResponseForbidden("Эта операция не требует подтверждения.")
     if not can_review_accountable_transaction(request.user, movement):
-        return HttpResponseForbidden("Нельзя подтвердить собственный приход.")
-    if movement.status != AccountableTransaction.STATUS_PENDING:
-        messages.error(request, "Эта операция уже рассмотрена.")
-        return redirect("finance_dashboard")
+        return HttpResponseForbidden("Нельзя подтвердить собственную операцию.")
     if period_is_closed(organization, movement.occurred_on):
         messages.error(request, "Месяц закрыт.")
         return redirect("finance_dashboard")
@@ -310,11 +479,56 @@ def finance_transaction_review(request, transaction_id):
     if decision not in {AccountableTransaction.STATUS_APPROVED, AccountableTransaction.STATUS_REJECTED}:
         messages.error(request, "Выберите решение.")
         return redirect("finance_dashboard")
+    review_comment = (request.POST.get("review_comment") or "").strip()
+
+    if movement.pending_action:
+        with transaction.atomic():
+            action = movement.pending_action
+            payload = dict(movement.pending_payload or {})
+            if decision == AccountableTransaction.STATUS_APPROVED:
+                if action == AccountableTransaction.PENDING_EDIT:
+                    if period_is_closed(organization, date.fromisoformat(payload["occurred_on"])):
+                        messages.error(request, "Новый месяц операции уже закрыт.")
+                        return redirect("finance_employee_detail", employee_id=movement.employee_id)
+                    _apply_income_payload(movement, payload)
+                    movement.full_clean()
+                    change_action = AccountableTransactionChange.ACTION_UPDATED
+                    message = "Изменение прихода подтверждено."
+                elif action == AccountableTransaction.PENDING_DELETE:
+                    movement.is_voided = True
+                    movement.voided_at = timezone.now()
+                    movement.voided_by = request.user
+                    movement.void_reason = review_comment or payload.get("reason", "")
+                    change_action = AccountableTransactionChange.ACTION_DELETED
+                    message = "Удаление прихода подтверждено."
+                else:
+                    return HttpResponseForbidden("Неизвестная заявка.")
+            else:
+                change_action = AccountableTransactionChange.ACTION_REJECTED
+                message = "Заявка отклонена."
+            movement.reviewed_by = request.user
+            movement.reviewed_at = timezone.now()
+            movement.review_comment = review_comment
+            _clear_pending_movement(movement)
+            movement.save()
+            AccountableTransactionChange.objects.create(
+                transaction=movement,
+                actor=request.user,
+                action=change_action,
+                note=review_comment,
+                payload=payload,
+            )
+        messages.success(request, message)
+        return redirect("finance_employee_detail", employee_id=movement.employee_id)
+
+    if movement.status != AccountableTransaction.STATUS_PENDING:
+        messages.error(request, "Эта операция уже рассмотрена.")
+        return redirect("finance_dashboard")
     movement.status = decision
     movement.reviewed_by = request.user
     movement.reviewed_at = timezone.now()
-    movement.review_comment = (request.POST.get("review_comment") or "").strip()
-    movement.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_comment"])
+    movement.review_comment = review_comment
+    movement.save(update_fields=["status", "review_comment", "reviewed_by", "reviewed_at"])
     messages.success(request, "Решение по приходу денег сохранено.")
     return redirect("finance_dashboard")
 
@@ -340,8 +554,62 @@ def finance_transaction_void(request, transaction_id):
     movement.voided_by = request.user
     movement.void_reason = reason
     movement.save(update_fields=["is_voided", "voided_at", "voided_by", "void_reason"])
+    AccountableTransactionChange.objects.create(
+        transaction=movement,
+        actor=request.user,
+        action=AccountableTransactionChange.ACTION_VOIDED,
+        note=reason,
+    )
     messages.success(request, "Операция аннулирована. История сохранена.")
     return redirect("finance_dashboard")
+
+
+@login_required
+def finance_employee_detail(request, employee_id):
+    organization, denied = _finance_guard(request)
+    if denied:
+        return denied
+    employee = get_object_or_404(finance_staff(organization), id=employee_id)
+    if not can_manage_finance(request.user, organization) and request.user.id != employee.id:
+        return HttpResponseForbidden("Недостаточно прав.")
+
+    movements = list(
+        AccountableTransaction.objects.filter(organization=organization, employee=employee)
+        .select_related("client", "created_by", "reviewed_by", "voided_by", "pending_requested_by")
+        .prefetch_related("changes__actor")
+        .order_by("-occurred_on", "-id")
+    )
+    for movement in movements:
+        movement.can_request_change = _can_request_income_change(request.user, movement)
+
+    recent_expenses = (
+        Expense.objects.filter(organization=organization, employee=employee)
+        .select_related("category", "client", "pool", "created_by", "reviewed_by")
+        .order_by("-spent_on", "-id")[:50]
+    )
+    can_close = can_close_finance_period(request.user, organization)
+    change_history = (
+        AccountableTransactionChange.objects.filter(
+            transaction__organization=organization,
+            transaction__employee=employee,
+        )
+        .select_related("transaction", "actor")
+        .order_by("-created_at", "-id")[:100]
+        if can_close
+        else []
+    )
+    context = {
+        "employee": employee,
+        "balance": accountable_balance(organization, employee),
+        "movements": movements,
+        "recent_expenses": recent_expenses,
+        "change_history": change_history,
+        "can_close_finance": can_close,
+        "can_manage_finance": can_manage_finance(request.user, organization),
+        "active_tab": "finance",
+        "show_add_button": False,
+    }
+    return render(request, "pool_service/finance/employee_detail.html", context)
 
 
 def _expense_form_response(request, organization, form, expense=None):

@@ -78,7 +78,10 @@ from .views import (
 from . import views
 from .finance_views import (
     finance_dashboard,
+    finance_employee_detail,
     finance_income_create,
+    finance_income_delete,
+    finance_income_edit,
     finance_expense_create,
     finance_expense_detail,
     finance_expense_edit,
@@ -168,7 +171,10 @@ urlpatterns = [
     path("api/push/unsubscribe/", push_unsubscribe, name="push_unsubscribe"),
     path("finance/", finance_dashboard, name="finance_dashboard"),
     path("finance/accountable/new/", finance_transaction_create, name="finance_transaction_create"),
+    path("finance/accountable/employees/<int:employee_id>/", finance_employee_detail, name="finance_employee_detail"),
     path("finance/income/new/", finance_income_create, name="finance_income_create"),
+    path("finance/income/<int:transaction_id>/edit/", finance_income_edit, name="finance_income_edit"),
+    path("finance/income/<int:transaction_id>/delete/", finance_income_delete, name="finance_income_delete"),
     path("finance/accountable/<int:transaction_id>/review/", finance_transaction_review, name="finance_transaction_review"),
     path("finance/accountable/<int:transaction_id>/void/", finance_transaction_void, name="finance_transaction_void"),
     path("finance/expenses/new/", finance_expense_create, name="finance_expense_create"),
