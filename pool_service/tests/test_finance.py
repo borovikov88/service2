@@ -585,6 +585,11 @@ class FinanceTests(TestCase):
         response = self.client.get(reverse("finance_report"))
 
         self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-expense-bulk-root')
+        self.assertContains(response, 'class="date-cell"')
+        self.assertContains(response, 'expense-employee-cell__last')
+        self.assertContains(response, 'expense-purpose-cell__main')
+        self.assertContains(response, reverse("finance_expense_bulk_review"))
         self.assertEqual(response.context["approved_total"], 3000)
         self.assertEqual(response.context["office_total"], 500)
         export = self.client.get(reverse("finance_report_export"))
@@ -595,6 +600,25 @@ class FinanceTests(TestCase):
         )
         invalid_filter = self.client.get(reverse("finance_report"), {"employee": "invalid"})
         self.assertEqual(invalid_filter.status_code, 200)
+
+    def test_report_bulk_review_updates_selected_pending_expenses(self):
+        self.create_expense()
+        expense = Expense.objects.get()
+        self.client.force_login(self.manager)
+
+        response = self.client.post(
+            reverse("finance_expense_bulk_review"),
+            {
+                "expense_ids": [str(expense.uuid)],
+                "decision": Expense.STATUS_APPROVED,
+                "review_comment": "bulk ok",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        expense.refresh_from_db()
+        self.assertEqual(expense.status, Expense.STATUS_APPROVED)
+        self.assertEqual(expense.review_comment, "bulk ok")
 
     def test_closed_month_blocks_new_expenses(self):
         self.client.force_login(self.owner)

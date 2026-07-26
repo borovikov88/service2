@@ -61,18 +61,47 @@
   <div class="col-12 col-lg-6"><div class="card card-soft p-3 p-lg-4 h-100"><h2 class="h5 fw-bold mb-3">По клиентам и офису</h2>{% for name, total in client_totals %}<div class="d-flex justify-content-between border-bottom py-2"><span>{{ name }}</span><strong>{{ total|money }}</strong></div>{% empty %}<div class="text-muted">Нет данных</div>{% endfor %}</div></div>
 </div>
 
-<div class="card card-soft p-3 p-lg-4">
-  <h2 class="h5 fw-bold mb-3">Все расходы</h2>
+<div class="card card-soft p-3 p-lg-4" data-expense-bulk-root>
+  <div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-3">
+    <div>
+      <h2 class="h5 fw-bold mb-1">Все расходы</h2>
+      <div class="text-muted small">Удерживайте строку, чтобы выбрать несколько расходов</div>
+    </div>
+    <form method="post" action="{% url 'finance_expense_bulk_review' %}" class="d-none flex-wrap align-items-center gap-2" data-expense-bulk-toolbar>
+      {% csrf_token %}
+      <span class="badge bg-primary-subtle text-primary border" data-expense-bulk-count>0 выбрано</span>
+      <input type="text" name="review_comment" class="form-control form-control-sm expense-bulk-comment" placeholder="Комментарий">
+      <button type="submit" name="decision" value="approved" class="btn btn-success btn-sm">Подтвердить</button>
+      <button type="submit" name="decision" value="rejected" class="btn btn-outline-danger btn-sm">Отклонить</button>
+    </form>
+  </div>
   <div class="table-responsive">
-    <table class="table align-middle mb-0">
-      <thead class="small text-muted"><tr><th>Дата</th><th>Сотрудник</th><th>Назначение</th><th>Категория</th><th>Чек</th><th>Статус</th><th class="text-end">Сумма</th></tr></thead>
+    <table class="table align-middle mb-0 expense-report-table">
+      <thead class="small text-muted"><tr><th class="expense-select-cell"></th><th>Дата</th><th>Сотрудник</th><th>Назначение</th><th>Чек</th><th>Статус</th><th class="text-end">Сумма</th></tr></thead>
       <tbody>
         {% for expense in expenses %}
-          <tr data-row-href="{% url 'finance_expense_detail' expense.uuid %}">
-            <td><a href="{% url 'finance_expense_detail' expense.uuid %}">{{ expense.spent_on|date:"d.m.Y" }}</a></td>
-            <td>{{ expense.employee|finance_employee_name }}</td>
-            <td>{{ expense.destination_name }}{% if expense.pool %}<div class="small text-muted">{{ expense.pool.address }}</div>{% endif %}</td>
-            <td>{{ expense.category.name }}</td>
+          <tr data-row-href="{% url 'finance_expense_detail' expense.uuid %}" data-expense-bulk-row>
+            <td class="expense-select-cell">
+              {% if expense.status == "pending" %}
+                <input type="checkbox" name="expense_ids" value="{{ expense.uuid }}" class="form-check-input expense-bulk-checkbox" form="expense-bulk-hidden-form" data-expense-checkbox>
+              {% endif %}
+            </td>
+            <td class="date-cell"><a href="{% url 'finance_expense_detail' expense.uuid %}" class="text-decoration-none"><span>{{ expense.spent_on|date:"d.m" }}</span><span class="date-cell__year">{{ expense.spent_on|date:"Y" }}</span></a></td>
+            <td class="expense-employee-cell">
+              {% if expense.employee.last_name %}
+                <div class="expense-employee-cell__last">{{ expense.employee.last_name }}</div>
+                <div class="expense-employee-cell__first small text-muted">{{ expense.employee.first_name|default:expense.employee.username }}</div>
+              {% elif expense.employee.first_name %}
+                <div class="expense-employee-cell__last">{{ expense.employee.first_name }}</div>
+                <div class="expense-employee-cell__first small text-muted">{{ expense.employee.username }}</div>
+              {% else %}
+                <div class="expense-employee-cell__last">{{ expense.employee|finance_employee_name }}</div>
+              {% endif %}
+            </td>
+            <td class="expense-purpose-cell">
+              <div class="expense-purpose-cell__main">{% if expense.description %}{{ expense.description }}{% elif expense.vendor %}{{ expense.vendor }}{% else %}—{% endif %}</div>
+              <div class="expense-purpose-cell__sub small text-muted">{{ expense.destination_name }}</div>
+            </td>
             <td>{% if expense.receipts.all %}<span class="text-success"><i class="bi bi-check-circle"></i></span>{% elif expense.receipt_missing_confirmed %}<span class="text-warning"><i class="bi bi-exclamation-circle"></i></span>{% else %}<span class="text-danger">Нет</span>{% endif %}</td>
             <td>{% if expense.status == "approved" %}<span class="badge bg-success-subtle text-success border status-badge" title="Подтверждён"><i class="bi bi-check-circle"></i><span class="status-text">Подтверждён</span></span>{% elif expense.status == "rejected" %}<span class="badge bg-danger-subtle text-danger border status-badge" title="Отклонён"><i class="bi bi-x-circle"></i><span class="status-text">Отклонён</span></span>{% else %}<span class="badge bg-warning-subtle text-warning border status-badge" title="На проверке"><i class="bi bi-hourglass-split"></i><span class="status-text">На проверке</span></span>{% endif %}</td>
             <td class="text-end fw-semibold">{{ expense.amount|money }}</td>
@@ -82,4 +111,95 @@
     </table>
   </div>
 </div>
+<form id="expense-bulk-hidden-form" method="post" action="{% url 'finance_expense_bulk_review' %}" class="d-none">{% csrf_token %}</form>
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    const root = document.querySelector("[data-expense-bulk-root]");
+    if (!root) return;
+    const toolbar = root.querySelector("[data-expense-bulk-toolbar]");
+    const count = root.querySelector("[data-expense-bulk-count]");
+    const checkboxes = Array.from(root.querySelectorAll("[data-expense-checkbox]"));
+    const hiddenForm = document.getElementById("expense-bulk-hidden-form");
+    let selectionMode = false;
+    let longPressTimer = null;
+
+    if (toolbar) toolbar.setAttribute("id", "expense-bulk-form");
+
+    function selectedCheckboxes() {
+      return checkboxes.filter((checkbox) => checkbox.checked);
+    }
+
+    function syncToolbar() {
+      const selected = selectedCheckboxes();
+      if (count) count.textContent = `${selected.length} выбрано`;
+      if (toolbar) {
+        toolbar.classList.toggle("d-none", !selectionMode);
+        toolbar.classList.toggle("d-flex", selectionMode);
+      }
+      root.classList.toggle("expense-selection-mode", selectionMode);
+      checkboxes.forEach((checkbox) => {
+        checkbox.closest("tr")?.classList.toggle("expense-row-selected", checkbox.checked);
+      });
+    }
+
+    function enableSelection(checkbox) {
+      selectionMode = true;
+      if (checkbox) checkbox.checked = true;
+      syncToolbar();
+    }
+
+    function clearTimer() {
+      if (longPressTimer) window.clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+
+    root.querySelectorAll("[data-expense-bulk-row]").forEach((row) => {
+      const checkbox = row.querySelector("[data-expense-checkbox]");
+      row.addEventListener("pointerdown", (event) => {
+        if (!checkbox || event.target.closest("a, button, input, select, textarea")) return;
+        clearTimer();
+        longPressTimer = window.setTimeout(() => enableSelection(checkbox), 550);
+      });
+      row.addEventListener("pointermove", clearTimer);
+      row.addEventListener("pointerup", clearTimer);
+      row.addEventListener("pointercancel", clearTimer);
+      row.addEventListener("click", (event) => {
+        if (!selectionMode) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (!checkbox || event.target.closest("input, button, select, textarea")) return;
+        checkbox.checked = !checkbox.checked;
+        syncToolbar();
+      });
+    });
+
+    checkboxes.forEach((checkbox) => {
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) selectionMode = true;
+        syncToolbar();
+      });
+    });
+
+    toolbar?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (!hiddenForm) return;
+      if (!selectedCheckboxes().length) return;
+      hiddenForm.querySelectorAll("input[name='decision'], input[name='review_comment']").forEach((item) => item.remove());
+      const submitter = event.submitter;
+      const decision = document.createElement("input");
+      decision.type = "hidden";
+      decision.name = "decision";
+      decision.value = submitter?.value || "";
+      hiddenForm.appendChild(decision);
+      const comment = document.createElement("input");
+      comment.type = "hidden";
+      comment.name = "review_comment";
+      comment.value = toolbar.querySelector("[name='review_comment']")?.value || "";
+      hiddenForm.appendChild(comment);
+      hiddenForm.submit();
+    });
+
+    syncToolbar();
+  });
+</script>
 {% endblock %}

@@ -100,7 +100,7 @@
 <style>
   .receipt-image-stage {
     height: min(78vh, calc(100vh - 11rem));
-    overflow: auto;
+    overflow: hidden;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -122,6 +122,7 @@
     user-select: none;
     -webkit-user-drag: none;
     touch-action: none;
+    will-change: transform;
   }
   @media (max-width: 576px) {
     .receipt-image-stage {
@@ -171,6 +172,13 @@
     const viewportMeta = document.querySelector("meta[name='viewport']");
     const originalViewport = viewportMeta ? viewportMeta.getAttribute("content") : "";
     let zoom = 1;
+    let panX = 0;
+    let panY = 0;
+    let activeTouches = new Map();
+    let lastTouchDistance = 0;
+    let lastTouchCenter = null;
+    let lastPointer = null;
+    let suppressImageClick = false;
 
     function lockViewportZoom() {
       if (!viewportMeta) return;
@@ -182,19 +190,37 @@
       viewportMeta.setAttribute("content", originalViewport || "width=device-width, initial-scale=1");
     }
 
-    function setZoom(value) {
-      zoom = Math.min(4, Math.max(1, value));
+    function applyImageTransform() {
       if (zoom === 1) {
         image.style.maxWidth = "100%";
         image.style.maxHeight = "100%";
-        image.style.width = "";
+        panX = 0;
+        panY = 0;
       } else {
-        image.style.maxWidth = "none";
-        image.style.maxHeight = "none";
-        image.style.width = Math.round(image.naturalWidth * zoom) + "px";
+        image.style.maxWidth = "100%";
+        image.style.maxHeight = "100%";
       }
+      image.style.transform = `translate(${Math.round(panX)}px, ${Math.round(panY)}px) scale(${zoom})`;
       image.style.cursor = zoom > 1 ? "zoom-out" : "zoom-in";
       zoomReset.textContent = Math.round(zoom * 100) + "%";
+    }
+
+    function setZoom(value) {
+      zoom = Math.min(4, Math.max(1, value));
+      applyImageTransform();
+    }
+
+    function distanceBetween(touches) {
+      const [first, second] = touches;
+      return Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY);
+    }
+
+    function centerBetween(touches) {
+      const [first, second] = touches;
+      return {
+        x: (first.clientX + second.clientX) / 2,
+        y: (first.clientY + second.clientY) / 2,
+      };
     }
 
     function showImage(url) {
@@ -232,7 +258,13 @@
     zoomIn.addEventListener("click", function () { setZoom(zoom + 0.25); });
     zoomOut.addEventListener("click", function () { setZoom(zoom - 0.25); });
     zoomReset.addEventListener("click", function () { setZoom(1); });
-    image.addEventListener("click", function () { setZoom(zoom > 1 ? 1 : 2); });
+    image.addEventListener("click", function () {
+      if (suppressImageClick) {
+        suppressImageClick = false;
+        return;
+      }
+      setZoom(zoom > 1 ? 1 : 2);
+    });
     ["gesturestart", "gesturechange", "gestureend"].forEach(function (eventName) {
       imageStage.addEventListener(eventName, function (event) {
         event.preventDefault();
@@ -242,10 +274,73 @@
       }, { passive: false });
     });
     imageStage.addEventListener("touchmove", function (event) {
-      if (event.touches.length > 1) {
-        event.preventDefault();
+      if (!event.touches.length) return;
+      event.preventDefault();
+      suppressImageClick = true;
+      if (event.touches.length >= 2) {
+        const touches = Array.from(event.touches).slice(0, 2);
+        const distance = distanceBetween(touches);
+        const center = centerBetween(touches);
+        if (lastTouchDistance) {
+          const nextZoom = Math.min(4, Math.max(1, zoom * (distance / lastTouchDistance)));
+          if (lastTouchCenter && nextZoom > 1) {
+            panX += center.x - lastTouchCenter.x;
+            panY += center.y - lastTouchCenter.y;
+          }
+          zoom = nextZoom;
+          applyImageTransform();
+        }
+        lastTouchDistance = distance;
+        lastTouchCenter = center;
+        return;
+      }
+      if (zoom <= 1) return;
+      const touch = event.touches[0];
+      if (lastTouchCenter) {
+        panX += touch.clientX - lastTouchCenter.x;
+        panY += touch.clientY - lastTouchCenter.y;
+        applyImageTransform();
+      }
+      lastTouchCenter = { x: touch.clientX, y: touch.clientY };
+    }, { passive: false });
+    imageStage.addEventListener("touchstart", function (event) {
+      if (event.touches.length >= 2) {
+        const touches = Array.from(event.touches).slice(0, 2);
+        lastTouchDistance = distanceBetween(touches);
+        lastTouchCenter = centerBetween(touches);
+      } else if (event.touches.length === 1) {
+        const touch = event.touches[0];
+        lastTouchDistance = 0;
+        lastTouchCenter = { x: touch.clientX, y: touch.clientY };
       }
     }, { passive: false });
+    imageStage.addEventListener("touchend", function () {
+      lastTouchDistance = 0;
+      lastTouchCenter = null;
+    }, { passive: false });
+    imageStage.addEventListener("pointerdown", function (event) {
+      if (event.pointerType === "touch") return;
+      if (zoom <= 1) return;
+      activeTouches.set(event.pointerId, event);
+      lastPointer = { x: event.clientX, y: event.clientY };
+      imageStage.setPointerCapture?.(event.pointerId);
+      event.preventDefault();
+    });
+    imageStage.addEventListener("pointermove", function (event) {
+      if (event.pointerType === "touch" || zoom <= 1 || !activeTouches.has(event.pointerId) || !lastPointer) return;
+      suppressImageClick = true;
+      panX += event.clientX - lastPointer.x;
+      panY += event.clientY - lastPointer.y;
+      lastPointer = { x: event.clientX, y: event.clientY };
+      applyImageTransform();
+      event.preventDefault();
+    });
+    ["pointerup", "pointercancel", "pointerleave"].forEach(function (eventName) {
+      imageStage.addEventListener(eventName, function (event) {
+        activeTouches.delete(event.pointerId);
+        lastPointer = null;
+      });
+    });
     imageStage.addEventListener("wheel", function (event) {
       if (!event.ctrlKey && Math.abs(event.deltaY) < 40) return;
       event.preventDefault();
@@ -256,6 +351,8 @@
     modalElement.addEventListener("hidden.bs.modal", function () {
       frame.src = "about:blank";
       image.src = "";
+      panX = 0;
+      panY = 0;
       setZoom(1);
       unlockViewportZoom();
     });

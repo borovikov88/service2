@@ -839,6 +839,51 @@ def finance_expense_review(request, expense_uuid):
     return redirect("finance_expense_detail", expense_uuid=expense.uuid)
 
 
+@require_POST
+@login_required
+def finance_expense_bulk_review(request):
+    organization, denied = _finance_guard(request, manage=True)
+    if denied:
+        return denied
+    form = ExpenseReviewForm(request.POST)
+    expense_ids = [value for value in request.POST.getlist("expense_ids") if value]
+    if not form.is_valid() or not expense_ids:
+        messages.error(request, "Выберите расходы и решение.")
+        return redirect(request.META.get("HTTP_REFERER") or reverse("finance_report"))
+
+    decision = form.cleaned_data["decision"]
+    review_comment = (form.cleaned_data["review_comment"] or "").strip()
+    expenses = list(
+        Expense.objects.select_related("organization", "employee", "created_by")
+        .filter(organization=organization, uuid__in=expense_ids, status=Expense.STATUS_PENDING)
+    )
+    reviewed_count = 0
+    with transaction.atomic():
+        for expense in expenses:
+            if not can_review_expense(request.user, expense) or period_is_closed(expense.organization, expense.spent_on):
+                continue
+            expense.status = decision
+            expense.review_comment = review_comment
+            expense.reviewed_by = request.user
+            expense.reviewed_at = timezone.now()
+            expense.save(update_fields=["status", "review_comment", "reviewed_by", "reviewed_at", "updated_at"])
+            action = ExpenseChange.ACTION_APPROVED if decision == Expense.STATUS_APPROVED else ExpenseChange.ACTION_REJECTED
+            ExpenseChange.objects.create(
+                expense=expense,
+                actor=request.user,
+                action=action,
+                note=review_comment,
+            )
+            reviewed_count += 1
+            notify_expense_reviewed(expense)
+
+    if reviewed_count:
+        messages.success(request, f"Обработано расходов: {reviewed_count}.")
+    else:
+        messages.error(request, "Нет расходов, доступных для согласования.")
+    return redirect(request.META.get("HTTP_REFERER") or reverse("finance_report"))
+
+
 @login_required
 @xframe_options_sameorigin
 def finance_receipt_download(request, receipt_id):

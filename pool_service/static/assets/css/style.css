@@ -12061,3 +12061,61 @@ textarea.form-control-lg {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+
+.expense-report-table td,
+.expense-report-table th {
+    padding-top: 0.65rem;
+    padding-bottom: 0.65rem;
+}
+
+.expense-select-cell {
+    width: 1%;
+    min-width: 0;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+}
+
+.expense-bulk-checkbox {
+    display: none;
+}
+
+.expense-selection-mode .expense-select-cell {
+    min-width: 36px;
+    padding-left: 0.35rem !important;
+    padding-right: 0.35rem !important;
+}
+
+.expense-selection-mode .expense-bulk-checkbox {
+    display: inline-block;
+}
+
+.expense-row-selected {
+    background: rgba(13, 110, 253, 0.06);
+}
+
+.expense-employee-cell {
+    max-width: clamp(120px, 18vw, 240px);
+}
+
+.expense-employee-cell__last,
+.expense-employee-cell__first {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.expense-employee-cell__last {
+    color: #0f172a;
+    font-weight: 600;
+}
+
+.expense-bulk-comment {
+    width: min(260px, 100%);
+}
+
+@media (max-width: 768px) {
+    .expense-report-table {
+        min-width: 680px;
+    }
+}
