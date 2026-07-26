@@ -528,7 +528,7 @@
     {% endif %}
 
     <div class="table-responsive">
-        <table class="table align-middle">
+        <table class="table table-hover align-middle">
             <thead class="small text-muted">
                 <tr>
                     <th>Дата</th>
@@ -542,7 +542,7 @@
             </thead>
             <tbody>
                 {% for issue in service_issues %}
-                    <tr class="{% if issue.stage == service_issue_done_stage %}text-muted{% endif %}">
+                    <tr class="{% if issue.stage == service_issue_done_stage %}text-muted{% endif %}" data-row-href="{{ issue.detail_url }}">
                         <td>{{ issue.created_at|date:"d.m.Y H:i" }}</td>
                         <td class="fw-semibold">{{ issue.title }}</td>
                         <td>

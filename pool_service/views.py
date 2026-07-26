@@ -6353,6 +6353,10 @@ def pool_detail(request, pool_uuid):
             for issue in service_issues:
 
                 issue.stage_label = CRM_STAGE_LABELS.get(issue.stage, issue.stage)
+                issue.detail_url = reverse(
+                    "crm_view",
+                    kwargs={"direction": issue.direction, "item_id": issue.id},
+                )
 
                 photo_urls = []
 
@@ -6543,7 +6547,11 @@ def pool_issue_create(request, pool_uuid):
 
         issue.save()
 
-        for photo in form.cleaned_data.get("photos", []):
+        uploaded_photos = list(request.FILES.getlist("photos"))
+        if not uploaded_photos:
+            uploaded_photos = form.cleaned_data.get("photos", [])
+
+        for photo in uploaded_photos:
 
             processed = _compress_issue_photo(photo)
             CrmItemPhoto.objects.create(item=issue, image=processed)
