@@ -18,7 +18,7 @@
   <meta name="apple-mobile-web-app-title" content="{{ brand_name }}" />
   <meta name="application-name" content="{{ brand_name }}" />
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" />
-  <link href="{% static 'assets/css/style.css' %}?v=11" rel="stylesheet" />
+  <link href="{% static 'assets/css/style.css' %}?v=12" rel="stylesheet" />
 
   <!-- Yandex.Metrika counter -->
   <script type="text/javascript">
@@ -1892,13 +1892,7 @@
         input.insertAdjacentElement("afterend", wrapper);
 
         pickerState.set(input, { wrapper, preview, urls: [] });
-        trigger.addEventListener("click", () => {
-          if (isMobileDevice()) {
-            openSheet(input);
-          } else {
-            openNativePicker(input, "file");
-          }
-        });
+        trigger.addEventListener("click", () => openNativePicker(input, "file"));
         input.addEventListener("change", () => renderPreview(input));
         renderPreview(input);
       }
@@ -1912,13 +1906,7 @@
         const input = event.detail && event.detail.input;
         if (!input) return;
         enhanceInput(input);
-        if (event.detail && event.detail.mode) {
-          openNativePicker(input, event.detail.mode);
-        } else if (isMobileDevice()) {
-          openSheet(input);
-        } else {
-          openNativePicker(input, "file");
-        }
+        openNativePicker(input, (event.detail && event.detail.mode) || "file");
       });
 
       window.RovikPhotoPicker = { init, open: openSheet, openNative: openNativePicker };
