@@ -64,14 +64,20 @@ class PoolIssueTests(TestCase):
 
         self.assertRedirects(response, reverse("pool_detail", kwargs={"pool_uuid": self.pool.uuid}))
         issue = CrmItem.objects.get(title="Pump leak")
-        self.assertEqual(CrmItemPhoto.objects.filter(item=issue).count(), 1)
+        photo = CrmItemPhoto.objects.get(item=issue)
 
         detail_url = reverse(
             "crm_view",
             kwargs={"direction": CrmItem.DIRECTION_SERVICE, "item_id": issue.id},
         )
+        photo_url = reverse("crm_issue_photo_download", kwargs={"photo_id": photo.id})
         detail_response = self.client.get(reverse("pool_detail", kwargs={"pool_uuid": self.pool.uuid}))
         self.assertEqual(detail_response.status_code, 200)
         self.assertContains(detail_response, f'data-row-href="{detail_url}"', html=False)
         self.assertContains(detail_response, "issue-photo-thumb")
-        self.assertContains(detail_response, "crm_issues/")
+        self.assertContains(detail_response, photo_url)
+        self.assertContains(detail_response, 'input.dataset.photoPicker = "1";', html=False)
+
+        photo_response = self.client.get(photo_url)
+        self.assertEqual(photo_response.status_code, 200)
+        self.assertEqual(photo_response["Content-Type"], "image/jpeg")

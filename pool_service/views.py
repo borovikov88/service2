@@ -38,7 +38,7 @@ from django.db import connection
 
 from django.db.models import Count, Q, Max, Case, When, Value, IntegerField
 
-from django.http import HttpResponse, HttpResponseForbidden, HttpResponseNotFound, JsonResponse
+from django.http import FileResponse, HttpResponse, HttpResponseForbidden, HttpResponseNotFound, JsonResponse
 
 from django.utils import timezone, formats
 
@@ -56,6 +56,7 @@ from io import BytesIO
 from pathlib import Path
 from PIL import Image, ImageOps
 import html
+import mimetypes
 
 from django.templatetags.static import static
 
@@ -494,6 +495,54 @@ def _compress_issue_photo(uploaded_file, max_size=ISSUE_PHOTO_MAX_SIZE, quality=
         except Exception:
             pass
         return uploaded_file
+
+
+def _crm_photo_file_response(stored_file, filename):
+    content_type = mimetypes.guess_type(filename or "")[0] or "application/octet-stream"
+    response = FileResponse(
+        stored_file.open("rb"),
+        content_type=content_type,
+        as_attachment=False,
+        filename=Path(filename or "photo").name,
+    )
+    response["Cache-Control"] = "private, no-store"
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+def _crm_item_photo_urls(item):
+    photo_urls = []
+    for photo in item.photos.all():
+        if photo.image:
+            photo_urls.append(reverse("crm_issue_photo_download", kwargs={"photo_id": photo.id}))
+    if item.photo:
+        photo_urls.append(reverse("crm_issue_primary_photo_download", kwargs={"item_id": item.id}))
+    if item.photo_url:
+        photo_urls.append(item.photo_url)
+    return photo_urls
+
+
+@login_required
+def crm_issue_photo_download(request, photo_id):
+    if not _can_access_crm(request.user):
+        return HttpResponseForbidden()
+    photo = get_object_or_404(
+        CrmItemPhoto.objects.select_related("item__organization"),
+        id=photo_id,
+    )
+    _crm_get_item_for_user(request, photo.item.direction, photo.item_id, include_archived=True)
+    return _crm_photo_file_response(photo.image, photo.image.name)
+
+
+@login_required
+def crm_issue_primary_photo_download(request, item_id):
+    if not _can_access_crm(request.user):
+        return HttpResponseForbidden()
+    item = get_object_or_404(CrmItem.objects.select_related("organization"), id=item_id)
+    _crm_get_item_for_user(request, item.direction, item.id, include_archived=True)
+    if not item.photo:
+        return HttpResponseNotFound()
+    return _crm_photo_file_response(item.photo, item.photo.name)
 
 
 def _can_access_crm(user):
@@ -4351,14 +4400,7 @@ def crm_view(request, direction, item_id):
     if item.amount is not None:
         item.amount_display = format_money(item.amount)
 
-    item_photo_urls = []
-    for photo in item.photos.all():
-        if photo.image:
-            item_photo_urls.append(photo.image.url)
-    if item.photo:
-        item_photo_urls.append(item.photo.url)
-    if item.photo_url:
-        item_photo_urls.append(item.photo_url)
+    item_photo_urls = _crm_item_photo_urls(item)
 
     related_tasks = list(
         item.service_tasks.select_related("pool", "client", "primary_responsible").order_by("-updated_at")
@@ -4569,21 +4611,7 @@ def crm_edit(request, direction, item_id):
 
 
 
-    item_photo_urls = []
-
-    for photo in item.photos.all():
-
-        if photo.image:
-
-            item_photo_urls.append(photo.image.url)
-
-    if item.photo:
-
-        item_photo_urls.append(item.photo.url)
-
-    if item.photo_url:
-
-        item_photo_urls.append(item.photo_url)
+    item_photo_urls = _crm_item_photo_urls(item)
 
 
 
@@ -6358,21 +6386,7 @@ def pool_detail(request, pool_uuid):
                     kwargs={"direction": issue.direction, "item_id": issue.id},
                 )
 
-                photo_urls = []
-
-                if issue.photo:
-
-                    photo_urls.append(issue.photo.url)
-
-                if issue.photo_url:
-
-                    photo_urls.append(issue.photo_url)
-
-                for photo in issue.photos.all():
-
-                    if photo.image:
-
-                        photo_urls.append(photo.image.url)
+                photo_urls = _crm_item_photo_urls(issue)
 
                 issue.photo_urls = photo_urls
 

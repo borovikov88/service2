@@ -525,6 +525,13 @@
             </button>
         </div>
     </form>
+    <script>
+      (function () {
+        const input = document.querySelector("#service-issue-form input[type='file'][name='photos']");
+        if (!input) return;
+        input.dataset.photoPicker = "1";
+      })();
+    </script>
     {% endif %}
 
     <div class="table-responsive">
