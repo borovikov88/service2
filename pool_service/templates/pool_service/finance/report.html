@@ -102,8 +102,8 @@
               <div class="expense-purpose-cell__main">{% if expense.description %}{{ expense.description }}{% elif expense.vendor %}{{ expense.vendor }}{% else %}—{% endif %}</div>
               <div class="expense-purpose-cell__sub small text-muted">{{ expense.destination_name }}</div>
             </td>
-            <td>{% if expense.receipts.all %}<span class="text-success"><i class="bi bi-check-circle"></i></span>{% elif expense.receipt_missing_confirmed %}<span class="text-warning"><i class="bi bi-exclamation-circle"></i></span>{% else %}<span class="text-danger">Нет</span>{% endif %}</td>
-            <td>{% if expense.status == "approved" %}<span class="badge bg-success-subtle text-success border status-badge" title="Подтверждён"><i class="bi bi-check-circle"></i><span class="status-text">Подтверждён</span></span>{% elif expense.status == "rejected" %}<span class="badge bg-danger-subtle text-danger border status-badge" title="Отклонён"><i class="bi bi-x-circle"></i><span class="status-text">Отклонён</span></span>{% else %}<span class="badge bg-warning-subtle text-warning border status-badge" title="На проверке"><i class="bi bi-hourglass-split"></i><span class="status-text">На проверке</span></span>{% endif %}</td>
+            <td>{% if expense.receipts.all %}<span class="expense-state-icon expense-state-icon--success" title="Чек приложен"><i class="bi bi-check-circle"></i></span>{% elif expense.receipt_missing_confirmed %}<span class="expense-state-icon expense-state-icon--warning" title="Чек отсутствует"><i class="bi bi-exclamation-circle"></i></span>{% else %}<span class="expense-state-icon expense-state-icon--danger" title="Нет чека"><i class="bi bi-x-circle"></i></span>{% endif %}</td>
+            <td>{% if expense.status == "approved" %}<span class="expense-state-icon expense-state-icon--success" title="Подтверждён"><i class="bi bi-check-circle"></i></span>{% elif expense.status == "rejected" %}<span class="expense-state-icon expense-state-icon--danger" title="Отклонён"><i class="bi bi-x-circle"></i></span>{% else %}<span class="expense-state-icon expense-state-icon--warning" title="На проверке"><i class="bi bi-hourglass-split"></i></span>{% endif %}</td>
             <td class="text-end fw-semibold">{{ expense.amount|money }}</td>
           </tr>
         {% empty %}<tr><td colspan="7" class="text-center text-muted py-4">Расходов за период нет</td></tr>{% endfor %}
@@ -155,14 +155,23 @@
 
     root.querySelectorAll("[data-expense-bulk-row]").forEach((row) => {
       const checkbox = row.querySelector("[data-expense-checkbox]");
-      row.addEventListener("pointerdown", (event) => {
+      const startLongPress = (event) => {
         if (!checkbox || event.target.closest("a, button, input, select, textarea")) return;
         clearTimer();
         longPressTimer = window.setTimeout(() => enableSelection(checkbox), 550);
-      });
+      };
+      row.addEventListener("pointerdown", startLongPress);
+      row.addEventListener("touchstart", (event) => {
+        if (!checkbox || event.target.closest("a, button, input, select, textarea")) return;
+        event.preventDefault();
+        startLongPress(event);
+      }, { passive: false });
       row.addEventListener("pointermove", clearTimer);
       row.addEventListener("pointerup", clearTimer);
       row.addEventListener("pointercancel", clearTimer);
+      row.addEventListener("touchmove", clearTimer, { passive: true });
+      row.addEventListener("touchend", clearTimer, { passive: true });
+      row.addEventListener("touchcancel", clearTimer, { passive: true });
       row.addEventListener("click", (event) => {
         if (!selectionMode) return;
         event.preventDefault();

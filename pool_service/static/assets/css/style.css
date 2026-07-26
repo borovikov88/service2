@@ -12068,6 +12068,12 @@ textarea.form-control-lg {
     padding-bottom: 0.65rem;
 }
 
+.expense-report-table [data-expense-bulk-row] {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
 .expense-select-cell {
     width: 1%;
     min-width: 0;
@@ -12112,6 +12118,46 @@ textarea.form-control-lg {
 
 .expense-bulk-comment {
     width: min(260px, 100%);
+}
+
+.expense-state-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border: 1px solid currentColor;
+    border-radius: 10px;
+    font-size: 1rem;
+    line-height: 1;
+    background: #fff;
+}
+
+.expense-state-icon--success {
+    color: #198754;
+    background: rgba(25, 135, 84, 0.08);
+}
+
+.expense-state-icon--warning {
+    color: #f0ad00;
+    background: rgba(255, 193, 7, 0.12);
+}
+
+.expense-state-icon--danger {
+    color: #dc3545;
+    background: rgba(220, 53, 69, 0.08);
+}
+
+@media (min-width: 992px) {
+    .expense-select-cell {
+        min-width: 36px;
+        padding-left: 0.35rem !important;
+        padding-right: 0.35rem !important;
+    }
+
+    .expense-bulk-checkbox {
+        display: inline-block;
+    }
 }
 
 @media (max-width: 768px) {

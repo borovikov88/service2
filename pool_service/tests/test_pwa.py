@@ -23,7 +23,7 @@ class PwaTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "application/javascript")
-        self.assertContains(response, "CACHE_VERSION = 'v13'")
+        self.assertContains(response, "CACHE_VERSION = 'v14'")
         self.assertContains(response, "const OFFLINE_URLS = []")
         self.assertContains(response, "/finance/receipts/")
         self.assertContains(response, "event.request.mode === 'navigate'")

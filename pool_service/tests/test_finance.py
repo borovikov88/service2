@@ -589,6 +589,8 @@ class FinanceTests(TestCase):
         self.assertContains(response, 'class="date-cell"')
         self.assertContains(response, 'expense-employee-cell__last')
         self.assertContains(response, 'expense-purpose-cell__main')
+        self.assertContains(response, 'data-expense-checkbox')
+        self.assertContains(response, 'expense-state-icon')
         self.assertContains(response, reverse("finance_expense_bulk_review"))
         self.assertEqual(response.context["approved_total"], 3000)
         self.assertEqual(response.context["office_total"], 500)
