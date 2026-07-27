@@ -27,7 +27,8 @@ DEFAULT_EXPENSE_CATEGORIES = [
 LEGACY_EXPENSE_CATEGORIES = ["Доставка", "Вода"]
 
 FINANCE_ACCESS_ROLES = {"owner", "admin", "manager", "service", "installer", "accountant"}
-FINANCE_MANAGE_ROLES = {"owner", "admin", "manager", "accountant"}
+FINANCE_MANAGE_ROLES = {"owner", "admin", "accountant"}
+FINANCE_ADVANCE_ISSUE_ROLES = {"owner", "admin", "manager", "accountant"}
 FINANCE_CLOSE_ROLES = {"owner", "admin", "accountant"}
 
 
@@ -52,6 +53,12 @@ def can_manage_finance(user, organization):
     if user.is_superuser:
         return bool(organization)
     return bool(organization_roles(user, organization) & FINANCE_MANAGE_ROLES)
+
+
+def can_issue_accountable_transaction(user, organization):
+    if user.is_superuser:
+        return bool(organization)
+    return bool(organization_roles(user, organization) & FINANCE_ADVANCE_ISSUE_ROLES)
 
 
 def can_close_finance_period(user, organization):

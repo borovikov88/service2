@@ -12,8 +12,10 @@
   <div class="d-flex flex-wrap gap-2">
     <a href="{% url 'finance_expense_create' %}" class="btn btn-primary" data-finance-modal data-modal-title="Новый расход" data-modal-size="xl"><i class="bi bi-receipt me-2"></i>Добавить расход</a>
     <a href="{% url 'finance_income_create' %}" class="btn btn-outline-success" data-finance-modal data-modal-title="Приход денег" data-modal-size="lg"><i class="bi bi-wallet2 me-2"></i>Приход денег</a>
-    {% if can_manage_finance %}
+    {% if can_issue_accountable %}
       <a href="{% url 'finance_transaction_create' %}" class="btn btn-outline-primary" data-finance-modal data-modal-title="Операция подотчёта" data-modal-size="lg"><i class="bi bi-cash-stack me-2"></i>Выдать подотчёт</a>
+    {% endif %}
+    {% if can_manage_finance %}
       <a href="{% url 'finance_report' %}" class="btn btn-outline-secondary"><i class="bi bi-bar-chart me-2"></i>Отчёт</a>
     {% endif %}
   </div>

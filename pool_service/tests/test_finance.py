@@ -425,7 +425,7 @@ class FinanceTests(TestCase):
         self.assertEqual(pending_balance["confirmed_balance"], 10000)
         self.assertEqual(pending_balance["operational_balance"], 7500)
 
-        self.client.force_login(self.manager)
+        self.client.force_login(self.accountant)
         response = self.client.post(
             reverse("finance_expense_review", kwargs={"expense_uuid": expense.uuid}),
             {"decision": Expense.STATUS_APPROVED, "review_comment": ""},
@@ -437,6 +437,44 @@ class FinanceTests(TestCase):
         approved_balance = accountable_balance(self.organization, self.service)
         self.assertEqual(approved_balance["confirmed_balance"], 7500)
         self.assertEqual(approved_balance["operational_balance"], 7500)
+
+    def test_manager_can_issue_advance_without_viewing_employee_accountables(self):
+        AccountableTransaction.objects.create(
+            organization=self.organization,
+            employee=self.service,
+            created_by=self.owner,
+            transaction_type=AccountableTransaction.TYPE_ISSUE,
+            amount="500.00",
+            occurred_on=date.today(),
+        )
+        self.client.force_login(self.manager)
+
+        dashboard = self.client.get(reverse("finance_dashboard"))
+        detail = self.client.get(reverse("finance_employee_detail", kwargs={"employee_id": self.service.id}))
+        report = self.client.get(reverse("finance_report"))
+        transaction_form = self.client.get(reverse("finance_transaction_create"))
+        transaction_post = self.client.post(
+            reverse("finance_transaction_create"),
+            {
+                "employee": self.service.id,
+                "transaction_type": AccountableTransaction.TYPE_ISSUE,
+                "amount": "1000.00",
+                "occurred_on": date.today().isoformat(),
+                "note": "manager advance",
+            },
+        )
+
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertContains(dashboard, reverse("finance_transaction_create"))
+        self.assertNotContains(
+            dashboard,
+            f'data-row-href="{reverse("finance_employee_detail", kwargs={"employee_id": self.service.id})}"',
+            html=False,
+        )
+        self.assertEqual(detail.status_code, 403)
+        self.assertEqual(report.status_code, 403)
+        self.assertEqual(transaction_form.status_code, 200)
+        self.assertEqual(transaction_post.status_code, 302)
 
     def test_new_client_is_created_once_from_expense(self):
         first_request_id = str(uuid.uuid4())
@@ -567,7 +605,7 @@ class FinanceTests(TestCase):
         )
         self.create_expense()
         employee_expense = Expense.objects.get()
-        self.client.force_login(self.manager)
+        self.client.force_login(self.accountant)
         self.client.post(
             reverse("finance_expense_review", kwargs={"expense_uuid": employee_expense.uuid}),
             {"decision": Expense.STATUS_APPROVED, "review_comment": ""},
@@ -580,7 +618,7 @@ class FinanceTests(TestCase):
             destination_type=Expense.DESTINATION_OFFICE,
             destination_query="",
         )
-        self.client.force_login(self.manager)
+        self.client.force_login(self.accountant)
 
         response = self.client.get(reverse("finance_report"))
 
@@ -609,7 +647,7 @@ class FinanceTests(TestCase):
     def test_report_bulk_review_updates_selected_pending_expenses(self):
         self.create_expense()
         expense = Expense.objects.get()
-        self.client.force_login(self.manager)
+        self.client.force_login(self.accountant)
 
         response = self.client.post(
             reverse("finance_expense_bulk_review"),

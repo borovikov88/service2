@@ -35,6 +35,7 @@ from pool_service.services.finance import (
     can_access_finance,
     can_close_finance_period,
     can_edit_expense,
+    can_issue_accountable_transaction,
     can_manage_finance,
     can_review_accountable_transaction,
     can_review_expense,
@@ -59,13 +60,15 @@ def _organization_for_finance(request):
     return organization_for_user(request.user)
 
 
-def _finance_guard(request, *, manage=False, close=False):
+def _finance_guard(request, *, manage=False, close=False, issue=False):
     organization = _organization_for_finance(request)
     if not organization:
         return None, HttpResponseForbidden("Организация не найдена.")
     allowed = can_access_finance(request.user, organization)
     if manage:
         allowed = can_manage_finance(request.user, organization)
+    if issue:
+        allowed = can_issue_accountable_transaction(request.user, organization)
     if close:
         allowed = can_close_finance_period(request.user, organization)
     if not allowed:
@@ -245,6 +248,7 @@ def finance_dashboard(request):
         return denied
     ensure_default_categories(organization)
     manage = can_manage_finance(request.user, organization)
+    can_issue_accountable = can_issue_accountable_transaction(request.user, organization)
     today = date.today()
     month_start, month_end = month_bounds(today)
     expenses = (
@@ -285,6 +289,7 @@ def finance_dashboard(request):
         {
             "organization": organization,
             "can_manage_finance": manage,
+            "can_issue_accountable": can_issue_accountable,
             "can_close_finance": can_close_finance_period(request.user, organization),
             "balance_rows": balance_rows,
             "latest_expenses": expenses[:20],
@@ -302,7 +307,7 @@ def finance_dashboard(request):
 @login_required
 @xframe_options_sameorigin
 def finance_transaction_create(request):
-    organization, denied = _finance_guard(request, manage=True)
+    organization, denied = _finance_guard(request, issue=True)
     if denied:
         return denied
     form = AccountableTransactionForm(
