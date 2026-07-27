@@ -1,0 +1,84 @@
+{% extends "pool_service/base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<div class="{% if finance_modal %}p-3 p-lg-4{% else %}mx-auto{% endif %}"{% if not finance_modal %} style="max-width:900px;"{% endif %}>
+  {% if not finance_modal %}
+  <div class="d-flex align-items-center justify-content-between gap-3 mb-4">
+    <div>
+      <h1 class="h3 fw-bold mb-1">{{ title }}</h1>
+      <div class="text-muted">Укажите количество купюр и монет, сумму посчитает программа</div>
+    </div>
+    <a href="{% url back_url_name %}" class="btn btn-outline-secondary">Назад</a>
+  </div>
+  {% endif %}
+
+  <form method="post" class="{% if not finance_modal %}card card-soft p-3 p-lg-4{% endif %}" data-cash-count-form>
+    {% csrf_token %}
+    <div class="row g-3 mb-3">
+      <div class="col-12 col-md-6">
+        <label class="form-label" for="{{ form.occurred_on.id_for_label }}">{{ form.occurred_on.label }}</label>
+        {{ form.occurred_on }}
+        {% for error in form.occurred_on.errors %}<div class="invalid-feedback d-block">{{ error }}</div>{% endfor %}
+      </div>
+      <div class="col-12 col-md-6">
+        <div class="card border-0 bg-light h-100 p-3">
+          <div class="text-muted small">Итого по пересчёту</div>
+          <div class="h3 fw-bold mb-0" data-cash-count-total>0,00 ₽</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row g-2">
+      {% for name, label, value, field in denomination_fields %}
+        <div class="col-6 col-md-4 col-lg-3">
+          <label class="form-label small" for="{{ field.id_for_label }}">{{ label }}</label>
+          <div class="input-group">
+            {{ field }}
+            <span class="input-group-text">шт.</span>
+          </div>
+          <div class="form-text" data-denomination-subtotal data-value="{{ value }}">0,00 ₽</div>
+          {% for error in field.errors %}<div class="invalid-feedback d-block">{{ error }}</div>{% endfor %}
+        </div>
+      {% endfor %}
+    </div>
+
+    <div class="mt-3">
+      <label class="form-label" for="{{ form.note.id_for_label }}">{{ form.note.label }}</label>
+      {{ form.note }}
+      {% for error in form.note.errors %}<div class="invalid-feedback d-block">{{ error }}</div>{% endfor %}
+    </div>
+    {% if form.non_field_errors %}<div class="alert alert-danger mt-3">{{ form.non_field_errors }}</div>{% endif %}
+    <div class="d-flex gap-2 mt-4">
+      <button type="submit" class="btn btn-primary">Подтвердить пересчёт</button>
+      <a href="{% url back_url_name %}" class="btn btn-outline-secondary">Отмена</a>
+    </div>
+  </form>
+</div>
+
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    const form = document.querySelector("[data-cash-count-form]");
+    if (!form) return;
+    const formatter = new Intl.NumberFormat("ru-RU", { style: "currency", currency: "RUB" });
+    const totalElement = form.querySelector("[data-cash-count-total]");
+    function updateTotal() {
+      let total = 0;
+      form.querySelectorAll("[data-denomination-subtotal]").forEach(function (subtotal) {
+        const input = subtotal.closest(".col-6").querySelector("input");
+        const value = Number(subtotal.dataset.value || "0");
+        const count = Number(input.value || "0");
+        const sum = value * count;
+        subtotal.textContent = formatter.format(sum);
+        total += sum;
+      });
+      totalElement.textContent = formatter.format(total);
+    }
+    form.querySelectorAll("input[type='number']").forEach(function (input) {
+      input.addEventListener("input", updateTotal);
+    });
+    updateTotal();
+  });
+</script>
+{% endblock %}

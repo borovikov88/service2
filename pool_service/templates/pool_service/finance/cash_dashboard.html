@@ -1,25 +1,44 @@
 {% extends "pool_service/base.html" %}
 {% load finance_tags %}
 
-{% block title %}Касса{% endblock %}
+{% block title %}{% if cashbox_section == "company" %}Касса организации{% else %}Касса ККМ{% endif %}{% endblock %}
 
 {% block content %}
 <div class="d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-4">
   <div>
-    <h1 class="h3 fw-bold mb-1">Касса</h1>
-    <div class="text-muted">Кассы ККМ менеджеров и общая касса компании</div>
+    <h1 class="h3 fw-bold mb-1">{% if cashbox_section == "company" %}Касса организации{% else %}Касса ККМ{% endif %}</h1>
+    <div class="text-muted">
+      {% if cashbox_section == "company" %}
+        Общая касса владельца, администратора и бухгалтера
+      {% else %}
+        Общая история движений по ККМ
+      {% endif %}
+    </div>
   </div>
+  {% if cashbox_section == "kkm" %}
   <div class="d-flex flex-wrap gap-2">
     {% if can_create_manager_cash %}
       <a href="{% url 'finance_cash_income_create' %}" class="btn btn-outline-success"><i class="bi bi-plus-circle me-2"></i>Получил деньги</a>
       <a href="{% url 'finance_cash_accountable_issue_create' %}" class="btn btn-outline-primary"><i class="bi bi-cash-stack me-2"></i>Выдать подотчёт</a>
       <a href="{% url 'finance_cash_transfer_create' %}" class="btn btn-primary"><i class="bi bi-arrow-left-right me-2"></i>Сдать выручку</a>
     {% endif %}
+    {% if can_return_accountable %}
+      <a href="{% url 'finance_accountable_return_create' %}" class="btn btn-outline-primary"><i class="bi bi-arrow-return-left me-2"></i>Возврат подотчёта</a>
+    {% endif %}
   </div>
+  {% endif %}
 </div>
 
+{% if cashbox_section == "company" and can_manage_cash %}
+<div class="card card-soft p-3 p-lg-4 mb-4">
+  <div class="d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-3">
+    <div>
+      <h2 class="h5 fw-bold mb-1">Касса организации</h2>
+      <div class="text-muted small">Общая касса для владельца, администратора и бухгалтера</div>
+    </div>
+    <a href="{% url 'finance_cash_count_create' cashbox_type='company' %}" class="btn btn-outline-secondary"><i class="bi bi-calculator me-2"></i>Пересчёт кассы</a>
+  </div>
 <div class="row g-3 mb-4">
-  {% if can_manage_cash %}
     <div class="col-12 col-md-4">
       <div class="card card-soft p-4 h-100">
         <div class="text-muted small mb-1">Касса компании</div>
@@ -38,7 +57,36 @@
         <div class="fs-3 fw-bold text-warning">{{ company_balance.pending_transfer|money }}</div>
       </div>
     </div>
-  {% else %}
+  </div>
+  <h3 class="h6 fw-bold mb-2">Последние пересчёты кассы организации</h3>
+  <div class="table-responsive">
+    <table class="table align-middle mb-0">
+      <thead class="small text-muted"><tr><th>Дата</th><th>Кто считал</th><th>Комментарий</th><th class="text-end">Сумма</th></tr></thead>
+      <tbody>
+        {% for count in company_counts %}
+          <tr><td class="date-cell"><span>{{ count.occurred_on|date:"d.m" }}</span><span class="date-cell__year">{{ count.occurred_on|date:"Y" }}</span></td><td>{{ count.counted_by|finance_employee_name }}</td><td>{% if count.note %}{{ count.note }}{% else %}<span class="text-muted">—</span>{% endif %}</td><td class="text-end fw-semibold">{{ count.total|money }}</td></tr>
+        {% empty %}
+          <tr><td colspan="4" class="text-center text-muted py-4">Пересчётов пока нет</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{% if cashbox_section == "kkm" %}
+<div class="card card-soft p-3 p-lg-4 mb-4">
+  <div class="d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-3">
+    <div>
+      <h2 class="h5 fw-bold mb-1">Касса ККМ</h2>
+      <div class="text-muted small">Общая история движений по ККМ</div>
+    </div>
+    {% if can_count_kkm %}
+      <a href="{% url 'finance_cash_count_create' cashbox_type='kkm' %}" class="btn btn-outline-secondary"><i class="bi bi-calculator me-2"></i>Пересчёт ККМ</a>
+    {% endif %}
+  </div>
+  {% if not can_manage_cash %}
+  <div class="row g-3 mb-4">
     {% for row in manager_rows %}
       <div class="col-12 col-md-6">
         <div class="card card-soft p-4 h-100">
@@ -53,16 +101,14 @@
         </div>
       </div>
     {% endfor %}
+  </div>
   {% endif %}
-</div>
 
-{% if can_manage_cash %}
-<div class="card card-soft p-3 p-lg-4 mb-4">
-  <h2 class="h5 fw-bold mb-3">Кассы ККМ менеджеров</h2>
+  <h3 class="h6 fw-bold mb-3">Остатки ККМ по менеджерам</h3>
   <div class="table-responsive">
     <table class="table align-middle mb-0">
       <thead class="small text-muted">
-        <tr><th>Менеджер</th><th class="text-end">Получено</th><th class="text-end">Сдано</th><th class="text-end">Выдано</th><th class="text-end">На проверке</th><th class="text-end">Остаток ККМ</th></tr>
+        <tr><th>Менеджер</th><th class="text-end">Получено</th><th class="text-end">Сдано</th><th class="text-end">Выдано</th><th class="text-end">Возвраты</th><th class="text-end">На проверке</th><th class="text-end">Остаток ККМ</th></tr>
       </thead>
       <tbody>
         {% for row in manager_rows %}
@@ -71,11 +117,12 @@
             <td class="text-end">{{ row.approved_income|money }}</td>
             <td class="text-end">{{ row.approved_transfer|money }}</td>
             <td class="text-end">{{ row.approved_accountable_issue|money }}</td>
+            <td class="text-end">{{ row.approved_accountable_return|money }}</td>
             <td class="text-end">{{ row.pending_total|money }}</td>
             <td class="text-end fw-bold {% if row.balance < 0 %}text-danger{% else %}text-success{% endif %}">{{ row.balance|money }}</td>
           </tr>
         {% empty %}
-          <tr><td colspan="6" class="text-center text-muted py-4">Кассовых операций пока нет</td></tr>
+          <tr><td colspan="7" class="text-center text-muted py-4">Кассовых операций пока нет</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -83,8 +130,9 @@
 </div>
 {% endif %}
 
+{% if cashbox_section == "kkm" %}
 <div class="card card-soft p-3 p-lg-4">
-  <h2 class="h5 fw-bold mb-3">Операции кассы</h2>
+  <h2 class="h5 fw-bold mb-3">История движений ККМ</h2>
   <div class="table-responsive">
     <table class="table align-middle mb-0">
       <thead class="small text-muted">
@@ -92,10 +140,10 @@
           <th>Дата</th>
           <th>Операция</th>
           {% if can_manage_cash %}<th>Менеджер</th>{% endif %}
-          <th>Кому сдано</th>
+          <th>Связано с</th>
           <th class="text-end">Сумма</th>
           <th class="text-end">Статус</th>
-          {% if can_manage_cash %}<th class="text-end">Действия</th>{% endif %}
+          <th class="text-end">Действия</th>
         </tr>
       </thead>
       <tbody>
@@ -110,7 +158,7 @@
               {% endif %}
             </td>
             {% if can_manage_cash %}<td>{{ operation.manager|finance_employee_name }}</td>{% endif %}
-            <td>{% if operation.receiver %}{{ operation.receiver|finance_employee_name }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
+            <td>{% if operation.receiver %}{{ operation.receiver|finance_employee_name }}{% elif operation.accountable_transaction %}{{ operation.accountable_transaction.employee|finance_employee_name }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
             <td class="text-end fw-semibold">{{ operation.amount|money }}</td>
             <td class="text-end">
               {% if operation.status == "approved" %}<span class="badge bg-success-subtle text-success border status-badge"><i class="bi bi-check-circle"></i><span class="status-text">Подтверждено</span></span>
@@ -118,9 +166,8 @@
               {% elif operation.operation_type == "manager_income" %}<span class="badge bg-warning-subtle text-warning border status-badge"><i class="bi bi-hourglass-split"></i><span class="status-text">Не подтверждено</span></span>
               {% else %}<span class="badge bg-warning-subtle text-warning border status-badge"><i class="bi bi-hourglass-split"></i><span class="status-text">На проверке</span></span>{% endif %}
             </td>
-            {% if can_manage_cash %}
-              <td class="text-end">
-                {% if operation.status == "pending" and operation.operation_type != "accountable_issue" %}
+            <td class="text-end">
+                {% if operation.status == "pending" and operation.operation_type != "accountable_issue" and operation.operation_type != "accountable_return" and can_manage_cash %}
                   <div class="d-flex flex-wrap justify-content-end gap-2">
                     <form method="post" action="{% url 'finance_cash_operation_review' operation.id %}" class="d-inline">
                       {% csrf_token %}
@@ -133,11 +180,23 @@
                       <button class="btn btn-outline-danger btn-sm js-confirm-action" type="submit" data-confirm-title="Отклонить операцию" data-confirm-body="Отклонённая операция останется в истории, но не попадёт в остатки." data-confirm-confirm="Отклонить" data-confirm-variant="danger">Отклонить</button>
                     </form>
                   </div>
+                {% elif operation.status == "pending" and operation.operation_type == "accountable_return" and operation.manager_id == request.user.id and operation.created_by_id != request.user.id %}
+                  <div class="d-flex flex-wrap justify-content-end gap-2">
+                    <form method="post" action="{% url 'finance_cash_operation_review' operation.id %}" class="d-inline">
+                      {% csrf_token %}
+                      <input type="hidden" name="decision" value="approved">
+                      <button class="btn btn-success btn-sm js-confirm-action" type="submit" data-confirm-title="Подтвердить возврат" data-confirm-body="После подтверждения сумма попадёт в ККМ, а подотчёт сотрудника уменьшится." data-confirm-confirm="Подтвердить" data-confirm-variant="success">Подтвердить</button>
+                    </form>
+                    <form method="post" action="{% url 'finance_cash_operation_review' operation.id %}" class="d-inline">
+                      {% csrf_token %}
+                      <input type="hidden" name="decision" value="rejected">
+                      <button class="btn btn-outline-danger btn-sm js-confirm-action" type="submit" data-confirm-title="Отклонить возврат" data-confirm-body="Возврат останется в истории, но не попадёт в остатки." data-confirm-confirm="Отклонить" data-confirm-variant="danger">Отклонить</button>
+                    </form>
+                  </div>
                 {% else %}
                   <span class="text-muted">—</span>
                 {% endif %}
-              </td>
-            {% endif %}
+            </td>
           </tr>
         {% empty %}
           <tr><td colspan="{% if can_manage_cash %}7{% else %}6{% endif %}" class="text-center text-muted py-4">Кассовых операций пока нет</td></tr>
@@ -146,4 +205,23 @@
     </table>
   </div>
 </div>
+{% endif %}
+
+{% if cashbox_section == "kkm" %}
+<div class="card card-soft p-3 p-lg-4 mt-4">
+  <h2 class="h5 fw-bold mb-3">Последние пересчёты ККМ</h2>
+  <div class="table-responsive">
+    <table class="table align-middle mb-0">
+      <thead class="small text-muted"><tr><th>Дата</th><th>Менеджер</th><th>Кто считал</th><th>Комментарий</th><th class="text-end">Сумма</th></tr></thead>
+      <tbody>
+        {% for count in kkm_counts %}
+          <tr><td class="date-cell"><span>{{ count.occurred_on|date:"d.m" }}</span><span class="date-cell__year">{{ count.occurred_on|date:"Y" }}</span></td><td>{% if count.manager %}{{ count.manager|finance_employee_name }}{% else %}<span class="text-muted">Общая ККМ</span>{% endif %}</td><td>{{ count.counted_by|finance_employee_name }}</td><td>{% if count.note %}{{ count.note }}{% else %}<span class="text-muted">—</span>{% endif %}</td><td class="text-end fw-semibold">{{ count.total|money }}</td></tr>
+        {% empty %}
+          <tr><td colspan="5" class="text-center text-muted py-4">Пересчётов пока нет</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
 {% endblock %}

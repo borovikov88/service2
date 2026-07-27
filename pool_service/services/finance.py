@@ -69,10 +69,7 @@ def can_close_finance_period(user, organization):
 
 
 def can_access_cash(user, organization):
-    if user.is_superuser:
-        return bool(organization)
-    roles = organization_roles(user, organization)
-    return bool(roles & FINANCE_MANAGE_ROLES or "manager" in roles)
+    return can_access_finance(user, organization)
 
 
 def can_manage_cash(user, organization):
@@ -284,7 +281,7 @@ def accountable_rows(organization, through=None, users=None):
 
 
 def cash_operation_effect(operation_type, amount):
-    if operation_type == CashOperation.TYPE_MANAGER_INCOME:
+    if operation_type in {CashOperation.TYPE_MANAGER_INCOME, CashOperation.TYPE_ACCOUNTABLE_RETURN}:
         return amount
     if operation_type in {CashOperation.TYPE_TRANSFER_TO_COMPANY, CashOperation.TYPE_ACCOUNTABLE_ISSUE}:
         return -amount
@@ -303,9 +300,11 @@ def manager_cash_balance(organization, manager, through=None):
     pending_income = Decimal("0.00")
     pending_transfer = Decimal("0.00")
     pending_accountable_issue = Decimal("0.00")
+    pending_accountable_return = Decimal("0.00")
     approved_income = Decimal("0.00")
     approved_transfer = Decimal("0.00")
     approved_accountable_issue = Decimal("0.00")
+    approved_accountable_return = Decimal("0.00")
     for operation in operations.only("operation_type", "amount", "status"):
         if operation.status == CashOperation.STATUS_APPROVED:
             balance += cash_operation_effect(operation.operation_type, operation.amount)
@@ -315,6 +314,8 @@ def manager_cash_balance(organization, manager, through=None):
                 approved_transfer += operation.amount
             elif operation.operation_type == CashOperation.TYPE_ACCOUNTABLE_ISSUE:
                 approved_accountable_issue += operation.amount
+            elif operation.operation_type == CashOperation.TYPE_ACCOUNTABLE_RETURN:
+                approved_accountable_return += operation.amount
         elif operation.status == CashOperation.STATUS_PENDING:
             if operation.operation_type == CashOperation.TYPE_MANAGER_INCOME:
                 balance += operation.amount
@@ -324,18 +325,22 @@ def manager_cash_balance(organization, manager, through=None):
                 pending_transfer += operation.amount
             elif operation.operation_type == CashOperation.TYPE_ACCOUNTABLE_ISSUE:
                 pending_accountable_issue += operation.amount
+            elif operation.operation_type == CashOperation.TYPE_ACCOUNTABLE_RETURN:
+                pending_accountable_return += operation.amount
 
     return {
         "balance": balance,
         "approved_income": approved_income,
         "approved_transfer": approved_transfer,
         "approved_accountable_issue": approved_accountable_issue,
+        "approved_accountable_return": approved_accountable_return,
         "pending_income": pending_income,
         "pending_transfer": pending_transfer,
         "pending_accountable_issue": pending_accountable_issue,
+        "pending_accountable_return": pending_accountable_return,
         "reserved_total": pending_transfer + pending_accountable_issue,
         "available_balance": balance - pending_transfer - pending_accountable_issue,
-        "pending_total": pending_income + pending_transfer + pending_accountable_issue,
+        "pending_total": pending_income + pending_transfer + pending_accountable_issue + pending_accountable_return,
     }
 
 

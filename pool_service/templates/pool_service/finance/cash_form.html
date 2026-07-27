@@ -10,7 +10,7 @@
       <h1 class="h3 fw-bold mb-1">{{ title }}</h1>
       <div class="text-muted">{{ subtitle }}</div>
     </div>
-    <a href="{% url 'finance_cash_dashboard' %}" class="btn btn-outline-secondary">Назад</a>
+    <a href="{% url 'finance_kkm_cash_dashboard' %}" class="btn btn-outline-secondary">Назад</a>
   </div>
   {% endif %}
 
@@ -29,7 +29,7 @@
     {% if form.non_field_errors %}<div class="alert alert-danger mt-3">{{ form.non_field_errors }}</div>{% endif %}
     <div class="d-flex gap-2 mt-4">
       <button type="submit" class="btn btn-primary">{{ submit_label }}</button>
-      <a href="{% url 'finance_cash_dashboard' %}" class="btn btn-outline-secondary">Отмена</a>
+      <a href="{% url 'finance_kkm_cash_dashboard' %}" class="btn btn-outline-secondary">Отмена</a>
     </div>
   </form>
 </div>

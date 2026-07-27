@@ -89,6 +89,8 @@ def plan_status_context(request):
         and not user.is_superuser
     )
     can_access_finance = bool({"owner", "admin", "manager", "service", "installer", "accountant"} & set(org_roles))
+    can_manage_company_cash = user.is_superuser or bool({"owner", "admin", "accountant"} & set(org_roles))
+    can_count_kkm = can_manage_company_cash or "manager" in org_roles
     can_access_users = user.is_superuser or is_org_admin or "service" in org_roles
     is_org_staff = bool(operational_roles & set(org_roles))
     personal_free = is_personal_free(user)
@@ -99,6 +101,8 @@ def plan_status_context(request):
         "is_org_staff": is_org_staff,
         "can_access_crm": can_access_crm,
         "can_access_finance": can_access_finance,
+        "can_manage_company_cash": can_manage_company_cash,
+        "can_count_kkm": can_count_kkm,
         "can_access_users": can_access_users,
         "crm_service_only": crm_service_only,
         "finance_only_user": finance_only_user,

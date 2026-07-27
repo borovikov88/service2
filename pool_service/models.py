@@ -1079,10 +1079,12 @@ class CashOperation(models.Model):
     TYPE_MANAGER_INCOME = "manager_income"
     TYPE_TRANSFER_TO_COMPANY = "transfer_to_company"
     TYPE_ACCOUNTABLE_ISSUE = "accountable_issue"
+    TYPE_ACCOUNTABLE_RETURN = "accountable_return"
     TYPE_CHOICES = [
         (TYPE_MANAGER_INCOME, "Поступление в кассу ККМ"),
         (TYPE_TRANSFER_TO_COMPANY, "Сдача выручки в кассу компании"),
         (TYPE_ACCOUNTABLE_ISSUE, "Выдача подотчёта из ККМ"),
+        (TYPE_ACCOUNTABLE_RETURN, "Возврат подотчёта в ККМ"),
     ]
 
     STATUS_PENDING = "pending"
@@ -1172,6 +1174,8 @@ class CashOperation(models.Model):
             raise ValidationError({"receiver": "Укажите, кому сдана выручка."})
         if self.operation_type == self.TYPE_ACCOUNTABLE_ISSUE and not self.accountable_transaction_id:
             raise ValidationError({"accountable_transaction": "Выдача из ККМ должна быть связана с подотчётом."})
+        if self.operation_type == self.TYPE_ACCOUNTABLE_RETURN and not self.accountable_transaction_id:
+            raise ValidationError({"accountable_transaction": "Возврат в ККМ должен быть связан с подотчётом."})
 
     def __str__(self):
         return f"{self.get_operation_type_display()}: {self.amount}"
@@ -1204,6 +1208,62 @@ class CashOperationChange(models.Model):
 
     def __str__(self):
         return f"{self.operation_id}: {self.action}"
+
+
+class CashCount(models.Model):
+    CASHBOX_COMPANY = "company"
+    CASHBOX_KKM = "kkm"
+    CASHBOX_CHOICES = [
+        (CASHBOX_COMPANY, "Касса организации"),
+        (CASHBOX_KKM, "Касса ККМ"),
+    ]
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="cash_counts",
+    )
+    cashbox_type = models.CharField(max_length=16, choices=CASHBOX_CHOICES)
+    manager = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="manager_cash_counts",
+    )
+    counted_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="cash_counts",
+    )
+    occurred_on = models.DateField()
+    denominations = models.JSONField(default=dict, blank=True)
+    total = models.DecimalField(max_digits=12, decimal_places=2)
+    note = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-occurred_on", "-id"]
+        indexes = [
+            models.Index(fields=["organization", "cashbox_type", "occurred_on"], name="cash_count_box_date_idx"),
+            models.Index(fields=["manager", "occurred_on"], name="cash_count_manager_idx"),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.cashbox_type == self.CASHBOX_COMPANY and self.manager_id:
+            raise ValidationError({"manager": "Для кассы организации менеджер не указывается."})
+        if self.cashbox_type == self.CASHBOX_KKM and self.manager_id and self.organization_id:
+            has_access = OrganizationAccess.objects.filter(
+                user_id=self.manager_id,
+                organization_id=self.organization_id,
+                role="manager",
+            ).exists()
+            if not has_access:
+                raise ValidationError({"manager": "Касса ККМ доступна только менеджеру этой организации."})
+
+    def __str__(self):
+        return f"{self.get_cashbox_type_display()}: {self.total}"
 
 
 class Expense(models.Model):

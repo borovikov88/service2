@@ -1,11 +1,14 @@
 import uuid
+from decimal import Decimal
 from pathlib import Path
 
 from django import forms
+from django.contrib.auth.models import User
 from PIL import Image, UnidentifiedImageError
 
 from pool_service.models import (
     AccountableTransaction,
+    CashCount,
     CashOperation,
     Client,
     Expense,
@@ -18,6 +21,22 @@ from pool_service.services.finance import (
     period_is_closed,
     user_display_name,
 )
+
+
+CASH_DENOMINATIONS = [
+    ("bill_5000", "5000 ₽", Decimal("5000")),
+    ("bill_2000", "2000 ₽", Decimal("2000")),
+    ("bill_1000", "1000 ₽", Decimal("1000")),
+    ("bill_500", "500 ₽", Decimal("500")),
+    ("bill_200", "200 ₽", Decimal("200")),
+    ("bill_100", "100 ₽", Decimal("100")),
+    ("bill_50", "50 ₽", Decimal("50")),
+    ("bill_10", "10 ₽", Decimal("10")),
+    ("coin_10", "10 ₽ монета", Decimal("10")),
+    ("coin_5", "5 ₽", Decimal("5")),
+    ("coin_2", "2 ₽", Decimal("2")),
+    ("coin_1", "1 ₽", Decimal("1")),
+]
 
 
 ALLOWED_RECEIPT_CONTENT_TYPES = {
@@ -445,3 +464,84 @@ class ManagerCashAccountableIssueForm(forms.ModelForm):
         if period_is_closed(self.organization, occurred_on):
             raise forms.ValidationError("Этот месяц закрыт. Новые кассовые операции запрещены.")
         return occurred_on
+
+
+class AccountableReturnRequestForm(forms.ModelForm):
+    manager = forms.ModelChoiceField(
+        queryset=User.objects.none(),
+        label="Кому возвращаете",
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
+
+    class Meta:
+        model = AccountableTransaction
+        fields = ["manager", "amount", "occurred_on", "note"]
+        labels = {
+            "amount": "Сумма, ₽",
+            "occurred_on": "Дата возврата",
+            "note": "Комментарий",
+        }
+        widgets = {
+            "amount": forms.NumberInput(attrs={"class": "form-control", "min": "0.01", "step": "0.01"}),
+            "occurred_on": forms.DateInput(attrs={"class": "form-control", "type": "date"}, format="%Y-%m-%d"),
+            "note": forms.Textarea(attrs={"class": "form-control", "rows": 3}),
+        }
+
+    def __init__(self, *args, organization, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.organization = organization
+        self.fields["manager"].queryset = User.objects.filter(
+            organizationaccess__organization=organization,
+            organizationaccess__role="manager",
+            is_active=True,
+        ).distinct().order_by("last_name", "first_name", "username")
+        self.fields["manager"].label_from_instance = user_display_name
+        self.fields["occurred_on"].input_formats = ["%Y-%m-%d"]
+
+    def clean_occurred_on(self):
+        occurred_on = self.cleaned_data["occurred_on"]
+        if period_is_closed(self.organization, occurred_on):
+            raise forms.ValidationError("Этот месяц закрыт. Новые кассовые операции запрещены.")
+        return occurred_on
+
+
+class CashCountForm(forms.ModelForm):
+    class Meta:
+        model = CashCount
+        fields = ["occurred_on", "note"]
+        labels = {
+            "occurred_on": "Дата пересчёта",
+            "note": "Комментарий",
+        }
+        widgets = {
+            "occurred_on": forms.DateInput(attrs={"class": "form-control", "type": "date"}, format="%Y-%m-%d"),
+            "note": forms.Textarea(attrs={"class": "form-control", "rows": 2}),
+        }
+
+    def __init__(self, *args, organization, cashbox_type, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.organization = organization
+        self.cashbox_type = cashbox_type
+        self.fields["occurred_on"].input_formats = ["%Y-%m-%d"]
+        for name, label, _value in CASH_DENOMINATIONS:
+            self.fields[name] = forms.IntegerField(
+                required=False,
+                min_value=0,
+                label=label,
+                widget=forms.NumberInput(attrs={"class": "form-control", "min": "0", "inputmode": "numeric"}),
+            )
+
+    def clean_occurred_on(self):
+        occurred_on = self.cleaned_data["occurred_on"]
+        if period_is_closed(self.organization, occurred_on):
+            raise forms.ValidationError("Этот месяц закрыт. Пересчёт кассы запрещён.")
+        return occurred_on
+
+    def denomination_counts(self):
+        return {name: self.cleaned_data.get(name) or 0 for name, _label, _value in CASH_DENOMINATIONS}
+
+    def total_amount(self):
+        total = Decimal("0.00")
+        for name, _label, value in CASH_DENOMINATIONS:
+            total += value * Decimal(self.cleaned_data.get(name) or 0)
+        return total

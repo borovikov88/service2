@@ -2,6 +2,7 @@ import shutil
 import tempfile
 import uuid
 from datetime import date, timedelta
+from decimal import Decimal
 from io import BytesIO
 
 from PIL import Image
@@ -14,6 +15,7 @@ from django.utils import timezone
 from pool_service.models import (
     AccountableTransaction,
     AccountableTransactionChange,
+    CashCount,
     CashOperation,
     CashOperationChange,
     Client,
@@ -538,9 +540,9 @@ class FinanceTests(TestCase):
 
     def test_manager_cash_transfer_reaches_company_after_review(self):
         self.client.force_login(self.manager)
-        dashboard = self.client.get(reverse("finance_cash_dashboard"))
+        dashboard = self.client.get(reverse("finance_kkm_cash_dashboard"))
         self.assertEqual(dashboard.status_code, 200)
-        self.assertContains(dashboard, "Моя касса ККМ")
+        self.assertContains(dashboard, "Касса ККМ")
 
         income_response = self.client.post(
             reverse("finance_cash_income_create"),
@@ -556,7 +558,7 @@ class FinanceTests(TestCase):
         self.assertEqual(income.created_by, self.manager)
         self.assertEqual(income.status, CashOperation.STATUS_PENDING)
         self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 10000)
-        self.assertContains(self.client.get(reverse("finance_cash_dashboard")), reverse("finance_cash_operation_edit", kwargs={"operation_id": income.id}))
+        self.assertContains(self.client.get(reverse("finance_kkm_cash_dashboard")), reverse("finance_cash_operation_edit", kwargs={"operation_id": income.id}))
 
         edit_response = self.client.post(
             reverse("finance_cash_operation_edit", kwargs={"operation_id": income.id}),
@@ -608,7 +610,7 @@ class FinanceTests(TestCase):
         self.assertEqual(company_cash_balance(self.organization)["balance"], 0)
 
         self.client.force_login(self.owner)
-        company_dashboard = self.client.get(reverse("finance_cash_dashboard"))
+        company_dashboard = self.client.get(reverse("finance_company_cash_dashboard"))
         self.assertContains(company_dashboard, "Касса компании")
         review_transfer = self.client.post(
             reverse("finance_cash_operation_review", kwargs={"operation_id": transfer.id}),
@@ -678,17 +680,111 @@ class FinanceTests(TestCase):
         self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], -4000)
         self.assertEqual(accountable_balance(self.organization, self.service)["operational_balance"], 14000)
 
-    def test_non_manager_cannot_use_cashbox_pages(self):
+    def test_non_manager_can_view_kkm_but_cannot_manage_cashbox(self):
         self.client.force_login(self.service)
-        dashboard = self.client.get(reverse("finance_cash_dashboard"))
+        old_dashboard = self.client.get(reverse("finance_cash_dashboard"))
+        dashboard = self.client.get(reverse("finance_kkm_cash_dashboard"))
+        company_dashboard = self.client.get(reverse("finance_company_cash_dashboard"))
         income = self.client.get(reverse("finance_cash_income_create"))
         accountable_issue = self.client.get(reverse("finance_cash_accountable_issue_create"))
         transfer = self.client.get(reverse("finance_cash_transfer_create"))
+        kkm_count = self.client.get(reverse("finance_cash_count_create", kwargs={"cashbox_type": CashCount.CASHBOX_KKM}))
 
-        self.assertEqual(dashboard.status_code, 403)
+        self.assertEqual(old_dashboard.status_code, 302)
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertEqual(company_dashboard.status_code, 403)
         self.assertEqual(income.status_code, 403)
         self.assertEqual(accountable_issue.status_code, 403)
         self.assertEqual(transfer.status_code, 403)
+        self.assertEqual(kkm_count.status_code, 403)
+
+    def test_accountable_return_to_kkm_requires_manager_confirmation(self):
+        AccountableTransaction.objects.create(
+            organization=self.organization,
+            employee=self.service,
+            created_by=self.owner,
+            transaction_type=AccountableTransaction.TYPE_ISSUE,
+            amount="5000.00",
+            occurred_on=date.today(),
+            status=AccountableTransaction.STATUS_APPROVED,
+            reviewed_by=self.owner,
+            reviewed_at=timezone.now(),
+        )
+
+        self.client.force_login(self.service)
+        response = self.client.post(
+            reverse("finance_accountable_return_create"),
+            {
+                "manager": self.manager.id,
+                "amount": "1200.00",
+                "occurred_on": date.today().isoformat(),
+                "note": "Возврат остатка",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        movement = AccountableTransaction.objects.get(transaction_type=AccountableTransaction.TYPE_RETURN)
+        operation = CashOperation.objects.get(operation_type=CashOperation.TYPE_ACCOUNTABLE_RETURN)
+        self.assertEqual(movement.employee, self.service)
+        self.assertEqual(movement.status, AccountableTransaction.STATUS_PENDING)
+        self.assertEqual(operation.manager, self.manager)
+        self.assertEqual(operation.accountable_transaction, movement)
+        self.assertEqual(manager_cash_balance(self.organization, self.manager)["pending_accountable_return"], Decimal("1200.00"))
+        self.assertEqual(accountable_balance(self.organization, self.service)["operational_balance"], Decimal("5000.00"))
+
+        self.client.force_login(self.accountant)
+        forbidden = self.client.post(
+            reverse("finance_cash_operation_review", kwargs={"operation_id": operation.id}),
+            {"decision": CashOperation.STATUS_APPROVED},
+        )
+        self.assertEqual(forbidden.status_code, 403)
+
+        self.client.force_login(self.manager)
+        approved = self.client.post(
+            reverse("finance_cash_operation_review", kwargs={"operation_id": operation.id}),
+            {"decision": CashOperation.STATUS_APPROVED},
+        )
+
+        self.assertEqual(approved.status_code, 302)
+        movement.refresh_from_db()
+        operation.refresh_from_db()
+        self.assertEqual(movement.status, AccountableTransaction.STATUS_APPROVED)
+        self.assertEqual(operation.status, CashOperation.STATUS_APPROVED)
+        self.assertEqual(accountable_balance(self.organization, self.service)["operational_balance"], Decimal("3800.00"))
+        self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], Decimal("1200.00"))
+        self.assertTrue(operation.changes.filter(action=CashOperationChange.ACTION_APPROVED).exists())
+
+    def test_cash_count_stores_denominations_and_total(self):
+        self.client.force_login(self.owner)
+        company_response = self.client.post(
+            reverse("finance_cash_count_create", kwargs={"cashbox_type": CashCount.CASHBOX_COMPANY}),
+            {
+                "occurred_on": date.today().isoformat(),
+                "note": "Пересчёт компании",
+                "bill_5000": "1",
+                "coin_10": "2",
+            },
+        )
+        self.assertEqual(company_response.status_code, 302)
+        company_count = CashCount.objects.get(cashbox_type=CashCount.CASHBOX_COMPANY)
+        self.assertIsNone(company_count.manager)
+        self.assertEqual(company_count.total, Decimal("5020.00"))
+        self.assertEqual(company_count.denominations["bill_5000"], 1)
+
+        self.client.force_login(self.manager)
+        kkm_response = self.client.post(
+            reverse("finance_cash_count_create", kwargs={"cashbox_type": CashCount.CASHBOX_KKM}),
+            {
+                "occurred_on": date.today().isoformat(),
+                "note": "Пересчёт ККМ",
+                "bill_100": "3",
+                "coin_2": "2",
+            },
+        )
+        self.assertEqual(kkm_response.status_code, 302)
+        kkm_count = CashCount.objects.get(cashbox_type=CashCount.CASHBOX_KKM)
+        self.assertEqual(kkm_count.manager, self.manager)
+        self.assertEqual(kkm_count.total, Decimal("304.00"))
 
     def test_new_client_is_created_once_from_expense(self):
         first_request_id = str(uuid.uuid4())

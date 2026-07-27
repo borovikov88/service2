@@ -20,6 +20,9 @@ from django.views.decorators.http import require_POST
 
 from pool_service.finance_forms import (
     AccountableTransactionForm,
+    AccountableReturnRequestForm,
+    CASH_DENOMINATIONS,
+    CashCountForm,
     ClientPaymentForm,
     ExpenseForm,
     ExpenseReviewForm,
@@ -30,6 +33,7 @@ from pool_service.finance_forms import (
 from pool_service.models import (
     AccountableTransaction,
     AccountableTransactionChange,
+    CashCount,
     CashOperation,
     CashOperationChange,
     Client,
@@ -283,9 +287,7 @@ def _cash_reviewers_can_review(user, operation):
 
 
 def _can_view_cash_operation(user, operation):
-    if can_manage_cash(user, operation.organization):
-        return True
-    return can_access_cash(user, operation.organization) and user.id in {operation.manager_id, operation.created_by_id}
+    return can_access_cash(user, operation.organization)
 
 
 def _can_edit_cash_operation(user, operation):
@@ -296,6 +298,9 @@ def _can_edit_cash_operation(user, operation):
     ):
         return False
     if operation.operation_type == CashOperation.TYPE_ACCOUNTABLE_ISSUE:
+        if not operation.accountable_transaction_id or operation.accountable_transaction.status != AccountableTransaction.STATUS_PENDING:
+            return False
+    if operation.operation_type == CashOperation.TYPE_ACCOUNTABLE_RETURN:
         if not operation.accountable_transaction_id or operation.accountable_transaction.status != AccountableTransaction.STATUS_PENDING:
             return False
     return can_access_cash(user, operation.organization) and user.id in {operation.manager_id, operation.created_by_id}
@@ -340,7 +345,76 @@ def _cash_operation_form(operation, data=None):
             organization=operation.organization,
             instance=operation.accountable_transaction,
         )
+    if operation.operation_type == CashOperation.TYPE_ACCOUNTABLE_RETURN:
+        return AccountableReturnRequestForm(
+            data,
+            organization=operation.organization,
+            instance=operation.accountable_transaction,
+            initial={"manager": operation.manager_id},
+        )
     raise ValueError("Unknown cash operation type")
+
+
+def _render_cash_dashboard(request, section):
+    organization, denied = _cash_guard(request, manage=(section == "company"))
+    if denied:
+        return denied
+    manage = can_manage_cash(request.user, organization)
+    roles = organization_roles(request.user, organization)
+    if section not in {"company", "kkm"}:
+        return redirect("finance_kkm_cash_dashboard")
+
+    operations = []
+    manager_rows = []
+    company_balance = None
+    company_counts = []
+    kkm_counts = []
+    if section == "company":
+        company_balance = company_cash_balance(organization)
+        company_counts = (
+            CashCount.objects.filter(organization=organization, cashbox_type=CashCount.CASHBOX_COMPANY)
+            .select_related("counted_by")
+            .order_by("-occurred_on", "-id")[:20]
+        )
+    else:
+        operations = list(
+            CashOperation.objects.filter(organization=organization)
+            .select_related(
+                "manager",
+                "receiver",
+                "created_by",
+                "reviewed_by",
+                "accountable_transaction__employee",
+            )[:100]
+        )
+        for operation in operations:
+            operation.can_edit = _can_edit_cash_operation(request.user, operation)
+        manager_rows = manager_cash_rows(organization)
+        kkm_counts = (
+            CashCount.objects.filter(organization=organization, cashbox_type=CashCount.CASHBOX_KKM)
+            .select_related("manager", "counted_by")
+            .order_by("-occurred_on", "-id")[:20]
+        )
+
+    return render(
+        request,
+        "pool_service/finance/cash_dashboard.html",
+        {
+            "organization": organization,
+            "cashbox_section": section,
+            "can_manage_cash": manage,
+            "can_count_kkm": manage or "manager" in roles,
+            "can_create_manager_cash": "manager" in roles,
+            "can_return_accountable": can_access_finance(request.user, organization),
+            "company_balance": company_balance,
+            "manager_rows": manager_rows,
+            "operations": operations,
+            "company_counts": company_counts,
+            "kkm_counts": kkm_counts,
+            "active_tab": "finance",
+            "show_add_button": False,
+        },
+    )
 
 
 @login_required
@@ -410,42 +484,17 @@ def finance_dashboard(request):
 
 @login_required
 def finance_cash_dashboard(request):
-    organization, denied = _cash_guard(request)
-    if denied:
-        return denied
-    manage = can_manage_cash(request.user, organization)
-    roles = organization_roles(request.user, organization)
-    operations = CashOperation.objects.filter(organization=organization).select_related(
-        "manager",
-        "receiver",
-        "created_by",
-        "reviewed_by",
-        "accountable_transaction__employee",
-    )
-    if manage:
-        manager_rows = manager_cash_rows(organization)
-        company_balance = company_cash_balance(organization)
-    else:
-        operations = operations.filter(manager=request.user)
-        manager_rows = manager_cash_rows(organization, users=[request.user])
-        company_balance = None
-    operations = list(operations[:100])
-    for operation in operations:
-        operation.can_edit = _can_edit_cash_operation(request.user, operation)
-    return render(
-        request,
-        "pool_service/finance/cash_dashboard.html",
-        {
-            "organization": organization,
-            "can_manage_cash": manage,
-            "can_create_manager_cash": "manager" in roles,
-            "company_balance": company_balance,
-            "manager_rows": manager_rows,
-            "operations": operations,
-            "active_tab": "finance",
-            "show_add_button": False,
-        },
-    )
+    return redirect("finance_kkm_cash_dashboard")
+
+
+@login_required
+def finance_company_cash_dashboard(request):
+    return _render_cash_dashboard(request, "company")
+
+
+@login_required
+def finance_kkm_cash_dashboard(request):
+    return _render_cash_dashboard(request, "kkm")
 
 
 @login_required
@@ -482,7 +531,7 @@ def finance_cash_income_create(request):
             },
         )
         messages.success(request, "Поступление в кассу ККМ отправлено на подтверждение.")
-        return redirect("finance_cash_dashboard")
+        return redirect("finance_kkm_cash_dashboard")
     context = {
         "form": form,
         "title": "Поступление в кассу ККМ",
@@ -530,7 +579,7 @@ def finance_cash_transfer_create(request):
             },
         )
         messages.success(request, "Сдача выручки отправлена на подтверждение.")
-        return redirect("finance_cash_dashboard")
+        return redirect("finance_kkm_cash_dashboard")
     context = {
         "form": form,
         "title": "Сдать выручку",
@@ -605,7 +654,7 @@ def finance_cash_accountable_issue_create(request):
             )
         notify_advance(movement)
         messages.success(request, "Выдача из ККМ отправлена сотруднику на подтверждение.")
-        return redirect("finance_cash_dashboard")
+        return redirect("finance_kkm_cash_dashboard")
     context = {
         "form": form,
         "title": "Выдать подотчёт из ККМ",
@@ -616,6 +665,134 @@ def finance_cash_accountable_issue_create(request):
     }
     context.update(_finance_modal_context(request))
     return render(request, "pool_service/finance/cash_form.html", context)
+
+
+@login_required
+@xframe_options_sameorigin
+def finance_accountable_return_create(request):
+    organization, denied = _cash_guard(request)
+    if denied:
+        return denied
+    form = AccountableReturnRequestForm(
+        request.POST or None,
+        organization=organization,
+        initial={"occurred_on": date.today()},
+    )
+    if request.method == "POST" and form.is_valid():
+        manager = form.cleaned_data["manager"]
+        with transaction.atomic():
+            movement = form.save(commit=False)
+            movement.organization = organization
+            movement.employee = request.user
+            movement.created_by = request.user
+            movement.transaction_type = AccountableTransaction.TYPE_RETURN
+            movement.status = AccountableTransaction.STATUS_PENDING
+            movement.full_clean()
+            movement.save()
+            AccountableTransactionChange.objects.create(
+                transaction=movement,
+                actor=request.user,
+                action=AccountableTransactionChange.ACTION_CREATED,
+                payload={
+                    "source": "manager_cashbox_return",
+                    "manager_id": manager.id,
+                    "amount": str(movement.amount),
+                    "occurred_on": movement.occurred_on.isoformat(),
+                    "note": movement.note,
+                    "status": movement.status,
+                },
+            )
+            operation = CashOperation.objects.create(
+                organization=organization,
+                manager=manager,
+                created_by=request.user,
+                operation_type=CashOperation.TYPE_ACCOUNTABLE_RETURN,
+                accountable_transaction=movement,
+                amount=movement.amount,
+                occurred_on=movement.occurred_on,
+                note=movement.note,
+                status=CashOperation.STATUS_PENDING,
+            )
+            _create_cash_operation_change(
+                operation,
+                request.user,
+                CashOperationChange.ACTION_CREATED,
+                payload={
+                    "accountable_transaction_id": movement.id,
+                    "employee_id": request.user.id,
+                    "manager_id": manager.id,
+                    "operation_type": operation.operation_type,
+                    "amount": str(operation.amount),
+                    "occurred_on": operation.occurred_on.isoformat(),
+                    "note": operation.note,
+                },
+            )
+        messages.success(request, "Возврат подотчёта отправлен менеджеру на подтверждение.")
+        return redirect("finance_kkm_cash_dashboard")
+    context = {
+        "form": form,
+        "title": "Возврат подотчёта",
+        "subtitle": "Деньги попадут в кассу ККМ после подтверждения менеджером",
+        "submit_label": "Отправить возврат",
+        "active_tab": "finance",
+        "show_add_button": False,
+    }
+    context.update(_finance_modal_context(request))
+    return render(request, "pool_service/finance/cash_form.html", context)
+
+
+@login_required
+@xframe_options_sameorigin
+def finance_cash_count_create(request, cashbox_type):
+    organization, denied = _cash_guard(request)
+    if denied:
+        return denied
+    if cashbox_type not in {CashCount.CASHBOX_COMPANY, CashCount.CASHBOX_KKM}:
+        return HttpResponseForbidden("Неизвестная касса.")
+    manage = can_manage_cash(request.user, organization)
+    roles = organization_roles(request.user, organization)
+    if cashbox_type == CashCount.CASHBOX_COMPANY and not manage:
+        return HttpResponseForbidden("Пересчёт кассы организации доступен только администратору, владельцу или бухгалтеру.")
+    if cashbox_type == CashCount.CASHBOX_KKM and not (manage or "manager" in roles):
+        return HttpResponseForbidden("Пересчёт ККМ доступен менеджеру или финансовому администратору.")
+    form = CashCountForm(
+        request.POST or None,
+        organization=organization,
+        cashbox_type=cashbox_type,
+        initial={"occurred_on": date.today()},
+    )
+    denomination_fields = [(name, label, value, form[name]) for name, label, value in CASH_DENOMINATIONS]
+    if request.method == "POST" and form.is_valid():
+        cash_count = form.save(commit=False)
+        cash_count.organization = organization
+        cash_count.cashbox_type = cashbox_type
+        cash_count.manager = request.user if cashbox_type == CashCount.CASHBOX_KKM and "manager" in roles else None
+        cash_count.counted_by = request.user
+        cash_count.denominations = form.denomination_counts()
+        cash_count.total = form.total_amount()
+        cash_count.full_clean()
+        cash_count.save()
+        messages.success(request, f"Пересчёт сохранён. Сумма: {cash_count.total}.")
+        return redirect(
+            "finance_company_cash_dashboard"
+            if cashbox_type == CashCount.CASHBOX_COMPANY
+            else "finance_kkm_cash_dashboard"
+        )
+    title = "Пересчёт кассы организации" if cashbox_type == CashCount.CASHBOX_COMPANY else "Пересчёт кассы ККМ"
+    context = {
+        "form": form,
+        "title": title,
+        "back_url_name": (
+            "finance_company_cash_dashboard"
+            if cashbox_type == CashCount.CASHBOX_COMPANY
+            else "finance_kkm_cash_dashboard"
+        ),
+        "denomination_fields": denomination_fields,
+        "active_tab": "finance",
+        "show_add_button": False,
+    }
+    context.update(_finance_modal_context(request))
+    return render(request, "pool_service/finance/cash_count_form.html", context)
 
 
 @login_required
@@ -673,6 +850,34 @@ def finance_cash_operation_edit(request, operation_id):
                 operation.amount = movement.amount
                 operation.occurred_on = movement.occurred_on
                 operation.note = movement.note
+            elif operation.operation_type == CashOperation.TYPE_ACCOUNTABLE_RETURN:
+                manager = form.cleaned_data["manager"]
+                movement = form.save(commit=False)
+                movement.organization = operation.organization
+                movement.employee = operation.created_by
+                movement.created_by = operation.created_by
+                movement.transaction_type = AccountableTransaction.TYPE_RETURN
+                movement.status = AccountableTransaction.STATUS_PENDING
+                movement.full_clean()
+                movement.save()
+                AccountableTransactionChange.objects.create(
+                    transaction=movement,
+                    actor=request.user,
+                    action=AccountableTransactionChange.ACTION_UPDATED,
+                    note="Изменение возврата подотчёта",
+                    payload={
+                        "source": "manager_cashbox_return",
+                        "manager_id": manager.id,
+                        "amount": str(movement.amount),
+                        "occurred_on": movement.occurred_on.isoformat(),
+                        "note": movement.note,
+                    },
+                )
+                operation.manager = manager
+                operation.accountable_transaction = movement
+                operation.amount = movement.amount
+                operation.occurred_on = movement.occurred_on
+                operation.note = movement.note
             else:
                 updated = form.save(commit=False)
                 operation.amount = updated.amount
@@ -712,42 +917,68 @@ def finance_cash_operation_edit(request, operation_id):
 @require_POST
 @login_required
 def finance_cash_operation_review(request, operation_id):
-    organization, denied = _cash_guard(request, manage=True)
+    organization, denied = _cash_guard(request)
     if denied:
         return denied
     operation = get_object_or_404(CashOperation, id=operation_id, organization=organization)
     if operation.operation_type == CashOperation.TYPE_ACCOUNTABLE_ISSUE:
         return HttpResponseForbidden("Выдачу подотчёта из ККМ подтверждает сотрудник-получатель.")
+    if operation.operation_type == CashOperation.TYPE_ACCOUNTABLE_RETURN and operation.manager_id != request.user.id:
+        return HttpResponseForbidden("Возврат подотчёта подтверждает менеджер, которому возвращают деньги.")
+    if operation.operation_type == CashOperation.TYPE_ACCOUNTABLE_RETURN and operation.created_by_id == request.user.id:
+        return HttpResponseForbidden("Нельзя подтвердить собственный возврат подотчёта.")
+    if operation.operation_type != CashOperation.TYPE_ACCOUNTABLE_RETURN and not can_manage_cash(request.user, organization):
+        return HttpResponseForbidden("Недостаточно прав.")
     if not _cash_reviewers_can_review(request.user, operation):
-        return HttpResponseForbidden("Нельзя подтвердить собственную кассовую операцию.")
+        if operation.operation_type != CashOperation.TYPE_ACCOUNTABLE_RETURN:
+            return HttpResponseForbidden("Нельзя подтвердить собственную кассовую операцию.")
     if operation.status != CashOperation.STATUS_PENDING:
         messages.error(request, "Операция уже рассмотрена.")
-        return redirect("finance_cash_dashboard")
+        return redirect("finance_kkm_cash_dashboard")
     if period_is_closed(organization, operation.occurred_on):
         messages.error(request, "Месяц закрыт. Для подтверждения нужно открыть период.")
-        return redirect("finance_cash_dashboard")
+        return redirect("finance_kkm_cash_dashboard")
     decision = request.POST.get("decision")
     if decision not in {CashOperation.STATUS_APPROVED, CashOperation.STATUS_REJECTED}:
         messages.error(request, "Выберите решение.")
-        return redirect("finance_cash_dashboard")
+        return redirect("finance_kkm_cash_dashboard")
     review_comment = (request.POST.get("review_comment") or "").strip()
-    operation.status = decision
-    operation.reviewed_by = request.user
-    operation.reviewed_at = timezone.now()
-    operation.review_comment = review_comment
-    operation.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_comment", "updated_at"])
-    _create_cash_operation_change(
-        operation,
-        request.user,
-        CashOperationChange.ACTION_APPROVED if decision == CashOperation.STATUS_APPROVED else CashOperationChange.ACTION_REJECTED,
-        note=review_comment,
-        payload={"decision": decision},
-    )
+    with transaction.atomic():
+        operation.status = decision
+        operation.reviewed_by = request.user
+        operation.reviewed_at = timezone.now()
+        operation.review_comment = review_comment
+        operation.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_comment", "updated_at"])
+        _create_cash_operation_change(
+            operation,
+            request.user,
+            CashOperationChange.ACTION_APPROVED if decision == CashOperation.STATUS_APPROVED else CashOperationChange.ACTION_REJECTED,
+            note=review_comment,
+            payload={"decision": decision},
+        )
+        if operation.operation_type == CashOperation.TYPE_ACCOUNTABLE_RETURN and operation.accountable_transaction_id:
+            movement = operation.accountable_transaction
+            movement.status = decision
+            movement.reviewed_by = request.user
+            movement.reviewed_at = timezone.now()
+            movement.review_comment = review_comment
+            movement.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_comment"])
+            AccountableTransactionChange.objects.create(
+                transaction=movement,
+                actor=request.user,
+                action=(
+                    AccountableTransactionChange.ACTION_UPDATED
+                    if decision == AccountableTransaction.STATUS_APPROVED
+                    else AccountableTransactionChange.ACTION_REJECTED
+                ),
+                note=review_comment or "Подтверждение возврата менеджером",
+                payload={"decision": decision, "cash_operation_id": operation.id},
+            )
     if decision == CashOperation.STATUS_APPROVED:
         messages.success(request, "Кассовая операция подтверждена.")
     else:
         messages.success(request, "Кассовая операция отклонена.")
-    return redirect("finance_cash_dashboard")
+    return redirect("finance_kkm_cash_dashboard")
 
 
 @login_required
