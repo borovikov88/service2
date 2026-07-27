@@ -509,7 +509,7 @@ def finance_cash_income_create(request):
     form = ManagerCashIncomeForm(
         request.POST or None,
         organization=organization,
-        initial={"occurred_on": date.today()},
+        initial={"occurred_on": date.today(), "amount": request.GET.get("amount") or None},
     )
     if request.method == "POST" and form.is_valid():
         operation = form.save(commit=False)
@@ -556,7 +556,7 @@ def finance_cash_transfer_create(request):
     form = ManagerCashTransferForm(
         request.POST or None,
         organization=organization,
-        initial={"occurred_on": date.today()},
+        initial={"occurred_on": date.today(), "amount": request.GET.get("amount") or None},
     )
     if request.method == "POST" and form.is_valid():
         operation = form.save(commit=False)
@@ -605,7 +605,7 @@ def finance_cash_accountable_issue_create(request):
     form = ManagerCashAccountableIssueForm(
         request.POST or None,
         organization=organization,
-        initial={"occurred_on": date.today()},
+        initial={"occurred_on": date.today(), "amount": request.GET.get("amount") or None},
     )
     if request.method == "POST" and form.is_valid():
         with transaction.atomic():
@@ -729,7 +729,7 @@ def finance_accountable_return_create(request):
                 },
             )
         messages.success(request, "Возврат подотчёта отправлен менеджеру на подтверждение.")
-        return redirect("finance_kkm_cash_dashboard")
+        return redirect("finance_kkm_cash_dashboard" if can_access_cash(request.user, organization) else "finance_dashboard")
     context = {
         "form": form,
         "title": "Возврат подотчёта",
@@ -771,55 +771,21 @@ def finance_cash_count_create(request, cashbox_type):
     if request.method == "POST" and form.is_valid():
         actual_total = form.total_amount()
         difference = actual_total - expected_balance
-        with transaction.atomic():
-            cash_count = form.save(commit=False)
-            cash_count.organization = organization
-            cash_count.cashbox_type = cashbox_type
-            cash_count.manager = None
-            cash_count.counted_by = request.user
-            cash_count.occurred_on = date.today()
-            cash_count.denominations = {
-                **form.denomination_counts(),
-                "expected_balance": str(expected_balance),
-                "difference": str(difference),
-            }
-            cash_count.total = actual_total
-            cash_count.full_clean()
-            cash_count.save()
-            if cashbox_type == CashCount.CASHBOX_KKM and difference:
-                operation = CashOperation.objects.create(
-                    organization=organization,
-                    manager=None,
-                    created_by=request.user,
-                    reviewed_by=request.user,
-                    reviewed_at=timezone.now(),
-                    operation_type=(
-                        CashOperation.TYPE_CASH_COUNT_INCOME
-                        if difference > 0
-                        else CashOperation.TYPE_CASH_COUNT_WRITE_OFF
-                    ),
-                    amount=abs(difference),
-                    occurred_on=cash_count.occurred_on,
-                    note=f"Пересчёт ККМ №{cash_count.id}. Расчётный остаток: {expected_balance}, факт: {actual_total}.",
-                    status=CashOperation.STATUS_APPROVED,
-                )
-                _create_cash_operation_change(
-                    operation,
-                    request.user,
-                    CashOperationChange.ACTION_APPROVED,
-                    payload={
-                        "source": "cash_count",
-                        "cash_count_id": cash_count.id,
-                        "expected_balance": str(expected_balance),
-                        "actual_total": str(actual_total),
-                        "difference": str(difference),
-                    },
-                )
-        if cashbox_type == CashCount.CASHBOX_KKM and difference:
-            direction = "приход" if difference > 0 else "списание"
-            messages.success(request, f"Пересчёт сохранён. Добавлено {direction}: {abs(difference)}.")
-        else:
-            messages.success(request, f"Пересчёт сохранён. Сумма: {cash_count.total}.")
+        cash_count = form.save(commit=False)
+        cash_count.organization = organization
+        cash_count.cashbox_type = cashbox_type
+        cash_count.manager = None
+        cash_count.counted_by = request.user
+        cash_count.occurred_on = date.today()
+        cash_count.denominations = {
+            **form.denomination_counts(),
+            "expected_balance": str(expected_balance),
+            "difference": str(difference),
+        }
+        cash_count.total = actual_total
+        cash_count.full_clean()
+        cash_count.save()
+        messages.success(request, f"Пересчёт сохранён. Сумма: {cash_count.total}.")
         return redirect(
             "finance_company_cash_dashboard"
             if cashbox_type == CashCount.CASHBOX_COMPANY

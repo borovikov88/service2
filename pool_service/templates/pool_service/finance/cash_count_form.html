@@ -54,6 +54,7 @@
   }
   .cash-count-diff.is-positive { color: #0f8f56; }
   .cash-count-diff.is-negative { color: #dc3545; }
+  .cash-count-actions [hidden] { display: none !important; }
   @media (max-width: 576px) {
     .cash-count-meta {
       grid-template-columns: 1fr;
@@ -70,22 +71,22 @@
   <div class="d-flex align-items-center justify-content-between gap-3 mb-4">
     <div>
       <h1 class="h3 fw-bold mb-1">{{ title }}</h1>
-      <div class="text-muted">Дата и время ставятся автоматически в момент подтверждения.</div>
+      <div class="text-muted">&#1044;&#1072;&#1090;&#1072; &#1080; &#1074;&#1088;&#1077;&#1084;&#1103; &#1089;&#1090;&#1072;&#1074;&#1103;&#1090;&#1089;&#1103; &#1072;&#1074;&#1090;&#1086;&#1084;&#1072;&#1090;&#1080;&#1095;&#1077;&#1089;&#1082;&#1080; &#1074; &#1084;&#1086;&#1084;&#1077;&#1085;&#1090; &#1087;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1078;&#1076;&#1077;&#1085;&#1080;&#1103;.</div>
     </div>
-    <a href="{% url back_url_name %}" class="btn btn-outline-secondary">Назад</a>
+    <a href="{% url back_url_name %}" class="btn btn-outline-secondary">&#1053;&#1072;&#1079;&#1072;&#1076;</a>
   </div>
   {% endif %}
 
-  <form method="post" class="{% if not finance_modal %}card card-soft p-3 p-lg-4{% endif %}" data-cash-count-form data-expected-balance="{{ expected_balance }}" data-cashbox-type="{{ cashbox_type }}">
+  <form method="post" class="{% if not finance_modal %}card card-soft p-3 p-lg-4{% endif %}" data-cash-count-form data-expected-balance="{{ expected_balance }}" data-cashbox-type="{{ cashbox_type }}" data-income-url="{% url 'finance_cash_income_create' %}" data-transfer-url="{% url 'finance_cash_transfer_create' %}" data-issue-url="{% url 'finance_cash_accountable_issue_create' %}" data-finance-modal="{% if finance_modal %}1{% else %}0{% endif %}">
     {% csrf_token %}
     <div class="cash-count-meta">
       <div class="cash-count-meta__box">
-        <div class="text-muted small">Расчётный остаток</div>
+        <div class="text-muted small">&#1056;&#1072;&#1089;&#1095;&#1105;&#1090;&#1085;&#1099;&#1081; &#1086;&#1089;&#1090;&#1072;&#1090;&#1086;&#1082;</div>
         <div class="fw-bold">{{ expected_balance|money }}</div>
       </div>
       <div class="cash-count-meta__box">
-        <div class="text-muted small">Фактический итог</div>
-        <div class="h4 fw-bold mb-0 text-success" data-cash-count-total>0,00 ₽</div>
+        <div class="text-muted small">&#1060;&#1072;&#1082;&#1090;&#1080;&#1095;&#1077;&#1089;&#1082;&#1080;&#1081; &#1080;&#1090;&#1086;&#1075;</div>
+        <div class="h4 fw-bold mb-0 text-success" data-cash-count-total>0,00 &#8381;</div>
       </div>
     </div>
 
@@ -97,7 +98,7 @@
             {{ field }}
             {% for error in field.errors %}<div class="invalid-feedback d-block">{{ error }}</div>{% endfor %}
           </div>
-          <div class="cash-count-row__sum" data-denomination-subtotal data-value="{{ value }}">0,00 ₽</div>
+          <div class="cash-count-row__sum" data-denomination-subtotal data-value="{{ value }}">0,00 &#8381;</div>
         </div>
       {% endfor %}
       <div class="cash-count-row" data-cash-count-row>
@@ -106,7 +107,7 @@
           {{ form.manual_amount }}
           {% for error in form.manual_amount.errors %}<div class="invalid-feedback d-block">{{ error }}</div>{% endfor %}
         </div>
-        <div class="cash-count-row__sum text-primary" data-manual-subtotal>0,00 ₽</div>
+        <div class="cash-count-row__sum text-primary" data-manual-subtotal>0,00 &#8381;</div>
       </div>
     </div>
 
@@ -119,15 +120,38 @@
 
     <div class="cash-count-total-panel">
       <div class="d-flex justify-content-between gap-3 mb-3">
-        <span class="text-muted">Расхождение</span>
-        <strong class="cash-count-diff" data-cash-count-diff>0,00 ₽</strong>
+        <span class="text-muted">&#1056;&#1072;&#1089;&#1093;&#1086;&#1078;&#1076;&#1077;&#1085;&#1080;&#1077;</span>
+        <strong class="cash-count-diff" data-cash-count-diff>0,00 &#8381;</strong>
       </div>
       <div class="d-flex flex-wrap gap-2">
-        <button type="submit" class="btn btn-primary" data-cash-count-submit>Подтвердить пересчёт</button>
-        <a href="{% url back_url_name %}" class="btn btn-outline-secondary">Отмена</a>
+        <button type="submit" class="btn btn-primary" data-cash-count-submit>&#1055;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1076;&#1080;&#1090;&#1100; &#1087;&#1077;&#1088;&#1077;&#1089;&#1095;&#1105;&#1090;</button>
+        <a href="{% url back_url_name %}" class="btn btn-outline-secondary">&#1054;&#1090;&#1084;&#1077;&#1085;&#1072;</a>
       </div>
     </div>
   </form>
+</div>
+
+<div class="modal fade" id="cashCountMismatchModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title h5 mb-0">&#1056;&#1072;&#1089;&#1093;&#1086;&#1078;&#1076;&#1077;&#1085;&#1080;&#1077; &#1087;&#1086; &#1050;&#1050;&#1052;</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="&#1047;&#1072;&#1082;&#1088;&#1099;&#1090;&#1100;"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-2">&#1060;&#1072;&#1082;&#1090;&#1080;&#1095;&#1077;&#1089;&#1082;&#1080;&#1081; &#1086;&#1089;&#1090;&#1072;&#1090;&#1086;&#1082; &#1085;&#1077; &#1089;&#1086;&#1074;&#1087;&#1072;&#1076;&#1072;&#1077;&#1090; &#1089; &#1088;&#1072;&#1089;&#1095;&#1105;&#1090;&#1085;&#1099;&#1084;.</p>
+        <div class="fw-semibold" data-mismatch-message></div>
+      </div>
+      <div class="modal-footer cash-count-actions justify-content-between">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">&#1054;&#1090;&#1084;&#1077;&#1085;&#1072;</button>
+        <div class="d-flex flex-wrap gap-2 justify-content-end">
+          <button type="button" class="btn btn-outline-primary" data-mismatch-issue hidden>&#1042;&#1099;&#1076;&#1072;&#1090;&#1100; &#1087;&#1086;&#1076;&#1086;&#1090;&#1095;&#1105;&#1090;</button>
+          <button type="button" class="btn btn-primary" data-mismatch-transfer hidden>&#1057;&#1076;&#1072;&#1090;&#1100; &#1074;&#1099;&#1088;&#1091;&#1095;&#1082;&#1091;</button>
+          <button type="button" class="btn btn-success" data-mismatch-income hidden>&#1055;&#1086;&#1083;&#1091;&#1095;&#1080;&#1090;&#1100;</button>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -142,10 +166,28 @@
     const manualSubtotal = form.querySelector("[data-manual-subtotal]");
     const expectedBalance = Number(String(form.dataset.expectedBalance || "0").replace(",", ".")) || 0;
     const isKkm = form.dataset.cashboxType === "kkm";
+    const modalElement = document.getElementById("cashCountMismatchModal");
+    const modal = modalElement && typeof bootstrap !== "undefined" ? bootstrap.Modal.getOrCreateInstance(modalElement) : null;
+    const mismatchMessage = modalElement && modalElement.querySelector("[data-mismatch-message]");
+    const issueButton = modalElement && modalElement.querySelector("[data-mismatch-issue]");
+    const transferButton = modalElement && modalElement.querySelector("[data-mismatch-transfer]");
+    const incomeButton = modalElement && modalElement.querySelector("[data-mismatch-income]");
+    let currentDiff = 0;
 
     function numericValue(input) {
       if (!input) return 0;
       return Number(String(input.value || "0").replace(",", ".")) || 0;
+    }
+
+    function buildActionUrl(path, amount) {
+      const url = new URL(path, window.location.href);
+      url.searchParams.set("amount", Math.abs(amount).toFixed(2));
+      if (form.dataset.financeModal === "1") url.searchParams.set("modal", "1");
+      return url.toString();
+    }
+
+    function openAction(path) {
+      window.location.assign(buildActionUrl(path, currentDiff));
     }
 
     function updateTotal() {
@@ -162,22 +204,41 @@
       if (manualSubtotal) manualSubtotal.textContent = formatter.format(manual);
       total += manual;
 
-      const diff = total - expectedBalance;
+      currentDiff = total - expectedBalance;
       totalElement.textContent = formatter.format(total);
-      diffElement.textContent = formatter.format(diff);
-      diffElement.classList.toggle("is-positive", diff > 0);
-      diffElement.classList.toggle("is-negative", diff < 0);
-      if (!isKkm || diff === 0) {
-        submitButton.textContent = "Подтвердить пересчёт";
-        submitButton.className = "btn btn-primary";
-      } else if (diff > 0) {
-        submitButton.textContent = "Добавить приход " + formatter.format(diff);
-        submitButton.className = "btn btn-success";
-      } else {
-        submitButton.textContent = "Добавить списание " + formatter.format(Math.abs(diff));
-        submitButton.className = "btn btn-danger";
-      }
+      diffElement.textContent = formatter.format(currentDiff);
+      diffElement.classList.toggle("is-positive", currentDiff > 0);
+      diffElement.classList.toggle("is-negative", currentDiff < 0);
+      submitButton.textContent = "\u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u044c \u043f\u0435\u0440\u0435\u0441\u0447\u0451\u0442";
+      submitButton.className = "btn btn-primary";
     }
+
+    function showMismatchDialog() {
+      if (!modalElement || !modal) return false;
+      const amount = Math.abs(currentDiff);
+      if (mismatchMessage) {
+        mismatchMessage.textContent = currentDiff > 0
+          ? "\u041b\u0438\u0448\u043d\u0438\u0435 \u0434\u0435\u043d\u044c\u0433\u0438: " + formatter.format(amount)
+          : "\u041d\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442: " + formatter.format(amount);
+      }
+      issueButton.hidden = currentDiff <= 0;
+      transferButton.hidden = currentDiff <= 0;
+      incomeButton.hidden = currentDiff >= 0;
+      modal.show();
+      return true;
+    }
+
+    issueButton?.addEventListener("click", function () { openAction(form.dataset.issueUrl); });
+    transferButton?.addEventListener("click", function () { openAction(form.dataset.transferUrl); });
+    incomeButton?.addEventListener("click", function () { openAction(form.dataset.incomeUrl); });
+
+    form.addEventListener("submit", function (event) {
+      if (!isKkm || Math.abs(currentDiff) < 0.005) return;
+      event.preventDefault();
+      if (!showMismatchDialog()) {
+        alert("\u0415\u0441\u0442\u044c \u0440\u0430\u0441\u0445\u043e\u0436\u0434\u0435\u043d\u0438\u0435: " + formatter.format(currentDiff));
+      }
+    });
 
     form.querySelectorAll("input[type='number']").forEach(function (input) {
       input.addEventListener("input", updateTotal);

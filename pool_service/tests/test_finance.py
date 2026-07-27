@@ -724,6 +724,7 @@ class FinanceTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse("finance_dashboard"))
         movement = AccountableTransaction.objects.get(transaction_type=AccountableTransaction.TYPE_RETURN)
         operation = CashOperation.objects.get(operation_type=CashOperation.TYPE_ACCOUNTABLE_RETURN)
         self.assertEqual(movement.employee, self.service)
@@ -788,8 +789,32 @@ class FinanceTests(TestCase):
         self.assertIsNone(kkm_count.manager)
         self.assertEqual(kkm_count.total, Decimal("11304.00"))
         self.assertEqual(kkm_count.denominations["manual_amount"], "11000.00")
-        self.assertEqual(kkm_cash_balance(self.organization)["balance"], Decimal("11304.00"))
-        self.assertTrue(CashOperation.objects.filter(operation_type=CashOperation.TYPE_CASH_COUNT_INCOME).exists())
+        self.assertEqual(kkm_count.denominations["expected_balance"], "0.00")
+        self.assertEqual(kkm_count.denominations["difference"], "11304.00")
+        self.assertEqual(kkm_cash_balance(self.organization)["balance"], Decimal("0.00"))
+        self.assertFalse(CashOperation.objects.filter(operation_type=CashOperation.TYPE_CASH_COUNT_INCOME).exists())
+
+    def test_cash_count_mismatch_actions_prefill_amount(self):
+        self.client.force_login(self.manager)
+
+        count_response = self.client.get(
+            reverse("finance_cash_count_create", kwargs={"cashbox_type": CashCount.CASHBOX_KKM}),
+            {"modal": "1"},
+        )
+        self.assertContains(count_response, 'id="cashCountMismatchModal"')
+        self.assertContains(count_response, 'data-mismatch-issue')
+        self.assertContains(count_response, 'data-mismatch-transfer')
+        self.assertContains(count_response, 'data-mismatch-income')
+
+        for url_name in (
+            "finance_cash_income_create",
+            "finance_cash_transfer_create",
+            "finance_cash_accountable_issue_create",
+        ):
+            response = self.client.get(reverse(url_name), {"amount": "123.45", "modal": "1"})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.context["form"].initial["amount"], "123.45")
+            self.assertTrue(response.context["finance_modal"])
 
     def test_new_client_is_created_once_from_expense(self):
         first_request_id = str(uuid.uuid4())
