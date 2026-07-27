@@ -1078,9 +1078,11 @@ class AccountableTransactionChange(models.Model):
 class CashOperation(models.Model):
     TYPE_MANAGER_INCOME = "manager_income"
     TYPE_TRANSFER_TO_COMPANY = "transfer_to_company"
+    TYPE_ACCOUNTABLE_ISSUE = "accountable_issue"
     TYPE_CHOICES = [
         (TYPE_MANAGER_INCOME, "Поступление в кассу ККМ"),
         (TYPE_TRANSFER_TO_COMPANY, "Сдача выручки в кассу компании"),
+        (TYPE_ACCOUNTABLE_ISSUE, "Выдача подотчёта из ККМ"),
     ]
 
     STATUS_PENDING = "pending"
@@ -1108,6 +1110,13 @@ class CashOperation(models.Model):
         null=True,
         blank=True,
         related_name="received_cash_operations",
+    )
+    accountable_transaction = models.ForeignKey(
+        AccountableTransaction,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="cash_operations",
     )
     operation_type = models.CharField(max_length=32, choices=TYPE_CHOICES)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
@@ -1161,6 +1170,8 @@ class CashOperation(models.Model):
                 raise ValidationError({"receiver": "Принять выручку может только владелец, админ или бухгалтер."})
         if self.operation_type == self.TYPE_TRANSFER_TO_COMPANY and not self.receiver_id:
             raise ValidationError({"receiver": "Укажите, кому сдана выручка."})
+        if self.operation_type == self.TYPE_ACCOUNTABLE_ISSUE and not self.accountable_transaction_id:
+            raise ValidationError({"accountable_transaction": "Выдача из ККМ должна быть связана с подотчётом."})
 
     def __str__(self):
         return f"{self.get_operation_type_display()}: {self.amount}"

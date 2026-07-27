@@ -605,14 +605,73 @@ class FinanceTests(TestCase):
         self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 3000)
         self.assertEqual(company_cash_balance(self.organization)["balance"], 7000)
 
+    def test_manager_cashbox_can_issue_accountable_after_employee_confirmation(self):
+        CashOperation.objects.create(
+            organization=self.organization,
+            manager=self.manager,
+            created_by=self.manager,
+            operation_type=CashOperation.TYPE_MANAGER_INCOME,
+            amount="10000.00",
+            occurred_on=date.today(),
+            status=CashOperation.STATUS_APPROVED,
+            reviewed_by=self.accountant,
+            reviewed_at=timezone.now(),
+        )
+
+        self.client.force_login(self.manager)
+        response = self.client.post(
+            reverse("finance_cash_accountable_issue_create"),
+            {
+                "employee": self.service.id,
+                "amount": "4000.00",
+                "occurred_on": date.today().isoformat(),
+                "note": "Материалы с объекта",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        movement = AccountableTransaction.objects.get(transaction_type=AccountableTransaction.TYPE_ISSUE)
+        operation = CashOperation.objects.get(operation_type=CashOperation.TYPE_ACCOUNTABLE_ISSUE)
+        self.assertEqual(movement.employee, self.service)
+        self.assertEqual(movement.status, AccountableTransaction.STATUS_PENDING)
+        self.assertEqual(operation.accountable_transaction, movement)
+        self.assertEqual(operation.status, CashOperation.STATUS_PENDING)
+        self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 10000)
+        self.assertEqual(manager_cash_balance(self.organization, self.manager)["available_balance"], 6000)
+        self.assertEqual(accountable_balance(self.organization, self.service)["operational_balance"], 0)
+
+        self.client.force_login(self.accountant)
+        forbidden = self.client.post(
+            reverse("finance_cash_operation_review", kwargs={"operation_id": operation.id}),
+            {"decision": CashOperation.STATUS_APPROVED},
+        )
+        self.assertEqual(forbidden.status_code, 403)
+
+        self.client.force_login(self.service)
+        confirmed = self.client.post(
+            reverse("finance_transaction_confirm", kwargs={"transaction_id": movement.id}),
+            {"decision": AccountableTransaction.STATUS_APPROVED},
+        )
+
+        self.assertEqual(confirmed.status_code, 302)
+        movement.refresh_from_db()
+        operation.refresh_from_db()
+        self.assertEqual(movement.status, AccountableTransaction.STATUS_APPROVED)
+        self.assertEqual(operation.status, CashOperation.STATUS_APPROVED)
+        self.assertEqual(operation.reviewed_by, self.service)
+        self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 6000)
+        self.assertEqual(accountable_balance(self.organization, self.service)["operational_balance"], 4000)
+
     def test_non_manager_cannot_use_cashbox_pages(self):
         self.client.force_login(self.service)
         dashboard = self.client.get(reverse("finance_cash_dashboard"))
         income = self.client.get(reverse("finance_cash_income_create"))
+        accountable_issue = self.client.get(reverse("finance_cash_accountable_issue_create"))
         transfer = self.client.get(reverse("finance_cash_transfer_create"))
 
         self.assertEqual(dashboard.status_code, 403)
         self.assertEqual(income.status_code, 403)
+        self.assertEqual(accountable_issue.status_code, 403)
         self.assertEqual(transfer.status_code, 403)
 
     def test_new_client_is_created_once_from_expense(self):

@@ -23,6 +23,7 @@ from pool_service.finance_forms import (
     ClientPaymentForm,
     ExpenseForm,
     ExpenseReviewForm,
+    ManagerCashAccountableIssueForm,
     ManagerCashIncomeForm,
     ManagerCashTransferForm,
 )
@@ -56,6 +57,7 @@ from pool_service.services.finance import (
     finance_staff,
     find_client_by_name,
     company_cash_balance,
+    manager_cash_balance,
     manager_cash_rows,
     month_bounds,
     notify_advance,
@@ -367,6 +369,7 @@ def finance_cash_dashboard(request):
         "receiver",
         "created_by",
         "reviewed_by",
+        "accountable_transaction__employee",
     )
     if manage:
         manager_rows = manager_cash_rows(organization)
@@ -486,6 +489,82 @@ def finance_cash_transfer_create(request):
     return render(request, "pool_service/finance/cash_form.html", context)
 
 
+@login_required
+@xframe_options_sameorigin
+def finance_cash_accountable_issue_create(request):
+    organization, denied = _cash_guard(request)
+    if denied:
+        return denied
+    if "manager" not in organization_roles(request.user, organization):
+        return HttpResponseForbidden("Выдать подотчёт из ККМ может только менеджер.")
+    balance = manager_cash_balance(organization, request.user)
+    form = ManagerCashAccountableIssueForm(
+        request.POST or None,
+        organization=organization,
+        available_amount=balance["available_balance"],
+        initial={"occurred_on": date.today()},
+    )
+    if request.method == "POST" and form.is_valid():
+        with transaction.atomic():
+            movement = form.save(commit=False)
+            movement.organization = organization
+            movement.created_by = request.user
+            movement.transaction_type = AccountableTransaction.TYPE_ISSUE
+            movement.status = AccountableTransaction.STATUS_PENDING
+            movement.full_clean()
+            movement.save()
+            AccountableTransactionChange.objects.create(
+                transaction=movement,
+                actor=request.user,
+                action=AccountableTransactionChange.ACTION_CREATED,
+                payload={
+                    "source": "manager_cashbox",
+                    "employee_id": movement.employee_id,
+                    "amount": str(movement.amount),
+                    "occurred_on": movement.occurred_on.isoformat(),
+                    "note": movement.note,
+                    "status": movement.status,
+                },
+            )
+            operation = CashOperation.objects.create(
+                organization=organization,
+                manager=request.user,
+                created_by=request.user,
+                operation_type=CashOperation.TYPE_ACCOUNTABLE_ISSUE,
+                accountable_transaction=movement,
+                amount=movement.amount,
+                occurred_on=movement.occurred_on,
+                note=movement.note,
+                status=CashOperation.STATUS_PENDING,
+            )
+            _create_cash_operation_change(
+                operation,
+                request.user,
+                CashOperationChange.ACTION_CREATED,
+                payload={
+                    "accountable_transaction_id": movement.id,
+                    "employee_id": movement.employee_id,
+                    "operation_type": operation.operation_type,
+                    "amount": str(operation.amount),
+                    "occurred_on": operation.occurred_on.isoformat(),
+                    "note": operation.note,
+                },
+            )
+        notify_advance(movement)
+        messages.success(request, "Выдача из ККМ отправлена сотруднику на подтверждение.")
+        return redirect("finance_cash_dashboard")
+    context = {
+        "form": form,
+        "title": "Выдать подотчёт из ККМ",
+        "subtitle": f"Доступный остаток ККМ: {balance['available_balance']}",
+        "submit_label": "Отправить на подтверждение",
+        "active_tab": "finance",
+        "show_add_button": False,
+    }
+    context.update(_finance_modal_context(request))
+    return render(request, "pool_service/finance/cash_form.html", context)
+
+
 @require_POST
 @login_required
 def finance_cash_operation_review(request, operation_id):
@@ -493,6 +572,8 @@ def finance_cash_operation_review(request, operation_id):
     if denied:
         return denied
     operation = get_object_or_404(CashOperation, id=operation_id, organization=organization)
+    if operation.operation_type == CashOperation.TYPE_ACCOUNTABLE_ISSUE:
+        return HttpResponseForbidden("Выдачу подотчёта из ККМ подтверждает сотрудник-получатель.")
     if not _cash_reviewers_can_review(request.user, operation):
         return HttpResponseForbidden("Нельзя подтвердить собственную кассовую операцию.")
     if operation.status != CashOperation.STATUS_PENDING:
@@ -599,22 +680,53 @@ def finance_transaction_confirm(request, transaction_id):
         messages.error(request, "Выберите решение.")
         return redirect(request.META.get("HTTP_REFERER") or reverse("finance_dashboard"))
     review_comment = (request.POST.get("review_comment") or "").strip()
-    movement.status = decision
-    movement.reviewed_by = request.user
-    movement.reviewed_at = timezone.now()
-    movement.review_comment = review_comment
-    movement.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_comment"])
-    AccountableTransactionChange.objects.create(
-        transaction=movement,
-        actor=request.user,
-        action=(
-            AccountableTransactionChange.ACTION_UPDATED
-            if decision == AccountableTransaction.STATUS_APPROVED
-            else AccountableTransactionChange.ACTION_REJECTED
-        ),
-        note=review_comment or "Подтверждение получателем",
-        payload={"decision": decision},
-    )
+    with transaction.atomic():
+        cash_operation = (
+            CashOperation.objects.select_for_update()
+            .filter(
+                accountable_transaction=movement,
+                status=CashOperation.STATUS_PENDING,
+            )
+            .first()
+        )
+        if (
+            cash_operation
+            and decision == AccountableTransaction.STATUS_APPROVED
+            and manager_cash_balance(cash_operation.organization, cash_operation.manager)["balance"] < cash_operation.amount
+        ):
+            messages.error(request, "В кассе ККМ недостаточно денег для подтверждения выдачи.")
+            return redirect(request.META.get("HTTP_REFERER") or reverse("finance_dashboard"))
+        movement.status = decision
+        movement.reviewed_by = request.user
+        movement.reviewed_at = timezone.now()
+        movement.review_comment = review_comment
+        movement.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_comment"])
+        AccountableTransactionChange.objects.create(
+            transaction=movement,
+            actor=request.user,
+            action=(
+                AccountableTransactionChange.ACTION_UPDATED
+                if decision == AccountableTransaction.STATUS_APPROVED
+                else AccountableTransactionChange.ACTION_REJECTED
+            ),
+            note=review_comment or "Подтверждение получателем",
+            payload={"decision": decision},
+        )
+        if cash_operation:
+            cash_operation.status = decision
+            cash_operation.reviewed_by = request.user
+            cash_operation.reviewed_at = timezone.now()
+            cash_operation.review_comment = review_comment
+            cash_operation.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_comment", "updated_at"])
+            _create_cash_operation_change(
+                cash_operation,
+                request.user,
+                CashOperationChange.ACTION_APPROVED
+                if decision == CashOperation.STATUS_APPROVED
+                else CashOperationChange.ACTION_REJECTED,
+                note=review_comment or "Подтверждение получателем",
+                payload={"decision": decision, "accountable_transaction_id": movement.id},
+            )
     if decision == AccountableTransaction.STATUS_APPROVED:
         messages.success(request, "Получение подотчёта подтверждено.")
     else:

@@ -80,6 +80,7 @@ from .views import (
 from . import views
 from .finance_views import (
     finance_cash_dashboard,
+    finance_cash_accountable_issue_create,
     finance_cash_income_create,
     finance_cash_operation_review,
     finance_cash_transfer_create,
@@ -182,6 +183,7 @@ urlpatterns = [
     path("api/push/unsubscribe/", push_unsubscribe, name="push_unsubscribe"),
     path("finance/", finance_dashboard, name="finance_dashboard"),
     path("finance/cash/", finance_cash_dashboard, name="finance_cash_dashboard"),
+    path("finance/cash/accountable/new/", finance_cash_accountable_issue_create, name="finance_cash_accountable_issue_create"),
     path("finance/cash/income/new/", finance_cash_income_create, name="finance_cash_income_create"),
     path("finance/cash/transfer/new/", finance_cash_transfer_create, name="finance_cash_transfer_create"),
     path("finance/cash/<int:operation_id>/review/", finance_cash_operation_review, name="finance_cash_operation_review"),

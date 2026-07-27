@@ -286,7 +286,7 @@ def accountable_rows(organization, through=None, users=None):
 def cash_operation_effect(operation_type, amount):
     if operation_type == CashOperation.TYPE_MANAGER_INCOME:
         return amount
-    if operation_type == CashOperation.TYPE_TRANSFER_TO_COMPANY:
+    if operation_type in {CashOperation.TYPE_TRANSFER_TO_COMPANY, CashOperation.TYPE_ACCOUNTABLE_ISSUE}:
         return -amount
     return Decimal("0.00")
 
@@ -302,8 +302,10 @@ def manager_cash_balance(organization, manager, through=None):
     balance = Decimal("0.00")
     pending_income = Decimal("0.00")
     pending_transfer = Decimal("0.00")
+    pending_accountable_issue = Decimal("0.00")
     approved_income = Decimal("0.00")
     approved_transfer = Decimal("0.00")
+    approved_accountable_issue = Decimal("0.00")
     for operation in operations.only("operation_type", "amount", "status"):
         if operation.status == CashOperation.STATUS_APPROVED:
             balance += cash_operation_effect(operation.operation_type, operation.amount)
@@ -311,19 +313,27 @@ def manager_cash_balance(organization, manager, through=None):
                 approved_income += operation.amount
             elif operation.operation_type == CashOperation.TYPE_TRANSFER_TO_COMPANY:
                 approved_transfer += operation.amount
+            elif operation.operation_type == CashOperation.TYPE_ACCOUNTABLE_ISSUE:
+                approved_accountable_issue += operation.amount
         elif operation.status == CashOperation.STATUS_PENDING:
             if operation.operation_type == CashOperation.TYPE_MANAGER_INCOME:
                 pending_income += operation.amount
             elif operation.operation_type == CashOperation.TYPE_TRANSFER_TO_COMPANY:
                 pending_transfer += operation.amount
+            elif operation.operation_type == CashOperation.TYPE_ACCOUNTABLE_ISSUE:
+                pending_accountable_issue += operation.amount
 
     return {
         "balance": balance,
         "approved_income": approved_income,
         "approved_transfer": approved_transfer,
+        "approved_accountable_issue": approved_accountable_issue,
         "pending_income": pending_income,
         "pending_transfer": pending_transfer,
-        "pending_total": pending_income + pending_transfer,
+        "pending_accountable_issue": pending_accountable_issue,
+        "reserved_total": pending_transfer + pending_accountable_issue,
+        "available_balance": balance - pending_transfer - pending_accountable_issue,
+        "pending_total": pending_income + pending_transfer + pending_accountable_issue,
     }
 
 

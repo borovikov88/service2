@@ -13,6 +13,7 @@
     <a href="{% url 'finance_dashboard' %}" class="btn btn-outline-secondary">Подотчёт</a>
     {% if can_create_manager_cash %}
       <a href="{% url 'finance_cash_income_create' %}" class="btn btn-outline-success"><i class="bi bi-plus-circle me-2"></i>Получил деньги</a>
+      <a href="{% url 'finance_cash_accountable_issue_create' %}" class="btn btn-outline-primary"><i class="bi bi-cash-stack me-2"></i>Выдать подотчёт</a>
       <a href="{% url 'finance_cash_transfer_create' %}" class="btn btn-primary"><i class="bi bi-arrow-left-right me-2"></i>Сдать выручку</a>
     {% endif %}
   </div>
@@ -62,7 +63,7 @@
   <div class="table-responsive">
     <table class="table align-middle mb-0">
       <thead class="small text-muted">
-        <tr><th>Менеджер</th><th class="text-end">Получено</th><th class="text-end">Сдано</th><th class="text-end">На проверке</th><th class="text-end">Остаток ККМ</th></tr>
+        <tr><th>Менеджер</th><th class="text-end">Получено</th><th class="text-end">Сдано</th><th class="text-end">Выдано</th><th class="text-end">На проверке</th><th class="text-end">Остаток ККМ</th></tr>
       </thead>
       <tbody>
         {% for row in manager_rows %}
@@ -70,11 +71,12 @@
             <td class="fw-semibold">{{ row.manager|finance_employee_name }}</td>
             <td class="text-end">{{ row.approved_income|money }}</td>
             <td class="text-end">{{ row.approved_transfer|money }}</td>
+            <td class="text-end">{{ row.approved_accountable_issue|money }}</td>
             <td class="text-end">{{ row.pending_total|money }}</td>
             <td class="text-end fw-bold {% if row.balance < 0 %}text-danger{% else %}text-success{% endif %}">{{ row.balance|money }}</td>
           </tr>
         {% empty %}
-          <tr><td colspan="5" class="text-center text-muted py-4">Кассовых операций пока нет</td></tr>
+          <tr><td colspan="6" class="text-center text-muted py-4">Кассовых операций пока нет</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -104,6 +106,9 @@
             <td>
               <div class="fw-semibold">{{ operation.get_operation_type_display }}</div>
               {% if operation.note %}<div class="small text-muted">{{ operation.note }}</div>{% endif %}
+              {% if operation.accountable_transaction %}
+                <div class="small text-muted">Кому: {{ operation.accountable_transaction.employee|finance_employee_name }}</div>
+              {% endif %}
             </td>
             {% if can_manage_cash %}<td>{{ operation.manager|finance_employee_name }}</td>{% endif %}
             <td>{% if operation.receiver %}{{ operation.receiver|finance_employee_name }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
@@ -115,7 +120,7 @@
             </td>
             {% if can_manage_cash %}
               <td class="text-end">
-                {% if operation.status == "pending" %}
+                {% if operation.status == "pending" and operation.operation_type != "accountable_issue" %}
                   <div class="d-flex flex-wrap justify-content-end gap-2">
                     <form method="post" action="{% url 'finance_cash_operation_review' operation.id %}" class="d-inline">
                       {% csrf_token %}
