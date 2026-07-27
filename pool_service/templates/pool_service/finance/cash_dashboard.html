@@ -10,7 +10,6 @@
     <div class="text-muted">Кассы ККМ менеджеров и общая касса компании</div>
   </div>
   <div class="d-flex flex-wrap gap-2">
-    <a href="{% url 'finance_dashboard' %}" class="btn btn-outline-secondary">Подотчёт</a>
     {% if can_create_manager_cash %}
       <a href="{% url 'finance_cash_income_create' %}" class="btn btn-outline-success"><i class="bi bi-plus-circle me-2"></i>Получил деньги</a>
       <a href="{% url 'finance_cash_accountable_issue_create' %}" class="btn btn-outline-primary"><i class="bi bi-cash-stack me-2"></i>Выдать подотчёт</a>

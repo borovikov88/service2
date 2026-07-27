@@ -1312,7 +1312,20 @@
             <a class="text-decoration-none {% if active_tab == 'clients' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'clients_list' %}">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;</a>
           {% endif %}
           {% if can_access_finance %}
-            <a class="text-decoration-none {% if active_tab == 'finance' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'finance_dashboard' %}">Финансы</a>
+            <div class="crm-nav">
+              <a class="crm-nav__link text-decoration-none {% if active_tab == 'finance' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'finance_dashboard' %}">Финансы</a>
+              <span class="crm-nav__toggle" aria-hidden="true"><i class="bi bi-chevron-down"></i></span>
+              <div class="crm-nav__menu">
+                <a href="{% url 'finance_dashboard' %}" class="ui-dropdown__item {% if request.resolver_match.url_name == 'finance_dashboard' or request.resolver_match.url_name == 'finance_transaction_create' or request.resolver_match.url_name == 'finance_employee_detail' or request.resolver_match.url_name == 'finance_income_create' or request.resolver_match.url_name == 'finance_expense_create' or request.resolver_match.url_name == 'finance_expense_detail' or request.resolver_match.url_name == 'finance_report' %}is-active{% endif %}">
+                  <i class="bi bi-cash-stack"></i>
+                  <span>Подотчёт</span>
+                </a>
+                <a href="{% url 'finance_cash_dashboard' %}" class="ui-dropdown__item {% if request.resolver_match.url_name == 'finance_cash_dashboard' or request.resolver_match.url_name == 'finance_cash_income_create' or request.resolver_match.url_name == 'finance_cash_transfer_create' or request.resolver_match.url_name == 'finance_cash_accountable_issue_create' %}is-active{% endif %}">
+                  <i class="bi bi-wallet2"></i>
+                  <span>Касса</span>
+                </a>
+              </div>
+            </div>
           {% endif %}
           {% if can_access_users %}
             <a class="text-decoration-none {% if active_tab == 'users' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'users' %}">&#1055;&#1086;&#1083;&#1100;&#1079;&#1086;&#1074;&#1072;&#1090;&#1077;&#1083;&#1080;</a>
@@ -1481,7 +1494,22 @@
           <a href="{% url 'clients_list' %}" class="list-group-item list-group-item-action">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;</a>
           {% endif %}
           {% if can_access_finance %}
-          <a href="{% url 'finance_dashboard' %}" class="list-group-item list-group-item-action">Финансы</a>
+          <details class="mobile-submenu mb-2" {% if active_tab == 'finance' %}open{% endif %}>
+            <summary class="mobile-submenu__summary">
+              <span>Финансы</span>
+              <i class="bi bi-chevron-down"></i>
+            </summary>
+            <div class="mobile-submenu__body">
+              <a href="{% url 'finance_dashboard' %}" class="mobile-submenu__item {% if request.resolver_match.url_name == 'finance_dashboard' or request.resolver_match.url_name == 'finance_transaction_create' or request.resolver_match.url_name == 'finance_employee_detail' or request.resolver_match.url_name == 'finance_income_create' or request.resolver_match.url_name == 'finance_expense_create' or request.resolver_match.url_name == 'finance_expense_detail' or request.resolver_match.url_name == 'finance_report' %}is-active{% endif %}">
+                <i class="bi bi-cash-stack"></i>
+                <span>Подотчёт</span>
+              </a>
+              <a href="{% url 'finance_cash_dashboard' %}" class="mobile-submenu__item {% if request.resolver_match.url_name == 'finance_cash_dashboard' or request.resolver_match.url_name == 'finance_cash_income_create' or request.resolver_match.url_name == 'finance_cash_transfer_create' or request.resolver_match.url_name == 'finance_cash_accountable_issue_create' %}is-active{% endif %}">
+                <i class="bi bi-wallet2"></i>
+                <span>Касса</span>
+              </a>
+            </div>
+          </details>
           {% endif %}
           {% if can_access_users %}
             <a href="{% url 'users' %}" class="list-group-item list-group-item-action">&#1055;&#1086;&#1083;&#1100;&#1079;&#1086;&#1074;&#1072;&#1090;&#1077;&#1083;&#1080;</a>
