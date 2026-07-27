@@ -555,7 +555,21 @@ class FinanceTests(TestCase):
         self.assertEqual(income.manager, self.manager)
         self.assertEqual(income.created_by, self.manager)
         self.assertEqual(income.status, CashOperation.STATUS_PENDING)
-        self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 0)
+        self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 10000)
+        self.assertContains(self.client.get(reverse("finance_cash_dashboard")), reverse("finance_cash_operation_edit", kwargs={"operation_id": income.id}))
+
+        edit_response = self.client.post(
+            reverse("finance_cash_operation_edit", kwargs={"operation_id": income.id}),
+            {
+                "amount": "12000.00",
+                "occurred_on": date.today().isoformat(),
+                "note": "Выручка исправлена",
+            },
+        )
+        self.assertEqual(edit_response.status_code, 302)
+        income.refresh_from_db()
+        self.assertEqual(income.amount, 12000)
+        self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 12000)
 
         forbidden = self.client.post(
             reverse("finance_cash_operation_review", kwargs={"operation_id": income.id}),
@@ -571,8 +585,10 @@ class FinanceTests(TestCase):
         self.assertEqual(review_response.status_code, 302)
         income.refresh_from_db()
         self.assertEqual(income.status, CashOperation.STATUS_APPROVED)
-        self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 10000)
+        self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 12000)
         self.assertTrue(income.changes.filter(action=CashOperationChange.ACTION_APPROVED).exists())
+        edit_after_review = self.client.get(reverse("finance_cash_operation_edit", kwargs={"operation_id": income.id}))
+        self.assertEqual(edit_after_review.status_code, 302)
 
         self.client.force_login(self.manager)
         transfer_response = self.client.post(
@@ -588,7 +604,7 @@ class FinanceTests(TestCase):
         transfer = CashOperation.objects.get(operation_type=CashOperation.TYPE_TRANSFER_TO_COMPANY)
         self.assertEqual(transfer.receiver, self.accountant)
         self.assertEqual(transfer.status, CashOperation.STATUS_PENDING)
-        self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 10000)
+        self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 12000)
         self.assertEqual(company_cash_balance(self.organization)["balance"], 0)
 
         self.client.force_login(self.owner)
@@ -602,7 +618,7 @@ class FinanceTests(TestCase):
         self.assertEqual(review_transfer.status_code, 302)
         transfer.refresh_from_db()
         self.assertEqual(transfer.status, CashOperation.STATUS_APPROVED)
-        self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 3000)
+        self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 5000)
         self.assertEqual(company_cash_balance(self.organization)["balance"], 7000)
 
     def test_manager_cashbox_can_issue_accountable_after_employee_confirmation(self):
@@ -622,8 +638,8 @@ class FinanceTests(TestCase):
         response = self.client.post(
             reverse("finance_cash_accountable_issue_create"),
             {
-                "employee": self.service.id,
-                "amount": "4000.00",
+            "employee": self.service.id,
+                "amount": "14000.00",
                 "occurred_on": date.today().isoformat(),
                 "note": "Материалы с объекта",
             },
@@ -637,7 +653,7 @@ class FinanceTests(TestCase):
         self.assertEqual(operation.accountable_transaction, movement)
         self.assertEqual(operation.status, CashOperation.STATUS_PENDING)
         self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 10000)
-        self.assertEqual(manager_cash_balance(self.organization, self.manager)["available_balance"], 6000)
+        self.assertEqual(manager_cash_balance(self.organization, self.manager)["available_balance"], -4000)
         self.assertEqual(accountable_balance(self.organization, self.service)["operational_balance"], 0)
 
         self.client.force_login(self.accountant)
@@ -659,8 +675,8 @@ class FinanceTests(TestCase):
         self.assertEqual(movement.status, AccountableTransaction.STATUS_APPROVED)
         self.assertEqual(operation.status, CashOperation.STATUS_APPROVED)
         self.assertEqual(operation.reviewed_by, self.service)
-        self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 6000)
-        self.assertEqual(accountable_balance(self.organization, self.service)["operational_balance"], 4000)
+        self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], -4000)
+        self.assertEqual(accountable_balance(self.organization, self.service)["operational_balance"], 14000)
 
     def test_non_manager_cannot_use_cashbox_pages(self):
         self.client.force_login(self.service)

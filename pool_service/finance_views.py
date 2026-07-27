@@ -282,6 +282,43 @@ def _cash_reviewers_can_review(user, operation):
     return user.id not in {operation.manager_id, operation.created_by_id}
 
 
+def _can_view_cash_operation(user, operation):
+    if can_manage_cash(user, operation.organization):
+        return True
+    return can_access_cash(user, operation.organization) and user.id in {operation.manager_id, operation.created_by_id}
+
+
+def _can_edit_cash_operation(user, operation):
+    if (
+        not operation
+        or operation.status != CashOperation.STATUS_PENDING
+        or period_is_closed(operation.organization, operation.occurred_on)
+    ):
+        return False
+    if operation.operation_type == CashOperation.TYPE_ACCOUNTABLE_ISSUE:
+        if not operation.accountable_transaction_id or operation.accountable_transaction.status != AccountableTransaction.STATUS_PENDING:
+            return False
+    return can_access_cash(user, operation.organization) and user.id in {operation.manager_id, operation.created_by_id}
+
+
+def _cash_operation_for_user(request, operation_id):
+    operation = get_object_or_404(
+        CashOperation.objects.select_related(
+            "organization",
+            "manager",
+            "receiver",
+            "created_by",
+            "reviewed_by",
+            "accountable_transaction__employee",
+            "accountable_transaction__created_by",
+        ).prefetch_related("changes__actor"),
+        id=operation_id,
+    )
+    if not _can_view_cash_operation(request.user, operation):
+        return None
+    return operation
+
+
 def _create_cash_operation_change(operation, actor, action, note="", payload=None):
     CashOperationChange.objects.create(
         operation=operation,
@@ -290,6 +327,20 @@ def _create_cash_operation_change(operation, actor, action, note="", payload=Non
         note=note,
         payload=payload or {},
     )
+
+
+def _cash_operation_form(operation, data=None):
+    if operation.operation_type == CashOperation.TYPE_MANAGER_INCOME:
+        return ManagerCashIncomeForm(data, organization=operation.organization, instance=operation)
+    if operation.operation_type == CashOperation.TYPE_TRANSFER_TO_COMPANY:
+        return ManagerCashTransferForm(data, organization=operation.organization, instance=operation)
+    if operation.operation_type == CashOperation.TYPE_ACCOUNTABLE_ISSUE:
+        return ManagerCashAccountableIssueForm(
+            data,
+            organization=operation.organization,
+            instance=operation.accountable_transaction,
+        )
+    raise ValueError("Unknown cash operation type")
 
 
 @login_required
@@ -378,6 +429,9 @@ def finance_cash_dashboard(request):
         operations = operations.filter(manager=request.user)
         manager_rows = manager_cash_rows(organization, users=[request.user])
         company_balance = None
+    operations = list(operations[:100])
+    for operation in operations:
+        operation.can_edit = _can_edit_cash_operation(request.user, operation)
     return render(
         request,
         "pool_service/finance/cash_dashboard.html",
@@ -387,7 +441,7 @@ def finance_cash_dashboard(request):
             "can_create_manager_cash": "manager" in roles,
             "company_balance": company_balance,
             "manager_rows": manager_rows,
-            "operations": operations[:100],
+            "operations": operations,
             "active_tab": "finance",
             "show_add_button": False,
         },
@@ -501,7 +555,6 @@ def finance_cash_accountable_issue_create(request):
     form = ManagerCashAccountableIssueForm(
         request.POST or None,
         organization=organization,
-        available_amount=balance["available_balance"],
         initial={"occurred_on": date.today()},
     )
     if request.method == "POST" and form.is_valid():
@@ -556,8 +609,99 @@ def finance_cash_accountable_issue_create(request):
     context = {
         "form": form,
         "title": "Выдать подотчёт из ККМ",
-        "subtitle": f"Доступный остаток ККМ: {balance['available_balance']}",
+        "subtitle": f"Текущий остаток ККМ: {balance['balance']}",
         "submit_label": "Отправить на подтверждение",
+        "active_tab": "finance",
+        "show_add_button": False,
+    }
+    context.update(_finance_modal_context(request))
+    return render(request, "pool_service/finance/cash_form.html", context)
+
+
+@login_required
+def finance_cash_operation_detail(request, operation_id):
+    operation = _cash_operation_for_user(request, operation_id)
+    if not operation:
+        return HttpResponseForbidden("Недостаточно прав.")
+    return render(
+        request,
+        "pool_service/finance/cash_detail.html",
+        {
+            "operation": operation,
+            "can_edit": _can_edit_cash_operation(request.user, operation),
+            "can_manage_cash": can_manage_cash(request.user, operation.organization),
+            "active_tab": "finance",
+            "show_add_button": False,
+        },
+    )
+
+
+@login_required
+@xframe_options_sameorigin
+def finance_cash_operation_edit(request, operation_id):
+    operation = _cash_operation_for_user(request, operation_id)
+    if not operation:
+        return HttpResponseForbidden("Недостаточно прав.")
+    if not _can_edit_cash_operation(request.user, operation):
+        messages.error(request, "Подтверждённую кассовую операцию редактировать нельзя.")
+        return redirect("finance_cash_operation_detail", operation_id=operation.id)
+    form = _cash_operation_form(operation, request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        with transaction.atomic():
+            if operation.operation_type == CashOperation.TYPE_ACCOUNTABLE_ISSUE:
+                movement = form.save(commit=False)
+                movement.organization = operation.organization
+                movement.created_by = operation.created_by
+                movement.transaction_type = AccountableTransaction.TYPE_ISSUE
+                movement.status = AccountableTransaction.STATUS_PENDING
+                movement.full_clean()
+                movement.save()
+                AccountableTransactionChange.objects.create(
+                    transaction=movement,
+                    actor=request.user,
+                    action=AccountableTransactionChange.ACTION_UPDATED,
+                    note="Изменение выдачи из ККМ",
+                    payload={
+                        "source": "manager_cashbox",
+                        "employee_id": movement.employee_id,
+                        "amount": str(movement.amount),
+                        "occurred_on": movement.occurred_on.isoformat(),
+                        "note": movement.note,
+                    },
+                )
+                operation.accountable_transaction = movement
+                operation.amount = movement.amount
+                operation.occurred_on = movement.occurred_on
+                operation.note = movement.note
+            else:
+                updated = form.save(commit=False)
+                operation.amount = updated.amount
+                operation.occurred_on = updated.occurred_on
+                operation.note = updated.note
+                if operation.operation_type == CashOperation.TYPE_TRANSFER_TO_COMPANY:
+                    operation.receiver = updated.receiver
+            operation.full_clean()
+            operation.save()
+            _create_cash_operation_change(
+                operation,
+                request.user,
+                CashOperationChange.ACTION_UPDATED,
+                note="Операция изменена",
+                payload={
+                    "amount": str(operation.amount),
+                    "occurred_on": operation.occurred_on.isoformat(),
+                    "note": operation.note,
+                    "receiver_id": operation.receiver_id,
+                    "accountable_transaction_id": operation.accountable_transaction_id,
+                },
+            )
+        messages.success(request, "Кассовая операция изменена.")
+        return redirect("finance_cash_operation_detail", operation_id=operation.id)
+    context = {
+        "form": form,
+        "title": f"Изменить: {operation.get_operation_type_display()}",
+        "subtitle": "Редактирование доступно только до подтверждения",
+        "submit_label": "Сохранить изменения",
         "active_tab": "finance",
         "show_add_button": False,
     }
@@ -689,13 +833,6 @@ def finance_transaction_confirm(request, transaction_id):
             )
             .first()
         )
-        if (
-            cash_operation
-            and decision == AccountableTransaction.STATUS_APPROVED
-            and manager_cash_balance(cash_operation.organization, cash_operation.manager)["balance"] < cash_operation.amount
-        ):
-            messages.error(request, "В кассе ККМ недостаточно денег для подтверждения выдачи.")
-            return redirect(request.META.get("HTTP_REFERER") or reverse("finance_dashboard"))
         movement.status = decision
         movement.reviewed_by = request.user
         movement.reviewed_at = timezone.now()

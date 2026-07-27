@@ -1179,10 +1179,12 @@ class CashOperation(models.Model):
 
 class CashOperationChange(models.Model):
     ACTION_CREATED = "created"
+    ACTION_UPDATED = "updated"
     ACTION_APPROVED = "approved"
     ACTION_REJECTED = "rejected"
     ACTION_CHOICES = [
         (ACTION_CREATED, "Создана"),
+        (ACTION_UPDATED, "Изменена"),
         (ACTION_APPROVED, "Подтверждена"),
         (ACTION_REJECTED, "Отклонена"),
     ]

@@ -433,19 +433,12 @@ class ManagerCashAccountableIssueForm(forms.ModelForm):
             "note": forms.Textarea(attrs={"class": "form-control", "rows": 3}),
         }
 
-    def __init__(self, *args, organization, available_amount=None, **kwargs):
+    def __init__(self, *args, organization, **kwargs):
         super().__init__(*args, **kwargs)
         self.organization = organization
-        self.available_amount = available_amount
         self.fields["employee"].queryset = finance_staff(organization)
         self.fields["employee"].label_from_instance = user_display_name
         self.fields["occurred_on"].input_formats = ["%Y-%m-%d"]
-
-    def clean_amount(self):
-        amount = self.cleaned_data["amount"]
-        if self.available_amount is not None and amount > self.available_amount:
-            raise forms.ValidationError("Недостаточно денег в доступном остатке ККМ.")
-        return amount
 
     def clean_occurred_on(self):
         occurred_on = self.cleaned_data["occurred_on"]

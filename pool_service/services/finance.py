@@ -317,6 +317,8 @@ def manager_cash_balance(organization, manager, through=None):
                 approved_accountable_issue += operation.amount
         elif operation.status == CashOperation.STATUS_PENDING:
             if operation.operation_type == CashOperation.TYPE_MANAGER_INCOME:
+                balance += operation.amount
+                approved_income += operation.amount
                 pending_income += operation.amount
             elif operation.operation_type == CashOperation.TYPE_TRANSFER_TO_COMPANY:
                 pending_transfer += operation.amount

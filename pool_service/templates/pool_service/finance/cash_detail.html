@@ -1,0 +1,55 @@
+{% extends "pool_service/base.html" %}
+{% load finance_tags %}
+
+{% block title %}Кассовая операция{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-4">
+  <div>
+    <h1 class="h3 fw-bold mb-1">{{ operation.get_operation_type_display }}</h1>
+    <div class="text-muted">Касса ККМ и касса компании</div>
+  </div>
+  <div class="d-flex flex-wrap gap-2">
+    {% if can_edit %}
+      <a href="{% url 'finance_cash_operation_edit' operation.id %}" class="btn btn-primary">Изменить</a>
+    {% endif %}
+    <a href="{% url 'finance_cash_dashboard' %}" class="btn btn-outline-secondary">К кассе</a>
+  </div>
+</div>
+
+<div class="card card-soft p-3 p-lg-4 mb-4">
+  <h2 class="h5 fw-bold mb-3">Данные операции</h2>
+  <div class="row g-3">
+    <div class="col-6 col-lg-3"><div class="text-muted small">Дата</div><div class="fw-semibold">{{ operation.occurred_on|date:"d.m.Y" }}</div></div>
+    <div class="col-6 col-lg-3"><div class="text-muted small">Сумма</div><div class="fw-semibold">{{ operation.amount|money }}</div></div>
+    <div class="col-6 col-lg-3"><div class="text-muted small">Менеджер</div><div class="fw-semibold">{{ operation.manager|finance_employee_name }}</div></div>
+    <div class="col-6 col-lg-3"><div class="text-muted small">Статус</div><div class="fw-semibold">{{ operation.get_status_display }}</div></div>
+    <div class="col-12 col-lg-6"><div class="text-muted small">Кому сдано</div><div class="fw-semibold">{% if operation.receiver %}{{ operation.receiver|finance_employee_name }}{% else %}—{% endif %}</div></div>
+    <div class="col-12 col-lg-6"><div class="text-muted small">Кому выдан подотчёт</div><div class="fw-semibold">{% if operation.accountable_transaction %}{{ operation.accountable_transaction.employee|finance_employee_name }}{% else %}—{% endif %}</div></div>
+    <div class="col-12"><div class="text-muted small">Комментарий</div><div class="fw-semibold">{% if operation.note %}{{ operation.note }}{% else %}—{% endif %}</div></div>
+  </div>
+</div>
+
+{% if can_manage_cash %}
+<div class="card card-soft p-3 p-lg-4">
+  <h2 class="h5 fw-bold mb-3">История</h2>
+  <div class="table-responsive">
+    <table class="table align-middle mb-0">
+      <thead class="small text-muted"><tr><th>Дата</th><th>Действие</th><th>Кто</th><th>Комментарий</th></tr></thead>
+      <tbody>
+        {% for change in operation.changes.all %}
+          <tr>
+            <td>{{ change.created_at|date:"d.m.Y H:i" }}</td>
+            <td>{{ change.get_action_display }}</td>
+            <td>{{ change.actor|finance_employee_name }}</td>
+            <td>{% if change.note %}{{ change.note }}{% else %}—{% endif %}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="4" class="text-center text-muted py-4">Истории пока нет</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
