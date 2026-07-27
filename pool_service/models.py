@@ -1075,6 +1075,124 @@ class AccountableTransactionChange(models.Model):
         return f"{self.transaction_id}: {self.action}"
 
 
+class CashOperation(models.Model):
+    TYPE_MANAGER_INCOME = "manager_income"
+    TYPE_TRANSFER_TO_COMPANY = "transfer_to_company"
+    TYPE_CHOICES = [
+        (TYPE_MANAGER_INCOME, "Поступление в кассу ККМ"),
+        (TYPE_TRANSFER_TO_COMPANY, "Сдача выручки в кассу компании"),
+    ]
+
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "На проверке"),
+        (STATUS_APPROVED, "Подтверждено"),
+        (STATUS_REJECTED, "Отклонено"),
+    ]
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="cash_operations",
+    )
+    manager = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="manager_cash_operations",
+    )
+    receiver = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="received_cash_operations",
+    )
+    operation_type = models.CharField(max_length=32, choices=TYPE_CHOICES)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    occurred_on = models.DateField()
+    note = models.TextField(blank=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="created_cash_operations",
+    )
+    reviewed_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="reviewed_cash_operations",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_comment = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-occurred_on", "-id"]
+        indexes = [
+            models.Index(fields=["organization", "occurred_on"], name="cash_org_date_idx"),
+            models.Index(fields=["organization", "status"], name="cash_org_status_idx"),
+            models.Index(fields=["manager", "occurred_on"], name="cash_manager_date_idx"),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.amount is not None and self.amount <= 0:
+            raise ValidationError({"amount": "Сумма должна быть больше нуля."})
+        if self.manager_id and self.organization_id:
+            has_access = OrganizationAccess.objects.filter(
+                user_id=self.manager_id,
+                organization_id=self.organization_id,
+                role="manager",
+            ).exists()
+            if not has_access:
+                raise ValidationError({"manager": "Касса ККМ доступна только менеджеру этой организации."})
+        if self.receiver_id and self.organization_id:
+            has_receiver_access = OrganizationAccess.objects.filter(
+                user_id=self.receiver_id,
+                organization_id=self.organization_id,
+                role__in=["owner", "admin", "accountant"],
+            ).exists()
+            if not has_receiver_access:
+                raise ValidationError({"receiver": "Принять выручку может только владелец, админ или бухгалтер."})
+        if self.operation_type == self.TYPE_TRANSFER_TO_COMPANY and not self.receiver_id:
+            raise ValidationError({"receiver": "Укажите, кому сдана выручка."})
+
+    def __str__(self):
+        return f"{self.get_operation_type_display()}: {self.amount}"
+
+
+class CashOperationChange(models.Model):
+    ACTION_CREATED = "created"
+    ACTION_APPROVED = "approved"
+    ACTION_REJECTED = "rejected"
+    ACTION_CHOICES = [
+        (ACTION_CREATED, "Создана"),
+        (ACTION_APPROVED, "Подтверждена"),
+        (ACTION_REJECTED, "Отклонена"),
+    ]
+
+    operation = models.ForeignKey(CashOperation, on_delete=models.CASCADE, related_name="changes")
+    actor = models.ForeignKey(User, on_delete=models.PROTECT, related_name="cash_operation_changes")
+    action = models.CharField(max_length=24, choices=ACTION_CHOICES)
+    note = models.TextField(blank=True)
+    payload = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["operation", "created_at"], name="cash_change_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.operation_id}: {self.action}"
+
+
 class Expense(models.Model):
     SOURCE_ACCOUNTABLE = "accountable"
     SOURCE_COMPANY_CASH = "company_cash"

@@ -1,0 +1,144 @@
+{% extends "pool_service/base.html" %}
+{% load finance_tags %}
+
+{% block title %}Касса{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-4">
+  <div>
+    <h1 class="h3 fw-bold mb-1">Касса</h1>
+    <div class="text-muted">Кассы ККМ менеджеров и общая касса компании</div>
+  </div>
+  <div class="d-flex flex-wrap gap-2">
+    <a href="{% url 'finance_dashboard' %}" class="btn btn-outline-secondary">Подотчёт</a>
+    {% if can_create_manager_cash %}
+      <a href="{% url 'finance_cash_income_create' %}" class="btn btn-outline-success"><i class="bi bi-plus-circle me-2"></i>Получил деньги</a>
+      <a href="{% url 'finance_cash_transfer_create' %}" class="btn btn-primary"><i class="bi bi-arrow-left-right me-2"></i>Сдать выручку</a>
+    {% endif %}
+  </div>
+</div>
+
+<div class="row g-3 mb-4">
+  {% if can_manage_cash %}
+    <div class="col-12 col-md-4">
+      <div class="card card-soft p-4 h-100">
+        <div class="text-muted small mb-1">Касса компании</div>
+        <div class="fs-3 fw-bold text-success">{{ company_balance.balance|money }}</div>
+      </div>
+    </div>
+    <div class="col-12 col-md-4">
+      <div class="card card-soft p-4 h-100">
+        <div class="text-muted small mb-1">Поступило от менеджеров</div>
+        <div class="fs-3 fw-bold">{{ company_balance.income|money }}</div>
+      </div>
+    </div>
+    <div class="col-12 col-md-4">
+      <div class="card card-soft p-4 h-100">
+        <div class="text-muted small mb-1">Сдача на проверке</div>
+        <div class="fs-3 fw-bold text-warning">{{ company_balance.pending_transfer|money }}</div>
+      </div>
+    </div>
+  {% else %}
+    {% for row in manager_rows %}
+      <div class="col-12 col-md-6">
+        <div class="card card-soft p-4 h-100">
+          <div class="text-muted small mb-1">Моя касса ККМ</div>
+          <div class="fs-3 fw-bold text-success">{{ row.balance|money }}</div>
+        </div>
+      </div>
+      <div class="col-12 col-md-6">
+        <div class="card card-soft p-4 h-100">
+          <div class="text-muted small mb-1">Операции на проверке</div>
+          <div class="fs-3 fw-bold text-warning">{{ row.pending_total|money }}</div>
+        </div>
+      </div>
+    {% endfor %}
+  {% endif %}
+</div>
+
+{% if can_manage_cash %}
+<div class="card card-soft p-3 p-lg-4 mb-4">
+  <h2 class="h5 fw-bold mb-3">Кассы ККМ менеджеров</h2>
+  <div class="table-responsive">
+    <table class="table align-middle mb-0">
+      <thead class="small text-muted">
+        <tr><th>Менеджер</th><th class="text-end">Получено</th><th class="text-end">Сдано</th><th class="text-end">На проверке</th><th class="text-end">Остаток ККМ</th></tr>
+      </thead>
+      <tbody>
+        {% for row in manager_rows %}
+          <tr>
+            <td class="fw-semibold">{{ row.manager|finance_employee_name }}</td>
+            <td class="text-end">{{ row.approved_income|money }}</td>
+            <td class="text-end">{{ row.approved_transfer|money }}</td>
+            <td class="text-end">{{ row.pending_total|money }}</td>
+            <td class="text-end fw-bold {% if row.balance < 0 %}text-danger{% else %}text-success{% endif %}">{{ row.balance|money }}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="5" class="text-center text-muted py-4">Кассовых операций пока нет</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<div class="card card-soft p-3 p-lg-4">
+  <h2 class="h5 fw-bold mb-3">Операции кассы</h2>
+  <div class="table-responsive">
+    <table class="table align-middle mb-0">
+      <thead class="small text-muted">
+        <tr>
+          <th>Дата</th>
+          <th>Операция</th>
+          {% if can_manage_cash %}<th>Менеджер</th>{% endif %}
+          <th>Кому сдано</th>
+          <th class="text-end">Сумма</th>
+          <th class="text-end">Статус</th>
+          {% if can_manage_cash %}<th class="text-end">Действия</th>{% endif %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for operation in operations %}
+          <tr>
+            <td class="date-cell"><span>{{ operation.occurred_on|date:"d.m" }}</span><span class="date-cell__year">{{ operation.occurred_on|date:"Y" }}</span></td>
+            <td>
+              <div class="fw-semibold">{{ operation.get_operation_type_display }}</div>
+              {% if operation.note %}<div class="small text-muted">{{ operation.note }}</div>{% endif %}
+            </td>
+            {% if can_manage_cash %}<td>{{ operation.manager|finance_employee_name }}</td>{% endif %}
+            <td>{% if operation.receiver %}{{ operation.receiver|finance_employee_name }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
+            <td class="text-end fw-semibold">{{ operation.amount|money }}</td>
+            <td class="text-end">
+              {% if operation.status == "approved" %}<span class="badge bg-success-subtle text-success border status-badge"><i class="bi bi-check-circle"></i><span class="status-text">Подтверждено</span></span>
+              {% elif operation.status == "rejected" %}<span class="badge bg-danger-subtle text-danger border status-badge"><i class="bi bi-x-circle"></i><span class="status-text">Отклонено</span></span>
+              {% else %}<span class="badge bg-warning-subtle text-warning border status-badge"><i class="bi bi-hourglass-split"></i><span class="status-text">На проверке</span></span>{% endif %}
+            </td>
+            {% if can_manage_cash %}
+              <td class="text-end">
+                {% if operation.status == "pending" %}
+                  <div class="d-flex flex-wrap justify-content-end gap-2">
+                    <form method="post" action="{% url 'finance_cash_operation_review' operation.id %}" class="d-inline">
+                      {% csrf_token %}
+                      <input type="hidden" name="decision" value="approved">
+                      <button class="btn btn-success btn-sm js-confirm-action" type="submit" data-confirm-title="Подтвердить операцию" data-confirm-body="После подтверждения операция попадёт в кассовые остатки." data-confirm-confirm="Подтвердить" data-confirm-variant="success">Подтвердить</button>
+                    </form>
+                    <form method="post" action="{% url 'finance_cash_operation_review' operation.id %}" class="d-inline">
+                      {% csrf_token %}
+                      <input type="hidden" name="decision" value="rejected">
+                      <button class="btn btn-outline-danger btn-sm js-confirm-action" type="submit" data-confirm-title="Отклонить операцию" data-confirm-body="Отклонённая операция останется в истории, но не попадёт в остатки." data-confirm-confirm="Отклонить" data-confirm-variant="danger">Отклонить</button>
+                    </form>
+                  </div>
+                {% else %}
+                  <span class="text-muted">—</span>
+                {% endif %}
+              </td>
+            {% endif %}
+          </tr>
+        {% empty %}
+          <tr><td colspan="{% if can_manage_cash %}7{% else %}6{% endif %}" class="text-center text-muted py-4">Кассовых операций пока нет</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

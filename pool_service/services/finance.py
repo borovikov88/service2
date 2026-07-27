@@ -8,6 +8,7 @@ from django.urls import reverse
 
 from pool_service.models import (
     AccountableTransaction,
+    CashOperation,
     Client,
     Expense,
     ExpenseCategory,
@@ -67,6 +68,17 @@ def can_close_finance_period(user, organization):
     return bool(organization_roles(user, organization) & FINANCE_CLOSE_ROLES)
 
 
+def can_access_cash(user, organization):
+    if user.is_superuser:
+        return bool(organization)
+    roles = organization_roles(user, organization)
+    return bool(roles & FINANCE_MANAGE_ROLES or "manager" in roles)
+
+
+def can_manage_cash(user, organization):
+    return can_manage_finance(user, organization)
+
+
 def can_review_expense(user, expense):
     if not can_manage_finance(user, expense.organization):
         return False
@@ -120,6 +132,18 @@ def finance_staff(organization):
         User.objects.filter(
             organizationaccess__organization=organization,
             organizationaccess__role__in=FINANCE_ACCESS_ROLES,
+            is_active=True,
+        )
+        .distinct()
+        .order_by("last_name", "first_name", "username")
+    )
+
+
+def manager_staff(organization):
+    return (
+        User.objects.filter(
+            organizationaccess__organization=organization,
+            organizationaccess__role="manager",
             is_active=True,
         )
         .distinct()
@@ -257,6 +281,93 @@ def accountable_rows(organization, through=None, users=None):
             continue
         rows.append({"employee": employee, **balance})
     return rows
+
+
+def cash_operation_effect(operation_type, amount):
+    if operation_type == CashOperation.TYPE_MANAGER_INCOME:
+        return amount
+    if operation_type == CashOperation.TYPE_TRANSFER_TO_COMPANY:
+        return -amount
+    return Decimal("0.00")
+
+
+def manager_cash_balance(organization, manager, through=None):
+    operations = CashOperation.objects.filter(
+        organization=organization,
+        manager=manager,
+    )
+    if through:
+        operations = operations.filter(occurred_on__lte=through)
+
+    balance = Decimal("0.00")
+    pending_income = Decimal("0.00")
+    pending_transfer = Decimal("0.00")
+    approved_income = Decimal("0.00")
+    approved_transfer = Decimal("0.00")
+    for operation in operations.only("operation_type", "amount", "status"):
+        if operation.status == CashOperation.STATUS_APPROVED:
+            balance += cash_operation_effect(operation.operation_type, operation.amount)
+            if operation.operation_type == CashOperation.TYPE_MANAGER_INCOME:
+                approved_income += operation.amount
+            elif operation.operation_type == CashOperation.TYPE_TRANSFER_TO_COMPANY:
+                approved_transfer += operation.amount
+        elif operation.status == CashOperation.STATUS_PENDING:
+            if operation.operation_type == CashOperation.TYPE_MANAGER_INCOME:
+                pending_income += operation.amount
+            elif operation.operation_type == CashOperation.TYPE_TRANSFER_TO_COMPANY:
+                pending_transfer += operation.amount
+
+    return {
+        "balance": balance,
+        "approved_income": approved_income,
+        "approved_transfer": approved_transfer,
+        "pending_income": pending_income,
+        "pending_transfer": pending_transfer,
+        "pending_total": pending_income + pending_transfer,
+    }
+
+
+def manager_cash_rows(organization, through=None, users=None):
+    managers = users if users is not None else manager_staff(organization)
+    rows = []
+    for manager in managers:
+        balance = manager_cash_balance(organization, manager, through=through)
+        if not any(balance.values()) and users is None:
+            continue
+        rows.append({"manager": manager, **balance})
+    return rows
+
+
+def company_cash_balance(organization, through=None):
+    transfers = CashOperation.objects.filter(
+        organization=organization,
+        operation_type=CashOperation.TYPE_TRANSFER_TO_COMPANY,
+        status=CashOperation.STATUS_APPROVED,
+    )
+    expenses = Expense.objects.filter(
+        organization=organization,
+        source=Expense.SOURCE_COMPANY_CASH,
+        status=Expense.STATUS_APPROVED,
+    )
+    pending_transfers = CashOperation.objects.filter(
+        organization=organization,
+        operation_type=CashOperation.TYPE_TRANSFER_TO_COMPANY,
+        status=CashOperation.STATUS_PENDING,
+    )
+    if through:
+        transfers = transfers.filter(occurred_on__lte=through)
+        expenses = expenses.filter(spent_on__lte=through)
+        pending_transfers = pending_transfers.filter(occurred_on__lte=through)
+
+    income = sum((item.amount for item in transfers.only("amount")), Decimal("0.00"))
+    spent = sum((item.amount for item in expenses.only("amount")), Decimal("0.00"))
+    pending = sum((item.amount for item in pending_transfers.only("amount")), Decimal("0.00"))
+    return {
+        "income": income,
+        "spent": spent,
+        "pending_transfer": pending,
+        "balance": income - spent,
+    }
 
 
 def report_employee_rows(organization, start, end):

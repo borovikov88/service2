@@ -6,12 +6,14 @@ from PIL import Image, UnidentifiedImageError
 
 from pool_service.models import (
     AccountableTransaction,
+    CashOperation,
     Client,
     Expense,
     ExpenseCategory,
 )
 from pool_service.services.finance import (
     finance_staff,
+    finance_reviewers,
     find_client_by_name,
     period_is_closed,
     user_display_name,
@@ -354,3 +356,61 @@ class ExpenseReviewForm(forms.Form):
         if cleaned.get("decision") == Expense.STATUS_REJECTED and not (cleaned.get("review_comment") or "").strip():
             self.add_error("review_comment", "Укажите причину отклонения.")
         return cleaned
+
+
+class ManagerCashIncomeForm(forms.ModelForm):
+    class Meta:
+        model = CashOperation
+        fields = ["amount", "occurred_on", "note"]
+        labels = {
+            "amount": "Сумма, ₽",
+            "occurred_on": "Дата получения",
+            "note": "Комментарий",
+        }
+        widgets = {
+            "amount": forms.NumberInput(attrs={"class": "form-control", "min": "0.01", "step": "0.01"}),
+            "occurred_on": forms.DateInput(attrs={"class": "form-control", "type": "date"}, format="%Y-%m-%d"),
+            "note": forms.Textarea(attrs={"class": "form-control", "rows": 3}),
+        }
+
+    def __init__(self, *args, organization, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.organization = organization
+        self.fields["occurred_on"].input_formats = ["%Y-%m-%d"]
+
+    def clean_occurred_on(self):
+        occurred_on = self.cleaned_data["occurred_on"]
+        if period_is_closed(self.organization, occurred_on):
+            raise forms.ValidationError("Этот месяц закрыт. Новые кассовые операции запрещены.")
+        return occurred_on
+
+
+class ManagerCashTransferForm(forms.ModelForm):
+    class Meta:
+        model = CashOperation
+        fields = ["receiver", "amount", "occurred_on", "note"]
+        labels = {
+            "receiver": "Кому сдана выручка",
+            "amount": "Сумма, ₽",
+            "occurred_on": "Дата сдачи",
+            "note": "Комментарий",
+        }
+        widgets = {
+            "receiver": forms.Select(attrs={"class": "form-select"}),
+            "amount": forms.NumberInput(attrs={"class": "form-control", "min": "0.01", "step": "0.01"}),
+            "occurred_on": forms.DateInput(attrs={"class": "form-control", "type": "date"}, format="%Y-%m-%d"),
+            "note": forms.Textarea(attrs={"class": "form-control", "rows": 3}),
+        }
+
+    def __init__(self, *args, organization, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.organization = organization
+        self.fields["receiver"].queryset = finance_reviewers(organization)
+        self.fields["receiver"].label_from_instance = user_display_name
+        self.fields["occurred_on"].input_formats = ["%Y-%m-%d"]
+
+    def clean_occurred_on(self):
+        occurred_on = self.cleaned_data["occurred_on"]
+        if period_is_closed(self.organization, occurred_on):
+            raise forms.ValidationError("Этот месяц закрыт. Новые кассовые операции запрещены.")
+        return occurred_on

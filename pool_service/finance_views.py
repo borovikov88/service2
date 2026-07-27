@@ -18,10 +18,19 @@ from django.utils import timezone
 from django.views.decorators.clickjacking import xframe_options_sameorigin
 from django.views.decorators.http import require_POST
 
-from pool_service.finance_forms import AccountableTransactionForm, ClientPaymentForm, ExpenseForm, ExpenseReviewForm
+from pool_service.finance_forms import (
+    AccountableTransactionForm,
+    ClientPaymentForm,
+    ExpenseForm,
+    ExpenseReviewForm,
+    ManagerCashIncomeForm,
+    ManagerCashTransferForm,
+)
 from pool_service.models import (
     AccountableTransaction,
     AccountableTransactionChange,
+    CashOperation,
+    CashOperationChange,
     Client,
     Expense,
     ExpenseCategory,
@@ -32,11 +41,13 @@ from pool_service.models import (
 from pool_service.services.finance import (
     accountable_balance,
     accountable_rows,
+    can_access_cash,
     can_access_finance,
     can_close_finance_period,
     can_confirm_accountable_issue,
     can_edit_expense,
     can_issue_accountable_transaction,
+    can_manage_cash,
     can_manage_finance,
     can_review_accountable_transaction,
     can_review_expense,
@@ -44,6 +55,8 @@ from pool_service.services.finance import (
     ensure_default_categories,
     finance_staff,
     find_client_by_name,
+    company_cash_balance,
+    manager_cash_rows,
     month_bounds,
     notify_advance,
     notify_expense_reviewed,
@@ -72,6 +85,19 @@ def _finance_guard(request, *, manage=False, close=False, issue=False):
         allowed = can_issue_accountable_transaction(request.user, organization)
     if close:
         allowed = can_close_finance_period(request.user, organization)
+    if not allowed:
+        return organization, HttpResponseForbidden("Недостаточно прав.")
+    if is_org_access_blocked(request.user):
+        messages.error(request, "Доступ организации к сервису приостановлен.")
+        return organization, redirect("billing")
+    return organization, None
+
+
+def _cash_guard(request, *, manage=False):
+    organization = _organization_for_finance(request)
+    if not organization:
+        return None, HttpResponseForbidden("Организация не найдена.")
+    allowed = can_manage_cash(request.user, organization) if manage else can_access_cash(request.user, organization)
     if not allowed:
         return organization, HttpResponseForbidden("Недостаточно прав.")
     if is_org_access_blocked(request.user):
@@ -248,6 +274,22 @@ def _decorate_accountable_movements(user, movements):
     return movements
 
 
+def _cash_reviewers_can_review(user, operation):
+    if not can_manage_cash(user, operation.organization):
+        return False
+    return user.id not in {operation.manager_id, operation.created_by_id}
+
+
+def _create_cash_operation_change(operation, actor, action, note="", payload=None):
+    CashOperationChange.objects.create(
+        operation=operation,
+        actor=actor,
+        action=action,
+        note=note,
+        payload=payload or {},
+    )
+
+
 @login_required
 @xframe_options_sameorigin
 def finance_dashboard(request):
@@ -311,6 +353,176 @@ def finance_dashboard(request):
             "show_add_button": False,
         },
     )
+
+
+@login_required
+def finance_cash_dashboard(request):
+    organization, denied = _cash_guard(request)
+    if denied:
+        return denied
+    manage = can_manage_cash(request.user, organization)
+    roles = organization_roles(request.user, organization)
+    operations = CashOperation.objects.filter(organization=organization).select_related(
+        "manager",
+        "receiver",
+        "created_by",
+        "reviewed_by",
+    )
+    if manage:
+        manager_rows = manager_cash_rows(organization)
+        company_balance = company_cash_balance(organization)
+    else:
+        operations = operations.filter(manager=request.user)
+        manager_rows = manager_cash_rows(organization, users=[request.user])
+        company_balance = None
+    return render(
+        request,
+        "pool_service/finance/cash_dashboard.html",
+        {
+            "organization": organization,
+            "can_manage_cash": manage,
+            "can_create_manager_cash": "manager" in roles,
+            "company_balance": company_balance,
+            "manager_rows": manager_rows,
+            "operations": operations[:100],
+            "active_tab": "finance",
+            "show_add_button": False,
+        },
+    )
+
+
+@login_required
+@xframe_options_sameorigin
+def finance_cash_income_create(request):
+    organization, denied = _cash_guard(request)
+    if denied:
+        return denied
+    if "manager" not in organization_roles(request.user, organization):
+        return HttpResponseForbidden("Поступление в ККМ может добавить только менеджер.")
+    form = ManagerCashIncomeForm(
+        request.POST or None,
+        organization=organization,
+        initial={"occurred_on": date.today()},
+    )
+    if request.method == "POST" and form.is_valid():
+        operation = form.save(commit=False)
+        operation.organization = organization
+        operation.manager = request.user
+        operation.created_by = request.user
+        operation.operation_type = CashOperation.TYPE_MANAGER_INCOME
+        operation.status = CashOperation.STATUS_PENDING
+        operation.full_clean()
+        operation.save()
+        _create_cash_operation_change(
+            operation,
+            request.user,
+            CashOperationChange.ACTION_CREATED,
+            payload={
+                "operation_type": operation.operation_type,
+                "amount": str(operation.amount),
+                "occurred_on": operation.occurred_on.isoformat(),
+                "note": operation.note,
+            },
+        )
+        messages.success(request, "Поступление в кассу ККМ отправлено на подтверждение.")
+        return redirect("finance_cash_dashboard")
+    context = {
+        "form": form,
+        "title": "Поступление в кассу ККМ",
+        "subtitle": "Деньги, которые получил менеджер",
+        "submit_label": "Сохранить поступление",
+        "active_tab": "finance",
+        "show_add_button": False,
+    }
+    context.update(_finance_modal_context(request))
+    return render(request, "pool_service/finance/cash_form.html", context)
+
+
+@login_required
+@xframe_options_sameorigin
+def finance_cash_transfer_create(request):
+    organization, denied = _cash_guard(request)
+    if denied:
+        return denied
+    if "manager" not in organization_roles(request.user, organization):
+        return HttpResponseForbidden("Сдать выручку может только менеджер.")
+    form = ManagerCashTransferForm(
+        request.POST or None,
+        organization=organization,
+        initial={"occurred_on": date.today()},
+    )
+    if request.method == "POST" and form.is_valid():
+        operation = form.save(commit=False)
+        operation.organization = organization
+        operation.manager = request.user
+        operation.created_by = request.user
+        operation.operation_type = CashOperation.TYPE_TRANSFER_TO_COMPANY
+        operation.status = CashOperation.STATUS_PENDING
+        operation.full_clean()
+        operation.save()
+        _create_cash_operation_change(
+            operation,
+            request.user,
+            CashOperationChange.ACTION_CREATED,
+            payload={
+                "receiver_id": operation.receiver_id,
+                "operation_type": operation.operation_type,
+                "amount": str(operation.amount),
+                "occurred_on": operation.occurred_on.isoformat(),
+                "note": operation.note,
+            },
+        )
+        messages.success(request, "Сдача выручки отправлена на подтверждение.")
+        return redirect("finance_cash_dashboard")
+    context = {
+        "form": form,
+        "title": "Сдать выручку",
+        "subtitle": "После подтверждения деньги перейдут из ККМ в кассу компании",
+        "submit_label": "Отправить на подтверждение",
+        "active_tab": "finance",
+        "show_add_button": False,
+    }
+    context.update(_finance_modal_context(request))
+    return render(request, "pool_service/finance/cash_form.html", context)
+
+
+@require_POST
+@login_required
+def finance_cash_operation_review(request, operation_id):
+    organization, denied = _cash_guard(request, manage=True)
+    if denied:
+        return denied
+    operation = get_object_or_404(CashOperation, id=operation_id, organization=organization)
+    if not _cash_reviewers_can_review(request.user, operation):
+        return HttpResponseForbidden("Нельзя подтвердить собственную кассовую операцию.")
+    if operation.status != CashOperation.STATUS_PENDING:
+        messages.error(request, "Операция уже рассмотрена.")
+        return redirect("finance_cash_dashboard")
+    if period_is_closed(organization, operation.occurred_on):
+        messages.error(request, "Месяц закрыт. Для подтверждения нужно открыть период.")
+        return redirect("finance_cash_dashboard")
+    decision = request.POST.get("decision")
+    if decision not in {CashOperation.STATUS_APPROVED, CashOperation.STATUS_REJECTED}:
+        messages.error(request, "Выберите решение.")
+        return redirect("finance_cash_dashboard")
+    review_comment = (request.POST.get("review_comment") or "").strip()
+    operation.status = decision
+    operation.reviewed_by = request.user
+    operation.reviewed_at = timezone.now()
+    operation.review_comment = review_comment
+    operation.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_comment", "updated_at"])
+    _create_cash_operation_change(
+        operation,
+        request.user,
+        CashOperationChange.ACTION_APPROVED if decision == CashOperation.STATUS_APPROVED else CashOperationChange.ACTION_REJECTED,
+        note=review_comment,
+        payload={"decision": decision},
+    )
+    if decision == CashOperation.STATUS_APPROVED:
+        messages.success(request, "Кассовая операция подтверждена.")
+    else:
+        messages.success(request, "Кассовая операция отклонена.")
+    return redirect("finance_cash_dashboard")
 
 
 @login_required

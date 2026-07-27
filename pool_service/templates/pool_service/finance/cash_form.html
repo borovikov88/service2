@@ -1,0 +1,36 @@
+{% extends "pool_service/base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<div class="{% if finance_modal %}p-3 p-lg-4{% else %}mx-auto{% endif %}"{% if not finance_modal %} style="max-width:760px;"{% endif %}>
+  {% if not finance_modal %}
+  <div class="d-flex align-items-center justify-content-between gap-3 mb-4">
+    <div>
+      <h1 class="h3 fw-bold mb-1">{{ title }}</h1>
+      <div class="text-muted">{{ subtitle }}</div>
+    </div>
+    <a href="{% url 'finance_cash_dashboard' %}" class="btn btn-outline-secondary">Назад</a>
+  </div>
+  {% endif %}
+
+  <form method="post" class="{% if not finance_modal %}card card-soft p-3 p-lg-4{% endif %}">
+    {% csrf_token %}
+    <div class="row g-3">
+      {% for field in form %}
+        <div class="{% if field.name == 'note' %}col-12{% else %}col-12 col-md-6{% endif %}">
+          <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+          {{ field }}
+          {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+          {% for error in field.errors %}<div class="invalid-feedback d-block">{{ error }}</div>{% endfor %}
+        </div>
+      {% endfor %}
+    </div>
+    {% if form.non_field_errors %}<div class="alert alert-danger mt-3">{{ form.non_field_errors }}</div>{% endif %}
+    <div class="d-flex gap-2 mt-4">
+      <button type="submit" class="btn btn-primary">{{ submit_label }}</button>
+      <a href="{% url 'finance_cash_dashboard' %}" class="btn btn-outline-secondary">Отмена</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
