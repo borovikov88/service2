@@ -26,7 +26,7 @@ from pool_service.models import (
     Organization,
     OrganizationAccess,
 )
-from pool_service.services.finance import accountable_balance, company_cash_balance, ensure_default_categories, format_money, manager_cash_balance
+from pool_service.services.finance import accountable_balance, company_cash_balance, ensure_default_categories, format_money, kkm_cash_balance, manager_cash_balance
 
 
 @override_settings(
@@ -558,6 +558,7 @@ class FinanceTests(TestCase):
         self.assertEqual(income.created_by, self.manager)
         self.assertEqual(income.status, CashOperation.STATUS_PENDING)
         self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 10000)
+        self.assertEqual(kkm_cash_balance(self.organization)["balance"], 10000)
         self.assertContains(self.client.get(reverse("finance_kkm_cash_dashboard")), reverse("finance_cash_operation_edit", kwargs={"operation_id": income.id}))
 
         edit_response = self.client.post(
@@ -680,7 +681,7 @@ class FinanceTests(TestCase):
         self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], -4000)
         self.assertEqual(accountable_balance(self.organization, self.service)["operational_balance"], 14000)
 
-    def test_non_manager_can_view_kkm_but_cannot_manage_cashbox(self):
+    def test_service_cannot_access_kkm_cashbox(self):
         self.client.force_login(self.service)
         old_dashboard = self.client.get(reverse("finance_cash_dashboard"))
         dashboard = self.client.get(reverse("finance_kkm_cash_dashboard"))
@@ -691,7 +692,7 @@ class FinanceTests(TestCase):
         kkm_count = self.client.get(reverse("finance_cash_count_create", kwargs={"cashbox_type": CashCount.CASHBOX_KKM}))
 
         self.assertEqual(old_dashboard.status_code, 302)
-        self.assertEqual(dashboard.status_code, 200)
+        self.assertEqual(dashboard.status_code, 403)
         self.assertEqual(company_dashboard.status_code, 403)
         self.assertEqual(income.status_code, 403)
         self.assertEqual(accountable_issue.status_code, 403)
@@ -779,12 +780,14 @@ class FinanceTests(TestCase):
                 "note": "Пересчёт ККМ",
                 "bill_100": "3",
                 "coin_2": "2",
+                "manual_amount": "11000.00",
             },
         )
         self.assertEqual(kkm_response.status_code, 302)
         kkm_count = CashCount.objects.get(cashbox_type=CashCount.CASHBOX_KKM)
-        self.assertEqual(kkm_count.manager, self.manager)
-        self.assertEqual(kkm_count.total, Decimal("304.00"))
+        self.assertIsNone(kkm_count.manager)
+        self.assertEqual(kkm_count.total, Decimal("11304.00"))
+        self.assertEqual(kkm_count.denominations["manual_amount"], "11000.00")
 
     def test_new_client_is_created_once_from_expense(self):
         first_request_id = str(uuid.uuid4())

@@ -3,12 +3,61 @@
 {% block title %}{{ title }}{% endblock %}
 
 {% block content %}
-<div class="{% if finance_modal %}p-3 p-lg-4{% else %}mx-auto{% endif %}"{% if not finance_modal %} style="max-width:900px;"{% endif %}>
+<style>
+  .cash-count-panel {
+    display: grid;
+    gap: 12px;
+  }
+  .cash-count-row {
+    display: grid;
+    grid-template-columns: minmax(88px, 1fr) 120px minmax(110px, 1fr);
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid #e5edf7;
+    border-radius: 16px;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+  }
+  .cash-count-row__label {
+    font-weight: 700;
+    color: #132238;
+  }
+  .cash-count-row__input .form-control {
+    min-height: 42px;
+    border-radius: 12px;
+    text-align: center;
+    font-weight: 700;
+  }
+  .cash-count-row__sum {
+    text-align: right;
+    font-weight: 800;
+    color: #0f8f56;
+    white-space: nowrap;
+  }
+  .cash-count-summary {
+    border: 1px solid #d7e6ff;
+    border-radius: 18px;
+    background: radial-gradient(circle at top right, rgba(13, 110, 253, 0.12), transparent 38%), #f8fbff;
+  }
+  @media (max-width: 576px) {
+    .cash-count-row {
+      grid-template-columns: 1fr 104px;
+    }
+    .cash-count-row__sum {
+      grid-column: 1 / -1;
+      text-align: left;
+      color: #5f6f82;
+    }
+  }
+</style>
+
+<div class="{% if finance_modal %}p-3 p-lg-4{% else %}mx-auto{% endif %}"{% if not finance_modal %} style="max-width:720px;"{% endif %}>
   {% if not finance_modal %}
   <div class="d-flex align-items-center justify-content-between gap-3 mb-4">
     <div>
       <h1 class="h3 fw-bold mb-1">{{ title }}</h1>
-      <div class="text-muted">Укажите количество купюр и монет, сумму посчитает программа</div>
+      <div class="text-muted">Укажите количество купюр и монет. Пачки и смешанные суммы можно внести отдельной строкой.</div>
     </div>
     <a href="{% url back_url_name %}" class="btn btn-outline-secondary">Назад</a>
   </div>
@@ -23,25 +72,32 @@
         {% for error in form.occurred_on.errors %}<div class="invalid-feedback d-block">{{ error }}</div>{% endfor %}
       </div>
       <div class="col-12 col-md-6">
-        <div class="card border-0 bg-light h-100 p-3">
-          <div class="text-muted small">Итого по пересчёту</div>
-          <div class="h3 fw-bold mb-0" data-cash-count-total>0,00 ₽</div>
+        <div class="cash-count-summary h-100 p-3">
+          <div class="text-muted small">Общий итог</div>
+          <div class="h3 fw-bold mb-0 text-success" data-cash-count-total>0,00 ₽</div>
         </div>
       </div>
     </div>
 
-    <div class="row g-2">
+    <div class="cash-count-panel">
       {% for name, label, value, field in denomination_fields %}
-        <div class="col-6 col-md-4 col-lg-3">
-          <label class="form-label small" for="{{ field.id_for_label }}">{{ label }}</label>
-          <div class="input-group">
+        <div class="cash-count-row" data-cash-count-row>
+          <label class="cash-count-row__label mb-0" for="{{ field.id_for_label }}">{{ label }}</label>
+          <div class="cash-count-row__input">
             {{ field }}
-            <span class="input-group-text">шт.</span>
+            {% for error in field.errors %}<div class="invalid-feedback d-block">{{ error }}</div>{% endfor %}
           </div>
-          <div class="form-text" data-denomination-subtotal data-value="{{ value }}">0,00 ₽</div>
-          {% for error in field.errors %}<div class="invalid-feedback d-block">{{ error }}</div>{% endfor %}
+          <div class="cash-count-row__sum" data-denomination-subtotal data-value="{{ value }}">0,00 ₽</div>
         </div>
       {% endfor %}
+      <div class="cash-count-row cash-count-row--manual" data-cash-count-row>
+        <label class="cash-count-row__label mb-0" for="{{ form.manual_amount.id_for_label }}">{{ form.manual_amount.label }}</label>
+        <div class="cash-count-row__input">
+          {{ form.manual_amount }}
+          {% for error in form.manual_amount.errors %}<div class="invalid-feedback d-block">{{ error }}</div>{% endfor %}
+        </div>
+        <div class="cash-count-row__sum text-primary" data-manual-subtotal>0,00 ₽</div>
+      </div>
     </div>
 
     <div class="mt-3">
@@ -50,7 +106,7 @@
       {% for error in form.note.errors %}<div class="invalid-feedback d-block">{{ error }}</div>{% endfor %}
     </div>
     {% if form.non_field_errors %}<div class="alert alert-danger mt-3">{{ form.non_field_errors }}</div>{% endif %}
-    <div class="d-flex gap-2 mt-4">
+    <div class="d-flex flex-wrap gap-2 mt-4">
       <button type="submit" class="btn btn-primary">Подтвердить пересчёт</button>
       <a href="{% url back_url_name %}" class="btn btn-outline-secondary">Отмена</a>
     </div>
@@ -63,18 +119,31 @@
     if (!form) return;
     const formatter = new Intl.NumberFormat("ru-RU", { style: "currency", currency: "RUB" });
     const totalElement = form.querySelector("[data-cash-count-total]");
+    const manualInput = form.querySelector("[name='manual_amount']");
+    const manualSubtotal = form.querySelector("[data-manual-subtotal]");
+
+    function numericValue(input) {
+      if (!input) return 0;
+      return Number(String(input.value || "0").replace(",", ".")) || 0;
+    }
+
     function updateTotal() {
       let total = 0;
       form.querySelectorAll("[data-denomination-subtotal]").forEach(function (subtotal) {
-        const input = subtotal.closest(".col-6").querySelector("input");
+        const row = subtotal.closest("[data-cash-count-row]");
+        const input = row && row.querySelector("input");
         const value = Number(subtotal.dataset.value || "0");
-        const count = Number(input.value || "0");
+        const count = numericValue(input);
         const sum = value * count;
         subtotal.textContent = formatter.format(sum);
         total += sum;
       });
+      const manual = numericValue(manualInput);
+      if (manualSubtotal) manualSubtotal.textContent = formatter.format(manual);
+      total += manual;
       totalElement.textContent = formatter.format(total);
     }
+
     form.querySelectorAll("input[type='number']").forEach(function (input) {
       input.addEventListener("input", updateTotal);
     });

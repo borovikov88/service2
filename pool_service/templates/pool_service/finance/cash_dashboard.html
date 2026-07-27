@@ -36,7 +36,7 @@
       <h2 class="h5 fw-bold mb-1">Касса организации</h2>
       <div class="text-muted small">Общая касса для владельца, администратора и бухгалтера</div>
     </div>
-    <a href="{% url 'finance_cash_count_create' cashbox_type='company' %}" class="btn btn-outline-secondary"><i class="bi bi-calculator me-2"></i>Пересчёт кассы</a>
+    <a href="{% url 'finance_cash_count_create' cashbox_type='company' %}" class="btn btn-outline-secondary" data-finance-modal data-modal-title="Пересчёт кассы организации" data-modal-size="lg"><i class="bi bi-calculator me-2"></i>Пересчёт кассы</a>
   </div>
 <div class="row g-3 mb-4">
     <div class="col-12 col-md-4">
@@ -79,53 +79,31 @@
   <div class="d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-3">
     <div>
       <h2 class="h5 fw-bold mb-1">Касса ККМ</h2>
-      <div class="text-muted small">Общая история движений по ККМ</div>
+      <div class="text-muted small">Одна общая касса для менеджеров, бухгалтера, администратора и владельца</div>
     </div>
     {% if can_count_kkm %}
-      <a href="{% url 'finance_cash_count_create' cashbox_type='kkm' %}" class="btn btn-outline-secondary"><i class="bi bi-calculator me-2"></i>Пересчёт ККМ</a>
+      <a href="{% url 'finance_cash_count_create' cashbox_type='kkm' %}" class="btn btn-outline-secondary" data-finance-modal data-modal-title="Пересчёт кассы ККМ" data-modal-size="lg"><i class="bi bi-calculator me-2"></i>Пересчёт ККМ</a>
     {% endif %}
   </div>
-  {% if not can_manage_cash %}
   <div class="row g-3 mb-4">
-    {% for row in manager_rows %}
-      <div class="col-12 col-md-6">
-        <div class="card card-soft p-4 h-100">
-          <div class="text-muted small mb-1">Моя касса ККМ</div>
-          <div class="fs-3 fw-bold text-success">{{ row.balance|money }}</div>
-        </div>
+    <div class="col-12 col-md-4">
+      <div class="card card-soft p-4 h-100">
+        <div class="text-muted small mb-1">Остаток ККМ</div>
+        <div class="fs-3 fw-bold {% if kkm_balance.balance < 0 %}text-danger{% else %}text-success{% endif %}">{{ kkm_balance.balance|money }}</div>
       </div>
-      <div class="col-12 col-md-6">
-        <div class="card card-soft p-4 h-100">
-          <div class="text-muted small mb-1">Операции на проверке</div>
-          <div class="fs-3 fw-bold text-warning">{{ row.pending_total|money }}</div>
-        </div>
+    </div>
+    <div class="col-12 col-md-4">
+      <div class="card card-soft p-4 h-100">
+        <div class="text-muted small mb-1">Операции на проверке</div>
+        <div class="fs-3 fw-bold text-warning">{{ kkm_balance.pending_total|money }}</div>
       </div>
-    {% endfor %}
-  </div>
-  {% endif %}
-
-  <h3 class="h6 fw-bold mb-3">Остатки ККМ по менеджерам</h3>
-  <div class="table-responsive">
-    <table class="table align-middle mb-0">
-      <thead class="small text-muted">
-        <tr><th>Менеджер</th><th class="text-end">Получено</th><th class="text-end">Сдано</th><th class="text-end">Выдано</th><th class="text-end">Возвраты</th><th class="text-end">На проверке</th><th class="text-end">Остаток ККМ</th></tr>
-      </thead>
-      <tbody>
-        {% for row in manager_rows %}
-          <tr>
-            <td class="fw-semibold">{{ row.manager|finance_employee_name }}</td>
-            <td class="text-end">{{ row.approved_income|money }}</td>
-            <td class="text-end">{{ row.approved_transfer|money }}</td>
-            <td class="text-end">{{ row.approved_accountable_issue|money }}</td>
-            <td class="text-end">{{ row.approved_accountable_return|money }}</td>
-            <td class="text-end">{{ row.pending_total|money }}</td>
-            <td class="text-end fw-bold {% if row.balance < 0 %}text-danger{% else %}text-success{% endif %}">{{ row.balance|money }}</td>
-          </tr>
-        {% empty %}
-          <tr><td colspan="7" class="text-center text-muted py-4">Кассовых операций пока нет</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    </div>
+    <div class="col-12 col-md-4">
+      <div class="card card-soft p-4 h-100">
+        <div class="text-muted small mb-1">Доступно с учётом резерва</div>
+        <div class="fs-3 fw-bold {% if kkm_balance.available_balance < 0 %}text-danger{% else %}text-success{% endif %}">{{ kkm_balance.available_balance|money }}</div>
+      </div>
+    </div>
   </div>
 </div>
 {% endif %}
@@ -139,7 +117,7 @@
         <tr>
           <th>Дата</th>
           <th>Операция</th>
-          {% if can_manage_cash %}<th>Менеджер</th>{% endif %}
+          <th>Менеджер</th>
           <th>Связано с</th>
           <th class="text-end">Сумма</th>
           <th class="text-end">Статус</th>
@@ -157,7 +135,7 @@
                 <div class="small text-muted">Кому: {{ operation.accountable_transaction.employee|finance_employee_name }}</div>
               {% endif %}
             </td>
-            {% if can_manage_cash %}<td>{{ operation.manager|finance_employee_name }}</td>{% endif %}
+            <td>{{ operation.manager|finance_employee_name }}</td>
             <td>{% if operation.receiver %}{{ operation.receiver|finance_employee_name }}{% elif operation.accountable_transaction %}{{ operation.accountable_transaction.employee|finance_employee_name }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
             <td class="text-end fw-semibold">{{ operation.amount|money }}</td>
             <td class="text-end">
@@ -199,7 +177,7 @@
             </td>
           </tr>
         {% empty %}
-          <tr><td colspan="{% if can_manage_cash %}7{% else %}6{% endif %}" class="text-center text-muted py-4">Кассовых операций пока нет</td></tr>
+          <tr><td colspan="7" class="text-center text-muted py-4">Кассовых операций пока нет</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -212,16 +190,88 @@
   <h2 class="h5 fw-bold mb-3">Последние пересчёты ККМ</h2>
   <div class="table-responsive">
     <table class="table align-middle mb-0">
-      <thead class="small text-muted"><tr><th>Дата</th><th>Менеджер</th><th>Кто считал</th><th>Комментарий</th><th class="text-end">Сумма</th></tr></thead>
+      <thead class="small text-muted"><tr><th>Дата</th><th>Кто считал</th><th>Комментарий</th><th class="text-end">Сумма</th></tr></thead>
       <tbody>
         {% for count in kkm_counts %}
-          <tr><td class="date-cell"><span>{{ count.occurred_on|date:"d.m" }}</span><span class="date-cell__year">{{ count.occurred_on|date:"Y" }}</span></td><td>{% if count.manager %}{{ count.manager|finance_employee_name }}{% else %}<span class="text-muted">Общая ККМ</span>{% endif %}</td><td>{{ count.counted_by|finance_employee_name }}</td><td>{% if count.note %}{{ count.note }}{% else %}<span class="text-muted">—</span>{% endif %}</td><td class="text-end fw-semibold">{{ count.total|money }}</td></tr>
+          <tr><td class="date-cell"><span>{{ count.occurred_on|date:"d.m" }}</span><span class="date-cell__year">{{ count.occurred_on|date:"Y" }}</span></td><td>{{ count.counted_by|finance_employee_name }}</td><td>{% if count.note %}{{ count.note }}{% else %}<span class="text-muted">—</span>{% endif %}</td><td class="text-end fw-semibold">{{ count.total|money }}</td></tr>
         {% empty %}
-          <tr><td colspan="5" class="text-center text-muted py-4">Пересчётов пока нет</td></tr>
+          <tr><td colspan="4" class="text-center text-muted py-4">Пересчётов пока нет</td></tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
 </div>
 {% endif %}
+
+<div class="modal fade" id="financeFormModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content overflow-hidden">
+      <div class="modal-header">
+        <h2 class="modal-title h5 mb-0" data-finance-modal-title>Касса</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+      </div>
+      <div class="modal-body p-0">
+        <iframe src="about:blank" title="Форма кассы" class="d-block w-100 border-0" style="height:min(760px, calc(100vh - 8rem));" data-finance-modal-frame></iframe>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    const modalElement = document.getElementById("financeFormModal");
+    const frame = modalElement && modalElement.querySelector("[data-finance-modal-frame]");
+    const title = modalElement && modalElement.querySelector("[data-finance-modal-title]");
+    const dialog = modalElement && modalElement.querySelector(".modal-dialog");
+    if (!modalElement || !frame || !title || !dialog || typeof bootstrap === "undefined") return;
+
+    const modal = bootstrap.Modal.getOrCreateInstance(modalElement);
+    const dashboardPaths = [
+      "{% url 'finance_company_cash_dashboard' %}",
+      "{% url 'finance_kkm_cash_dashboard' %}",
+      "{% url 'finance_cash_dashboard' %}",
+    ];
+    let formPath = "";
+
+    document.querySelectorAll("[data-finance-modal]").forEach(function (link) {
+      link.addEventListener("click", function (event) {
+        if (!window.matchMedia("(min-width: 992px)").matches) return;
+        event.preventDefault();
+        const url = new URL(link.href, window.location.href);
+        url.searchParams.set("modal", "1");
+        formPath = url.pathname;
+        title.textContent = link.dataset.modalTitle || "Касса";
+        frame.title = title.textContent;
+        dialog.classList.toggle("modal-xl", link.dataset.modalSize === "xl");
+        dialog.classList.toggle("modal-lg", link.dataset.modalSize !== "xl");
+        frame.src = url.toString();
+        modal.show();
+      });
+    });
+
+    frame.addEventListener("load", function () {
+      if (!formPath) return;
+      try {
+        const frameLocation = frame.contentWindow.location;
+        if (frameLocation.pathname === formPath) return;
+        const destination = frameLocation.href;
+        formPath = "";
+        modal.hide();
+        if (dashboardPaths.includes(frameLocation.pathname)) {
+          window.location.reload();
+        } else {
+          window.location.assign(destination);
+        }
+      } catch (error) {
+        formPath = "";
+        modal.hide();
+      }
+    });
+
+    modalElement.addEventListener("hidden.bs.modal", function () {
+      formPath = "";
+      frame.src = "about:blank";
+    });
+  });
+</script>
 {% endblock %}

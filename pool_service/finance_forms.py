@@ -506,6 +506,23 @@ class AccountableReturnRequestForm(forms.ModelForm):
 
 
 class CashCountForm(forms.ModelForm):
+    manual_amount = forms.DecimalField(
+        required=False,
+        min_value=Decimal("0.00"),
+        max_digits=12,
+        decimal_places=2,
+        label="Дополнительная сумма",
+        widget=forms.NumberInput(
+            attrs={
+                "class": "form-control",
+                "min": "0",
+                "step": "0.01",
+                "inputmode": "decimal",
+                "placeholder": "0,00",
+            }
+        ),
+    )
+
     class Meta:
         model = CashCount
         fields = ["occurred_on", "note"]
@@ -538,10 +555,12 @@ class CashCountForm(forms.ModelForm):
         return occurred_on
 
     def denomination_counts(self):
-        return {name: self.cleaned_data.get(name) or 0 for name, _label, _value in CASH_DENOMINATIONS}
+        counts = {name: self.cleaned_data.get(name) or 0 for name, _label, _value in CASH_DENOMINATIONS}
+        counts["manual_amount"] = str(self.cleaned_data.get("manual_amount") or Decimal("0.00"))
+        return counts
 
     def total_amount(self):
-        total = Decimal("0.00")
+        total = self.cleaned_data.get("manual_amount") or Decimal("0.00")
         for name, _label, value in CASH_DENOMINATIONS:
             total += value * Decimal(self.cleaned_data.get(name) or 0)
         return total

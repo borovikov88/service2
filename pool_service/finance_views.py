@@ -61,8 +61,7 @@ from pool_service.services.finance import (
     finance_staff,
     find_client_by_name,
     company_cash_balance,
-    manager_cash_balance,
-    manager_cash_rows,
+    kkm_cash_balance,
     month_bounds,
     notify_advance,
     notify_expense_reviewed,
@@ -367,6 +366,7 @@ def _render_cash_dashboard(request, section):
     operations = []
     manager_rows = []
     company_balance = None
+    kkm_balance = None
     company_counts = []
     kkm_counts = []
     if section == "company":
@@ -377,6 +377,7 @@ def _render_cash_dashboard(request, section):
             .order_by("-occurred_on", "-id")[:20]
         )
     else:
+        kkm_balance = kkm_cash_balance(organization)
         operations = list(
             CashOperation.objects.filter(organization=organization)
             .select_related(
@@ -389,10 +390,9 @@ def _render_cash_dashboard(request, section):
         )
         for operation in operations:
             operation.can_edit = _can_edit_cash_operation(request.user, operation)
-        manager_rows = manager_cash_rows(organization)
         kkm_counts = (
             CashCount.objects.filter(organization=organization, cashbox_type=CashCount.CASHBOX_KKM)
-            .select_related("manager", "counted_by")
+            .select_related("counted_by")
             .order_by("-occurred_on", "-id")[:20]
         )
 
@@ -405,8 +405,9 @@ def _render_cash_dashboard(request, section):
             "can_manage_cash": manage,
             "can_count_kkm": manage or "manager" in roles,
             "can_create_manager_cash": "manager" in roles,
-            "can_return_accountable": can_access_finance(request.user, organization),
+            "can_return_accountable": can_access_cash(request.user, organization),
             "company_balance": company_balance,
+            "kkm_balance": kkm_balance,
             "manager_rows": manager_rows,
             "operations": operations,
             "company_counts": company_counts,
@@ -600,7 +601,7 @@ def finance_cash_accountable_issue_create(request):
         return denied
     if "manager" not in organization_roles(request.user, organization):
         return HttpResponseForbidden("Выдать подотчёт из ККМ может только менеджер.")
-    balance = manager_cash_balance(organization, request.user)
+    balance = kkm_cash_balance(organization)
     form = ManagerCashAccountableIssueForm(
         request.POST or None,
         organization=organization,
@@ -658,7 +659,7 @@ def finance_cash_accountable_issue_create(request):
     context = {
         "form": form,
         "title": "Выдать подотчёт из ККМ",
-        "subtitle": f"Текущий остаток ККМ: {balance['balance']}",
+        "subtitle": f"Текущий общий остаток ККМ: {balance['balance']}",
         "submit_label": "Отправить на подтверждение",
         "active_tab": "finance",
         "show_add_button": False,
@@ -670,7 +671,7 @@ def finance_cash_accountable_issue_create(request):
 @login_required
 @xframe_options_sameorigin
 def finance_accountable_return_create(request):
-    organization, denied = _cash_guard(request)
+    organization, denied = _finance_guard(request)
     if denied:
         return denied
     form = AccountableReturnRequestForm(
@@ -766,7 +767,7 @@ def finance_cash_count_create(request, cashbox_type):
         cash_count = form.save(commit=False)
         cash_count.organization = organization
         cash_count.cashbox_type = cashbox_type
-        cash_count.manager = request.user if cashbox_type == CashCount.CASHBOX_KKM and "manager" in roles else None
+        cash_count.manager = None
         cash_count.counted_by = request.user
         cash_count.denominations = form.denomination_counts()
         cash_count.total = form.total_amount()

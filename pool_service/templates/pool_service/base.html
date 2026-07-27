@@ -1326,10 +1326,12 @@
                   <span>Касса организации</span>
                 </a>
                 {% endif %}
+                {% if can_access_kkm_cash %}
                 <a href="{% url 'finance_kkm_cash_dashboard' %}" class="ui-dropdown__item {% if request.resolver_match.url_name == 'finance_kkm_cash_dashboard' or request.resolver_match.url_name == 'finance_cash_dashboard' or request.resolver_match.url_name == 'finance_cash_income_create' or request.resolver_match.url_name == 'finance_cash_transfer_create' or request.resolver_match.url_name == 'finance_cash_accountable_issue_create' or request.resolver_match.url_name == 'finance_accountable_return_create' or request.resolver_match.url_name == 'finance_cash_count_create' and request.resolver_match.kwargs.cashbox_type == 'kkm' or request.resolver_match.url_name == 'finance_cash_operation_detail' or request.resolver_match.url_name == 'finance_cash_operation_edit' %}is-active{% endif %}">
                   <i class="bi bi-wallet2"></i>
                   <span>Касса ККМ</span>
                 </a>
+                {% endif %}
               </div>
             </div>
           {% endif %}
@@ -1516,10 +1518,12 @@
                 <span>Касса организации</span>
               </a>
               {% endif %}
+              {% if can_access_kkm_cash %}
               <a href="{% url 'finance_kkm_cash_dashboard' %}" class="mobile-submenu__item {% if request.resolver_match.url_name == 'finance_kkm_cash_dashboard' or request.resolver_match.url_name == 'finance_cash_dashboard' or request.resolver_match.url_name == 'finance_cash_income_create' or request.resolver_match.url_name == 'finance_cash_transfer_create' or request.resolver_match.url_name == 'finance_cash_accountable_issue_create' or request.resolver_match.url_name == 'finance_accountable_return_create' or request.resolver_match.url_name == 'finance_cash_count_create' and request.resolver_match.kwargs.cashbox_type == 'kkm' or request.resolver_match.url_name == 'finance_cash_operation_detail' or request.resolver_match.url_name == 'finance_cash_operation_edit' %}is-active{% endif %}">
                 <i class="bi bi-wallet2"></i>
                 <span>Касса ККМ</span>
               </a>
+              {% endif %}
             </div>
           </details>
           {% endif %}

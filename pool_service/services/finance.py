@@ -29,6 +29,7 @@ LEGACY_EXPENSE_CATEGORIES = ["Доставка", "Вода"]
 
 FINANCE_ACCESS_ROLES = {"owner", "admin", "manager", "service", "installer", "accountant"}
 FINANCE_MANAGE_ROLES = {"owner", "admin", "accountant"}
+FINANCE_CASH_ACCESS_ROLES = {"owner", "admin", "manager", "accountant"}
 FINANCE_ADVANCE_ISSUE_ROLES = {"owner", "admin", "manager", "accountant"}
 FINANCE_CLOSE_ROLES = {"owner", "admin", "accountant"}
 
@@ -69,7 +70,9 @@ def can_close_finance_period(user, organization):
 
 
 def can_access_cash(user, organization):
-    return can_access_finance(user, organization)
+    if user.is_superuser:
+        return bool(organization)
+    return bool(organization_roles(user, organization) & FINANCE_CASH_ACCESS_ROLES)
 
 
 def can_manage_cash(user, organization):
@@ -288,14 +291,7 @@ def cash_operation_effect(operation_type, amount):
     return Decimal("0.00")
 
 
-def manager_cash_balance(organization, manager, through=None):
-    operations = CashOperation.objects.filter(
-        organization=organization,
-        manager=manager,
-    )
-    if through:
-        operations = operations.filter(occurred_on__lte=through)
-
+def _cash_balance_from_operations(operations):
     balance = Decimal("0.00")
     pending_income = Decimal("0.00")
     pending_transfer = Decimal("0.00")
@@ -342,6 +338,23 @@ def manager_cash_balance(organization, manager, through=None):
         "available_balance": balance - pending_transfer - pending_accountable_issue,
         "pending_total": pending_income + pending_transfer + pending_accountable_issue + pending_accountable_return,
     }
+
+
+def kkm_cash_balance(organization, through=None):
+    operations = CashOperation.objects.filter(organization=organization)
+    if through:
+        operations = operations.filter(occurred_on__lte=through)
+    return _cash_balance_from_operations(operations)
+
+
+def manager_cash_balance(organization, manager, through=None):
+    operations = CashOperation.objects.filter(
+        organization=organization,
+        manager=manager,
+    )
+    if through:
+        operations = operations.filter(occurred_on__lte=through)
+    return _cash_balance_from_operations(operations)
 
 
 def manager_cash_rows(organization, through=None, users=None):
