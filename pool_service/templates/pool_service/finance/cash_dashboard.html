@@ -157,6 +157,12 @@
                       <input type="hidden" name="decision" value="rejected">
                       <button class="btn btn-outline-danger btn-sm js-confirm-action" type="submit" data-confirm-title="Отклонить операцию" data-confirm-body="Отклонённая операция останется в истории, но не попадёт в остатки." data-confirm-confirm="Отклонить" data-confirm-variant="danger">Отклонить</button>
                     </form>
+                    {% if operation.can_delete %}
+                      <form method="post" action="{% url 'finance_cash_operation_delete' operation.id %}" class="d-inline">
+                        {% csrf_token %}
+                        <button class="btn btn-outline-danger btn-sm js-confirm-action" type="submit" data-confirm-title="Удалить операцию" data-confirm-body="Временно: операция ККМ и связанные события будут удалены без восстановления." data-confirm-confirm="Удалить" data-confirm-variant="danger">Удалить</button>
+                      </form>
+                    {% endif %}
                   </div>
                 {% elif operation.status == "pending" and operation.operation_type == "accountable_return" and operation.manager_id == request.user.id and operation.created_by_id != request.user.id %}
                   <div class="d-flex flex-wrap justify-content-end gap-2">
@@ -170,7 +176,18 @@
                       <input type="hidden" name="decision" value="rejected">
                       <button class="btn btn-outline-danger btn-sm js-confirm-action" type="submit" data-confirm-title="Отклонить возврат" data-confirm-body="Возврат останется в истории, но не попадёт в остатки." data-confirm-confirm="Отклонить" data-confirm-variant="danger">Отклонить</button>
                     </form>
+                    {% if operation.can_delete %}
+                      <form method="post" action="{% url 'finance_cash_operation_delete' operation.id %}" class="d-inline">
+                        {% csrf_token %}
+                        <button class="btn btn-outline-danger btn-sm js-confirm-action" type="submit" data-confirm-title="Удалить операцию" data-confirm-body="Временно: операция ККМ и связанные события будут удалены без восстановления." data-confirm-confirm="Удалить" data-confirm-variant="danger">Удалить</button>
+                      </form>
+                    {% endif %}
                   </div>
+                {% elif operation.can_delete %}
+                  <form method="post" action="{% url 'finance_cash_operation_delete' operation.id %}" class="d-inline">
+                    {% csrf_token %}
+                    <button class="btn btn-outline-danger btn-sm js-confirm-action" type="submit" data-confirm-title="Удалить операцию" data-confirm-body="Временно: операция ККМ и связанные события будут удалены без восстановления." data-confirm-confirm="Удалить" data-confirm-variant="danger">Удалить</button>
+                  </form>
                 {% else %}
                   <span class="text-muted">—</span>
                 {% endif %}

@@ -305,6 +305,12 @@ def _can_edit_cash_operation(user, operation):
     return can_access_cash(user, operation.organization) and user.id in {operation.manager_id, operation.created_by_id}
 
 
+def _can_delete_cash_operation(user, operation):
+    if not operation:
+        return False
+    return user.is_superuser or "admin" in organization_roles(user, operation.organization)
+
+
 def _cash_operation_for_user(request, operation_id):
     operation = get_object_or_404(
         CashOperation.objects.select_related(
@@ -377,6 +383,7 @@ def _render_cash_dashboard(request, section):
             .order_by("-occurred_on", "-id")[:20]
         )
     else:
+        can_delete_cash_operations = request.user.is_superuser or "admin" in roles
         kkm_balance = kkm_cash_balance(organization)
         operations = list(
             CashOperation.objects.filter(organization=organization)
@@ -390,6 +397,7 @@ def _render_cash_dashboard(request, section):
         )
         for operation in operations:
             operation.can_edit = _can_edit_cash_operation(request.user, operation)
+            operation.can_delete = can_delete_cash_operations
         kkm_counts = (
             CashCount.objects.filter(organization=organization, cashbox_type=CashCount.CASHBOX_KKM)
             .select_related("counted_by")
@@ -406,6 +414,7 @@ def _render_cash_dashboard(request, section):
             "can_count_kkm": manage or "manager" in roles,
             "can_create_manager_cash": "manager" in roles,
             "can_return_accountable": can_access_cash(request.user, organization),
+            "can_delete_cash_operations": request.user.is_superuser or "admin" in roles,
             "company_balance": company_balance,
             "kkm_balance": kkm_balance,
             "manager_rows": manager_rows,
@@ -821,6 +830,7 @@ def finance_cash_operation_detail(request, operation_id):
         {
             "operation": operation,
             "can_edit": _can_edit_cash_operation(request.user, operation),
+            "can_delete": _can_delete_cash_operation(request.user, operation),
             "can_manage_cash": can_manage_cash(request.user, operation.organization),
             "active_tab": "finance",
             "show_add_button": False,
@@ -927,6 +937,28 @@ def finance_cash_operation_edit(request, operation_id):
     }
     context.update(_finance_modal_context(request))
     return render(request, "pool_service/finance/cash_form.html", context)
+
+
+@require_POST
+@login_required
+def finance_cash_operation_delete(request, operation_id):
+    organization, denied = _cash_guard(request)
+    if denied:
+        return denied
+    operation = get_object_or_404(
+        CashOperation.objects.select_related("accountable_transaction"),
+        id=operation_id,
+        organization=organization,
+    )
+    if not _can_delete_cash_operation(request.user, operation):
+        return HttpResponseForbidden("Удаление кассовых операций временно доступно только администратору.")
+    with transaction.atomic():
+        linked_transaction = operation.accountable_transaction
+        operation.delete()
+        if linked_transaction and not linked_transaction.cash_operations.exists():
+            linked_transaction.delete()
+    messages.success(request, "Кассовая операция и связанные события удалены.")
+    return redirect("finance_kkm_cash_dashboard")
 
 
 @require_POST

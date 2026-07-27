@@ -48,6 +48,7 @@ class FinanceTests(TestCase):
             paid_until=timezone.now() + timedelta(days=30),
         )
         self.owner = User.objects.create_user(username="finance-owner", password="pass", first_name="Owner")
+        self.admin = User.objects.create_user(username="finance-admin", password="pass", first_name="Admin")
         self.manager = User.objects.create_user(username="finance-manager", password="pass", first_name="Manager")
         self.service = User.objects.create_user(
             username="finance-service",
@@ -58,6 +59,7 @@ class FinanceTests(TestCase):
         self.installer = User.objects.create_user(username="finance-installer", password="pass", first_name="Installer")
         self.accountant = User.objects.create_user(username="finance-accountant", password="pass", first_name="Accountant")
         OrganizationAccess.objects.create(user=self.owner, organization=self.organization, role="owner")
+        OrganizationAccess.objects.create(user=self.admin, organization=self.organization, role="admin")
         OrganizationAccess.objects.create(user=self.manager, organization=self.organization, role="manager")
         OrganizationAccess.objects.create(user=self.service, organization=self.organization, role="service")
         OrganizationAccess.objects.create(user=self.installer, organization=self.organization, role="installer")
@@ -680,6 +682,53 @@ class FinanceTests(TestCase):
         self.assertEqual(operation.reviewed_by, self.service)
         self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], -4000)
         self.assertEqual(accountable_balance(self.organization, self.service)["operational_balance"], 14000)
+
+    def test_admin_can_temporarily_delete_kkm_cash_operation_with_related_records(self):
+        movement = AccountableTransaction.objects.create(
+            organization=self.organization,
+            employee=self.service,
+            created_by=self.manager,
+            transaction_type=AccountableTransaction.TYPE_ISSUE,
+            amount="2500.00",
+            occurred_on=date.today(),
+            status=AccountableTransaction.STATUS_PENDING,
+        )
+        AccountableTransactionChange.objects.create(
+            transaction=movement,
+            actor=self.manager,
+            action=AccountableTransactionChange.ACTION_CREATED,
+        )
+        operation = CashOperation.objects.create(
+            organization=self.organization,
+            manager=self.manager,
+            created_by=self.manager,
+            operation_type=CashOperation.TYPE_ACCOUNTABLE_ISSUE,
+            accountable_transaction=movement,
+            amount="2500.00",
+            occurred_on=date.today(),
+            status=CashOperation.STATUS_PENDING,
+        )
+        CashOperationChange.objects.create(
+            operation=operation,
+            actor=self.manager,
+            action=CashOperationChange.ACTION_CREATED,
+        )
+
+        self.client.force_login(self.owner)
+        forbidden = self.client.post(reverse("finance_cash_operation_delete", kwargs={"operation_id": operation.id}))
+        self.assertEqual(forbidden.status_code, 403)
+        self.assertTrue(CashOperation.objects.filter(id=operation.id).exists())
+
+        self.client.force_login(self.admin)
+        dashboard = self.client.get(reverse("finance_kkm_cash_dashboard"))
+        self.assertContains(dashboard, reverse("finance_cash_operation_delete", kwargs={"operation_id": operation.id}))
+        response = self.client.post(reverse("finance_cash_operation_delete", kwargs={"operation_id": operation.id}))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(CashOperation.objects.filter(id=operation.id).exists())
+        self.assertFalse(CashOperationChange.objects.filter(operation_id=operation.id).exists())
+        self.assertFalse(AccountableTransaction.objects.filter(id=movement.id).exists())
+        self.assertFalse(AccountableTransactionChange.objects.filter(transaction_id=movement.id).exists())
 
     def test_service_cannot_access_kkm_cashbox(self):
         self.client.force_login(self.service)

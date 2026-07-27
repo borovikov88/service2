@@ -13,6 +13,12 @@
     {% if can_edit %}
       <a href="{% url 'finance_cash_operation_edit' operation.id %}" class="btn btn-primary">Изменить</a>
     {% endif %}
+    {% if can_delete %}
+      <form method="post" action="{% url 'finance_cash_operation_delete' operation.id %}" class="d-inline">
+        {% csrf_token %}
+        <button class="btn btn-outline-danger js-confirm-action" type="submit" data-confirm-title="Удалить операцию" data-confirm-body="Временно: операция ККМ и связанные события будут удалены без восстановления." data-confirm-confirm="Удалить" data-confirm-variant="danger">Удалить</button>
+      </form>
+    {% endif %}
     <a href="{% url 'finance_kkm_cash_dashboard' %}" class="btn btn-outline-secondary">К кассе ККМ</a>
   </div>
 </div>
