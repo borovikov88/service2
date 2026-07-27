@@ -284,9 +284,17 @@ def accountable_rows(organization, through=None, users=None):
 
 
 def cash_operation_effect(operation_type, amount):
-    if operation_type in {CashOperation.TYPE_MANAGER_INCOME, CashOperation.TYPE_ACCOUNTABLE_RETURN}:
+    if operation_type in {
+        CashOperation.TYPE_MANAGER_INCOME,
+        CashOperation.TYPE_ACCOUNTABLE_RETURN,
+        CashOperation.TYPE_CASH_COUNT_INCOME,
+    }:
         return amount
-    if operation_type in {CashOperation.TYPE_TRANSFER_TO_COMPANY, CashOperation.TYPE_ACCOUNTABLE_ISSUE}:
+    if operation_type in {
+        CashOperation.TYPE_TRANSFER_TO_COMPANY,
+        CashOperation.TYPE_ACCOUNTABLE_ISSUE,
+        CashOperation.TYPE_CASH_COUNT_WRITE_OFF,
+    }:
         return -amount
     return Decimal("0.00")
 
@@ -312,6 +320,10 @@ def _cash_balance_from_operations(operations):
                 approved_accountable_issue += operation.amount
             elif operation.operation_type == CashOperation.TYPE_ACCOUNTABLE_RETURN:
                 approved_accountable_return += operation.amount
+            elif operation.operation_type == CashOperation.TYPE_CASH_COUNT_INCOME:
+                approved_income += operation.amount
+            elif operation.operation_type == CashOperation.TYPE_CASH_COUNT_WRITE_OFF:
+                approved_transfer += operation.amount
         elif operation.status == CashOperation.STATUS_PENDING:
             if operation.operation_type == CashOperation.TYPE_MANAGER_INCOME:
                 balance += operation.amount

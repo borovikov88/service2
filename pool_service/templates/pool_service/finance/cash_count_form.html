@@ -1,85 +1,95 @@
 {% extends "pool_service/base.html" %}
+{% load finance_tags %}
 
 {% block title %}{{ title }}{% endblock %}
 
 {% block content %}
 <style>
-  .cash-count-panel {
+  .cash-count-meta {
     display: grid;
-    gap: 12px;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .cash-count-meta__box {
+    border-radius: 14px;
+    background: #f7f9fc;
+    padding: 10px 12px;
+  }
+  .cash-count-list {
+    display: grid;
+    gap: 4px;
   }
   .cash-count-row {
     display: grid;
-    grid-template-columns: minmax(88px, 1fr) 120px minmax(110px, 1fr);
+    grid-template-columns: minmax(72px, 1fr) 96px minmax(96px, 1fr);
     align-items: center;
-    gap: 12px;
-    padding: 10px 12px;
-    border: 1px solid #e5edf7;
-    border-radius: 16px;
-    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
-    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+    gap: 8px;
+    padding: 3px 0;
   }
   .cash-count-row__label {
-    font-weight: 700;
+    font-weight: 600;
     color: #132238;
   }
   .cash-count-row__input .form-control {
-    min-height: 42px;
-    border-radius: 12px;
+    min-height: 34px;
+    padding: 4px 8px;
+    border-radius: 10px;
     text-align: center;
     font-weight: 700;
   }
   .cash-count-row__sum {
     text-align: right;
-    font-weight: 800;
+    font-weight: 700;
     color: #0f8f56;
     white-space: nowrap;
   }
-  .cash-count-summary {
-    border: 1px solid #d7e6ff;
-    border-radius: 18px;
-    background: radial-gradient(circle at top right, rgba(13, 110, 253, 0.12), transparent 38%), #f8fbff;
+  .cash-count-total-panel {
+    position: sticky;
+    bottom: 0;
+    margin-top: 14px;
+    border-top: 1px solid #e5edf7;
+    background: #fff;
+    padding-top: 12px;
   }
+  .cash-count-diff.is-positive { color: #0f8f56; }
+  .cash-count-diff.is-negative { color: #dc3545; }
   @media (max-width: 576px) {
-    .cash-count-row {
-      grid-template-columns: 1fr 104px;
+    .cash-count-meta {
+      grid-template-columns: 1fr;
     }
-    .cash-count-row__sum {
-      grid-column: 1 / -1;
-      text-align: left;
-      color: #5f6f82;
+    .cash-count-row {
+      grid-template-columns: 1fr 86px 92px;
+      gap: 6px;
     }
   }
 </style>
 
-<div class="{% if finance_modal %}p-3 p-lg-4{% else %}mx-auto{% endif %}"{% if not finance_modal %} style="max-width:720px;"{% endif %}>
+<div class="{% if finance_modal %}p-3 p-lg-4{% else %}mx-auto{% endif %}"{% if not finance_modal %} style="max-width:640px;"{% endif %}>
   {% if not finance_modal %}
   <div class="d-flex align-items-center justify-content-between gap-3 mb-4">
     <div>
       <h1 class="h3 fw-bold mb-1">{{ title }}</h1>
-      <div class="text-muted">Укажите количество купюр и монет. Пачки и смешанные суммы можно внести отдельной строкой.</div>
+      <div class="text-muted">Дата и время ставятся автоматически в момент подтверждения.</div>
     </div>
     <a href="{% url back_url_name %}" class="btn btn-outline-secondary">Назад</a>
   </div>
   {% endif %}
 
-  <form method="post" class="{% if not finance_modal %}card card-soft p-3 p-lg-4{% endif %}" data-cash-count-form>
+  <form method="post" class="{% if not finance_modal %}card card-soft p-3 p-lg-4{% endif %}" data-cash-count-form data-expected-balance="{{ expected_balance }}" data-cashbox-type="{{ cashbox_type }}">
     {% csrf_token %}
-    <div class="row g-3 mb-3">
-      <div class="col-12 col-md-6">
-        <label class="form-label" for="{{ form.occurred_on.id_for_label }}">{{ form.occurred_on.label }}</label>
-        {{ form.occurred_on }}
-        {% for error in form.occurred_on.errors %}<div class="invalid-feedback d-block">{{ error }}</div>{% endfor %}
+    <div class="cash-count-meta">
+      <div class="cash-count-meta__box">
+        <div class="text-muted small">Расчётный остаток</div>
+        <div class="fw-bold">{{ expected_balance|money }}</div>
       </div>
-      <div class="col-12 col-md-6">
-        <div class="cash-count-summary h-100 p-3">
-          <div class="text-muted small">Общий итог</div>
-          <div class="h3 fw-bold mb-0 text-success" data-cash-count-total>0,00 ₽</div>
-        </div>
+      <div class="cash-count-meta__box">
+        <div class="text-muted small">Фактический итог</div>
+        <div class="h4 fw-bold mb-0 text-success" data-cash-count-total>0,00 ₽</div>
       </div>
     </div>
 
-    <div class="cash-count-panel">
+    <div class="cash-count-list">
       {% for name, label, value, field in denomination_fields %}
         <div class="cash-count-row" data-cash-count-row>
           <label class="cash-count-row__label mb-0" for="{{ field.id_for_label }}">{{ label }}</label>
@@ -90,7 +100,7 @@
           <div class="cash-count-row__sum" data-denomination-subtotal data-value="{{ value }}">0,00 ₽</div>
         </div>
       {% endfor %}
-      <div class="cash-count-row cash-count-row--manual" data-cash-count-row>
+      <div class="cash-count-row" data-cash-count-row>
         <label class="cash-count-row__label mb-0" for="{{ form.manual_amount.id_for_label }}">{{ form.manual_amount.label }}</label>
         <div class="cash-count-row__input">
           {{ form.manual_amount }}
@@ -106,9 +116,16 @@
       {% for error in form.note.errors %}<div class="invalid-feedback d-block">{{ error }}</div>{% endfor %}
     </div>
     {% if form.non_field_errors %}<div class="alert alert-danger mt-3">{{ form.non_field_errors }}</div>{% endif %}
-    <div class="d-flex flex-wrap gap-2 mt-4">
-      <button type="submit" class="btn btn-primary">Подтвердить пересчёт</button>
-      <a href="{% url back_url_name %}" class="btn btn-outline-secondary">Отмена</a>
+
+    <div class="cash-count-total-panel">
+      <div class="d-flex justify-content-between gap-3 mb-3">
+        <span class="text-muted">Расхождение</span>
+        <strong class="cash-count-diff" data-cash-count-diff>0,00 ₽</strong>
+      </div>
+      <div class="d-flex flex-wrap gap-2">
+        <button type="submit" class="btn btn-primary" data-cash-count-submit>Подтвердить пересчёт</button>
+        <a href="{% url back_url_name %}" class="btn btn-outline-secondary">Отмена</a>
+      </div>
     </div>
   </form>
 </div>
@@ -119,8 +136,12 @@
     if (!form) return;
     const formatter = new Intl.NumberFormat("ru-RU", { style: "currency", currency: "RUB" });
     const totalElement = form.querySelector("[data-cash-count-total]");
+    const diffElement = form.querySelector("[data-cash-count-diff]");
+    const submitButton = form.querySelector("[data-cash-count-submit]");
     const manualInput = form.querySelector("[name='manual_amount']");
     const manualSubtotal = form.querySelector("[data-manual-subtotal]");
+    const expectedBalance = Number(String(form.dataset.expectedBalance || "0").replace(",", ".")) || 0;
+    const isKkm = form.dataset.cashboxType === "kkm";
 
     function numericValue(input) {
       if (!input) return 0;
@@ -133,15 +154,29 @@
         const row = subtotal.closest("[data-cash-count-row]");
         const input = row && row.querySelector("input");
         const value = Number(subtotal.dataset.value || "0");
-        const count = numericValue(input);
-        const sum = value * count;
+        const sum = value * numericValue(input);
         subtotal.textContent = formatter.format(sum);
         total += sum;
       });
       const manual = numericValue(manualInput);
       if (manualSubtotal) manualSubtotal.textContent = formatter.format(manual);
       total += manual;
+
+      const diff = total - expectedBalance;
       totalElement.textContent = formatter.format(total);
+      diffElement.textContent = formatter.format(diff);
+      diffElement.classList.toggle("is-positive", diff > 0);
+      diffElement.classList.toggle("is-negative", diff < 0);
+      if (!isKkm || diff === 0) {
+        submitButton.textContent = "Подтвердить пересчёт";
+        submitButton.className = "btn btn-primary";
+      } else if (diff > 0) {
+        submitButton.textContent = "Добавить приход " + formatter.format(diff);
+        submitButton.className = "btn btn-success";
+      } else {
+        submitButton.textContent = "Добавить списание " + formatter.format(Math.abs(diff));
+        submitButton.className = "btn btn-danger";
+      }
     }
 
     form.querySelectorAll("input[type='number']").forEach(function (input) {

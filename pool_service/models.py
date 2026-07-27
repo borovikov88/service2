@@ -1080,11 +1080,15 @@ class CashOperation(models.Model):
     TYPE_TRANSFER_TO_COMPANY = "transfer_to_company"
     TYPE_ACCOUNTABLE_ISSUE = "accountable_issue"
     TYPE_ACCOUNTABLE_RETURN = "accountable_return"
+    TYPE_CASH_COUNT_INCOME = "cash_count_income"
+    TYPE_CASH_COUNT_WRITE_OFF = "cash_count_write_off"
     TYPE_CHOICES = [
         (TYPE_MANAGER_INCOME, "Поступление в кассу ККМ"),
         (TYPE_TRANSFER_TO_COMPANY, "Сдача выручки в кассу компании"),
         (TYPE_ACCOUNTABLE_ISSUE, "Выдача подотчёта из ККМ"),
         (TYPE_ACCOUNTABLE_RETURN, "Возврат подотчёта в ККМ"),
+        (TYPE_CASH_COUNT_INCOME, "Приход по пересчёту ККМ"),
+        (TYPE_CASH_COUNT_WRITE_OFF, "Списание по пересчёту ККМ"),
     ]
 
     STATUS_PENDING = "pending"
@@ -1104,6 +1108,8 @@ class CashOperation(models.Model):
     manager = models.ForeignKey(
         User,
         on_delete=models.PROTECT,
+        null=True,
+        blank=True,
         related_name="manager_cash_operations",
     )
     receiver = models.ForeignKey(
@@ -1154,6 +1160,14 @@ class CashOperation(models.Model):
         super().clean()
         if self.amount is not None and self.amount <= 0:
             raise ValidationError({"amount": "Сумма должна быть больше нуля."})
+        manager_required_types = {
+            self.TYPE_MANAGER_INCOME,
+            self.TYPE_TRANSFER_TO_COMPANY,
+            self.TYPE_ACCOUNTABLE_ISSUE,
+            self.TYPE_ACCOUNTABLE_RETURN,
+        }
+        if self.operation_type in manager_required_types and not self.manager_id:
+            raise ValidationError({"manager": "Укажите менеджера кассы ККМ."})
         if self.manager_id and self.organization_id:
             has_access = OrganizationAccess.objects.filter(
                 user_id=self.manager_id,

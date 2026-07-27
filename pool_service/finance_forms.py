@@ -1,4 +1,5 @@
 import uuid
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -32,7 +33,6 @@ CASH_DENOMINATIONS = [
     ("bill_100", "100 ₽", Decimal("100")),
     ("bill_50", "50 ₽", Decimal("50")),
     ("bill_10", "10 ₽", Decimal("10")),
-    ("coin_10", "10 ₽ монета", Decimal("10")),
     ("coin_5", "5 ₽", Decimal("5")),
     ("coin_2", "2 ₽", Decimal("2")),
     ("coin_1", "1 ₽", Decimal("1")),
@@ -525,13 +525,11 @@ class CashCountForm(forms.ModelForm):
 
     class Meta:
         model = CashCount
-        fields = ["occurred_on", "note"]
+        fields = ["note"]
         labels = {
-            "occurred_on": "Дата пересчёта",
             "note": "Комментарий",
         }
         widgets = {
-            "occurred_on": forms.DateInput(attrs={"class": "form-control", "type": "date"}, format="%Y-%m-%d"),
             "note": forms.Textarea(attrs={"class": "form-control", "rows": 2}),
         }
 
@@ -539,7 +537,6 @@ class CashCountForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         self.organization = organization
         self.cashbox_type = cashbox_type
-        self.fields["occurred_on"].input_formats = ["%Y-%m-%d"]
         for name, label, _value in CASH_DENOMINATIONS:
             self.fields[name] = forms.IntegerField(
                 required=False,
@@ -548,11 +545,11 @@ class CashCountForm(forms.ModelForm):
                 widget=forms.NumberInput(attrs={"class": "form-control", "min": "0", "inputmode": "numeric"}),
             )
 
-    def clean_occurred_on(self):
-        occurred_on = self.cleaned_data["occurred_on"]
-        if period_is_closed(self.organization, occurred_on):
+    def clean(self):
+        cleaned = super().clean()
+        if period_is_closed(self.organization, date.today()):
             raise forms.ValidationError("Этот месяц закрыт. Пересчёт кассы запрещён.")
-        return occurred_on
+        return cleaned
 
     def denomination_counts(self):
         counts = {name: self.cleaned_data.get(name) or 0 for name, _label, _value in CASH_DENOMINATIONS}

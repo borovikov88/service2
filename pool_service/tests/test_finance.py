@@ -158,7 +158,7 @@ class FinanceTests(TestCase):
 
         self.assertContains(dashboard, 'id="financeFormModal"')
         self.assertContains(dashboard, 'class="btn btn-primary" data-finance-modal', count=1)
-        self.assertContains(dashboard, 'class="btn btn-outline-primary" data-finance-modal', count=1)
+        self.assertContains(dashboard, 'class="btn btn-outline-primary" data-finance-modal', count=2)
         self.assertContains(dashboard, 'class="btn btn-outline-success" data-finance-modal', count=1)
         for response in (transaction, income, expense):
             self.assertTrue(response.context["finance_modal"])
@@ -763,7 +763,7 @@ class FinanceTests(TestCase):
                 "occurred_on": date.today().isoformat(),
                 "note": "Пересчёт компании",
                 "bill_5000": "1",
-                "coin_10": "2",
+                "coin_5": "4",
             },
         )
         self.assertEqual(company_response.status_code, 302)
@@ -788,6 +788,8 @@ class FinanceTests(TestCase):
         self.assertIsNone(kkm_count.manager)
         self.assertEqual(kkm_count.total, Decimal("11304.00"))
         self.assertEqual(kkm_count.denominations["manual_amount"], "11000.00")
+        self.assertEqual(kkm_cash_balance(self.organization)["balance"], Decimal("11304.00"))
+        self.assertTrue(CashOperation.objects.filter(operation_type=CashOperation.TYPE_CASH_COUNT_INCOME).exists())
 
     def test_new_client_is_created_once_from_expense(self):
         first_request_id = str(uuid.uuid4())
