@@ -218,12 +218,12 @@
       const amount = Math.abs(currentDiff);
       if (mismatchMessage) {
         mismatchMessage.textContent = currentDiff > 0
-          ? "\u041b\u0438\u0448\u043d\u0438\u0435 \u0434\u0435\u043d\u044c\u0433\u0438: " + formatter.format(amount)
-          : "\u041d\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442: " + formatter.format(amount);
+          ? "\u041d\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442 \u0432 \u043a\u0430\u0441\u0441\u0435: " + formatter.format(amount)
+          : "\u041b\u0438\u0448\u043d\u0438\u0435 \u0434\u0435\u043d\u044c\u0433\u0438: " + formatter.format(amount);
       }
-      issueButton.hidden = currentDiff <= 0;
-      transferButton.hidden = currentDiff <= 0;
-      incomeButton.hidden = currentDiff >= 0;
+      issueButton.hidden = currentDiff >= 0;
+      transferButton.hidden = currentDiff >= 0;
+      incomeButton.hidden = currentDiff <= 0;
       modal.show();
       return true;
     }

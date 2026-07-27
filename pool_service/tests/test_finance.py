@@ -854,6 +854,9 @@ class FinanceTests(TestCase):
         self.assertContains(count_response, 'data-mismatch-issue')
         self.assertContains(count_response, 'data-mismatch-transfer')
         self.assertContains(count_response, 'data-mismatch-income')
+        self.assertContains(count_response, "issueButton.hidden = currentDiff >= 0;")
+        self.assertContains(count_response, "transferButton.hidden = currentDiff >= 0;")
+        self.assertContains(count_response, "incomeButton.hidden = currentDiff <= 0;")
 
         for url_name in (
             "finance_cash_income_create",
