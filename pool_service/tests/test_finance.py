@@ -138,6 +138,8 @@ class FinanceTests(TestCase):
 
         self.assertIn("Service Employee", transaction_labels)
         self.assertIn("Service Employee", expense_labels)
+        self.assertIn("Manager", transaction_labels)
+        self.assertIn("Manager", expense_labels)
         self.assertIn("Имя не указано", transaction_labels)
         self.assertNotIn(self.service.username, transaction_labels)
         self.assertNotIn(unnamed.username, transaction_labels)
@@ -410,6 +412,19 @@ class FinanceTests(TestCase):
             },
         )
         self.assertEqual(response.status_code, 302)
+        movement = AccountableTransaction.objects.get(transaction_type=AccountableTransaction.TYPE_ISSUE)
+        self.assertEqual(movement.status, AccountableTransaction.STATUS_PENDING)
+        self.assertEqual(accountable_balance(self.organization, self.service)["operational_balance"], 0)
+
+        self.client.force_login(self.service)
+        response = self.client.post(
+            reverse("finance_transaction_confirm", kwargs={"transaction_id": movement.id}),
+            {"decision": AccountableTransaction.STATUS_APPROVED},
+        )
+        self.assertEqual(response.status_code, 302)
+        movement.refresh_from_db()
+        self.assertEqual(movement.status, AccountableTransaction.STATUS_APPROVED)
+        self.assertEqual(movement.reviewed_by, self.service)
 
         response = self.create_expense(
             source=Expense.SOURCE_COMPANY_CASH,
@@ -475,6 +490,49 @@ class FinanceTests(TestCase):
         self.assertEqual(report.status_code, 403)
         self.assertEqual(transaction_form.status_code, 200)
         self.assertEqual(transaction_post.status_code, 302)
+        self.assertEqual(
+            AccountableTransaction.objects.order_by("-id").first().status,
+            AccountableTransaction.STATUS_PENDING,
+        )
+
+    def test_advance_issue_requires_recipient_confirmation(self):
+        self.client.force_login(self.manager)
+        response = self.client.post(
+            reverse("finance_transaction_create"),
+            {
+                "employee": self.service.id,
+                "transaction_type": AccountableTransaction.TYPE_ISSUE,
+                "amount": "1500.00",
+                "occurred_on": date.today().isoformat(),
+                "note": "parts",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        movement = AccountableTransaction.objects.get(amount="1500.00")
+        self.assertEqual(movement.status, AccountableTransaction.STATUS_PENDING)
+        self.assertEqual(accountable_balance(self.organization, self.service)["operational_balance"], 0)
+
+        self.client.force_login(self.accountant)
+        forbidden = self.client.post(
+            reverse("finance_transaction_confirm", kwargs={"transaction_id": movement.id}),
+            {"decision": AccountableTransaction.STATUS_APPROVED},
+        )
+        self.assertEqual(forbidden.status_code, 403)
+
+        self.client.force_login(self.service)
+        detail = self.client.get(reverse("finance_employee_detail", kwargs={"employee_id": self.service.id}))
+        self.assertContains(detail, "Подтвердить")
+        confirmed = self.client.post(
+            reverse("finance_transaction_confirm", kwargs={"transaction_id": movement.id}),
+            {"decision": AccountableTransaction.STATUS_APPROVED},
+        )
+
+        self.assertEqual(confirmed.status_code, 302)
+        movement.refresh_from_db()
+        self.assertEqual(movement.status, AccountableTransaction.STATUS_APPROVED)
+        self.assertEqual(movement.reviewed_by, self.service)
+        self.assertEqual(accountable_balance(self.organization, self.service)["operational_balance"], 1500)
+        self.assertTrue(movement.changes.filter(action=AccountableTransactionChange.ACTION_UPDATED).exists())
 
     def test_new_client_is_created_once_from_expense(self):
         first_request_id = str(uuid.uuid4())

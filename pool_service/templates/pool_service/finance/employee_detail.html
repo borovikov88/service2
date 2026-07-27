@@ -79,7 +79,20 @@
               {% endif %}
             </td>
             <td class="text-end">
-              {% if movement.can_request_change %}
+              {% if movement.can_confirm_issue %}
+                <div class="d-flex flex-wrap justify-content-end gap-2">
+                  <form method="post" action="{% url 'finance_transaction_confirm' movement.id %}" class="d-inline">
+                    {% csrf_token %}
+                    <input type="hidden" name="decision" value="approved">
+                    <button class="btn btn-success btn-sm js-confirm-action" type="submit" data-confirm-title="Подтвердить получение" data-confirm-body="После подтверждения сумма попадёт в ваш остаток подотчёта." data-confirm-confirm="Подтвердить" data-confirm-variant="success">Подтвердить</button>
+                  </form>
+                  <form method="post" action="{% url 'finance_transaction_confirm' movement.id %}" class="d-inline">
+                    {% csrf_token %}
+                    <input type="hidden" name="decision" value="rejected">
+                    <button class="btn btn-outline-danger btn-sm js-confirm-action" type="submit" data-confirm-title="Отклонить выдачу" data-confirm-body="Отклонённая выдача останется в истории, но не попадёт в баланс." data-confirm-confirm="Отклонить" data-confirm-variant="danger">Отклонить</button>
+                  </form>
+                </div>
+              {% elif movement.can_request_change %}
                 <div class="d-flex flex-wrap justify-content-end gap-2">
                   <a href="{% url 'finance_income_edit' movement.id %}" class="btn btn-outline-primary btn-sm">Изменить</a>
                   <form method="post" action="{% url 'finance_income_delete' movement.id %}" class="d-inline">

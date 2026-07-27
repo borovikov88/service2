@@ -34,6 +34,7 @@ from pool_service.services.finance import (
     accountable_rows,
     can_access_finance,
     can_close_finance_period,
+    can_confirm_accountable_issue,
     can_edit_expense,
     can_issue_accountable_transaction,
     can_manage_finance,
@@ -240,6 +241,13 @@ def _can_request_income_change(user, movement):
     )
 
 
+def _decorate_accountable_movements(user, movements):
+    for movement in movements:
+        movement.can_request_change = _can_request_income_change(user, movement)
+        movement.can_confirm_issue = can_confirm_accountable_issue(user, movement)
+    return movements
+
+
 @login_required
 @xframe_options_sameorigin
 def finance_dashboard(request):
@@ -283,6 +291,7 @@ def finance_dashboard(request):
         ),
         Decimal("0.00"),
     )
+    latest_transactions = _decorate_accountable_movements(request.user, list(transactions[:15]))
     return render(
         request,
         "pool_service/finance/dashboard.html",
@@ -293,7 +302,7 @@ def finance_dashboard(request):
             "can_close_finance": can_close_finance_period(request.user, organization),
             "balance_rows": balance_rows,
             "latest_expenses": expenses[:20],
-            "latest_transactions": transactions[:15],
+            "latest_transactions": latest_transactions,
             "approved_total": approved_total,
             "pending_total": pending_total,
             "company_cash_total": company_cash_total,
@@ -319,13 +328,38 @@ def finance_transaction_create(request):
         movement = form.save(commit=False)
         movement.organization = organization
         movement.created_by = request.user
-        movement.status = AccountableTransaction.STATUS_APPROVED
-        movement.reviewed_by = request.user
-        movement.reviewed_at = timezone.now()
+        requires_employee_confirmation = (
+            movement.transaction_type == AccountableTransaction.TYPE_ISSUE
+            and movement.employee_id != request.user.id
+        )
+        if requires_employee_confirmation:
+            movement.status = AccountableTransaction.STATUS_PENDING
+            movement.reviewed_by = None
+            movement.reviewed_at = None
+        else:
+            movement.status = AccountableTransaction.STATUS_APPROVED
+            movement.reviewed_by = request.user
+            movement.reviewed_at = timezone.now()
         movement.full_clean()
         movement.save()
+        AccountableTransactionChange.objects.create(
+            transaction=movement,
+            actor=request.user,
+            action=AccountableTransactionChange.ACTION_CREATED,
+            payload={
+                "employee_id": movement.employee_id,
+                "transaction_type": movement.transaction_type,
+                "amount": str(movement.amount),
+                "occurred_on": movement.occurred_on.isoformat(),
+                "note": movement.note,
+                "status": movement.status,
+            },
+        )
         notify_advance(movement)
-        messages.success(request, "Операция подотчёта сохранена.")
+        if requires_employee_confirmation:
+            messages.success(request, "Выдача подотчёта отправлена сотруднику на подтверждение.")
+        else:
+            messages.success(request, "Операция подотчёта сохранена.")
         return redirect("finance_dashboard")
     context = {
         "form": form,
@@ -334,6 +368,46 @@ def finance_transaction_create(request):
     }
     context.update(_finance_modal_context(request))
     return render(request, "pool_service/finance/transaction_form.html", context)
+
+
+@require_POST
+@login_required
+def finance_transaction_confirm(request, transaction_id):
+    movement = get_object_or_404(
+        AccountableTransaction.objects.select_related("organization", "employee", "created_by"),
+        id=transaction_id,
+    )
+    if not can_confirm_accountable_issue(request.user, movement):
+        return HttpResponseForbidden("Подтвердить выдачу может только сотрудник, которому выданы деньги.")
+    if period_is_closed(movement.organization, movement.occurred_on):
+        messages.error(request, "Месяц закрыт. Для подтверждения нужно открыть период.")
+        return redirect(request.META.get("HTTP_REFERER") or reverse("finance_dashboard"))
+    decision = request.POST.get("decision")
+    if decision not in {AccountableTransaction.STATUS_APPROVED, AccountableTransaction.STATUS_REJECTED}:
+        messages.error(request, "Выберите решение.")
+        return redirect(request.META.get("HTTP_REFERER") or reverse("finance_dashboard"))
+    review_comment = (request.POST.get("review_comment") or "").strip()
+    movement.status = decision
+    movement.reviewed_by = request.user
+    movement.reviewed_at = timezone.now()
+    movement.review_comment = review_comment
+    movement.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_comment"])
+    AccountableTransactionChange.objects.create(
+        transaction=movement,
+        actor=request.user,
+        action=(
+            AccountableTransactionChange.ACTION_UPDATED
+            if decision == AccountableTransaction.STATUS_APPROVED
+            else AccountableTransactionChange.ACTION_REJECTED
+        ),
+        note=review_comment or "Подтверждение получателем",
+        payload={"decision": decision},
+    )
+    if decision == AccountableTransaction.STATUS_APPROVED:
+        messages.success(request, "Получение подотчёта подтверждено.")
+    else:
+        messages.success(request, "Выдача подотчёта отклонена.")
+    return redirect(request.META.get("HTTP_REFERER") or reverse("finance_dashboard"))
 
 
 @login_required
@@ -584,8 +658,7 @@ def finance_employee_detail(request, employee_id):
         .prefetch_related("changes__actor")
         .order_by("-occurred_on", "-id")
     )
-    for movement in movements:
-        movement.can_request_change = _can_request_income_change(request.user, movement)
+    _decorate_accountable_movements(request.user, movements)
 
     recent_expenses = (
         Expense.objects.filter(organization=organization, employee=employee)

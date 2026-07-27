@@ -103,6 +103,18 @@ def can_review_accountable_transaction(user, movement):
     return user.id not in {movement.employee_id, movement.created_by_id}
 
 
+def can_confirm_accountable_issue(user, movement):
+    return (
+        movement
+        and movement.transaction_type == AccountableTransaction.TYPE_ISSUE
+        and movement.status == AccountableTransaction.STATUS_PENDING
+        and not movement.is_voided
+        and not movement.pending_action
+        and can_access_finance(user, movement.organization)
+        and user.id == movement.employee_id
+    )
+
+
 def finance_staff(organization):
     return (
         User.objects.filter(
