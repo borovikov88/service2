@@ -273,11 +273,12 @@ class ExpenseForm(forms.ModelForm):
             "description": forms.Textarea(attrs={"class": "form-control", "rows": 4}),
         }
 
-    def __init__(self, *args, organization, user, can_manage, **kwargs):
+    def __init__(self, *args, organization, user, can_manage, fixed_source=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.organization = organization
         self.current_user = user
         self.can_manage = can_manage
+        self.fixed_source = fixed_source
         self.resolved_client = None
         self.new_client_name = ""
         self.fields["employee"].queryset = finance_staff(organization)
@@ -295,8 +296,11 @@ class ExpenseForm(forms.ModelForm):
         else:
             self.fields["request_id"].initial = uuid.uuid4()
             self.fields["employee"].initial = user
-            self.fields["source"].initial = Expense.SOURCE_ACCOUNTABLE
+            self.fields["source"].initial = fixed_source or Expense.SOURCE_ACCOUNTABLE
             self.fields["destination_type"].initial = Expense.DESTINATION_OFFICE
+        if fixed_source:
+            self.fields["source"].widget = forms.HiddenInput()
+            self.fields["source"].initial = fixed_source
         if not can_manage:
             self.fields["employee"].widget = forms.HiddenInput()
             self.fields["source"].widget = forms.HiddenInput()
@@ -316,9 +320,12 @@ class ExpenseForm(forms.ModelForm):
 
     def clean(self):
         cleaned = super().clean()
+        if self.fixed_source:
+            cleaned["source"] = self.fixed_source
         if not self.can_manage:
             cleaned["employee"] = self.current_user
-            cleaned["source"] = Expense.SOURCE_ACCOUNTABLE
+            if not self.fixed_source:
+                cleaned["source"] = Expense.SOURCE_ACCOUNTABLE
         destination_type = cleaned.get("destination_type")
         destination_query = (cleaned.get("destination_query") or "").strip()
         client_id = cleaned.get("client_id")

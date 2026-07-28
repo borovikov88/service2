@@ -526,7 +526,9 @@ def finance_cash_income_create(request):
         operation.manager = request.user
         operation.created_by = request.user
         operation.operation_type = CashOperation.TYPE_MANAGER_INCOME
-        operation.status = CashOperation.STATUS_PENDING
+        operation.status = CashOperation.STATUS_APPROVED
+        operation.reviewed_by = request.user
+        operation.reviewed_at = timezone.now()
         operation.full_clean()
         operation.save()
         _create_cash_operation_change(
@@ -540,7 +542,13 @@ def finance_cash_income_create(request):
                 "note": operation.note,
             },
         )
-        messages.success(request, "Поступление в кассу ККМ отправлено на подтверждение.")
+        _create_cash_operation_change(
+            operation,
+            request.user,
+            CashOperationChange.ACTION_APPROVED,
+            payload={"decision": CashOperation.STATUS_APPROVED},
+        )
+        messages.success(request, "Поступление в кассу ККМ сохранено.")
         return redirect("finance_kkm_cash_dashboard")
     context = {
         "form": form,
@@ -1449,13 +1457,20 @@ def finance_expense_create(request):
         return denied
     ensure_default_categories(organization)
     manage = can_manage_finance(request.user, organization)
+    requested_source = request.POST.get("source") if request.method == "POST" else request.GET.get("source")
+    fixed_source = None
+    if requested_source == Expense.SOURCE_KKM_CASH:
+        if not can_access_cash(request.user, organization):
+            return HttpResponseForbidden("Расход из кассы ККМ доступен только сотрудникам с доступом к ККМ.")
+        fixed_source = Expense.SOURCE_KKM_CASH
     form = ExpenseForm(
         request.POST or None,
         request.FILES or None,
         organization=organization,
         user=request.user,
         can_manage=manage,
-        initial={"spent_on": date.today()},
+        fixed_source=fixed_source,
+        initial={"spent_on": date.today(), "source": fixed_source or Expense.SOURCE_ACCOUNTABLE},
     )
     if request.method != "POST" or not form.is_valid():
         if request.method == "POST" and _is_offline_request(request):

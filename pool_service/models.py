@@ -1283,9 +1283,11 @@ class CashCount(models.Model):
 class Expense(models.Model):
     SOURCE_ACCOUNTABLE = "accountable"
     SOURCE_COMPANY_CASH = "company_cash"
+    SOURCE_KKM_CASH = "kkm_cash"
     SOURCE_CHOICES = [
         (SOURCE_ACCOUNTABLE, "Подотчёт"),
         (SOURCE_COMPANY_CASH, "Касса компании"),
+        (SOURCE_KKM_CASH, "Касса ККМ"),
     ]
 
     DESTINATION_OFFICE = "office"

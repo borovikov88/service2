@@ -551,70 +551,40 @@ class FinanceTests(TestCase):
             {
                 "amount": "10000.00",
                 "occurred_on": date.today().isoformat(),
-                "note": "Выручка без ККМ",
+                "note": "выручка за день",
             },
         )
         self.assertEqual(income_response.status_code, 302)
         income = CashOperation.objects.get(operation_type=CashOperation.TYPE_MANAGER_INCOME)
         self.assertEqual(income.manager, self.manager)
         self.assertEqual(income.created_by, self.manager)
-        self.assertEqual(income.status, CashOperation.STATUS_PENDING)
+        self.assertEqual(income.status, CashOperation.STATUS_APPROVED)
+        self.assertEqual(income.reviewed_by, self.manager)
         self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 10000)
         self.assertEqual(kkm_cash_balance(self.organization)["balance"], 10000)
-        self.assertContains(self.client.get(reverse("finance_kkm_cash_dashboard")), reverse("finance_cash_operation_edit", kwargs={"operation_id": income.id}))
-
-        edit_response = self.client.post(
-            reverse("finance_cash_operation_edit", kwargs={"operation_id": income.id}),
-            {
-                "amount": "12000.00",
-                "occurred_on": date.today().isoformat(),
-                "note": "Выручка исправлена",
-            },
-        )
-        self.assertEqual(edit_response.status_code, 302)
-        income.refresh_from_db()
-        self.assertEqual(income.amount, 12000)
-        self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 12000)
-
-        forbidden = self.client.post(
-            reverse("finance_cash_operation_review", kwargs={"operation_id": income.id}),
-            {"decision": CashOperation.STATUS_APPROVED},
-        )
-        self.assertEqual(forbidden.status_code, 403)
-
-        self.client.force_login(self.accountant)
-        review_response = self.client.post(
-            reverse("finance_cash_operation_review", kwargs={"operation_id": income.id}),
-            {"decision": CashOperation.STATUS_APPROVED},
-        )
-        self.assertEqual(review_response.status_code, 302)
-        income.refresh_from_db()
-        self.assertEqual(income.status, CashOperation.STATUS_APPROVED)
-        self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 12000)
         self.assertTrue(income.changes.filter(action=CashOperationChange.ACTION_APPROVED).exists())
         edit_after_review = self.client.get(reverse("finance_cash_operation_edit", kwargs={"operation_id": income.id}))
         self.assertEqual(edit_after_review.status_code, 302)
 
-        self.client.force_login(self.manager)
         transfer_response = self.client.post(
             reverse("finance_cash_transfer_create"),
             {
                 "receiver": self.accountant.id,
                 "amount": "7000.00",
                 "occurred_on": date.today().isoformat(),
-                "note": "Сдача выручки",
+                "note": "сдача выручки",
             },
         )
         self.assertEqual(transfer_response.status_code, 302)
         transfer = CashOperation.objects.get(operation_type=CashOperation.TYPE_TRANSFER_TO_COMPANY)
         self.assertEqual(transfer.receiver, self.accountant)
         self.assertEqual(transfer.status, CashOperation.STATUS_PENDING)
-        self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 12000)
+        self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 10000)
         self.assertEqual(company_cash_balance(self.organization)["balance"], 0)
 
         self.client.force_login(self.owner)
         company_dashboard = self.client.get(reverse("finance_company_cash_dashboard"))
-        self.assertContains(company_dashboard, "Касса компании")
+        self.assertContains(company_dashboard, "Касса организации")
         review_transfer = self.client.post(
             reverse("finance_cash_operation_review", kwargs={"operation_id": transfer.id}),
             {"decision": CashOperation.STATUS_APPROVED},
@@ -623,7 +593,7 @@ class FinanceTests(TestCase):
         self.assertEqual(review_transfer.status_code, 302)
         transfer.refresh_from_db()
         self.assertEqual(transfer.status, CashOperation.STATUS_APPROVED)
-        self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 5000)
+        self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], 3000)
         self.assertEqual(company_cash_balance(self.organization)["balance"], 7000)
 
     def test_manager_cashbox_can_issue_accountable_after_employee_confirmation(self):
@@ -682,6 +652,54 @@ class FinanceTests(TestCase):
         self.assertEqual(operation.reviewed_by, self.service)
         self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], -4000)
         self.assertEqual(accountable_balance(self.organization, self.service)["operational_balance"], 14000)
+
+    def test_kkm_cash_expense_does_not_affect_accountable_balance(self):
+        CashOperation.objects.create(
+            organization=self.organization,
+            manager=self.manager,
+            created_by=self.manager,
+            reviewed_by=self.manager,
+            reviewed_at=timezone.now(),
+            operation_type=CashOperation.TYPE_MANAGER_INCOME,
+            amount="5000.00",
+            occurred_on=date.today(),
+            status=CashOperation.STATUS_APPROVED,
+        )
+
+        self.client.force_login(self.manager)
+        dashboard = self.client.get(reverse("finance_kkm_cash_dashboard"))
+        self.assertContains(dashboard, f"{reverse('finance_expense_create')}?source=kkm_cash")
+        response = self.client.post(
+            f"{reverse('finance_expense_create')}?source=kkm_cash",
+            self.expense_payload(
+                source=Expense.SOURCE_KKM_CASH,
+                employee=self.manager.id,
+                amount="1200.00",
+                destination_type=Expense.DESTINATION_OFFICE,
+                destination_query="",
+            ),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        expense = Expense.objects.get(source=Expense.SOURCE_KKM_CASH)
+        self.assertEqual(expense.employee, self.manager)
+        self.assertEqual(expense.status, Expense.STATUS_PENDING)
+        self.assertEqual(accountable_balance(self.organization, self.manager)["operational_balance"], Decimal("0.00"))
+        self.assertEqual(kkm_cash_balance(self.organization)["balance"], Decimal("5000.00"))
+        self.assertEqual(kkm_cash_balance(self.organization)["pending_kkm_expense"], Decimal("1200.00"))
+        self.assertEqual(kkm_cash_balance(self.organization)["available_balance"], Decimal("3800.00"))
+
+        self.client.force_login(self.owner)
+        review_response = self.client.post(
+            reverse("finance_expense_review", kwargs={"expense_uuid": expense.uuid}),
+            {"decision": Expense.STATUS_APPROVED, "review_comment": ""},
+        )
+
+        self.assertEqual(review_response.status_code, 302)
+        expense.refresh_from_db()
+        self.assertEqual(expense.status, Expense.STATUS_APPROVED)
+        self.assertEqual(kkm_cash_balance(self.organization)["balance"], Decimal("3800.00"))
+        self.assertEqual(accountable_balance(self.organization, self.manager)["operational_balance"], Decimal("0.00"))
 
     def test_admin_can_temporarily_delete_kkm_cash_operation_with_related_records(self):
         movement = AccountableTransaction.objects.create(

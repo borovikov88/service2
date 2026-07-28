@@ -354,9 +354,30 @@ def _cash_balance_from_operations(operations):
 
 def kkm_cash_balance(organization, through=None):
     operations = CashOperation.objects.filter(organization=organization)
+    expenses = Expense.objects.filter(
+        organization=organization,
+        source=Expense.SOURCE_KKM_CASH,
+    )
     if through:
         operations = operations.filter(occurred_on__lte=through)
-    return _cash_balance_from_operations(operations)
+        expenses = expenses.filter(spent_on__lte=through)
+    balance = _cash_balance_from_operations(operations)
+    approved_expenses = sum(
+        (item.amount for item in expenses.filter(status=Expense.STATUS_APPROVED).only("amount")),
+        Decimal("0.00"),
+    )
+    pending_expenses = sum(
+        (item.amount for item in expenses.filter(status=Expense.STATUS_PENDING).only("amount")),
+        Decimal("0.00"),
+    )
+    balance["balance"] -= approved_expenses
+    balance["approved_transfer"] += approved_expenses
+    balance["pending_total"] += pending_expenses
+    balance["reserved_total"] += pending_expenses
+    balance["available_balance"] -= approved_expenses + pending_expenses
+    balance["approved_kkm_expense"] = approved_expenses
+    balance["pending_kkm_expense"] = pending_expenses
+    return balance
 
 
 def manager_cash_balance(organization, manager, through=None):
