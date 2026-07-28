@@ -630,7 +630,15 @@ def finance_cash_accountable_issue_create(request):
             movement.organization = organization
             movement.created_by = request.user
             movement.transaction_type = AccountableTransaction.TYPE_ISSUE
-            movement.status = AccountableTransaction.STATUS_PENDING
+            requires_employee_confirmation = movement.employee_id != request.user.id
+            movement.status = (
+                AccountableTransaction.STATUS_PENDING
+                if requires_employee_confirmation
+                else AccountableTransaction.STATUS_APPROVED
+            )
+            if not requires_employee_confirmation:
+                movement.reviewed_by = request.user
+                movement.reviewed_at = timezone.now()
             movement.full_clean()
             movement.save()
             AccountableTransactionChange.objects.create(
@@ -655,7 +663,13 @@ def finance_cash_accountable_issue_create(request):
                 amount=movement.amount,
                 occurred_on=movement.occurred_on,
                 note=movement.note,
-                status=CashOperation.STATUS_PENDING,
+                status=(
+                    CashOperation.STATUS_PENDING
+                    if requires_employee_confirmation
+                    else CashOperation.STATUS_APPROVED
+                ),
+                reviewed_by=None if requires_employee_confirmation else request.user,
+                reviewed_at=None if requires_employee_confirmation else timezone.now(),
             )
             _create_cash_operation_change(
                 operation,
@@ -670,8 +684,26 @@ def finance_cash_accountable_issue_create(request):
                     "note": operation.note,
                 },
             )
-        notify_advance(movement)
-        messages.success(request, "Выдача из ККМ отправлена сотруднику на подтверждение.")
+            if not requires_employee_confirmation:
+                AccountableTransactionChange.objects.create(
+                    transaction=movement,
+                    actor=request.user,
+                    action=AccountableTransactionChange.ACTION_UPDATED,
+                    note="Автоматически подтверждено при выдаче самому себе",
+                    payload={"decision": AccountableTransaction.STATUS_APPROVED},
+                )
+                _create_cash_operation_change(
+                    operation,
+                    request.user,
+                    CashOperationChange.ACTION_APPROVED,
+                    note="Автоматически подтверждено при выдаче самому себе",
+                    payload={"decision": CashOperation.STATUS_APPROVED, "accountable_transaction_id": movement.id},
+                )
+        if requires_employee_confirmation:
+            notify_advance(movement)
+            messages.success(request, "Выдача из ККМ отправлена сотруднику на подтверждение.")
+        else:
+            messages.success(request, "Выдача из ККМ сохранена без подтверждения.")
         return redirect("finance_kkm_cash_dashboard")
     context = {
         "form": form,
@@ -704,7 +736,15 @@ def finance_accountable_return_create(request):
             movement.employee = request.user
             movement.created_by = request.user
             movement.transaction_type = AccountableTransaction.TYPE_RETURN
-            movement.status = AccountableTransaction.STATUS_PENDING
+            requires_manager_confirmation = manager.id != request.user.id
+            movement.status = (
+                AccountableTransaction.STATUS_PENDING
+                if requires_manager_confirmation
+                else AccountableTransaction.STATUS_APPROVED
+            )
+            if not requires_manager_confirmation:
+                movement.reviewed_by = request.user
+                movement.reviewed_at = timezone.now()
             movement.full_clean()
             movement.save()
             AccountableTransactionChange.objects.create(
@@ -729,7 +769,13 @@ def finance_accountable_return_create(request):
                 amount=movement.amount,
                 occurred_on=movement.occurred_on,
                 note=movement.note,
-                status=CashOperation.STATUS_PENDING,
+                status=(
+                    CashOperation.STATUS_PENDING
+                    if requires_manager_confirmation
+                    else CashOperation.STATUS_APPROVED
+                ),
+                reviewed_by=None if requires_manager_confirmation else request.user,
+                reviewed_at=None if requires_manager_confirmation else timezone.now(),
             )
             _create_cash_operation_change(
                 operation,
@@ -745,7 +791,25 @@ def finance_accountable_return_create(request):
                     "note": operation.note,
                 },
             )
-        messages.success(request, "Возврат подотчёта отправлен менеджеру на подтверждение.")
+            if not requires_manager_confirmation:
+                AccountableTransactionChange.objects.create(
+                    transaction=movement,
+                    actor=request.user,
+                    action=AccountableTransactionChange.ACTION_UPDATED,
+                    note="Автоматически подтверждено при возврате самому себе",
+                    payload={"decision": AccountableTransaction.STATUS_APPROVED},
+                )
+                _create_cash_operation_change(
+                    operation,
+                    request.user,
+                    CashOperationChange.ACTION_APPROVED,
+                    note="Автоматически подтверждено при возврате самому себе",
+                    payload={"decision": CashOperation.STATUS_APPROVED, "accountable_transaction_id": movement.id},
+                )
+        if requires_manager_confirmation:
+            messages.success(request, "Возврат подотчёта отправлен менеджеру на подтверждение.")
+        else:
+            messages.success(request, "Возврат подотчёта сохранён без подтверждения.")
         return redirect("finance_kkm_cash_dashboard" if can_access_cash(request.user, organization) else "finance_dashboard")
     context = {
         "form": form,

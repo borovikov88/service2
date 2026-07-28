@@ -653,6 +653,42 @@ class FinanceTests(TestCase):
         self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], -4000)
         self.assertEqual(accountable_balance(self.organization, self.service)["operational_balance"], 14000)
 
+    def test_manager_cashbox_self_issue_is_approved_immediately(self):
+        CashOperation.objects.create(
+            organization=self.organization,
+            manager=self.manager,
+            created_by=self.manager,
+            operation_type=CashOperation.TYPE_MANAGER_INCOME,
+            amount="10000.00",
+            occurred_on=date.today(),
+            status=CashOperation.STATUS_APPROVED,
+            reviewed_by=self.manager,
+            reviewed_at=timezone.now(),
+        )
+
+        self.client.force_login(self.manager)
+        response = self.client.post(
+            reverse("finance_cash_accountable_issue_create"),
+            {
+                "employee": self.manager.id,
+                "amount": "2500.00",
+                "occurred_on": date.today().isoformat(),
+                "note": "own accountable",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        movement = AccountableTransaction.objects.get(transaction_type=AccountableTransaction.TYPE_ISSUE)
+        operation = CashOperation.objects.get(operation_type=CashOperation.TYPE_ACCOUNTABLE_ISSUE)
+        self.assertEqual(movement.employee, self.manager)
+        self.assertEqual(movement.status, AccountableTransaction.STATUS_APPROVED)
+        self.assertEqual(movement.reviewed_by, self.manager)
+        self.assertEqual(operation.status, CashOperation.STATUS_APPROVED)
+        self.assertEqual(operation.reviewed_by, self.manager)
+        self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], Decimal("7500.00"))
+        self.assertEqual(accountable_balance(self.organization, self.manager)["operational_balance"], Decimal("2500.00"))
+        self.assertTrue(operation.changes.filter(action=CashOperationChange.ACTION_APPROVED).exists())
+
     def test_kkm_cash_expense_does_not_affect_accountable_balance(self):
         CashOperation.objects.create(
             organization=self.organization,
@@ -669,6 +705,7 @@ class FinanceTests(TestCase):
         self.client.force_login(self.manager)
         dashboard = self.client.get(reverse("finance_kkm_cash_dashboard"))
         self.assertContains(dashboard, f"{reverse('finance_expense_create')}?source=kkm_cash")
+        self.assertNotContains(dashboard, reverse("finance_accountable_return_create"))
         response = self.client.post(
             f"{reverse('finance_expense_create')}?source=kkm_cash",
             self.expense_payload(
@@ -820,6 +857,44 @@ class FinanceTests(TestCase):
         self.assertEqual(movement.status, AccountableTransaction.STATUS_APPROVED)
         self.assertEqual(operation.status, CashOperation.STATUS_APPROVED)
         self.assertEqual(accountable_balance(self.organization, self.service)["operational_balance"], Decimal("3800.00"))
+        self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], Decimal("1200.00"))
+        self.assertTrue(operation.changes.filter(action=CashOperationChange.ACTION_APPROVED).exists())
+
+    def test_accountable_self_return_to_kkm_is_approved_immediately(self):
+        AccountableTransaction.objects.create(
+            organization=self.organization,
+            employee=self.manager,
+            created_by=self.owner,
+            transaction_type=AccountableTransaction.TYPE_ISSUE,
+            amount="5000.00",
+            occurred_on=date.today(),
+            status=AccountableTransaction.STATUS_APPROVED,
+            reviewed_by=self.owner,
+            reviewed_at=timezone.now(),
+        )
+
+        self.client.force_login(self.manager)
+        response = self.client.post(
+            reverse("finance_accountable_return_create"),
+            {
+                "manager": self.manager.id,
+                "amount": "1200.00",
+                "occurred_on": date.today().isoformat(),
+                "note": "self return",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse("finance_kkm_cash_dashboard"))
+        movement = AccountableTransaction.objects.get(transaction_type=AccountableTransaction.TYPE_RETURN)
+        operation = CashOperation.objects.get(operation_type=CashOperation.TYPE_ACCOUNTABLE_RETURN)
+        self.assertEqual(movement.employee, self.manager)
+        self.assertEqual(movement.status, AccountableTransaction.STATUS_APPROVED)
+        self.assertEqual(movement.reviewed_by, self.manager)
+        self.assertEqual(operation.manager, self.manager)
+        self.assertEqual(operation.status, CashOperation.STATUS_APPROVED)
+        self.assertEqual(operation.reviewed_by, self.manager)
+        self.assertEqual(accountable_balance(self.organization, self.manager)["operational_balance"], Decimal("3800.00"))
         self.assertEqual(manager_cash_balance(self.organization, self.manager)["balance"], Decimal("1200.00"))
         self.assertTrue(operation.changes.filter(action=CashOperationChange.ACTION_APPROVED).exists())
 
