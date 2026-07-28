@@ -255,7 +255,6 @@
     if (!modalElement || !frame || !title || !dialog || typeof bootstrap === "undefined") return;
 
     const modal = bootstrap.Modal.getOrCreateInstance(modalElement);
-    const dashboardPath = "{% url 'finance_dashboard' %}";
     let formPath = "";
 
     document.querySelectorAll("[data-finance-modal]").forEach(function (link) {
@@ -279,14 +278,9 @@
       try {
         const frameLocation = frame.contentWindow.location;
         if (frameLocation.pathname === formPath) return;
-        const destination = frameLocation.href;
         formPath = "";
         modal.hide();
-        if (frameLocation.pathname === dashboardPath) {
-          window.location.reload();
-        } else {
-          window.location.assign(destination);
-        }
+        window.location.reload();
       } catch (error) {
         formPath = "";
         modal.hide();

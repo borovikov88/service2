@@ -394,7 +394,7 @@ class FinanceTests(TestCase):
         cases = [
             (self.service, reverse("readings_all")),
             (self.installer, reverse("finance_dashboard")),
-            (self.manager, reverse("finance_dashboard")),
+            (self.manager, reverse("finance_kkm_cash_dashboard")),
             (self.accountant, reverse("finance_dashboard")),
         ]
 

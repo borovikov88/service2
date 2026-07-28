@@ -130,6 +130,8 @@ def plan_status_context(request):
 
     if "service" in org_roles:
         context["home_url"] = reverse("readings_all")
+    elif "manager" in org_roles:
+        context["home_url"] = reverse("finance_kkm_cash_dashboard")
     elif can_access_finance:
         context["home_url"] = reverse("finance_dashboard")
 

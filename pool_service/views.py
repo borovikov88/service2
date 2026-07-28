@@ -574,6 +574,8 @@ def _default_authenticated_url(user):
     roles = _crm_user_roles(user)
     if "service" in roles:
         return reverse("readings_all")
+    if "manager" in roles:
+        return reverse("finance_kkm_cash_dashboard")
     if roles & {"owner", "admin", "manager", "installer", "accountant"}:
         return reverse("finance_dashboard")
     return reverse("pool_list")
