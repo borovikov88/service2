@@ -1026,6 +1026,17 @@
       box-shadow: 0 10px 30px rgba(13, 110, 253, 0.25);
       display: none;
     }
+    .btn-loading {
+      pointer-events: none;
+      opacity: 0.86;
+    }
+    .btn-loading .btn-loading__spinner {
+      margin-right: 0.45rem;
+      vertical-align: -0.125em;
+    }
+    .btn-loading.btn-loading--icon-only .btn-loading__spinner {
+      margin-right: 0;
+    }
     .plan-badge {
       display: inline-flex;
       align-items: center;
@@ -2939,6 +2950,95 @@
     });
   </script>
   <script>
+    (function () {
+      const loadingSelector = ".btn, button[type='submit'], input[type='submit'], input[type='button']";
+      const skipSelector = [
+        "[data-no-loading]",
+        "[data-bs-toggle]",
+        "[data-bs-dismiss]",
+        "[data-finance-modal]",
+        "[data-task-modal-url]",
+        "[data-menu-button]",
+        ".btn-close",
+        ".js-confirm-action",
+      ].join(",");
+
+      const isSkippable = (element) => {
+        if (!element || element.matches(skipSelector)) return true;
+        if (element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true") return true;
+        if (element.tagName === "A") {
+          const href = element.getAttribute("href") || "";
+          if (!href || href === "#" || href.startsWith("#")) return true;
+          if (element.target && element.target !== "_self") return true;
+          if (element.hasAttribute("download")) return true;
+        }
+        const type = (element.getAttribute("type") || "").toLowerCase();
+        if (element.tagName === "BUTTON" && type === "button" && !element.closest("form")) return true;
+        return false;
+      };
+
+      const setLoading = (element) => {
+        if (!element || element.dataset.buttonLoading === "1" || isSkippable(element)) return;
+        element.dataset.buttonLoading = "1";
+        element.setAttribute("aria-busy", "true");
+        element.classList.add("btn-loading");
+
+        if (element.tagName === "INPUT") {
+          element.dataset.originalValue = element.value || "";
+          element.value = "\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430...";
+          return;
+        }
+
+        const rect = element.getBoundingClientRect();
+        if (rect.width) {
+          element.style.minWidth = `${Math.ceil(rect.width)}px`;
+        }
+        const text = (element.textContent || "").trim();
+        if (!text || text.length <= 2) {
+          element.classList.add("btn-loading--icon-only");
+        }
+        const spinner = document.createElement("span");
+        spinner.className = "spinner-border spinner-border-sm btn-loading__spinner";
+        spinner.setAttribute("aria-hidden", "true");
+        element.prepend(spinner);
+      };
+
+      const resetLoading = (element) => {
+        if (!element || element.dataset.buttonLoading !== "1") return;
+        element.dataset.buttonLoading = "0";
+        element.removeAttribute("aria-busy");
+        element.classList.remove("btn-loading", "btn-loading--icon-only");
+        element.style.minWidth = "";
+        element.querySelector(".btn-loading__spinner")?.remove();
+        if (element.tagName === "INPUT" && Object.prototype.hasOwnProperty.call(element.dataset, "originalValue")) {
+          element.value = element.dataset.originalValue;
+          delete element.dataset.originalValue;
+        }
+      };
+
+      window.setButtonLoading = setLoading;
+      window.resetButtonLoading = resetLoading;
+
+      document.addEventListener("submit", (event) => {
+        const form = event.target;
+        const submitter = event.submitter || form.querySelector("button[type='submit'], input[type='submit'], .btn[type='submit']");
+        if (submitter) setLoading(submitter);
+      });
+
+      document.addEventListener("click", (event) => {
+        const element = event.target.closest(loadingSelector);
+        if (!element || event.defaultPrevented || isSkippable(element)) return;
+        const type = (element.getAttribute("type") || "").toLowerCase();
+        if (element.closest("form") && (type === "submit" || type === "" || element.tagName === "INPUT")) return;
+        setLoading(element);
+      });
+
+      window.addEventListener("pageshow", () => {
+        document.querySelectorAll("[data-button-loading='1']").forEach(resetLoading);
+      });
+    })();
+  </script>
+  <script>
     document.addEventListener("DOMContentLoaded", function () {
       const interactiveSelector = "a, button, input, select, textarea, label, summary, details, form";
       document.querySelectorAll("tr[data-row-href]").forEach((row) => {
@@ -3000,6 +3100,7 @@
 
       submitBtn.addEventListener("click", () => {
         if (!pendingForm) return;
+        window.setButtonLoading?.(submitBtn);
         pendingForm.submit();
       });
 
