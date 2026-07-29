@@ -101,9 +101,9 @@ def plan_status_context(request):
     personal_free = is_personal_free(user)
     security_pin_enabled = bool(getattr(getattr(user, "profile", None), "security_pin_hash", ""))
     security_passkey_enabled = WebAuthnCredential.objects.filter(user=user).exists()
-    security_show_passkey_prompt = (
-        not security_passkey_enabled
-        and has_fresh_password_login(request)
+    security_show_quick_setup_prompt = (
+        has_fresh_password_login(request)
+        and (not security_pin_enabled or not security_passkey_enabled)
         and not passkey_prompt_dismissed(request)
     )
     context = {
@@ -126,7 +126,7 @@ def plan_status_context(request):
         "security_pin_enabled": security_pin_enabled,
         "security_passkey_enabled": security_passkey_enabled,
         "security_quick_unlock_enabled": security_pin_enabled or security_passkey_enabled,
-        "security_show_passkey_prompt": security_show_passkey_prompt,
+        "security_show_quick_setup_prompt": security_show_quick_setup_prompt,
         "security_idle_timeout_seconds": idle_timeout_seconds(),
     }
 

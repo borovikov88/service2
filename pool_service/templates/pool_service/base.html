@@ -1613,25 +1613,54 @@
     {% endif %}
   </div>
   <div id="offline-toast" class="offline-toast"></div>
-  {% if security_show_passkey_prompt and not hide_header %}
-  <div class="modal fade" id="passkeySetupPromptModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+  {% if security_show_quick_setup_prompt and not hide_header %}
+  <div class="modal fade" id="quickSecuritySetupModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
     <div class="modal-dialog modal-dialog-centered">
       <div class="modal-content rounded-4 border-0 shadow-lg">
-        <div class="modal-body p-4 p-md-5 text-center">
-          <div class="d-inline-flex align-items-center justify-content-center rounded-circle bg-primary bg-opacity-10 text-primary mb-3" style="width:72px;height:72px;">
-            <i class="bi bi-fingerprint fs-1"></i>
+        <div class="modal-body p-4 p-md-5">
+          <div class="text-center mb-4">
+            <div class="d-inline-flex align-items-center justify-content-center rounded-circle bg-primary bg-opacity-10 text-primary mb-3" style="width:72px;height:72px;">
+              <i class="bi bi-shield-lock fs-1"></i>
+            </div>
+            <h5 class="fw-bold mb-2">Настройте быстрый вход</h5>
+            <p class="text-muted mb-0">PIN и биометрия нужны для безопасного входа после блокировки приложения.</p>
           </div>
-          <h5 class="fw-bold mb-2">Включить вход по биометрии?</h5>
-          <p class="text-muted mb-4">В следующий раз после блокировки можно будет войти Face ID, Touch ID, отпечатком или системным PIN устройства.</p>
-          <div class="d-grid gap-2">
-            <button type="button" class="btn btn-primary btn-lg rounded-3" data-passkey-autosetup-button>
-              Включить биометрию
-            </button>
-            <button type="button" class="btn btn-link text-muted text-decoration-none" data-passkey-autosetup-dismiss>
-              Не сейчас
-            </button>
+
+          <form method="post" action="{% url 'security_pin_quick_setup' %}" class="{% if security_pin_enabled %}d-none{% endif %}" data-quick-pin-form>
+            {% csrf_token %}
+            <div class="mb-3">
+              <label class="form-label text-muted small">Новый PIN</label>
+              <input type="password" name="pin" class="form-control form-control-lg text-center" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{4}" maxlength="4" required>
+            </div>
+            <div class="mb-3">
+              <label class="form-label text-muted small">Повтор PIN</label>
+              <input type="password" name="pin_confirm" class="form-control form-control-lg text-center" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{4}" maxlength="4" required>
+            </div>
+            <div class="d-grid gap-2">
+              <button type="submit" class="btn btn-primary btn-lg rounded-3" data-quick-pin-submit>Сохранить PIN</button>
+              <button type="button" class="btn btn-link text-muted text-decoration-none" data-quick-setup-dismiss>Позже</button>
+            </div>
+            <div class="small mt-3 text-center" data-quick-pin-status></div>
+          </form>
+
+          <div class="{% if not security_pin_enabled or security_passkey_enabled %}d-none{% endif %}" data-quick-passkey-step>
+            <div class="text-center mb-3">
+              <i class="bi bi-fingerprint display-5 text-primary"></i>
+              <h6 class="fw-bold mt-3 mb-2">Подключить биометрию?</h6>
+              <p class="text-muted small mb-0">Будет использоваться штатная защита устройства: Face ID, Touch ID, отпечаток, Windows Hello или системный PIN.</p>
+            </div>
+            <div class="d-grid gap-2">
+              <button type="button" class="btn btn-primary btn-lg rounded-3" data-passkey-autosetup-button>Подключить биометрию</button>
+              <button type="button" class="btn btn-link text-muted text-decoration-none" data-quick-setup-dismiss>Позже</button>
+            </div>
+            <div class="small mt-3 text-center" data-passkey-autosetup-status></div>
           </div>
-          <div class="small mt-3" data-passkey-autosetup-status></div>
+
+          <div class="d-none text-center" data-quick-setup-complete>
+            <div class="text-success mb-3"><i class="bi bi-check-circle display-5"></i></div>
+            <h6 class="fw-bold mb-2">Быстрый вход настроен</h6>
+            <button type="button" class="btn btn-primary rounded-3 px-4" data-quick-setup-finish>Готово</button>
+          </div>
         </div>
       </div>
     </div>
@@ -2670,21 +2699,45 @@
       };
     })();
 
-    {% if security_show_passkey_prompt and not hide_header %}
+    {% if security_show_quick_setup_prompt and not hide_header %}
     (function () {
-      function initPasskeyPrompt() {
-        const modalEl = document.getElementById("passkeySetupPromptModal");
+      function initQuickSecuritySetup() {
+        const modalEl = document.getElementById("quickSecuritySetupModal");
         if (!modalEl || !window.bootstrap) return;
-        const button = modalEl.querySelector("[data-passkey-autosetup-button]");
-        const dismiss = modalEl.querySelector("[data-passkey-autosetup-dismiss]");
-        const status = modalEl.querySelector("[data-passkey-autosetup-status]");
+        const pinForm = modalEl.querySelector("[data-quick-pin-form]");
+        const pinSubmit = modalEl.querySelector("[data-quick-pin-submit]");
+        const pinStatus = modalEl.querySelector("[data-quick-pin-status]");
+        const passkeyStep = modalEl.querySelector("[data-quick-passkey-step]");
+        const passkeyButton = modalEl.querySelector("[data-passkey-autosetup-button]");
+        const passkeyStatus = modalEl.querySelector("[data-passkey-autosetup-status]");
+        const completeStep = modalEl.querySelector("[data-quick-setup-complete]");
+        const dismissButtons = modalEl.querySelectorAll("[data-quick-setup-dismiss]");
+        const finishButton = modalEl.querySelector("[data-quick-setup-finish]");
         const modal = new bootstrap.Modal(modalEl);
 
-        function setStatus(message, isError) {
-          if (!status) return;
-          status.textContent = message || "";
-          status.classList.toggle("text-danger", !!isError);
-          status.classList.toggle("text-success", !isError && !!message);
+        function setStatus(element, message, isError) {
+          if (!element) return;
+          element.textContent = message || "";
+          element.classList.toggle("text-danger", !!isError);
+          element.classList.toggle("text-success", !isError && !!message);
+        }
+
+        function showCompleteStep() {
+          pinForm?.classList.add("d-none");
+          passkeyStep?.classList.add("d-none");
+          completeStep?.classList.remove("d-none");
+        }
+
+        function showPasskeyStep() {
+          pinForm?.classList.add("d-none");
+          if (!passkeyStep || {{ security_passkey_enabled|yesno:"true,false" }}) {
+            showCompleteStep();
+            return;
+          }
+          if (!window.RovikWebAuthn?.isSupported()) {
+            setStatus(passkeyStatus, "Это устройство не поддерживает биометрию/passkey. Можно подключить позже после входа с подходящего устройства.", true);
+          }
+          passkeyStep.classList.remove("d-none");
         }
 
         async function dismissPrompt() {
@@ -2699,31 +2752,69 @@
           modal.hide();
         }
 
-        if (!window.RovikWebAuthn?.isSupported()) {
-          dismissPrompt();
-          return;
-        }
+        pinForm?.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const formData = new FormData(pinForm);
+          const pin = String(formData.get("pin") || "");
+          const pinConfirm = String(formData.get("pin_confirm") || "");
+          if (!/^\d{4}$/.test(pin)) {
+            setStatus(pinStatus, "PIN должен содержать 4 цифры.", true);
+            return;
+          }
+          if (pin !== pinConfirm) {
+            setStatus(pinStatus, "PIN-коды не совпадают.", true);
+            return;
+          }
 
-        button?.addEventListener("click", async () => {
-          window.setButtonLoading?.(button);
-          setStatus("Подтвердите действие на устройстве...");
+          window.setButtonLoading?.(pinSubmit);
+          setStatus(pinStatus, "Сохраняем PIN...");
           try {
-            await window.RovikWebAuthn.registerDevice({ name: "Это устройство" });
-            setStatus("Биометрия включена.");
-            window.setTimeout(() => window.location.reload(), 600);
+            const response = await fetch(pinForm.action, {
+              method: "POST",
+              credentials: "same-origin",
+              headers: { "X-Requested-With": "XMLHttpRequest" },
+              body: formData,
+            });
+            const data = await response.json().catch(() => null);
+            if (!response.ok || !data?.ok) {
+              throw new Error(data?.error || "Не удалось сохранить PIN.");
+            }
+            setStatus(pinStatus, "PIN сохранён.");
+            showPasskeyStep();
           } catch (error) {
-            setStatus(error.message || "Не удалось включить биометрию.", true);
-            window.resetButtonLoading?.(button);
+            setStatus(pinStatus, error.message || "Не удалось сохранить PIN.", true);
+          } finally {
+            window.resetButtonLoading?.(pinSubmit);
           }
         });
-        dismiss?.addEventListener("click", dismissPrompt);
+
+        passkeyButton?.addEventListener("click", async () => {
+          if (!window.RovikWebAuthn?.isSupported()) {
+            setStatus(passkeyStatus, "Это устройство не поддерживает биометрию/passkey.", true);
+            return;
+          }
+          window.setButtonLoading?.(passkeyButton);
+          setStatus(passkeyStatus, "Подтвердите действие на устройстве...");
+          try {
+            await window.RovikWebAuthn.registerDevice({ name: "Это устройство" });
+            setStatus(passkeyStatus, "Биометрия включена.");
+            showCompleteStep();
+          } catch (error) {
+            setStatus(passkeyStatus, error.message || "Не удалось включить биометрию.", true);
+          } finally {
+            window.resetButtonLoading?.(passkeyButton);
+          }
+        });
+
+        dismissButtons.forEach((button) => button.addEventListener("click", dismissPrompt));
+        finishButton?.addEventListener("click", () => window.location.reload());
         modal.show();
       }
 
       if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", initPasskeyPrompt, { once: true });
+        document.addEventListener("DOMContentLoaded", initQuickSecuritySetup, { once: true });
       } else {
-        initPasskeyPrompt();
+        initQuickSecuritySetup();
       }
     })();
     {% endif %}

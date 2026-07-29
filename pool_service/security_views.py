@@ -130,7 +130,7 @@ def security_unlock(request):
             "next_url": next_url,
             "hide_header": True,
             "hide_bottom_nav": True,
-            "user_full_name": request.user.get_full_name() or request.user.username,
+            "user_full_name": request.user.first_name or request.user.username,
             "security_pin_enabled": profile.has_security_pin,
             "security_passkey_enabled": has_passkey,
         },
@@ -166,6 +166,25 @@ def security_pin_set(request):
             for error in errors:
                 messages.error(request, error)
     return redirect("profile")
+
+
+@require_POST
+@login_required
+def security_pin_quick_setup(request):
+    if not has_fresh_password_login(request):
+        return _json_error("Для настройки PIN войдите по паролю заново.", status=403)
+
+    profile, _ = Profile.objects.get_or_create(user=request.user)
+    pin = (request.POST.get("pin") or "").strip()
+    pin_confirm = (request.POST.get("pin_confirm") or "").strip()
+    if not pin.isdigit() or len(pin) != 4:
+        return _json_error("PIN должен содержать 4 цифры.")
+    if pin != pin_confirm:
+        return _json_error("PIN-коды не совпадают.")
+
+    set_security_pin(profile, pin)
+    mark_session_unlocked(request)
+    return JsonResponse({"ok": True})
 
 
 @require_POST

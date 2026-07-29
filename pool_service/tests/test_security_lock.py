@@ -117,6 +117,36 @@ class SessionSecurityTests(TestCase):
         self.profile.refresh_from_db()
         self.assertEqual(self.profile.security_pin_failed_attempts, 1)
 
+    def test_quick_pin_setup_requires_fresh_password_login(self):
+        self.client.force_login(self.user)
+
+        response = self.client.post(
+            reverse("security_pin_quick_setup"),
+            {"pin": "1234", "pin_confirm": "1234"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.profile.refresh_from_db()
+        self.assertEqual(self.profile.security_pin_hash, "")
+
+    def test_quick_pin_setup_sets_pin_after_fresh_password_login(self):
+        self.client.force_login(self.user)
+        session = self.client.session
+        session[SESSION_FRESH_PASSWORD_LOGIN_AT_KEY] = timestamp_now()
+        session.save()
+
+        response = self.client.post(
+            reverse("security_pin_quick_setup"),
+            {"pin": "1234", "pin_confirm": "1234"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+        self.profile.refresh_from_db()
+        self.assertTrue(check_password("1234", self.profile.security_pin_hash))
+
     def test_too_many_wrong_pins_disable_pin_and_logout(self):
         set_security_pin(self.profile, "1234")
         self.client.force_login(self.user)

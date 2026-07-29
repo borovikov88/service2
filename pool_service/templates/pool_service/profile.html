@@ -216,93 +216,58 @@
                     <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
                         <div>
                             <h5 class="card-title mb-1">Безопасность входа</h5>
-                            <p class="text-muted mb-0">PIN или биометрия блокируют уже открытую сессию после 5 минут бездействия. Биометрия работает через штатный passkey/WebAuthn устройства.</p>
+                            <p class="text-muted mb-0">PIN и биометрия настраиваются после входа в приложение, если ещё не подключены. В профиле можно сменить PIN с подтверждением паролем.</p>
                         </div>
-                        {% if security_pin_enabled %}
-                            <span class="badge bg-success text-white border-0">PIN включён</span>
-                        {% else %}
-                            <span class="badge bg-light text-dark border">PIN не включён</span>
-                        {% endif %}
+                        <div class="d-flex flex-wrap gap-2 justify-content-end">
+                            {% if security_pin_enabled %}
+                                <span class="badge bg-success text-white border-0">PIN включён</span>
+                            {% else %}
+                                <span class="badge bg-light text-dark border">PIN не включён</span>
+                            {% endif %}
+                            <span class="badge bg-light text-dark border">Биометрия: {{ webauthn_credentials|length }}</span>
+                        </div>
                     </div>
                     {% if security_pin_enabled and security_pin_changed_at %}
-                        <div class="small text-muted mb-3">Последнее изменение: {{ security_pin_changed_at|date:"d.m.Y H:i" }}</div>
+                        <div class="small text-muted mb-3">Последнее изменение PIN: {{ security_pin_changed_at|date:"d.m.Y H:i" }}</div>
                     {% endif %}
-                    <form method="post" action="{% url 'security_pin_set' %}" class="row g-3 align-items-end">
-                        {% csrf_token %}
-                        <div class="col-12 col-md-4">
-                            <label class="form-label text-muted small">Текущий пароль</label>
-                            <input type="password" name="current_password" class="form-control" autocomplete="current-password" required>
-                        </div>
-                        <div class="col-6 col-md-3">
-                            <label class="form-label text-muted small">Новый PIN</label>
-                            <input type="password" name="pin" class="form-control" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{4,8}" required>
-                        </div>
-                        <div class="col-6 col-md-3">
-                            <label class="form-label text-muted small">Повтор PIN</label>
-                            <input type="password" name="pin_confirm" class="form-control" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{4,8}" required>
-                        </div>
-                        <div class="col-12 col-md-2">
-                            <button type="submit" class="btn btn-primary w-100">{% if security_pin_enabled %}Обновить{% else %}Включить{% endif %}</button>
-                        </div>
-                    </form>
-                    {% if security_pin_enabled %}
-                    <form method="post" action="{% url 'security_pin_disable' %}" class="row g-3 align-items-end mt-2">
-                        {% csrf_token %}
-                        <div class="col-12 col-md-8">
-                            <label class="form-label text-muted small">Пароль для отключения PIN</label>
-                            <input type="password" name="current_password" class="form-control" autocomplete="current-password" required>
-                        </div>
-                        <div class="col-12 col-md-4">
-                            <button type="submit" class="btn btn-outline-danger w-100 js-confirm-action" data-confirm-title="Отключить PIN" data-confirm-body="После отключения сессия не будет блокироваться PIN-кодом." data-confirm-confirm="Отключить" data-confirm-variant="danger">Отключить PIN</button>
-                        </div>
-                    </form>
-                    {% endif %}
-                    <hr class="my-4">
-                    <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
-                        <div>
-                            <h6 class="fw-bold mb-1">Биометрия устройства</h6>
-                            <p class="text-muted small mb-0">Привяжите iPhone, Android или компьютер с Windows Hello/Touch ID. Разблокировка будет выполняться штатной защитой устройства.</p>
-                        </div>
-                        <span class="badge bg-light text-dark border">{{ webauthn_credentials|length }} устр.</span>
-                    </div>
-                    <div class="row g-3 align-items-end" data-passkey-register>
-                        <div class="col-12 col-md-4">
-                            <label class="form-label text-muted small">Текущий пароль</label>
-                            <input type="password" class="form-control" autocomplete="current-password" data-passkey-password>
-                        </div>
-                        <div class="col-12 col-md-4">
-                            <label class="form-label text-muted small">Название устройства</label>
-                            <input type="text" class="form-control" placeholder="Например, iPhone" data-passkey-name>
-                        </div>
-                        <div class="col-12 col-md-4">
-                            <button type="button" class="btn btn-outline-primary w-100" data-passkey-register-button>
-                                <i class="bi bi-fingerprint me-2"></i>Привязать устройство
-                            </button>
-                        </div>
-                        <div class="col-12">
-                            <div class="small text-muted" data-passkey-status></div>
-                        </div>
-                    </div>
-                    {% if webauthn_credentials %}
-                    <div class="list-group list-group-flush mt-3">
-                        {% for credential in webauthn_credentials %}
-                        <div class="list-group-item px-0 d-flex justify-content-between align-items-center gap-3">
-                            <div>
-                                <div class="fw-semibold">{{ credential.name|default:"Устройство" }}</div>
-                                <div class="small text-muted">
-                                    Добавлено {{ credential.created_at|date:"d.m.Y H:i" }}
-                                    {% if credential.last_used_at %} · использовалось {{ credential.last_used_at|date:"d.m.Y H:i" }}{% endif %}
-                                </div>
-                            </div>
-                            <form method="post" action="{% url 'webauthn_credential_delete' credential.id %}">
-                                {% csrf_token %}
-                                <button type="submit" class="btn btn-sm btn-outline-danger js-confirm-action" data-confirm-title="Удалить устройство" data-confirm-body="После удаления это устройство нельзя будет использовать для разблокировки." data-confirm-confirm="Удалить" data-confirm-variant="danger">Удалить</button>
-                            </form>
-                        </div>
-                        {% endfor %}
-                    </div>
-                    {% endif %}
+                    <button type="button" class="btn btn-primary rounded-3" data-bs-toggle="modal" data-bs-target="#pinChangeModal">
+                        <i class="bi bi-shield-lock me-2"></i>Сменить PIN
+                    </button>
                 </div>
+            </div>
+
+            <div class="modal fade" id="pinChangeModal" tabindex="-1" aria-hidden="true">
+              <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content rounded-4 border-0 shadow-lg">
+                  <div class="modal-header">
+                    <h5 class="modal-title">Сменить PIN</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                  </div>
+                  <form method="post" action="{% url 'security_pin_set' %}">
+                    {% csrf_token %}
+                    <div class="modal-body">
+                      <div class="mb-3">
+                        <label class="form-label text-muted small">Текущий пароль</label>
+                        <input type="password" name="current_password" class="form-control" autocomplete="current-password" required>
+                      </div>
+                      <div class="row g-3">
+                        <div class="col-6">
+                          <label class="form-label text-muted small">Новый PIN</label>
+                          <input type="password" name="pin" class="form-control text-center" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{4}" maxlength="4" required>
+                        </div>
+                        <div class="col-6">
+                          <label class="form-label text-muted small">Повтор PIN</label>
+                          <input type="password" name="pin_confirm" class="form-control text-center" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{4}" maxlength="4" required>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="modal-footer">
+                      <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+                      <button type="submit" class="btn btn-primary">Сохранить PIN</button>
+                    </div>
+                  </form>
+                </div>
+              </div>
             </div>
 
             <div class="card card-soft mb-4" id="pwa-install-card">

@@ -81,6 +81,7 @@ from . import views
 from .security_views import (
     security_lock,
     security_pin_disable,
+    security_pin_quick_setup,
     security_pin_set,
     security_unlock,
     webauthn_authentication_options,
@@ -148,6 +149,7 @@ urlpatterns = [
     path("security/unlock/", security_unlock, name="security_unlock"),
     path("security/lock/", security_lock, name="security_lock"),
     path("security/pin/", security_pin_set, name="security_pin_set"),
+    path("security/pin/quick-setup/", security_pin_quick_setup, name="security_pin_quick_setup"),
     path("security/pin/disable/", security_pin_disable, name="security_pin_disable"),
     path("security/passkeys/register/options/", webauthn_registration_options, name="webauthn_registration_options"),
     path("security/passkeys/register/verify/", webauthn_registration_verify, name="webauthn_registration_verify"),
