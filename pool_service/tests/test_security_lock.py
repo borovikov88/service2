@@ -16,6 +16,7 @@ from pool_service.security import (
     timestamp_now,
 )
 from pool_service.webauthn_utils import SESSION_WEBAUTHN_AUTHENTICATION_CHALLENGE
+from pool_service.webauthn_utils import credential_id_hash
 
 
 @override_settings(SECURITY_IDLE_TIMEOUT_SECONDS=300)
@@ -172,6 +173,7 @@ class SessionSecurityTests(TestCase):
         WebAuthnCredential.objects.create(
             user=self.user,
             credential_id=bytes_to_base64url(b"credential-id"),
+            credential_id_hash=credential_id_hash(bytes_to_base64url(b"credential-id")),
             public_key=b"public-key",
         )
         self.client.force_login(self.user)
@@ -189,6 +191,7 @@ class SessionSecurityTests(TestCase):
         credential = WebAuthnCredential.objects.create(
             user=self.user,
             credential_id=bytes_to_base64url(b"credential-id"),
+            credential_id_hash=credential_id_hash(bytes_to_base64url(b"credential-id")),
             public_key=b"public-key",
             sign_count=1,
         )

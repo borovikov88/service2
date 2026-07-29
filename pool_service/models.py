@@ -96,7 +96,8 @@ class Profile(models.Model):
 
 class WebAuthnCredential(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="webauthn_credentials")
-    credential_id = models.CharField(max_length=512, unique=True)
+    credential_id = models.CharField(max_length=1024)
+    credential_id_hash = models.CharField(max_length=64, unique=True)
     public_key = models.BinaryField()
     sign_count = models.PositiveBigIntegerField(default=0)
     name = models.CharField(max_length=120, blank=True)

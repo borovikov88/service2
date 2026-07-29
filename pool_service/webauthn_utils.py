@@ -1,4 +1,5 @@
 import json
+import hashlib
 from urllib.parse import urlparse
 
 from django.conf import settings
@@ -59,6 +60,10 @@ def credential_id_to_text(credential_id):
 
 def credential_id_to_bytes(credential_id):
     return base64url_to_bytes(credential_id)
+
+
+def credential_id_hash(credential_id):
+    return hashlib.sha256(credential_id.encode("utf-8")).hexdigest()
 
 
 def credential_descriptor(credential):

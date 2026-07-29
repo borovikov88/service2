@@ -37,6 +37,7 @@ from .webauthn_utils import (
     SESSION_WEBAUTHN_REGISTRATION_CHALLENGE,
     challenge_from_session,
     challenge_to_session,
+    credential_id_hash,
     credential_id_to_text,
     mark_credential_used,
     options_response,
@@ -203,9 +204,10 @@ def webauthn_registration_verify(request):
     name = request.session.pop("webauthn_pending_name", "") or "Это устройство"
     request.session.pop(SESSION_WEBAUTHN_REGISTRATION_CHALLENGE, None)
     WebAuthnCredential.objects.update_or_create(
-        credential_id=credential_id,
+        credential_id_hash=credential_id_hash(credential_id),
         defaults={
             "user": request.user,
+            "credential_id": credential_id,
             "public_key": verified.credential_public_key,
             "sign_count": verified.sign_count,
             "name": name,
@@ -241,7 +243,11 @@ def webauthn_authentication_verify(request):
         return _json_error("Сессия проверки истекла. Попробуйте ещё раз.")
 
     data = _json_request(request)
-    credential = WebAuthnCredential.objects.filter(user=request.user, credential_id=data.get("id")).first()
+    raw_credential_id = data.get("id") or ""
+    credential = WebAuthnCredential.objects.filter(
+        user=request.user,
+        credential_id_hash=credential_id_hash(raw_credential_id),
+    ).first()
     if not credential:
         return _json_error("Устройство не привязано к этой учётной записи.", status=403)
 
