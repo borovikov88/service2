@@ -61,7 +61,11 @@ def plan_status_context(request):
     from django.utils import timezone
     from django.urls import reverse
     from pool_service.models import OrganizationAccess, WebAuthnCredential
-    from pool_service.security import idle_timeout_seconds
+    from pool_service.security import (
+        has_fresh_password_login,
+        idle_timeout_seconds,
+        passkey_prompt_dismissed,
+    )
     from pool_service.services.permissions import (
         company_has_access,
         company_trial_days_left,
@@ -97,6 +101,11 @@ def plan_status_context(request):
     personal_free = is_personal_free(user)
     security_pin_enabled = bool(getattr(getattr(user, "profile", None), "security_pin_hash", ""))
     security_passkey_enabled = WebAuthnCredential.objects.filter(user=user).exists()
+    security_show_passkey_prompt = (
+        not security_passkey_enabled
+        and has_fresh_password_login(request)
+        and not passkey_prompt_dismissed(request)
+    )
     context = {
         "is_personal_user": personal_user,
         "is_personal_free": personal_free,
@@ -117,6 +126,7 @@ def plan_status_context(request):
         "security_pin_enabled": security_pin_enabled,
         "security_passkey_enabled": security_passkey_enabled,
         "security_quick_unlock_enabled": security_pin_enabled or security_passkey_enabled,
+        "security_show_passkey_prompt": security_show_passkey_prompt,
         "security_idle_timeout_seconds": idle_timeout_seconds(),
     }
 

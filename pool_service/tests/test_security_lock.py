@@ -10,6 +10,7 @@ from webauthn.helpers import bytes_to_base64url
 
 from pool_service.models import Profile, WebAuthnCredential
 from pool_service.security import (
+    SESSION_FRESH_PASSWORD_LOGIN_AT_KEY,
     SESSION_LAST_ACTIVITY_KEY,
     SESSION_LOCKED_KEY,
     set_security_pin,
@@ -168,6 +169,34 @@ class SessionSecurityTests(TestCase):
         self.assertIn("challenge", data["publicKey"])
         self.assertIn("webauthn_registration_challenge", self.client.session)
         self.assertEqual(self.client.session["webauthn_pending_name"], "iPhone")
+
+    def test_webauthn_registration_options_allow_fresh_login_without_password(self):
+        self.client.force_login(self.user)
+        session = self.client.session
+        session[SESSION_FRESH_PASSWORD_LOGIN_AT_KEY] = timestamp_now()
+        session.save()
+
+        response = self.client.post(
+            reverse("webauthn_registration_options"),
+            json.dumps({"name": "iPhone"}),
+            content_type="application/json",
+            HTTP_HOST="localhost",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+
+    def test_webauthn_registration_options_reject_stale_login_without_password(self):
+        self.client.force_login(self.user)
+
+        response = self.client.post(
+            reverse("webauthn_registration_options"),
+            json.dumps({"name": "iPhone"}),
+            content_type="application/json",
+            HTTP_HOST="localhost",
+        )
+
+        self.assertEqual(response.status_code, 403)
 
     def test_user_with_passkey_and_no_pin_is_locked_by_idle_timeout(self):
         WebAuthnCredential.objects.create(

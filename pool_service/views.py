@@ -65,6 +65,7 @@ from django.conf import settings
 from django.contrib.sitemaps.views import sitemap as sitemap_view
 
 from pool_service.services.finance import format_money
+from pool_service.security import mark_password_login_fresh
 
 import uuid
 
@@ -2096,6 +2097,7 @@ def invite_accept(request, token):
                 invite.save(update_fields=["accepted_at", "accepted_user"])
 
                 login(request, user)
+                mark_password_login_fresh(request)
 
                 messages.success(request, "\u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043d.")
 
@@ -2844,6 +2846,7 @@ def client_invite_accept(request, token):
                 invite.save(update_fields=["accepted_at", "accepted_user"])
 
                 login(request, user)
+                mark_password_login_fresh(request)
 
                 messages.success(request, "Аккаунт активирован.")
 
@@ -5447,6 +5450,7 @@ def home(request):
             user = form.get_user()
 
             login(request, user)
+            mark_password_login_fresh(request)
 
             messages.success(
 
@@ -6017,6 +6021,7 @@ def confirm_email(request, uidb64, token):
             return redirect("profile")
 
         login(request, user)
+        mark_password_login_fresh(request)
 
         personal_url = _personal_pool_redirect(user)
 
@@ -9163,7 +9168,9 @@ class CustomLoginView(LoginView):
 
         messages.success(self.request, "\u0412\u044b \u0443\u0441\u043f\u0435\u0448\u043d\u043e \u0432\u043e\u0448\u043b\u0438 \u0432 \u0441\u0438\u0441\u0442\u0435\u043c\u0443.")
 
-        return super().form_valid(form)
+        response = super().form_valid(form)
+        mark_password_login_fresh(self.request)
+        return response
 
 
 

@@ -86,6 +86,7 @@ from .security_views import (
     webauthn_authentication_options,
     webauthn_authentication_verify,
     webauthn_credential_delete,
+    webauthn_prompt_dismiss,
     webauthn_registration_options,
     webauthn_registration_verify,
 )
@@ -152,6 +153,7 @@ urlpatterns = [
     path("security/passkeys/register/verify/", webauthn_registration_verify, name="webauthn_registration_verify"),
     path("security/passkeys/authenticate/options/", webauthn_authentication_options, name="webauthn_authentication_options"),
     path("security/passkeys/authenticate/verify/", webauthn_authentication_verify, name="webauthn_authentication_verify"),
+    path("security/passkeys/prompt/dismiss/", webauthn_prompt_dismiss, name="webauthn_prompt_dismiss"),
     path("security/passkeys/<int:credential_id>/delete/", webauthn_credential_delete, name="webauthn_credential_delete"),
     path("users/", users_view, name="users"),
     path("notifications/", notifications_list, name="notifications"),

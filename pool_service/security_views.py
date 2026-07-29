@@ -24,6 +24,8 @@ from .security import (
     MAX_PIN_ATTEMPTS,
     SESSION_LOCKED_KEY,
     clear_security_pin,
+    dismiss_passkey_prompt,
+    has_fresh_password_login,
     has_security_pin,
     lock_session,
     mark_session_unlocked,
@@ -158,7 +160,12 @@ def security_pin_disable(request):
 @login_required
 def webauthn_registration_options(request):
     data = _json_request(request)
-    if not request.user.check_password(data.get("current_password") or ""):
+    current_password = data.get("current_password") or ""
+    if current_password:
+        password_ok = request.user.check_password(current_password)
+    else:
+        password_ok = has_fresh_password_login(request)
+    if not password_ok:
         return _json_error("Текущий пароль указан неверно.", status=403)
 
     display_name = request.user.get_full_name() or request.user.username
@@ -278,3 +285,10 @@ def webauthn_credential_delete(request, credential_id):
     credential.delete()
     messages.success(request, "Устройство удалено.")
     return redirect("profile")
+
+
+@require_POST
+@login_required
+def webauthn_prompt_dismiss(request):
+    dismiss_passkey_prompt(request)
+    return JsonResponse({"ok": True})
