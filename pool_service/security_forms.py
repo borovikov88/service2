@@ -3,7 +3,7 @@ import re
 from django import forms
 
 
-PIN_RE = re.compile(r"^\d{4,8}$")
+PIN_RE = re.compile(r"^\d{4}$")
 
 
 class SecurityPinForm(forms.Form):
@@ -13,12 +13,12 @@ class SecurityPinForm(forms.Form):
     )
     pin = forms.CharField(
         label="PIN-код",
-        help_text="От 4 до 8 цифр.",
-        widget=forms.PasswordInput(attrs={"class": "form-control", "autocomplete": "new-password", "inputmode": "numeric"}),
+        help_text="4 цифры.",
+        widget=forms.PasswordInput(attrs={"class": "form-control", "autocomplete": "new-password", "inputmode": "numeric", "maxlength": "4"}),
     )
     pin_confirm = forms.CharField(
         label="Повторите PIN",
-        widget=forms.PasswordInput(attrs={"class": "form-control", "autocomplete": "new-password", "inputmode": "numeric"}),
+        widget=forms.PasswordInput(attrs={"class": "form-control", "autocomplete": "new-password", "inputmode": "numeric", "maxlength": "4"}),
     )
 
     def __init__(self, *args, user, **kwargs):
@@ -34,7 +34,7 @@ class SecurityPinForm(forms.Form):
     def clean_pin(self):
         pin = self.cleaned_data["pin"]
         if not PIN_RE.match(pin):
-            raise forms.ValidationError("PIN должен содержать от 4 до 8 цифр.")
+            raise forms.ValidationError("PIN должен содержать 4 цифры.")
         return pin
 
     def clean(self):
@@ -66,11 +66,11 @@ class SecurityPinDisableForm(forms.Form):
 class SecurityUnlockForm(forms.Form):
     pin = forms.CharField(
         label="PIN-код",
-        widget=forms.PasswordInput(attrs={"class": "form-control form-control-lg text-center", "autocomplete": "current-password", "inputmode": "numeric", "autofocus": "autofocus"}),
+        widget=forms.PasswordInput(attrs={"class": "form-control form-control-lg text-center", "autocomplete": "current-password", "inputmode": "numeric", "autofocus": "autofocus", "maxlength": "4"}),
     )
 
     def clean_pin(self):
         pin = self.cleaned_data["pin"]
         if not PIN_RE.match(pin):
-            raise forms.ValidationError("PIN должен содержать только цифры.")
+            raise forms.ValidationError("PIN должен содержать 4 цифры.")
         return pin

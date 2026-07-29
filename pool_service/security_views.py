@@ -62,37 +62,65 @@ def _json_error(message, status=400):
     return JsonResponse({"ok": False, "error": message}, status=status)
 
 
+def _is_ajax(request):
+    return request.headers.get("x-requested-with") == "XMLHttpRequest"
+
+
 @login_required
 def security_unlock(request):
     profile, _ = Profile.objects.get_or_create(user=request.user)
     next_url = request.GET.get("next") or request.POST.get("next") or request.session.get("security_next") or "/"
+    is_ajax = _is_ajax(request)
     has_passkey = WebAuthnCredential.objects.filter(user=request.user).exists()
     if not profile.security_pin_hash and not has_passkey:
+        if is_ajax:
+            return JsonResponse({"ok": False, "redirect_url": "/accounts/login/"}, status=403)
         logout(request)
         messages.error(request, "Быстрый вход не настроен. Войдите заново и настройте PIN или биометрию в профиле.")
         return redirect("login")
     if not request.session.get(SESSION_LOCKED_KEY):
+        if is_ajax:
+            return JsonResponse({"ok": True, "redirect_url": next_url})
         return redirect(next_url)
 
     form = SecurityUnlockForm(request.POST or None)
-    if request.method == "POST" and form.is_valid():
-        if verify_security_pin(profile, form.cleaned_data["pin"]):
+    if request.method == "POST":
+        if not form.is_valid():
+            error_message = "PIN должен содержать 4 цифры."
+            form.add_error("pin", error_message)
+            if is_ajax:
+                return JsonResponse({"ok": False, "error": error_message}, status=400)
+        elif verify_security_pin(profile, form.cleaned_data["pin"]):
             profile.security_pin_failed_attempts = 0
             profile.save(update_fields=["security_pin_failed_attempts"])
             mark_session_unlocked(request)
             request.session.pop("security_next", None)
+            if is_ajax:
+                return JsonResponse({"ok": True, "redirect_url": next_url})
             messages.success(request, "Доступ разблокирован.")
             return redirect(next_url)
-
-        profile.security_pin_failed_attempts += 1
-        attempts = profile.security_pin_failed_attempts
-        profile.save(update_fields=["security_pin_failed_attempts"])
-        if attempts >= MAX_PIN_ATTEMPTS:
-            clear_security_pin(profile)
-            logout(request)
-            messages.error(request, "Слишком много неверных PIN. Быстрый вход отключён, войдите заново.")
-            return redirect("login")
-        form.add_error("pin", f"Неверный PIN. Осталось попыток: {MAX_PIN_ATTEMPTS - attempts}.")
+        else:
+            profile.security_pin_failed_attempts += 1
+            attempts = profile.security_pin_failed_attempts
+            profile.save(update_fields=["security_pin_failed_attempts"])
+            if attempts >= MAX_PIN_ATTEMPTS:
+                clear_security_pin(profile)
+                logout(request)
+                if is_ajax:
+                    return JsonResponse(
+                        {
+                            "ok": False,
+                            "error": "Слишком много неверных PIN. Быстрый вход отключён, войдите заново.",
+                            "redirect_url": "/accounts/login/",
+                        },
+                        status=403,
+                    )
+                messages.error(request, "Слишком много неверных PIN. Быстрый вход отключён, войдите заново.")
+                return redirect("login")
+            error_message = f"Неверный PIN. Осталось попыток: {MAX_PIN_ATTEMPTS - attempts}."
+            form.add_error("pin", error_message)
+            if is_ajax:
+                return JsonResponse({"ok": False, "error": error_message}, status=400)
 
     return render(
         request,

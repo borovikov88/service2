@@ -80,6 +80,43 @@ class SessionSecurityTests(TestCase):
         self.assertEqual(self.profile.security_pin_failed_attempts, 0)
         self.assertFalse(self.client.session.get(SESSION_LOCKED_KEY))
 
+    def test_ajax_correct_pin_unlocks_session(self):
+        set_security_pin(self.profile, "1234")
+        self.client.force_login(self.user)
+        session = self.client.session
+        session[SESSION_LOCKED_KEY] = True
+        session["security_next"] = reverse("profile")
+        session.save()
+
+        response = self.client.post(
+            reverse("security_unlock"),
+            {"pin": "1234", "next": reverse("profile")},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["redirect_url"], reverse("profile"))
+        self.assertFalse(self.client.session.get(SESSION_LOCKED_KEY))
+
+    def test_ajax_wrong_pin_returns_error_without_redirect(self):
+        set_security_pin(self.profile, "1234")
+        self.client.force_login(self.user)
+        session = self.client.session
+        session[SESSION_LOCKED_KEY] = True
+        session.save()
+
+        response = self.client.post(
+            reverse("security_unlock"),
+            {"pin": "9999"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.json()["ok"])
+        self.assertIn("Неверный PIN", response.json()["error"])
+        self.profile.refresh_from_db()
+        self.assertEqual(self.profile.security_pin_failed_attempts, 1)
+
     def test_too_many_wrong_pins_disable_pin_and_logout(self):
         set_security_pin(self.profile, "1234")
         self.client.force_login(self.user)

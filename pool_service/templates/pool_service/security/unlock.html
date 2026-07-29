@@ -79,6 +79,24 @@
     transform: scale(1.14);
   }
 
+  [data-pin-unlock-form].is-pin-error .unlock-dot {
+    background: #dc3545;
+    animation: unlock-pin-shake 0.28s ease;
+  }
+
+  @keyframes unlock-pin-shake {
+    0%,
+    100% {
+      transform: translateX(0);
+    }
+    25% {
+      transform: translateX(-5px);
+    }
+    75% {
+      transform: translateX(5px);
+    }
+  }
+
   .unlock-keypad {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -125,6 +143,10 @@
 
   .unlock-key--submit:active {
     background: #0b5ed7;
+  }
+
+  .unlock-key--spacer {
+    pointer-events: none;
   }
 
   .unlock-passkey-hint {
@@ -201,12 +223,8 @@
           <span class="unlock-dot"></span>
           <span class="unlock-dot"></span>
           <span class="unlock-dot"></span>
-          <span class="unlock-dot"></span>
-          <span class="unlock-dot"></span>
-          <span class="unlock-dot"></span>
-          <span class="unlock-dot"></span>
         </div>
-        <div class="text-danger small text-center unlock-error">
+        <div class="text-danger small text-center unlock-error" data-pin-status>
           {% if form.pin.errors %}{{ form.pin.errors|striptags }}{% endif %}
         </div>
         <div class="unlock-keypad" aria-label="Цифровая клавиатура">
@@ -223,18 +241,24 @@
             <i class="bi bi-backspace"></i>
           </button>
           <button type="button" class="unlock-key" data-pin-key="0">0</button>
-          <button type="submit" class="unlock-key unlock-key--submit" data-pin-submit aria-label="Продолжить">
-            <i class="bi bi-arrow-right"></i>
-          </button>
+          {% if security_passkey_enabled %}
+            <button type="button" class="unlock-key unlock-key--icon" data-passkey-unlock aria-label="Разблокировать биометрией">
+              <i class="bi bi-fingerprint"></i>
+            </button>
+          {% else %}
+            <span class="unlock-key unlock-key--spacer" aria-hidden="true"></span>
+          {% endif %}
         </div>
       </form>
       {% endif %}
 
       {% if security_passkey_enabled %}
       <div class="text-center mt-3">
+        {% if not security_pin_enabled %}
         <button type="button" class="unlock-key unlock-key--icon" data-passkey-unlock aria-label="Разблокировать биометрией">
           <i class="bi bi-fingerprint"></i>
         </button>
+        {% endif %}
         <div class="text-muted unlock-passkey-hint" data-passkey-unlock-status></div>
       </div>
       {% endif %}
@@ -256,36 +280,83 @@
       if (!form) return;
       const valueInput = form.querySelector("[data-pin-value]");
       const dots = Array.from(form.querySelectorAll(".unlock-dot"));
-      const submit = form.querySelector("[data-pin-submit]");
+      const status = form.querySelector("[data-pin-status]");
+      const keys = Array.from(form.querySelectorAll("[data-pin-key], [data-pin-backspace]"));
       let value = "";
+      let running = false;
 
       function render() {
         valueInput.value = value;
         dots.forEach((dot, index) => {
           dot.classList.toggle("is-filled", index < value.length);
         });
-        if (submit) {
-          submit.disabled = value.length < 4;
+      }
+
+      function setPinError(message) {
+        if (status) status.textContent = message || "Неверный PIN";
+        form.classList.add("is-pin-error");
+        value = "";
+        render();
+        window.setTimeout(() => form.classList.remove("is-pin-error"), 360);
+      }
+
+      function setKeysDisabled(disabled) {
+        keys.forEach((button) => {
+          button.disabled = disabled;
+        });
+      }
+
+      async function submitPin() {
+        if (running || value.length !== 4) return;
+        running = true;
+        if (status) status.textContent = "";
+        setKeysDisabled(true);
+        try {
+          const response = await fetch(form.action || window.location.href, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: {
+              "X-Requested-With": "XMLHttpRequest",
+            },
+            body: new FormData(form),
+          });
+          const data = await response.json().catch(() => null);
+          if (data?.redirect_url && (response.ok || response.status === 403)) {
+            window.location.assign(data.redirect_url);
+            return;
+          }
+          if (!response.ok || !data?.ok) {
+            throw new Error(data?.error || "Неверный PIN");
+          }
+          window.location.assign(data.redirect_url || "{{ next_url|escapejs }}" || "/");
+        } catch (error) {
+          setPinError(error.message || "Неверный PIN");
+          running = false;
+          setKeysDisabled(false);
         }
       }
 
       form.querySelectorAll("[data-pin-key]").forEach((button) => {
         button.addEventListener("click", () => {
-          if (value.length >= 8) return;
+          if (running || value.length >= 4) return;
           value += button.dataset.pinKey;
           render();
+          if (value.length === 4) {
+            submitPin();
+          }
         });
       });
 
       form.querySelector("[data-pin-backspace]")?.addEventListener("click", () => {
+        if (running) return;
         value = value.slice(0, -1);
+        if (status) status.textContent = "";
         render();
       });
 
       form.addEventListener("submit", (event) => {
-        if (value.length < 4) {
-          event.preventDefault();
-        }
+        event.preventDefault();
+        submitPin();
       });
 
       render();
