@@ -8677,6 +8677,7 @@ def profile_view(request):
         "timezone_choices": PROFILE_TIMEZONE_CHOICES,
         "security_pin_enabled": profile.has_security_pin,
         "security_pin_changed_at": profile.security_pin_changed_at,
+        "webauthn_credentials": request.user.webauthn_credentials.all(),
 
     }
 

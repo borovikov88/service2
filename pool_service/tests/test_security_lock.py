@@ -1,15 +1,21 @@
+import json
+from types import SimpleNamespace
+from unittest.mock import patch
+
 from django.contrib.auth.hashers import check_password
 from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from webauthn.helpers import bytes_to_base64url
 
-from pool_service.models import Profile
+from pool_service.models import Profile, WebAuthnCredential
 from pool_service.security import (
     SESSION_LAST_ACTIVITY_KEY,
     SESSION_LOCKED_KEY,
     set_security_pin,
     timestamp_now,
 )
+from pool_service.webauthn_utils import SESSION_WEBAUTHN_AUTHENTICATION_CHALLENGE
 
 
 @override_settings(SECURITY_IDLE_TIMEOUT_SECONDS=300)
@@ -133,3 +139,78 @@ class SessionSecurityTests(TestCase):
         self.assertIn(reverse("security_unlock"), response["Location"])
         self.profile.refresh_from_db()
         self.assertTrue(check_password("1234", self.profile.security_pin_hash))
+
+    def test_webauthn_registration_options_require_password(self):
+        self.client.force_login(self.user)
+
+        response = self.client.post(
+            reverse("webauthn_registration_options"),
+            json.dumps({"current_password": "wrong"}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_webauthn_registration_options_create_challenge(self):
+        self.client.force_login(self.user)
+
+        response = self.client.post(
+            reverse("webauthn_registration_options"),
+            json.dumps({"current_password": "strong-password", "name": "iPhone"}),
+            content_type="application/json",
+            HTTP_HOST="localhost",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["ok"])
+        self.assertIn("challenge", data["publicKey"])
+        self.assertIn("webauthn_registration_challenge", self.client.session)
+        self.assertEqual(self.client.session["webauthn_pending_name"], "iPhone")
+
+    def test_user_with_passkey_and_no_pin_is_locked_by_idle_timeout(self):
+        WebAuthnCredential.objects.create(
+            user=self.user,
+            credential_id=bytes_to_base64url(b"credential-id"),
+            public_key=b"public-key",
+        )
+        self.client.force_login(self.user)
+        session = self.client.session
+        session[SESSION_LAST_ACTIVITY_KEY] = timestamp_now() - 301
+        session[SESSION_LOCKED_KEY] = False
+        session.save()
+
+        response = self.client.get(reverse("profile"))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(reverse("security_unlock"), response["Location"])
+
+    def test_webauthn_authentication_verify_unlocks_session(self):
+        credential = WebAuthnCredential.objects.create(
+            user=self.user,
+            credential_id=bytes_to_base64url(b"credential-id"),
+            public_key=b"public-key",
+            sign_count=1,
+        )
+        self.client.force_login(self.user)
+        session = self.client.session
+        session[SESSION_LOCKED_KEY] = True
+        session[SESSION_WEBAUTHN_AUTHENTICATION_CHALLENGE] = bytes_to_base64url(b"challenge")
+        session.save()
+
+        with patch(
+            "pool_service.security_views.verify_authentication_response",
+            return_value=SimpleNamespace(new_sign_count=2),
+        ):
+            response = self.client.post(
+                reverse("webauthn_authentication_verify"),
+                json.dumps({"id": credential.credential_id, "next": reverse("profile")}),
+                content_type="application/json",
+                HTTP_HOST="localhost",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+        self.assertFalse(self.client.session.get(SESSION_LOCKED_KEY))
+        credential.refresh_from_db()
+        self.assertEqual(credential.sign_count, 2)

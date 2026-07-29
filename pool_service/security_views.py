@@ -1,11 +1,25 @@
+import json
+
 from django.contrib import messages
 from django.contrib.auth import logout
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
-from django.shortcuts import redirect, render
+from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
+from webauthn import (
+    generate_authentication_options,
+    generate_registration_options,
+    verify_authentication_response,
+    verify_registration_response,
+)
+from webauthn.helpers.exceptions import WebAuthnException
+from webauthn.helpers.structs import (
+    AuthenticatorSelectionCriteria,
+    ResidentKeyRequirement,
+    UserVerificationRequirement,
+)
 
-from .models import Profile
+from .models import Profile, WebAuthnCredential
 from .security import (
     MAX_PIN_ATTEMPTS,
     SESSION_LOCKED_KEY,
@@ -18,15 +32,41 @@ from .security import (
     verify_security_pin,
 )
 from .security_forms import SecurityPinDisableForm, SecurityPinForm, SecurityUnlockForm
+from .webauthn_utils import (
+    SESSION_WEBAUTHN_AUTHENTICATION_CHALLENGE,
+    SESSION_WEBAUTHN_REGISTRATION_CHALLENGE,
+    challenge_from_session,
+    challenge_to_session,
+    credential_id_to_text,
+    mark_credential_used,
+    options_response,
+    origin_for_request,
+    rp_id_for_request,
+    user_credential_descriptors,
+)
+
+
+def _json_request(request):
+    if not request.body:
+        return {}
+    try:
+        return json.loads(request.body.decode("utf-8"))
+    except (TypeError, ValueError, UnicodeDecodeError):
+        return {}
+
+
+def _json_error(message, status=400):
+    return JsonResponse({"ok": False, "error": message}, status=status)
 
 
 @login_required
 def security_unlock(request):
     profile, _ = Profile.objects.get_or_create(user=request.user)
     next_url = request.GET.get("next") or request.POST.get("next") or request.session.get("security_next") or "/"
-    if not profile.security_pin_hash:
+    has_passkey = WebAuthnCredential.objects.filter(user=request.user).exists()
+    if not profile.security_pin_hash and not has_passkey:
         logout(request)
-        messages.error(request, "PIN не настроен. Войдите заново и настройте PIN в профиле.")
+        messages.error(request, "Быстрый вход не настроен. Войдите заново и настройте PIN или биометрию в профиле.")
         return redirect("login")
     if not request.session.get(SESSION_LOCKED_KEY):
         return redirect(next_url)
@@ -60,6 +100,8 @@ def security_unlock(request):
             "hide_header": True,
             "hide_bottom_nav": True,
             "user_full_name": request.user.get_full_name() or request.user.username,
+            "security_pin_enabled": profile.has_security_pin,
+            "security_passkey_enabled": has_passkey,
         },
     )
 
@@ -67,7 +109,7 @@ def security_unlock(request):
 @require_POST
 @login_required
 def security_lock(request):
-    if not has_security_pin(request.user):
+    if not has_security_pin(request.user) and not WebAuthnCredential.objects.filter(user=request.user).exists():
         if request.headers.get("x-requested-with") == "XMLHttpRequest":
             return JsonResponse({"locked": False})
         return redirect("profile")
@@ -108,4 +150,125 @@ def security_pin_disable(request):
         for errors in form.errors.values():
             for error in errors:
                 messages.error(request, error)
+    return redirect("profile")
+
+
+@require_POST
+@login_required
+def webauthn_registration_options(request):
+    data = _json_request(request)
+    if not request.user.check_password(data.get("current_password") or ""):
+        return _json_error("Текущий пароль указан неверно.", status=403)
+
+    display_name = request.user.get_full_name() or request.user.username
+    options = generate_registration_options(
+        rp_id=rp_id_for_request(request),
+        rp_name="RovikPool",
+        user_id=f"user-{request.user.pk}".encode("utf-8"),
+        user_name=request.user.username,
+        user_display_name=display_name,
+        authenticator_selection=AuthenticatorSelectionCriteria(
+            resident_key=ResidentKeyRequirement.PREFERRED,
+            user_verification=UserVerificationRequirement.REQUIRED,
+        ),
+        exclude_credentials=user_credential_descriptors(request.user),
+    )
+    challenge_to_session(request, SESSION_WEBAUTHN_REGISTRATION_CHALLENGE, options.challenge)
+    request.session["webauthn_pending_name"] = (data.get("name") or "").strip()[:120]
+    request.session.modified = True
+    return JsonResponse({"ok": True, "publicKey": options_response(options)})
+
+
+@require_POST
+@login_required
+def webauthn_registration_verify(request):
+    challenge = challenge_from_session(request, SESSION_WEBAUTHN_REGISTRATION_CHALLENGE)
+    if not challenge:
+        return _json_error("Сессия регистрации истекла. Попробуйте ещё раз.")
+
+    data = _json_request(request)
+    try:
+        verified = verify_registration_response(
+            credential=data,
+            expected_challenge=challenge,
+            expected_rp_id=rp_id_for_request(request),
+            expected_origin=origin_for_request(request),
+            require_user_verification=True,
+        )
+    except WebAuthnException as exc:
+        return _json_error(str(exc), status=400)
+
+    credential_id = credential_id_to_text(verified.credential_id)
+    transports = data.get("response", {}).get("transports") or []
+    name = request.session.pop("webauthn_pending_name", "") or "Это устройство"
+    request.session.pop(SESSION_WEBAUTHN_REGISTRATION_CHALLENGE, None)
+    WebAuthnCredential.objects.update_or_create(
+        credential_id=credential_id,
+        defaults={
+            "user": request.user,
+            "public_key": verified.credential_public_key,
+            "sign_count": verified.sign_count,
+            "name": name,
+            "transports": transports,
+            "device_type": getattr(verified.credential_device_type, "value", str(verified.credential_device_type)),
+            "backed_up": verified.credential_backed_up,
+        },
+    )
+    return JsonResponse({"ok": True})
+
+
+@require_POST
+@login_required
+def webauthn_authentication_options(request):
+    credentials = user_credential_descriptors(request.user)
+    if not credentials:
+        return _json_error("Для этой учётной записи нет привязанных устройств.")
+
+    options = generate_authentication_options(
+        rp_id=rp_id_for_request(request),
+        allow_credentials=credentials,
+        user_verification=UserVerificationRequirement.REQUIRED,
+    )
+    challenge_to_session(request, SESSION_WEBAUTHN_AUTHENTICATION_CHALLENGE, options.challenge)
+    return JsonResponse({"ok": True, "publicKey": options_response(options)})
+
+
+@require_POST
+@login_required
+def webauthn_authentication_verify(request):
+    challenge = challenge_from_session(request, SESSION_WEBAUTHN_AUTHENTICATION_CHALLENGE)
+    if not challenge:
+        return _json_error("Сессия проверки истекла. Попробуйте ещё раз.")
+
+    data = _json_request(request)
+    credential = WebAuthnCredential.objects.filter(user=request.user, credential_id=data.get("id")).first()
+    if not credential:
+        return _json_error("Устройство не привязано к этой учётной записи.", status=403)
+
+    try:
+        verified = verify_authentication_response(
+            credential=data,
+            expected_challenge=challenge,
+            expected_rp_id=rp_id_for_request(request),
+            expected_origin=origin_for_request(request),
+            credential_public_key=credential.public_key,
+            credential_current_sign_count=credential.sign_count,
+            require_user_verification=True,
+        )
+    except WebAuthnException as exc:
+        return _json_error(str(exc), status=400)
+
+    request.session.pop(SESSION_WEBAUTHN_AUTHENTICATION_CHALLENGE, None)
+    mark_credential_used(credential, verified.new_sign_count)
+    mark_session_unlocked(request)
+    request.session.pop("security_next", None)
+    return JsonResponse({"ok": True, "redirect_url": data.get("next") or "/"})
+
+
+@require_POST
+@login_required
+def webauthn_credential_delete(request, credential_id):
+    credential = get_object_or_404(WebAuthnCredential, pk=credential_id, user=request.user)
+    credential.delete()
+    messages.success(request, "Устройство удалено.")
     return redirect("profile")

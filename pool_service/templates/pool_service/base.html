@@ -1353,7 +1353,7 @@
             <a class="text-decoration-none {% if active_tab == 'billing_admin' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'billing_admin' %}">&#1055;&#1088;&#1086;&#1076;&#1083;&#1077;&#1085;&#1080;&#1103;</a>
           {% endif %}
           <a class="text-decoration-none {% if active_tab == 'profile' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'profile' %}">&#1055;&#1088;&#1086;&#1092;&#1080;&#1083;&#1100;</a>
-          {% if security_pin_enabled %}
+          {% if security_quick_unlock_enabled %}
           <form method="post" action="{% url 'security_lock' %}" class="d-inline-flex m-0">
             {% csrf_token %}
             <input type="hidden" name="next" value="{{ request.get_full_path }}">
@@ -1554,7 +1554,7 @@
             <a href="{% url 'billing_admin' %}" class="list-group-item list-group-item-action">&#1055;&#1088;&#1086;&#1076;&#1083;&#1077;&#1085;&#1080;&#1103;</a>
           {% endif %}
           <a href="{% url 'profile' %}" class="list-group-item list-group-item-action">&#1055;&#1088;&#1086;&#1092;&#1080;&#1083;&#1100;</a>
-          {% if security_pin_enabled %}
+          {% if security_quick_unlock_enabled %}
           <form method="post" action="{% url 'security_lock' %}" class="m-0">
             {% csrf_token %}
             <input type="hidden" name="next" value="{{ request.get_full_path }}">
@@ -2525,6 +2525,127 @@
       return "";
     }
 
+    window.RovikWebAuthn = (function () {
+      function isSupported() {
+        return !!(window.PublicKeyCredential && navigator.credentials);
+      }
+
+      function base64urlToBuffer(value) {
+        const padding = "=".repeat((4 - (value.length % 4)) % 4);
+        const base64 = (value + padding).replace(/-/g, "+").replace(/_/g, "/");
+        const raw = atob(base64);
+        const buffer = new ArrayBuffer(raw.length);
+        const bytes = new Uint8Array(buffer);
+        for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i);
+        return buffer;
+      }
+
+      function bufferToBase64url(buffer) {
+        const bytes = new Uint8Array(buffer || new ArrayBuffer(0));
+        let binary = "";
+        bytes.forEach((byte) => {
+          binary += String.fromCharCode(byte);
+        });
+        return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+      }
+
+      function prepareCreationOptions(options) {
+        const publicKey = { ...options };
+        publicKey.challenge = base64urlToBuffer(publicKey.challenge);
+        publicKey.user = { ...publicKey.user, id: base64urlToBuffer(publicKey.user.id) };
+        publicKey.excludeCredentials = (publicKey.excludeCredentials || []).map((credential) => ({
+          ...credential,
+          id: base64urlToBuffer(credential.id),
+        }));
+        return publicKey;
+      }
+
+      function prepareRequestOptions(options) {
+        const publicKey = { ...options };
+        publicKey.challenge = base64urlToBuffer(publicKey.challenge);
+        publicKey.allowCredentials = (publicKey.allowCredentials || []).map((credential) => ({
+          ...credential,
+          id: base64urlToBuffer(credential.id),
+        }));
+        return publicKey;
+      }
+
+      function serializeCredential(credential) {
+        const response = {
+          clientDataJSON: bufferToBase64url(credential.response.clientDataJSON),
+        };
+        if (credential.response.attestationObject) {
+          response.attestationObject = bufferToBase64url(credential.response.attestationObject);
+          if (credential.response.getTransports) {
+            response.transports = credential.response.getTransports();
+          }
+        }
+        if (credential.response.authenticatorData) {
+          response.authenticatorData = bufferToBase64url(credential.response.authenticatorData);
+          response.signature = bufferToBase64url(credential.response.signature);
+          response.userHandle = credential.response.userHandle ? bufferToBase64url(credential.response.userHandle) : null;
+        }
+        return {
+          id: credential.id,
+          rawId: bufferToBase64url(credential.rawId),
+          type: credential.type,
+          authenticatorAttachment: credential.authenticatorAttachment || null,
+          response,
+          clientExtensionResults: credential.getClientExtensionResults ? credential.getClientExtensionResults() : {},
+        };
+      }
+
+      async function postJson(url, payload) {
+        const response = await fetch(url, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRFToken": getCsrfToken(),
+            "X-Requested-With": "XMLHttpRequest",
+          },
+          body: JSON.stringify(payload || {}),
+        });
+        const data = await response.json().catch(() => null);
+        if (!response.ok || !data || data.ok === false) {
+          throw new Error((data && data.error) || "Операция не выполнена.");
+        }
+        return data;
+      }
+
+      async function registerDevice({ currentPassword, name }) {
+        if (!isSupported()) throw new Error("Браузер не поддерживает биометрию/passkey.");
+        const optionsData = await postJson("{% url 'webauthn_registration_options' %}", {
+          current_password: currentPassword,
+          name,
+        });
+        const credential = await navigator.credentials.create({
+          publicKey: prepareCreationOptions(optionsData.publicKey),
+        });
+        if (!credential) throw new Error("Устройство не привязано.");
+        await postJson("{% url 'webauthn_registration_verify' %}", serializeCredential(credential));
+        return true;
+      }
+
+      async function authenticate({ next }) {
+        if (!isSupported()) throw new Error("Браузер не поддерживает биометрию/passkey.");
+        const optionsData = await postJson("{% url 'webauthn_authentication_options' %}", {});
+        const credential = await navigator.credentials.get({
+          publicKey: prepareRequestOptions(optionsData.publicKey),
+        });
+        if (!credential) throw new Error("Проверка не выполнена.");
+        const payload = serializeCredential(credential);
+        payload.next = next || "/";
+        return postJson("{% url 'webauthn_authentication_verify' %}", payload);
+      }
+
+      return {
+        isSupported,
+        registerDevice,
+        authenticate,
+      };
+    })();
+
     function urlBase64ToUint8Array(base64String) {
       const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
       const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
@@ -2544,7 +2665,7 @@
       return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
     }
 
-    {% if security_pin_enabled and request.resolver_match.url_name != 'security_unlock' %}
+    {% if security_quick_unlock_enabled and request.resolver_match.url_name != 'security_unlock' %}
     (function () {
       const timeoutMs = Math.max(30, Number("{{ security_idle_timeout_seconds|default:300 }}") || 300) * 1000;
       const lockUrl = "{% url 'security_lock' %}";

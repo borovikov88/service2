@@ -73,6 +73,7 @@ class SessionSecurityMiddleware:
         "/accounts/logout/",
         "/security/unlock/",
         "/security/lock/",
+        "/security/passkeys/authenticate/",
         "/static/",
         "/manifest.webmanifest",
         "/sw.js",
@@ -90,7 +91,8 @@ class SessionSecurityMiddleware:
         if any(path.startswith(prefix) for prefix in self.allowed_prefixes):
             return self.get_response(request)
 
-        if not has_security_pin(user):
+        has_passkey = user.webauthn_credentials.exists()
+        if not has_security_pin(user) and not has_passkey:
             request.session[SESSION_LOCKED_KEY] = False
             request.session[SESSION_LAST_ACTIVITY_KEY] = timestamp_now()
             return self.get_response(request)

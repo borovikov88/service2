@@ -216,7 +216,7 @@
                     <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
                         <div>
                             <h5 class="card-title mb-1">Безопасность входа</h5>
-                            <p class="text-muted mb-0">PIN блокирует уже открытую сессию после 5 минут бездействия. На телефоне системная биометрия работает через вход в установленное приложение и будет добавлена отдельным слоем WebAuthn.</p>
+                            <p class="text-muted mb-0">PIN или биометрия блокируют уже открытую сессию после 5 минут бездействия. Биометрия работает через штатный passkey/WebAuthn устройства.</p>
                         </div>
                         {% if security_pin_enabled %}
                             <span class="badge bg-success text-white border-0">PIN включён</span>
@@ -256,6 +256,51 @@
                             <button type="submit" class="btn btn-outline-danger w-100 js-confirm-action" data-confirm-title="Отключить PIN" data-confirm-body="После отключения сессия не будет блокироваться PIN-кодом." data-confirm-confirm="Отключить" data-confirm-variant="danger">Отключить PIN</button>
                         </div>
                     </form>
+                    {% endif %}
+                    <hr class="my-4">
+                    <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
+                        <div>
+                            <h6 class="fw-bold mb-1">Биометрия устройства</h6>
+                            <p class="text-muted small mb-0">Привяжите iPhone, Android или компьютер с Windows Hello/Touch ID. Разблокировка будет выполняться штатной защитой устройства.</p>
+                        </div>
+                        <span class="badge bg-light text-dark border">{{ webauthn_credentials|length }} устр.</span>
+                    </div>
+                    <div class="row g-3 align-items-end" data-passkey-register>
+                        <div class="col-12 col-md-4">
+                            <label class="form-label text-muted small">Текущий пароль</label>
+                            <input type="password" class="form-control" autocomplete="current-password" data-passkey-password>
+                        </div>
+                        <div class="col-12 col-md-4">
+                            <label class="form-label text-muted small">Название устройства</label>
+                            <input type="text" class="form-control" placeholder="Например, iPhone" data-passkey-name>
+                        </div>
+                        <div class="col-12 col-md-4">
+                            <button type="button" class="btn btn-outline-primary w-100" data-passkey-register-button>
+                                <i class="bi bi-fingerprint me-2"></i>Привязать устройство
+                            </button>
+                        </div>
+                        <div class="col-12">
+                            <div class="small text-muted" data-passkey-status></div>
+                        </div>
+                    </div>
+                    {% if webauthn_credentials %}
+                    <div class="list-group list-group-flush mt-3">
+                        {% for credential in webauthn_credentials %}
+                        <div class="list-group-item px-0 d-flex justify-content-between align-items-center gap-3">
+                            <div>
+                                <div class="fw-semibold">{{ credential.name|default:"Устройство" }}</div>
+                                <div class="small text-muted">
+                                    Добавлено {{ credential.created_at|date:"d.m.Y H:i" }}
+                                    {% if credential.last_used_at %} · использовалось {{ credential.last_used_at|date:"d.m.Y H:i" }}{% endif %}
+                                </div>
+                            </div>
+                            <form method="post" action="{% url 'webauthn_credential_delete' credential.id %}">
+                                {% csrf_token %}
+                                <button type="submit" class="btn btn-sm btn-outline-danger js-confirm-action" data-confirm-title="Удалить устройство" data-confirm-body="После удаления это устройство нельзя будет использовать для разблокировки." data-confirm-confirm="Удалить" data-confirm-variant="danger">Удалить</button>
+                            </form>
+                        </div>
+                        {% endfor %}
+                    </div>
                     {% endif %}
                 </div>
             </div>
@@ -439,6 +484,57 @@
   </div>
 </div>
 <script>
+  (function () {
+    function initPasskeyRegister() {
+      const root = document.querySelector("[data-passkey-register]");
+      if (!root) return;
+      const button = root.querySelector("[data-passkey-register-button]");
+      const passwordInput = root.querySelector("[data-passkey-password]");
+      const nameInput = root.querySelector("[data-passkey-name]");
+      const status = root.querySelector("[data-passkey-status]");
+
+      function setStatus(message, isError) {
+        if (!status) return;
+        status.textContent = message || "";
+        status.classList.toggle("text-danger", !!isError);
+        status.classList.toggle("text-success", !isError && !!message);
+      }
+
+      if (!window.RovikWebAuthn?.isSupported()) {
+        if (button) button.disabled = true;
+        setStatus("Этот браузер не поддерживает passkey/биометрию.", true);
+        return;
+      }
+
+      button?.addEventListener("click", async () => {
+        const currentPassword = passwordInput?.value || "";
+        const name = nameInput?.value || "";
+        if (!currentPassword) {
+          setStatus("Введите текущий пароль.", true);
+          passwordInput?.focus();
+          return;
+        }
+
+        window.setButtonLoading?.(button);
+        setStatus("Подтвердите действие на устройстве...");
+        try {
+          await window.RovikWebAuthn.registerDevice({ currentPassword, name });
+          setStatus("Устройство привязано. Обновляем страницу...");
+          window.location.reload();
+        } catch (error) {
+          setStatus(error.message || "Не удалось привязать устройство.", true);
+          window.resetButtonLoading?.(button);
+        }
+      });
+    }
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", initPasskeyRegister, { once: true });
+    } else {
+      initPasskeyRegister();
+    }
+  })();
+
   (function () {
     const button = document.getElementById("pwa-install-profile-btn");
     const badge = document.getElementById("pwa-install-status");

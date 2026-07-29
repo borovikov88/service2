@@ -94,6 +94,26 @@ class Profile(models.Model):
         return bool(self.security_pin_hash)
 
 
+class WebAuthnCredential(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="webauthn_credentials")
+    credential_id = models.CharField(max_length=512, unique=True)
+    public_key = models.BinaryField()
+    sign_count = models.PositiveBigIntegerField(default=0)
+    name = models.CharField(max_length=120, blank=True)
+    transports = models.JSONField(default=list, blank=True)
+    device_type = models.CharField(max_length=32, blank=True)
+    backed_up = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-last_used_at", "-created_at"]
+
+    def __str__(self):
+        label = self.name or self.credential_id[:16]
+        return f"{self.user.username}: {label}"
+
+
 class Client(models.Model):
     CLIENT_TYPE_CHOICES = [
         ("private", "Частный клиент"),

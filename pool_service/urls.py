@@ -78,7 +78,17 @@ from .views import (
     push_unsubscribe,
 )
 from . import views
-from .security_views import security_lock, security_pin_disable, security_pin_set, security_unlock
+from .security_views import (
+    security_lock,
+    security_pin_disable,
+    security_pin_set,
+    security_unlock,
+    webauthn_authentication_options,
+    webauthn_authentication_verify,
+    webauthn_credential_delete,
+    webauthn_registration_options,
+    webauthn_registration_verify,
+)
 from .finance_views import (
     finance_cash_dashboard,
     finance_cash_accountable_issue_create,
@@ -138,6 +148,11 @@ urlpatterns = [
     path("security/lock/", security_lock, name="security_lock"),
     path("security/pin/", security_pin_set, name="security_pin_set"),
     path("security/pin/disable/", security_pin_disable, name="security_pin_disable"),
+    path("security/passkeys/register/options/", webauthn_registration_options, name="webauthn_registration_options"),
+    path("security/passkeys/register/verify/", webauthn_registration_verify, name="webauthn_registration_verify"),
+    path("security/passkeys/authenticate/options/", webauthn_authentication_options, name="webauthn_authentication_options"),
+    path("security/passkeys/authenticate/verify/", webauthn_authentication_verify, name="webauthn_authentication_verify"),
+    path("security/passkeys/<int:credential_id>/delete/", webauthn_credential_delete, name="webauthn_credential_delete"),
     path("users/", users_view, name="users"),
     path("notifications/", notifications_list, name="notifications"),
     path("notifications/<int:notification_id>/read/", notification_mark_read, name="notifications_mark_read"),
