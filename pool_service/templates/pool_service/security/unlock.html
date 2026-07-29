@@ -306,6 +306,23 @@
         });
       }
 
+      function appendDigit(digit) {
+        if (running || value.length >= 4) return;
+        value += digit;
+        if (status) status.textContent = "";
+        render();
+        if (value.length === 4) {
+          submitPin();
+        }
+      }
+
+      function removeLastDigit() {
+        if (running) return;
+        value = value.slice(0, -1);
+        if (status) status.textContent = "";
+        render();
+      }
+
       async function submitPin() {
         if (running || value.length !== 4) return;
         running = true;
@@ -338,20 +355,30 @@
 
       form.querySelectorAll("[data-pin-key]").forEach((button) => {
         button.addEventListener("click", () => {
-          if (running || value.length >= 4) return;
-          value += button.dataset.pinKey;
-          render();
-          if (value.length === 4) {
-            submitPin();
-          }
+          appendDigit(button.dataset.pinKey);
         });
       });
 
       form.querySelector("[data-pin-backspace]")?.addEventListener("click", () => {
-        if (running) return;
-        value = value.slice(0, -1);
-        if (status) status.textContent = "";
-        render();
+        removeLastDigit();
+      });
+
+      document.addEventListener("keydown", (event) => {
+        if (!document.body.contains(form)) return;
+        if (/^\d$/.test(event.key)) {
+          event.preventDefault();
+          appendDigit(event.key);
+          return;
+        }
+        if (event.key === "Backspace" || event.key === "Delete") {
+          event.preventDefault();
+          removeLastDigit();
+          return;
+        }
+        if (event.key === "Enter") {
+          event.preventDefault();
+          submitPin();
+        }
       });
 
       form.addEventListener("submit", (event) => {
