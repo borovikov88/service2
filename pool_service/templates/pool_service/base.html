@@ -1353,6 +1353,15 @@
             <a class="text-decoration-none {% if active_tab == 'billing_admin' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'billing_admin' %}">&#1055;&#1088;&#1086;&#1076;&#1083;&#1077;&#1085;&#1080;&#1103;</a>
           {% endif %}
           <a class="text-decoration-none {% if active_tab == 'profile' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'profile' %}">&#1055;&#1088;&#1086;&#1092;&#1080;&#1083;&#1100;</a>
+          {% if security_pin_enabled %}
+          <form method="post" action="{% url 'security_lock' %}" class="d-inline-flex m-0">
+            {% csrf_token %}
+            <input type="hidden" name="next" value="{{ request.get_full_path }}">
+            <button type="submit" class="header-icon text-muted" aria-label="Заблокировать" title="Заблокировать">
+              <i class="bi bi-lock fs-5"></i>
+            </button>
+          </form>
+          {% endif %}
           <a class="text-decoration-none d-inline-flex align-items-center justify-content-center position-relative {% if active_tab == 'notifications' %}text-primary{% else %}text-muted{% endif %}" href="{% url 'notifications' %}" aria-label="&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;" title="&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;">
             <i class="bi bi-bell fs-5"></i>
             {% if notifications_unread_count %}
@@ -1545,6 +1554,15 @@
             <a href="{% url 'billing_admin' %}" class="list-group-item list-group-item-action">&#1055;&#1088;&#1086;&#1076;&#1083;&#1077;&#1085;&#1080;&#1103;</a>
           {% endif %}
           <a href="{% url 'profile' %}" class="list-group-item list-group-item-action">&#1055;&#1088;&#1086;&#1092;&#1080;&#1083;&#1100;</a>
+          {% if security_pin_enabled %}
+          <form method="post" action="{% url 'security_lock' %}" class="m-0">
+            {% csrf_token %}
+            <input type="hidden" name="next" value="{{ request.get_full_path }}">
+            <button type="submit" class="list-group-item list-group-item-action w-100 text-start bg-transparent border-0">
+              Заблокировать
+            </button>
+          </form>
+          {% endif %}
       </div>
   </div>
   {% endif %}
@@ -2525,6 +2543,65 @@
     function isStandaloneMode() {
       return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
     }
+
+    {% if security_pin_enabled and request.resolver_match.url_name != 'security_unlock' %}
+    (function () {
+      const timeoutMs = Math.max(30, Number("{{ security_idle_timeout_seconds|default:300 }}") || 300) * 1000;
+      const lockUrl = "{% url 'security_lock' %}";
+      let idleTimer = null;
+      let lastActivity = Date.now();
+      let locking = false;
+
+      const nextPath = () => `${window.location.pathname}${window.location.search || ""}`;
+
+      async function lockSession() {
+        if (locking || window.location.pathname.startsWith("/security/unlock/")) return;
+        locking = true;
+        const body = new URLSearchParams();
+        body.set("next", nextPath());
+        try {
+          const response = await fetch(lockUrl, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+              "X-CSRFToken": getCsrfToken(),
+              "X-Requested-With": "XMLHttpRequest",
+            },
+            body: body.toString(),
+          });
+          const data = await response.json().catch(() => null);
+          if (data && data.locked && data.unlock_url) {
+            window.location.assign(data.unlock_url);
+            return;
+          }
+        } finally {
+          locking = false;
+        }
+      }
+
+      function resetIdleTimer() {
+        lastActivity = Date.now();
+        window.clearTimeout(idleTimer);
+        idleTimer = window.setTimeout(lockSession, timeoutMs);
+      }
+
+      ["mousemove", "mousedown", "keydown", "touchstart", "scroll"].forEach((eventName) => {
+        window.addEventListener(eventName, resetIdleTimer, { passive: true });
+      });
+
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState !== "visible") return;
+        if (Date.now() - lastActivity >= timeoutMs) {
+          lockSession();
+        } else {
+          resetIdleTimer();
+        }
+      });
+
+      resetIdleTimer();
+    })();
+    {% endif %}
 
     async function getPushSubscriptionState() {
       const state = {

@@ -82,9 +82,16 @@ class Profile(models.Model):
     phone_verification_call_phone = models.CharField(max_length=20, blank=True)
     phone_sms_code_hash = models.CharField(max_length=128, blank=True)
     phone_sms_sent_at = models.DateTimeField(null=True, blank=True)
+    security_pin_hash = models.CharField(max_length=128, blank=True)
+    security_pin_failed_attempts = models.PositiveSmallIntegerField(default=0)
+    security_pin_changed_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f"{self.user.username}'s profile"
+
+    @property
+    def has_security_pin(self):
+        return bool(self.security_pin_hash)
 
 
 class Client(models.Model):

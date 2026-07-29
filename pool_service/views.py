@@ -8675,6 +8675,8 @@ def profile_view(request):
         "notify_pool_staff_daily_push": notification_access.organization.notify_pool_staff_daily_push if notification_access else False,
         "timezone_value": profile.timezone or "Europe/Moscow",
         "timezone_choices": PROFILE_TIMEZONE_CHOICES,
+        "security_pin_enabled": profile.has_security_pin,
+        "security_pin_changed_at": profile.security_pin_changed_at,
 
     }
 

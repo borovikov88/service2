@@ -78,6 +78,7 @@ from .views import (
     push_unsubscribe,
 )
 from . import views
+from .security_views import security_lock, security_pin_disable, security_pin_set, security_unlock
 from .finance_views import (
     finance_cash_dashboard,
     finance_cash_accountable_issue_create,
@@ -133,6 +134,10 @@ urlpatterns = [
     path("tasks/move/", task_move, name="task_move"),
     path("readings/plan/move/", visit_plan_move, name="visit_plan_move"),
     path("profile/", profile_view, name="profile"),
+    path("security/unlock/", security_unlock, name="security_unlock"),
+    path("security/lock/", security_lock, name="security_lock"),
+    path("security/pin/", security_pin_set, name="security_pin_set"),
+    path("security/pin/disable/", security_pin_disable, name="security_pin_disable"),
     path("users/", users_view, name="users"),
     path("notifications/", notifications_list, name="notifications"),
     path("notifications/<int:notification_id>/read/", notification_mark_read, name="notifications_mark_read"),

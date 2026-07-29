@@ -1,10 +1,19 @@
-from django.http import HttpResponseForbidden
+from django.http import HttpResponseForbidden, JsonResponse
 from django.shortcuts import redirect
 from django.urls import reverse
 from django.utils import timezone
 
 from .models import OrganizationAccess, Profile
 from .seo import is_indexable_host
+from .security import (
+    SESSION_LAST_ACTIVITY_KEY,
+    SESSION_LOCKED_KEY,
+    has_security_pin,
+    idle_timeout_seconds,
+    lock_session,
+    timestamp_now,
+    unlock_url,
+)
 
 
 class TimezoneMiddleware:
@@ -59,6 +68,50 @@ class AuthRedirectMiddleware:
         return self.get_response(request)
 
 
+class SessionSecurityMiddleware:
+    allowed_prefixes = (
+        "/accounts/logout/",
+        "/security/unlock/",
+        "/security/lock/",
+        "/static/",
+        "/manifest.webmanifest",
+        "/sw.js",
+    )
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        user = request.user
+        if not user.is_authenticated:
+            return self.get_response(request)
+
+        path = request.path
+        if any(path.startswith(prefix) for prefix in self.allowed_prefixes):
+            return self.get_response(request)
+
+        if not has_security_pin(user):
+            request.session[SESSION_LOCKED_KEY] = False
+            request.session[SESSION_LAST_ACTIVITY_KEY] = timestamp_now()
+            return self.get_response(request)
+
+        now_ts = timestamp_now()
+        last_activity = int(request.session.get(SESSION_LAST_ACTIVITY_KEY) or now_ts)
+        locked = bool(request.session.get(SESSION_LOCKED_KEY))
+        if not locked and now_ts - last_activity >= idle_timeout_seconds():
+            lock_session(request, next_url=request.get_full_path())
+            locked = True
+
+        if locked:
+            if request.headers.get("x-requested-with") == "XMLHttpRequest" or path.startswith("/api/"):
+                return JsonResponse({"locked": True, "unlock_url": unlock_url(request.get_full_path())}, status=423)
+            return redirect(unlock_url(request.get_full_path()))
+
+        request.session[SESSION_LAST_ACTIVITY_KEY] = now_ts
+        request.session.modified = True
+        return self.get_response(request)
+
+
 class FinanceOnlyRoleMiddleware:
     operational_roles = {"owner", "admin", "manager", "service", "installer"}
     allowed_prefixes = (
@@ -70,6 +123,7 @@ class FinanceOnlyRoleMiddleware:
         "/media/",
         "/notifications/",
         "/profile/",
+        "/security/",
         "/static/",
         "/manifest.webmanifest",
         "/sw.js",

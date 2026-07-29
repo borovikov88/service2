@@ -211,6 +211,55 @@
                 </div>
             </div>
 
+            <div class="card card-soft mb-4">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
+                        <div>
+                            <h5 class="card-title mb-1">Безопасность входа</h5>
+                            <p class="text-muted mb-0">PIN блокирует уже открытую сессию после 5 минут бездействия. На телефоне системная биометрия работает через вход в установленное приложение и будет добавлена отдельным слоем WebAuthn.</p>
+                        </div>
+                        {% if security_pin_enabled %}
+                            <span class="badge bg-success text-white border-0">PIN включён</span>
+                        {% else %}
+                            <span class="badge bg-light text-dark border">PIN не включён</span>
+                        {% endif %}
+                    </div>
+                    {% if security_pin_enabled and security_pin_changed_at %}
+                        <div class="small text-muted mb-3">Последнее изменение: {{ security_pin_changed_at|date:"d.m.Y H:i" }}</div>
+                    {% endif %}
+                    <form method="post" action="{% url 'security_pin_set' %}" class="row g-3 align-items-end">
+                        {% csrf_token %}
+                        <div class="col-12 col-md-4">
+                            <label class="form-label text-muted small">Текущий пароль</label>
+                            <input type="password" name="current_password" class="form-control" autocomplete="current-password" required>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <label class="form-label text-muted small">Новый PIN</label>
+                            <input type="password" name="pin" class="form-control" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{4,8}" required>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <label class="form-label text-muted small">Повтор PIN</label>
+                            <input type="password" name="pin_confirm" class="form-control" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{4,8}" required>
+                        </div>
+                        <div class="col-12 col-md-2">
+                            <button type="submit" class="btn btn-primary w-100">{% if security_pin_enabled %}Обновить{% else %}Включить{% endif %}</button>
+                        </div>
+                    </form>
+                    {% if security_pin_enabled %}
+                    <form method="post" action="{% url 'security_pin_disable' %}" class="row g-3 align-items-end mt-2">
+                        {% csrf_token %}
+                        <div class="col-12 col-md-8">
+                            <label class="form-label text-muted small">Пароль для отключения PIN</label>
+                            <input type="password" name="current_password" class="form-control" autocomplete="current-password" required>
+                        </div>
+                        <div class="col-12 col-md-4">
+                            <button type="submit" class="btn btn-outline-danger w-100 js-confirm-action" data-confirm-title="Отключить PIN" data-confirm-body="После отключения сессия не будет блокироваться PIN-кодом." data-confirm-confirm="Отключить" data-confirm-variant="danger">Отключить PIN</button>
+                        </div>
+                    </form>
+                    {% endif %}
+                </div>
+            </div>
+
             <div class="card card-soft mb-4" id="pwa-install-card">
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-2">

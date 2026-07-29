@@ -61,6 +61,7 @@ def plan_status_context(request):
     from django.utils import timezone
     from django.urls import reverse
     from pool_service.models import OrganizationAccess
+    from pool_service.security import idle_timeout_seconds
     from pool_service.services.permissions import (
         company_has_access,
         company_trial_days_left,
@@ -111,6 +112,8 @@ def plan_status_context(request):
         "personal_pool_url": None,
         "home_url": reverse("pool_list"),
         "show_plan_badge": False,
+        "security_pin_enabled": bool(getattr(getattr(user, "profile", None), "security_pin_hash", "")),
+        "security_idle_timeout_seconds": idle_timeout_seconds(),
     }
 
     if personal_free:
