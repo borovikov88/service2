@@ -66,6 +66,7 @@ from django.contrib.sitemaps.views import sitemap as sitemap_view
 
 from pool_service.services.finance import format_money
 from pool_service.security import mark_password_login_fresh
+from pool_service.pool_details_forms import PoolServiceDetailsForm
 
 import uuid
 
@@ -738,6 +739,10 @@ def _pool_role_for_user(user, pool):
 
             org_role = "manager"
 
+        elif "accountant" in org_roles:
+
+            org_role = "accountant"
+
 
 
     role = org_role or client_role or pool_role
@@ -747,6 +752,30 @@ def _pool_role_for_user(user, pool):
         role = "admin"
 
     return role
+
+
+
+
+
+def _can_view_pool_service_details(user, pool):
+
+    if user.is_superuser:
+
+        return True
+
+    if not pool.organization_id:
+
+        return False
+
+    return OrganizationAccess.objects.filter(
+
+        user=user,
+
+        organization=pool.organization,
+
+        role__in=["owner", "admin", "manager", "accountant"],
+
+    ).exists()
 
 
 
@@ -6305,6 +6334,8 @@ def pool_detail(request, pool_uuid):
 
     can_add_reading = role in {"editor", "service", "admin"}
 
+    can_view_service_details = _can_view_pool_service_details(request.user, pool)
+
 
 
     readings_list = WaterReading.objects.filter(pool=pool).select_related("added_by").order_by("-date")
@@ -6461,6 +6492,8 @@ def pool_detail(request, pool_uuid):
 
         "can_add_reading": can_add_reading,
 
+        "can_view_service_details": can_view_service_details,
+
         "pagination_query": query_params.urlencode(),
 
         "page_title": None,
@@ -6496,6 +6529,60 @@ def pool_detail(request, pool_uuid):
     }
 
     return render(request, "pool_service/pool_detail.html", context)
+
+
+
+
+
+@login_required
+
+def pool_service_details(request, pool_uuid):
+
+    pool = get_object_or_404(Pool.objects.select_related("client", "organization"), uuid=pool_uuid)
+
+    if not _can_view_pool_service_details(request.user, pool):
+
+        return render(request, "403.html")
+
+    if request.method == "POST":
+
+        form = PoolServiceDetailsForm(request.POST, instance=pool)
+
+        if form.is_valid():
+
+            form.save()
+
+            messages.success(request, "Данные обслуживания сохранены.")
+
+            return redirect("pool_service_details", pool_uuid=pool.uuid)
+
+    else:
+
+        form = PoolServiceDetailsForm(instance=pool)
+
+    context = {
+
+        "pool": pool,
+
+        "form": form,
+
+        "service_monthly_price_display": format_money(pool.service_monthly_price or 0) if pool.service_monthly_price else None,
+
+        "page_title": None,
+
+        "page_subtitle": None,
+
+        "show_search": False,
+
+        "show_add_button": False,
+
+        "add_url": None,
+
+        "active_tab": "pools",
+
+    }
+
+    return render(request, "pool_service/pool_service_details.html", context)
 
 
 

@@ -141,6 +141,12 @@ class FinanceOnlyRoleMiddleware:
                 OrganizationAccess.objects.filter(user=user).values_list("role", flat=True)
             )
             finance_only = "accountant" in roles and not bool(roles & self.operational_roles)
+            if finance_only and request.path.startswith("/pools/"):
+                if request.path.endswith("/service-details/"):
+                    return self.get_response(request)
+                if request.method in {"GET", "HEAD", "OPTIONS"}:
+                    return self.get_response(request)
+                return HttpResponseForbidden()
             if finance_only and not any(request.path.startswith(prefix) for prefix in self.allowed_prefixes):
                 if request.method not in {"GET", "HEAD", "OPTIONS"}:
                     return HttpResponseForbidden()

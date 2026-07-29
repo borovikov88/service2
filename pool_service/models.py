@@ -229,6 +229,8 @@ class Pool(models.Model):
     volume = models.FloatField(null=True, blank=True)
     dosing_station = models.BooleanField(default=False)
     service_frequency = models.CharField(max_length=20, choices=SERVICE_FREQUENCY_CHOICES, null=True, blank=True)
+    service_monthly_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    service_details_comment = models.TextField(null=True, blank=True)
     service_interval_days = models.PositiveSmallIntegerField(null=True, blank=True)
     service_suspended = models.BooleanField(default=False)
     daily_readings_required = models.BooleanField(default=False)

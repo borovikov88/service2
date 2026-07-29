@@ -1,0 +1,112 @@
+{% extends 'pool_service/base.html' %}
+
+{% block title %}Подробнее: {{ pool.client.name }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center gap-3 mb-3">
+    <a href="{% url 'pool_detail' pool.uuid %}" class="text-decoration-none d-flex align-items-center gap-2 text-dark">
+        <i class="bi bi-arrow-left"></i>
+        <span class="fw-semibold">Назад к объекту</span>
+    </a>
+    <button type="button" class="btn btn-primary rounded-3 d-flex align-items-center gap-2" data-bs-toggle="modal" data-bs-target="#serviceDetailsEditModal">
+        <i class="bi bi-pencil"></i>
+        <span>Редактировать</span>
+    </button>
+</div>
+
+<div class="card card-soft p-4 mb-4">
+    <div class="d-flex align-items-start justify-content-between gap-3 flex-wrap">
+        <div>
+            <h1 class="fw-bold h4 mb-1">{{ pool.client.name }}</h1>
+            <div class="text-muted"><i class="bi bi-geo-alt me-1"></i>{{ pool.address }}</div>
+        </div>
+        <span class="badge rounded-pill {% if pool.object_type == 'water' %}bg-success{% else %}bg-primary{% endif %}">
+            {{ pool.get_object_type_display }}
+        </span>
+    </div>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-12 col-md-6 col-xl-4">
+        <div class="card card-soft p-4 h-100">
+            <div class="text-muted mb-2">Стоимость обслуживания в месяц</div>
+            <div class="display-6 fw-bold text-success">
+                {% if service_monthly_price_display %}
+                    {{ service_monthly_price_display }}
+                {% else %}
+                    —
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    <div class="col-12 col-md-6 col-xl-4">
+        <div class="card card-soft p-4 h-100">
+            <div class="text-muted mb-2">Частота визитов</div>
+            <div class="h4 fw-bold mb-0">{{ pool.get_service_frequency_display|default:"—" }}</div>
+        </div>
+    </div>
+    <div class="col-12 col-xl-4">
+        <div class="card card-soft p-4 h-100">
+            <div class="text-muted mb-2">Комментарий</div>
+            <div class="fw-semibold" style="white-space: pre-wrap;">{{ pool.service_details_comment|default:"—"|linebreaksbr }}</div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="serviceDetailsEditModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content rounded-4 border-0 shadow-lg">
+            <div class="modal-header">
+                <h5 class="modal-title">Редактировать данные обслуживания</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form method="post">
+                {% csrf_token %}
+                <div class="modal-body">
+                    <div class="row g-3">
+                        <div class="col-12 col-md-6">
+                            <label class="form-label text-muted small" for="{{ form.service_monthly_price.id_for_label }}">{{ form.service_monthly_price.label }}</label>
+                            {{ form.service_monthly_price }}
+                            {% if form.service_monthly_price.errors %}
+                                <div class="text-danger small mt-1">{{ form.service_monthly_price.errors.0 }}</div>
+                            {% endif %}
+                        </div>
+                        <div class="col-12 col-md-6">
+                            <label class="form-label text-muted small" for="{{ form.service_frequency.id_for_label }}">{{ form.service_frequency.label }}</label>
+                            {{ form.service_frequency }}
+                            {% if form.service_frequency.errors %}
+                                <div class="text-danger small mt-1">{{ form.service_frequency.errors.0 }}</div>
+                            {% endif %}
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label text-muted small" for="{{ form.service_details_comment.id_for_label }}">{{ form.service_details_comment.label }}</label>
+                            {{ form.service_details_comment }}
+                            {% if form.service_details_comment.errors %}
+                                <div class="text-danger small mt-1">{{ form.service_details_comment.errors.0 }}</div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% if form.non_field_errors %}
+                        <div class="alert alert-danger mt-3 mb-0">{{ form.non_field_errors|striptags }}</div>
+                    {% endif %}
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+                    <button type="submit" class="btn btn-primary">Сохранить</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+{% if form.errors %}
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    const modalEl = document.getElementById("serviceDetailsEditModal");
+    if (modalEl && window.bootstrap) {
+      new bootstrap.Modal(modalEl).show();
+    }
+  });
+</script>
+{% endif %}
+{% endblock %}
