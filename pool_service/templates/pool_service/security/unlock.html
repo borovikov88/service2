@@ -3,57 +3,300 @@
 {% block title %}Разблокировка{% endblock %}
 
 {% block content %}
-<section class="min-vh-100 d-flex align-items-center justify-content-center py-4">
-  <div class="card card-soft w-100" style="max-width: 420px;">
-    <div class="card-body p-4 p-md-5">
-      <div class="text-center mb-4">
-        <div class="d-inline-flex align-items-center justify-content-center rounded-circle bg-primary bg-opacity-10 text-primary mb-3" style="width: 64px; height: 64px;">
-          <i class="bi bi-shield-lock fs-3"></i>
-        </div>
-        <h1 class="h4 fw-bold mb-2">Экран заблокирован</h1>
-        <p class="text-muted mb-0">{{ user_full_name }}</p>
-      </div>
+<style>
+  .page-shell {
+    padding-top: 0;
+    padding-bottom: 0;
+  }
 
-      {% if security_passkey_enabled %}
-      <div class="d-grid gap-2 mb-3">
-        <button type="button" class="btn btn-primary btn-lg rounded-3" data-passkey-unlock>
-          <i class="bi bi-fingerprint me-2"></i>Разблокировать биометрией
-        </button>
-        <div class="small text-muted text-center" data-passkey-unlock-status></div>
+  .page-shell > .container {
+    max-width: none;
+    padding: 0;
+  }
+
+  .unlock-screen {
+    width: 100vw;
+    min-height: 100vh;
+    margin-left: calc(50% - 50vw);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: max(22px, env(safe-area-inset-top)) 16px max(22px, env(safe-area-inset-bottom));
+    background:
+      radial-gradient(circle at 50% 0%, rgba(13, 110, 253, 0.16), transparent 34%),
+      linear-gradient(180deg, #f8fbff 0%, #f0f6ff 45%, #fff7fb 100%);
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
+  }
+
+  .unlock-panel {
+    width: min(100%, 390px);
+    border: 0;
+    border-radius: 36px;
+    background: rgba(255, 255, 255, 0.78);
+    box-shadow: 0 28px 70px rgba(15, 23, 42, 0.13);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+  }
+
+  .unlock-avatar {
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
+    margin: 0 auto 38px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #73839a;
+    background: rgba(255, 255, 255, 0.7);
+    box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.18);
+  }
+
+  .unlock-greeting {
+    margin-bottom: 56px;
+  }
+
+  .unlock-dots {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    min-height: 16px;
+    margin: 14px 0 28px;
+  }
+
+  .unlock-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 999px;
+    background: #d7dfec;
+    transition: background 0.15s ease, transform 0.15s ease;
+  }
+
+  .unlock-dot.is-filled {
+    background: #1d2736;
+    transform: scale(1.14);
+  }
+
+  .unlock-keypad {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px 18px;
+    max-width: 286px;
+    margin: 0 auto;
+  }
+
+  .unlock-key {
+    min-height: 58px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: #151f2e;
+    font-size: 1.55rem;
+    line-height: 1;
+    transition: background 0.12s ease, transform 0.12s ease, opacity 0.12s ease;
+  }
+
+  .unlock-key:active {
+    background: rgba(13, 110, 253, 0.1);
+    transform: translateY(1px);
+  }
+
+  .unlock-key:disabled {
+    opacity: 0.35;
+  }
+
+  .unlock-key--muted {
+    font-size: 0.72rem;
+    line-height: 1.15;
+    color: #7d8999;
+  }
+
+  .unlock-key--icon {
+    color: #728195;
+    font-size: 1.25rem;
+  }
+
+  .unlock-key--submit {
+    color: #fff;
+    background: #0d6efd;
+  }
+
+  .unlock-key--submit:active {
+    background: #0b5ed7;
+  }
+
+  .unlock-passkey-hint {
+    min-height: 22px;
+    font-size: 0.82rem;
+  }
+
+  .unlock-switch {
+    border: 0;
+    background: transparent;
+    color: #7b8798;
+    font-size: 0.88rem;
+  }
+
+  .unlock-error {
+    min-height: 20px;
+  }
+
+  @media (max-width: 575.98px) {
+    body {
+      background: #f8fbff;
+    }
+
+    .unlock-screen {
+      align-items: stretch;
+      padding: max(28px, env(safe-area-inset-top)) 18px max(18px, env(safe-area-inset-bottom));
+    }
+
+    .unlock-panel {
+      width: 100%;
+      min-height: calc(100vh - max(28px, env(safe-area-inset-top)) - max(18px, env(safe-area-inset-bottom)));
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+      display: flex;
+      align-items: center;
+    }
+
+    .unlock-greeting {
+      margin-bottom: 52px;
+    }
+
+    .unlock-keypad {
+      gap: 8px 18px;
+    }
+
+    .unlock-key {
+      min-height: 56px;
+      font-size: 1.45rem;
+    }
+  }
+</style>
+
+<section class="unlock-screen">
+  <div class="unlock-panel">
+    <div class="w-100 px-3 px-sm-4 py-4 py-sm-5">
+      <div class="text-center unlock-greeting">
+        <div class="unlock-avatar">
+          <i class="bi bi-person fs-5"></i>
+        </div>
+        <h1 class="h6 fw-semibold mb-0">Доброе утро, {{ user_full_name }}!</h1>
       </div>
-      {% endif %}
 
       {% if security_pin_enabled %}
-      <form method="post" class="d-grid gap-3">
+      <form method="post" data-pin-unlock-form autocomplete="off">
         {% csrf_token %}
         <input type="hidden" name="next" value="{{ next_url }}">
-        <div>
-          <label class="form-label text-muted small" for="{{ form.pin.id_for_label }}">PIN-код</label>
-          {{ form.pin }}
-          {% if form.pin.errors %}
-            <div class="text-danger small mt-2">{{ form.pin.errors|striptags }}</div>
-          {% endif %}
+        <input type="hidden" name="pin" value="" data-pin-value>
+        <p class="text-center text-muted small mb-0">Введите код</p>
+        <div class="unlock-dots" aria-hidden="true" data-pin-dots>
+          <span class="unlock-dot"></span>
+          <span class="unlock-dot"></span>
+          <span class="unlock-dot"></span>
+          <span class="unlock-dot"></span>
+          <span class="unlock-dot"></span>
+          <span class="unlock-dot"></span>
+          <span class="unlock-dot"></span>
+          <span class="unlock-dot"></span>
         </div>
-        <button type="submit" class="btn btn-primary btn-lg rounded-3">Продолжить</button>
+        <div class="text-danger small text-center unlock-error">
+          {% if form.pin.errors %}{{ form.pin.errors|striptags }}{% endif %}
+        </div>
+        <div class="unlock-keypad" aria-label="Цифровая клавиатура">
+          <button type="button" class="unlock-key" data-pin-key="1">1</button>
+          <button type="button" class="unlock-key" data-pin-key="2">2</button>
+          <button type="button" class="unlock-key" data-pin-key="3">3</button>
+          <button type="button" class="unlock-key" data-pin-key="4">4</button>
+          <button type="button" class="unlock-key" data-pin-key="5">5</button>
+          <button type="button" class="unlock-key" data-pin-key="6">6</button>
+          <button type="button" class="unlock-key" data-pin-key="7">7</button>
+          <button type="button" class="unlock-key" data-pin-key="8">8</button>
+          <button type="button" class="unlock-key" data-pin-key="9">9</button>
+          <button type="button" class="unlock-key unlock-key--icon" data-pin-backspace aria-label="Удалить цифру">
+            <i class="bi bi-backspace"></i>
+          </button>
+          <button type="button" class="unlock-key" data-pin-key="0">0</button>
+          <button type="submit" class="unlock-key unlock-key--submit" data-pin-submit aria-label="Продолжить">
+            <i class="bi bi-arrow-right"></i>
+          </button>
+        </div>
       </form>
       {% endif %}
 
-      <form method="post" action="{% url 'logout' %}" class="mt-3">
+      {% if security_passkey_enabled %}
+      <div class="text-center mt-3">
+        <button type="button" class="unlock-key unlock-key--icon" data-passkey-unlock aria-label="Разблокировать биометрией">
+          <i class="bi bi-fingerprint"></i>
+        </button>
+        <div class="text-muted unlock-passkey-hint" data-passkey-unlock-status></div>
+      </div>
+      {% endif %}
+
+      <form method="post" action="{% url 'logout' %}" class="mt-3 text-center">
         {% csrf_token %}
-        <button type="submit" class="btn btn-link text-muted w-100 text-decoration-none" data-no-loading>
+        <button type="submit" class="unlock-switch" data-no-loading>
           Выйти и войти другим пользователем
         </button>
       </form>
     </div>
   </div>
 </section>
+
 <script>
   (function () {
+    function initPinUnlock() {
+      const form = document.querySelector("[data-pin-unlock-form]");
+      if (!form) return;
+      const valueInput = form.querySelector("[data-pin-value]");
+      const dots = Array.from(form.querySelectorAll(".unlock-dot"));
+      const submit = form.querySelector("[data-pin-submit]");
+      let value = "";
+
+      function render() {
+        valueInput.value = value;
+        dots.forEach((dot, index) => {
+          dot.classList.toggle("is-filled", index < value.length);
+        });
+        if (submit) {
+          submit.disabled = value.length < 4;
+        }
+      }
+
+      form.querySelectorAll("[data-pin-key]").forEach((button) => {
+        button.addEventListener("click", () => {
+          if (value.length >= 8) return;
+          value += button.dataset.pinKey;
+          render();
+        });
+      });
+
+      form.querySelector("[data-pin-backspace]")?.addEventListener("click", () => {
+        value = value.slice(0, -1);
+        render();
+      });
+
+      form.addEventListener("submit", (event) => {
+        if (value.length < 4) {
+          event.preventDefault();
+        }
+      });
+
+      render();
+    }
+
     function initPasskeyUnlock() {
       const button = document.querySelector("[data-passkey-unlock]");
       if (!button) return;
       const status = document.querySelector("[data-passkey-unlock-status]");
       const nextUrl = "{{ next_url|escapejs }}";
+      let running = false;
 
       function setStatus(message, isError) {
         if (!status) return;
@@ -62,29 +305,44 @@
         status.classList.toggle("text-success", !isError && !!message);
       }
 
-      if (!window.RovikWebAuthn?.isSupported()) {
-        button.disabled = true;
-        setStatus("Браузер не поддерживает passkey/биометрию.", true);
-        return;
-      }
+      async function runPasskeyUnlock(isAutomatic) {
+        if (running) return;
+        if (!window.RovikWebAuthn?.isSupported()) {
+          if (!isAutomatic) {
+            button.disabled = true;
+            setStatus("Браузер не поддерживает passkey/биометрию.", true);
+          }
+          return;
+        }
 
-      button.addEventListener("click", async () => {
-        window.setButtonLoading?.(button);
-        setStatus("Подтвердите вход на устройстве...");
+        running = true;
+        if (!isAutomatic) window.setButtonLoading?.(button);
+        setStatus(isAutomatic ? "" : "Подтвердите вход на устройстве...");
         try {
           const result = await window.RovikWebAuthn.authenticate({ next: nextUrl });
           window.location.assign(result.redirect_url || nextUrl || "/");
         } catch (error) {
-          setStatus(error.message || "Не удалось разблокировать.", true);
-          window.resetButtonLoading?.(button);
+          const message = error.message || "Не удалось разблокировать.";
+          setStatus(isAutomatic ? "" : message, !isAutomatic);
+          if (!isAutomatic) window.resetButtonLoading?.(button);
+        } finally {
+          running = false;
         }
-      });
+      }
+
+      button.addEventListener("click", () => runPasskeyUnlock(false));
+      window.setTimeout(() => runPasskeyUnlock(true), 450);
+    }
+
+    function initUnlock() {
+      initPinUnlock();
+      initPasskeyUnlock();
     }
 
     if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", initPasskeyUnlock, { once: true });
+      document.addEventListener("DOMContentLoaded", initUnlock, { once: true });
     } else {
-      initPasskeyUnlock();
+      initUnlock();
     }
   })();
 </script>
