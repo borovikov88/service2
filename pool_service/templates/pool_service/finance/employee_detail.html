@@ -77,6 +77,7 @@
               {% else %}
                 <span class="badge bg-warning-subtle text-warning border status-badge" title="На проверке"><i class="bi bi-hourglass-split"></i><span class="status-text">На проверке</span></span>
               {% endif %}
+              {% if movement.reviewed_by %}<div class="small text-muted mt-1">{{ movement.reviewed_by|finance_employee_name }} · {{ movement.reviewed_at|date:"d.m H:i" }}</div>{% endif %}
             </td>
             <td class="text-end">
               {% if movement.can_confirm_issue %}

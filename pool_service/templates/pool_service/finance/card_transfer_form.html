@@ -1,0 +1,101 @@
+{% extends "pool_service/base.html" %}
+
+{% block title %}Новая оплата переводом{% endblock %}
+
+{% block extra_head %}
+  {% if finance_modal %}
+  <style>
+    body { background: #fff; }
+    .page-shell { min-height: 0; padding: 0; }
+    .page-shell > .container { max-width: none; padding: 0; }
+  </style>
+  {% endif %}
+{% endblock %}
+
+{% block content %}
+<div class="{% if finance_modal %}p-3 p-lg-4{% else %}mx-auto{% endif %}"{% if not finance_modal %} style="max-width:820px;"{% endif %}>
+  {% if not finance_modal %}
+  <div class="d-flex align-items-center justify-content-between gap-3 mb-4">
+    <div>
+      <h1 class="h3 fw-bold mb-1">Новая оплата переводом</h1>
+      <div class="text-muted">Укажите клиента, сумму, назначение и приложите подтверждение оплаты</div>
+    </div>
+    <a href="{% url 'finance_card_transfer_dashboard' %}" class="btn btn-outline-secondary">Назад</a>
+  </div>
+  {% endif %}
+
+  <form method="post" enctype="multipart/form-data" class="{% if not finance_modal %}card card-soft p-3 p-lg-4{% endif %}" id="card-transfer-form">
+    {% csrf_token %}
+    {{ form.client_id }}
+    <div class="row g-3">
+      <div class="col-12 col-md-6">
+        <label class="form-label" for="{{ form.destination_query.id_for_label }}">{{ form.destination_query.label }}</label>
+        {{ form.destination_query }}
+        <datalist id="finance-client-options">
+          {% for option in client_options %}<option value="{{ option.name }}" label="{{ option.label }}"></option>{% endfor %}
+        </datalist>
+        <div class="form-text">Если клиента нет, он будет создан при сохранении.</div>
+        {% for error in form.destination_query.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+      <div class="col-7 col-md-3">
+        <label class="form-label" for="{{ form.amount.id_for_label }}">{{ form.amount.label }}</label>
+        {{ form.amount }}
+        {% for error in form.amount.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+      <div class="col-5 col-md-3">
+        <label class="form-label" for="{{ form.paid_on.id_for_label }}">{{ form.paid_on.label }}</label>
+        {{ form.paid_on }}
+        {% for error in form.paid_on.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+      <div class="col-12">
+        <label class="form-label" for="{{ form.purpose.id_for_label }}">{{ form.purpose.label }}</label>
+        {{ form.purpose }}
+        {% for error in form.purpose.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+      <div class="col-12">
+        <label class="form-label" for="{{ form.note.id_for_label }}">{{ form.note.label }}</label>
+        {{ form.note }}
+        {% for error in form.note.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+      <div class="col-12">
+        <label class="form-label" for="{{ form.attachments.id_for_label }}">{{ form.attachments.label }}</label>
+        {{ form.attachments }}
+        <div class="form-text">До 5 файлов JPG, PNG, WEBP или PDF, каждый до 10 МБ.</div>
+        {% for error in form.attachments.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+    </div>
+    {% for error in form.non_field_errors %}<div class="alert alert-danger mt-3 mb-0">{{ error }}</div>{% endfor %}
+    <div class="d-flex flex-wrap gap-2 mt-4">
+      <button type="submit" class="btn btn-primary">Сохранить оплату</button>
+      <a href="{% url 'finance_card_transfer_dashboard' %}" class="btn btn-outline-secondary">Отмена</a>
+    </div>
+  </form>
+</div>
+
+{{ client_options|json_script:"finance-client-data" }}
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    const clientQuery = document.querySelector("[data-client-query]");
+    const clientId = document.querySelector("[data-client-id]");
+    const clientDataElement = document.getElementById("finance-client-data");
+    if (!clientQuery || !clientId || !clientDataElement) return;
+    const clientData = JSON.parse(clientDataElement.textContent || "[]");
+
+    function selectedClient() {
+      const query = (clientQuery.value || "").trim().toLocaleLowerCase("ru");
+      return clientData.find(function (client) {
+        return (client.name || "").trim().toLocaleLowerCase("ru") === query;
+      });
+    }
+
+    function syncClientId() {
+      const client = selectedClient();
+      clientId.value = client ? client.id : "";
+    }
+
+    clientQuery.addEventListener("input", syncClientId);
+    clientQuery.addEventListener("change", syncClientId);
+    syncClientId();
+  });
+</script>
+{% endblock %}

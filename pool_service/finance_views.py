@@ -22,6 +22,7 @@ from pool_service.finance_forms import (
     AccountableTransactionForm,
     AccountableReturnRequestForm,
     CASH_DENOMINATIONS,
+    CardTransferPaymentForm,
     CashCountForm,
     ClientPaymentForm,
     ExpenseForm,
@@ -33,6 +34,9 @@ from pool_service.finance_forms import (
 from pool_service.models import (
     AccountableTransaction,
     AccountableTransactionChange,
+    CardTransferAttachment,
+    CardTransferPayment,
+    CardTransferPaymentChange,
     CashCount,
     CashOperation,
     CashOperationChange,
@@ -54,8 +58,10 @@ from pool_service.services.finance import (
     can_issue_accountable_transaction,
     can_manage_cash,
     can_manage_finance,
+    can_review_card_transfer_payment,
     can_review_accountable_transaction,
     can_review_expense,
+    can_view_card_transfer_payment,
     can_view_expense,
     ensure_default_categories,
     finance_staff,
@@ -164,6 +170,20 @@ def _save_receipts(expense, files, user):
         stored_file, content_type = _prepare_receipt(uploaded_file)
         ExpenseReceipt.objects.create(
             expense=expense,
+            file=stored_file,
+            original_name=original_name,
+            content_type=content_type,
+            size=stored_file.size,
+            uploaded_by=user,
+        )
+
+
+def _save_card_transfer_attachments(payment, files, user):
+    for uploaded_file in files:
+        original_name = Path(uploaded_file.name).name[:255]
+        stored_file, content_type = _prepare_receipt(uploaded_file)
+        CardTransferAttachment.objects.create(
+            payment=payment,
             file=stored_file,
             original_name=original_name,
             content_type=content_type,
@@ -440,13 +460,13 @@ def finance_dashboard(request):
     month_start, month_end = month_bounds(today)
     expenses = (
         Expense.objects.filter(organization=organization)
-        .select_related("employee", "category", "client")
+        .select_related("employee", "category", "client", "reviewed_by")
         .prefetch_related("receipts")
     )
     transactions = AccountableTransaction.objects.filter(
         organization=organization,
         is_voided=False,
-    ).select_related("employee", "created_by", "client", "pending_requested_by")
+    ).select_related("employee", "created_by", "client", "pending_requested_by", "reviewed_by")
     if manage:
         balance_rows = accountable_rows(organization)
     else:
@@ -505,6 +525,168 @@ def finance_company_cash_dashboard(request):
 @login_required
 def finance_kkm_cash_dashboard(request):
     return _render_cash_dashboard(request, "kkm")
+
+
+@login_required
+def finance_card_transfer_dashboard(request):
+    organization, denied = _cash_guard(request)
+    if denied:
+        return denied
+    can_review = can_manage_finance(request.user, organization)
+    payments = (
+        CardTransferPayment.objects.filter(organization=organization)
+        .select_related("client", "created_by", "reviewed_by")
+        .prefetch_related("attachments")
+    )
+    client_id = (request.GET.get("client") or "").strip()
+    date_from = (request.GET.get("date_from") or "").strip()
+    date_to = (request.GET.get("date_to") or "").strip()
+    selected_client_id = ""
+    if client_id.isdigit():
+        payments = payments.filter(client_id=int(client_id))
+        selected_client_id = client_id
+    parsed_date_from = None
+    parsed_date_to = None
+    if date_from:
+        try:
+            parsed_date_from = date.fromisoformat(date_from)
+            payments = payments.filter(paid_on__gte=parsed_date_from)
+        except ValueError:
+            messages.error(request, "Некорректная дата начала.")
+    if date_to:
+        try:
+            parsed_date_to = date.fromisoformat(date_to)
+            payments = payments.filter(paid_on__lte=parsed_date_to)
+        except ValueError:
+            messages.error(request, "Некорректная дата окончания.")
+    payments = list(payments[:200])
+    for payment in payments:
+        payment.can_review = can_review_card_transfer_payment(request.user, payment) and payment.status == CardTransferPayment.STATUS_PENDING
+    return render(
+        request,
+        "pool_service/finance/card_transfer_dashboard.html",
+        {
+            "payments": payments,
+            "clients": Client.objects.filter(organization=organization).order_by("name"),
+            "selected_client_id": selected_client_id,
+            "date_from": parsed_date_from.isoformat() if parsed_date_from else "",
+            "date_to": parsed_date_to.isoformat() if parsed_date_to else "",
+            "can_review_transfers": can_review,
+            "active_tab": "finance",
+            "show_add_button": False,
+        },
+    )
+
+
+@login_required
+@xframe_options_sameorigin
+def finance_card_transfer_create(request):
+    organization, denied = _cash_guard(request)
+    if denied:
+        return denied
+    form = CardTransferPaymentForm(
+        request.POST or None,
+        request.FILES or None,
+        organization=organization,
+        initial={"paid_on": date.today()},
+    )
+    if request.method == "POST" and form.is_valid():
+        with transaction.atomic():
+            client = form.resolved_client
+            if form.new_client_name:
+                client = find_client_by_name(organization, form.new_client_name)
+                if not client:
+                    client = Client.objects.create(
+                        organization=organization,
+                        name=form.new_client_name,
+                        client_type="private",
+                    )
+            payment = form.save(commit=False)
+            payment.organization = organization
+            payment.client = client
+            payment.created_by = request.user
+            payment.status = CardTransferPayment.STATUS_PENDING
+            payment.full_clean()
+            payment.save()
+            _save_card_transfer_attachments(payment, form.cleaned_data["attachments"], request.user)
+            CardTransferPaymentChange.objects.create(
+                payment=payment,
+                actor=request.user,
+                action=CardTransferPaymentChange.ACTION_CREATED,
+            )
+        messages.success(request, "Оплата переводом добавлена и отправлена на подтверждение.")
+        return redirect("finance_card_transfer_dashboard")
+    context = {
+        "form": form,
+        "client_options": _client_options(organization),
+        "active_tab": "finance",
+        "show_add_button": False,
+    }
+    context.update(_finance_modal_context(request))
+    return render(request, "pool_service/finance/card_transfer_form.html", context)
+
+
+@require_POST
+@login_required
+def finance_card_transfer_review(request, payment_id):
+    payment = get_object_or_404(
+        CardTransferPayment.objects.select_related("organization", "created_by", "reviewed_by"),
+        id=payment_id,
+    )
+    if not can_review_card_transfer_payment(request.user, payment):
+        return HttpResponseForbidden("Недостаточно прав.")
+    if payment.status != CardTransferPayment.STATUS_PENDING:
+        messages.error(request, "Эта оплата уже рассмотрена.")
+        return redirect("finance_card_transfer_dashboard")
+    if period_is_closed(payment.organization, payment.paid_on):
+        messages.error(request, "Месяц закрыт.")
+        return redirect("finance_card_transfer_dashboard")
+    decision = (request.POST.get("decision") or "").strip()
+    if decision not in {CardTransferPayment.STATUS_APPROVED, CardTransferPayment.STATUS_REJECTED}:
+        messages.error(request, "Выберите решение.")
+        return redirect("finance_card_transfer_dashboard")
+    review_comment = (request.POST.get("review_comment") or "").strip()
+    with transaction.atomic():
+        payment.status = decision
+        payment.reviewed_by = request.user
+        payment.reviewed_at = timezone.now()
+        payment.review_comment = review_comment
+        payment.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_comment", "updated_at"])
+        CardTransferPaymentChange.objects.create(
+            payment=payment,
+            actor=request.user,
+            action=(
+                CardTransferPaymentChange.ACTION_APPROVED
+                if decision == CardTransferPayment.STATUS_APPROVED
+                else CardTransferPaymentChange.ACTION_REJECTED
+            ),
+            note=review_comment,
+        )
+    messages.success(request, "Решение по перечислению сохранено.")
+    return redirect("finance_card_transfer_dashboard")
+
+
+@login_required
+def finance_card_transfer_attachment_download(request, attachment_id):
+    attachment = get_object_or_404(
+        CardTransferAttachment.objects.select_related(
+            "payment__organization",
+            "payment__client",
+            "payment__created_by",
+        ),
+        id=attachment_id,
+    )
+    if not can_view_card_transfer_payment(request.user, attachment.payment):
+        return HttpResponseForbidden("Недостаточно прав.")
+    response = FileResponse(
+        attachment.file.open("rb"),
+        content_type=attachment.content_type or "application/octet-stream",
+        as_attachment=False,
+        filename=attachment.original_name,
+    )
+    response["Cache-Control"] = "private, no-store"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    return response
 
 
 @login_required

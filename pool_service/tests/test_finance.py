@@ -15,6 +15,8 @@ from django.utils import timezone
 from pool_service.models import (
     AccountableTransaction,
     AccountableTransactionChange,
+    CardTransferAttachment,
+    CardTransferPayment,
     CashCount,
     CashOperation,
     CashOperationChange,
@@ -802,6 +804,88 @@ class FinanceTests(TestCase):
         self.assertEqual(accountable_issue.status_code, 403)
         self.assertEqual(transfer.status_code, 403)
         self.assertEqual(kkm_count.status_code, 403)
+
+    def test_card_transfer_create_filter_and_review_flow(self):
+        client = Client.objects.create(organization=self.organization, name="Клиент перевод", client_type="private")
+
+        self.client.force_login(self.manager)
+        dashboard = self.client.get(reverse("finance_card_transfer_dashboard"))
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertContains(dashboard, reverse("finance_card_transfer_create"))
+
+        created = self.client.post(
+            reverse("finance_card_transfer_create"),
+            {
+                "destination_query": client.name,
+                "client_id": client.id,
+                "amount": "4321.00",
+                "paid_on": date.today().isoformat(),
+                "purpose": "Обслуживание объекта",
+                "note": "Перевод на карту",
+                "attachments": self.receipt("transfer.jpg"),
+            },
+        )
+        self.assertEqual(created.status_code, 302)
+        payment = CardTransferPayment.objects.get()
+        self.assertEqual(payment.created_by, self.manager)
+        self.assertEqual(payment.client, client)
+        self.assertEqual(payment.status, CardTransferPayment.STATUS_PENDING)
+        self.assertEqual(CardTransferAttachment.objects.filter(payment=payment).count(), 1)
+
+        forbidden = self.client.post(
+            reverse("finance_card_transfer_review", kwargs={"payment_id": payment.id}),
+            {"decision": CardTransferPayment.STATUS_APPROVED, "review_comment": ""},
+        )
+        self.assertEqual(forbidden.status_code, 403)
+
+        self.client.force_login(self.accountant)
+        reviewed = self.client.post(
+            reverse("finance_card_transfer_review", kwargs={"payment_id": payment.id}),
+            {"decision": CardTransferPayment.STATUS_APPROVED, "review_comment": "Документы в 1С"},
+        )
+        self.assertEqual(reviewed.status_code, 302)
+        payment.refresh_from_db()
+        self.assertEqual(payment.status, CardTransferPayment.STATUS_APPROVED)
+        self.assertEqual(payment.reviewed_by, self.accountant)
+        self.assertIsNotNone(payment.reviewed_at)
+
+        filtered = self.client.get(
+            reverse("finance_card_transfer_dashboard"),
+            {"client": client.id, "date_from": date.today().isoformat(), "date_to": date.today().isoformat()},
+        )
+        self.assertContains(filtered, "Обслуживание объекта")
+        self.assertContains(filtered, "Подтвердил:")
+
+        self.client.force_login(self.service)
+        denied = self.client.get(reverse("finance_card_transfer_dashboard"))
+        self.assertEqual(denied.status_code, 403)
+
+    def test_card_transfer_close_role_can_review_own_payment(self):
+        client = Client.objects.create(organization=self.organization, name="Свой клиент", client_type="private")
+        self.client.force_login(self.accountant)
+        created = self.client.post(
+            reverse("finance_card_transfer_create"),
+            {
+                "destination_query": client.name,
+                "client_id": client.id,
+                "amount": "1500.00",
+                "paid_on": date.today().isoformat(),
+                "purpose": "Оплата по карте",
+                "attachments": self.receipt("own-transfer.jpg"),
+            },
+        )
+        self.assertEqual(created.status_code, 302)
+        payment = CardTransferPayment.objects.get()
+
+        reviewed = self.client.post(
+            reverse("finance_card_transfer_review", kwargs={"payment_id": payment.id}),
+            {"decision": CardTransferPayment.STATUS_APPROVED, "review_comment": "Приходник в 1С"},
+        )
+
+        self.assertEqual(reviewed.status_code, 302)
+        payment.refresh_from_db()
+        self.assertEqual(payment.status, CardTransferPayment.STATUS_APPROVED)
+        self.assertEqual(payment.reviewed_by, self.accountant)
 
     def test_accountable_return_to_kkm_requires_manager_confirmation(self):
         AccountableTransaction.objects.create(

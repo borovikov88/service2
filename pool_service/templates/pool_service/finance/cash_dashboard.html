@@ -141,6 +141,7 @@
               {% elif operation.status == "rejected" %}<span class="badge bg-danger-subtle text-danger border status-badge"><i class="bi bi-x-circle"></i><span class="status-text">Отклонено</span></span>
               {% elif operation.operation_type == "manager_income" %}<span class="badge bg-warning-subtle text-warning border status-badge"><i class="bi bi-hourglass-split"></i><span class="status-text">Не подтверждено</span></span>
               {% else %}<span class="badge bg-warning-subtle text-warning border status-badge"><i class="bi bi-hourglass-split"></i><span class="status-text">На проверке</span></span>{% endif %}
+              {% if operation.reviewed_by %}<div class="small text-muted mt-1">{{ operation.reviewed_by|finance_employee_name }} · {{ operation.reviewed_at|date:"d.m H:i" }}</div>{% endif %}
             </td>
             <td class="text-end">
                 {% if operation.status == "pending" and operation.operation_type != "accountable_issue" and operation.operation_type != "accountable_return" and can_manage_cash %}

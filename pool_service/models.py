@@ -1516,3 +1516,115 @@ class ExpenseChange(models.Model):
 
     def __str__(self):
         return f"{self.expense_id}: {self.action}"
+
+
+class CardTransferPayment(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "На проверке"),
+        (STATUS_APPROVED, "Подтверждено"),
+        (STATUS_REJECTED, "Отклонено"),
+    ]
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="card_transfer_payments",
+    )
+    client = models.ForeignKey(
+        Client,
+        on_delete=models.PROTECT,
+        related_name="card_transfer_payments",
+    )
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    paid_on = models.DateField()
+    purpose = models.CharField(max_length=255)
+    note = models.TextField(blank=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="created_card_transfer_payments",
+    )
+    reviewed_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="reviewed_card_transfer_payments",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_comment = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-paid_on", "-id"]
+        indexes = [
+            models.Index(fields=["organization", "paid_on"], name="card_transfer_org_date_idx"),
+            models.Index(fields=["organization", "status"], name="card_transfer_org_status_idx"),
+            models.Index(fields=["client", "paid_on"], name="card_transfer_client_date_idx"),
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.amount is not None and self.amount <= 0:
+            errors["amount"] = "Сумма должна быть больше нуля."
+        if self.client_id and self.organization_id and self.client.organization_id != self.organization_id:
+            errors["client"] = "Клиент относится к другой организации."
+        if errors:
+            raise ValidationError(errors)
+
+    def __str__(self):
+        return f"{self.client}: {self.amount}"
+
+
+def card_transfer_attachment_upload_to(instance, filename):
+    suffix = Path(filename).suffix.lower()[:10]
+    return f"card_transfers/{instance.payment.organization_id}/{instance.payment_id}/{uuid.uuid4().hex}{suffix}"
+
+
+class CardTransferAttachment(models.Model):
+    payment = models.ForeignKey(CardTransferPayment, on_delete=models.CASCADE, related_name="attachments")
+    file = models.FileField(storage=private_media_storage, upload_to=card_transfer_attachment_upload_to)
+    original_name = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=100, blank=True)
+    size = models.PositiveIntegerField(default=0)
+    uploaded_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="uploaded_card_transfer_attachments",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.original_name
+
+
+class CardTransferPaymentChange(models.Model):
+    ACTION_CREATED = "created"
+    ACTION_APPROVED = "approved"
+    ACTION_REJECTED = "rejected"
+    ACTION_CHOICES = [
+        (ACTION_CREATED, "Создано"),
+        (ACTION_APPROVED, "Подтверждено"),
+        (ACTION_REJECTED, "Отклонено"),
+    ]
+
+    payment = models.ForeignKey(CardTransferPayment, on_delete=models.CASCADE, related_name="changes")
+    actor = models.ForeignKey(User, on_delete=models.PROTECT, related_name="card_transfer_payment_changes")
+    action = models.CharField(max_length=16, choices=ACTION_CHOICES)
+    note = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["payment", "created_at"], name="card_transfer_change_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.payment_id}: {self.action}"

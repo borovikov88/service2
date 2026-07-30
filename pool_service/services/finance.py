@@ -79,6 +79,18 @@ def can_manage_cash(user, organization):
     return can_manage_finance(user, organization)
 
 
+def can_review_card_transfer_payment(user, payment):
+    if not payment:
+        return False
+    return can_manage_finance(user, payment.organization)
+
+
+def can_view_card_transfer_payment(user, payment):
+    if not payment:
+        return False
+    return can_access_cash(user, payment.organization)
+
+
 def can_review_expense(user, expense):
     if not can_manage_finance(user, expense.organization):
         return False

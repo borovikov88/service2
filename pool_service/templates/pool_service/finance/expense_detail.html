@@ -13,6 +13,9 @@
       {% else %}<span class="badge bg-warning-subtle text-warning border status-badge" title="На проверке"><i class="bi bi-hourglass-split"></i><span class="status-text">На проверке</span></span>{% endif %}
     </div>
     <div class="text-muted">{{ expense.spent_on|date:"d.m.Y" }} · {{ expense.destination_name }}</div>
+    {% if expense.reviewed_by %}
+      <div class="small text-muted mt-1">Подтвердил: {{ expense.reviewed_by|finance_employee_name }} · {{ expense.reviewed_at|date:"d.m.Y H:i" }}</div>
+    {% endif %}
   </div>
   <div class="d-flex flex-wrap gap-2">
     {% if can_edit %}<a href="{% url 'finance_expense_edit' expense.uuid %}" class="btn btn-primary">Изменить</a>{% endif %}

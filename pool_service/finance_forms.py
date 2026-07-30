@@ -11,6 +11,7 @@ from pool_service.models import (
     AccountableTransaction,
     CashCount,
     CashOperation,
+    CardTransferPayment,
     Client,
     Expense,
     ExpenseCategory,
@@ -188,6 +189,89 @@ class ClientPaymentForm(forms.ModelForm):
         if period_is_closed(self.organization, occurred_on):
             raise forms.ValidationError("Этот месяц закрыт. Новые операции запрещены.")
         return occurred_on
+
+    def clean(self):
+        cleaned = super().clean()
+        client_id = cleaned.get("client_id")
+        destination_query = (cleaned.get("destination_query") or "").strip()
+        if client_id:
+            self.resolved_client = Client.objects.filter(
+                id=client_id,
+                organization=self.organization,
+            ).first()
+            if not self.resolved_client:
+                self.add_error("destination_query", "Клиент не найден.")
+        elif destination_query:
+            self.resolved_client = find_client_by_name(self.organization, destination_query)
+            if not self.resolved_client:
+                self.new_client_name = destination_query[:255]
+        else:
+            self.add_error("destination_query", "Выберите или укажите нового клиента.")
+        return cleaned
+
+
+class CardTransferPaymentForm(forms.ModelForm):
+    destination_query = forms.CharField(
+        required=True,
+        label="Клиент",
+        widget=forms.TextInput(
+            attrs={
+                "class": "form-control",
+                "list": "finance-client-options",
+                "autocomplete": "off",
+                "placeholder": "Начните вводить имя или название",
+                "data-client-query": "1",
+            }
+        ),
+    )
+    client_id = forms.IntegerField(required=False, widget=forms.HiddenInput(attrs={"data-client-id": "1"}))
+    attachments = MultipleFileField(
+        required=True,
+        label="Фото или файл оплаты",
+        widget=MultipleFileInput(
+            attrs={
+                "class": "form-control",
+                "accept": "image/jpeg,image/png,image/webp,application/pdf",
+                "data-finance-receipts": "1",
+                "data-photo-picker": "1",
+            }
+        ),
+    )
+
+    class Meta:
+        model = CardTransferPayment
+        fields = ["amount", "paid_on", "purpose", "note"]
+        labels = {
+            "amount": "Сумма, ₽",
+            "paid_on": "Дата оплаты",
+            "purpose": "За что",
+            "note": "Комментарий",
+        }
+        widgets = {
+            "amount": forms.NumberInput(attrs={"class": "form-control", "min": "0.01", "step": "0.01"}),
+            "paid_on": forms.DateInput(attrs={"class": "form-control", "type": "date"}, format="%Y-%m-%d"),
+            "purpose": forms.TextInput(attrs={"class": "form-control", "placeholder": "Например: обслуживание, монтаж, материалы"}),
+            "note": forms.Textarea(attrs={"class": "form-control", "rows": 3}),
+        }
+
+    def __init__(self, *args, organization, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.organization = organization
+        self.resolved_client = None
+        self.new_client_name = ""
+        self.fields["paid_on"].input_formats = ["%Y-%m-%d"]
+
+    def clean_paid_on(self):
+        paid_on = self.cleaned_data["paid_on"]
+        if period_is_closed(self.organization, paid_on):
+            raise forms.ValidationError("Этот месяц закрыт. Новые оплаты запрещены.")
+        return paid_on
+
+    def clean_attachments(self):
+        files = self.cleaned_data.get("attachments") or []
+        if not files:
+            raise forms.ValidationError("Приложите фото или PDF подтверждения оплаты.")
+        return validate_receipts(files)
 
     def clean(self):
         cleaned = super().clean()
