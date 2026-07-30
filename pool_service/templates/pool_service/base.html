@@ -3620,19 +3620,61 @@
   </script>
   <script>
     (function () {
-      const showStatusTooltip = (button) => {
+      const isTouchTooltip = () => window.matchMedia("(hover: none), (pointer: coarse)").matches;
+
+      const getStatusTooltip = (button) => {
         if (typeof bootstrap === "undefined") return;
-        const tooltip = bootstrap.Tooltip.getOrCreateInstance(button, { trigger: "manual", placement: "top" });
-        tooltip.show();
-        window.setTimeout(() => tooltip.hide(), 1800);
+        return bootstrap.Tooltip.getOrCreateInstance(button, { trigger: "manual", placement: "top" });
       };
+
+      const showStatusTooltip = (button, autohide) => {
+        const tooltip = getStatusTooltip(button);
+        if (!tooltip) return;
+        tooltip.show();
+        if (autohide) {
+          window.setTimeout(() => tooltip.hide(), 1800);
+        }
+      };
+
+      const hideStatusTooltip = (button) => {
+        const tooltip = getStatusTooltip(button);
+        if (tooltip) tooltip.hide();
+      };
+
+      document.addEventListener("mouseover", (event) => {
+        if (isTouchTooltip()) return;
+        const button = event.target.closest(".finance-status-icon");
+        if (!button || button.contains(event.relatedTarget)) return;
+        showStatusTooltip(button, false);
+      });
+
+      document.addEventListener("mouseout", (event) => {
+        if (isTouchTooltip()) return;
+        const button = event.target.closest(".finance-status-icon");
+        if (!button || button.contains(event.relatedTarget)) return;
+        hideStatusTooltip(button);
+      });
+
+      document.addEventListener("focusin", (event) => {
+        const button = event.target.closest(".finance-status-icon");
+        if (!button || isTouchTooltip()) return;
+        showStatusTooltip(button, false);
+      });
+
+      document.addEventListener("focusout", (event) => {
+        const button = event.target.closest(".finance-status-icon");
+        if (!button || isTouchTooltip()) return;
+        hideStatusTooltip(button);
+      });
 
       document.addEventListener("click", (event) => {
         const button = event.target.closest(".finance-status-icon");
         if (!button) return;
         event.preventDefault();
         event.stopPropagation();
-        showStatusTooltip(button);
+        if (isTouchTooltip()) {
+          showStatusTooltip(button, true);
+        }
       });
     })();
   </script>
