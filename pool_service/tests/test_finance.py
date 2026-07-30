@@ -854,11 +854,20 @@ class FinanceTests(TestCase):
             {"client": client.id, "date_from": date.today().isoformat(), "date_to": date.today().isoformat()},
         )
         self.assertContains(filtered, "Обслуживание объекта")
-        self.assertContains(filtered, "Подтвердил:")
+        self.assertContains(filtered, reverse("finance_card_transfer_detail", kwargs={"payment_id": payment.id}))
+        self.assertContains(filtered, "data-receipt-modal")
+        self.assertNotContains(filtered, "Подтвердил:")
+
+        detail = self.client.get(reverse("finance_card_transfer_detail", kwargs={"payment_id": payment.id}))
+        self.assertContains(detail, "Подтвердил:")
+        self.assertContains(detail, self.accountant.first_name)
+        self.assertContains(detail, "data-receipt-modal")
 
         self.client.force_login(self.service)
         denied = self.client.get(reverse("finance_card_transfer_dashboard"))
         self.assertEqual(denied.status_code, 403)
+        denied_detail = self.client.get(reverse("finance_card_transfer_detail", kwargs={"payment_id": payment.id}))
+        self.assertEqual(denied_detail.status_code, 403)
 
     def test_card_transfer_close_role_can_review_own_payment(self):
         client = Client.objects.create(organization=self.organization, name="Свой клиент", client_type="private")

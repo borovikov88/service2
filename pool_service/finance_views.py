@@ -630,6 +630,32 @@ def finance_card_transfer_create(request):
     return render(request, "pool_service/finance/card_transfer_form.html", context)
 
 
+@login_required
+def finance_card_transfer_detail(request, payment_id):
+    payment = get_object_or_404(
+        CardTransferPayment.objects.select_related(
+            "organization",
+            "client",
+            "created_by",
+            "reviewed_by",
+        ).prefetch_related("attachments", "changes__actor"),
+        id=payment_id,
+    )
+    if not can_view_card_transfer_payment(request.user, payment):
+        return HttpResponseForbidden("Недостаточно прав.")
+    return render(
+        request,
+        "pool_service/finance/card_transfer_detail.html",
+        {
+            "payment": payment,
+            "can_review": can_review_card_transfer_payment(request.user, payment)
+            and payment.status == CardTransferPayment.STATUS_PENDING,
+            "active_tab": "finance",
+            "show_add_button": False,
+        },
+    )
+
+
 @require_POST
 @login_required
 def finance_card_transfer_review(request, payment_id):
@@ -641,14 +667,14 @@ def finance_card_transfer_review(request, payment_id):
         return HttpResponseForbidden("Недостаточно прав.")
     if payment.status != CardTransferPayment.STATUS_PENDING:
         messages.error(request, "Эта оплата уже рассмотрена.")
-        return redirect("finance_card_transfer_dashboard")
+        return redirect(request.META.get("HTTP_REFERER") or reverse("finance_card_transfer_dashboard"))
     if period_is_closed(payment.organization, payment.paid_on):
         messages.error(request, "Месяц закрыт.")
-        return redirect("finance_card_transfer_dashboard")
+        return redirect(request.META.get("HTTP_REFERER") or reverse("finance_card_transfer_dashboard"))
     decision = (request.POST.get("decision") or "").strip()
     if decision not in {CardTransferPayment.STATUS_APPROVED, CardTransferPayment.STATUS_REJECTED}:
         messages.error(request, "Выберите решение.")
-        return redirect("finance_card_transfer_dashboard")
+        return redirect(request.META.get("HTTP_REFERER") or reverse("finance_card_transfer_dashboard"))
     review_comment = (request.POST.get("review_comment") or "").strip()
     with transaction.atomic():
         payment.status = decision
@@ -667,7 +693,7 @@ def finance_card_transfer_review(request, payment_id):
             note=review_comment,
         )
     messages.success(request, "Решение по перечислению сохранено.")
-    return redirect("finance_card_transfer_dashboard")
+    return redirect(request.META.get("HTTP_REFERER") or reverse("finance_card_transfer_dashboard"))
 
 
 @login_required

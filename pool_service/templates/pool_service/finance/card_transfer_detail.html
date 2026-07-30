@@ -1,0 +1,126 @@
+{% extends "pool_service/base.html" %}
+{% load finance_tags %}
+
+{% block title %}Перечисление {{ payment.amount|money }}{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-4">
+  <div>
+    <div class="d-flex align-items-center gap-2 mb-1">
+      <h1 class="h3 fw-bold mb-0">{{ payment.amount|money }}</h1>
+      {% if payment.status == "approved" %}
+        <span class="badge bg-success-subtle text-success border status-badge"><i class="bi bi-check-circle"></i><span class="status-text">Подтверждено</span></span>
+      {% elif payment.status == "rejected" %}
+        <span class="badge bg-danger-subtle text-danger border status-badge"><i class="bi bi-x-circle"></i><span class="status-text">Отклонено</span></span>
+      {% else %}
+        <span class="badge bg-warning-subtle text-warning border status-badge"><i class="bi bi-hourglass-split"></i><span class="status-text">На проверке</span></span>
+      {% endif %}
+    </div>
+    <div class="text-muted">{{ payment.paid_on|date:"d.m.Y" }} · {{ payment.client.name }}</div>
+    {% if payment.reviewed_by %}
+      <div class="small text-muted mt-1">Подтвердил: {{ payment.reviewed_by|finance_employee_name }} · {{ payment.reviewed_at|date:"d.m.Y H:i" }}</div>
+    {% endif %}
+  </div>
+  <a href="{% url 'finance_card_transfer_dashboard' %}" class="btn btn-outline-secondary">К перечислениям</a>
+</div>
+
+{% if payment.status == "rejected" and payment.review_comment %}
+  <div class="alert alert-danger"><strong>Причина отклонения:</strong> {{ payment.review_comment }}</div>
+{% endif %}
+
+<div class="row g-4">
+  <div class="col-12 col-lg-7">
+    <div class="card card-soft p-3 p-lg-4 mb-4">
+      <h2 class="h5 fw-bold mb-3">Данные платежа</h2>
+      <div class="row g-3">
+        <div class="col-12 col-md-6">
+          <div class="text-muted small">Клиент</div>
+          <div class="fw-semibold">{{ payment.client.name }}</div>
+        </div>
+        <div class="col-12 col-md-6">
+          <div class="text-muted small">Дата оплаты</div>
+          <div class="fw-semibold">{{ payment.paid_on|date:"d.m.Y" }}</div>
+        </div>
+        <div class="col-12">
+          <div class="text-muted small">За что</div>
+          <div class="fw-semibold">{{ payment.purpose }}</div>
+        </div>
+        {% if payment.note %}
+          <div class="col-12">
+            <div class="text-muted small">Комментарий</div>
+            <div>{{ payment.note|linebreaksbr }}</div>
+          </div>
+        {% endif %}
+        <div class="col-12 col-md-6">
+          <div class="text-muted small">Добавил</div>
+          <div class="fw-semibold">{{ payment.created_by|finance_employee_name }}</div>
+          <div class="small text-muted">{{ payment.created_at|date:"d.m.Y H:i" }}</div>
+        </div>
+        {% if payment.reviewed_by %}
+          <div class="col-12 col-md-6">
+            <div class="text-muted small">Подтвердил</div>
+            <div class="fw-semibold">{{ payment.reviewed_by|finance_employee_name }}</div>
+            <div class="small text-muted">{{ payment.reviewed_at|date:"d.m.Y H:i" }}</div>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card card-soft p-3 p-lg-4">
+      <h2 class="h5 fw-bold mb-3">Подтверждение оплаты</h2>
+      <div class="row g-3">
+        {% for attachment in payment.attachments.all %}
+          <div class="col-auto">
+            <a href="{% url 'finance_card_transfer_attachment_download' attachment.id %}" target="_blank" rel="noopener" class="text-decoration-none" data-receipt-modal data-receipt-name="{{ attachment.original_name }}" data-receipt-kind="{% if attachment.content_type == 'application/pdf' %}pdf{% else %}image{% endif %}">
+              <div class="border rounded-3 p-2 h-100 d-inline-flex align-items-center justify-content-center bg-light">
+                {% if attachment.content_type == "application/pdf" %}
+                  <i class="bi bi-file-earmark-pdf fs-2 text-danger" style="width:64px;height:64px;display:inline-flex;align-items:center;justify-content:center;"></i>
+                {% else %}
+                  <img src="{% url 'finance_card_transfer_attachment_download' attachment.id %}" alt="Подтверждение оплаты" class="rounded-2 object-fit-cover" style="width:64px;height:64px;">
+                {% endif %}
+              </div>
+            </a>
+          </div>
+        {% empty %}
+          <div class="col-12 text-muted">Фото или файл не приложен</div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-12 col-lg-5">
+    {% if can_review %}
+      <div class="card card-soft p-3 p-lg-4 mb-4">
+        <h2 class="h5 fw-bold mb-3">Подтверждение</h2>
+        <form method="post" action="{% url 'finance_card_transfer_review' payment.id %}" class="d-flex flex-column gap-3">
+          {% csrf_token %}
+          <input type="hidden" name="decision" value="approved">
+          <input type="text" name="review_comment" class="form-control" placeholder="Комментарий, например: документы в 1С">
+          <button class="btn btn-success js-confirm-action" type="submit" data-confirm-title="Подтвердить перечисление" data-confirm-body="Отметьте оплату подтверждённой после внесения документов в 1С." data-confirm-confirm="Подтвердить" data-confirm-variant="success">Подтвердить</button>
+        </form>
+        <form method="post" action="{% url 'finance_card_transfer_review' payment.id %}" class="d-flex flex-column gap-3 mt-3">
+          {% csrf_token %}
+          <input type="hidden" name="decision" value="rejected">
+          <input type="text" name="review_comment" class="form-control" placeholder="Причина отклонения">
+          <button class="btn btn-outline-danger js-confirm-action" type="submit" data-confirm-title="Отклонить перечисление" data-confirm-body="Отклонённая оплата останется в истории." data-confirm-confirm="Отклонить" data-confirm-variant="danger">Отклонить</button>
+        </form>
+      </div>
+    {% endif %}
+
+    <div class="card card-soft p-3 p-lg-4">
+      <h2 class="h5 fw-bold mb-3">История</h2>
+      <div class="d-flex flex-column gap-3">
+        {% for change in payment.changes.all %}
+          <div class="border-bottom pb-3">
+            <div class="fw-semibold">{{ change.get_action_display }}</div>
+            <div class="small text-muted">{{ change.actor|finance_employee_name }} · {{ change.created_at|date:"d.m.Y H:i" }}</div>
+            {% if change.note %}<div class="small mt-1">{{ change.note }}</div>{% endif %}
+          </div>
+        {% empty %}
+          <div class="text-muted">История пустая</div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

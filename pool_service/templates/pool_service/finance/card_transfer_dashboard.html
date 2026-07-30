@@ -57,7 +57,7 @@
       </thead>
       <tbody>
         {% for payment in payments %}
-          <tr>
+          <tr data-row-href="{% url 'finance_card_transfer_detail' payment.id %}">
             <td class="date-cell"><span>{{ payment.paid_on|date:"d.m" }}</span><span class="date-cell__year">{{ payment.paid_on|date:"Y" }}</span></td>
             <td>{{ payment.client.name }}</td>
             <td class="text-end fw-semibold">{{ payment.amount|money }}</td>
@@ -68,7 +68,7 @@
             <td>
               <div class="d-flex flex-wrap gap-2">
                 {% for attachment in payment.attachments.all %}
-                  <a href="{% url 'finance_card_transfer_attachment_download' attachment.id %}" target="_blank" rel="noopener" class="text-decoration-none" title="{{ attachment.original_name }}">
+                  <a href="{% url 'finance_card_transfer_attachment_download' attachment.id %}" target="_blank" rel="noopener" class="text-decoration-none" title="{{ attachment.original_name }}" data-receipt-modal data-receipt-name="{{ attachment.original_name }}" data-receipt-kind="{% if attachment.content_type == 'application/pdf' %}pdf{% else %}image{% endif %}">
                     {% if attachment.content_type == "application/pdf" %}
                       <i class="bi bi-file-earmark-pdf fs-4 text-danger"></i>
                     {% else %}
@@ -82,14 +82,11 @@
             </td>
             <td class="text-end">
               {% if payment.status == "approved" %}
-                <span class="badge bg-success-subtle text-success border status-badge"><i class="bi bi-check-circle"></i><span class="status-text">Подтверждено</span></span>
+                <span class="expense-inline-icon text-success" title="Подтверждено"><i class="bi bi-check-circle"></i></span>
               {% elif payment.status == "rejected" %}
-                <span class="badge bg-danger-subtle text-danger border status-badge"><i class="bi bi-x-circle"></i><span class="status-text">Отклонено</span></span>
+                <span class="expense-inline-icon text-danger" title="Отклонено"><i class="bi bi-x-circle"></i></span>
               {% else %}
-                <span class="badge bg-warning-subtle text-warning border status-badge"><i class="bi bi-hourglass-split"></i><span class="status-text">На проверке</span></span>
-              {% endif %}
-              {% if payment.reviewed_by %}
-                <div class="small text-muted mt-1">Подтвердил: {{ payment.reviewed_by|finance_employee_name }} · {{ payment.reviewed_at|date:"d.m.Y H:i" }}</div>
+                <span class="expense-inline-icon text-warning" title="На проверке"><i class="bi bi-hourglass-split"></i></span>
               {% endif %}
             </td>
             <td class="text-end">
