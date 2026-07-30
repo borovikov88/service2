@@ -8619,7 +8619,7 @@ def profile_view(request):
         if profile.timezone != timezone_name:
             profile.timezone = timezone_name
             profile.save(update_fields=["timezone"])
-            timezone.activate(profile.timezone or "Europe/Moscow")
+            timezone.activate(ZoneInfo(profile.timezone or "Europe/Moscow"))
             messages.success(request, "Часовой пояс сохранён.")
         else:
             messages.info(request, "Часовой пояс не изменился.")

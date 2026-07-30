@@ -1,3 +1,5 @@
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
 from django.http import HttpResponseForbidden, JsonResponse
 from django.shortcuts import redirect
 from django.urls import reverse
@@ -26,7 +28,10 @@ class TimezoneMiddleware:
                 profile = request.user.profile
             except Profile.DoesNotExist:
                 profile = Profile.objects.create(user=request.user, timezone="Europe/Moscow")
-            timezone.activate(profile.timezone or "Europe/Moscow")
+            try:
+                timezone.activate(ZoneInfo(profile.timezone or "Europe/Moscow"))
+            except ZoneInfoNotFoundError:
+                timezone.activate(ZoneInfo("Europe/Moscow"))
         else:
             timezone.deactivate()
         return self.get_response(request)
