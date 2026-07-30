@@ -615,6 +615,10 @@ def finance_card_transfer_create(request):
                 action=CardTransferPaymentChange.ACTION_CREATED,
             )
         messages.success(request, "Оплата переводом добавлена и отправлена на подтверждение.")
+        if request.GET.get("modal") == "1":
+            return HttpResponse(
+                "<script>window.parent.postMessage({type:'finance-modal-close',reload:true}, window.location.origin);</script>"
+            )
         return redirect("finance_card_transfer_dashboard")
     context = {
         "form": form,
