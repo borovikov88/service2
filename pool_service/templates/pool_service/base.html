@@ -3620,6 +3620,24 @@
   </script>
   <script>
     (function () {
+      const showStatusTooltip = (button) => {
+        if (typeof bootstrap === "undefined") return;
+        const tooltip = bootstrap.Tooltip.getOrCreateInstance(button, { trigger: "manual", placement: "top" });
+        tooltip.show();
+        window.setTimeout(() => tooltip.hide(), 1800);
+      };
+
+      document.addEventListener("click", (event) => {
+        const button = event.target.closest(".finance-status-icon");
+        if (!button) return;
+        event.preventDefault();
+        event.stopPropagation();
+        showStatusTooltip(button);
+      });
+    })();
+  </script>
+  <script>
+    (function () {
       const initTaskForms = (scope) => {
         const root = scope || document;
         root.querySelectorAll("[data-task-form]").forEach((form) => {

@@ -1,4 +1,6 @@
 from django import template
+from django.template.defaultfilters import date as date_filter
+from django.utils.html import format_html
 
 from pool_service.services.finance import format_money, user_display_name
 
@@ -44,3 +46,39 @@ def cash_denominations(value):
     if manual and str(manual) not in {"0", "0.00"}:
         parts.append(f"Дополнительно {format_money(manual)}")
     return ", ".join(parts) or "—"
+
+
+@register.simple_tag
+def finance_status_icon(record, pending_label="На проверке"):
+    is_voided = bool(getattr(record, "is_voided", False))
+    pending_action = getattr(record, "pending_action", "")
+    status = getattr(record, "status", "")
+    reviewed_by = getattr(record, "reviewed_by", None) or getattr(record, "decided_by", None)
+    reviewed_at = getattr(record, "reviewed_at", None) or getattr(record, "decided_at", None)
+
+    if is_voided:
+        label, color, icon = "Аннулировано", "text-secondary", "bi-slash-circle"
+    elif pending_action == "edit":
+        label, color, icon = "Изменение на проверке", "text-warning", "bi-pencil-square"
+    elif pending_action == "delete":
+        label, color, icon = "Удаление на проверке", "text-warning", "bi-trash"
+    elif status == "approved":
+        label, color, icon = "Подтверждено", "text-success", "bi-check-circle"
+    elif status == "rejected":
+        label, color, icon = "Отклонено", "text-danger", "bi-x-circle"
+    else:
+        label, color, icon = pending_label, "text-warning", "bi-hourglass-split"
+
+    tooltip = label
+    if reviewed_by and reviewed_at and status in {"approved", "rejected"}:
+        tooltip = f"{label}: {user_display_name(reviewed_by)} · {date_filter(reviewed_at, 'd.m.Y H:i')}"
+
+    return format_html(
+        '<button type="button" class="expense-inline-icon expense-status-icon finance-status-icon {}" '
+        'data-bs-toggle="tooltip" data-bs-trigger="manual" data-bs-title="{}" '
+        'aria-label="{}"><i class="bi {}"></i></button>',
+        color,
+        tooltip,
+        label,
+        icon,
+    )

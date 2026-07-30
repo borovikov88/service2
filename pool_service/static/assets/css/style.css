@@ -12135,7 +12135,8 @@ textarea.form-control-lg {
     vertical-align: middle;
 }
 
-.expense-status-icon {
+.expense-status-icon,
+.finance-status-icon {
     cursor: pointer;
 }
 

@@ -64,20 +64,7 @@
             <td>{% if movement.client %}{{ movement.client.name }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
             <td class="text-end fw-semibold">{{ movement.amount|money }}</td>
             <td class="text-end">
-              {% if movement.is_voided %}
-                <span class="badge bg-secondary-subtle text-secondary border status-badge" title="Аннулировано"><i class="bi bi-slash-circle"></i><span class="status-text">Аннулировано</span></span>
-              {% elif movement.pending_action == "edit" %}
-                <span class="badge bg-warning-subtle text-warning border status-badge" title="Изменение на проверке"><i class="bi bi-pencil-square"></i><span class="status-text">Изменение на проверке</span></span>
-              {% elif movement.pending_action == "delete" %}
-                <span class="badge bg-warning-subtle text-warning border status-badge" title="Удаление на проверке"><i class="bi bi-trash"></i><span class="status-text">Удаление на проверке</span></span>
-              {% elif movement.status == "approved" %}
-                <span class="badge bg-success-subtle text-success border status-badge" title="Проведено"><i class="bi bi-check-circle"></i><span class="status-text">Проведено</span></span>
-              {% elif movement.status == "rejected" %}
-                <span class="badge bg-danger-subtle text-danger border status-badge" title="Отклонено"><i class="bi bi-x-circle"></i><span class="status-text">Отклонено</span></span>
-              {% else %}
-                <span class="badge bg-warning-subtle text-warning border status-badge" title="На проверке"><i class="bi bi-hourglass-split"></i><span class="status-text">На проверке</span></span>
-              {% endif %}
-              {% if movement.reviewed_by %}<div class="small text-muted mt-1">{{ movement.reviewed_by|finance_employee_name }} · {{ movement.reviewed_at|date:"d.m H:i" }}</div>{% endif %}
+              {% finance_status_icon movement %}
             </td>
             <td class="text-end">
               {% if movement.can_confirm_issue %}
@@ -144,7 +131,7 @@
               <div class="expense-purpose-cell__sub small text-muted">{{ expense.destination_name }}</div>
             </td>
             <td class="text-end fw-semibold">{{ expense.amount|money }}</td>
-            <td class="text-end">{{ expense.get_status_display }}</td>
+            <td class="text-end">{% finance_status_icon expense %}</td>
           </tr>
         {% empty %}
           <tr><td colspan="4" class="text-center text-muted py-4">Расходов пока нет</td></tr>

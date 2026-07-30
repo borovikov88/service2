@@ -103,7 +103,7 @@
               <div class="expense-purpose-cell__sub small text-muted">{{ expense.destination_name }}</div>
             </td>
             <td>{% if expense.receipts.all %}<span class="expense-inline-icon text-success" title="Чек приложен"><i class="bi bi-check-circle"></i></span>{% elif expense.receipt_missing_confirmed %}<span class="expense-inline-icon text-warning" title="Чек отсутствует"><i class="bi bi-exclamation-circle"></i></span>{% else %}<span class="expense-inline-icon text-danger" title="Нет чека"><i class="bi bi-x-circle"></i></span>{% endif %}</td>
-            <td>{% if expense.status == "approved" %}<button type="button" class="expense-inline-icon expense-status-icon text-success" data-bs-toggle="tooltip" data-bs-trigger="manual" data-bs-title="Подтверждён{% if expense.reviewed_by %}: {{ expense.reviewed_by|finance_employee_name }} · {{ expense.reviewed_at|date:'d.m.Y H:i' }}{% endif %}" aria-label="Подтверждён"><i class="bi bi-check-circle"></i></button>{% elif expense.status == "rejected" %}<button type="button" class="expense-inline-icon expense-status-icon text-danger" data-bs-toggle="tooltip" data-bs-trigger="manual" data-bs-title="Отклонён{% if expense.reviewed_by %}: {{ expense.reviewed_by|finance_employee_name }} · {{ expense.reviewed_at|date:'d.m.Y H:i' }}{% endif %}" aria-label="Отклонён"><i class="bi bi-x-circle"></i></button>{% else %}<button type="button" class="expense-inline-icon expense-status-icon text-warning" data-bs-toggle="tooltip" data-bs-trigger="manual" data-bs-title="На проверке" aria-label="На проверке"><i class="bi bi-hourglass-split"></i></button>{% endif %}</td>
+            <td>{% finance_status_icon expense %}</td>
             <td class="text-end fw-semibold">{{ expense.amount|money }}</td>
           </tr>
         {% empty %}<tr><td colspan="7" class="text-center text-muted py-4">Расходов за период нет</td></tr>{% endfor %}
@@ -210,17 +210,6 @@
     });
 
     clearSelectionButton?.addEventListener("click", clearSelection);
-
-    root.querySelectorAll(".expense-status-icon").forEach((button) => {
-      if (typeof bootstrap === "undefined") return;
-      const tooltip = bootstrap.Tooltip.getOrCreateInstance(button, { trigger: "manual", placement: "top" });
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        tooltip.show();
-        window.setTimeout(() => tooltip.hide(), 1600);
-      });
-    });
 
     syncToolbar();
   });

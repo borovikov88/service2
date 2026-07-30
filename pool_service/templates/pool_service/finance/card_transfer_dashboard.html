@@ -81,13 +81,7 @@
               </div>
             </td>
             <td class="text-end">
-              {% if payment.status == "approved" %}
-                <span class="expense-inline-icon text-success" title="Подтверждено"><i class="bi bi-check-circle"></i></span>
-              {% elif payment.status == "rejected" %}
-                <span class="expense-inline-icon text-danger" title="Отклонено"><i class="bi bi-x-circle"></i></span>
-              {% else %}
-                <span class="expense-inline-icon text-warning" title="На проверке"><i class="bi bi-hourglass-split"></i></span>
-              {% endif %}
+              {% finance_status_icon payment %}
             </td>
             <td class="text-end">
               {% if payment.can_review %}

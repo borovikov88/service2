@@ -139,10 +139,7 @@
                 </td>
                 <td class="text-end fw-semibold">{{ expense.amount|money }}</td>
                 <td class="text-end">
-                  {% if expense.status == "approved" %}<span class="badge bg-success-subtle text-success border status-badge" title="Подтверждён"><i class="bi bi-check-circle"></i><span class="status-text">Подтверждён</span></span>
-                  {% elif expense.status == "rejected" %}<span class="badge bg-danger-subtle text-danger border status-badge" title="Отклонён"><i class="bi bi-x-circle"></i><span class="status-text">Отклонён</span></span>
-                  {% else %}<span class="badge bg-warning-subtle text-warning border status-badge" title="На проверке"><i class="bi bi-hourglass-split"></i><span class="status-text">На проверке</span></span>{% endif %}
-                  {% if expense.reviewed_by %}<div class="small text-muted mt-1">{{ expense.reviewed_by|finance_employee_name }} · {{ expense.reviewed_at|date:"d.m H:i" }}</div>{% endif %}
+                  {% finance_status_icon expense %}
                 </td>
               </tr>
             {% empty %}
@@ -170,10 +167,7 @@
               </div>
               <div class="text-end">
                 <div class="fw-bold">{{ movement.amount|money }}</div>
-                {% if movement.pending_action %}<span class="badge bg-warning-subtle text-warning border status-badge" title="Заявка на правку"><i class="bi bi-pencil-square"></i><span class="status-text">Заявка на правку</span></span>
-                {% elif movement.status == "pending" %}<span class="badge bg-warning-subtle text-warning border status-badge" title="На проверке"><i class="bi bi-hourglass-split"></i><span class="status-text">На проверке</span></span>
-                {% elif movement.status == "rejected" %}<span class="badge bg-danger-subtle text-danger border status-badge" title="Отклонён"><i class="bi bi-x-circle"></i><span class="status-text">Отклонён</span></span>{% endif %}
-                {% if movement.reviewed_by %}<div class="small text-muted mt-1">{{ movement.reviewed_by|finance_employee_name }} · {{ movement.reviewed_at|date:"d.m H:i" }}</div>{% endif %}
+                {% finance_status_icon movement %}
               </div>
             </div>
             {% if movement.can_confirm_issue %}

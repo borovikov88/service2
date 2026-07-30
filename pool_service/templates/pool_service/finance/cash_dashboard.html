@@ -137,11 +137,11 @@
             <td>{% if operation.receiver %}{{ operation.receiver|finance_employee_name }}{% elif operation.accountable_transaction %}{{ operation.accountable_transaction.employee|finance_employee_name }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
             <td class="text-end fw-semibold">{{ operation.amount|money }}</td>
             <td class="text-end">
-              {% if operation.status == "approved" %}<span class="badge bg-success-subtle text-success border status-badge"><i class="bi bi-check-circle"></i><span class="status-text">Подтверждено</span></span>
-              {% elif operation.status == "rejected" %}<span class="badge bg-danger-subtle text-danger border status-badge"><i class="bi bi-x-circle"></i><span class="status-text">Отклонено</span></span>
-              {% elif operation.operation_type == "manager_income" %}<span class="badge bg-warning-subtle text-warning border status-badge"><i class="bi bi-hourglass-split"></i><span class="status-text">Не подтверждено</span></span>
-              {% else %}<span class="badge bg-warning-subtle text-warning border status-badge"><i class="bi bi-hourglass-split"></i><span class="status-text">На проверке</span></span>{% endif %}
-              {% if operation.reviewed_by %}<div class="small text-muted mt-1">{{ operation.reviewed_by|finance_employee_name }} · {{ operation.reviewed_at|date:"d.m H:i" }}</div>{% endif %}
+              {% if operation.operation_type == "manager_income" %}
+                {% finance_status_icon operation "Не подтверждено" %}
+              {% else %}
+                {% finance_status_icon operation %}
+              {% endif %}
             </td>
             <td class="text-end">
                 {% if operation.status == "pending" and operation.operation_type != "accountable_issue" and operation.operation_type != "accountable_return" and can_manage_cash %}
