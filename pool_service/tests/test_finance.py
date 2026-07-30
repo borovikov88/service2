@@ -983,7 +983,7 @@ class FinanceTests(TestCase):
         self.assertIsNone(expense.client)
         self.assertEqual(expense.destination_name, "Офисные расходы")
 
-    def test_manager_cannot_review_own_expense_but_owner_can(self):
+    def test_manager_cannot_review_own_expense_but_close_roles_can_review_their_own(self):
         response = self.create_expense(
             user=self.manager,
             source=Expense.SOURCE_COMPANY_CASH,
@@ -1008,6 +1008,49 @@ class FinanceTests(TestCase):
         self.assertEqual(response.status_code, 302)
         expense.refresh_from_db()
         self.assertEqual(expense.status, Expense.STATUS_APPROVED)
+
+        response = self.create_expense(
+            user=self.accountant,
+            source=Expense.SOURCE_ACCOUNTABLE,
+            employee=self.accountant.id,
+            amount="700.00",
+            destination_type=Expense.DESTINATION_OFFICE,
+            destination_query="",
+        )
+        self.assertEqual(response.status_code, 302)
+        accountant_expense = Expense.objects.get(employee=self.accountant)
+        self.assertEqual(accountant_expense.status, Expense.STATUS_PENDING)
+
+        response = self.client.post(
+            reverse("finance_expense_review", kwargs={"expense_uuid": accountant_expense.uuid}),
+            {"decision": Expense.STATUS_APPROVED, "review_comment": "Документы в 1С"},
+        )
+        self.assertEqual(response.status_code, 302)
+        accountant_expense.refresh_from_db()
+        self.assertEqual(accountant_expense.status, Expense.STATUS_APPROVED)
+        self.assertEqual(accountant_expense.reviewed_by, self.accountant)
+
+    def test_accountant_can_review_own_accountable_income(self):
+        movement = AccountableTransaction.objects.create(
+            organization=self.organization,
+            employee=self.accountant,
+            created_by=self.accountant,
+            transaction_type=AccountableTransaction.TYPE_CLIENT_PAYMENT,
+            amount="1200.00",
+            occurred_on=date.today(),
+            status=AccountableTransaction.STATUS_PENDING,
+        )
+        self.client.force_login(self.accountant)
+
+        response = self.client.post(
+            reverse("finance_transaction_review", kwargs={"transaction_id": movement.id}),
+            {"decision": AccountableTransaction.STATUS_APPROVED, "review_comment": "Приходник в 1С"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        movement.refresh_from_db()
+        self.assertEqual(movement.status, AccountableTransaction.STATUS_APPROVED)
+        self.assertEqual(movement.reviewed_by, self.accountant)
 
     def test_only_expense_creator_can_delete_expense(self):
         self.create_expense()

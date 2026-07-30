@@ -83,7 +83,7 @@ def can_review_expense(user, expense):
     if not can_manage_finance(user, expense.organization):
         return False
     roles = organization_roles(user, expense.organization)
-    if "owner" in roles or user.is_superuser:
+    if roles & FINANCE_CLOSE_ROLES or user.is_superuser:
         return True
     return user.id not in {expense.employee_id, expense.created_by_id}
 
@@ -110,9 +110,7 @@ def can_review_accountable_transaction(user, movement):
     roles = organization_roles(user, movement.organization)
     if not roles & FINANCE_CLOSE_ROLES:
         return False
-    if roles & {"owner", "admin"}:
-        return True
-    return user.id not in {movement.employee_id, movement.created_by_id}
+    return True
 
 
 def can_confirm_accountable_issue(user, movement):
