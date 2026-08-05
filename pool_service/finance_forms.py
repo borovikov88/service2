@@ -211,6 +211,7 @@ class ClientPaymentForm(forms.ModelForm):
 
 
 class CardTransferPaymentForm(forms.ModelForm):
+    receipt_missing_confirmed = forms.BooleanField(required=False, widget=forms.HiddenInput)
     destination_query = forms.CharField(
         required=True,
         label="Клиент",
@@ -226,7 +227,7 @@ class CardTransferPaymentForm(forms.ModelForm):
     )
     client_id = forms.IntegerField(required=False, widget=forms.HiddenInput(attrs={"data-client-id": "1"}))
     attachments = MultipleFileField(
-        required=True,
+        required=False,
         label="Фото или файл оплаты",
         widget=MultipleFileInput(
             attrs={
@@ -270,11 +271,15 @@ class CardTransferPaymentForm(forms.ModelForm):
     def clean_attachments(self):
         files = self.cleaned_data.get("attachments") or []
         if not files:
-            raise forms.ValidationError("Приложите фото или PDF подтверждения оплаты.")
+            return []
         return validate_receipts(files)
 
     def clean(self):
         cleaned = super().clean()
+        files = cleaned.get("attachments") or []
+        skip_receipt = self.data.get("receipt_missing_confirmed") in {"1", "true", "True", "on"}
+        if not files and not skip_receipt:
+            raise forms.ValidationError("Приложите фото/PDF подтверждения оплаты или нажмите «Пропустить».")
         client_id = cleaned.get("client_id")
         destination_query = (cleaned.get("destination_query") or "").strip()
         if client_id:

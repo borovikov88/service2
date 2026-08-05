@@ -606,9 +606,13 @@ def finance_card_transfer_create(request):
             payment.client = client
             payment.created_by = request.user
             payment.status = CardTransferPayment.STATUS_PENDING
+            payment.receipt_missing_confirmed = bool(form.cleaned_data.get("receipt_missing_confirmed")) and not bool(
+                form.cleaned_data["attachments"]
+            )
             payment.full_clean()
             payment.save()
-            _save_card_transfer_attachments(payment, form.cleaned_data["attachments"], request.user)
+            if form.cleaned_data["attachments"]:
+                _save_card_transfer_attachments(payment, form.cleaned_data["attachments"], request.user)
             CardTransferPaymentChange.objects.create(
                 payment=payment,
                 actor=request.user,

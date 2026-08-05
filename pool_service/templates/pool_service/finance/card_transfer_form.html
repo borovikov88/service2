@@ -24,9 +24,10 @@
   </div>
   {% endif %}
 
-  <form method="post" enctype="multipart/form-data" class="{% if not finance_modal %}card card-soft p-3 p-lg-4{% endif %}" id="card-transfer-form">
+  <form method="post" enctype="multipart/form-data" class="{% if not finance_modal %}card card-soft p-3 p-lg-4{% endif %}" id="card-transfer-form" data-receipt-required="1">
     {% csrf_token %}
     {{ form.client_id }}
+    {{ form.receipt_missing_confirmed }}
     <div class="row g-3">
       <div class="col-12 col-md-6">
         <label class="form-label" for="{{ form.destination_query.id_for_label }}">{{ form.destination_query.label }}</label>
@@ -61,6 +62,7 @@
         <label class="form-label" for="{{ form.attachments.id_for_label }}">{{ form.attachments.label }}</label>
         {{ form.attachments }}
         <div class="form-text">До 5 файлов JPG, PNG, WEBP или PDF, каждый до 10 МБ.</div>
+        <button type="button" class="btn btn-link text-muted text-decoration-none px-0 mt-1" data-receipt-skip>Пропустить без чека</button>
         {% for error in form.attachments.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
       </div>
     </div>
@@ -70,6 +72,27 @@
       <a href="{% url 'finance_card_transfer_dashboard' %}" class="btn btn-outline-secondary" {% if finance_modal %}data-finance-modal-cancel{% endif %}>Отмена</a>
     </div>
   </form>
+</div>
+
+<div class="modal fade" id="receiptRequiredModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title h5 mb-0">Прикрепите подтверждение оплаты</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+      </div>
+      <div class="modal-body">
+        Добавьте фото или PDF подтверждения оплаты. Если подтверждения нет, можно пропустить, но перечисление уйдёт на проверку с отметкой без чека.
+      </div>
+      <div class="modal-footer justify-content-between">
+        <button type="button" class="btn btn-link text-muted text-decoration-none px-0" data-receipt-skip>Пропустить без чека</button>
+        <div class="d-flex gap-2">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Вернуться</button>
+          <button type="button" class="btn btn-primary" data-receipt-add-photo>Добавить фото</button>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 {{ client_options|json_script:"finance-client-data" }}
@@ -96,6 +119,40 @@
     clientQuery.addEventListener("input", syncClientId);
     clientQuery.addEventListener("change", syncClientId);
     syncClientId();
+
+    const form = document.getElementById("card-transfer-form");
+    const attachments = document.querySelector("[data-finance-receipts]");
+    const skipReceipt = document.querySelector("[name='receipt_missing_confirmed']");
+    const receiptModalElement = document.getElementById("receiptRequiredModal");
+    const receiptModal = receiptModalElement && typeof bootstrap !== "undefined" ? bootstrap.Modal.getOrCreateInstance(receiptModalElement) : null;
+    const addReceiptButton = document.querySelector("[data-receipt-add-photo]");
+
+    attachments?.addEventListener("change", function () {
+      if (skipReceipt && attachments.files.length) skipReceipt.value = "";
+    });
+
+    form?.addEventListener("submit", function (event) {
+      if ((skipReceipt && skipReceipt.value === "1") || (attachments && attachments.files.length)) return;
+      event.preventDefault();
+      if (receiptModal) {
+        receiptModal.show();
+      } else {
+        alert("Добавьте фото или PDF подтверждения оплаты либо нажмите «Пропустить».");
+      }
+    });
+
+    document.querySelectorAll("[data-receipt-skip]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        if (skipReceipt) skipReceipt.value = "1";
+        if (receiptModal) receiptModal.hide();
+        form?.requestSubmit();
+      });
+    });
+
+    addReceiptButton?.addEventListener("click", function () {
+      if (receiptModal) receiptModal.hide();
+      document.dispatchEvent(new CustomEvent("rovik:open-photo-picker", { detail: { input: attachments, mode: "file" } }));
+    });
 
     document.querySelector("[data-finance-modal-cancel]")?.addEventListener("click", function (event) {
       event.preventDefault();

@@ -149,6 +149,8 @@ class FinanceOnlyRoleMiddleware:
             if finance_only and request.path.startswith("/pools/"):
                 if request.path.endswith("/service-details/"):
                     return self.get_response(request)
+                if request.path.endswith("/edit/"):
+                    return self.get_response(request)
                 if request.method in {"GET", "HEAD", "OPTIONS"}:
                     return self.get_response(request)
                 return HttpResponseForbidden()

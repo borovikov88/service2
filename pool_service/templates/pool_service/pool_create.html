@@ -192,6 +192,13 @@
                     {{ form.service_frequency }}
                     {% if form.service_frequency.errors %}<div class="text-danger small mt-1">{{ form.service_frequency.errors.0 }}</div>{% endif %}
                 </div>
+                {% if form.service_monthly_price %}
+                <div class="col-md-6">
+                    <label class="form-label" for="{{ form.service_monthly_price.id_for_label }}">Стоимость обслуживания в месяц</label>
+                    {{ form.service_monthly_price }}
+                    {% if form.service_monthly_price.errors %}<div class="text-danger small mt-1">{{ form.service_monthly_price.errors.0 }}</div>{% endif %}
+                </div>
+                {% endif %}
                 <div class="col-md-6 d-flex align-items-center">
                     <div class="form-check mt-3 mt-md-4">
                         {{ form.daily_readings_required }}
@@ -206,6 +213,13 @@
                     </div>
                     {% if form.service_suspended.errors %}<div class="text-danger small mt-1">{{ form.service_suspended.errors.0 }}</div>{% endif %}
                 </div>
+                {% if form.service_details_comment %}
+                <div class="col-12">
+                    <label class="form-label" for="{{ form.service_details_comment.id_for_label }}">Комментарий по обслуживанию</label>
+                    {{ form.service_details_comment }}
+                    {% if form.service_details_comment.errors %}<div class="text-danger small mt-1">{{ form.service_details_comment.errors.0 }}</div>{% endif %}
+                </div>
+                {% endif %}
             </div>
         </div>
         <div class="d-flex gap-2">

@@ -1542,6 +1542,7 @@ class CardTransferPayment(models.Model):
     paid_on = models.DateField()
     purpose = models.CharField(max_length=255)
     note = models.TextField(blank=True)
+    receipt_missing_confirmed = models.BooleanField(default=False)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
     created_by = models.ForeignKey(
         User,

@@ -856,6 +856,7 @@ class FinanceTests(TestCase):
         self.assertContains(filtered, "Обслуживание объекта")
         self.assertContains(filtered, reverse("finance_card_transfer_detail", kwargs={"payment_id": payment.id}))
         self.assertContains(filtered, "data-receipt-modal")
+        self.assertContains(filtered, self.manager.first_name)
         self.assertNotContains(filtered, "Подтвердил:")
 
         detail = self.client.get(reverse("finance_card_transfer_detail", kwargs={"payment_id": payment.id}))
@@ -868,6 +869,30 @@ class FinanceTests(TestCase):
         self.assertEqual(denied.status_code, 403)
         denied_detail = self.client.get(reverse("finance_card_transfer_detail", kwargs={"payment_id": payment.id}))
         self.assertEqual(denied_detail.status_code, 403)
+
+    def test_card_transfer_can_be_created_without_receipt_when_confirmed(self):
+        client = Client.objects.create(organization=self.organization, name="No receipt transfer", client_type="private")
+
+        self.client.force_login(self.manager)
+        created = self.client.post(
+            reverse("finance_card_transfer_create"),
+            {
+                "destination_query": client.name,
+                "client_id": client.id,
+                "amount": "2500.00",
+                "paid_on": date.today().isoformat(),
+                "purpose": "Оплата без чека",
+                "receipt_missing_confirmed": "1",
+            },
+        )
+
+        self.assertEqual(created.status_code, 302)
+        payment = CardTransferPayment.objects.get()
+        self.assertTrue(payment.receipt_missing_confirmed)
+        self.assertFalse(CardTransferAttachment.objects.filter(payment=payment).exists())
+
+        dashboard = self.client.get(reverse("finance_card_transfer_dashboard"))
+        self.assertContains(dashboard, "bi-exclamation-circle")
 
     def test_card_transfer_close_role_can_review_own_payment(self):
         client = Client.objects.create(organization=self.organization, name="Свой клиент", client_type="private")

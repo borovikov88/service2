@@ -5065,7 +5065,7 @@ def pool_edit(request, pool_uuid):
 
     role = _pool_role_for_user(request.user, pool)
 
-    if role not in {"admin", "service"}:
+    if role not in {"admin", "service"} and not _can_view_pool_service_details(request.user, pool):
 
         return render(request, "403.html")
 
@@ -6330,13 +6330,10 @@ def pool_detail(request, pool_uuid):
 
 
 
-    can_edit_pool = role in {"admin", "service"}
+    can_view_service_details = _can_view_pool_service_details(request.user, pool)
+    can_edit_pool = role in {"admin", "service"} or can_view_service_details
 
     can_add_reading = role in {"editor", "service", "admin"}
-
-    can_view_service_details = _can_view_pool_service_details(request.user, pool)
-
-
 
     readings_list = WaterReading.objects.filter(pool=pool).select_related("added_by").order_by("-date")
 
@@ -6493,6 +6490,7 @@ def pool_detail(request, pool_uuid):
         "can_add_reading": can_add_reading,
 
         "can_view_service_details": can_view_service_details,
+        "service_monthly_price_display": format_money(pool.service_monthly_price or 0) if pool.service_monthly_price else None,
 
         "pagination_query": query_params.urlencode(),
 

@@ -82,7 +82,11 @@
             </a>
           </div>
         {% empty %}
-          <div class="col-12 text-muted">Фото или файл не приложен</div>
+          {% if payment.receipt_missing_confirmed %}
+            <div class="col-12"><span class="badge bg-warning-subtle text-warning border"><i class="bi bi-exclamation-circle me-1"></i>Чек отсутствует</span></div>
+          {% else %}
+            <div class="col-12 text-muted">Фото или файл не приложен</div>
+          {% endif %}
         {% endfor %}
       </div>
     </div>

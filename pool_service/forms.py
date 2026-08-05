@@ -747,6 +747,8 @@ class PoolForm(forms.ModelForm):
             "volume",
             "dosing_station",
             "service_frequency",
+            "service_monthly_price",
+            "service_details_comment",
             "service_suspended",
             "daily_readings_required",
             "water_system_type",
@@ -779,6 +781,16 @@ class PoolForm(forms.ModelForm):
             "volume": forms.NumberInput(attrs={"class": "form-control rounded-3", "step": "0.01"}),
             "dosing_station": forms.CheckboxInput(attrs={"class": "form-check-input"}),
             "service_frequency": forms.Select(attrs={"class": "form-select"}),
+            "service_monthly_price": forms.NumberInput(
+                attrs={"class": "form-control rounded-3", "step": "0.01", "min": "0", "placeholder": "Например, 25000"}
+            ),
+            "service_details_comment": forms.Textarea(
+                attrs={
+                    "class": "form-control rounded-3",
+                    "rows": 4,
+                    "placeholder": "Условия обслуживания, особенности доступа, договорённости с клиентом",
+                }
+            ),
             "service_suspended": forms.CheckboxInput(attrs={"class": "form-check-input"}),
             "daily_readings_required": forms.CheckboxInput(attrs={"class": "form-check-input"}),
             "water_system_type": forms.Select(attrs={"class": "form-select"}),
@@ -803,6 +815,17 @@ class PoolForm(forms.ModelForm):
             if mapped:
                 self.initial["service_frequency"] = mapped
         if user:
+            service_details_roles = {"owner", "admin", "manager", "accountant"}
+            can_edit_service_details = user.is_superuser
+            if not can_edit_service_details:
+                access_filter = {"user": user, "role__in": service_details_roles}
+                if getattr(self.instance, "organization_id", None):
+                    access_filter["organization_id"] = self.instance.organization_id
+                can_edit_service_details = OrganizationAccess.objects.filter(**access_filter).exists()
+            if not can_edit_service_details:
+                self.fields.pop("service_monthly_price", None)
+                self.fields.pop("service_details_comment", None)
+
             client_qs = Client.objects.none()
             client_self = Client.objects.filter(user=user)
 

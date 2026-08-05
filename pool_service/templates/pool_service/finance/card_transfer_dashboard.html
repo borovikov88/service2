@@ -48,6 +48,7 @@
         <tr>
           <th>Дата</th>
           <th>Клиент</th>
+          <th>Автор</th>
           <th class="text-end">Сумма</th>
           <th>За что</th>
           <th>Фото</th>
@@ -60,6 +61,7 @@
           <tr data-row-href="{% url 'finance_card_transfer_detail' payment.id %}">
             <td class="date-cell"><span>{{ payment.paid_on|date:"d.m" }}</span><span class="date-cell__year">{{ payment.paid_on|date:"Y" }}</span></td>
             <td>{{ payment.client.name }}</td>
+            <td>{{ payment.created_by|finance_employee_name }}</td>
             <td class="text-end fw-semibold">{{ payment.amount|money }}</td>
             <td>
               <div class="fw-semibold text-truncate" style="max-width:320px;">{{ payment.purpose }}</div>
@@ -76,7 +78,11 @@
                     {% endif %}
                   </a>
                 {% empty %}
-                  <span class="text-muted">—</span>
+                  {% if payment.receipt_missing_confirmed %}
+                    <span class="expense-inline-icon text-warning" title="Чек отсутствует"><i class="bi bi-exclamation-circle"></i></span>
+                  {% else %}
+                    <span class="text-muted">—</span>
+                  {% endif %}
                 {% endfor %}
               </div>
             </td>
@@ -103,7 +109,7 @@
             </td>
           </tr>
         {% empty %}
-          <tr><td colspan="7" class="text-center text-muted py-4">Перечислений пока нет</td></tr>
+          <tr><td colspan="8" class="text-center text-muted py-4">Перечислений пока нет</td></tr>
         {% endfor %}
       </tbody>
     </table>
