@@ -1,0 +1,22 @@
+<div class="col-12 col-md-6 col-lg-4">
+    <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
+        <i class="bi bi-calendar-check {% if is_water_object %}text-success{% else %}text-primary{% endif %}"></i>
+        <div class="small text-muted">Частота визитов</div>
+        <div class="ms-auto fw-semibold">{{ pool.get_service_frequency_display|default:"-" }}</div>
+    </div>
+</div>
+{% if can_view_service_details %}
+<div class="col-12 col-md-6 col-lg-4">
+    <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
+        <i class="bi bi-cash-coin text-success"></i>
+        <div class="small text-muted">Стоимость в месяц</div>
+        <div class="ms-auto fw-semibold">{% if service_monthly_price_display %}{{ service_monthly_price_display }}{% else %}-{% endif %}</div>
+    </div>
+</div>
+<div class="col-12">
+    <div class="p-2 rounded-3 bg-light">
+        <div class="small text-muted">Комментарий по обслуживанию</div>
+        <div class="fw-semibold" style="white-space: pre-wrap;">{{ pool.service_details_comment|default:"-"|linebreaksbr }}</div>
+    </div>
+</div>
+{% endif %}
