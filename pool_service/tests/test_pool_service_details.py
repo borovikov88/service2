@@ -26,6 +26,16 @@ class PoolServiceDetailsTests(TestCase):
             client=self.client_obj,
             organization=self.organization,
             address="Адрес объекта",
+            object_type=Pool.OBJECT_TYPE_POOL,
+            shape="rect",
+            pool_type="skimmer",
+            length=6.75,
+            width=3.73,
+            depth_min=1.5,
+            depth_max=2.0,
+            variable_depth=True,
+            surface_area=25.18,
+            volume=44.06,
             service_frequency=Pool.SERVICE_FREQ_MONTHLY,
             service_monthly_price=Decimal("15000.00"),
             service_details_comment="Внутренний комментарий",
@@ -68,7 +78,7 @@ class PoolServiceDetailsTests(TestCase):
                 "client": self.client_obj.id,
                 "address": self.pool.address,
                 "description": "",
-                "object_type": Pool.OBJECT_TYPE_POOL,
+                "object_type": Pool.OBJECT_TYPE_WATER,
                 "shape": "rect",
                 "pool_type": "skimmer",
                 "length": "",
@@ -91,3 +101,8 @@ class PoolServiceDetailsTests(TestCase):
         self.assertEqual(self.pool.service_monthly_price, Decimal("25000.50"))
         self.assertEqual(self.pool.service_frequency, Pool.SERVICE_FREQ_WEEKLY)
         self.assertEqual(self.pool.service_details_comment, "Комментарий по обслуживанию")
+        self.assertEqual(self.pool.object_type, Pool.OBJECT_TYPE_POOL)
+        self.assertEqual(self.pool.length, 6.75)
+        self.assertEqual(self.pool.width, 3.73)
+        self.assertEqual(self.pool.surface_area, 25.18)
+        self.assertEqual(self.pool.volume, 44.06)

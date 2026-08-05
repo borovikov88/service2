@@ -808,7 +808,17 @@ class PoolForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         user = kwargs.pop("user", None)
         selected_client_id = kwargs.pop("selected_client_id", None)
+        service_details_only = kwargs.pop("service_details_only", False)
         super().__init__(*args, **kwargs)
+        if service_details_only:
+            allowed_fields = {
+                "service_frequency",
+                "service_monthly_price",
+                "service_details_comment",
+            }
+            for field_name in list(self.fields):
+                if field_name not in allowed_fields:
+                    self.fields.pop(field_name)
         if "service_frequency" in self.fields and not self.initial.get("service_frequency"):
             interval = getattr(self.instance, "service_interval_days", None)
             mapped = _map_interval_to_frequency(interval)
@@ -826,32 +836,33 @@ class PoolForm(forms.ModelForm):
                 self.fields.pop("service_monthly_price", None)
                 self.fields.pop("service_details_comment", None)
 
-            client_qs = Client.objects.none()
-            client_self = Client.objects.filter(user=user)
+            if "client" in self.fields:
+                client_qs = Client.objects.none()
+                client_self = Client.objects.filter(user=user)
 
-            if user.is_superuser:
-                client_qs = Client.objects.all()
-                self.fields["client"].empty_label = "Выберите клиента"
-            elif client_self.exists():
-                client_qs = client_self
-                self.fields["client"].empty_label = None
-                self.fields["client"].initial = client_self.first()
-                self.fields["client"].widget = forms.HiddenInput()
-            else:
-                org_ids = OrganizationAccess.objects.filter(user=user).values_list("organization_id", flat=True)
-                if org_ids:
-                    client_qs = Client.objects.filter(organization_id__in=org_ids).distinct()
-                self.fields["client"].empty_label = "Выберите клиента"
+                if user.is_superuser:
+                    client_qs = Client.objects.all()
+                    self.fields["client"].empty_label = "Выберите клиента"
+                elif client_self.exists():
+                    client_qs = client_self
+                    self.fields["client"].empty_label = None
+                    self.fields["client"].initial = client_self.first()
+                    self.fields["client"].widget = forms.HiddenInput()
+                else:
+                    org_ids = OrganizationAccess.objects.filter(user=user).values_list("organization_id", flat=True)
+                    if org_ids:
+                        client_qs = Client.objects.filter(organization_id__in=org_ids).distinct()
+                    self.fields["client"].empty_label = "Выберите клиента"
 
-            self.fields["client"].queryset = client_qs
-            if selected_client_id:
-                try:
-                    selected_client = client_qs.get(pk=selected_client_id)
-                    self.fields["client"].initial = selected_client
-                except Client.DoesNotExist:
-                    pass
-            elif not client_self.exists():
-                self.fields["client"].initial = None
+                self.fields["client"].queryset = client_qs
+                if selected_client_id:
+                    try:
+                        selected_client = client_qs.get(pk=selected_client_id)
+                        self.fields["client"].initial = selected_client
+                    except Client.DoesNotExist:
+                        pass
+                elif not client_self.exists():
+                    self.fields["client"].initial = None
 
 
 class OrganizationWaterNormsForm(forms.ModelForm):

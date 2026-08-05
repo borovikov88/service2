@@ -7,6 +7,7 @@
     <h3 class="fw-bold h5 mb-3">{% if is_edit %}Редактирование объекта{% else %}Создание объекта{% endif %}</h3>
     <form method="post" class="offline-queue-form" action="{% if is_edit %}{% url 'pool_edit' pool.uuid %}{% else %}{% url 'pool_create' %}{% endif %}">
         {% csrf_token %}
+        {% if form.client %}
         {% if form.client.is_hidden %}
             {{ form.client }}
         {% endif %}
@@ -39,22 +40,30 @@
             </div>
         </div>
         {% endif %}
+        {% endif %}
+        {% if form.object_type %}
         <div class="mb-3">
             <label class="form-label">Тип объекта</label>
             {{ form.object_type }}
             {% if form.object_type.errors %}<div class="text-danger small mt-1">{{ form.object_type.errors.0 }}</div>{% endif %}
         </div>
+        {% endif %}
+        {% if form.address %}
         <div class="mb-3 position-relative">
             <label class="form-label">Адрес</label>
             {{ form.address }}
             <div id="address-suggest" class="list-group position-absolute w-100 shadow-sm" style="z-index:1050; max-height:240px; overflow-y:auto; display:none;"></div>
             {% if form.address.errors %}<div class="text-danger small mt-1">{{ form.address.errors.0 }}</div>{% endif %}
         </div>
+        {% endif %}
+        {% if form.description %}
         <div class="mb-3">
             <label class="form-label">Описание</label>
             {{ form.description }}
             {% if form.description.errors %}<div class="text-danger small mt-1">{{ form.description.errors.0 }}</div>{% endif %}
         </div>
+        {% endif %}
+        {% if form.shape %}
         <div class="card card-soft p-3 mb-3 js-object-pool">
             <h4 class="fw-bold h6 mb-3">Параметры бассейна</h4>
             <div class="row g-3">
@@ -129,6 +138,8 @@
                 </div>
             </div>
         </div>
+        {% endif %}
+        {% if form.water_system_type %}
         <div class="card card-soft p-3 mb-3 js-object-water d-none">
             <h4 class="fw-bold h6 mb-3">Параметры водоподготовки</h4>
             <div class="row g-3">
@@ -184,6 +195,7 @@
                 </div>
             </div>
         </div>
+        {% endif %}
         <div class="card card-soft p-3 mb-3">
             <h4 class="fw-bold h6 mb-3">&#1056;&#1077;&#1075;&#1083;&#1072;&#1084;&#1077;&#1085;&#1090; &#1086;&#1073;&#1089;&#1083;&#1091;&#1078;&#1080;&#1074;&#1072;&#1085;&#1080;&#1103;</h4>
             <div class="row g-3">

@@ -5064,8 +5064,10 @@ def pool_edit(request, pool_uuid):
     is_water_object = pool.object_type == Pool.OBJECT_TYPE_WATER
 
     role = _pool_role_for_user(request.user, pool)
+    can_view_service_details = _can_view_pool_service_details(request.user, pool)
+    service_details_only = role not in {"admin", "service"} and can_view_service_details
 
-    if role not in {"admin", "service"} and not _can_view_pool_service_details(request.user, pool):
+    if role not in {"admin", "service"} and not can_view_service_details:
 
         return render(request, "403.html")
 
@@ -5077,7 +5079,7 @@ def pool_edit(request, pool_uuid):
 
     if request.method == "POST":
 
-        form = PoolForm(request.POST, instance=pool, user=request.user)
+        form = PoolForm(request.POST, instance=pool, user=request.user, service_details_only=service_details_only)
 
         if form.is_valid():
 
@@ -5095,7 +5097,7 @@ def pool_edit(request, pool_uuid):
 
     else:
 
-        form = PoolForm(instance=pool, user=request.user)
+        form = PoolForm(instance=pool, user=request.user, service_details_only=service_details_only)
 
 
 
