@@ -20,6 +20,22 @@ private_media/
 .env.prod
 *.env
 
+# Local databases
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+
+# Local backups and data dumps
+backup/
+backup.json
+data*.json
+dump*.json
+*.dump.json
+*.dump
+*.bak
+
 # MySQL dumps
 *.sql
 
