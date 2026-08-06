@@ -5,7 +5,15 @@ from pathlib import Path
 
 from django import forms
 from django.contrib.auth.models import User
+from django.core.exceptions import ValidationError
 from PIL import Image, UnidentifiedImageError
+
+from pool_service.finance_imports.validators import (
+    MAX_XLSX_SIZE,
+    safe_original_filename,
+    stream_sha256,
+    validate_xlsx_archive,
+)
 
 from pool_service.models import (
     AccountableTransaction,
@@ -23,6 +31,26 @@ from pool_service.services.finance import (
     period_is_closed,
     user_display_name,
 )
+
+
+class MonthlyProfitUploadForm(forms.Form):
+    report = forms.FileField(
+        label="Отчёт 1С в формате XLSX",
+        help_text="Максимальный размер — 15 МБ. XLS и XLSM не поддерживаются.",
+        widget=forms.ClearableFileInput(attrs={"accept": ".xlsx"}),
+    )
+
+    def clean_report(self):
+        uploaded_file = self.cleaned_data["report"]
+        uploaded_file.name = safe_original_filename(uploaded_file.name)
+        if uploaded_file.size > MAX_XLSX_SIZE:
+            raise forms.ValidationError("Размер файла превышает 15 МБ.")
+        try:
+            validate_xlsx_archive(uploaded_file, size=uploaded_file.size, filename=uploaded_file.name)
+        except ValidationError as exc:
+            raise forms.ValidationError(exc.messages) from exc
+        uploaded_file.file_sha256 = stream_sha256(uploaded_file)
+        return uploaded_file
 
 
 CASH_DENOMINATIONS = [

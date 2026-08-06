@@ -1,0 +1,458 @@
+from datetime import date, timedelta
+from decimal import Decimal
+from io import BytesIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+import zipfile
+
+from django.contrib.auth.models import User
+from django.core.exceptions import ValidationError
+from django.core.files.base import ContentFile
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import IntegrityError, transaction
+from django.test import Client, TestCase, override_settings
+from django.urls import reverse
+from django.utils import timezone
+from openpyxl import Workbook
+
+from pool_service.finance_forms import MonthlyProfitUploadForm
+from pool_service.finance_imports.monthly_profit_parser import ParseResult, parse_decimal, parse_monthly_profit
+from pool_service.finance_imports.services import (
+    DuplicateImportError,
+    _preview_metadata,
+    calculate_profitability,
+    cancel_monthly_profit,
+    confirm_monthly_profit,
+    create_monthly_profit_preview,
+)
+from pool_service.finance_imports.validators import delete_private_batch_file
+from pool_service.models import OneCImportBatch, OneCMonthlyProfit, Organization, OrganizationAccess
+
+
+def xlsx_bytes(
+    *, year=2026, month_label="Январь 2026", rows=None, multilevel=True,
+    profitability_label="Рентабельность",
+):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Валовая прибыль"
+    sheet.append([f"Валовая прибыль за {year}" if year else "Валовая прибыль"])
+    if multilevel:
+        sheet.append(["Номенклатура", "Артикул", month_label, None, None, None, None])
+        sheet.append([None, None, "Количество", "Выручка", "Себестоимость", "Валовая прибыль", profitability_label])
+    else:
+        sheet.append([
+            "Номенклатура", "Артикул", f"{month_label} Количество", f"{month_label} Выручка",
+            f"{month_label} Себестоимость", f"{month_label} Валовая прибыль", f"{month_label} {profitability_label}",
+        ])
+    for row in rows or [["Товар A", "A-1", "1 234,56", "10 000,00", "7 000,00", "3 000,00", "30%"]]:
+        sheet.append(row)
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def upload(name="monthly-profit.xlsx", data=None, **kwargs):
+    return SimpleUploadedFile(
+        name, data if data is not None else xlsx_bytes(**kwargs),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+class MonthlyProfitParserTests(TestCase):
+    def test_simple_report_and_multilevel_header(self):
+        result = parse_monthly_profit(BytesIO(xlsx_bytes()), filename="report.xlsx")
+        self.assertEqual(len(result.records), 1)
+        self.assertEqual(result.records[0]["period_month"], date(2026, 1, 1))
+        self.assertEqual(result.records[0]["revenue"], Decimal("10000.00"))
+
+    def test_russian_month_variants(self):
+        for label, month in (("Янв. 2026", 1), ("сент 2026", 9), ("12.2026", 12), ("2026-04", 4)):
+            with self.subTest(label=label):
+                result = parse_monthly_profit(BytesIO(xlsx_bytes(month_label=label)), filename="r.xlsx")
+                self.assertEqual(result.records[0]["period_month"].month, month)
+
+    def test_decimal_formats_negative_and_percent(self):
+        self.assertEqual(parse_decimal("1 234,56"), Decimal("1234.56"))
+        self.assertEqual(parse_decimal("1\u00a0234,56"), Decimal("1234.56"))
+        self.assertEqual(parse_decimal("1,234.56"), Decimal("1234.56"))
+        self.assertEqual(parse_decimal("(1 234,56)"), Decimal("-1234.56"))
+        self.assertEqual(parse_decimal("30%", percent=True), Decimal("30"))
+        self.assertIsNone(parse_decimal("—"))
+
+    def test_profit_and_profitability_columns_are_distinct(self):
+        result = parse_monthly_profit(
+            BytesIO(xlsx_bytes(
+                profitability_label="% прибыли",
+                rows=[["Товар", "A-1", 1, 10000, 7000, 3000, 30]],
+            )),
+            filename="r.xlsx",
+        )
+        row = result.records[0]
+        self.assertEqual(row["gross_profit"], Decimal("3000.00"))
+        self.assertEqual(row["profitability_percent"], Decimal("30.0000"))
+
+    def test_profitability_header_variants(self):
+        for label in ("% прибыли", "Процент прибыли", "Рентабельность", "Рентаб., %"):
+            with self.subTest(label=label):
+                result = parse_monthly_profit(
+                    BytesIO(xlsx_bytes(
+                        profitability_label=label,
+                        rows=[["Товар", "A-1", 1, 10000, 7000, 3000, 30]],
+                    )),
+                    filename="r.xlsx",
+                )
+                row = result.records[0]
+                self.assertEqual(row["gross_profit"], Decimal("3000.00"))
+                self.assertEqual(row["profitability_percent"], Decimal("30.0000"))
+
+    def test_total_row_is_skipped(self):
+        rows = [["Товар", "1", 1, 10, 5, 5, 50], ["Итого", "", 1, 10, 5, 5, 50]]
+        result = parse_monthly_profit(BytesIO(xlsx_bytes(rows=rows)), filename="r.xlsx")
+        self.assertEqual(len(result.records), 1)
+        self.assertGreaterEqual(result.rows_skipped, 1)
+
+    def test_multiple_months_are_normalized(self):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["Отчёт за 2026 год"])
+        sheet.append(["Номенклатура", "Январь 2026", None, "Февраль 2026", None])
+        sheet.append([None, "Выручка", "Валовая прибыль", "Выручка", "Валовая прибыль"])
+        sheet.append(["Товар", 100, 40, 200, 70])
+        output = BytesIO(); workbook.save(output)
+        result = parse_monthly_profit(BytesIO(output.getvalue()), filename="r.xlsx")
+        self.assertEqual([row["period_month"].month for row in result.records], [1, 2])
+        self.assertEqual({row["source_row_number"] for row in result.records}, {4})
+
+    def test_product_name_starting_with_itogo_is_not_total(self):
+        result = parse_monthly_profit(
+            BytesIO(xlsx_bytes(rows=[["Итого вкусный товар", "A", 1, 10, 5, 5, 50]])),
+            filename="r.xlsx",
+        )
+        self.assertEqual(len(result.records), 1)
+
+    def test_formula_without_cached_value_creates_warning(self):
+        result = parse_monthly_profit(
+            BytesIO(xlsx_bytes(rows=[["Товар", "A", 1, "=1+1", 1, 1, 50]])),
+            filename="r.xlsx",
+        )
+        self.assertGreater(result.warnings_total, 0)
+        self.assertTrue(any("формулу" in item for item in result.warnings))
+
+    def test_source_data_is_bounded(self):
+        row = ["Товар", "A", 1, 10, 5, 5, 50] + ["x" * 1000] * 80
+        result = parse_monthly_profit(BytesIO(xlsx_bytes(rows=[row])), filename="r.xlsx")
+        cells = result.records[0]["source_data"]["cells"]
+        self.assertLessEqual(len(cells), 50)
+        self.assertTrue(all(not isinstance(value, str) or len(value) <= 500 for value in cells.values()))
+
+    def test_decimal_rounding_large_values_and_profitability(self):
+        result = parse_monthly_profit(
+            BytesIO(xlsx_bytes(rows=[["Товар", "A", "1.1234567", "-10.125", "-2.125", "-8", "80.12345"]])),
+            filename="r.xlsx",
+        )
+        row = result.records[0]
+        self.assertEqual(row["quantity"], Decimal("1.123457"))
+        self.assertEqual(row["revenue"], Decimal("-10.13"))
+        self.assertEqual(row["cost"], Decimal("-2.13"))
+        self.assertEqual(row["profitability_percent"], Decimal("80.1235"))
+        self.assertEqual(calculate_profitability(Decimal("1"), Decimal("3")), Decimal("33.3333"))
+        self.assertIsNone(calculate_profitability(Decimal("1"), Decimal("0")))
+
+        too_large = parse_monthly_profit(
+            BytesIO(xlsx_bytes(rows=[["Товар", "A", 1, "1000000000000000000", 1, 1, 1]])),
+            filename="r.xlsx",
+        )
+        self.assertIsNone(too_large.records[0]["revenue"])
+        self.assertGreater(too_large.warnings_total, 0)
+
+    def test_unknown_year_is_critical(self):
+        result = parse_monthly_profit(
+            BytesIO(xlsx_bytes(year=None, month_label="Январь")), filename="r.xlsx"
+        )
+        self.assertTrue(result.critical_errors)
+        self.assertEqual(result.records, [])
+
+
+class MonthlyProfitFormTests(TestCase):
+    def test_rejects_unsupported_file(self):
+        form = MonthlyProfitUploadForm(files={"report": SimpleUploadedFile("bad.xls", b"not xlsx")})
+        self.assertFalse(form.is_valid())
+
+    def test_rejects_renamed_non_xlsx(self):
+        form = MonthlyProfitUploadForm(files={"report": SimpleUploadedFile("bad.xlsx", b"<html></html>")})
+        self.assertFalse(form.is_valid())
+
+    def test_rejects_too_large_file(self):
+        form = MonthlyProfitUploadForm(files={"report": SimpleUploadedFile("big.xlsx", b"0" * (15 * 1024 * 1024 + 1))})
+        self.assertFalse(form.is_valid())
+
+    def test_rejects_zip_traversal(self):
+        source = BytesIO(xlsx_bytes())
+        output = BytesIO(source.getvalue())
+        with zipfile.ZipFile(output, "a") as archive:
+            archive.writestr("../escape.txt", "x")
+        form = MonthlyProfitUploadForm(files={"report": SimpleUploadedFile("bad.xlsx", output.getvalue())})
+        self.assertFalse(form.is_valid())
+
+
+class MonthlyProfitWorkflowTests(TestCase):
+    def setUp(self):
+        self.private_dir = TemporaryDirectory()
+        self.override = override_settings(PRIVATE_MEDIA_ROOT=self.private_dir.name)
+        self.override.enable()
+        self.addCleanup(self.override.disable)
+        self.addCleanup(self.private_dir.cleanup)
+        self.organization = Organization.objects.create(
+            name="Тестовая организация", paid_until=timezone.now() + timedelta(days=30)
+        )
+        self.user = User.objects.create_user("owner", password="test")
+        OrganizationAccess.objects.create(user=self.user, organization=self.organization, role="owner")
+        self.client.force_login(self.user)
+
+    def create_preview(self):
+        return create_monthly_profit_preview(upload(), self.organization, self.user)
+
+    def test_preview_does_not_create_profit_rows(self):
+        batch = self.create_preview()
+        self.assertEqual(batch.status, OneCImportBatch.STATUS_PREVIEWED)
+        self.assertEqual(OneCMonthlyProfit.objects.count(), 0)
+
+    def test_preview_metadata_has_explicit_limits(self):
+        result = ParseResult(
+            records=[{"nomenclature": "Товар", "revenue": Decimal("3"), "cost": Decimal("2"), "gross_profit": Decimal("1")}] * 40,
+            warnings=["x" * 500] * 80,
+            warnings_total=80,
+        )
+        metadata = _preview_metadata(result)
+        self.assertEqual(len(metadata["preview"]), 30)
+        self.assertEqual(len(metadata["warnings"]), 50)
+        self.assertEqual(metadata["warnings_hidden"], 30)
+        self.assertTrue(all(len(item) <= 300 for item in metadata["warnings"]))
+        self.assertEqual(metadata["totals"]["profitability_percent"], "33.3333")
+
+    def test_authorized_pages_render(self):
+        batch = self.create_preview()
+        for url in (
+            reverse("finance_onec_import_list"),
+            reverse("finance_onec_monthly_profit_upload"),
+            reverse("finance_onec_import_preview", args=[batch.id]),
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(self.client.get(url).status_code, 200)
+
+    def test_admin_and_accountant_can_access(self):
+        for role in ("admin", "accountant"):
+            user = User.objects.create_user(f"user-{role}", password="test")
+            OrganizationAccess.objects.create(user=user, organization=self.organization, role=role)
+            self.client.force_login(user)
+            with self.subTest(role=role):
+                self.assertEqual(self.client.get(reverse("finance_onec_import_list")).status_code, 200)
+
+    def test_confirm_creates_rows_and_second_confirm_is_rejected(self):
+        batch = self.create_preview()
+        confirmed = confirm_monthly_profit(batch.id, self.organization, self.user)
+        self.assertEqual(confirmed.rows_imported, 1)
+        self.assertEqual(OneCMonthlyProfit.objects.count(), 1)
+        with self.assertRaises(ValidationError):
+            confirm_monthly_profit(batch.id, self.organization, self.user)
+        self.assertEqual(OneCMonthlyProfit.objects.count(), 1)
+
+    def test_duplicate_sha_is_rejected(self):
+        payload = xlsx_bytes()
+        batch = create_monthly_profit_preview(upload(data=payload), self.organization, self.user)
+        with self.assertRaises(DuplicateImportError) as context:
+            create_monthly_profit_preview(upload(data=payload), self.organization, self.user)
+        self.assertEqual(context.exception.batch.id, batch.id)
+
+    def test_integrity_error_race_returns_existing_batch_and_removes_orphan(self):
+        payload = xlsx_bytes()
+        existing = create_monthly_profit_preview(upload(data=payload), self.organization, self.user)
+        storage = existing.stored_file.storage
+        before = set(Path(storage.location).rglob("*.xlsx"))
+        with patch("django.db.models.query.QuerySet.first", return_value=None):
+            with self.assertRaises(DuplicateImportError) as context:
+                create_monthly_profit_preview(upload(data=payload), self.organization, self.user)
+        self.assertEqual(context.exception.batch.id, existing.id)
+        self.assertEqual(set(Path(storage.location).rglob("*.xlsx")), before)
+
+    def test_storage_failure_does_not_create_batch_or_orphan(self):
+        storage = OneCImportBatch._meta.get_field("stored_file").storage
+        original_save = storage.save
+
+        def save_then_fail(name, content, max_length=None):
+            original_save(name, content, max_length=max_length)
+            raise OSError("storage failure")
+
+        before = set(Path(storage.location).rglob("*.xlsx"))
+        with patch.object(storage, "save", side_effect=save_then_fail):
+            with self.assertRaises(OSError):
+                create_monthly_profit_preview(upload(), self.organization, self.user)
+        self.assertEqual(OneCImportBatch.objects.count(), 0)
+        self.assertEqual(set(Path(storage.location).rglob("*.xlsx")), before)
+
+    def test_database_save_failure_removes_orphan_file(self):
+        storage = OneCImportBatch._meta.get_field("stored_file").storage
+        before = set(Path(storage.location).rglob("*.xlsx"))
+        with patch.object(OneCImportBatch, "save", side_effect=RuntimeError("db unavailable")):
+            with self.assertRaises(RuntimeError):
+                create_monthly_profit_preview(upload(), self.organization, self.user)
+        self.assertEqual(OneCImportBatch.objects.count(), 0)
+        self.assertEqual(set(Path(storage.location).rglob("*.xlsx")), before)
+
+    def test_parse_failure_keeps_diagnostic_file_bound_to_failed_batch(self):
+        workbook = Workbook(); workbook.active.append(["Неподдерживаемый отчёт"])
+        output = BytesIO(); workbook.save(output)
+        bad = SimpleUploadedFile("bad.xlsx", output.getvalue())
+        with self.assertRaises(Exception):
+            create_monthly_profit_preview(bad, self.organization, self.user)
+        batch = OneCImportBatch.objects.get()
+        self.assertEqual(batch.status, OneCImportBatch.STATUS_FAILED)
+        self.assertTrue(batch.stored_file.storage.exists(batch.stored_file.name))
+
+    def test_confirm_error_rolls_back_rows(self):
+        batch = self.create_preview()
+        record = parse_monthly_profit(BytesIO(xlsx_bytes()), filename="r.xlsx").records[0]
+        duplicate_result = ParseResult(records=[record, dict(record)])
+        with patch("pool_service.finance_imports.services.parse_monthly_profit", return_value=duplicate_result):
+            with self.assertRaises(IntegrityError):
+                confirm_monthly_profit(batch.id, self.organization, self.user)
+        self.assertEqual(OneCMonthlyProfit.objects.count(), 0)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, OneCImportBatch.STATUS_FAILED)
+
+    def test_disallowed_role_gets_forbidden(self):
+        manager = User.objects.create_user("manager", password="test")
+        OrganizationAccess.objects.create(user=manager, organization=self.organization, role="manager")
+        self.client.force_login(manager)
+        response = self.client.get(reverse("finance_onec_import_list"))
+        self.assertEqual(response.status_code, 403)
+
+    def test_anonymous_and_superuser_without_organization_are_denied(self):
+        self.client.logout()
+        response = self.client.get(reverse("finance_onec_import_list"))
+        self.assertEqual(response.status_code, 302)
+        superuser = User.objects.create_superuser("root", "root@example.test", "test")
+        self.client.force_login(superuser)
+        self.assertEqual(self.client.get(reverse("finance_onec_import_list")).status_code, 403)
+
+    def test_other_organization_batch_is_hidden(self):
+        batch = self.create_preview()
+        other_org = Organization.objects.create(name="Другая", paid_until=timezone.now() + timedelta(days=30))
+        other = User.objects.create_user("other", password="test")
+        OrganizationAccess.objects.create(user=other, organization=other_org, role="owner")
+        self.client.force_login(other)
+        response = self.client.get(reverse("finance_onec_import_preview", args=[batch.id]))
+        self.assertEqual(response.status_code, 404)
+
+    def test_tampered_batch_uuid_is_not_found(self):
+        self.assertEqual(
+            self.client.get(reverse("finance_onec_import_preview", args=["00000000-0000-0000-0000-000000000000"])).status_code,
+            404,
+        )
+
+    def test_confirm_and_cancel_are_post_only(self):
+        batch = self.create_preview()
+        self.assertEqual(self.client.get(reverse("finance_onec_import_confirm", args=[batch.id])).status_code, 405)
+        self.assertEqual(self.client.get(reverse("finance_onec_import_cancel", args=[batch.id])).status_code, 405)
+
+    def test_confirm_requires_csrf(self):
+        batch = self.create_preview()
+        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client.force_login(self.user)
+        response = csrf_client.post(reverse("finance_onec_import_confirm", args=[batch.id]))
+        self.assertEqual(response.status_code, 403)
+
+    def test_cancel_removes_private_file_and_confirmed_cannot_cancel(self):
+        batch = self.create_preview()
+        path = batch.stored_file.path
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(reverse("finance_onec_import_cancel", args=[batch.id]))
+        self.assertEqual(response.status_code, 302)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, OneCImportBatch.STATUS_CANCELLED)
+        self.assertFalse(batch.stored_file.storage.exists(batch.stored_file.name))
+
+        confirmed = create_monthly_profit_preview(upload(rows=[["Товар B", "B", 1, 2, 1, 1, 50]]), self.organization, self.user)
+        confirm_monthly_profit(confirmed.id, self.organization, self.user)
+        self.client.post(reverse("finance_onec_import_cancel", args=[confirmed.id]))
+        confirmed.refresh_from_db()
+        self.assertEqual(confirmed.status, OneCImportBatch.STATUS_CONFIRMED)
+
+    def test_stale_preview_cannot_cancel_confirmed_batch(self):
+        stale = self.create_preview()
+        confirm_monthly_profit(stale.id, self.organization, self.user)
+        with self.assertRaises(ValidationError):
+            cancel_monthly_profit(stale, self.user)
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, OneCImportBatch.STATUS_CONFIRMED)
+        self.assertTrue(stale.stored_file.storage.exists(stale.stored_file.name))
+
+    def test_batch_source_row_unique_constraint(self):
+        batch = self.create_preview()
+        kwargs = dict(
+            import_batch=batch, organization=self.organization, period_month=date(2026, 1, 1),
+            source_row_number=1, nomenclature="Товар",
+        )
+        OneCMonthlyProfit.objects.create(**kwargs)
+        with self.assertRaises(IntegrityError):
+                with transaction.atomic(): OneCMonthlyProfit.objects.create(**kwargs)
+
+    def test_batch_and_organization_delete_remove_only_owned_file(self):
+        batch = self.create_preview()
+        storage = batch.stored_file.storage
+        owned_name = batch.stored_file.name
+        unrelated_name = storage.save("unrelated.txt", ContentFile(b"keep"))
+
+        with self.captureOnCommitCallbacks(execute=True):
+            batch.delete()
+        self.assertFalse(storage.exists(owned_name))
+        self.assertTrue(storage.exists(unrelated_name))
+
+        second = self.create_preview()
+        second_name = second.stored_file.name
+        with self.captureOnCommitCallbacks(execute=True):
+            self.organization.delete()
+        self.assertFalse(storage.exists(second_name))
+        self.assertTrue(storage.exists(unrelated_name))
+        storage.delete(unrelated_name)
+
+    def test_file_deletion_waits_for_database_commit(self):
+        batch = self.create_preview()
+        batch_id = batch.pk
+        stored_name = batch.stored_file.name
+        storage = batch.stored_file.storage
+
+        with self.assertRaises(RuntimeError):
+            with transaction.atomic():
+                batch.delete()
+                raise RuntimeError("rollback")
+
+        self.assertTrue(OneCImportBatch.objects.filter(pk=batch_id).exists())
+        self.assertTrue(storage.exists(stored_name))
+
+    def test_cancel_rollback_does_not_delete_file(self):
+        batch = self.create_preview()
+        stored_name = batch.stored_file.name
+        storage = batch.stored_file.storage
+
+        with self.assertRaises(RuntimeError):
+            with transaction.atomic():
+                cancel_monthly_profit(batch, self.user)
+                raise RuntimeError("rollback")
+
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, OneCImportBatch.STATUS_PREVIEWED)
+        self.assertTrue(storage.exists(stored_name))
+
+    def test_guarded_delete_rejects_tampered_path(self):
+        batch = self.create_preview()
+        storage = batch.stored_file.storage
+        unrelated_name = storage.save("unrelated.txt", ContentFile(b"keep"))
+        original_name = batch.stored_file.name
+        batch.stored_file.name = unrelated_name
+        self.assertFalse(delete_private_batch_file(batch))
+        self.assertTrue(storage.exists(unrelated_name))
+        self.assertTrue(storage.exists(original_name))
+        storage.delete(unrelated_name)

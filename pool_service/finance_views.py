@@ -3,6 +3,7 @@ from datetime import date
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
+import logging
 
 import tablib
 from PIL import Image, ImageOps
@@ -11,6 +12,8 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
 from django.db import transaction
+from django.db.models import Sum
+from django.core.paginator import Paginator
 from django.http import FileResponse, HttpResponse, HttpResponseForbidden, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -30,6 +33,7 @@ from pool_service.finance_forms import (
     ManagerCashAccountableIssueForm,
     ManagerCashIncomeForm,
     ManagerCashTransferForm,
+    MonthlyProfitUploadForm,
 )
 from pool_service.models import (
     AccountableTransaction,
@@ -46,6 +50,15 @@ from pool_service.models import (
     ExpenseChange,
     ExpensePeriod,
     ExpenseReceipt,
+    OneCImportBatch,
+    OneCMonthlyProfit,
+)
+from pool_service.finance_imports.services import (
+    DuplicateImportError,
+    calculate_profitability,
+    cancel_monthly_profit,
+    confirm_monthly_profit,
+    create_monthly_profit_preview,
 )
 from pool_service.services.finance import (
     accountable_balance,
@@ -80,9 +93,15 @@ from pool_service.services.finance import (
 )
 from pool_service.services.permissions import is_org_access_blocked, organization_for_user
 
+logger = logging.getLogger(__name__)
+
 
 def _organization_for_finance(request):
     return organization_for_user(request.user)
+
+
+def _onec_import_guard(request):
+    return _finance_guard(request, manage=True)
 
 
 def _finance_guard(request, *, manage=False, close=False, issue=False):
@@ -2203,3 +2222,122 @@ def finance_period_reopen(request):
     period.save(update_fields=["closed_at", "closed_by"])
     messages.success(request, "Месяц снова открыт.")
     return redirect(f"{reverse('finance_report')}?month={month}")
+
+
+@login_required
+def finance_onec_import_list(request):
+    organization, denied = _onec_import_guard(request)
+    if denied:
+        return denied
+    batches = OneCImportBatch.objects.filter(organization=organization).select_related("uploaded_by")
+    return render(request, "pool_service/finance/onec_import_list.html", {
+        "batches": batches,
+        "active_tab": "finance",
+    })
+
+
+@login_required
+def finance_onec_monthly_profit_upload(request):
+    organization, denied = _onec_import_guard(request)
+    if denied:
+        return denied
+    form = MonthlyProfitUploadForm(request.POST or None, request.FILES or None)
+    if request.method == "POST" and form.is_valid():
+        try:
+            batch = create_monthly_profit_preview(form.cleaned_data["report"], organization, request.user)
+        except DuplicateImportError as exc:
+            messages.info(request, "Этот файл уже загружен. Открыт существующий импорт.")
+            target = "finance_onec_import_preview" if exc.batch.status == OneCImportBatch.STATUS_PREVIEWED else "finance_onec_import_detail"
+            return redirect(target, batch_id=exc.batch.id)
+        except Exception as exc:
+            logger.exception(
+                "1C import upload failed organization=%s user=%s error_type=%s",
+                organization.id,
+                request.user.id,
+                type(exc).__name__,
+            )
+            messages.error(request, "Не удалось обработать XLSX. Проверьте формат отчёта.")
+            return redirect("finance_onec_import_list")
+        return redirect("finance_onec_import_preview", batch_id=batch.id)
+    return render(request, "pool_service/finance/onec_import_upload.html", {
+        "form": form,
+        "active_tab": "finance",
+    })
+
+
+@login_required
+def finance_onec_import_preview(request, batch_id):
+    organization, denied = _onec_import_guard(request)
+    if denied:
+        return denied
+    batch = get_object_or_404(OneCImportBatch, id=batch_id, organization=organization)
+    return render(request, "pool_service/finance/onec_import_preview.html", {
+        "batch": batch,
+        "preview": batch.metadata.get("preview", []),
+        "report": batch.metadata.get("report", {}),
+        "totals": batch.metadata.get("totals", {}),
+        "warnings": batch.metadata.get("warnings", []),
+        "warnings_hidden": batch.metadata.get("warnings_hidden", 0),
+        "critical_errors": batch.metadata.get("critical_errors", []),
+        "can_confirm": batch.status == OneCImportBatch.STATUS_PREVIEWED and not batch.metadata.get("critical_errors"),
+        "active_tab": "finance",
+    })
+
+
+@require_POST
+@login_required
+def finance_onec_import_confirm(request, batch_id):
+    organization, denied = _onec_import_guard(request)
+    if denied:
+        return denied
+    batch = get_object_or_404(OneCImportBatch, id=batch_id, organization=organization)
+    if batch.status != OneCImportBatch.STATUS_PREVIEWED:
+        messages.error(request, "Этот импорт уже обработан или недоступен для подтверждения.")
+        return redirect("finance_onec_import_detail", batch_id=batch.id)
+    try:
+        batch = confirm_monthly_profit(batch.id, organization, request.user)
+    except Exception:
+        messages.error(request, "Импорт не выполнен. Частичные данные не сохранены.")
+        return redirect("finance_onec_import_preview", batch_id=batch.id)
+    messages.success(request, "Отчёт 1С импортирован.")
+    return redirect("finance_onec_import_detail", batch_id=batch.id)
+
+
+@require_POST
+@login_required
+def finance_onec_import_cancel(request, batch_id):
+    organization, denied = _onec_import_guard(request)
+    if denied:
+        return denied
+    batch = get_object_or_404(OneCImportBatch, id=batch_id, organization=organization)
+    try:
+        cancel_monthly_profit(batch, request.user)
+    except Exception:
+        messages.error(request, "Подтверждённый импорт отменить нельзя.")
+    else:
+        messages.success(request, "Импорт отменён, временный файл удалён.")
+    return redirect("finance_onec_import_detail", batch_id=batch.id)
+
+
+@login_required
+def finance_onec_import_detail(request, batch_id):
+    organization, denied = _onec_import_guard(request)
+    if denied:
+        return denied
+    batch = get_object_or_404(OneCImportBatch, id=batch_id, organization=organization)
+    rows = OneCMonthlyProfit.objects.filter(import_batch=batch, organization=organization)
+    totals = rows.aggregate(revenue=Sum("revenue"), cost=Sum("cost"), gross_profit=Sum("gross_profit"))
+    revenue = totals["revenue"] or Decimal("0")
+    gross_profit = totals["gross_profit"] or Decimal("0")
+    totals["profitability_percent"] = calculate_profitability(gross_profit, revenue)
+    monthly = list(rows.values("period_month").annotate(
+        revenue=Sum("revenue"), cost=Sum("cost"), gross_profit=Sum("gross_profit")
+    ).order_by("period_month"))
+    for item in monthly:
+        month_revenue = item["revenue"] or Decimal("0")
+        item["profitability_percent"] = calculate_profitability(item["gross_profit"], month_revenue)
+    page = Paginator(rows.order_by("period_month", "source_row_number"), 50).get_page(request.GET.get("page"))
+    return render(request, "pool_service/finance/onec_import_detail.html", {
+        "batch": batch, "totals": totals, "monthly": monthly, "page_obj": page,
+        "active_tab": "finance",
+    })

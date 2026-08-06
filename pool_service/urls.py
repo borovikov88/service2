@@ -132,6 +132,12 @@ from .finance_views import (
     finance_transaction_create,
     finance_transaction_review,
     finance_transaction_void,
+    finance_onec_import_list,
+    finance_onec_monthly_profit_upload,
+    finance_onec_import_preview,
+    finance_onec_import_confirm,
+    finance_onec_import_cancel,
+    finance_onec_import_detail,
 )
 
 urlpatterns = [
@@ -262,6 +268,12 @@ urlpatterns = [
     path("finance/reports/export/", finance_report_export, name="finance_report_export"),
     path("finance/period/close/", finance_period_close, name="finance_period_close"),
     path("finance/period/reopen/", finance_period_reopen, name="finance_period_reopen"),
+    path("finance/1c-imports/", finance_onec_import_list, name="finance_onec_import_list"),
+    path("finance/1c-imports/monthly-profit/upload/", finance_onec_monthly_profit_upload, name="finance_onec_monthly_profit_upload"),
+    path("finance/1c-imports/<uuid:batch_id>/preview/", finance_onec_import_preview, name="finance_onec_import_preview"),
+    path("finance/1c-imports/<uuid:batch_id>/confirm/", finance_onec_import_confirm, name="finance_onec_import_confirm"),
+    path("finance/1c-imports/<uuid:batch_id>/cancel/", finance_onec_import_cancel, name="finance_onec_import_cancel"),
+    path("finance/1c-imports/<uuid:batch_id>/", finance_onec_import_detail, name="finance_onec_import_detail"),
     path("clients/create/", client_create, name="client_create"),
     path("clients/<int:client_id>/edit/", client_edit, name="client_edit"),
     path("clients/<int:client_id>/delete/", client_delete, name="client_delete"),
