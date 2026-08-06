@@ -46,6 +46,15 @@
             <label class="form-label">Тип объекта</label>
             {{ form.object_type }}
             {% if form.object_type.errors %}<div class="text-danger small mt-1">{{ form.object_type.errors.0 }}</div>{% endif %}
+            {% if is_edit and form.confirm_object_type_change %}
+            <div class="form-check mt-2">
+                {{ form.confirm_object_type_change }}
+                <label class="form-check-label" for="{{ form.confirm_object_type_change.id_for_label }}">
+                    {{ form.confirm_object_type_change.label }}
+                </label>
+                {% if form.confirm_object_type_change.errors %}<div class="text-danger small mt-1">{{ form.confirm_object_type_change.errors.0 }}</div>{% endif %}
+            </div>
+            {% endif %}
         </div>
         {% endif %}
         {% if form.address %}

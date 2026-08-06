@@ -6,7 +6,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from pool_service.models import Client, Organization, OrganizationAccess, Pool
+from pool_service.models import Client, DataAuditLog, Organization, OrganizationAccess, Pool, WaterReading
 
 
 class PoolServiceDetailsTests(TestCase):
@@ -17,6 +17,12 @@ class PoolServiceDetailsTests(TestCase):
             user=self.user,
             organization=self.organization,
             role="accountant",
+        )
+        self.admin_user = User.objects.create_user(username="admin", password="password")
+        OrganizationAccess.objects.create(
+            user=self.admin_user,
+            organization=self.organization,
+            role="admin",
         )
         self.client_obj = Client.objects.create(
             name="Клиент",
@@ -106,3 +112,68 @@ class PoolServiceDetailsTests(TestCase):
         self.assertEqual(self.pool.width, 3.73)
         self.assertEqual(self.pool.surface_area, 25.18)
         self.assertEqual(self.pool.volume, 44.06)
+
+    def test_pool_type_change_with_history_requires_explicit_confirmation(self):
+        WaterReading.objects.create(
+            pool=self.pool,
+            date=timezone.now(),
+            added_by=self.admin_user,
+            comment="История есть",
+        )
+        self.client.force_login(self.admin_user)
+
+        payload = {
+            "client": self.client_obj.id,
+            "address": self.pool.address,
+            "description": "",
+            "object_type": Pool.OBJECT_TYPE_WATER,
+            "shape": "rect",
+            "pool_type": "skimmer",
+            "length": "6.75",
+            "width": "3.73",
+            "diameter": "",
+            "depth": "",
+            "depth_min": "1.5",
+            "depth_max": "2.0",
+            "overflow_volume": "",
+            "surface_area": "25.18",
+            "volume": "44.06",
+            "service_frequency": Pool.SERVICE_FREQ_MONTHLY,
+            "service_monthly_price": "15000.00",
+            "service_details_comment": "Внутренний комментарий",
+        }
+        response = self.client.post(reverse("pool_edit", kwargs={"pool_uuid": self.pool.uuid}), payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Подтвердите смену типа объекта")
+        self.pool.refresh_from_db()
+        self.assertEqual(self.pool.object_type, Pool.OBJECT_TYPE_POOL)
+
+        payload["confirm_object_type_change"] = "on"
+        response = self.client.post(reverse("pool_edit", kwargs={"pool_uuid": self.pool.uuid}), payload)
+        self.assertRedirects(response, reverse("pool_detail", kwargs={"pool_uuid": self.pool.uuid}))
+        self.pool.refresh_from_db()
+        self.assertEqual(self.pool.object_type, Pool.OBJECT_TYPE_WATER)
+        audit = DataAuditLog.objects.filter(
+            entity_type="pool",
+            entity_id=str(self.pool.uuid),
+            action=DataAuditLog.ACTION_UPDATE,
+        ).latest("created_at")
+        self.assertIn("object_type", audit.changed_fields)
+
+    def test_water_reading_create_writes_audit_log(self):
+        self.client.force_login(self.admin_user)
+
+        response = self.client.post(
+            reverse("water_reading_create", kwargs={"pool_uuid": self.pool.uuid}),
+            {
+                "date": timezone.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "comment": "Проверка аудита",
+            },
+        )
+
+        self.assertRedirects(response, reverse("pool_detail", kwargs={"pool_uuid": self.pool.uuid}))
+        reading = WaterReading.objects.get(comment="Проверка аудита")
+        audit = DataAuditLog.objects.get(entity_type="water_reading", entity_id=str(reading.uuid))
+        self.assertEqual(audit.action, DataAuditLog.ACTION_CREATE)
+        self.assertEqual(audit.actor, self.admin_user)
+        self.assertEqual(audit.pool, self.pool)

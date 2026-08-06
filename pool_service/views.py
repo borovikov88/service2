@@ -78,6 +78,7 @@ import json
 
 import calendar
 from datetime import date, timedelta, time
+from decimal import Decimal
 
 from calendar import monthrange
 
@@ -332,6 +333,8 @@ from .models import (
     PoolAccess,
 
     WaterReading,
+
+    DataAuditLog,
 
     Client,
 
@@ -779,6 +782,108 @@ def _can_view_pool_service_details(user, pool):
 
 
 
+
+
+POOL_AUDIT_FIELDS = [
+    "client_id",
+    "address",
+    "organization_id",
+    "object_type",
+    "description",
+    "shape",
+    "pool_type",
+    "length",
+    "width",
+    "diameter",
+    "variable_depth",
+    "depth",
+    "depth_min",
+    "depth_max",
+    "overflow_volume",
+    "surface_area",
+    "volume",
+    "dosing_station",
+    "service_frequency",
+    "service_monthly_price",
+    "service_details_comment",
+    "service_suspended",
+    "daily_readings_required",
+    "water_system_type",
+    "water_source",
+    "water_capacity_value",
+    "water_capacity_unit",
+    "water_control_parameters",
+    "water_equipment",
+    "water_operation_mode",
+    "water_contact_name",
+    "water_contact_phone",
+    "water_access_notes",
+]
+
+WATER_READING_AUDIT_FIELDS = [
+    "pool_id",
+    "date",
+    "added_by_id",
+    "temperature",
+    "ph",
+    "cl_free",
+    "cl_total",
+    "ph_dosing_station",
+    "cl_free_dosing_station",
+    "cl_total_dosing_station",
+    "redox_dosing_station",
+    "comment",
+    "required_materials",
+    "performed_works",
+    "consumables_replaced",
+]
+
+
+def _audit_value(value):
+    if isinstance(value, Decimal):
+        return str(value)
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    return value
+
+
+def _snapshot_instance(instance, fields):
+    return {field: _audit_value(getattr(instance, field, None)) for field in fields}
+
+
+def _changed_fields(before, after):
+    keys = set(before or {}) | set(after or {})
+    return sorted(key for key in keys if (before or {}).get(key) != (after or {}).get(key))
+
+
+def _request_ip_address(request):
+    forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip() or None
+    return request.META.get("REMOTE_ADDR") or None
+
+
+def _write_data_audit(request, *, action, instance, before=None, after=None):
+    entity_type = "pool" if isinstance(instance, Pool) else "water_reading"
+    pool = instance if isinstance(instance, Pool) else getattr(instance, "pool", None)
+    client = getattr(pool, "client", None) if pool else None
+    organization = getattr(pool, "organization", None) if pool else None
+    DataAuditLog.objects.create(
+        entity_type=entity_type,
+        entity_id=str(getattr(instance, "uuid", None) or instance.pk),
+        action=action,
+        organization=organization,
+        client=client,
+        pool=pool,
+        actor=request.user if getattr(request, "user", None) and request.user.is_authenticated else None,
+        before=before or {},
+        after=after or {},
+        changed_fields=_changed_fields(before or {}, after or {}),
+        ip_address=_request_ip_address(request),
+        user_agent=(request.META.get("HTTP_USER_AGENT") or "")[:512],
+    )
 
 
 def _mark_phone_confirmed(profile):
@@ -4983,6 +5088,12 @@ def pool_create(request):
                         pool.organization_id = org_access.organization_id
 
             pool.save()
+            _write_data_audit(
+                request,
+                action=DataAuditLog.ACTION_CREATE,
+                instance=pool,
+                after=_snapshot_instance(pool, POOL_AUDIT_FIELDS),
+            )
 
             # дать доступ создателю
 
@@ -5079,6 +5190,8 @@ def pool_edit(request, pool_uuid):
 
     if request.method == "POST":
 
+        before = _snapshot_instance(pool, POOL_AUDIT_FIELDS)
+
         form = PoolForm(request.POST, instance=pool, user=request.user, service_details_only=service_details_only)
 
         if form.is_valid():
@@ -5090,6 +5203,13 @@ def pool_edit(request, pool_uuid):
                 updated.client = user_client
 
             updated.save()
+            _write_data_audit(
+                request,
+                action=DataAuditLog.ACTION_UPDATE,
+                instance=updated,
+                before=before,
+                after=_snapshot_instance(updated, POOL_AUDIT_FIELDS),
+            )
 
             messages.success(request, "Объект обновлен")
 
@@ -6474,6 +6594,13 @@ def pool_detail(request, pool_uuid):
     for reading in readings:
         reading.linked_supply_tasks = reading_task_map.get(reading.id, [])
 
+    audit_logs = []
+    if can_view_service_details:
+        audit_logs = (
+            DataAuditLog.objects.filter(pool=pool)
+            .select_related("actor")
+            .order_by("-created_at", "-id")[:20]
+        )
 
 
     context = {
@@ -6493,6 +6620,7 @@ def pool_detail(request, pool_uuid):
 
         "can_view_service_details": can_view_service_details,
         "service_monthly_price_display": format_money(pool.service_monthly_price or 0) if pool.service_monthly_price else None,
+        "audit_logs": audit_logs,
 
         "pagination_query": query_params.urlencode(),
 
@@ -8464,6 +8592,12 @@ def water_reading_create(request, pool_uuid):
                 return redirect("pool_detail", pool_uuid=pool.uuid)
 
             reading.save()
+            _write_data_audit(
+                request,
+                action=DataAuditLog.ACTION_CREATE,
+                instance=reading,
+                after=_snapshot_instance(reading, WATER_READING_AUDIT_FIELDS),
+            )
 
             if is_water_object:
                 messages.success(request, "Запись добавлена")
@@ -8543,6 +8677,8 @@ def water_reading_edit(request, reading_uuid):
 
     if request.method == "POST":
 
+        before = _snapshot_instance(reading, WATER_READING_AUDIT_FIELDS)
+
         form = WaterReadingForm(request.POST, instance=reading)
 
         if form.is_valid():
@@ -8556,6 +8692,13 @@ def water_reading_edit(request, reading_uuid):
             updated.added_by = reading.added_by
 
             updated.save()
+            _write_data_audit(
+                request,
+                action=DataAuditLog.ACTION_UPDATE,
+                instance=updated,
+                before=before,
+                after=_snapshot_instance(updated, WATER_READING_AUDIT_FIELDS),
+            )
 
             if is_water_object:
                 messages.success(request, "Запись обновлена.")

@@ -240,6 +240,51 @@
     </div>
 </div>
 
+{% if audit_logs %}
+<div class="card card-soft p-4 mb-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <div>
+            <h3 class="fw-bold h5 mb-1">Журнал изменений</h3>
+            <div class="text-muted small">Последние действия по объекту и его записям</div>
+        </div>
+    </div>
+    <div class="table-responsive">
+        <table class="table align-middle table-borderless mb-0">
+            <thead class="small text-muted">
+                <tr>
+                    <th>Дата</th>
+                    <th>Действие</th>
+                    <th>Пользователь</th>
+                    <th>Что изменено</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for audit in audit_logs %}
+                <tr class="border-top">
+                    <td class="fw-semibold">{{ audit.created_at|date:"d.m.Y H:i" }}</td>
+                    <td>{{ audit.get_action_display }}</td>
+                    <td>
+                        {% if audit.actor %}
+                            {% if audit.actor.get_full_name %}{{ audit.actor.get_full_name }}{% else %}{{ audit.actor.username }}{% endif %}
+                        {% else %}
+                            -
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if audit.changed_fields %}
+                            {{ audit.changed_fields|join:", " }}
+                        {% else %}
+                            -
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
 
 {% if readings %}
 <div class="card card-soft p-4 mb-4">

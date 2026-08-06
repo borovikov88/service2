@@ -252,6 +252,44 @@ class Pool(models.Model):
         return f"{label}: {self.address} ({org_name})"
 
 
+class DataAuditLog(models.Model):
+    ACTION_CREATE = "create"
+    ACTION_UPDATE = "update"
+    ACTION_DELETE = "delete"
+    ACTION_RESTORE = "restore"
+    ACTION_CHOICES = [
+        (ACTION_CREATE, "Создание"),
+        (ACTION_UPDATE, "Изменение"),
+        (ACTION_DELETE, "Удаление"),
+        (ACTION_RESTORE, "Восстановление"),
+    ]
+
+    entity_type = models.CharField(max_length=80)
+    entity_id = models.CharField(max_length=80)
+    action = models.CharField(max_length=20, choices=ACTION_CHOICES)
+    organization = models.ForeignKey(Organization, on_delete=models.SET_NULL, null=True, blank=True)
+    client = models.ForeignKey(Client, on_delete=models.SET_NULL, null=True, blank=True)
+    pool = models.ForeignKey(Pool, on_delete=models.SET_NULL, null=True, blank=True, related_name="audit_logs")
+    actor = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="data_audit_logs")
+    before = models.JSONField(default=dict, blank=True)
+    after = models.JSONField(default=dict, blank=True)
+    changed_fields = models.JSONField(default=list, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=512, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["entity_type", "entity_id", "created_at"], name="audit_entity_idx"),
+            models.Index(fields=["pool", "created_at"], name="audit_pool_idx"),
+            models.Index(fields=["actor", "created_at"], name="audit_actor_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.entity_type}:{self.entity_id} {self.action}"
+
+
 class ServiceVisitPlan(models.Model):
     pool = models.ForeignKey(Pool, on_delete=models.CASCADE, related_name="visit_plans")
     week_start = models.DateField()

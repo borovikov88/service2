@@ -18,6 +18,7 @@ from .models import (
     ClientAccess,
     CrmItem,
     ServiceTask,
+    ServiceVisitPlan,
 )
 
 
@@ -726,6 +727,11 @@ class InviteAcceptForm(forms.Form):
 
 
 class PoolForm(forms.ModelForm):
+    confirm_object_type_change = forms.BooleanField(
+        required=False,
+        label="Подтверждаю смену типа объекта и понимаю, что это изменит отображение истории",
+    )
+
     class Meta:
         model = Pool
         fields = [
@@ -810,6 +816,8 @@ class PoolForm(forms.ModelForm):
         selected_client_id = kwargs.pop("selected_client_id", None)
         service_details_only = kwargs.pop("service_details_only", False)
         super().__init__(*args, **kwargs)
+        if "confirm_object_type_change" in self.fields:
+            self.fields["confirm_object_type_change"].widget.attrs.update({"class": "form-check-input"})
         if service_details_only:
             allowed_fields = {
                 "service_frequency",
@@ -863,6 +871,27 @@ class PoolForm(forms.ModelForm):
                         pass
                 elif not client_self.exists():
                     self.fields["client"].initial = None
+
+    def clean(self):
+        cleaned = super().clean()
+        if self.instance and self.instance.pk and "object_type" in self.fields:
+            old_type = self.instance.object_type
+            new_type = cleaned.get("object_type")
+            if old_type and new_type and old_type != new_type:
+                has_history = (
+                    WaterReading.objects.filter(pool=self.instance).exists()
+                    or ServiceTask.objects.filter(pool=self.instance).exists()
+                    or ServiceVisitPlan.objects.filter(pool=self.instance).exists()
+                    or CrmItem.objects.filter(pool=self.instance).exists()
+                )
+                if has_history and not cleaned.get("confirm_object_type_change"):
+                    message = (
+                        "У объекта уже есть история. Подтвердите смену типа объекта, "
+                        "иначе история может отображаться по-другому."
+                    )
+                    self.add_error("object_type", message)
+                    self.add_error("confirm_object_type_change", message)
+        return cleaned
 
 
 class OrganizationWaterNormsForm(forms.ModelForm):
