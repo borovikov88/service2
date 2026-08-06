@@ -1,0 +1,11 @@
+{% extends "pool_service/base.html" %}
+{% block title %}Загрузка отчёта 1С{% endblock %}
+{% block content %}
+<div class="mb-4"><h1 class="h3">Загрузка отчёта 1С</h1><div class="text-muted">Файл сохраняется в приватном хранилище и сначала проходит предпросмотр.</div></div>
+<div class="card card-soft p-4"><form method="post" enctype="multipart/form-data">
+  {% csrf_token %}{{ form.non_field_errors }}
+  <div class="mb-3">{{ form.report.label_tag }}{{ form.report }}<div class="form-text">{{ form.report.help_text }}</div>{{ form.report.errors }}</div>
+  <button class="btn btn-primary" type="submit">Загрузить и проверить</button>
+  <a class="btn btn-outline-secondary" href="{% url 'finance_onec_import_list' %}">Отмена</a>
+</form></div>
+{% endblock %}

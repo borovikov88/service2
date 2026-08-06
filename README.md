@@ -6,6 +6,9 @@
 [docs/local-development.md](docs/local-development.md). Не используйте для
 локального запуска доступ к продакшен-базе.
 
+Ручной импорт XLSX-отчёта 1С «Валовая прибыль по месяцам» описан в
+[docs/1c-monthly-profit-import.md](docs/1c-monthly-profit-import.md).
+
 ## Архив и автоочистка
 
 В проекте есть команда `cleanup_archive`, которая удаляет навсегда только архивные записи с причиной `deleted`, если они старше указанного числа дней.

@@ -1687,3 +1687,130 @@ class CardTransferPaymentChange(models.Model):
 
     def __str__(self):
         return f"{self.payment_id}: {self.action}"
+
+
+def onec_import_upload_to(instance, filename):
+    return f"onec_imports/{instance.organization_id}/{instance.id}/{uuid.uuid4().hex}.xlsx"
+
+
+class OneCImportBatch(models.Model):
+    TYPE_MONTHLY_PROFIT = "monthly_profit"
+    TYPE_CHOICES = [(TYPE_MONTHLY_PROFIT, "Валовая прибыль по месяцам")]
+
+    STATUS_UPLOADED = "uploaded"
+    STATUS_PREVIEWED = "previewed"
+    STATUS_CONFIRMED = "confirmed"
+    STATUS_FAILED = "failed"
+    STATUS_CANCELLED = "cancelled"
+    STATUS_CHOICES = [
+        (STATUS_UPLOADED, "Загружен"),
+        (STATUS_PREVIEWED, "Предпросмотр"),
+        (STATUS_CONFIRMED, "Подтверждён"),
+        (STATUS_FAILED, "Ошибка"),
+        (STATUS_CANCELLED, "Отменён"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="onec_import_batches",
+        verbose_name="Организация",
+    )
+    import_type = models.CharField(
+        "Тип импорта", max_length=40, choices=TYPE_CHOICES, default=TYPE_MONTHLY_PROFIT
+    )
+    original_filename = models.CharField("Исходное имя файла", max_length=255)
+    stored_file = models.FileField(
+        "Приватный файл", max_length=160, storage=private_media_storage, upload_to=onec_import_upload_to
+    )
+    file_sha256 = models.CharField("SHA-256", max_length=64)
+    file_size = models.PositiveBigIntegerField("Размер файла", default=0)
+    status = models.CharField("Статус", max_length=16, choices=STATUS_CHOICES, default=STATUS_UPLOADED)
+    uploaded_by = models.ForeignKey(
+        User, on_delete=models.PROTECT, related_name="uploaded_onec_batches", verbose_name="Загрузил"
+    )
+    uploaded_at = models.DateTimeField("Загружен", auto_now_add=True)
+    confirmed_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="confirmed_onec_batches",
+        verbose_name="Подтвердил",
+    )
+    confirmed_at = models.DateTimeField("Подтверждён", null=True, blank=True)
+    rows_detected = models.PositiveIntegerField("Обнаружено строк", default=0)
+    rows_imported = models.PositiveIntegerField("Импортировано строк", default=0)
+    warnings_count = models.PositiveIntegerField("Предупреждений", default=0)
+    error_message = models.TextField("Сообщение об ошибке", blank=True)
+    parser_version = models.CharField("Версия парсера", max_length=20, default="1")
+    metadata = models.JSONField("Метаданные", default=dict, blank=True)
+
+    class Meta:
+        verbose_name = "Загрузка отчёта 1С"
+        verbose_name_plural = "Загрузки отчётов 1С"
+        ordering = ["-uploaded_at", "-id"]
+        indexes = [
+            models.Index(
+                fields=["organization", "import_type", "uploaded_at"],
+                name="onec_batch_org_type_at_idx",
+            ),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "import_type", "file_sha256"],
+                name="unique_onec_file_per_org_type",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.get_import_type_display()}: {self.original_filename}"
+
+
+class OneCMonthlyProfit(models.Model):
+    import_batch = models.ForeignKey(
+        OneCImportBatch,
+        on_delete=models.CASCADE,
+        related_name="monthly_profit_rows",
+        verbose_name="Загрузка",
+    )
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="onec_monthly_profit_rows",
+        verbose_name="Организация",
+    )
+    period_month = models.DateField("Месяц")
+    source_row_number = models.PositiveIntegerField("Номер строки источника")
+    nomenclature = models.CharField("Номенклатура", max_length=500)
+    article = models.CharField("Артикул или код", max_length=120, blank=True)
+    quantity = models.DecimalField("Количество", max_digits=20, decimal_places=6, null=True, blank=True)
+    revenue = models.DecimalField("Выручка", max_digits=20, decimal_places=2, null=True, blank=True)
+    cost = models.DecimalField("Себестоимость", max_digits=20, decimal_places=2, null=True, blank=True)
+    gross_profit = models.DecimalField(
+        "Валовая прибыль", max_digits=20, decimal_places=2, null=True, blank=True
+    )
+    profitability_percent = models.DecimalField(
+        "Рентабельность, %", max_digits=12, decimal_places=4, null=True, blank=True
+    )
+    source_data = models.JSONField("Исходные данные", default=dict, blank=True)
+    created_at = models.DateTimeField("Создано", auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Строка валовой прибыли 1С"
+        verbose_name_plural = "Строки валовой прибыли 1С"
+        ordering = ["period_month", "source_row_number", "id"]
+        indexes = [
+            models.Index(fields=["organization", "period_month"], name="onec_profit_org_month_idx"),
+            models.Index(fields=["organization", "nomenclature"], name="onec_profit_org_name_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["import_batch", "source_row_number", "period_month"],
+                name="unique_onec_batch_row_month",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.period_month:%m.%Y}: {self.nomenclature}"
