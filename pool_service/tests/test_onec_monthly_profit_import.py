@@ -30,18 +30,21 @@ from pool_service.finance_imports.validators import delete_private_batch_file
 from pool_service.models import OneCImportBatch, OneCMonthlyProfit, Organization, OrganizationAccess
 
 
-def xlsx_bytes(*, year=2026, month_label="Январь 2026", rows=None, multilevel=True):
+def xlsx_bytes(
+    *, year=2026, month_label="Январь 2026", rows=None, multilevel=True,
+    profitability_label="Рентабельность",
+):
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Валовая прибыль"
     sheet.append([f"Валовая прибыль за {year}" if year else "Валовая прибыль"])
     if multilevel:
         sheet.append(["Номенклатура", "Артикул", month_label, None, None, None, None])
-        sheet.append([None, None, "Количество", "Выручка", "Себестоимость", "Валовая прибыль", "Рентабельность"])
+        sheet.append([None, None, "Количество", "Выручка", "Себестоимость", "Валовая прибыль", profitability_label])
     else:
         sheet.append([
             "Номенклатура", "Артикул", f"{month_label} Количество", f"{month_label} Выручка",
-            f"{month_label} Себестоимость", f"{month_label} Валовая прибыль", f"{month_label} Рентабельность",
+            f"{month_label} Себестоимость", f"{month_label} Валовая прибыль", f"{month_label} {profitability_label}",
         ])
     for row in rows or [["Товар A", "A-1", "1 234,56", "10 000,00", "7 000,00", "3 000,00", "30%"]]:
         sheet.append(row)
@@ -77,6 +80,32 @@ class MonthlyProfitParserTests(TestCase):
         self.assertEqual(parse_decimal("(1 234,56)"), Decimal("-1234.56"))
         self.assertEqual(parse_decimal("30%", percent=True), Decimal("30"))
         self.assertIsNone(parse_decimal("—"))
+
+    def test_profit_and_profitability_columns_are_distinct(self):
+        result = parse_monthly_profit(
+            BytesIO(xlsx_bytes(
+                profitability_label="% прибыли",
+                rows=[["Товар", "A-1", 1, 10000, 7000, 3000, 30]],
+            )),
+            filename="r.xlsx",
+        )
+        row = result.records[0]
+        self.assertEqual(row["gross_profit"], Decimal("3000.00"))
+        self.assertEqual(row["profitability_percent"], Decimal("30.0000"))
+
+    def test_profitability_header_variants(self):
+        for label in ("% прибыли", "Процент прибыли", "Рентабельность", "Рентаб., %"):
+            with self.subTest(label=label):
+                result = parse_monthly_profit(
+                    BytesIO(xlsx_bytes(
+                        profitability_label=label,
+                        rows=[["Товар", "A-1", 1, 10000, 7000, 3000, 30]],
+                    )),
+                    filename="r.xlsx",
+                )
+                row = result.records[0]
+                self.assertEqual(row["gross_profit"], Decimal("3000.00"))
+                self.assertEqual(row["profitability_percent"], Decimal("30.0000"))
 
     def test_total_row_is_skipped(self):
         rows = [["Товар", "1", 1, 10, 5, 5, 50], ["Итого", "", 1, 10, 5, 5, 50]]
