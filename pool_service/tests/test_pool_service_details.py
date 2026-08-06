@@ -177,3 +177,58 @@ class PoolServiceDetailsTests(TestCase):
         self.assertEqual(audit.action, DataAuditLog.ACTION_CREATE)
         self.assertEqual(audit.actor, self.admin_user)
         self.assertEqual(audit.pool, self.pool)
+
+    def test_water_reading_soft_delete_hides_and_restore_returns_it(self):
+        reading = WaterReading.objects.create(
+            pool=self.pool,
+            date=timezone.now(),
+            added_by=self.service_user,
+            comment="soft delete reading",
+        )
+        self.client.force_login(self.admin_user)
+
+        response = self.client.post(reverse("water_reading_delete", kwargs={"reading_uuid": reading.uuid}))
+
+        self.assertRedirects(response, reverse("pool_detail", kwargs={"pool_uuid": self.pool.uuid}))
+        reading.refresh_from_db()
+        self.assertTrue(reading.is_deleted)
+        self.assertEqual(reading.deleted_by, self.admin_user)
+        self.assertTrue(
+            DataAuditLog.objects.filter(
+                entity_type="water_reading",
+                entity_id=str(reading.uuid),
+                action=DataAuditLog.ACTION_DELETE,
+            ).exists()
+        )
+        detail = self.client.get(reverse("pool_detail", kwargs={"pool_uuid": self.pool.uuid}))
+        self.assertNotContains(detail, "soft delete reading")
+
+        response = self.client.post(reverse("water_reading_restore", kwargs={"reading_uuid": reading.uuid}))
+
+        self.assertRedirects(response, reverse("archive_list"))
+        reading.refresh_from_db()
+        self.assertFalse(reading.is_deleted)
+        self.assertIsNone(reading.deleted_by)
+        detail = self.client.get(reverse("pool_detail", kwargs={"pool_uuid": self.pool.uuid}))
+        self.assertContains(detail, "soft delete reading")
+
+    def test_pool_soft_delete_hides_object_and_writes_audit_log(self):
+        self.client.force_login(self.admin_user)
+
+        response = self.client.post(reverse("pool_delete", kwargs={"pool_uuid": self.pool.uuid}))
+
+        self.assertRedirects(response, reverse("pool_list"))
+        self.pool.refresh_from_db()
+        self.assertTrue(self.pool.is_deleted)
+        self.assertEqual(self.pool.deleted_by, self.admin_user)
+        self.assertTrue(
+            DataAuditLog.objects.filter(
+                entity_type="pool",
+                entity_id=str(self.pool.uuid),
+                action=DataAuditLog.ACTION_DELETE,
+            ).exists()
+        )
+        detail = self.client.get(reverse("pool_detail", kwargs={"pool_uuid": self.pool.uuid}))
+        self.assertEqual(detail.status_code, 404)
+        listing = self.client.get(reverse("pool_list"))
+        self.assertNotContains(listing, self.pool.address)

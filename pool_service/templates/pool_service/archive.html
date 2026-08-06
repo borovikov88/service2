@@ -138,6 +138,8 @@
     <a href="{% url 'archive_list' %}" class="archive-chip {% if kind == 'all' %}is-active{% endif %}">Все {{ archive_total_count }}</a>
     <a href="{% url 'archive_list' %}?kind=tasks" class="archive-chip {% if kind == 'tasks' %}is-active{% endif %}">Задачи {{ archive_task_count }}</a>
     <a href="{% url 'archive_list' %}?kind=crm" class="archive-chip {% if kind == 'crm' %}is-active{% endif %}">CRM {{ archive_crm_count }}</a>
+    <a href="{% url 'archive_list' %}?kind=pools" class="archive-chip {% if kind == 'pools' %}is-active{% endif %}">Объекты {{ archive_pool_count }}</a>
+    <a href="{% url 'archive_list' %}?kind=readings" class="archive-chip {% if kind == 'readings' %}is-active{% endif %}">Записи {{ archive_reading_count }}</a>
     <a href="{% url 'archive_list' %}{% if kind != 'all' %}?kind={{ kind }}&{% else %}?{% endif %}reason=completed" class="archive-chip {% if reason == 'completed' %}is-active{% endif %}">Выполненные</a>
     <a href="{% url 'archive_list' %}{% if kind != 'all' %}?kind={{ kind }}&{% else %}?{% endif %}reason=deleted" class="archive-chip {% if reason == 'deleted' %}is-active{% endif %}">Удалённые</a>
 </div>
@@ -220,6 +222,82 @@
                     </article>
                     {% empty %}
                     <div class="text-muted">В архиве CRM пока пусто.</div>
+                    {% endfor %}
+                </div>
+            </div>
+        </section>
+        {% endif %}
+
+        {% if show_pools %}
+        <section class="archive-card">
+            <div class="archive-card__header">
+                <h3 class="h5 fw-bold mb-1">Архив объектов</h3>
+                <div class="text-muted small">Удалённые бассейны и водоподготовка</div>
+            </div>
+            <div class="archive-card__body">
+                <div class="archive-list">
+                    {% for pool in archived_pools %}
+                    <article class="archive-item">
+                        <div>
+                            <input class="form-check-input archive-check archive-row-select" type="checkbox" name="pool_uuids" value="{{ pool.uuid }}" aria-label="Выбрать объект {{ pool.address }}">
+                        </div>
+                        <div>
+                            <div class="archive-badge archive-badge--deleted">Удалено</div>
+                            <div class="archive-item__title">{{ pool.client.name|default:"Без клиента" }}</div>
+                            <div class="archive-item__meta">
+                                {{ pool.address|default:"Без адреса" }}
+                                · Архив {{ pool.deleted_at|date:"d.m.Y H:i" }}
+                                {% if pool.deleted_by %}· {{ pool.deleted_by.get_full_name|default:pool.deleted_by.username }}{% endif %}
+                            </div>
+                        </div>
+                        <div class="archive-actions">
+                            <button type="submit" class="btn btn-outline-primary btn-sm archive-single-action" data-action="restore" data-target-name="pool_uuids" data-target-id="{{ pool.uuid }}">Восстановить</button>
+                        </div>
+                    </article>
+                    {% empty %}
+                    <div class="text-muted">В архиве объектов пока пусто.</div>
+                    {% endfor %}
+                </div>
+            </div>
+        </section>
+        {% endif %}
+
+        {% if show_readings %}
+        <section class="archive-card">
+            <div class="archive-card__header">
+                <h3 class="h5 fw-bold mb-1">Архив записей обслуживания</h3>
+                <div class="text-muted small">Удалённые показания и записи по водоподготовке</div>
+            </div>
+            <div class="archive-card__body">
+                <div class="archive-list">
+                    {% for reading in archived_readings %}
+                    <article class="archive-item">
+                        <div>
+                            <input class="form-check-input archive-check archive-row-select" type="checkbox" name="reading_uuids" value="{{ reading.uuid }}" aria-label="Выбрать запись {{ reading.date|date:'d.m.Y H:i' }}">
+                        </div>
+                        <div>
+                            <div class="archive-badge archive-badge--deleted">Удалено</div>
+                            <div class="archive-item__title">
+                                {% if reading.pool.object_type == "water" %}Запись обслуживания{% else %}Показания воды{% endif %}
+                                · {{ reading.date|date:"d.m.Y H:i" }}
+                            </div>
+                            <div class="archive-item__meta">
+                                {{ reading.pool.client.name|default:"Без клиента" }}
+                                · {{ reading.pool.address|default:"Без адреса" }}
+                                · Архив {{ reading.deleted_at|date:"d.m.Y H:i" }}
+                                {% if reading.deleted_by %}· {{ reading.deleted_by.get_full_name|default:reading.deleted_by.username }}{% endif %}
+                            </div>
+                        </div>
+                        <div class="archive-actions">
+                            {% if not reading.pool.is_deleted %}
+                            <button type="submit" class="btn btn-outline-primary btn-sm archive-single-action" data-action="restore" data-target-name="reading_uuids" data-target-id="{{ reading.uuid }}">Восстановить</button>
+                            {% else %}
+                            <span class="text-muted small">Сначала восстановите объект</span>
+                            {% endif %}
+                        </div>
+                    </article>
+                    {% empty %}
+                    <div class="text-muted">В архиве записей пока пусто.</div>
                     {% endfor %}
                 </div>
             </div>

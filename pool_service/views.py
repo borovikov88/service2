@@ -668,7 +668,7 @@ def _personal_pool_redirect(user):
 
         return None
 
-    pool = Pool.objects.filter(client=client).first()
+    pool = Pool.objects.filter(client=client, is_deleted=False).first()
 
     if not pool:
 
@@ -818,6 +818,10 @@ POOL_AUDIT_FIELDS = [
     "water_contact_name",
     "water_contact_phone",
     "water_access_notes",
+    "is_deleted",
+    "deleted_at",
+    "deleted_by_id",
+    "delete_reason",
 ]
 
 WATER_READING_AUDIT_FIELDS = [
@@ -836,6 +840,10 @@ WATER_READING_AUDIT_FIELDS = [
     "required_materials",
     "performed_works",
     "consumables_replaced",
+    "is_deleted",
+    "deleted_at",
+    "deleted_by_id",
+    "delete_reason",
 ]
 
 
@@ -1191,6 +1199,24 @@ def _reading_edit_allowed(reading, user):
     return now - reading_date <= timedelta(minutes=30)
 
 
+def _can_restore_pool_data(user, pool):
+    if user.is_superuser:
+        return False
+    if not pool.organization_id:
+        return False
+    return OrganizationAccess.objects.filter(
+        user=user,
+        organization=pool.organization,
+        role__in=["owner", "admin"],
+    ).exists()
+
+
+def _reading_delete_allowed(reading, user):
+    if _can_restore_pool_data(user, reading.pool):
+        return True
+    return _reading_edit_allowed(reading, user)
+
+
 
 
 
@@ -1262,6 +1288,9 @@ def pool_list(request):
         )
 
 
+    pools = pools.filter(is_deleted=False)
+
+
 
     sort = request.GET.get("sort", "client_asc")
 
@@ -1289,9 +1318,9 @@ def pool_list(request):
 
     pools = pools.annotate(
 
-        num_readings=Count("waterreading"),
+        num_readings=Count("waterreading", filter=Q(waterreading__is_deleted=False)),
 
-        last_reading=Max("waterreading__date"),
+        last_reading=Max("waterreading__date", filter=Q(waterreading__is_deleted=False)),
 
     ).select_related("client")
 
@@ -1361,7 +1390,7 @@ def pool_list(request):
 
         if personal_client:
 
-            personal_pool_count = Pool.objects.filter(client=personal_client).count()
+            personal_pool_count = Pool.objects.filter(client=personal_client, is_deleted=False).count()
 
 
 
@@ -1516,7 +1545,66 @@ def billing_info(request):
     )
 
 
+@login_required
+@require_POST
+def pool_delete(request, pool_uuid):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
 
+    pool = get_object_or_404(Pool, uuid=pool_uuid, is_deleted=False)
+    if not _can_restore_pool_data(request.user, pool):
+        return HttpResponseForbidden()
+
+    before = _snapshot_instance(pool, POOL_AUDIT_FIELDS)
+    pool.is_deleted = True
+    pool.deleted_at = timezone.now()
+    pool.deleted_by = request.user
+    pool.delete_reason = (request.POST.get("delete_reason") or "").strip()
+    pool.save(update_fields=["is_deleted", "deleted_at", "deleted_by", "delete_reason"])
+    _write_data_audit(
+        request,
+        action=DataAuditLog.ACTION_DELETE,
+        instance=pool,
+        before=before,
+        after=_snapshot_instance(pool, POOL_AUDIT_FIELDS),
+    )
+    messages.success(request, "Объект перемещён в архив.")
+    return redirect("pool_list")
+
+
+@login_required
+@require_POST
+def pool_restore(request, pool_uuid):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+
+    pool = get_object_or_404(Pool, uuid=pool_uuid, is_deleted=True)
+    if not _can_restore_pool_data(request.user, pool):
+        return HttpResponseForbidden()
+
+    before = _snapshot_instance(pool, POOL_AUDIT_FIELDS)
+    pool.is_deleted = False
+    pool.deleted_at = None
+    pool.deleted_by = None
+    pool.delete_reason = ""
+    pool.save(update_fields=["is_deleted", "deleted_at", "deleted_by", "delete_reason"])
+    _write_data_audit(
+        request,
+        action=DataAuditLog.ACTION_RESTORE,
+        instance=pool,
+        before=before,
+        after=_snapshot_instance(pool, POOL_AUDIT_FIELDS),
+    )
+    messages.success(request, "Объект восстановлен.")
+    return redirect("archive_list")
 
 
 @login_required
@@ -4803,34 +4891,58 @@ def archive_list(request):
     archived_crm_items = CrmItem.objects.filter(is_archived=True).select_related(
         "organization", "pool", "client", "archived_by", "responsible"
     )
+    archived_pools = Pool.objects.filter(is_deleted=True).select_related("organization", "client", "deleted_by")
+    archived_readings = WaterReading.objects.filter(is_deleted=True).select_related(
+        "pool", "pool__organization", "pool__client", "added_by", "deleted_by"
+    )
 
     if org:
         archived_tasks = archived_tasks.filter(organization=org)
         archived_crm_items = archived_crm_items.filter(organization=org)
+        archived_pools = archived_pools.filter(Q(organization=org) | Q(client__organization=org)).distinct()
+        archived_readings = archived_readings.filter(
+            Q(pool__organization=org) | Q(pool__client__organization=org)
+        ).distinct()
 
     if reason:
         archived_tasks = archived_tasks.filter(archived_reason=reason)
         archived_crm_items = archived_crm_items.filter(archived_reason=reason)
+        if reason != "deleted":
+            archived_pools = archived_pools.none()
+            archived_readings = archived_readings.none()
 
     archived_tasks = archived_tasks.order_by("-archived_at", "-updated_at")
     archived_crm_items = archived_crm_items.order_by("-archived_at", "-updated_at")
+    archived_pools = archived_pools.order_by("-deleted_at", "-id")
+    archived_readings = archived_readings.order_by("-deleted_at", "-date", "-id")
 
     return render(
         request,
         "pool_service/archive.html",
         {
             "page_title": "Архив",
-            "page_subtitle": "Завершённые и удалённые задачи и CRM-записи",
+            "page_subtitle": "Завершённые и удалённые записи",
             "active_tab": "crm",
             "kind": kind,
             "reason": reason,
             "show_tasks": kind in {"all", "tasks"},
             "show_crm": kind in {"all", "crm"},
+            "show_pools": kind in {"all", "pools"},
+            "show_readings": kind in {"all", "readings"},
             "archived_tasks": archived_tasks,
             "archived_crm_items": archived_crm_items,
-            "archive_total_count": archived_tasks.count() + archived_crm_items.count(),
+            "archived_pools": archived_pools,
+            "archived_readings": archived_readings,
+            "archive_total_count": (
+                archived_tasks.count()
+                + archived_crm_items.count()
+                + archived_pools.count()
+                + archived_readings.count()
+            ),
             "archive_task_count": archived_tasks.count(),
             "archive_crm_count": archived_crm_items.count(),
+            "archive_pool_count": archived_pools.count(),
+            "archive_reading_count": archived_readings.count(),
         },
     )
 
@@ -4898,6 +5010,8 @@ def archive_bulk_update(request):
     action = (request.POST.get("archive_action") or "").strip()
     task_ids = []
     item_ids = []
+    pool_uuids = []
+    reading_uuids = []
     for raw_id in request.POST.getlist("task_ids"):
         try:
             task_ids.append(int(raw_id))
@@ -4908,16 +5022,32 @@ def archive_bulk_update(request):
             item_ids.append(int(raw_id))
         except (TypeError, ValueError):
             continue
+    for raw_uuid in request.POST.getlist("pool_uuids"):
+        try:
+            pool_uuids.append(uuid.UUID(str(raw_uuid)))
+        except (TypeError, ValueError):
+            continue
+    for raw_uuid in request.POST.getlist("reading_uuids"):
+        try:
+            reading_uuids.append(uuid.UUID(str(raw_uuid)))
+        except (TypeError, ValueError):
+            continue
 
     tasks = ServiceTask.objects.filter(id__in=task_ids, is_archived=True)
     items = CrmItem.objects.filter(id__in=item_ids, is_archived=True)
+    pools = Pool.objects.filter(uuid__in=pool_uuids, is_deleted=True)
+    readings = WaterReading.objects.filter(uuid__in=reading_uuids, is_deleted=True).select_related("pool")
     if org:
         tasks = tasks.filter(organization=org)
         items = items.filter(organization=org)
+        pools = pools.filter(Q(organization=org) | Q(client__organization=org)).distinct()
+        readings = readings.filter(Q(pool__organization=org) | Q(pool__client__organization=org)).distinct()
 
     tasks = list(tasks)
     items = list(items)
-    if not tasks and not items:
+    pools = list(pools)
+    readings = list(readings)
+    if not tasks and not items and not pools and not readings:
         messages.warning(request, "Не выбраны архивные записи.")
         return redirect("archive_list")
 
@@ -4932,6 +5062,40 @@ def archive_bulk_update(request):
             changed += 1
         for item in items:
             restore_crm_item(item, request.user)
+            changed += 1
+        for pool in pools:
+            if not _can_restore_pool_data(request.user, pool):
+                continue
+            before = _snapshot_instance(pool, POOL_AUDIT_FIELDS)
+            pool.is_deleted = False
+            pool.deleted_at = None
+            pool.deleted_by = None
+            pool.delete_reason = ""
+            pool.save(update_fields=["is_deleted", "deleted_at", "deleted_by", "delete_reason"])
+            _write_data_audit(
+                request,
+                action=DataAuditLog.ACTION_RESTORE,
+                instance=pool,
+                before=before,
+                after=_snapshot_instance(pool, POOL_AUDIT_FIELDS),
+            )
+            changed += 1
+        for reading in readings:
+            if reading.pool.is_deleted or not _can_restore_pool_data(request.user, reading.pool):
+                continue
+            before = _snapshot_instance(reading, WATER_READING_AUDIT_FIELDS)
+            reading.is_deleted = False
+            reading.deleted_at = None
+            reading.deleted_by = None
+            reading.delete_reason = ""
+            reading.save(update_fields=["is_deleted", "deleted_at", "deleted_by", "delete_reason"])
+            _write_data_audit(
+                request,
+                action=DataAuditLog.ACTION_RESTORE,
+                instance=reading,
+                before=before,
+                after=_snapshot_instance(reading, WATER_READING_AUDIT_FIELDS),
+            )
             changed += 1
         messages.success(request, f"Восстановлено записей: {changed}.")
         return redirect("archive_list")
@@ -5039,7 +5203,7 @@ def pool_create(request):
 
         client = Client.objects.filter(user=request.user, organization__isnull=True).first()
 
-        if client and Pool.objects.filter(client=client).exists():
+        if client and Pool.objects.filter(client=client, is_deleted=False).exists():
 
             messages.info(request, "Можно создать только один объект для личного аккаунта.")
 
@@ -5171,7 +5335,7 @@ def pool_edit(request, pool_uuid):
 
 
 
-    pool = get_object_or_404(Pool, uuid=pool_uuid)
+    pool = get_object_or_404(Pool, uuid=pool_uuid, is_deleted=False)
     is_water_object = pool.object_type == Pool.OBJECT_TYPE_WATER
 
     role = _pool_role_for_user(request.user, pool)
@@ -6440,7 +6604,7 @@ def pool_detail(request, pool_uuid):
 
     """Детальная страница объекта с показателями и доступами."""
 
-    pool = get_object_or_404(Pool, uuid=pool_uuid)
+    pool = get_object_or_404(Pool, uuid=pool_uuid, is_deleted=False)
 
 
 
@@ -6454,10 +6618,11 @@ def pool_detail(request, pool_uuid):
 
     can_view_service_details = _can_view_pool_service_details(request.user, pool)
     can_edit_pool = role in {"admin", "service"} or can_view_service_details
+    can_delete_pool = _can_restore_pool_data(request.user, pool)
 
     can_add_reading = role in {"editor", "service", "admin"}
 
-    readings_list = WaterReading.objects.filter(pool=pool).select_related("added_by").order_by("-date")
+    readings_list = WaterReading.objects.filter(pool=pool, is_deleted=False).select_related("added_by").order_by("-date")
 
 
 
@@ -6478,6 +6643,7 @@ def pool_detail(request, pool_uuid):
 
 
     editable_reading_ids = []
+    deletable_reading_ids = []
 
     if can_add_reading:
 
@@ -6486,6 +6652,8 @@ def pool_detail(request, pool_uuid):
             if _reading_edit_allowed(reading, request.user):
 
                 editable_reading_ids.append(reading.id)
+            if _reading_delete_allowed(reading, request.user):
+                deletable_reading_ids.append(reading.id)
 
 
 
@@ -6615,6 +6783,7 @@ def pool_detail(request, pool_uuid):
         "role": role,
 
         "can_edit_pool": can_edit_pool,
+        "can_delete_pool": can_delete_pool,
 
         "can_add_reading": can_add_reading,
 
@@ -6637,6 +6806,7 @@ def pool_detail(request, pool_uuid):
         "active_tab": "pools",
 
         "editable_reading_ids": editable_reading_ids,
+        "deletable_reading_ids": deletable_reading_ids,
 
         "reading_task_map": reading_task_map,
 
@@ -6666,7 +6836,7 @@ def pool_detail(request, pool_uuid):
 
 def pool_service_details(request, pool_uuid):
 
-    pool = get_object_or_404(Pool.objects.select_related("client", "organization"), uuid=pool_uuid)
+    pool = get_object_or_404(Pool.objects.select_related("client", "organization"), uuid=pool_uuid, is_deleted=False)
 
     if not _can_view_pool_service_details(request.user, pool):
 
@@ -6736,7 +6906,7 @@ def pool_issue_create(request, pool_uuid):
 
 
 
-    pool = get_object_or_404(Pool, uuid=pool_uuid)
+    pool = get_object_or_404(Pool, uuid=pool_uuid, is_deleted=False)
 
     if not pool.organization_id:
 
@@ -6831,7 +7001,7 @@ def pool_issue_update(request, pool_uuid, item_id):
 
 
 
-    pool = get_object_or_404(Pool, uuid=pool_uuid)
+    pool = get_object_or_404(Pool, uuid=pool_uuid, is_deleted=False)
 
     if not pool.organization_id:
 
@@ -7560,7 +7730,7 @@ def readings_all(request):
     else:
         pools = Pool.objects.filter(accesses__user=request.user)
 
-    pools = pools.select_related("client", "organization").order_by("client__name", "address")
+    pools = pools.filter(is_deleted=False).select_related("client", "organization").order_by("client__name", "address")
     pool_list = list(pools)
 
     today = timezone.localdate() if settings.USE_TZ else date.today()
@@ -7711,7 +7881,7 @@ def readings_all(request):
         .values_list("user_id", flat=True)
     )
 
-    base_readings = WaterReading.objects.filter(pool_id__in=pool_ids)
+    base_readings = WaterReading.objects.filter(pool_id__in=pool_ids, is_deleted=False)
     if org_user_ids:
         base_readings = base_readings.filter(added_by_id__in=org_user_ids)
     else:
@@ -8436,7 +8606,7 @@ def visit_plan_move(request):
     else:
         return JsonResponse({"ok": False, "error": "missing_fields"}, status=400)
 
-    pools = list(Pool.objects.filter(id__in=pool_ids).select_related("organization"))
+    pools = list(Pool.objects.filter(id__in=pool_ids, is_deleted=False).select_related("organization"))
     if not pools or len({pool.id for pool in pools}) != len(set(pool_ids)):
         return JsonResponse({"ok": False, "error": "pool_not_found"}, status=404)
 
@@ -8498,6 +8668,7 @@ def visit_plan_move(request):
             added_by_id__in=org_user_ids,
             date__date__gte=target_week_start,
             date__date__lte=target_week_end,
+            is_deleted=False,
         ).exists()
         if has_actual:
             return JsonResponse({"ok": False, "error": "already_completed"}, status=409)
@@ -8539,7 +8710,7 @@ def water_reading_create(request, pool_uuid):
 
     """Создание нового замера для выбранного объекта."""
 
-    pool = get_object_or_404(Pool, uuid=pool_uuid)
+    pool = get_object_or_404(Pool, uuid=pool_uuid, is_deleted=False)
     is_water_object = pool.object_type == Pool.OBJECT_TYPE_WATER
 
     role = _pool_role_for_user(request.user, pool)
@@ -8584,7 +8755,7 @@ def water_reading_create(request, pool_uuid):
             }
             for field_name in duplicate_fields:
                 duplicate_filters[field_name] = getattr(reading, field_name)
-            if WaterReading.objects.filter(**duplicate_filters).exists():
+            if WaterReading.objects.filter(**duplicate_filters, is_deleted=False).exists():
                 if is_water_object:
                     messages.info(request, "Такая запись уже сохранена.")
                 else:
@@ -8628,7 +8799,7 @@ def water_reading_create(request, pool_uuid):
 @never_cache
 @login_required
 def water_object_visit_create(request, pool_uuid):
-    pool = get_object_or_404(Pool, uuid=pool_uuid)
+    pool = get_object_or_404(Pool, uuid=pool_uuid, is_deleted=False)
     if pool.object_type != Pool.OBJECT_TYPE_WATER:
         return redirect("water_reading_create", pool_uuid=pool.uuid)
     return water_reading_create(request, pool_uuid=pool.uuid)
@@ -8652,7 +8823,12 @@ def water_reading_edit(request, reading_uuid):
 
 
 
-    reading = get_object_or_404(WaterReading.objects.select_related("pool"), uuid=reading_uuid)
+    reading = get_object_or_404(
+        WaterReading.objects.select_related("pool"),
+        uuid=reading_uuid,
+        is_deleted=False,
+        pool__is_deleted=False,
+    )
     is_water_object = reading.pool.object_type == Pool.OBJECT_TYPE_WATER
 
 
@@ -8727,6 +8903,74 @@ def water_reading_edit(request, reading_uuid):
         {"form": form, "pool": reading.pool, "active_tab": "pools", "is_edit": True, "reading": reading},
 
     )
+
+
+@login_required
+@require_POST
+def water_reading_delete(request, reading_uuid):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+
+    reading = get_object_or_404(
+        WaterReading.objects.select_related("pool"),
+        uuid=reading_uuid,
+        is_deleted=False,
+        pool__is_deleted=False,
+    )
+    role = _pool_role_for_user(request.user, reading.pool)
+    if role not in {"editor", "service", "admin"} or not _reading_delete_allowed(reading, request.user):
+        return HttpResponseForbidden()
+
+    before = _snapshot_instance(reading, WATER_READING_AUDIT_FIELDS)
+    reading.is_deleted = True
+    reading.deleted_at = timezone.now()
+    reading.deleted_by = request.user
+    reading.delete_reason = (request.POST.get("delete_reason") or "").strip()
+    reading.save(update_fields=["is_deleted", "deleted_at", "deleted_by", "delete_reason"])
+    _write_data_audit(
+        request,
+        action=DataAuditLog.ACTION_DELETE,
+        instance=reading,
+        before=before,
+        after=_snapshot_instance(reading, WATER_READING_AUDIT_FIELDS),
+    )
+    messages.success(request, "Запись перемещена в архив.")
+    return redirect("pool_detail", pool_uuid=reading.pool.uuid)
+
+
+@login_required
+@require_POST
+def water_reading_restore(request, reading_uuid):
+    readonly = _deny_superuser_write(request)
+    if readonly:
+        return readonly
+    blocked = _redirect_if_access_blocked(request)
+    if blocked:
+        return blocked
+
+    reading = get_object_or_404(WaterReading.objects.select_related("pool"), uuid=reading_uuid, is_deleted=True)
+    if reading.pool.is_deleted or not _can_restore_pool_data(request.user, reading.pool):
+        return HttpResponseForbidden()
+
+    before = _snapshot_instance(reading, WATER_READING_AUDIT_FIELDS)
+    reading.is_deleted = False
+    reading.deleted_at = None
+    reading.deleted_by = None
+    reading.delete_reason = ""
+    reading.save(update_fields=["is_deleted", "deleted_at", "deleted_by", "delete_reason"])
+    _write_data_audit(
+        request,
+        action=DataAuditLog.ACTION_RESTORE,
+        instance=reading,
+        before=before,
+        after=_snapshot_instance(reading, WATER_READING_AUDIT_FIELDS),
+    )
+    messages.success(request, "Запись восстановлена.")
+    return redirect("archive_list")
 
 
 

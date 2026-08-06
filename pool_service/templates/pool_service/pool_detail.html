@@ -65,7 +65,7 @@
     </a>
     {% endif %}
 
-    {% if can_edit_pool or can_add_reading %}
+    {% if can_edit_pool or can_add_reading or can_delete_pool %}
         <div class="d-flex align-items-center gap-2">
             {% if can_edit_pool %}
                 <a class="btn btn-outline-primary rounded-3 d-flex align-items-center gap-2 {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% url 'pool_edit' pool.uuid %}" aria-label="&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; &#1086;&#1073;&#1098;&#1077;&#1082;&#1090;" title="&#1056;&#1077;&#1076;&#1072;&#1082;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; &#1086;&#1073;&#1098;&#1077;&#1082;&#1090;">
@@ -76,6 +76,14 @@
                 <a class="btn btn-primary rounded-3 d-flex align-items-center gap-2 {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% if is_water_object %}{% url 'water_object_visit_create' pool.uuid %}{% else %}{% url 'water_reading_create' pool.uuid %}{% endif %}" aria-label="{% if is_water_object %}&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1079;&#1072;&#1087;&#1080;&#1089;&#1100;{% else %}&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;{% endif %}" title="{% if is_water_object %}&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1079;&#1072;&#1087;&#1080;&#1089;&#1100;{% else %}&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;{% endif %}">
                     <i class="bi bi-plus-lg"></i><span class="d-none d-sm-inline">{% if is_water_object %}&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1079;&#1072;&#1087;&#1080;&#1089;&#1100;{% else %}&#1044;&#1086;&#1073;&#1072;&#1074;&#1080;&#1090;&#1100; &#1087;&#1086;&#1082;&#1072;&#1079;&#1072;&#1085;&#1080;&#1103;{% endif %}</span>
                 </a>
+            {% endif %}
+            {% if can_delete_pool %}
+                <form method="post" action="{% url 'pool_delete' pool.uuid %}" class="m-0" onsubmit="return confirm('Переместить объект в архив?');">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-outline-danger rounded-3 d-flex align-items-center gap-2 {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} aria-label="Удалить объект" title="Удалить объект">
+                        <i class="bi bi-trash"></i><span class="d-none d-sm-inline">Удалить</span>
+                    </button>
+                </form>
             {% endif %}
         </div>
     {% endif %}
@@ -342,11 +350,21 @@
                         <td>{{ reading.comment|default:"-" }}</td>
                         <td>{{ reading.consumables_replaced|default:"-" }}</td>
                         <td class="text-end">
-                            {% if reading.id in editable_reading_ids %}
-                                <a class="btn btn-outline-secondary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% url 'water_reading_edit' reading.uuid %}">
-                                    <i class="bi bi-pencil"></i>
-                                </a>
-                            {% endif %}
+                            <div class="d-inline-flex align-items-center gap-1">
+                                {% if reading.id in editable_reading_ids %}
+                                    <a class="btn btn-outline-secondary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% url 'water_reading_edit' reading.uuid %}">
+                                        <i class="bi bi-pencil"></i>
+                                    </a>
+                                {% endif %}
+                                {% if reading.id in deletable_reading_ids %}
+                                    <form method="post" action="{% url 'water_reading_delete' reading.uuid %}" class="m-0" onsubmit="return confirm('Переместить запись в архив?');">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-outline-danger btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} aria-label="Удалить запись" title="Удалить запись">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                    </form>
+                                {% endif %}
+                            </div>
                         </td>
                     </tr>
                 {% endfor %}
@@ -429,11 +447,21 @@
                         </td>
                         <td>{{ reading.performed_works|default:"-" }}</td>
                         <td class="text-end">
-                            {% if reading.id in editable_reading_ids %}
-                                <a class="btn btn-outline-secondary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% url 'water_reading_edit' reading.uuid %}">
-                                    <i class="bi bi-pencil"></i>
-                                </a>
-                            {% endif %}
+                            <div class="d-inline-flex align-items-center gap-1">
+                                {% if reading.id in editable_reading_ids %}
+                                    <a class="btn btn-outline-secondary btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% url 'water_reading_edit' reading.uuid %}">
+                                        <i class="bi bi-pencil"></i>
+                                    </a>
+                                {% endif %}
+                                {% if reading.id in deletable_reading_ids %}
+                                    <form method="post" action="{% url 'water_reading_delete' reading.uuid %}" class="m-0" onsubmit="return confirm('Переместить запись в архив?');">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-outline-danger btn-sm {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} aria-label="Удалить запись" title="Удалить запись">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                    </form>
+                                {% endif %}
+                            </div>
                         </td>
                     </tr>
                 {% endfor %}

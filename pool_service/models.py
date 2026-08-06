@@ -245,6 +245,16 @@ class Pool(models.Model):
     water_contact_phone = models.CharField(max_length=30, null=True, blank=True)
     water_access_notes = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
+    is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="deleted_pools",
+    )
+    delete_reason = models.TextField(blank=True)
 
     def __str__(self):
         org_name = self.organization.name if self.organization else "без организации"
@@ -746,6 +756,16 @@ class WaterReading(models.Model):
     required_materials = models.TextField(null=True, blank=True)
     performed_works = models.TextField(null=True, blank=True)
     consumables_replaced = models.TextField(null=True, blank=True)
+    is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="deleted_water_readings",
+    )
+    delete_reason = models.TextField(blank=True)
 
     def __str__(self):
         return f"{self.pool.address} - {self.date.strftime('%d.%m.%Y %H:%M')}"
