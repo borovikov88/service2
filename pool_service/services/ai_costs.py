@@ -4,8 +4,11 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 
-PRICING_VERSION = "openai-2026-08-10"
+PRICING_VERSION = "openai-2026-08-10-long-context-v2"
 _MILLION = Decimal("1000000")
+LONG_CONTEXT_THRESHOLD = 272_000
+LONG_CONTEXT_INPUT_MULTIPLIER = Decimal("2")
+LONG_CONTEXT_OUTPUT_MULTIPLIER = Decimal("1.5")
 
 # Prices are USD per million tokens.  Only models listed here can produce a
 # calculated cost; metadata must never be able to add a price.
@@ -48,8 +51,16 @@ def calculate_usage_cost(model, input_tokens, cached_input_tokens, output_tokens
     cached_input_tokens = cached_input_tokens or 0
     if cached_input_tokens > input_tokens or model not in PRICE_TABLE:
         return None
+    long_context = input_tokens > LONG_CONTEXT_THRESHOLD
+    if long_context and cached_input_tokens:
+        # OpenAI documents the long-context input/output multipliers, but not
+        # an unambiguous long-context cached-input rate.  Do not guess costs.
+        return None
     normal_input = input_tokens - cached_input_tokens
     normal_price, cached_price, output_price = PRICE_TABLE[model]
+    if long_context:
+        normal_price *= LONG_CONTEXT_INPUT_MULTIPLIER
+        output_price *= LONG_CONTEXT_OUTPUT_MULTIPLIER
     amount = (
         Decimal(normal_input) * normal_price
         + Decimal(cached_input_tokens) * cached_price
