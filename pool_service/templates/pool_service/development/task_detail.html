@@ -1,0 +1,88 @@
+{% extends "pool_service/base.html" %}
+{% block title %}{{ task.reference }} — {{ task.title }}{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+  <div>
+    <a class="text-decoration-none" href="{% url 'development_task_list' %}">← Задачи разработки</a>
+    <div class="text-muted fw-semibold mt-3">{{ task.reference }}</div>
+    <h1 class="h3 mb-2">{{ task.title }}</h1>
+    <div class="d-flex flex-wrap gap-2">
+      <span class="badge text-bg-{% if task.status == 'done' %}success{% elif task.status == 'blocked' or task.status == 'failed' %}danger{% elif task.status == 'review' %}warning{% else %}secondary{% endif %}">{{ task.get_status_display }}</span>
+      <span class="badge text-bg-light">Приоритет: {{ task.get_priority_display }}</span>
+      <span class="badge text-bg-light">Итераций: {{ iterations|length }}</span>
+    </div>
+  </div>
+  <a class="btn btn-primary" href="{% url 'development_iteration_create' task.id %}">Добавить итерацию</a>
+</div>
+
+<div class="card card-soft p-3 p-lg-4 mb-4">
+  <h2 class="h5 mb-3">Этапы</h2>
+  <div class="d-flex flex-wrap gap-3">
+    {% for stage in stage_rows %}
+    <div class="d-flex align-items-center gap-2 {% if stage.state == 'pending' %}text-muted{% elif stage.state == 'current' %}text-primary fw-semibold{% else %}text-success{% endif %}">
+      <span aria-hidden="true">{% if stage.state == 'done' %}✓{% elif stage.state == 'current' %}●{% else %}○{% endif %}</span><span>{{ stage.label }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="row g-4 mb-4">
+  <div class="col-lg-8">
+    <div class="card card-soft p-3 p-lg-4 h-100">
+      <section class="mb-4"><h2 class="h6 text-uppercase text-muted">Исходная задача</h2><div>{{ task.description|linebreaksbr }}</div></section>
+      <section class="mb-4"><h2 class="h6 text-uppercase text-muted">Бизнес-цель</h2><div>{{ task.business_goal|default:"—"|linebreaksbr }}</div></section>
+      <section class="mb-4"><h2 class="h6 text-uppercase text-muted">Definition of Done</h2><div>{{ task.definition_of_done|default:"—"|linebreaksbr }}</div></section>
+      <section class="mb-4"><h2 class="h6 text-uppercase text-muted">Что уже сделано</h2><div>{{ task.completed_work|default:"—"|linebreaksbr }}</div></section>
+      <section class="mb-4"><h2 class="h6 text-uppercase text-muted">Что происходит сейчас</h2><div>{{ task.current_activity|default:"—"|linebreaksbr }}</div></section>
+      <section class="mb-4"><h2 class="h6 text-uppercase text-muted">Проблемы / blockers</h2><div>{{ task.blockers|default:"—"|linebreaksbr }}</div></section>
+      {% if task.final_summary or task.execution_result %}
+      <section class="mb-4"><h2 class="h6 text-uppercase text-muted">Итоговое резюме</h2><div>{{ task.final_summary|default:"—"|linebreaksbr }}</div></section>
+      <section><h2 class="h6 text-uppercase text-muted">Результат выполнения</h2><div>{{ task.execution_result|default:"—"|linebreaksbr }}</div></section>
+      {% endif %}
+    </div>
+  </div>
+  <div class="col-lg-4">
+    <form method="post" action="{% url 'development_task_update' task.id %}" class="card card-soft p-3 h-100">
+      {% csrf_token %}
+      <h2 class="h5 mb-3">Состояние задачи</h2>
+      {% if update_form.non_field_errors %}<div class="alert alert-danger">{{ update_form.non_field_errors }}</div>{% endif %}
+      {% for field in update_form %}
+      <div class="mb-3"><label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}</div>
+      {% endfor %}
+      <button class="btn btn-outline-primary mt-auto" type="submit">Сохранить состояние</button>
+    </form>
+  </div>
+</div>
+
+<div class="card card-soft p-3 p-lg-4 mb-4">
+  <div class="d-flex justify-content-between align-items-center mb-3"><h2 class="h4 mb-0">История итераций</h2><span class="text-muted">{{ iterations|length }}</span></div>
+  {% for iteration in iterations %}
+  <article class="border rounded-3 p-3 mb-3">
+    <div class="d-flex flex-wrap justify-content-between gap-2 mb-2">
+      <div class="fw-semibold">Итерация #{{ iteration.iteration_number }} · {{ iteration.get_executor_type_display }}</div>
+      <span class="badge text-bg-light">{{ iteration.get_status_display }}</span>
+    </div>
+    <div class="small text-muted mb-2">{{ iteration.tests_passed }} passed / {{ iteration.tests_failed }} failed{% if iteration.started_at %} · {{ iteration.started_at|date:"d.m.Y H:i" }}{% endif %}</div>
+    <div>{{ iteration.result_summary|default:"Резюме пока не заполнено."|linebreaksbr }}</div>
+    <details class="mt-3"><summary class="text-primary">Технические подробности</summary>
+      <div class="mt-3"><h3 class="h6">Prompt</h3><div class="text-break">{{ iteration.prompt|default:"—"|linebreaksbr }}</div></div>
+      <div class="mt-3"><h3 class="h6">Ответ Codex</h3><div class="text-break">{{ iteration.response|default:"—"|linebreaksbr }}</div></div>
+      <div class="mt-3"><h3 class="h6">Изменённые файлы</h3><div class="text-break">{{ iteration.changed_files|default:"—"|linebreaksbr }}</div></div>
+      <div class="mt-3"><h3 class="h6">Тесты</h3><div>{{ iteration.test_result|default:"—"|linebreaksbr }}</div></div>
+      <div class="mt-3"><h3 class="h6">Технические ошибки</h3><div>{{ iteration.technical_errors|default:"—"|linebreaksbr }}</div></div>
+      <div class="mt-3"><h3 class="h6">Замечания reviewer</h3><div>{{ iteration.reviewer_notes|default:"—"|linebreaksbr }}</div></div>
+      <div class="mt-3"><h3 class="h6">Следующий prompt</h3><div>{{ iteration.next_prompt|default:"—"|linebreaksbr }}</div></div>
+    </details>
+  </article>
+  {% empty %}<div class="text-muted py-3">Итераций пока нет.</div>{% endfor %}
+</div>
+
+<div class="card card-soft p-3 p-lg-4">
+  <h2 class="h4 mb-3">Журнал событий</h2>
+  <div class="vstack gap-3">
+    {% for event in events %}
+    <div class="d-flex gap-3"><div class="text-muted text-nowrap">{{ event.created_at|date:"d.m.Y H:i" }}</div><div>{{ event.message }}</div></div>
+    {% empty %}<div class="text-muted">Событий пока нет.</div>{% endfor %}
+  </div>
+</div>
+{% endblock %}

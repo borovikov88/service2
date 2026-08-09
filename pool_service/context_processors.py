@@ -116,6 +116,7 @@ def plan_status_context(request):
         "can_manage_company_cash": can_manage_company_cash,
         "can_access_kkm_cash": can_access_kkm_cash,
         "can_access_users": can_access_users,
+        "can_access_development": False,
         "crm_service_only": crm_service_only,
         "finance_only_user": finance_only_user,
         "payment_url": reverse("billing"),
@@ -144,6 +145,12 @@ def plan_status_context(request):
     org = organization_for_user(user)
     if not org:
         return context
+
+    context["can_access_development"] = user.is_superuser or OrganizationAccess.objects.filter(
+        user=user,
+        organization=org,
+        role__in={"owner", "admin"},
+    ).exists()
 
     if "service" in org_roles:
         context["home_url"] = reverse("readings_all")

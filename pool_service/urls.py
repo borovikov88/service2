@@ -140,6 +140,13 @@ from .finance_views import (
     finance_onec_import_cancel,
     finance_onec_import_detail,
 )
+from .development_views import (
+    development_iteration_create,
+    development_task_create,
+    development_task_detail,
+    development_task_list,
+    development_task_update,
+)
 
 urlpatterns = [
     path('', home, name='home'),
@@ -276,6 +283,11 @@ urlpatterns = [
     path("finance/1c-imports/<uuid:batch_id>/confirm/", finance_onec_import_confirm, name="finance_onec_import_confirm"),
     path("finance/1c-imports/<uuid:batch_id>/cancel/", finance_onec_import_cancel, name="finance_onec_import_cancel"),
     path("finance/1c-imports/<uuid:batch_id>/", finance_onec_import_detail, name="finance_onec_import_detail"),
+    path("development/tasks/", development_task_list, name="development_task_list"),
+    path("development/tasks/new/", development_task_create, name="development_task_create"),
+    path("development/tasks/<int:task_id>/", development_task_detail, name="development_task_detail"),
+    path("development/tasks/<int:task_id>/update/", development_task_update, name="development_task_update"),
+    path("development/tasks/<int:task_id>/iterations/new/", development_iteration_create, name="development_iteration_create"),
     path("clients/create/", client_create, name="client_create"),
     path("clients/<int:client_id>/edit/", client_edit, name="client_edit"),
     path("clients/<int:client_id>/delete/", client_delete, name="client_delete"),

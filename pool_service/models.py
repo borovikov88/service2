@@ -1918,3 +1918,239 @@ class OneCReportPeriodActivation(models.Model):
 
     def __str__(self):
         return f"{self.period_state_id}: {self.batch_id}"
+
+
+class DevelopmentTask(models.Model):
+    PRIORITY_LOW = "low"
+    PRIORITY_MEDIUM = "medium"
+    PRIORITY_HIGH = "high"
+    PRIORITY_CRITICAL = "critical"
+    PRIORITY_CHOICES = [
+        (PRIORITY_LOW, "Низкий"),
+        (PRIORITY_MEDIUM, "Обычный"),
+        (PRIORITY_HIGH, "Высокий"),
+        (PRIORITY_CRITICAL, "Критический"),
+    ]
+
+    STATUS_NEW = "new"
+    STATUS_ANALYSIS = "analysis"
+    STATUS_READY_FOR_CODEX = "ready_for_codex"
+    STATUS_CODEX_WORKING = "codex_working"
+    STATUS_TESTING = "testing"
+    STATUS_REVIEW = "review"
+    STATUS_REVISION = "revision"
+    STATUS_BLOCKED = "blocked"
+    STATUS_DONE = "done"
+    STATUS_FAILED = "failed"
+    STATUS_CANCELLED = "cancelled"
+    STATUS_CHOICES = [
+        (STATUS_NEW, "Новая"),
+        (STATUS_ANALYSIS, "Анализ"),
+        (STATUS_READY_FOR_CODEX, "Готова к передаче Codex"),
+        (STATUS_CODEX_WORKING, "Codex работает"),
+        (STATUS_TESTING, "Тестирование"),
+        (STATUS_REVIEW, "Проверка"),
+        (STATUS_REVISION, "Требуется доработка"),
+        (STATUS_BLOCKED, "Заблокирована"),
+        (STATUS_DONE, "Выполнена"),
+        (STATUS_FAILED, "Не выполнена"),
+        (STATUS_CANCELLED, "Отменена"),
+    ]
+
+    STAGE_ANALYSIS = "analysis"
+    STAGE_DEVELOPMENT = "development"
+    STAGE_TESTING = "testing"
+    STAGE_REVIEW = "review"
+    STAGE_COMPLETION = "completion"
+    STAGE_CHOICES = [
+        (STAGE_ANALYSIS, "Анализ"),
+        (STAGE_DEVELOPMENT, "Разработка"),
+        (STAGE_TESTING, "Тестирование"),
+        (STAGE_REVIEW, "Review"),
+        (STAGE_COMPLETION, "Завершение"),
+    ]
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="development_tasks",
+        verbose_name="Организация",
+    )
+    title = models.CharField("Название", max_length=255)
+    description = models.TextField("Исходная задача")
+    business_goal = models.TextField("Бизнес-цель", blank=True)
+    definition_of_done = models.TextField("Definition of Done", blank=True)
+    priority = models.CharField(
+        "Приоритет", max_length=16, choices=PRIORITY_CHOICES, default=PRIORITY_MEDIUM
+    )
+    status = models.CharField(
+        "Статус", max_length=24, choices=STATUS_CHOICES, default=STATUS_NEW
+    )
+    current_stage = models.CharField(
+        "Текущий этап", max_length=20, choices=STAGE_CHOICES, default=STAGE_ANALYSIS
+    )
+    initiator = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="initiated_development_tasks",
+        verbose_name="Инициатор",
+    )
+    started_at = models.DateTimeField("Начало работы", null=True, blank=True)
+    completed_at = models.DateTimeField("Завершение", null=True, blank=True)
+    completed_work = models.TextField("Что уже сделано", blank=True)
+    current_activity = models.TextField("Что происходит сейчас", blank=True)
+    blockers = models.TextField("Проблемы / blockers", blank=True)
+    final_summary = models.TextField("Итоговое резюме", blank=True)
+    execution_result = models.TextField("Результат выполнения", blank=True)
+    automation_metadata = models.JSONField(
+        "Данные автоматизации", default=dict, blank=True
+    )
+    created_at = models.DateTimeField("Создано", auto_now_add=True)
+    updated_at = models.DateTimeField("Обновлено", auto_now=True)
+
+    class Meta:
+        verbose_name = "Задача разработки"
+        verbose_name_plural = "Задачи разработки"
+        ordering = ["-updated_at", "-id"]
+        indexes = [
+            models.Index(fields=["organization", "status"], name="dev_task_org_status_idx"),
+            models.Index(fields=["organization", "updated_at"], name="dev_task_org_updated_idx"),
+        ]
+
+    @property
+    def reference(self):
+        return f"DEV-{self.pk:04d}" if self.pk else "DEV-новая"
+
+    def __str__(self):
+        return f"{self.reference} {self.title}"
+
+
+class DevelopmentIteration(models.Model):
+    EXECUTOR_CODEX = "codex"
+    EXECUTOR_CHATGPT = "chatgpt"
+    EXECUTOR_HUMAN = "human"
+    EXECUTOR_SYSTEM = "system"
+    EXECUTOR_OTHER = "other"
+    EXECUTOR_CHOICES = [
+        (EXECUTOR_CODEX, "Codex"),
+        (EXECUTOR_CHATGPT, "ChatGPT"),
+        (EXECUTOR_HUMAN, "Человек"),
+        (EXECUTOR_SYSTEM, "Система"),
+        (EXECUTOR_OTHER, "Другой"),
+    ]
+
+    STATUS_NEW = "new"
+    STATUS_WORKING = "working"
+    STATUS_TESTING = "testing"
+    STATUS_REVIEW = "review"
+    STATUS_ACCEPTED = "accepted"
+    STATUS_REVISION = "revision"
+    STATUS_FAILED = "failed"
+    STATUS_CANCELLED = "cancelled"
+    STATUS_CHOICES = [
+        (STATUS_NEW, "Создана"),
+        (STATUS_WORKING, "В работе"),
+        (STATUS_TESTING, "Тестирование"),
+        (STATUS_REVIEW, "На проверке"),
+        (STATUS_ACCEPTED, "Принята"),
+        (STATUS_REVISION, "На доработке"),
+        (STATUS_FAILED, "Ошибка"),
+        (STATUS_CANCELLED, "Отменена"),
+    ]
+
+    task = models.ForeignKey(
+        DevelopmentTask,
+        on_delete=models.CASCADE,
+        related_name="iterations",
+        verbose_name="Задача",
+    )
+    iteration_number = models.PositiveIntegerField("Номер итерации")
+    executor_type = models.CharField(
+        "Тип исполнителя", max_length=16, choices=EXECUTOR_CHOICES, default=EXECUTOR_CODEX
+    )
+    executor = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="development_iterations",
+        verbose_name="Исполнитель",
+    )
+    prompt = models.TextField("Prompt для Codex", blank=True)
+    response = models.TextField("Ответ Codex", blank=True)
+    result_summary = models.TextField("Краткое резюме результата", blank=True)
+    status = models.CharField(
+        "Статус", max_length=16, choices=STATUS_CHOICES, default=STATUS_NEW
+    )
+    started_at = models.DateTimeField("Начало", null=True, blank=True)
+    completed_at = models.DateTimeField("Завершение", null=True, blank=True)
+    changed_files = models.TextField("Изменённые файлы", blank=True)
+    test_result = models.TextField("Результат тестов", blank=True)
+    tests_passed = models.PositiveIntegerField("Успешных тестов", default=0)
+    tests_failed = models.PositiveIntegerField("Упавших тестов", default=0)
+    technical_errors = models.TextField("Технические ошибки", blank=True)
+    reviewer_notes = models.TextField("Замечания reviewer", blank=True)
+    next_prompt = models.TextField("Следующий prompt", blank=True)
+    automation_metadata = models.JSONField(
+        "Данные автоматизации", default=dict, blank=True
+    )
+    created_at = models.DateTimeField("Создано", auto_now_add=True)
+    updated_at = models.DateTimeField("Обновлено", auto_now=True)
+
+    class Meta:
+        verbose_name = "Итерация разработки"
+        verbose_name_plural = "Итерации разработки"
+        ordering = ["iteration_number", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["task", "iteration_number"], name="dev_iter_task_number_uniq"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.task.reference}, итерация {self.iteration_number}"
+
+
+class DevelopmentTaskEvent(models.Model):
+    TYPE_CREATED = "created"
+    TYPE_STATUS_CHANGED = "status_changed"
+    TYPE_ITERATION_ADDED = "iteration_added"
+    TYPE_TEST_RESULT = "test_result"
+    TYPE_NOTE = "note"
+    TYPE_CHOICES = [
+        (TYPE_CREATED, "Задача создана"),
+        (TYPE_STATUS_CHANGED, "Статус изменён"),
+        (TYPE_ITERATION_ADDED, "Итерация добавлена"),
+        (TYPE_TEST_RESULT, "Результат тестов"),
+        (TYPE_NOTE, "Заметка"),
+    ]
+
+    task = models.ForeignKey(
+        DevelopmentTask,
+        on_delete=models.CASCADE,
+        related_name="events",
+        verbose_name="Задача",
+    )
+    event_type = models.CharField("Тип события", max_length=24, choices=TYPE_CHOICES)
+    message = models.CharField("Событие", max_length=500)
+    actor = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="development_task_events",
+        verbose_name="Автор",
+    )
+    metadata = models.JSONField("Дополнительные данные", default=dict, blank=True)
+    created_at = models.DateTimeField("Создано", auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Событие задачи разработки"
+        verbose_name_plural = "События задач разработки"
+        ordering = ["-created_at", "-id"]
+        indexes = [models.Index(fields=["task", "created_at"], name="dev_event_task_at_idx")]
+
+    def __str__(self):
+        return f"{self.task.reference}: {self.message}"
