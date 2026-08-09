@@ -274,6 +274,86 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         self.assertEqual(iteration.status, DevelopmentIteration.STATUS_WORKING)
         self.assertEqual(iteration.automation_metadata["workflow_run_id"], 501)
 
+        self.client.force_login(self.owner)
+        response = self.client.get(reverse("development_task_detail", args=[task.pk]))
+        self.assertContains(response, "Открыть запуск GitHub Actions")
+        self.assertContains(
+            response,
+            'href="https://github.com/borovikov88/service2/actions/runs/501"',
+        )
+        self.assertContains(response, 'target="_blank"')
+        self.assertContains(response, 'rel="noopener noreferrer"')
+
+    @patch("pool_service.services.development_codex._workflow_validation_state")
+    @patch("pool_service.services.development_codex._list_workflow_runs")
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_run_id_is_saved_before_outcome_lookup_failure(
+        self, dispatch, runs, validation
+    ):
+        task = self.make_ready_task()
+        development_codex.dispatch_codex(task.pk, self.owner.pk)
+        iteration = task.iterations.get(executor_type="codex")
+        runs.return_value = {
+            "workflow_runs": [
+                self.matching_run(task, iteration, status="completed", conclusion="failure")
+            ]
+        }
+        validation.side_effect = TimeoutError("temporary GitHub failure")
+
+        result = development_codex.check_codex(task.pk, self.owner.pk)
+
+        self.assertEqual(result.state, "check_failed")
+        iteration.refresh_from_db()
+        self.assertEqual(iteration.automation_metadata["workflow_run_id"], 501)
+
+    @patch("pool_service.services.development_codex._list_workflow_runs")
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_ambiguous_runs_do_not_save_run_id(self, dispatch, runs):
+        task = self.make_ready_task()
+        development_codex.dispatch_codex(task.pk, self.owner.pk)
+        iteration = task.iterations.get(executor_type="codex")
+        runs.return_value = {
+            "workflow_runs": [
+                self.matching_run(task, iteration),
+                {**self.matching_run(task, iteration), "id": 502},
+            ]
+        }
+
+        result = development_codex.check_codex(task.pk, self.owner.pk)
+
+        self.assertEqual(result.state, "not_found")
+        iteration.refresh_from_db()
+        self.assertNotIn("workflow_run_id", iteration.automation_metadata)
+
+    def test_run_link_ignores_metadata_url_and_rejects_invalid_run_ids(self):
+        task = self.make_ready_task()
+        iteration = DevelopmentIteration.objects.create(
+            task=task,
+            iteration_number=2,
+            executor_type=DevelopmentIteration.EXECUTOR_CODEX,
+            status=DevelopmentIteration.STATUS_FAILED,
+            automation_metadata={
+                "purpose": development_codex.PURPOSE,
+                "state": development_codex.STATE_FAILED,
+                "applied": True,
+                "workflow_run_id": True,
+                "workflow_run_url": "javascript:alert(1)",
+            },
+        )
+        task.automation_metadata = {"active_codex_iteration_id": iteration.pk}
+        task.save(update_fields=["automation_metadata", "updated_at"])
+        self.client.force_login(self.owner)
+
+        response = self.client.get(reverse("development_task_detail", args=[task.pk]))
+
+        self.assertNotContains(response, "Открыть запуск GitHub Actions")
+        self.assertNotContains(response, "javascript:alert(1)")
+
+    @override_settings(GITHUB_DEVELOPMENT_REPOSITORY="attacker/repo/actions/runs/9")
+    def test_run_url_requires_valid_server_repository(self):
+        self.assertEqual(development_codex.github_actions_run_url(501), "")
+        self.assertEqual(development_codex.github_actions_run_url("not-a-number"), "")
+
     @patch("pool_service.services.development_codex._workflow_validation_state", return_value="passed")
     @patch("pool_service.services.development_codex._pull_request_files")
     @patch("pool_service.services.development_codex._find_pull_request")

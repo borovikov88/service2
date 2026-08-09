@@ -117,16 +117,21 @@ def is_configured():
     return bool(settings.GITHUB_DEVELOPMENT_TOKEN.strip())
 
 
-def _configuration():
-    if not settings.GITHUB_DEVELOPMENT_TOKEN.strip():
-        raise CodexConfigurationError("GitHub development integration is not configured")
+def _configured_repository():
     repository = settings.GITHUB_DEVELOPMENT_REPOSITORY.strip()
-    workflow = settings.GITHUB_DEVELOPMENT_WORKFLOW.strip()
     if not SAFE_REPOSITORY_RE.fullmatch(repository):
         raise CodexConfigurationError("Invalid GitHub development repository")
     owner, name = repository.split("/", 1)
     if owner in {".", ".."} or name in {".", ".."}:
         raise CodexConfigurationError("Invalid GitHub development repository")
+    return repository
+
+
+def _configuration():
+    if not settings.GITHUB_DEVELOPMENT_TOKEN.strip():
+        raise CodexConfigurationError("GitHub development integration is not configured")
+    repository = _configured_repository()
+    workflow = settings.GITHUB_DEVELOPMENT_WORKFLOW.strip()
     if not SAFE_WORKFLOW_RE.fullmatch(workflow) or workflow.startswith("."):
         raise CodexConfigurationError("Invalid GitHub development workflow")
     return repository, workflow
@@ -568,6 +573,29 @@ def _safe_github_url(value, repository):
     return value if value.startswith(prefix) else ""
 
 
+def _workflow_run_id(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str) and re.fullmatch(r"[0-9]+", value):
+        run_id = int(value)
+        return run_id if run_id > 0 else None
+    return None
+
+
+def github_actions_run_url(run_id):
+    """Build a run URL exclusively from trusted server configuration."""
+    normalized_run_id = _workflow_run_id(run_id)
+    if normalized_run_id is None:
+        return ""
+    try:
+        repository = _configured_repository()
+    except CodexConfigurationError:
+        return ""
+    return f"https://github.com/{repository}/actions/runs/{normalized_run_id}"
+
+
 def _workflow_test_result(pr_body):
     match = re.search(r"<!--\s*codex-tests:\s*(passed|failed)\s*-->", pr_body or "")
     if not match:
@@ -790,6 +818,31 @@ def _find_matching_run(task, iteration):
     return matches[0] if len(matches) == 1 else None
 
 
+def _remember_workflow_run(iteration_id, launch_token, run_id):
+    normalized_run_id = _workflow_run_id(run_id)
+    if normalized_run_id is None:
+        return False
+    with transaction.atomic():
+        iteration = DevelopmentIteration.objects.select_for_update().get(pk=iteration_id)
+        metadata = _metadata(iteration)
+        if metadata.get("launch_token") != launch_token:
+            return False
+        existing_run_id = _workflow_run_id(metadata.get("workflow_run_id"))
+        if existing_run_id is not None and existing_run_id != normalized_run_id:
+            return False
+        if (
+            metadata.get("workflow_run_id") == normalized_run_id
+            and "workflow_run_url" not in metadata
+        ):
+            return True
+        metadata["workflow_run_id"] = normalized_run_id
+        # Legacy API-derived URLs are intentionally never trusted by the UI.
+        metadata.pop("workflow_run_url", None)
+        iteration.automation_metadata = metadata
+        iteration.save(update_fields=["automation_metadata", "updated_at"])
+    return True
+
+
 def check_codex(task_id, actor_id):
     if not is_configured():
         return CodexOperationResult("not_configured")
@@ -822,6 +875,12 @@ def check_codex(task_id, actor_id):
         return CodexOperationResult("check_failed")
     if run is None:
         return CodexOperationResult("not_found")
+
+    run_id = _workflow_run_id(run.get("id"))
+    if run_id is None or not _remember_workflow_run(iteration_id, launch_token, run_id):
+        return CodexOperationResult("not_found")
+    run = dict(run)
+    run["id"] = run_id
 
     run_status = str(run.get("status") or "").lower()
     conclusion = str(run.get("conclusion") or "").lower()
@@ -894,8 +953,7 @@ def check_codex(task_id, actor_id):
         metadata.update(
             {
                 "state": remote_state,
-                "workflow_run_id": run.get("id"),
-                "workflow_run_url": _safe_github_url(run.get("html_url"), repository),
+                "workflow_run_id": run_id,
                 "checked_at": _now_iso(),
                 "validation_state": validation_state,
             }

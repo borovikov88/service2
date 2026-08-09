@@ -29,6 +29,7 @@ from pool_service.services.development_ai import (
 from pool_service.services.development_codex import (
     check_codex,
     dispatch_codex,
+    github_actions_run_url,
     is_configured as codex_is_configured,
     resolve_codex_iteration,
 )
@@ -199,9 +200,11 @@ def _codex_context(task):
             DevelopmentTask.STATUS_BLOCKED,
         }
     )
+    workflow_run_url = github_actions_run_url(metadata.get("workflow_run_id"))
     return {
         "codex_iteration": iteration,
         "codex_metadata": metadata,
+        "codex_workflow_run_url": workflow_run_url,
         "codex_state": state,
         "codex_state_label": labels.get(state, "Состояние Codex обновляется"),
         "codex_configured": configured,

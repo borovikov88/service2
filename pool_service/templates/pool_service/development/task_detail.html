@@ -64,7 +64,7 @@
       {% elif codex_state == "dispatch_unknown" %}
       <div class="small text-danger mt-2">Не удалось однозначно подтвердить запуск. Повторная передача заблокирована; используйте ручную проверку.</div>
       {% endif %}
-      {% if codex_metadata.workflow_run_url %}<div class="small mt-2"><a href="{{ codex_metadata.workflow_run_url }}" rel="noopener noreferrer" target="_blank">Открыть GitHub Actions</a></div>{% endif %}
+      {% if codex_workflow_run_url %}<div class="small mt-2"><a href="{{ codex_workflow_run_url }}" rel="noopener noreferrer" target="_blank">Открыть запуск GitHub Actions</a></div>{% endif %}
       {% if codex_metadata.branch_name %}<div class="small mt-2">Ветка: <code>{{ codex_metadata.branch_name }}</code></div>{% endif %}
       {% if codex_metadata.pr_url %}<div class="small mt-2"><a href="{{ codex_metadata.pr_url }}" rel="noopener noreferrer" target="_blank">Pull Request #{{ codex_metadata.pr_number }}</a></div>{% endif %}
     </div>
