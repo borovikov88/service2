@@ -691,6 +691,33 @@ class FinanceTests(TestCase):
         self.assertEqual(accountable_balance(self.organization, self.manager)["operational_balance"], Decimal("2500.00"))
         self.assertTrue(operation.changes.filter(action=CashOperationChange.ACTION_APPROVED).exists())
 
+    def test_admin_has_manager_cashbox_actions(self):
+        self.client.force_login(self.admin)
+
+        dashboard = self.client.get(reverse("finance_kkm_cash_dashboard"))
+
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertContains(dashboard, reverse("finance_cash_income_create"))
+        self.assertContains(dashboard, reverse("finance_cash_accountable_issue_create"))
+        self.assertContains(dashboard, reverse("finance_cash_transfer_create"))
+        self.assertContains(dashboard, f"{reverse('finance_expense_create')}?source=kkm_cash")
+
+        income_response = self.client.post(
+            reverse("finance_cash_income_create"),
+            {
+                "amount": "3200.00",
+                "occurred_on": date.today().isoformat(),
+                "note": "admin income",
+            },
+        )
+
+        self.assertEqual(income_response.status_code, 302)
+        income = CashOperation.objects.get(operation_type=CashOperation.TYPE_MANAGER_INCOME)
+        self.assertEqual(income.manager, self.admin)
+        self.assertEqual(income.created_by, self.admin)
+        self.assertEqual(income.status, CashOperation.STATUS_APPROVED)
+        self.assertEqual(kkm_cash_balance(self.organization)["balance"], Decimal("3200.00"))
+
     def test_kkm_cash_expense_does_not_affect_accountable_balance(self):
         CashOperation.objects.create(
             organization=self.organization,
