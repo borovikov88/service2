@@ -315,6 +315,28 @@ class DevelopmentTaskTests(TestCase):
         self.assertEqual(update.status_code, 404)
         self.assertEqual(iteration.status_code, 404)
 
+    def test_cross_organization_cannot_create_iteration_by_post(self):
+        other_org = Organization.objects.create(
+            name="Другая организация для POST",
+            paid_until=timezone.now() + timedelta(days=30),
+        )
+        other_admin = self.user_with_role(
+            "other-post-admin", "admin", organization=other_org
+        )
+        foreign_task = self.create_task(title="Чужая задача для POST")
+        self.client.force_login(other_admin)
+
+        response = self.client.post(
+            reverse("development_iteration_create", args=[foreign_task.pk]),
+            self.iteration_payload(),
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(
+            DevelopmentIteration.objects.filter(task=foreign_task).exists()
+        )
+        self.assertFalse(foreign_task.events.exists())
+
     def test_manager_cannot_create_or_update(self):
         task = self.create_task()
         self.client.force_login(self.manager)
