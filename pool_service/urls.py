@@ -142,6 +142,8 @@ from .finance_views import (
 )
 from .development_views import (
     development_iteration_create,
+    development_task_analysis_check,
+    development_task_analysis_launch,
     development_task_create,
     development_task_detail,
     development_task_list,
@@ -288,6 +290,8 @@ urlpatterns = [
     path("development/tasks/new/", development_task_create, name="development_task_create"),
     path("development/tasks/<int:task_id>/", development_task_detail, name="development_task_detail"),
     path("development/tasks/<int:task_id>/start/", development_task_start, name="development_task_start"),
+    path("development/tasks/<int:task_id>/analysis/start/", development_task_analysis_launch, name="development_task_analysis_launch"),
+    path("development/tasks/<int:task_id>/analysis/check/", development_task_analysis_check, name="development_task_analysis_check"),
     path("development/tasks/<int:task_id>/update/", development_task_update, name="development_task_update"),
     path("development/tasks/<int:task_id>/iterations/new/", development_iteration_create, name="development_iteration_create"),
     path("clients/create/", client_create, name="client_create"),
