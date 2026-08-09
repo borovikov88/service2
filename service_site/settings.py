@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 from pathlib import Path
 from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
+import math
 import os
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -24,6 +25,19 @@ def _env_bool(name, default=False):
     if value is None:
         return default
     return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_float(name, default, *, minimum, maximum):
+    raw_value = os.getenv(name, str(default))
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ImproperlyConfigured(f"{name} must be a number") from exc
+    if not math.isfinite(value) or not minimum <= value <= maximum:
+        raise ImproperlyConfigured(
+            f"{name} must be between {minimum} and {maximum} seconds"
+        )
+    return value
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
@@ -51,6 +65,17 @@ SECURE_HSTS_PRELOAD = _env_bool("SECURE_HSTS_PRELOAD", not DEBUG)
 allowed_hosts_env = os.getenv('ALLOWED_HOSTS', '')
 ALLOWED_HOSTS = [host.strip() for host in allowed_hosts_env.split(',') if host.strip()]
 YANDEX_SUGGEST_API_KEY = os.getenv("YANDEX_SUGGEST_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_DEVELOPMENT_MODEL = os.getenv("OPENAI_DEVELOPMENT_MODEL", "gpt-5.6")
+OPENAI_DEVELOPMENT_TIMEOUT_SECONDS = _env_float(
+    "OPENAI_DEVELOPMENT_TIMEOUT_SECONDS",
+    25,
+    minimum=1,
+    maximum=60,
+)
+OPENAI_DEVELOPMENT_MAX_OUTPUT_TOKENS = int(
+    os.getenv("OPENAI_DEVELOPMENT_MAX_OUTPUT_TOKENS", "6000")
+)
 SITE_URL = os.getenv("SITE_URL", "")
 SMS_RU_API_ID = os.getenv("SMS_RU_API_ID", "")
 SMS_RU_TIMEOUT = int(os.getenv("SMS_RU_TIMEOUT", "8"))

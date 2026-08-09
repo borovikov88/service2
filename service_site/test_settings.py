@@ -22,6 +22,8 @@ SMS_RU_API_ID = ""
 VAPID_PRIVATE_KEY = ""
 VAPID_PUBLIC_KEY = ""
 YANDEX_SUGGEST_API_KEY = ""
+OPENAI_API_KEY = ""
+OPENAI_DEVELOPMENT_MODEL = "test-model"
 SECURE_SSL_REDIRECT = False
 SECURE_HSTS_SECONDS = 0
 _TEST_PRIVATE_MEDIA = tempfile.TemporaryDirectory(prefix="service2-test-private-")
