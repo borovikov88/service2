@@ -26,6 +26,12 @@ from pool_service.services.development_ai import (
     launch_analysis,
     resolve_primary_analysis_iteration,
 )
+from pool_service.services.development_codex import (
+    check_codex,
+    dispatch_codex,
+    is_configured as codex_is_configured,
+    resolve_codex_iteration,
+)
 
 
 DEVELOPMENT_ROLES = {"owner", "admin"}
@@ -149,6 +155,60 @@ def _analysis_context(task, iteration):
     }
 
 
+def _codex_context(task):
+    iteration = resolve_codex_iteration(task)
+    metadata = (
+        dict(iteration.automation_metadata)
+        if iteration and isinstance(iteration.automation_metadata, dict)
+        else {}
+    )
+    state = metadata.get("state", "not_started")
+    labels = {
+        "not_started": "Задача ещё не передана в Codex",
+        "dispatching": "Запуск GitHub Actions подготавливается",
+        "dispatched": "Задача передана в GitHub Actions",
+        "dispatch_unknown": "Результат запуска требует ручной проверки",
+        "queued": "Workflow ожидает запуска",
+        "in_progress": "Codex выполняет задачу",
+        "completed": "Codex создал Pull Request",
+        "failed": "Workflow завершился ошибкой",
+        "cancelled": "Workflow отменён",
+        "timed_out": "Workflow превысил лимит времени",
+        "validation_failed": "Codex создал PR, но проверки не прошли",
+        "security_blocked": "Codex попытался изменить защищённые файлы",
+        "infrastructure_failed": "Workflow завершился инфраструктурной ошибкой",
+    }
+    configured = codex_is_configured()
+    analysis = resolve_primary_analysis_iteration(task)
+    can_launch = bool(
+        configured
+        and task.status == DevelopmentTask.STATUS_READY_FOR_CODEX
+        and analysis
+        and analysis.status == DevelopmentIteration.STATUS_ACCEPTED
+        and (iteration is None or metadata.get("applied"))
+    )
+    can_check = bool(
+        configured
+        and iteration
+        and not metadata.get("applied")
+        and task.status
+        in {
+            DevelopmentTask.STATUS_READY_FOR_CODEX,
+            DevelopmentTask.STATUS_CODEX_WORKING,
+            DevelopmentTask.STATUS_BLOCKED,
+        }
+    )
+    return {
+        "codex_iteration": iteration,
+        "codex_metadata": metadata,
+        "codex_state": state,
+        "codex_state_label": labels.get(state, "Состояние Codex обновляется"),
+        "codex_configured": configured,
+        "codex_can_launch": can_launch,
+        "codex_can_check": can_check,
+    }
+
+
 @login_required
 def development_task_list(request):
     organization, denied = _development_guard(request)
@@ -248,6 +308,7 @@ def development_task_detail(request, task_id):
         "active_tab": "development",
     }
     context.update(_analysis_context(task, analysis_iteration))
+    context.update(_codex_context(task))
     return render(
         request,
         "pool_service/development/task_detail.html",
@@ -398,6 +459,69 @@ def development_task_analysis_check(request, task_id):
         messages.info(request, "Итерация первичного AI-анализа недоступна для проверки.")
     else:
         messages.info(request, "AI-анализ ещё не был запущен.")
+    return redirect("development_task_detail", task_id=task.pk)
+
+
+@login_required
+@require_POST
+def development_task_codex_start(request, task_id):
+    organization, denied = _development_guard(request)
+    if denied:
+        return denied
+    task = _task_for_organization(organization, task_id)
+    result = dispatch_codex(task.pk, request.user.pk)
+    if result.state == "not_configured":
+        messages.error(request, "Интеграция GitHub Actions не настроена.")
+    elif result.state == "not_available":
+        messages.info(request, "Задача недоступна для передачи в Codex.")
+    elif result.state == "dispatch_unknown":
+        messages.error(
+            request,
+            "Не удалось однозначно подтвердить запуск. Автоматический повтор заблокирован.",
+        )
+    elif result.state == "task_state_changed":
+        messages.warning(
+            request,
+            "Workflow запущен, но состояние задачи уже изменилось; результат не применён.",
+        )
+    elif result.changed:
+        messages.success(request, "Задача передана в Codex через GitHub Actions.")
+    else:
+        messages.info(request, "Запуск Codex уже существует; дублирующий запрос не создан.")
+    return redirect("development_task_detail", task_id=task.pk)
+
+
+@login_required
+@require_POST
+def development_task_codex_check(request, task_id):
+    organization, denied = _development_guard(request)
+    if denied:
+        return denied
+    task = _task_for_organization(organization, task_id)
+    result = check_codex(task.pk, request.user.pk)
+    if result.state == "completed":
+        messages.success(request, "Codex завершил работу; Pull Request готов к review.")
+    elif result.state in {"queued", "in_progress", "dispatched"}:
+        messages.info(request, "Codex ещё выполняет задачу.")
+    elif result.state == "not_found":
+        messages.info(request, "Запуск workflow пока не найден. Повторите проверку позже.")
+    elif result.state == "check_failed":
+        messages.error(request, "Не удалось проверить GitHub Actions. Повторите позже.")
+    elif result.state in {
+        "failed",
+        "cancelled",
+        "timed_out",
+        "validation_failed",
+        "security_blocked",
+        "infrastructure_failed",
+    }:
+        messages.error(request, "Выполнение Codex требует ручной проверки.")
+    elif result.state == "not_configured":
+        messages.error(request, "Интеграция GitHub Actions не настроена.")
+    elif result.state == "task_state_changed":
+        messages.warning(request, "Результат не применён: состояние задачи уже изменилось.")
+    else:
+        messages.info(request, "Запуск Codex недоступен для проверки.")
     return redirect("development_task_detail", task_id=task.pk)
 
 

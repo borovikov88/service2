@@ -1,0 +1,447 @@
+name: Development Codex automation
+run-name: development-${{ inputs.task_reference }}-${{ inputs.launch_token }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_reference:
+        description: Development task reference
+        required: true
+        type: string
+      launch_token:
+        description: Non-secret idempotency token
+        required: true
+        type: string
+      branch_name:
+        description: Server-generated feature branch
+        required: true
+        type: string
+      prompt_b64:
+        description: UTF-8 task prompt encoded as base64
+        required: true
+        type: string
+      pr_title_b64:
+        description: UTF-8 pull request title encoded as base64
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: development-${{ inputs.task_reference }}-${{ inputs.launch_token }}
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    env:
+      REQUEST_ACTOR: ${{ github.actor }}
+      REQUEST_EVENT: ${{ github.event_name }}
+      TRUSTED_ACTOR: borovikov88
+    steps:
+      - name: Enforce trusted workflow dispatch actor
+        shell: bash
+        run: |
+          if [[ "$REQUEST_EVENT" != "workflow_dispatch" ]]; then
+            echo "Unexpected workflow event" >&2
+            exit 1
+          fi
+          if [[ "$REQUEST_ACTOR" != "$TRUSTED_ACTOR" ]]; then
+            echo "Workflow actor is not authorized" >&2
+            exit 1
+          fi
+
+  codex:
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      TASK_REFERENCE: ${{ inputs.task_reference }}
+      LAUNCH_TOKEN: ${{ inputs.launch_token }}
+      BRANCH_NAME: ${{ inputs.branch_name }}
+      PROMPT_B64: ${{ inputs.prompt_b64 }}
+      PR_TITLE_B64: ${{ inputs.pr_title_b64 }}
+    steps:
+      - name: Validate server inputs
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, re
+          checks = {
+              "TASK_REFERENCE": r"DEV-[0-9]{4,}",
+              "LAUNCH_TOKEN": r"[a-f0-9]{32}",
+              "BRANCH_NAME": r"codex/dev-[0-9]+-[a-f0-9]{12}",
+          }
+          for name, pattern in checks.items():
+              if re.fullmatch(pattern, os.environ.get(name, "")) is None:
+                  raise SystemExit(f"Invalid {name}")
+          PY
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: main
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install trusted dependencies before Codex
+        run: python -m pip install -r requirements.txt
+
+      - name: Decode UTF-8 prompt and PR title
+        env:
+          PROMPT_FILE: ${{ runner.temp }}/development-prompt.txt
+          TITLE_FILE: ${{ runner.temp }}/pr-title.txt
+        shell: bash
+        run: |
+          python - <<'PY'
+          import base64, os
+          values = (
+              ("PROMPT_B64", "PROMPT_FILE", 40000),
+              ("PR_TITLE_B64", "TITLE_FILE", 255),
+          )
+          for source, target, limit in values:
+              try:
+                  raw = base64.b64decode(os.environ[source], validate=True)
+                  text = raw.decode("utf-8")
+              except Exception as exc:
+                  raise SystemExit(f"Invalid {source}") from exc
+              if not text.strip() or len(raw) > limit or "\x00" in text:
+                  raise SystemExit(f"Unsafe {source}")
+              with open(os.environ[target], "w", encoding="utf-8", newline="\n") as handle:
+                  handle.write(text)
+          PY
+
+      - name: Snapshot trusted Git metadata before Codex
+        shell: bash
+        run: |
+          cp .git/config "${{ runner.temp }}/trusted-git-config"
+          cp .git/index "${{ runner.temp }}/trusted-git-index"
+
+      - name: Run Codex in workspace-only sandbox
+        uses: openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56 # v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: ${{ runner.temp }}/development-prompt.txt
+          output-file: ${{ runner.temp }}/codex-final.txt
+          permission-profile: ":workspace"
+          safety-strategy: "drop-sudo"
+          allow-users: "borovikov88"
+          allow-bots: "false"
+
+      # This is the only post-Codex step besides artifact upload. It has no secrets or
+      # repository write credentials and only serializes an inert binary patch.
+      - name: Package Codex changes
+        env:
+          FINAL_FILE: ${{ runner.temp }}/codex-final.txt
+          TITLE_FILE: ${{ runner.temp }}/pr-title.txt
+          ARTIFACT_DIR: ${{ runner.temp }}/codex-artifact
+          TRUSTED_GIT_CONFIG: ${{ runner.temp }}/trusted-git-config
+          TRUSTED_GIT_INDEX: ${{ runner.temp }}/trusted-git-index
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, pathlib, shutil, subprocess
+          git_dir = pathlib.Path(".git")
+          if not git_dir.is_dir() or git_dir.is_symlink():
+              raise SystemExit("Git metadata directory is unsafe")
+          if (git_dir / "config").is_symlink() or (git_dir / "index").is_symlink():
+              raise SystemExit("Git metadata file is unsafe")
+          shutil.copyfile(os.environ["TRUSTED_GIT_CONFIG"], git_dir / "config")
+          shutil.copyfile(os.environ["TRUSTED_GIT_INDEX"], git_dir / "index")
+          shutil.rmtree(git_dir / "hooks", ignore_errors=True)
+          (git_dir / "hooks").mkdir()
+          subprocess.run(["git", "add", "-N", "--", "."], check=True)
+          changed = subprocess.check_output(
+              ["git", "diff", "--name-only", "--diff-filter=ACDMRTUXB"], text=True
+          ).splitlines()
+          if not changed:
+              raise SystemExit("Codex produced no changes")
+          patch = subprocess.check_output(
+              [
+                  "git", "diff", "--binary", "--full-index", "--no-ext-diff",
+                  "--no-textconv",
+              ]
+          )
+          if len(patch) > 5_000_000:
+              raise SystemExit("Patch exceeds 5 MB")
+          target = pathlib.Path(os.environ["ARTIFACT_DIR"])
+          target.mkdir(parents=True, exist_ok=True)
+          (target / "codex.patch").write_bytes(patch)
+          for source, name in (("FINAL_FILE", "codex-final.txt"), ("TITLE_FILE", "pr-title.txt")):
+              content = pathlib.Path(os.environ[source]).read_bytes()
+              (target / name).write_bytes(content)
+          manifest = {
+              "task_reference": os.environ["TASK_REFERENCE"],
+              "launch_token": os.environ["LAUNCH_TOKEN"],
+              "branch_name": os.environ["BRANCH_NAME"],
+              "patch_sha256": hashlib.sha256(patch).hexdigest(),
+              "patch_size": len(patch),
+          }
+          (target / "manifest.json").write_text(
+              json.dumps(manifest, sort_keys=True), encoding="utf-8"
+          )
+          PY
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: codex-change-${{ inputs.launch_token }}
+          path: ${{ runner.temp }}/codex-artifact
+          if-no-files-found: error
+          retention-days: 3
+
+  validate:
+    needs: codex
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      validation_state: ${{ steps.classify.outputs.state }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: main
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: codex-change-${{ inputs.launch_token }}
+          path: ${{ runner.temp }}/codex-artifact
+
+      - name: Validate artifact and protected paths before apply
+        id: gate
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/codex-artifact
+          TASK_REFERENCE: ${{ inputs.task_reference }}
+          LAUNCH_TOKEN: ${{ inputs.launch_token }}
+          BRANCH_NAME: ${{ inputs.branch_name }}
+        shell: bash
+        run: |
+          set +e
+          python .github/scripts/validate_codex_patch.py \
+            --artifact-dir "$ARTIFACT_DIR" \
+            --task-reference "$TASK_REFERENCE" \
+            --launch-token "$LAUNCH_TOKEN" \
+            --branch-name "$BRANCH_NAME" \
+            > "${{ runner.temp }}/artifact-validation.log" 2>&1
+          code=$?
+          if [[ $code -eq 0 ]]; then state=allowed
+          elif [[ $code -eq 3 ]]; then state=security_blocked
+          else state=infrastructure_failed
+          fi
+          printf 'state=%s\n' "$state" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Apply gated patch on fresh runner
+        if: ${{ steps.gate.outputs.state == 'allowed' }}
+        run: git apply --index --binary "${{ runner.temp }}/codex-artifact/codex.patch"
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        if: ${{ steps.gate.outputs.state == 'allowed' }}
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        if: ${{ steps.gate.outputs.state == 'allowed' }}
+        run: python -m pip install -r requirements.txt
+
+      - name: Run required checks
+        id: tests
+        if: ${{ steps.gate.outputs.state == 'allowed' }}
+        shell: bash
+        run: |
+          set +e
+          status=0
+          log="${{ runner.temp }}/validation.log"
+          python manage.py check --settings=service_site.test_settings >> "$log" 2>&1 || status=1
+          python manage.py makemigrations --check --settings=service_site.test_settings >> "$log" 2>&1 || status=1
+          python manage.py test pool_service.tests.test_development_tasks --settings=service_site.test_settings >> "$log" 2>&1 || status=1
+          python manage.py test pool_service.tests.test_development_ai_analysis --settings=service_site.test_settings >> "$log" 2>&1 || status=1
+          python manage.py test pool_service.tests.test_development_codex_automation --settings=service_site.test_settings >> "$log" 2>&1 || status=1
+          printf '\n=== Trusted baseline regression ===\n' >> "$log"
+          git restore --source=HEAD --worktree --staged -- \
+            service_site/test_settings.py \
+            pool_service/tests/test_development_tasks.py \
+            pool_service/tests/test_development_ai_analysis.py \
+            pool_service/tests/test_development_codex_automation.py >> "$log" 2>&1 || status=1
+          python manage.py check --settings=service_site.test_settings >> "$log" 2>&1 || status=1
+          python manage.py makemigrations --check --settings=service_site.test_settings >> "$log" 2>&1 || status=1
+          python manage.py test \
+            pool_service.tests.test_development_tasks \
+            pool_service.tests.test_development_ai_analysis \
+            pool_service.tests.test_development_codex_automation \
+            --settings=service_site.test_settings >> "$log" 2>&1 || status=1
+          cat "$log"
+          [[ $status -eq 0 ]] && result=passed || result=failed
+          printf 'result=%s\n' "$result" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Classify trusted validation outcome
+        id: classify
+        if: ${{ always() }}
+        env:
+          GATE_STATE: ${{ steps.gate.outputs.state }}
+          TEST_STATE: ${{ steps.tests.outputs.result }}
+        shell: bash
+        run: |
+          if [[ "$GATE_STATE" == "allowed" ]]; then
+            state="${TEST_STATE:-infrastructure_failed}"
+          else
+            state="${GATE_STATE:-infrastructure_failed}"
+          fi
+          case "$state" in
+            passed|failed|security_blocked|infrastructure_failed) ;;
+            *) state=infrastructure_failed ;;
+          esac
+          printf 'state=%s\n' "$state" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$state" > "${{ runner.temp }}/test-result.txt"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ always() }}
+        with:
+          name: codex-validation-${{ inputs.launch_token }}
+          path: |
+            ${{ runner.temp }}/validation.log
+            ${{ runner.temp }}/artifact-validation.log
+            ${{ runner.temp }}/test-result.txt
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: validate
+    if: ${{ needs.validate.outputs.validation_state == 'passed' || needs.validate.outputs.validation_state == 'failed' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH_NAME: ${{ inputs.branch_name }}
+      TASK_REFERENCE: ${{ inputs.task_reference }}
+      LAUNCH_TOKEN: ${{ inputs.launch_token }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: main
+          persist-credentials: true
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: codex-change-${{ inputs.launch_token }}
+          path: ${{ runner.temp }}/codex-artifact
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: codex-validation-${{ inputs.launch_token }}
+          path: ${{ runner.temp }}/validation
+
+      - name: Revalidate artifact before privileged apply
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/codex-artifact
+        shell: bash
+        run: |
+          python .github/scripts/validate_codex_patch.py \
+            --artifact-dir "$ARTIFACT_DIR" \
+            --task-reference "$TASK_REFERENCE" \
+            --launch-token "$LAUNCH_TOKEN" \
+            --branch-name "$BRANCH_NAME"
+
+      - name: Prepare trusted Pull Request metadata before patch apply
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/codex-artifact
+          VALIDATION_DIR: ${{ runner.temp }}/validation
+        shell: bash
+        run: |
+          python - <<'PY'
+          import html, os, pathlib
+          artifact = pathlib.Path(os.environ["ARTIFACT_DIR"])
+          validation = pathlib.Path(os.environ["VALIDATION_DIR"])
+          title = (artifact / "pr-title.txt").read_text(encoding="utf-8").strip()
+          if not title or len(title.encode("utf-8")) > 255:
+              raise SystemExit("Invalid PR title")
+          summary = (artifact / "codex-final.txt").read_text(encoding="utf-8").strip()[:6000]
+          tests = (validation / "test-result.txt").read_text(encoding="utf-8").strip()
+          log_path = validation / "validation.log"
+          diagnostics = log_path.read_text(encoding="utf-8", errors="replace")[-8000:] if log_path.exists() else ""
+          diagnostics = "".join(
+              character for character in diagnostics
+              if character in "\n\t" or ord(character) >= 32
+          )
+          body = "\n".join([
+              "## Codex result", "", summary or "Codex did not provide a summary.", "",
+              "## Automated checks", "", f"Result: **{tests}**", "",
+              "<details><summary>Validation diagnostics</summary>", "",
+              f"<pre>{html.escape(diagnostics)}</pre>", "", "</details>", "",
+              f"DevelopmentTask: `{os.environ['TASK_REFERENCE']}`",
+              f"Branch: `{os.environ['BRANCH_NAME']}`",
+              f"Launch token: `{os.environ['LAUNCH_TOKEN']}`",
+              "", "This PR was created automatically. It has not been merged or deployed.",
+              f"<!-- codex-launch-token: {os.environ['LAUNCH_TOKEN']} -->",
+              f"<!-- codex-tests: {tests} -->",
+          ])
+          (artifact / "pr-body.txt").write_text(body, encoding="utf-8")
+          (artifact / "safe-title.txt").write_text(title, encoding="utf-8")
+          PY
+
+      - name: Apply validated patch using trusted Git only
+        shell: bash
+        run: |
+          git apply --index --binary "${{ runner.temp }}/codex-artifact/codex.patch"
+          changed="$(git diff --cached --name-only)"
+          [[ -n "$changed" ]]
+
+      - name: Commit and push server-generated branch
+        shell: bash
+        run: |
+          mkdir -p "${{ runner.temp }}/empty-hooks"
+          git config core.hooksPath "${{ runner.temp }}/empty-hooks"
+          git switch -c "$BRANCH_NAME"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --no-verify -m "${TASK_REFERENCE}: implement development task"
+          git push origin "HEAD:refs/heads/${BRANCH_NAME}"
+
+      - name: Create Pull Request without merging using trusted GitHub CLI
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/codex-artifact
+        shell: bash
+        run: |
+          existing="$(gh pr list --state open --head "$BRANCH_NAME" --base main --json number --jq '.[0].number // empty')"
+          if [[ -z "$existing" ]]; then
+            gh pr create --base main --head "$BRANCH_NAME" \
+              --title "$(cat "$ARTIFACT_DIR/safe-title.txt")" \
+              --body-file "$ARTIFACT_DIR/pr-body.txt"
+          else
+            printf 'Pull Request #%s already exists\n' "$existing"
+          fi
+
+  outcome:
+    name: outcome-${{ needs.validate.outputs.validation_state || 'infrastructure_failed' }}
+    needs: [codex, validate, publish]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    env:
+      VALIDATION_STATE: ${{ needs.validate.outputs.validation_state }}
+      PUBLISH_RESULT: ${{ needs.publish.result }}
+    steps:
+      - name: Enforce logical workflow outcome
+        shell: bash
+        run: |
+          printf 'validation_state=%s publish_result=%s\n' \
+            "${VALIDATION_STATE:-infrastructure_failed}" "$PUBLISH_RESULT"
+          if [[ "$VALIDATION_STATE" != "passed" || "$PUBLISH_RESULT" != "success" ]]; then
+            exit 1
+          fi

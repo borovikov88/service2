@@ -53,6 +53,39 @@
 </div>
 {% endif %}
 
+{% if task.status == "ready_for_codex" or codex_iteration %}
+<div class="card card-soft p-3 p-lg-4 mb-4">
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
+    <div>
+      <h2 class="h5 mb-1">Выполнение в Codex</h2>
+      <div class="text-muted">{{ codex_state_label }}</div>
+      {% if not codex_configured and not codex_iteration %}
+      <div class="small text-warning mt-2">Интеграция GitHub Actions пока не настроена администратором.</div>
+      {% elif codex_state == "dispatch_unknown" %}
+      <div class="small text-danger mt-2">Не удалось однозначно подтвердить запуск. Повторная передача заблокирована; используйте ручную проверку.</div>
+      {% endif %}
+      {% if codex_metadata.workflow_run_url %}<div class="small mt-2"><a href="{{ codex_metadata.workflow_run_url }}" rel="noopener noreferrer" target="_blank">Открыть GitHub Actions</a></div>{% endif %}
+      {% if codex_metadata.branch_name %}<div class="small mt-2">Ветка: <code>{{ codex_metadata.branch_name }}</code></div>{% endif %}
+      {% if codex_metadata.pr_url %}<div class="small mt-2"><a href="{{ codex_metadata.pr_url }}" rel="noopener noreferrer" target="_blank">Pull Request #{{ codex_metadata.pr_number }}</a></div>{% endif %}
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+      {% if codex_can_launch %}
+      <form method="post" action="{% url 'development_task_codex_start' task.id %}">
+        {% csrf_token %}
+        <button class="btn btn-success" type="submit">Передать в Codex</button>
+      </form>
+      {% endif %}
+      {% if codex_can_check %}
+      <form method="post" action="{% url 'development_task_codex_check' task.id %}">
+        {% csrf_token %}
+        <button class="btn btn-outline-primary" type="submit">Проверить Codex</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <div class="card card-soft p-3 p-lg-4 mb-4">
   <h2 class="h5 mb-3">Этапы</h2>
   <div class="d-flex flex-wrap gap-3">

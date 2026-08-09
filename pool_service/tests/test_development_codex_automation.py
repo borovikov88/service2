@@ -1,0 +1,775 @@
+import contextlib
+import importlib.util
+import io
+from datetime import timedelta
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+from django.conf import settings
+from django.contrib.auth.models import User
+from django.db import connection
+from django.test import Client, TestCase, TransactionTestCase, override_settings
+from django.urls import reverse
+from django.utils import timezone
+
+from pool_service.models import (
+    DevelopmentIteration,
+    DevelopmentTask,
+    DevelopmentTaskEvent,
+    Organization,
+    OrganizationAccess,
+)
+from pool_service.services import development_codex
+
+
+CODEX_SETTINGS = override_settings(
+    GITHUB_DEVELOPMENT_TOKEN="github-test-token-never-sent",
+    GITHUB_DEVELOPMENT_REPOSITORY="borovikov88/service2",
+    GITHUB_DEVELOPMENT_WORKFLOW="development-codex.yml",
+    GITHUB_DEVELOPMENT_TIMEOUT_SECONDS=3,
+    GITHUB_DEVELOPMENT_PROMPT_MAX_BYTES=40000,
+)
+
+
+def load_patch_validator():
+    path = Path(settings.BASE_DIR) / ".github/scripts/validate_codex_patch.py"
+    spec = importlib.util.spec_from_file_location("validate_codex_patch", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class CodexTestMixin:
+    def make_user(self, username, role, organization=None):
+        user = User.objects.create_user(username, password="test-password")
+        OrganizationAccess.objects.create(
+            user=user,
+            organization=organization or self.organization,
+            role=role,
+        )
+        return user
+
+    def make_ready_task(self, organization=None):
+        task = DevelopmentTask.objects.create(
+            organization=organization or self.organization,
+            initiator=self.owner,
+            title="Автоматизировать безопасный workflow",
+            description="Добавить передачу задачи в Codex.",
+            business_goal="Создавать проверяемый Pull Request.",
+            definition_of_done="Workflow безопасен, тесты проходят.",
+            priority=DevelopmentTask.PRIORITY_HIGH,
+            status=DevelopmentTask.STATUS_READY_FOR_CODEX,
+            current_stage=DevelopmentTask.STAGE_DEVELOPMENT,
+        )
+        DevelopmentIteration.objects.create(
+            task=task,
+            iteration_number=1,
+            executor_type=DevelopmentIteration.EXECUTOR_SYSTEM,
+            status=DevelopmentIteration.STATUS_ACCEPTED,
+            prompt="Первичный prompt",
+            response="Проверенный первичный анализ и технический план.",
+            result_summary="Анализ завершён.",
+            automation_metadata={"purpose": "primary_analysis", "applied": True},
+        )
+        return task
+
+    def start_url(self, task):
+        return reverse("development_task_codex_start", args=[task.pk])
+
+    def check_url(self, task):
+        return reverse("development_task_codex_check", args=[task.pk])
+
+    def matching_run(self, task, iteration, *, status="in_progress", conclusion=None):
+        token = iteration.automation_metadata["launch_token"]
+        return {
+            "id": 501,
+            "display_title": f"development-{task.reference}-{token}",
+            "head_branch": "main",
+            "status": status,
+            "conclusion": conclusion,
+            "html_url": "https://github.com/borovikov88/service2/actions/runs/501",
+        }
+
+
+@CODEX_SETTINGS
+class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
+    def setUp(self):
+        self.organization = Organization.objects.create(
+            name="Codex org", paid_until=timezone.now() + timedelta(days=30)
+        )
+        self.owner = self.make_user("codex-owner", "owner")
+        self.admin = self.make_user("codex-admin", "admin")
+        self.manager = self.make_user("codex-manager", "manager")
+
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_dispatch_creates_separate_codex_iteration_and_structured_prompt(self, dispatch):
+        task = self.make_ready_task()
+
+        result = development_codex.dispatch_codex(task.pk, self.owner.pk)
+
+        self.assertEqual(result.state, development_codex.STATE_DISPATCHED)
+        self.assertEqual(task.iterations.count(), 2)
+        iteration = task.iterations.get(executor_type=DevelopmentIteration.EXECUTOR_CODEX)
+        self.assertEqual(iteration.automation_metadata["purpose"], development_codex.PURPOSE)
+        self.assertEqual(iteration.automation_metadata["provider"], development_codex.PROVIDER)
+        self.assertIn(task.reference, iteration.prompt)
+        self.assertIn(task.business_goal, iteration.prompt)
+        self.assertIn("первичный анализ", iteration.prompt.lower())
+        self.assertIn("Не выполняй deploy", iteration.prompt)
+        payload = dispatch.call_args.args[0]
+        self.assertEqual(payload["ref"], "main")
+        self.assertEqual(payload["inputs"]["branch_name"], iteration.automation_metadata["branch_name"])
+        self.assertNotIn(settings.GITHUB_DEVELOPMENT_TOKEN, str(payload))
+        self.assertNotIn(settings.GITHUB_DEVELOPMENT_TOKEN, str(iteration.automation_metadata))
+
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_confirmed_dispatch_advances_task_and_writes_audit_event(self, dispatch):
+        task = self.make_ready_task()
+
+        development_codex.dispatch_codex(task.pk, self.admin.pk)
+
+        task.refresh_from_db()
+        self.assertEqual(task.status, DevelopmentTask.STATUS_CODEX_WORKING)
+        self.assertEqual(task.current_stage, DevelopmentTask.STAGE_DEVELOPMENT)
+        event = task.events.get(metadata__action="codex_dispatched")
+        self.assertEqual(event.actor, self.admin)
+        self.assertEqual(event.metadata["old_status"], DevelopmentTask.STATUS_READY_FOR_CODEX)
+
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_double_submit_creates_one_iteration_and_one_dispatch(self, dispatch):
+        task = self.make_ready_task()
+
+        first = development_codex.dispatch_codex(task.pk, self.owner.pk)
+        second = development_codex.dispatch_codex(task.pk, self.owner.pk)
+
+        self.assertTrue(first.changed)
+        self.assertFalse(second.changed)
+        self.assertEqual(dispatch.call_count, 1)
+        self.assertEqual(task.iterations.filter(executor_type="codex").count(), 1)
+
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_uncertain_dispatch_is_not_retried_and_becomes_recoverable(self, dispatch):
+        dispatch.side_effect = TimeoutError("transport uncertainty")
+        task = self.make_ready_task()
+
+        first = development_codex.dispatch_codex(task.pk, self.owner.pk)
+        second = development_codex.dispatch_codex(task.pk, self.owner.pk)
+
+        self.assertEqual(first.state, development_codex.STATE_DISPATCH_UNKNOWN)
+        self.assertFalse(second.changed)
+        self.assertEqual(dispatch.call_count, 1)
+        task.refresh_from_db()
+        iteration = task.iterations.get(executor_type="codex")
+        self.assertEqual(task.status, DevelopmentTask.STATUS_BLOCKED)
+        self.assertEqual(iteration.automation_metadata["state"], "dispatch_unknown")
+        self.assertNotIn("transport uncertainty", iteration.technical_errors)
+
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_invalid_task_state_never_dispatches(self, dispatch):
+        task = self.make_ready_task()
+        task.status = DevelopmentTask.STATUS_REVIEW
+        task.save(update_fields=["status", "updated_at"])
+
+        result = development_codex.dispatch_codex(task.pk, self.owner.pk)
+
+        self.assertEqual(result.state, "not_available")
+        dispatch.assert_not_called()
+
+    @override_settings(GITHUB_DEVELOPMENT_REPOSITORY="../service2")
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_invalid_server_repository_is_rejected_before_dispatch(self, dispatch):
+        task = self.make_ready_task()
+
+        with self.assertRaises(development_codex.CodexConfigurationError):
+            development_codex.dispatch_codex(task.pk, self.owner.pk)
+
+        dispatch.assert_not_called()
+        self.assertFalse(task.iterations.filter(executor_type="codex").exists())
+
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_manual_state_change_during_dispatch_is_not_overwritten(self, dispatch):
+        task = self.make_ready_task()
+
+        def change_task_state(_payload):
+            DevelopmentTask.objects.filter(pk=task.pk).update(
+                status=DevelopmentTask.STATUS_CANCELLED
+            )
+
+        dispatch.side_effect = change_task_state
+
+        result = development_codex.dispatch_codex(task.pk, self.owner.pk)
+
+        self.assertEqual(result.state, "task_state_changed")
+        task.refresh_from_db()
+        self.assertEqual(task.status, DevelopmentTask.STATUS_CANCELLED)
+        self.assertTrue(
+            task.events.filter(metadata__action="codex_dispatched_task_state_changed").exists()
+        )
+
+    @override_settings(GITHUB_DEVELOPMENT_PROMPT_MAX_BYTES=1000)
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_prompt_size_limit_blocks_dispatch_before_external_call(self, dispatch):
+        task = self.make_ready_task()
+        task.description = "я" * 2000
+        task.save(update_fields=["description", "updated_at"])
+
+        with self.assertRaises(development_codex.CodexPromptError):
+            development_codex.dispatch_codex(task.pk, self.owner.pk)
+
+        dispatch.assert_not_called()
+        self.assertFalse(task.iterations.filter(executor_type="codex").exists())
+
+    @patch("pool_service.services.development_codex._list_workflow_runs")
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_pending_check_keeps_task_and_iteration_working(self, dispatch, runs):
+        task = self.make_ready_task()
+        development_codex.dispatch_codex(task.pk, self.owner.pk)
+        iteration = task.iterations.get(executor_type="codex")
+        runs.return_value = {"workflow_runs": [self.matching_run(task, iteration)]}
+
+        result = development_codex.check_codex(task.pk, self.owner.pk)
+
+        self.assertEqual(result.state, "in_progress")
+        task.refresh_from_db()
+        iteration.refresh_from_db()
+        self.assertEqual(task.status, DevelopmentTask.STATUS_CODEX_WORKING)
+        self.assertEqual(iteration.status, DevelopmentIteration.STATUS_WORKING)
+        self.assertEqual(iteration.automation_metadata["workflow_run_id"], 501)
+
+    @patch("pool_service.services.development_codex._workflow_validation_state", return_value="passed")
+    @patch("pool_service.services.development_codex._pull_request_files")
+    @patch("pool_service.services.development_codex._find_pull_request")
+    @patch("pool_service.services.development_codex._list_workflow_runs")
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_success_with_pull_request_advances_to_review(
+        self, dispatch, runs, find_pr, pr_files, validation
+    ):
+        task = self.make_ready_task()
+        development_codex.dispatch_codex(task.pk, self.owner.pk)
+        iteration = task.iterations.get(executor_type="codex")
+        runs.return_value = {
+            "workflow_runs": [self.matching_run(task, iteration, status="completed", conclusion="success")]
+        }
+        find_pr.return_value = {
+            "number": 17,
+            "title": f"[{task.reference}] {task.title}",
+            "body": "Codex summary. Tests passed.\n<!-- codex-tests: passed -->",
+            "html_url": "https://github.com/borovikov88/service2/pull/17",
+        }
+        pr_files.return_value = ["pool_service/development_views.py", "pool_service/tests/test_x.py"]
+
+        result = development_codex.check_codex(task.pk, self.admin.pk)
+
+        self.assertEqual(result.state, "completed")
+        task.refresh_from_db()
+        iteration.refresh_from_db()
+        self.assertEqual(task.status, DevelopmentTask.STATUS_REVIEW)
+        self.assertEqual(task.current_stage, DevelopmentTask.STAGE_REVIEW)
+        self.assertEqual(iteration.status, DevelopmentIteration.STATUS_ACCEPTED)
+        self.assertEqual(iteration.automation_metadata["pr_number"], 17)
+        self.assertIn("development_views.py", iteration.changed_files)
+        self.assertIn("прошли успешно", iteration.test_result)
+        self.assertTrue(task.events.filter(metadata__action="codex_completed").exists())
+
+    @patch(
+        "pool_service.services.development_codex._workflow_validation_state",
+        return_value="infrastructure_failed",
+    )
+    @patch("pool_service.services.development_codex._list_workflow_runs")
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_failed_run_blocks_task(self, dispatch, runs, validation):
+        task = self.make_ready_task()
+        development_codex.dispatch_codex(task.pk, self.owner.pk)
+        iteration = task.iterations.get(executor_type="codex")
+        runs.return_value = {
+            "workflow_runs": [self.matching_run(task, iteration, status="completed", conclusion="failure")]
+        }
+
+        result = development_codex.check_codex(task.pk, self.owner.pk)
+
+        self.assertEqual(result.state, "infrastructure_failed")
+        task.refresh_from_db()
+        iteration.refresh_from_db()
+        self.assertEqual(task.status, DevelopmentTask.STATUS_BLOCKED)
+        self.assertEqual(iteration.status, DevelopmentIteration.STATUS_FAILED)
+
+    @patch(
+        "pool_service.services.development_codex._workflow_validation_state",
+        return_value="infrastructure_failed",
+    )
+    @patch("pool_service.services.development_codex._list_workflow_runs")
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_cancelled_and_timed_out_runs_block_task(self, dispatch, runs, validation):
+        for index, conclusion in enumerate(("cancelled", "timed_out"), start=1):
+            with self.subTest(conclusion=conclusion):
+                task = self.make_ready_task()
+                development_codex.dispatch_codex(task.pk, self.owner.pk)
+                iteration = task.iterations.get(executor_type="codex")
+                runs.return_value = {
+                    "workflow_runs": [
+                        self.matching_run(task, iteration, status="completed", conclusion=conclusion)
+                    ]
+                }
+
+                result = development_codex.check_codex(task.pk, self.owner.pk)
+
+                self.assertEqual(result.state, conclusion)
+                task.refresh_from_db()
+                self.assertEqual(task.status, DevelopmentTask.STATUS_BLOCKED)
+
+    @patch("pool_service.services.development_codex._workflow_validation_state", return_value="failed")
+    @patch("pool_service.services.development_codex._pull_request_files")
+    @patch("pool_service.services.development_codex._find_pull_request")
+    @patch("pool_service.services.development_codex._list_workflow_runs")
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_failed_validation_preserves_diagnostic_pr_and_blocks_task(
+        self, dispatch, runs, find_pr, files, validation
+    ):
+        task = self.make_ready_task()
+        development_codex.dispatch_codex(task.pk, self.owner.pk)
+        iteration = task.iterations.get(executor_type="codex")
+        runs.return_value = {
+            "workflow_runs": [
+                self.matching_run(task, iteration, status="completed", conclusion="failure")
+            ]
+        }
+        find_pr.return_value = {
+            "number": 19,
+            "title": "Diagnostic PR",
+            "body": "Diagnostics\n<!-- codex-tests: failed -->",
+            "html_url": "https://github.com/borovikov88/service2/pull/19",
+        }
+        files.return_value = ["pool_service/development_views.py"]
+
+        first = development_codex.check_codex(task.pk, self.admin.pk)
+        event_count = task.events.count()
+        second = development_codex.check_codex(task.pk, self.admin.pk)
+
+        task.refresh_from_db()
+        iteration.refresh_from_db()
+        self.assertEqual(first.state, "validation_failed")
+        self.assertFalse(second.changed)
+        self.assertEqual(task.status, DevelopmentTask.STATUS_BLOCKED)
+        self.assertEqual(task.current_stage, DevelopmentTask.STAGE_DEVELOPMENT)
+        self.assertEqual(
+            task.current_activity, "Codex создал изменения, но проверки не прошли"
+        )
+        self.assertEqual(iteration.automation_metadata["pr_number"], 19)
+        self.assertEqual(iteration.automation_metadata["validation_state"], "failed")
+        self.assertIn("проверки", iteration.technical_errors.lower())
+        self.assertEqual(task.events.count(), event_count)
+        self.assertEqual(runs.call_count, 1)
+
+    @patch(
+        "pool_service.services.development_codex._workflow_validation_state",
+        return_value="security_blocked",
+    )
+    @patch("pool_service.services.development_codex._find_pull_request")
+    @patch("pool_service.services.development_codex._list_workflow_runs")
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_security_violation_blocks_without_pr_lookup(
+        self, dispatch, runs, find_pr, validation
+    ):
+        task = self.make_ready_task()
+        development_codex.dispatch_codex(task.pk, self.owner.pk)
+        iteration = task.iterations.get(executor_type="codex")
+        runs.return_value = {
+            "workflow_runs": [
+                self.matching_run(task, iteration, status="completed", conclusion="failure")
+            ]
+        }
+
+        result = development_codex.check_codex(task.pk, self.owner.pk)
+
+        task.refresh_from_db()
+        iteration.refresh_from_db()
+        self.assertEqual(result.state, "security_blocked")
+        self.assertEqual(task.status, DevelopmentTask.STATUS_BLOCKED)
+        self.assertIn("защищённые файлы", task.blockers)
+        self.assertNotIn("pr_number", iteration.automation_metadata)
+        find_pr.assert_not_called()
+
+    @patch("pool_service.services.development_codex._workflow_validation_state", return_value="passed")
+    @patch("pool_service.services.development_codex._pull_request_files")
+    @patch("pool_service.services.development_codex._find_pull_request")
+    @patch("pool_service.services.development_codex._list_workflow_runs")
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_repeated_completed_check_is_idempotent(
+        self, dispatch, runs, find_pr, files, validation
+    ):
+        task = self.make_ready_task()
+        development_codex.dispatch_codex(task.pk, self.owner.pk)
+        iteration = task.iterations.get(executor_type="codex")
+        runs.return_value = {
+            "workflow_runs": [self.matching_run(task, iteration, status="completed", conclusion="success")]
+        }
+        find_pr.return_value = {
+            "number": 18,
+            "title": "Safe PR",
+            "body": "Done",
+            "html_url": "https://github.com/borovikov88/service2/pull/18",
+        }
+        files.return_value = []
+
+        first = development_codex.check_codex(task.pk, self.owner.pk)
+        event_count = task.events.count()
+        second = development_codex.check_codex(task.pk, self.owner.pk)
+
+        self.assertTrue(first.changed)
+        self.assertFalse(second.changed)
+        self.assertEqual(task.events.count(), event_count)
+        self.assertEqual(runs.call_count, 1)
+
+    @patch("pool_service.services.development_codex._list_workflow_runs")
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_run_for_other_launch_token_is_ignored(self, dispatch, runs):
+        task = self.make_ready_task()
+        development_codex.dispatch_codex(task.pk, self.owner.pk)
+        iteration = task.iterations.get(executor_type="codex")
+        wrong = self.matching_run(task, iteration)
+        wrong["display_title"] = f"development-{task.reference}-other-token"
+        runs.return_value = {"workflow_runs": [wrong]}
+
+        result = development_codex.check_codex(task.pk, self.owner.pk)
+
+        self.assertEqual(result.state, "not_found")
+        iteration.refresh_from_db()
+        self.assertNotIn("workflow_run_id", iteration.automation_metadata)
+
+    @patch("pool_service.services.development_codex._list_workflow_runs")
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_stale_task_state_is_not_overwritten(self, dispatch, runs):
+        task = self.make_ready_task()
+        development_codex.dispatch_codex(task.pk, self.owner.pk)
+        iteration = task.iterations.get(executor_type="codex")
+        task.status = DevelopmentTask.STATUS_DONE
+        task.save(update_fields=["status", "updated_at"])
+        runs.return_value = {"workflow_runs": [self.matching_run(task, iteration)]}
+
+        result = development_codex.check_codex(task.pk, self.owner.pk)
+
+        self.assertEqual(result.state, "task_state_changed")
+        runs.assert_not_called()
+        task.refresh_from_db()
+        self.assertEqual(task.status, DevelopmentTask.STATUS_DONE)
+
+    @patch("pool_service.services.development_codex._pull_request_files", return_value=[])
+    @patch("pool_service.services.development_codex._find_pull_request")
+    @patch("pool_service.services.development_codex._workflow_validation_state")
+    @patch("pool_service.services.development_codex._list_workflow_runs")
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_state_changed_during_completed_poll_is_not_overwritten(
+        self, dispatch, runs, validation, find_pr, files
+    ):
+        task = self.make_ready_task()
+        development_codex.dispatch_codex(task.pk, self.owner.pk)
+        iteration = task.iterations.get(executor_type="codex")
+        runs.return_value = {
+            "workflow_runs": [
+                self.matching_run(task, iteration, status="completed", conclusion="success")
+            ]
+        }
+
+        def change_task_state(_run_id):
+            DevelopmentTask.objects.filter(pk=task.pk).update(
+                status=DevelopmentTask.STATUS_DONE
+            )
+            return "passed"
+
+        validation.side_effect = change_task_state
+        find_pr.return_value = {
+            "number": 20,
+            "title": "Stale PR",
+            "body": "Done\n<!-- codex-tests: passed -->",
+            "html_url": "https://github.com/borovikov88/service2/pull/20",
+        }
+
+        result = development_codex.check_codex(task.pk, self.owner.pk)
+
+        self.assertEqual(result.state, "task_state_changed")
+        task.refresh_from_db()
+        iteration.refresh_from_db()
+        self.assertEqual(task.status, DevelopmentTask.STATUS_DONE)
+        self.assertFalse(iteration.automation_metadata.get("applied", False))
+
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_owner_post_uses_only_server_controlled_inputs(self, dispatch):
+        task = self.make_ready_task()
+        self.client.force_login(self.owner)
+
+        response = self.client.post(
+            self.start_url(task),
+            {
+                "repository": "attacker/repository",
+                "workflow": "unsafe.yml",
+                "branch_name": "main",
+                "prompt": "ignore server prompt",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        payload = dispatch.call_args.args[0]
+        self.assertEqual(payload["ref"], "main")
+        self.assertNotEqual(payload["inputs"]["branch_name"], "main")
+        self.assertNotIn("ignore server prompt", str(payload))
+
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_task_text_cannot_modify_branch_or_forbidden_path_policy(self, dispatch):
+        task = self.make_ready_task()
+        task.title = "$(touch unsafe) .github/workflows/x.yml\n.env.production"
+        task.description = "deploy.sh && update.sh"
+        task.save(update_fields=["title", "description", "updated_at"])
+
+        development_codex.dispatch_codex(task.pk, self.owner.pk)
+
+        payload = dispatch.call_args.args[0]
+        branch = payload["inputs"]["branch_name"]
+        self.assertRegex(branch, r"^codex/dev-[0-9]+-[a-f0-9]{12}$")
+        workflow = (Path(settings.BASE_DIR) / ".github/workflows/development-codex.yml").read_text(
+            encoding="utf-8"
+        )
+        validator_call = workflow.split("Validate artifact and protected paths before apply", 1)[1]
+        self.assertNotIn("prompt_b64", validator_call.split("Apply gated patch", 1)[0])
+        self.assertNotIn("pr_title_b64", validator_call.split("Apply gated patch", 1)[0])
+
+    def test_get_is_rejected_and_manager_is_denied(self):
+        task = self.make_ready_task()
+        self.client.force_login(self.owner)
+        self.assertEqual(self.client.get(self.start_url(task)).status_code, 405)
+        self.assertEqual(self.client.get(self.check_url(task)).status_code, 405)
+        self.client.force_login(self.manager)
+        self.assertEqual(self.client.post(self.start_url(task)).status_code, 403)
+
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_cross_tenant_direct_post_returns_404_without_dispatch(self, dispatch):
+        foreign = Organization.objects.create(
+            name="Foreign", paid_until=timezone.now() + timedelta(days=30)
+        )
+        task = self.make_ready_task(organization=foreign)
+        self.client.force_login(self.owner)
+
+        response = self.client.post(self.start_url(task))
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(self.client.post(self.check_url(task)).status_code, 404)
+        dispatch.assert_not_called()
+        self.assertFalse(task.iterations.filter(executor_type="codex").exists())
+
+    def test_state_changing_endpoints_require_csrf(self):
+        task = self.make_ready_task()
+        client = Client(enforce_csrf_checks=True)
+        client.force_login(self.owner)
+
+        self.assertEqual(client.post(self.start_url(task)).status_code, 403)
+        self.assertEqual(client.post(self.check_url(task)).status_code, 403)
+
+    @patch("pool_service.services.development_codex.urlopen")
+    def test_github_dispatch_uses_short_timeout_and_header_only_token(self, urlopen):
+        response = MagicMock()
+        response.status = 204
+        response.read.return_value = b""
+        urlopen.return_value.__enter__.return_value = response
+
+        development_codex._dispatch_workflow({"ref": "main", "inputs": {}})
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 3)
+        self.assertEqual(
+            request.get_header("Authorization"),
+            "Bearer github-test-token-never-sent",
+        )
+        self.assertNotIn(b"github-test-token-never-sent", request.data)
+
+    @patch("pool_service.services.development_codex._github_request")
+    def test_workflow_outcome_job_provides_trusted_validation_state(self, request):
+        request.return_value = {
+            "jobs": [
+                {"name": "codex"},
+                {"name": "outcome-security_blocked"},
+            ]
+        }
+
+        state = development_codex._workflow_validation_state(501)
+
+        self.assertEqual(state, "security_blocked")
+        self.assertIn("/actions/runs/501/jobs", request.call_args.args[1])
+
+    @override_settings(GITHUB_DEVELOPMENT_TOKEN="")
+    def test_unconfigured_ui_hides_launch_button(self):
+        task = self.make_ready_task()
+        self.client.force_login(self.owner)
+
+        response = self.client.get(reverse("development_task_detail", args=[task.pk]))
+
+        self.assertContains(response, "Интеграция GitHub Actions пока не настроена")
+        self.assertNotContains(response, ">Передать в Codex<", html=False)
+
+    def test_workflow_has_pinned_actions_and_separates_secret_from_write_token(self):
+        workflow = (Path(settings.BASE_DIR) / ".github/workflows/development-codex.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56", workflow)
+        self.assertIn('permission-profile: ":workspace"', workflow)
+        self.assertIn('safety-strategy: "drop-sudo"', workflow)
+        self.assertIn("persist-credentials: false", workflow)
+        self.assertIn("contents: write", workflow)
+        before_publish, publish_job = workflow.split("  publish:", 1)
+        codex_job, validate_job = before_publish.split("  validate:", 1)
+        self.assertIn("secrets.OPENAI_API_KEY", codex_job)
+        self.assertNotIn("contents: write", codex_job)
+        self.assertNotIn("${{ secrets.", validate_job)
+        self.assertNotIn("contents: write", validate_job)
+        self.assertNotIn("secrets.OPENAI_API_KEY", publish_job)
+        self.assertIn("git apply --index --binary", publish_job)
+        self.assertNotIn("git merge", workflow)
+        self.assertNotIn("deploy.sh", publish_job.lower())
+        self.assertNotIn("manage.py migrate", publish_job.lower())
+        self.assertIn('allow-users: "borovikov88"', codex_job)
+        self.assertIn('allow-bots: "false"', codex_job)
+        self.assertNotIn('allow-users: "*"', codex_job)
+        self.assertNotIn("${{ secrets.", publish_job)
+        self.assertIn("Snapshot trusted Git metadata before Codex", codex_job)
+        self.assertIn("TRUSTED_GIT_CONFIG", codex_job)
+        self.assertIn('"--no-textconv"', codex_job)
+
+    def test_workflow_actor_guard_is_authoritative_and_precedes_codex(self):
+        workflow = (Path(settings.BASE_DIR) / ".github/workflows/development-codex.yml").read_text(
+            encoding="utf-8"
+        )
+        authorize, after_authorize = workflow.split("  codex:", 1)
+        codex = after_authorize.split("  validate:", 1)[0]
+        inputs = workflow.split("permissions:", 1)[0]
+        self.assertIn("  authorize:", authorize)
+        self.assertIn("permissions: {}", authorize)
+        self.assertIn("TRUSTED_ACTOR: borovikov88", authorize)
+        self.assertIn('REQUEST_ACTOR: ${{ github.actor }}', authorize)
+        self.assertIn('REQUEST_EVENT: ${{ github.event_name }}', authorize)
+        self.assertIn('[[ "$REQUEST_ACTOR" != "$TRUSTED_ACTOR" ]]', authorize)
+        self.assertIn('[[ "$REQUEST_EVENT" != "workflow_dispatch" ]]', authorize)
+        self.assertNotIn("trusted_actor:", inputs.lower())
+        self.assertNotIn("request_actor:", inputs.lower())
+        self.assertIn("needs: authorize", codex)
+        self.assertNotIn("secrets.OPENAI_API_KEY", authorize)
+        self.assertIn("secrets.OPENAI_API_KEY", codex)
+        self.assertIn('allow-bots: "false"', codex)
+        self.assertNotIn("github-actions[bot]", authorize)
+
+    def test_repository_has_no_conflicting_automatic_workflows(self):
+        workflow_dir = Path(settings.BASE_DIR) / ".github/workflows"
+        workflows = sorted(workflow_dir.glob("*.y*ml"))
+        self.assertEqual([item.name for item in workflows], ["development-codex.yml"])
+        text = workflows[0].read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", text)
+        self.assertNotIn("\n  push:", text)
+        self.assertNotIn("\n  pull_request:", text)
+        self.assertNotIn("\n  workflow_run:", text)
+
+    def test_forbidden_patch_path_policy_is_fail_closed(self):
+        validator = load_patch_validator()
+        blocked = {
+            ".github/workflows/x.yml",
+            ".github/actions/check/action.yml",
+            ".gitmodules",
+            ".gitattributes",
+            ".env",
+            "config/.env.production",
+            "deploy",
+            "deploy.ps1",
+            "deploy/release.sh",
+            "update.sh",
+            "passenger_wsgi.py",
+            "service_site/wsgi.py",
+            "service_site/asgi.py",
+        }
+        for path in blocked:
+            with self.subTest(path=path):
+                self.assertTrue(validator.forbidden_reason(path))
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as blocked_exit:
+                        validator.validate_relative_path(path)
+                self.assertEqual(blocked_exit.exception.code, validator.SECURITY_BLOCKED_EXIT)
+        for path in {
+            ".gitignore",
+            "pool_service/development_views.py",
+            "pool_service/tests/test_feature.py",
+        }:
+            with self.subTest(path=path):
+                self.assertEqual(validator.forbidden_reason(path), "")
+                validator.validate_relative_path(path)
+
+    def test_binary_patch_path_parser_blocks_protected_path_and_allows_application_file(self):
+        validator = load_patch_validator()
+        with patch.object(validator.subprocess, "run") as run:
+            run.return_value = SimpleNamespace(
+                returncode=0,
+                stdout=b"1\t0\tpool_service/development_views.py\0",
+                stderr=b"",
+            )
+            self.assertEqual(
+                validator.patch_paths(Path("unused.patch")),
+                ["pool_service/development_views.py"],
+            )
+            run.return_value = SimpleNamespace(
+                returncode=0,
+                stdout=b"1\t0\t.github/workflows/unsafe.yml\0",
+                stderr=b"",
+            )
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as blocked_exit:
+                    validator.patch_paths(Path("unused.patch"))
+            self.assertEqual(blocked_exit.exception.code, validator.SECURITY_BLOCKED_EXIT)
+
+    def test_publish_revalidates_before_apply_and_never_runs_repository_code_after_patch(self):
+        workflow = (Path(settings.BASE_DIR) / ".github/workflows/development-codex.yml").read_text(
+            encoding="utf-8"
+        )
+        publish = workflow.split("  publish:", 1)[1].split("  outcome:", 1)[0]
+        validator_position = publish.index("validate_codex_patch.py")
+        apply_position = publish.index("git apply --index --binary")
+        self.assertLess(validator_position, apply_position)
+        after_apply = publish[apply_position:]
+        for command in ("manage.py", "pip install", "npm ", "./deploy", "./update"):
+            self.assertNotIn(command, after_apply)
+        self.assertIn("core.hooksPath", after_apply)
+        self.assertIn("git commit --no-verify", after_apply)
+
+    def test_artifact_correlation_and_validation_state_are_trusted_workflow_inputs(self):
+        workflow = (Path(settings.BASE_DIR) / ".github/workflows/development-codex.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('"patch_sha256": hashlib.sha256(patch).hexdigest()', workflow)
+        self.assertGreaterEqual(workflow.count("validate_codex_patch.py"), 2)
+        self.assertIn("security_blocked", workflow)
+        self.assertIn(
+            "needs.validate.outputs.validation_state == 'passed' || needs.validate.outputs.validation_state == 'failed'",
+            workflow,
+        )
+        self.assertIn("outcome-${{ needs.validate.outputs.validation_state", workflow)
+        self.assertIn("codex-change-${{ inputs.launch_token }}", workflow)
+
+
+@CODEX_SETTINGS
+class DevelopmentCodexTransactionTests(CodexTestMixin, TransactionTestCase):
+    reset_sequences = True
+
+    def setUp(self):
+        self.organization = Organization.objects.create(
+            name="Codex transaction org", paid_until=timezone.now() + timedelta(days=30)
+        )
+        self.owner = self.make_user("codex-transaction-owner", "owner")
+
+    def test_dispatch_http_call_runs_outside_database_transaction(self):
+        task = self.make_ready_task()
+        atomic_states = []
+
+        def observe(_payload):
+            atomic_states.append(connection.in_atomic_block)
+
+        with patch(
+            "pool_service.services.development_codex._dispatch_workflow",
+            side_effect=observe,
+        ):
+            development_codex.dispatch_codex(task.pk, self.owner.pk)
+
+        self.assertEqual(atomic_states, [False])
