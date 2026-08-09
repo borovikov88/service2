@@ -17,6 +17,7 @@ from pool_service.models import (
 logger = logging.getLogger(__name__)
 
 PROVIDER = "openai"
+PRIMARY_ANALYSIS_PURPOSE = "primary_analysis"
 STATE_LAUNCHING = "launching"
 STATE_QUEUED = "queued"
 STATE_IN_PROGRESS = "in_progress"
@@ -59,6 +60,66 @@ def _now_iso():
 def _metadata(iteration):
     value = iteration.automation_metadata
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _legacy_primary_iteration_id(task):
+    iteration_ids = set()
+    events = task.events.filter(
+        event_type=DevelopmentTaskEvent.TYPE_STATUS_CHANGED
+    ).only("metadata")
+    for event in events:
+        metadata = event.metadata if isinstance(event.metadata, dict) else {}
+        if metadata.get("action") != "start":
+            continue
+        try:
+            iteration_ids.add(int(metadata["iteration_id"]))
+        except (KeyError, TypeError, ValueError):
+            return None
+    if len(iteration_ids) != 1:
+        return None
+    return iteration_ids.pop()
+
+
+def resolve_primary_analysis_iteration(task):
+    marked = list(
+        task.iterations.filter(
+            executor_type=DevelopmentIteration.EXECUTOR_SYSTEM,
+            automation_metadata__purpose=PRIMARY_ANALYSIS_PURPOSE,
+        ).order_by("id")[:2]
+    )
+    if len(marked) == 1:
+        return marked[0]
+    if marked:
+        return None
+
+    legacy_id = _legacy_primary_iteration_id(task)
+    if legacy_id is None:
+        return None
+    iteration = task.iterations.filter(
+        pk=legacy_id,
+        executor_type=DevelopmentIteration.EXECUTOR_SYSTEM,
+    ).first()
+    if iteration is None:
+        return None
+    metadata = _metadata(iteration)
+    if metadata.get("purpose") not in {None, "", PRIMARY_ANALYSIS_PURPOSE}:
+        return None
+    return iteration
+
+
+def _is_primary_analysis_iteration(iteration):
+    primary = resolve_primary_analysis_iteration(iteration.task)
+    return primary is not None and primary.pk == iteration.pk
+
+
+def _promote_legacy_primary_iteration(iteration):
+    metadata = _metadata(iteration)
+    if metadata.get("purpose") == PRIMARY_ANALYSIS_PURPOSE:
+        return metadata
+    metadata["purpose"] = PRIMARY_ANALYSIS_PURPOSE
+    iteration.automation_metadata = metadata
+    iteration.save(update_fields=["automation_metadata", "updated_at"])
+    return metadata
 
 
 def _summary(text, limit=500):
@@ -169,8 +230,12 @@ def _apply_response(iteration_id, response):
             .get(pk=iteration_id)
         )
         metadata = _metadata(iteration)
+        if not _is_primary_analysis_iteration(iteration):
+            return AnalysisOperationResult("not_available", changed=False)
         if metadata.get("applied"):
             return AnalysisOperationResult(STATE_COMPLETED, changed=False)
+        if iteration.status != DevelopmentIteration.STATUS_WORKING:
+            return AnalysisOperationResult("task_state_changed", changed=False)
         if metadata.get("response_id") != getattr(response, "id", None):
             raise RuntimeError("Response does not belong to this iteration")
 
@@ -317,13 +382,18 @@ def launch_analysis(iteration_id):
             .get(pk=iteration_id)
         )
         metadata = _metadata(iteration)
+        if (
+            iteration.executor_type != DevelopmentIteration.EXECUTOR_SYSTEM
+            or iteration.status != DevelopmentIteration.STATUS_WORKING
+            or iteration.task.status != DevelopmentTask.STATUS_ANALYSIS
+            or not _is_primary_analysis_iteration(iteration)
+        ):
+            return AnalysisOperationResult("not_available", changed=False)
+        metadata = _promote_legacy_primary_iteration(iteration)
         if metadata.get("response_id"):
             return AnalysisOperationResult(metadata.get("state", STATE_QUEUED), changed=False)
         if metadata.get("state") in {STATE_LAUNCHING, STATE_LAUNCH_UNKNOWN}:
             return AnalysisOperationResult(metadata["state"], changed=False)
-        if iteration.task.status != DevelopmentTask.STATUS_ANALYSIS:
-            return AnalysisOperationResult("not_available", changed=False)
-
         metadata.update(
             {
                 "provider": PROVIDER,
@@ -388,10 +458,22 @@ def launch_analysis(iteration_id):
 
 def check_analysis(iteration_id):
     with transaction.atomic():
-        iteration = DevelopmentIteration.objects.select_for_update().get(pk=iteration_id)
+        iteration = (
+            DevelopmentIteration.objects.select_for_update()
+            .select_related("task")
+            .get(pk=iteration_id)
+        )
         metadata = _metadata(iteration)
+        if not _is_primary_analysis_iteration(iteration):
+            return AnalysisOperationResult("not_available", changed=False)
         if metadata.get("applied"):
             return AnalysisOperationResult(metadata.get("state", STATE_COMPLETED), changed=False)
+        if (
+            iteration.executor_type != DevelopmentIteration.EXECUTOR_SYSTEM
+            or iteration.status != DevelopmentIteration.STATUS_WORKING
+            or iteration.task.status != DevelopmentTask.STATUS_ANALYSIS
+        ):
+            return AnalysisOperationResult("not_available", changed=False)
         response_id = metadata.get("response_id")
         if not response_id:
             return AnalysisOperationResult(metadata.get("state", "not_started"), changed=False)

@@ -17,6 +17,7 @@ from pool_service.models import (
     Organization,
     OrganizationAccess,
 )
+from pool_service import development_views
 from pool_service.services import development_ai
 from service_site.settings import _env_float
 
@@ -64,12 +65,18 @@ class DevelopmentAIAnalysisTests(TestCase):
             current_stage=DevelopmentTask.STAGE_ANALYSIS,
         )
 
-    def create_analysis_iteration(self, task, metadata=None):
+    def create_analysis_iteration(self, task, metadata=None, *, primary=True):
         task.status = DevelopmentTask.STATUS_ANALYSIS
         task.current_stage = DevelopmentTask.STAGE_ANALYSIS
         task.started_at = timezone.now()
         task.current_activity = "Выполняется первичный анализ задачи"
         task.save()
+        automation_metadata = dict(metadata or {})
+        if primary:
+            automation_metadata.setdefault(
+                "purpose",
+                development_ai.PRIMARY_ANALYSIS_PURPOSE,
+            )
         return DevelopmentIteration.objects.create(
             task=task,
             iteration_number=1,
@@ -77,7 +84,22 @@ class DevelopmentAIAnalysisTests(TestCase):
             status=DevelopmentIteration.STATUS_WORKING,
             prompt="Структурированный prompt",
             started_at=timezone.now(),
-            automation_metadata=metadata or {},
+            automation_metadata=automation_metadata,
+        )
+
+    def create_start_event(self, task, iteration):
+        return DevelopmentTaskEvent.objects.create(
+            task=task,
+            event_type=DevelopmentTaskEvent.TYPE_STATUS_CHANGED,
+            message="Задача запущена",
+            actor=self.owner,
+            metadata={
+                "old_status": DevelopmentTask.STATUS_NEW,
+                "new_status": DevelopmentTask.STATUS_ANALYSIS,
+                "iteration_id": iteration.pk,
+                "iteration_number": iteration.iteration_number,
+                "action": "start",
+            },
         )
 
     def start_url(self, task):
@@ -192,11 +214,12 @@ class DevelopmentAIAnalysisTests(TestCase):
 
         task.refresh_from_db()
         iteration.refresh_from_db()
-        self.assertEqual(result.state, "task_state_changed")
+        self.assertEqual(result.state, "not_available")
         self.assertEqual(task.status, DevelopmentTask.STATUS_CANCELLED)
         self.assertEqual(iteration.status, DevelopmentIteration.STATUS_WORKING)
         self.assertEqual(iteration.response, "")
         self.assertFalse(task.events.filter(metadata__action="ai_analysis_completed").exists())
+        retrieve.assert_not_called()
 
     @AI_SETTINGS
     @patch("pool_service.services.development_ai._retrieve_response")
@@ -259,7 +282,8 @@ class DevelopmentAIAnalysisTests(TestCase):
     @patch("pool_service.services.development_ai._create_background_response")
     def test_existing_analysis_task_can_launch_without_new_iteration(self, create_response):
         task = self.create_task()
-        iteration = self.create_analysis_iteration(task)
+        iteration = self.create_analysis_iteration(task, primary=False)
+        self.create_start_event(task, iteration)
         create_response.return_value = provider_response("resp_recovery")
         self.client.force_login(self.owner)
 
@@ -269,6 +293,128 @@ class DevelopmentAIAnalysisTests(TestCase):
         iteration.refresh_from_db()
         self.assertEqual(task.iterations.count(), 1)
         self.assertEqual(iteration.automation_metadata["response_id"], "resp_recovery")
+        self.assertEqual(
+            iteration.automation_metadata["purpose"],
+            development_ai.PRIMARY_ANALYSIS_PURPOSE,
+        )
+
+    def test_primary_marker_wins_over_later_manual_system_iteration(self):
+        task = self.create_task()
+        primary = self.create_analysis_iteration(task)
+        manual = DevelopmentIteration.objects.create(
+            task=task,
+            iteration_number=2,
+            executor_type=DevelopmentIteration.EXECUTOR_SYSTEM,
+            status=DevelopmentIteration.STATUS_WORKING,
+            prompt="Ручная system iteration",
+        )
+
+        resolved = development_views._analysis_iteration(task)
+
+        self.assertEqual(resolved.pk, primary.pk)
+        self.assertNotEqual(resolved.pk, manual.pk)
+
+    def test_legacy_start_event_identifies_exact_primary_iteration(self):
+        task = self.create_task()
+        legacy = self.create_analysis_iteration(task, primary=False)
+        DevelopmentIteration.objects.create(
+            task=task,
+            iteration_number=2,
+            executor_type=DevelopmentIteration.EXECUTOR_SYSTEM,
+            status=DevelopmentIteration.STATUS_WORKING,
+            prompt="Более новая ручная итерация",
+        )
+        self.create_start_event(task, legacy)
+
+        resolved = development_views._analysis_iteration(task)
+
+        self.assertEqual(resolved.pk, legacy.pk)
+        self.assertNotIn("purpose", legacy.automation_metadata)
+
+    @AI_SETTINGS
+    @patch("pool_service.services.development_ai._create_background_response")
+    def test_ambiguous_system_iterations_without_identity_never_launch(self, create_response):
+        task = self.create_task()
+        first = self.create_analysis_iteration(task, primary=False)
+        DevelopmentIteration.objects.create(
+            task=task,
+            iteration_number=2,
+            executor_type=DevelopmentIteration.EXECUTOR_SYSTEM,
+            status=DevelopmentIteration.STATUS_WORKING,
+        )
+        self.client.force_login(self.owner)
+
+        service_result = development_ai.launch_analysis(first.pk)
+        response = self.client.post(self.launch_url(task), follow=True)
+
+        self.assertEqual(service_result.state, "not_available")
+        self.assertContains(
+            response,
+            "Не удалось однозначно определить итерацию первичного AI-анализа. Запуск запрещён.",
+        )
+        create_response.assert_not_called()
+
+    @AI_SETTINGS
+    @patch("pool_service.services.development_ai._create_background_response")
+    def test_direct_launch_rejects_nonworking_or_human_iterations(self, create_response):
+        cases = (
+            (DevelopmentIteration.EXECUTOR_SYSTEM, DevelopmentIteration.STATUS_ACCEPTED),
+            (DevelopmentIteration.EXECUTOR_SYSTEM, DevelopmentIteration.STATUS_FAILED),
+            (DevelopmentIteration.EXECUTOR_HUMAN, DevelopmentIteration.STATUS_WORKING),
+        )
+        self.client.force_login(self.owner)
+
+        for index, (executor_type, status) in enumerate(cases, start=1):
+            with self.subTest(executor_type=executor_type, status=status):
+                task = self.create_task()
+                task.status = DevelopmentTask.STATUS_ANALYSIS
+                task.save(update_fields=["status", "updated_at"])
+                iteration = DevelopmentIteration.objects.create(
+                    task=task,
+                    iteration_number=1,
+                    executor_type=executor_type,
+                    status=status,
+                    automation_metadata={
+                        "purpose": development_ai.PRIMARY_ANALYSIS_PURPOSE,
+                    },
+                )
+
+                result = development_ai.launch_analysis(iteration.pk)
+                response = self.client.post(self.launch_url(task))
+
+                self.assertEqual(result.state, "not_available")
+                self.assertEqual(response.status_code, 302)
+
+        create_response.assert_not_called()
+
+    @AI_SETTINGS
+    @patch("pool_service.services.development_ai._retrieve_response")
+    def test_check_rejects_response_id_from_nonprimary_system_iteration(self, retrieve):
+        task = self.create_task()
+        primary = self.create_analysis_iteration(
+            task,
+            {"response_id": "resp_primary", "state": "queued"},
+        )
+        manual = DevelopmentIteration.objects.create(
+            task=task,
+            iteration_number=2,
+            executor_type=DevelopmentIteration.EXECUTOR_SYSTEM,
+            status=DevelopmentIteration.STATUS_WORKING,
+            automation_metadata={"response_id": "resp_manual", "state": "queued"},
+        )
+
+        result = development_ai.check_analysis(manual.pk)
+
+        self.assertEqual(result.state, "not_available")
+        self.assertEqual(development_views._analysis_iteration(task).pk, primary.pk)
+        retrieve.assert_not_called()
+
+        retrieve.return_value = provider_response("resp_primary", "queued")
+        self.client.force_login(self.owner)
+        response = self.client.post(self.check_url(task))
+
+        self.assertEqual(response.status_code, 302)
+        retrieve.assert_called_once_with("resp_primary")
 
     @AI_SETTINGS
     @patch("pool_service.services.development_ai._create_background_response")

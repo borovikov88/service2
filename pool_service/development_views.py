@@ -20,7 +20,12 @@ from pool_service.models import (
     OrganizationAccess,
 )
 from pool_service.services.permissions import is_org_access_blocked, organization_for_user
-from pool_service.services.development_ai import check_analysis, launch_analysis
+from pool_service.services.development_ai import (
+    PRIMARY_ANALYSIS_PURPOSE,
+    check_analysis,
+    launch_analysis,
+    resolve_primary_analysis_iteration,
+)
 
 
 DEVELOPMENT_ROLES = {"owner", "admin"}
@@ -99,11 +104,7 @@ def _initial_analysis_prompt(task):
 
 
 def _analysis_iteration(task):
-    return (
-        task.iterations.filter(executor_type=DevelopmentIteration.EXECUTOR_SYSTEM)
-        .order_by("-iteration_number", "-id")
-        .first()
-    )
+    return resolve_primary_analysis_iteration(task)
 
 
 def _analysis_context(task, iteration):
@@ -293,6 +294,7 @@ def development_task_start(request, task_id):
             prompt=_initial_analysis_prompt(task),
             result_summary="Задача принята системой для первичного анализа.",
             started_at=now,
+            automation_metadata={"purpose": PRIMARY_ANALYSIS_PURPOSE},
         )
         DevelopmentTaskEvent.objects.create(
             task=task,
@@ -319,6 +321,8 @@ def development_task_start(request, task_id):
             request,
             "Не удалось подтвердить запуск AI-анализа. Повторный запрос автоматически не выполнялся.",
         )
+    elif result.state == "not_available":
+        messages.error(request, "Итерация первичного AI-анализа не прошла проверку безопасности.")
     else:
         messages.success(request, "Задача запущена и передана на первичный AI-анализ.")
     return redirect("development_task_detail", task_id=task.pk)
@@ -333,7 +337,10 @@ def development_task_analysis_launch(request, task_id):
     task = _task_for_organization(organization, task_id)
     iteration = _analysis_iteration(task)
     if iteration is None or task.status != DevelopmentTask.STATUS_ANALYSIS:
-        messages.info(request, "Первичный AI-анализ недоступен для текущего состояния задачи.")
+        messages.info(
+            request,
+            "Не удалось однозначно определить итерацию первичного AI-анализа. Запуск запрещён.",
+        )
         return redirect("development_task_detail", task_id=task.pk)
 
     result = launch_analysis(iteration.pk)
@@ -344,6 +351,8 @@ def development_task_analysis_launch(request, task_id):
             request,
             "Не удалось подтвердить запуск AI-анализа; автоматический повтор заблокирован.",
         )
+    elif result.state == "not_available":
+        messages.info(request, "Итерация первичного AI-анализа недоступна для запуска.")
     elif result.changed:
         messages.success(request, "Первичный AI-анализ запущен.")
     else:
@@ -360,7 +369,10 @@ def development_task_analysis_check(request, task_id):
     task = _task_for_organization(organization, task_id)
     iteration = _analysis_iteration(task)
     if iteration is None:
-        messages.info(request, "Итерация первичного анализа не найдена.")
+        messages.info(
+            request,
+            "Не удалось однозначно определить итерацию первичного AI-анализа. Проверка запрещена.",
+        )
         return redirect("development_task_detail", task_id=task.pk)
     metadata = (
         iteration.automation_metadata
@@ -382,6 +394,8 @@ def development_task_analysis_check(request, task_id):
         messages.info(request, "AI-анализ ещё выполняется.")
     elif result.state == "task_state_changed":
         messages.warning(request, "Результат AI не применён: состояние задачи уже изменилось.")
+    elif result.state == "not_available":
+        messages.info(request, "Итерация первичного AI-анализа недоступна для проверки.")
     else:
         messages.info(request, "AI-анализ ещё не был запущен.")
     return redirect("development_task_detail", task_id=task.pk)

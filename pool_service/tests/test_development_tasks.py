@@ -257,7 +257,10 @@ class DevelopmentTaskTests(TestCase):
         self.assertIsNone(iteration.executor)
         self.assertEqual(iteration.status, DevelopmentIteration.STATUS_WORKING)
         self.assertIsNotNone(iteration.started_at)
-        self.assertEqual(iteration.automation_metadata, {})
+        self.assertEqual(
+            iteration.automation_metadata.get("purpose"),
+            "primary_analysis",
+        )
         for expected in (
             task.reference,
             task.title,
