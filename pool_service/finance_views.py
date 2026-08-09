@@ -405,6 +405,7 @@ def _render_cash_dashboard(request, section):
         return denied
     manage = can_manage_cash(request.user, organization)
     roles = organization_roles(request.user, organization)
+    can_create_kkm_operations = can_access_cash(request.user, organization)
     if section not in {"company", "kkm"}:
         return redirect("finance_kkm_cash_dashboard" if can_access_cash(request.user, organization) else "finance_dashboard")
 
@@ -451,7 +452,7 @@ def _render_cash_dashboard(request, section):
             "cashbox_section": section,
             "can_manage_cash": manage,
             "can_count_kkm": manage or "manager" in roles,
-            "can_create_manager_cash": "manager" in roles,
+            "can_create_manager_cash": can_create_kkm_operations,
             "can_return_accountable": can_access_cash(request.user, organization),
             "can_delete_cash_operations": request.user.is_superuser or "admin" in roles,
             "company_balance": company_balance,
@@ -748,8 +749,8 @@ def finance_cash_income_create(request):
     organization, denied = _cash_guard(request)
     if denied:
         return denied
-    if "manager" not in organization_roles(request.user, organization):
-        return HttpResponseForbidden("Поступление в ККМ может добавить только менеджер.")
+    if not can_access_cash(request.user, organization):
+        return HttpResponseForbidden("Поступление в ККМ доступно только сотрудникам с доступом к ККМ.")
     form = ManagerCashIncomeForm(
         request.POST or None,
         organization=organization,
@@ -803,8 +804,8 @@ def finance_cash_transfer_create(request):
     organization, denied = _cash_guard(request)
     if denied:
         return denied
-    if "manager" not in organization_roles(request.user, organization):
-        return HttpResponseForbidden("Сдать выручку может только менеджер.")
+    if not can_access_cash(request.user, organization):
+        return HttpResponseForbidden("Сдать выручку может только сотрудник с доступом к ККМ.")
     form = ManagerCashTransferForm(
         request.POST or None,
         organization=organization,
@@ -851,8 +852,8 @@ def finance_cash_accountable_issue_create(request):
     organization, denied = _cash_guard(request)
     if denied:
         return denied
-    if "manager" not in organization_roles(request.user, organization):
-        return HttpResponseForbidden("Выдать подотчёт из ККМ может только менеджер.")
+    if not can_access_cash(request.user, organization):
+        return HttpResponseForbidden("Выдать подотчёт из ККМ может только сотрудник с доступом к ККМ.")
     balance = kkm_cash_balance(organization)
     form = ManagerCashAccountableIssueForm(
         request.POST or None,

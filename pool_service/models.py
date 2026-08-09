@@ -1260,10 +1260,10 @@ class CashOperation(models.Model):
             has_access = OrganizationAccess.objects.filter(
                 user_id=self.manager_id,
                 organization_id=self.organization_id,
-                role="manager",
+                role__in=["owner", "admin", "manager", "accountant"],
             ).exists()
             if not has_access:
-                raise ValidationError({"manager": "Касса ККМ доступна только менеджеру этой организации."})
+                raise ValidationError({"manager": "Касса ККМ доступна только сотруднику с доступом к ККМ."})
         if self.receiver_id and self.organization_id:
             has_receiver_access = OrganizationAccess.objects.filter(
                 user_id=self.receiver_id,
