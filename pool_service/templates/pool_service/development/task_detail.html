@@ -53,6 +53,15 @@
 </div>
 {% endif %}
 
+<div class="card card-soft p-3 p-lg-4 mb-4">
+  <h2 class="h5 mb-3">Стоимость AI</h2>
+  <div class="row g-3">
+    <div class="col-md-4"><div class="text-muted">Анализ</div><div class="fs-5">{{ ai_costs.analysis.amount_display }}</div>{% for call in ai_costs.analysis.records %}<div class="small text-muted">Модель: {% if call.model is not None %}{{ call.model }}{% else %}Нет данных{% endif %}<br>Input tokens: {% if call.input_tokens is not None %}{{ call.input_tokens }}{% else %}Нет данных{% endif %}<br>Cached input tokens: {% if call.cached_input_tokens is not None %}{{ call.cached_input_tokens }}{% else %}Нет данных{% endif %}<br>Output tokens: {% if call.output_tokens is not None %}{{ call.output_tokens }}{% else %}Нет данных{% endif %}</div>{% empty %}<div class="small text-muted">Нет данных</div>{% endfor %}</div>
+    <div class="col-md-4"><div class="text-muted">Codex</div><div class="fs-5">{{ ai_costs.codex.amount_display }}</div>{% for call in ai_costs.codex.records %}<div class="small text-muted">Модель: {% if call.model is not None %}{{ call.model }}{% else %}Нет данных{% endif %}<br>Input tokens: {% if call.input_tokens is not None %}{{ call.input_tokens }}{% else %}Нет данных{% endif %}<br>Cached input tokens: {% if call.cached_input_tokens is not None %}{{ call.cached_input_tokens }}{% else %}Нет данных{% endif %}<br>Output tokens: {% if call.output_tokens is not None %}{{ call.output_tokens }}{% else %}Нет данных{% endif %}</div>{% empty %}<div class="small text-muted">Нет данных</div>{% endfor %}</div>
+    <div class="col-md-4"><div class="text-muted">Итого</div><div class="fs-5 fw-semibold">{{ ai_costs_total_display }}</div></div>
+  </div>
+</div>
+
 {% if task.status == "ready_for_codex" or codex_iteration %}
 <div class="card card-soft p-3 p-lg-4 mb-4">
   <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">

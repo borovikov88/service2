@@ -13,6 +13,7 @@ from pool_service.models import (
     DevelopmentTaskEvent,
 )
 from pool_service.services.development_model_selection import selection_metadata
+from pool_service.services.ai_costs import usage_record
 
 
 logger = logging.getLogger(__name__)
@@ -263,6 +264,18 @@ def _apply_response(iteration_id, response):
             return AnalysisOperationResult(remote_state, changed=True)
 
         if remote_state == STATE_COMPLETED:
+            usage = usage_record(response)
+            if usage is not None:
+                ai_usage = metadata.get("ai_usage") if isinstance(metadata.get("ai_usage"), dict) else {}
+                calls = ai_usage.get("calls") if isinstance(ai_usage.get("calls"), list) else []
+                if not any(call.get("response_id") == getattr(response, "id", None) for call in calls if isinstance(call, dict)):
+                    usage["response_id"] = getattr(response, "id", None)
+                    calls.append(usage)
+                metadata["ai_usage"] = {
+                    "stage": "primary_analysis",
+                    "status": "known" if usage.get("calculated_cost_usd") is not None else "unknown",
+                    "calls": calls,
+                }
             output_text = str(getattr(response, "output_text", "") or "").strip()
             if not output_text:
                 remote_state = STATE_INCOMPLETE

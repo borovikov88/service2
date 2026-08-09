@@ -1,0 +1,143 @@
+"""Server-side, versioned AI usage and cost presentation."""
+
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+
+
+PRICING_VERSION = "openai-2025-01"
+_MILLION = Decimal("1000000")
+
+# Prices are USD per million tokens.  Only models listed here can produce a
+# calculated cost; metadata must never be able to add a price.
+PRICE_TABLE = {
+    "gpt-4.1": (Decimal("2.00"), Decimal("0.50"), Decimal("8.00")),
+    "gpt-4o": (Decimal("2.50"), Decimal("1.25"), Decimal("10.00")),
+    "gpt-4o-mini": (Decimal("0.15"), Decimal("0.075"), Decimal("0.60")),
+    "gpt-5.6": (Decimal("1.25"), Decimal("0.125"), Decimal("10.00")),
+}
+
+
+@dataclass(frozen=True)
+class UsageCost:
+    model: str | None
+    input_tokens: int | None
+    cached_input_tokens: int | None
+    output_tokens: int | None
+    calculated_cost_usd: str | None
+    pricing_version: str | None
+
+
+def _nonnegative_int(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
+def calculate_usage_cost(model, input_tokens, cached_input_tokens, output_tokens):
+    """Return a fixed historical amount, or None when usage/pricing is unknown."""
+    model = str(model or "").strip() or None
+    input_tokens = _nonnegative_int(input_tokens)
+    cached_input_tokens = _nonnegative_int(cached_input_tokens)
+    output_tokens = _nonnegative_int(output_tokens)
+    if not model or input_tokens is None or output_tokens is None:
+        return None
+    cached_input_tokens = cached_input_tokens or 0
+    if cached_input_tokens > input_tokens or model not in PRICE_TABLE:
+        return None
+    normal_input = input_tokens - cached_input_tokens
+    normal_price, cached_price, output_price = PRICE_TABLE[model]
+    amount = (
+        Decimal(normal_input) * normal_price
+        + Decimal(cached_input_tokens) * cached_price
+        + Decimal(output_tokens) * output_price
+    ) / _MILLION
+    return amount.quantize(Decimal("0.00000001"), rounding=ROUND_HALF_UP)
+
+
+def usage_metadata(response):
+    """Extract only official Responses API usage fields from an SDK object/dict."""
+    usage = getattr(response, "usage", None)
+    if usage is None and isinstance(response, dict):
+        usage = response.get("usage")
+    if usage is None:
+        return None
+
+    def value(name):
+        result = getattr(usage, name, None)
+        if result is None and isinstance(usage, dict):
+            result = usage.get(name)
+        return result
+
+    details = value("input_tokens_details")
+    if details is None:
+        details = value("prompt_tokens_details")
+    if details is None:
+        details = {}
+    cached = getattr(details, "cached_tokens", None)
+    if cached is None and isinstance(details, dict):
+        cached = details.get("cached_tokens")
+    model = getattr(response, "model", None)
+    if model is None and isinstance(response, dict):
+        model = response.get("model")
+    return {
+        "model": str(model or "").strip() or None,
+        "input_tokens": _nonnegative_int(value("input_tokens")),
+        "cached_input_tokens": _nonnegative_int(cached),
+        "output_tokens": _nonnegative_int(value("output_tokens")),
+    }
+
+
+def usage_record(response):
+    usage = usage_metadata(response)
+    if usage is None:
+        return None
+    cost = calculate_usage_cost(**usage)
+    usage.update(
+        calculated_cost_usd=str(cost) if cost is not None else None,
+        pricing_version=PRICING_VERSION if cost is not None else None,
+        usage_source="openai_responses",
+    )
+    return usage
+
+
+def _records(iterations, stage):
+    records = []
+    for iteration in iterations:
+        metadata = iteration.automation_metadata if isinstance(iteration.automation_metadata, dict) else {}
+        usage = metadata.get("ai_usage") if isinstance(metadata.get("ai_usage"), dict) else {}
+        if usage.get("stage") == stage:
+            records.extend(usage.get("calls", []))
+    return [record for record in records if isinstance(record, dict)]
+
+
+def cost_context(iterations, *, codex_expected=False):
+    stages = {}
+    known_total = Decimal("0")
+    known_count = 0
+    for stage, expected in (("primary_analysis", True), ("codex", codex_expected)):
+        records = _records(iterations, stage)
+        amounts = []
+        for record in records:
+            try:
+                amounts.append(Decimal(str(record["calculated_cost_usd"])))
+            except (KeyError, InvalidOperation, TypeError):
+                pass
+        amount = sum(amounts, Decimal("0")) if amounts else None
+        if amount is not None:
+            known_total += amount
+            known_count += 1
+        stages[stage] = {"known": amount is not None, "amount": amount, "records": records, "expected": expected}
+    partial = known_count > 0 and any(stage["expected"] and not stage["known"] for stage in stages.values())
+    total = known_total if known_count and not partial else None
+    return {"analysis": stages["primary_analysis"], "codex": stages["codex"], "total": total, "partial_total": known_total if partial else None}
+
+
+def display_amount(amount, partial=False):
+    if amount is None:
+        return "—"
+    value = f"${amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,.2f}"
+    return value + ("+" if partial else "")

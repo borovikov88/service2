@@ -34,6 +34,7 @@ from pool_service.services.development_codex import (
     resolve_codex_iteration,
 )
 from pool_service.services.development_model_selection import display_context, effective_model
+from pool_service.services.ai_costs import cost_context, display_amount
 
 
 DEVELOPMENT_ROLES = {"owner", "admin"}
@@ -224,7 +225,7 @@ def development_task_list(request):
     selected_status = (request.GET.get("status") or "").strip()
     tasks = DevelopmentTask.objects.filter(organization=organization).annotate(
         iteration_count=Count("iterations", distinct=True)
-    )
+    ).prefetch_related("iterations")
     if selected_status in valid_statuses:
         tasks = tasks.filter(status=selected_status)
     else:
@@ -255,6 +256,15 @@ def development_task_list(request):
         {"label": label, "count": sum(counts.get(status, 0) for status in statuses)}
         for label, statuses in groups
     ]
+    for task in tasks:
+        costs = cost_context(
+            task.iterations.all(),
+            codex_expected=task.status not in {DevelopmentTask.STATUS_NEW, DevelopmentTask.STATUS_ANALYSIS},
+        )
+        task.ai_cost_display = display_amount(
+            costs["total"] if costs["total"] is not None else costs["partial_total"],
+            partial=costs["partial_total"] is not None and costs["total"] is None,
+        )
     return render(
         request,
         "pool_service/development/task_list.html",
@@ -315,6 +325,17 @@ def development_task_detail(request, task_id):
     context.update(_analysis_context(task, analysis_iteration))
     context.update(_codex_context(task))
     context["model_selection"] = display_context(task)
+    costs = cost_context(
+        iterations,
+        codex_expected=task.status not in {DevelopmentTask.STATUS_NEW, DevelopmentTask.STATUS_ANALYSIS},
+    )
+    context["ai_costs"] = costs
+    context["ai_costs_total_display"] = display_amount(
+        costs["total"] if costs["total"] is not None else costs["partial_total"],
+        partial=costs["partial_total"] is not None and costs["total"] is None,
+    )
+    for stage in ("analysis", "codex"):
+        costs[stage]["amount_display"] = display_amount(costs[stage]["amount"])
     return render(
         request,
         "pool_service/development/task_detail.html",
