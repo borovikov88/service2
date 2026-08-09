@@ -39,6 +39,17 @@ def _env_float(name, default, *, minimum, maximum):
         )
     return value
 
+
+def _env_int(name, default, *, minimum, maximum):
+    raw_value = os.getenv(name, str(default))
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ImproperlyConfigured(f"{name} must be an integer") from exc
+    if not minimum <= value <= maximum:
+        raise ImproperlyConfigured(f"{name} must be between {minimum} and {maximum}")
+    return value
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
 
@@ -75,6 +86,25 @@ OPENAI_DEVELOPMENT_TIMEOUT_SECONDS = _env_float(
 )
 OPENAI_DEVELOPMENT_MAX_OUTPUT_TOKENS = int(
     os.getenv("OPENAI_DEVELOPMENT_MAX_OUTPUT_TOKENS", "6000")
+)
+GITHUB_DEVELOPMENT_TOKEN = os.getenv("GITHUB_DEVELOPMENT_TOKEN", "")
+GITHUB_DEVELOPMENT_REPOSITORY = os.getenv(
+    "GITHUB_DEVELOPMENT_REPOSITORY", "borovikov88/service2"
+)
+GITHUB_DEVELOPMENT_WORKFLOW = os.getenv(
+    "GITHUB_DEVELOPMENT_WORKFLOW", "development-codex.yml"
+)
+GITHUB_DEVELOPMENT_TIMEOUT_SECONDS = _env_float(
+    "GITHUB_DEVELOPMENT_TIMEOUT_SECONDS",
+    20,
+    minimum=1,
+    maximum=60,
+)
+GITHUB_DEVELOPMENT_PROMPT_MAX_BYTES = _env_int(
+    "GITHUB_DEVELOPMENT_PROMPT_MAX_BYTES",
+    40000,
+    minimum=1000,
+    maximum=50000,
 )
 SITE_URL = os.getenv("SITE_URL", "")
 SMS_RU_API_ID = os.getenv("SMS_RU_API_ID", "")
