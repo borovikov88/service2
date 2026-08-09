@@ -1,4 +1,6 @@
+import re
 from datetime import timedelta
+from pathlib import Path
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
@@ -90,6 +92,34 @@ class DevelopmentModelDispatchTests(TestCase):
         result = development_codex.dispatch_codex(self.task.pk, self.user.pk)
         self.assertEqual(result.state, "invalid_model")
         dispatch.assert_not_called()
+
+    def test_workflow_accepts_only_server_selected_codex_models(self):
+        workflow = (
+            Path(__file__).resolve().parents[2] / ".github/workflows/development-codex.yml"
+        ).read_text(encoding="utf-8")
+        dispatch_inputs = workflow.split("    inputs:", 1)[1].split("\npermissions:", 1)[0]
+        codex_job = workflow.split("  codex:", 1)[1].split("\n  validate:", 1)[0]
+
+        self.assertRegex(
+            dispatch_inputs,
+            r"(?ms)^      codex_model:\n"
+            r"        description: Server-selected Codex model\n"
+            r"        required: true\n"
+            r"        type: string$",
+        )
+        self.assertIn('CODEX_MODEL: ${{ inputs.codex_model }}', codex_job)
+        self.assertIn('"gpt-5.6-luna"', codex_job)
+        self.assertIn('"gpt-5.6-terra"', codex_job)
+        self.assertIn('"gpt-5.6-sol"', codex_job)
+        allowlist = codex_job.split("allowed_models = {", 1)[1].split("}", 1)[0]
+        self.assertEqual(
+            set(re.findall(r'"([^"]+)"', allowlist)),
+            {"gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"},
+        )
+        self.assertIn('if os.environ.get("CODEX_MODEL") not in allowed_models:', codex_job)
+        self.assertIn('raise SystemExit("Invalid CODEX_MODEL")', codex_job)
+        self.assertIn('model: ${{ inputs.codex_model }}', codex_job)
+        self.assertNotIn("user-controlled-model", codex_job)
 
     def test_ui_displays_effective_model(self):
         self.client.force_login(self.user)
