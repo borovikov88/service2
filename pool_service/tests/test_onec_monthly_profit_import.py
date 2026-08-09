@@ -18,7 +18,12 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment
 
 from pool_service.finance_forms import MonthlyProfitUploadForm
-from pool_service.finance_imports.monthly_profit_parser import ParseResult, parse_decimal, parse_monthly_profit
+from pool_service.finance_imports.monthly_profit_parser import (
+    ParseResult,
+    classify_nomenclature_type,
+    parse_decimal,
+    parse_monthly_profit,
+)
 from pool_service.finance_imports.services import (
     DuplicateImportError,
     _preview_metadata,
@@ -156,6 +161,37 @@ def vertical_flat_xlsx(*, include_total=True, total=(100, 70, 30)):
     return output.getvalue()
 
 
+def vertical_article_type_xlsx(*, include_parent=True, articles=None):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append([
+        "Месяц", None, None, "Количество", "Выручка", "Себестоимость",
+        "Валовая прибыль", "Рентабельность",
+    ])
+    sheet.append(["Артикул", "Тип", "Номенклатура"])
+    sheet.append(["дек. 2025", None, None, 4, 18000, 7000, 11000, None])
+    if include_parent:
+        sheet.append(["GROUP", "Запас", "Тестовая группа", 4, 18000, 7000, 11000, None])
+    rows = [
+        ["TEST-001", "Запас", "Тестовый товар A", 2, 10000, 7000, 3000, 30],
+        ["", "Услуга", "Тестовая услуга", 1, 5000, None, 5000, 100],
+        ["TEST-003", "Работа", "Тестовая работа", 1, 3000, None, 3000, 100],
+    ]
+    if articles is not None:
+        for row, article in zip(rows, articles):
+            row[0] = article
+    for row in rows:
+        sheet.append(row)
+        sheet.cell(sheet.max_row, 3).alignment = Alignment(indent=2)
+    sheet.append(["янв. 2026", None, None, 1, 6000, 4000, 2000, None])
+    sheet.append(["TEST-001", "Запас", "Тестовый товар A", 1, 6000, 4000, 2000, "33,3333"])
+    sheet.cell(sheet.max_row, 3).alignment = Alignment(indent=2)
+    sheet.append(["Итого", None, None, 5, 24000, 11000, 13000, None])
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
 def upload(name="monthly-profit.xlsx", data=None, **kwargs):
     return SimpleUploadedFile(
         name, data if data is not None else xlsx_bytes(**kwargs),
@@ -169,6 +205,7 @@ class MonthlyProfitParserTests(TestCase):
         self.assertEqual(len(result.records), 1)
         self.assertEqual(result.records[0]["period_month"], date(2026, 1, 1))
         self.assertEqual(result.records[0]["revenue"], Decimal("10000.00"))
+        self.assertEqual(result.records[0]["nomenclature_type"], "")
 
     def test_russian_month_variants(self):
         for label, month in (("Янв. 2026", 1), ("сент 2026", 9), ("12.2026", 12), ("2026-04", 4)):
@@ -290,6 +327,7 @@ class MonthlyProfitParserTests(TestCase):
         self.assertEqual(second["period_month"], date(2025, 12, 1))
         self.assertEqual(second["source_row_number"], 5)
         self.assertEqual(second["article"], "")
+        self.assertEqual(second["nomenclature_type"], "")
         self.assertIsNone(second["quantity"])
         self.assertIsNone(second["cost"])
         self.assertEqual(second["gross_profit"], Decimal("5000.00"))
@@ -438,6 +476,97 @@ class MonthlyProfitParserTests(TestCase):
         self.assertTrue(result.metadata["totals_match"])
         self.assertFalse(result.critical_errors)
 
+    def test_vertical_article_type_report_preserves_fields_and_hierarchy(self):
+        result = parse_monthly_profit(
+            BytesIO(vertical_article_type_xlsx()), filename="vertical.xlsx"
+        )
+        self.assertEqual(result.metadata["layout"], "vertical_1c")
+        self.assertEqual(result.metadata["header_depth"], 2)
+        self.assertEqual(result.metadata["hierarchy_status"], "reliable")
+        self.assertEqual(result.metadata["hierarchy_reason"], "stable_positive_indent")
+        self.assertGreater(result.metadata["aggregate_rows_skipped"], 0)
+        self.assertEqual(len(result.records), 4)
+        self.assertTrue(result.metadata["totals_match"])
+        self.assertFalse(result.critical_errors)
+        first, service, work, january = result.records
+        self.assertEqual(first["article"], "TEST-001")
+        self.assertEqual(first["nomenclature_type"], "Запас")
+        self.assertEqual(first["nomenclature"], "Тестовый товар A")
+        self.assertEqual(first["period_month"], date(2025, 12, 1))
+        self.assertEqual(first["quantity"], Decimal("2.000000"))
+        self.assertEqual(first["revenue"], Decimal("10000.00"))
+        self.assertEqual(first["cost"], Decimal("7000.00"))
+        self.assertEqual(first["gross_profit"], Decimal("3000.00"))
+        self.assertEqual(first["profitability_percent"], Decimal("30.0000"))
+        self.assertEqual(first["source_data"]["article"], "TEST-001")
+        self.assertEqual(first["source_data"]["nomenclature_type"], "Запас")
+        self.assertEqual(service["article"], "")
+        self.assertEqual(service["nomenclature_type"], "Услуга")
+        self.assertIsNone(service["cost"])
+        self.assertEqual(work["nomenclature_type"], "Работа")
+        self.assertEqual(january["period_month"], date(2026, 1, 1))
+
+    def test_vertical_article_identifiers_are_normalized_without_losing_codes(self):
+        result = parse_monthly_profit(
+            BytesIO(vertical_article_type_xlsx(articles=[0, 123.0, "00123"])),
+            filename="vertical.xlsx",
+        )
+        self.assertEqual([row["article"] for row in result.records[:3]], ["0", "123", "00123"])
+        self.assertEqual(result.metadata["hierarchy_status"], "reliable")
+        self.assertFalse(result.critical_errors)
+        spaced = parse_monthly_profit(
+            BytesIO(vertical_article_type_xlsx(articles=["  CODE-1  ", "", "TEST-003"])),
+            filename="vertical.xlsx",
+        )
+        self.assertEqual(spaced.records[0]["article"], "CODE-1")
+
+    def test_vertical_identifier_columns_are_mapped_by_normalized_headers(self):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["Месяц", None, None, "Выручка", "Себестоимость", "Валовая прибыль", "Рентабельность"])
+        sheet.append(["  Тип\nноменклатуры ", " Номенклатура ", " КОД "])
+        sheet.append(["дек. 2025", None, None, 100, 70, 30, None])
+        sheet.append(["Запас", "Тестовая строка", " 00123 ", 100, 70, 30, 30])
+        sheet.cell(4, 2).alignment = Alignment(indent=2)
+        sheet.append(["Итого", None, None, 100, 70, 30, None])
+        output = BytesIO()
+        workbook.save(output)
+        result = parse_monthly_profit(BytesIO(output.getvalue()), filename="vertical.xlsx")
+        self.assertEqual(result.metadata["hierarchy_status"], "reliable")
+        self.assertEqual(result.records[0]["article"], "00123")
+        self.assertEqual(result.records[0]["nomenclature_type"], "Запас")
+        self.assertEqual(result.records[0]["nomenclature"], "Тестовая строка")
+        self.assertFalse(result.critical_errors)
+
+    def test_nomenclature_type_classification_is_explicit(self):
+        cases = (
+            ("Запас", "goods"),
+            ("  запас  ", "goods"),
+            ("Услуга", "service"),
+            ("Работа", "service"),
+            ("Новый тип", "unknown"),
+            ("", "unknown"),
+            (None, "unknown"),
+        )
+        for value, expected in cases:
+            with self.subTest(value=value):
+                self.assertEqual(classify_nomenclature_type(value), expected)
+
+    def test_horizontal_optional_type_column_is_mapped(self):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["Отчёт за 2026 год"])
+        sheet.append(["Номенклатура", "Артикул", "  Тип\nноменклатуры ", "Январь 2026", None])
+        sheet.append([None, None, None, "Выручка", "Валовая прибыль"])
+        sheet.append(["Тестовый товар", 123.0, "  Запас  ", 100, 40])
+        output = BytesIO()
+        workbook.save(output)
+        result = parse_monthly_profit(BytesIO(output.getvalue()), filename="horizontal.xlsx")
+        self.assertEqual(result.metadata["layout"], "horizontal")
+        self.assertEqual(result.records[0]["article"], "123")
+        self.assertEqual(result.records[0]["nomenclature_type"], "Запас")
+        self.assertFalse(result.critical_errors)
+
     def test_vertical_ambiguous_counterexamples_stay_critical_when_totals_match(self):
         for name, rows in vertical_counterexample_cases().items():
             with self.subTest(name=name):
@@ -539,6 +668,36 @@ class MonthlyProfitWorkflowTests(TestCase):
         confirmed = confirm_monthly_profit(batch.id, self.organization, self.user)
         self.assertEqual(confirmed.rows_imported, 4)
         self.assertEqual(OneCMonthlyProfit.objects.count(), 4)
+
+    def test_article_type_preview_and_confirm_persist_new_fields(self):
+        batch = create_monthly_profit_preview(
+            upload(name="article-type.xlsx", data=vertical_article_type_xlsx()),
+            self.organization,
+            self.user,
+        )
+        self.assertEqual(OneCMonthlyProfit.objects.count(), 0)
+        self.assertEqual(batch.metadata["report"]["hierarchy_status"], "reliable")
+        self.assertEqual(batch.metadata["preview"][0]["article"], "TEST-001")
+        self.assertEqual(batch.metadata["preview"][0]["nomenclature_type"], "Запас")
+        confirmed = confirm_monthly_profit(batch.id, self.organization, self.user)
+        self.assertEqual(confirmed.status, OneCImportBatch.STATUS_CONFIRMED)
+        rows = list(OneCMonthlyProfit.objects.filter(import_batch=batch).order_by("source_row_number"))
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(rows[0].article, "TEST-001")
+        self.assertEqual(rows[0].nomenclature_type, "Запас")
+        self.assertEqual(rows[1].article, "")
+        self.assertEqual(rows[1].nomenclature_type, "Услуга")
+
+    def test_monthly_profit_model_defaults_nomenclature_type_to_empty(self):
+        batch = self.create_preview()
+        row = OneCMonthlyProfit.objects.create(
+            import_batch=batch,
+            organization=self.organization,
+            period_month=date(2026, 1, 1),
+            source_row_number=999,
+            nomenclature="Тестовая строка",
+        )
+        self.assertEqual(row.nomenclature_type, "")
 
     def test_vertical_critical_preview_cannot_be_confirmed(self):
         batch = create_monthly_profit_preview(

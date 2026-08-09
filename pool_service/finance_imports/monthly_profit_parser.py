@@ -10,7 +10,7 @@ from openpyxl.utils.datetime import from_excel
 
 from .validators import validate_xlsx_archive
 
-PARSER_VERSION = "2"
+PARSER_VERSION = "3"
 FORMAT_HORIZONTAL = "horizontal"
 FORMAT_VERTICAL_1C = "vertical_1c"
 MAX_SHEETS = 10
@@ -39,6 +39,7 @@ METRICS = {
 }
 NAME_MARKERS = ("номенклатура", "наименование", "товар", "продукция")
 ARTICLE_MARKERS = ("артикул", "код")
+TYPE_MARKERS = ("тип", "тип номенклатуры")
 TOTAL_MARKERS = ("итого", "всего", "общий итог")
 TOTAL_TOLERANCE = Decimal("0.05")
 
@@ -65,6 +66,37 @@ class ParseResult:
 
 def _text(value):
     return "" if value is None else re.sub(r"\s+", " ", str(value).replace("\u00a0", " ")).strip()
+
+
+def _normalized_text(value):
+    return _text(value).lower().replace("ё", "е")
+
+
+def _identifier_text(value):
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, Decimal) and value == value.to_integral_value():
+        return str(int(value))
+    return _text(value)
+
+
+def _trimmed_source_text(value):
+    return "" if value is None else str(value).strip()
+
+
+def classify_nomenclature_type(value):
+    normalized = _normalized_text(value)
+    if normalized == "запас":
+        return "goods"
+    if normalized in {"услуга", "работа"}:
+        return "service"
+    return "unknown"
 
 
 def parse_decimal(value, *, percent=False):
@@ -175,13 +207,14 @@ def _find_header(rows, year, epoch):
         for depth in (1, 2, 3):
             block = rows[start:start + depth]
             width = max((len(row) for row in block), default=0)
-            columns, name_col, article_col = [], None, None
+            columns, name_col, article_col, type_col = [], None, None, None
             for col in range(width):
                 pieces = [_text(row[col]) if col < len(row) else "" for row in block]
                 combined = " ".join(filter(None, pieces))
                 lowered = combined.lower().replace("ё", "е")
                 if name_col is None and any(marker in lowered for marker in NAME_MARKERS): name_col = col
                 if article_col is None and any(marker in lowered for marker in ARTICLE_MARKERS): article_col = col
+                if type_col is None and lowered in TYPE_MARKERS: type_col = col
                 month = next((parse_month(piece, fallback_year=year, workbook_epoch=epoch) for piece in pieces if parse_month(piece, fallback_year=year, workbook_epoch=epoch)), None)
                 columns.append({"index": col, "month": month, "metric": _metric(combined)})
             last_month = None
@@ -191,14 +224,14 @@ def _find_header(rows, year, epoch):
             metric_columns = [column for column in columns if column["metric"] and column["month"]]
             score = len(metric_columns) * 10 + (5 if name_col is not None else 0)
             if metric_columns and (best is None or score > best[0]):
-                best = (score, start, depth, columns, name_col, article_col)
+                best = (score, start, depth, columns, name_col, article_col, type_col)
     if not best:
         raise MonthlyProfitParseError("Не удалось найти заголовки месяцев и показателей.")
-    _, start, depth, columns, name_col, article_col = best
+    _, start, depth, columns, name_col, article_col, type_col = best
     if name_col is None:
         used = {column["index"] for column in columns if column["metric"]}
         name_col = next((index for index in range(max(used or {0}) + 1) if index not in used), 0)
-    return start, depth, columns, name_col, article_col
+    return start, depth, columns, name_col, article_col, type_col
 
 
 def _is_total_label(value):
@@ -208,7 +241,7 @@ def _is_total_label(value):
 
 def _parse_horizontal_rows(sheet_title, rows, epoch, formula_cells=None, formulas_truncated=False):
     year = _detect_report_year(rows)
-    start, depth, columns, name_col, article_col = _find_header(rows, year, epoch)
+    start, depth, columns, name_col, article_col, type_col = _find_header(rows, year, epoch)
     result = ParseResult()
     unresolved = [c for c in columns if c["metric"] and isinstance(c["month"], tuple)]
     if unresolved: result.critical_errors.append("Найден месяц без года, а год отчёта определить не удалось.")
@@ -219,7 +252,12 @@ def _parse_horizontal_rows(sheet_title, rows, epoch, formula_cells=None, formula
         name = _text(row[name_col] if name_col < len(row) else "")
         if not name or _is_total_label(name):
             result.rows_skipped += 1; continue
-        article = _text(row[article_col] if article_col is not None and article_col < len(row) else "")
+        article = _identifier_text(
+            row[article_col] if article_col is not None and article_col < len(row) else None
+        )
+        nomenclature_type = _trimmed_source_text(
+            row[type_col] if type_col is not None and type_col < len(row) else None
+        )
         by_month = {}
         for column in metric_columns:
             raw = row[column["index"]] if column["index"] < len(row) else None
@@ -244,12 +282,15 @@ def _parse_horizontal_rows(sheet_title, rows, epoch, formula_cells=None, formula
             result.records.append({
                 "period_month": month, "source_row_number": excel_row,
                 "nomenclature": name[:500], "article": article[:120],
+                "nomenclature_type": nomenclature_type[:100],
                 "quantity": values.get("quantity"), "revenue": values.get("revenue"),
                 "cost": values.get("cost"), "gross_profit": values.get("gross_profit"),
                 "profitability_percent": values.get("profitability_percent"),
                 "source_data": {
                     "excel_row_number": excel_row,
                     "detected_layout": FORMAT_HORIZONTAL,
+                    "article": article[:120],
+                    "nomenclature_type": nomenclature_type[:100],
                     "cells": source,
                 },
             })
@@ -302,24 +343,51 @@ def _add_formula_warnings(result, rows, formula_cells, formulas_truncated):
 def _find_vertical_header(rows, epoch):
     report_year = _detect_report_year(rows)
     for index, row in enumerate(rows[:HEADER_SCAN_ROWS]):
-        first = _text(row[0] if row else "").lower().replace("ё", "е")
         metrics = {}
-        article_col = None
+        month_col = None
         for column, value in enumerate(row):
-            text = _text(value).lower().replace("ё", "е")
+            text = _normalized_text(value)
             metric = _metric(text)
             if metric and metric not in metrics:
                 metrics[metric] = column
-            if article_col is None and any(marker in text for marker in ARTICLE_MARKERS):
-                article_col = column
+            if month_col is None and text in {"месяц", "период"}:
+                month_col = column
         financial = {"revenue", "cost", "gross_profit", "profitability_percent"}
-        if first in {"месяц", "период"} and len(financial.intersection(metrics)) >= 3:
-            has_month_rows = any(
-                _parse_vertical_month(item[0] if item else None, epoch, report_year) is not None
-                for item in rows[index + 1:]
-            )
-            if has_month_rows:
-                return index, 0, article_col, metrics, report_year
+        if month_col is None or len(financial.intersection(metrics)) < 3:
+            continue
+        first_month_index = next((
+            row_index
+            for row_index, item in enumerate(rows[index + 1:], index + 1)
+            if _parse_vertical_month(
+                item[month_col] if month_col < len(item) else None,
+                epoch,
+                report_year,
+            ) is not None
+        ), None)
+        if first_month_index is None:
+            continue
+        article_col = type_col = name_col = None
+        for header_row in rows[index:first_month_index]:
+            for column, value in enumerate(header_row):
+                text = _normalized_text(value)
+                if article_col is None and text in ARTICLE_MARKERS:
+                    article_col = column
+                if type_col is None and text in TYPE_MARKERS:
+                    type_col = column
+                if name_col is None and text in NAME_MARKERS:
+                    name_col = column
+        if name_col is None:
+            name_col = month_col
+        return (
+            index,
+            first_month_index - index,
+            month_col,
+            name_col,
+            article_col,
+            type_col,
+            metrics,
+            report_year,
+        )
     return None
 
 
@@ -343,24 +411,36 @@ def _parse_vertical_month(value, epoch, fallback_year=None):
     return None
 
 
+def _vertical_month_for_row(row, month_col, name_col, epoch, fallback_year=None):
+    name = row[name_col] if name_col < len(row) else None
+    if month_col != name_col and _text(name):
+        return None
+    value = row[month_col] if month_col < len(row) else None
+    return _parse_vertical_month(value, epoch, fallback_year)
+
+
 def _detect_vertical_hierarchy(
-    rows, row_indents, start, name_col, article_col, metric_columns, epoch, fallback_year,
+    rows, row_indents, start, depth, month_col, name_col, article_col,
+    metric_columns, epoch, fallback_year,
 ):
     current_month = None
     candidates = []
-    has_nomenclature_schema_marker = False
-    for offset, row in enumerate(rows[start + 1:], start + 1):
+    has_nomenclature_schema_marker = any(
+        name_col < len(header_row)
+        and _normalized_text(header_row[name_col]) == "номенклатура"
+        for header_row in rows[start:start + depth]
+    )
+    for offset, row in enumerate(rows[start + depth:], start + depth):
         name = row[name_col] if name_col < len(row) else None
-        month = _parse_vertical_month(name, epoch, fallback_year)
+        month = _vertical_month_for_row(
+            row, month_col, name_col, epoch, fallback_year
+        )
         if isinstance(month, date):
             current_month = month
             continue
         if isinstance(month, tuple):
             current_month = None
             continue
-        normalized_name = _text(name).lower().replace("ё", "е")
-        if current_month is None and normalized_name == "номенклатура":
-            has_nomenclature_schema_marker = True
         if not current_month or not _text(name) or _is_total_label(name):
             continue
         has_values = any(
@@ -375,13 +455,6 @@ def _detect_vertical_hierarchy(
             )
             candidates.append((row_indents[offset], bool(article)))
 
-    if candidates and article_col is not None and all(has_article for _, has_article in candidates):
-        return {
-            "status": "flat",
-            "detail_indent": None,
-            "reason": "explicit_flat_schema",
-        }
-
     positive_indents = {indent for indent, _ in candidates if indent > 0}
     has_lower_financial_level = any(
         indent < next(iter(positive_indents)) for indent, _ in candidates
@@ -395,9 +468,16 @@ def _detect_vertical_hierarchy(
             "reason": "stable_positive_indent",
         }
     if len(positive_indents) > 1:
-        reason = "conflicting_detail_levels"
-    else:
-        reason = "no_reliable_detail_level"
+        return {"status": "ambiguous", "detail_indent": None, "reason": "conflicting_detail_levels"}
+    if not positive_indents and candidates and article_col is not None and all(
+        has_article for _, has_article in candidates
+    ):
+        return {
+            "status": "flat",
+            "detail_indent": None,
+            "reason": "explicit_flat_schema",
+        }
+    reason = "no_reliable_detail_level"
     return {"status": "ambiguous", "detail_indent": None, "reason": reason}
 
 
@@ -411,7 +491,16 @@ def _serialized_totals(values):
 def _parse_vertical_rows(
     sheet_title, rows, row_indents, epoch, header, formula_cells=None, formulas_truncated=False,
 ):
-    start, name_col, article_col, metric_columns, report_year = header
+    (
+        start,
+        depth,
+        month_col,
+        name_col,
+        article_col,
+        type_col,
+        metric_columns,
+        report_year,
+    ) = header
     result = ParseResult()
     current_month = None
     months = []
@@ -419,19 +508,33 @@ def _parse_vertical_rows(
     monetary = ("revenue", "cost", "gross_profit")
     calculated = {key: Decimal("0") for key in monetary}
     month_totals = {}
+    name_indents = [
+        indent_row[name_col] if name_col < len(indent_row) else 0
+        for indent_row in row_indents
+    ]
     hierarchy = _detect_vertical_hierarchy(
-        rows, row_indents, start, name_col, article_col, metric_columns, epoch, report_year
+        rows,
+        name_indents,
+        start,
+        depth,
+        month_col,
+        name_col,
+        article_col,
+        metric_columns,
+        epoch,
+        report_year,
     )
     detail_indent = hierarchy["detail_indent"]
     hierarchy_status = hierarchy["status"]
     hierarchy_reason = hierarchy["reason"]
     aggregate_rows_skipped = 0
 
-    for offset, row in enumerate(rows[start + 1:], start + 1):
+    for offset, row in enumerate(rows[start + depth:], start + depth):
         excel_row = offset + 1
         result.rows_read += 1
         name = _text(row[name_col] if name_col < len(row) else "")
-        month = _parse_vertical_month(name, epoch, report_year)
+        month_value = row[month_col] if month_col < len(row) else None
+        month = _vertical_month_for_row(row, month_col, name_col, epoch, report_year)
         if isinstance(month, date):
             current_month = month
             if month not in months:
@@ -445,7 +548,7 @@ def _parse_vertical_rows(
             )
             result.rows_skipped += 1
             continue
-        if _is_total_label(name):
+        if _is_total_label(name) or _is_total_label(month_value):
             parsed_totals = {}
             for metric in monetary:
                 column = metric_columns.get(metric)
@@ -470,7 +573,7 @@ def _parse_vertical_rows(
         if current_month is None:
             result.rows_skipped += 1
             continue
-        if detail_indent is not None and row_indents[offset] != detail_indent:
+        if detail_indent is not None and name_indents[offset] != detail_indent:
             result.rows_skipped += 1
             aggregate_rows_skipped += 1
             result.add_warning(
@@ -494,13 +597,18 @@ def _parse_vertical_rows(
             result.rows_skipped += 1
             continue
 
+        article = _identifier_text(
+            row[article_col] if article_col is not None and article_col < len(row) else None
+        )[:120]
+        nomenclature_type = _trimmed_source_text(
+            row[type_col] if type_col is not None and type_col < len(row) else None
+        )[:100]
         record = {
             "period_month": current_month,
             "source_row_number": excel_row,
             "nomenclature": name[:500],
-            "article": _text(
-                row[article_col] if article_col is not None and article_col < len(row) else ""
-            )[:120],
+            "article": article,
+            "nomenclature_type": nomenclature_type,
             "quantity": values.get("quantity"),
             "revenue": values.get("revenue"),
             "cost": values.get("cost"),
@@ -509,6 +617,8 @@ def _parse_vertical_rows(
             "source_data": {
                 "excel_row_number": excel_row,
                 "detected_layout": FORMAT_VERTICAL_1C,
+                "article": article,
+                "nomenclature_type": nomenclature_type,
                 "cells": _source_cells(row),
             },
         }
@@ -553,7 +663,7 @@ def _parse_vertical_rows(
         "sheet": sheet_title,
         "layout": FORMAT_VERTICAL_1C,
         "header_row": start + 1,
-        "header_depth": 1,
+        "header_depth": depth,
         "report_year": next(iter(years)) if len(years) == 1 else None,
         "months": [month.isoformat() for month in months],
         "month_count": len(months),
@@ -584,8 +694,10 @@ def _parse_sheet(sheet, epoch, formula_cells=None, formulas_truncated=False):
             raise MonthlyProfitParseError("Превышен лимит строк.")
         limited = cells[:MAX_COLUMNS]
         rows.append(tuple(cell.value for cell in limited))
-        first = limited[0] if limited else None
-        row_indents.append(float(getattr(getattr(first, "alignment", None), "indent", 0) or 0))
+        row_indents.append(tuple(
+            float(getattr(getattr(cell, "alignment", None), "indent", 0) or 0)
+            for cell in limited
+        ))
     layout = detect_layout(rows, epoch)
     if layout == FORMAT_VERTICAL_1C:
         return _parse_vertical_rows(
