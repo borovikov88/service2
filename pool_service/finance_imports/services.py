@@ -9,7 +9,14 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from pool_service.models import DataAuditLog, OneCImportBatch, OneCMonthlyProfit
+from pool_service.models import (
+    DataAuditLog,
+    OneCImportBatch,
+    OneCMonthlyProfit,
+    OneCReportPeriodActivation,
+    OneCReportPeriodState,
+    Organization,
+)
 from .monthly_profit_parser import PARSER_VERSION, MonthlyProfitParseError, parse_monthly_profit
 from .validators import delete_private_batch_file, delete_private_file, safe_original_filename, stream_sha256
 
@@ -43,7 +50,7 @@ def _audit(batch, user, before, after):
     )
 
 
-def _preview_metadata(result):
+def _preview_metadata(result, overlap_months=()):
     totals = {key: Decimal("0") for key in ("revenue", "cost", "gross_profit")}
     for row in result.records:
         for key in totals: totals[key] += row.get(key) or Decimal("0")
@@ -56,6 +63,7 @@ def _preview_metadata(result):
     warnings = [str(item)[:METADATA_WARNING_MAX_LENGTH] for item in result.warnings[:METADATA_WARNING_LIMIT]]
     warnings_total = max(result.warnings_total, len(result.warnings))
     totals["profitability_percent"] = calculate_profitability(totals["gross_profit"], totals["revenue"])
+    overlap_months = sorted(set(overlap_months))
     return {
         "report": result.metadata, "preview": sample,
         "totals": {key: str(value) if value is not None else None for key, value in totals.items()},
@@ -63,6 +71,8 @@ def _preview_metadata(result):
         "warnings_total": warnings_total,
         "warnings_hidden": max(warnings_total - len(warnings), 0),
         "critical_errors": [str(item)[:METADATA_WARNING_MAX_LENGTH] for item in result.critical_errors[:20]],
+        "overlap_months": [month.strftime("%Y-%m") for month in overlap_months],
+        "overlap_count": len(overlap_months),
     }
 
 
@@ -72,6 +82,94 @@ def calculate_profitability(gross_profit, revenue):
         return None
     return (Decimal(gross_profit or 0) * Decimal("100") / revenue).quantize(
         PROFITABILITY_QUANTUM, rounding=ROUND_HALF_UP
+    )
+
+
+def _result_periods(result):
+    periods = sorted({row["period_month"] for row in result.records})
+    if any(period.day != 1 for period in periods):
+        raise ValidationError("Месяц отчёта должен начинаться с первого числа.")
+    return periods
+
+
+def overlap_months_for(organization, report_type, periods):
+    if not periods:
+        return []
+    return list(
+        OneCReportPeriodState.objects.filter(
+            organization=organization,
+            report_type=report_type,
+            period_month__in=periods,
+        )
+        .order_by("period_month")
+        .values_list("period_month", flat=True)
+    )
+
+
+def validate_period_assignment(batch, organization, report_type, period_month):
+    if batch.organization_id != organization.pk:
+        raise ValidationError("Активная загрузка принадлежит другой организации.")
+    if batch.import_type != report_type:
+        raise ValidationError("Тип активной загрузки не совпадает с типом отчёта.")
+    if batch.status != OneCImportBatch.STATUS_CONFIRMED:
+        raise ValidationError("Активной может быть только подтверждённая загрузка.")
+    if period_month.day != 1:
+        raise ValidationError("Месяц активной версии должен начинаться с первого числа.")
+    if not OneCMonthlyProfit.objects.filter(
+        import_batch=batch,
+        organization=organization,
+        period_month=period_month,
+    ).exists():
+        raise ValidationError("В активной загрузке отсутствуют строки указанного месяца.")
+
+
+def _bulk_create_monthly_rows(rows):
+    OneCMonthlyProfit.objects.bulk_create(rows, batch_size=500)
+
+
+def _activate_period_states(batch, organization, user, periods, locked_states):
+    states_by_month = {state.period_month: state for state in locked_states}
+    for period_month in periods:
+        state = states_by_month.get(period_month)
+        replaced_batch = state.active_batch if state else None
+        if replaced_batch is not None:
+            validate_period_assignment(
+                replaced_batch, organization, batch.import_type, period_month
+            )
+        validate_period_assignment(batch, organization, batch.import_type, period_month)
+        if state is None:
+            state = OneCReportPeriodState.objects.create(
+                organization=organization,
+                report_type=batch.import_type,
+                period_month=period_month,
+                active_batch=batch,
+                updated_by=user,
+            )
+        else:
+            state.active_batch = batch
+            state.updated_by = user
+            state.save(update_fields=["active_batch", "updated_by", "updated_at"])
+        OneCReportPeriodActivation.objects.create(
+            period_state=state,
+            batch=batch,
+            replaced_batch=replaced_batch,
+            activated_by=user,
+        )
+
+
+def _save_confirmed_batch(batch, user, rows_count):
+    batch.confirmed_by = user
+    batch.confirmed_at = timezone.now()
+    batch.rows_imported = rows_count
+    batch.error_message = ""
+    batch.save(
+        update_fields=[
+            "status",
+            "confirmed_by",
+            "confirmed_at",
+            "rows_imported",
+            "error_message",
+        ]
     )
 
 
@@ -115,10 +213,14 @@ def create_monthly_profit_preview(uploaded_file, organization, user):
     try:
         with batch.stored_file.open("rb") as source:
             result = parse_monthly_profit(source, filename=batch.original_filename, size=batch.file_size)
+        periods = _result_periods(result)
+        overlap_months = overlap_months_for(
+            organization, batch.import_type, periods
+        )
         batch.status = OneCImportBatch.STATUS_PREVIEWED
         batch.rows_detected = len(result.records)
         batch.warnings_count = max(result.warnings_total, len(result.warnings))
-        batch.metadata = _preview_metadata(result)
+        batch.metadata = _preview_metadata(result, overlap_months)
         batch.error_message = ""
         batch.save(update_fields=["status", "rows_detected", "warnings_count", "metadata", "error_message"])
         _audit(batch, user, {"status": "uploaded"}, {"status": "previewed"})
@@ -143,24 +245,51 @@ def _stored_sha256(batch):
 def confirm_monthly_profit(batch_id, organization, user):
     try:
         with transaction.atomic():
-            batch = OneCImportBatch.objects.select_for_update().get(id=batch_id, organization=organization)
+            locked_organization = Organization.objects.select_for_update().get(
+                pk=organization.pk
+            )
+            batch = OneCImportBatch.objects.select_for_update().get(
+                id=batch_id, organization=locked_organization
+            )
             if batch.status != OneCImportBatch.STATUS_PREVIEWED:
                 raise ValidationError("Подтвердить можно только импорт в статусе previewed.")
-            if batch.metadata.get("critical_errors"):
-                raise ValidationError("Подтверждение заблокировано критическими ошибками preview.")
             if _stored_sha256(batch) != batch.file_sha256:
                 raise ValidationError("Контрольная сумма исходного файла изменилась.")
             with batch.stored_file.open("rb") as source:
                 result = parse_monthly_profit(source, filename=batch.original_filename, size=batch.file_size)
             if result.critical_errors: raise ValidationError("; ".join(result.critical_errors))
-            rows = [OneCMonthlyProfit(import_batch=batch, organization=organization, **record) for record in result.records]
-            OneCMonthlyProfit.objects.bulk_create(rows, batch_size=500)
+            periods = _result_periods(result)
+            locked_states = list(
+                OneCReportPeriodState.objects.select_for_update()
+                .filter(
+                    organization=locked_organization,
+                    report_type=batch.import_type,
+                    period_month__in=periods,
+                )
+                .select_related("active_batch")
+                .order_by("period_month")
+            )
+            rows = [
+                OneCMonthlyProfit(
+                    import_batch=batch,
+                    organization=locked_organization,
+                    **record,
+                )
+                for record in result.records
+            ]
+            _bulk_create_monthly_rows(rows)
             before = {"status": batch.status, "rows_imported": batch.rows_imported}
-            batch.status, batch.confirmed_by, batch.confirmed_at = OneCImportBatch.STATUS_CONFIRMED, user, timezone.now()
-            batch.rows_imported, batch.error_message = len(rows), ""
-            batch.save(update_fields=["status", "confirmed_by", "confirmed_at", "rows_imported", "error_message"])
+            batch.status = OneCImportBatch.STATUS_CONFIRMED
+            _activate_period_states(
+                batch,
+                locked_organization,
+                user,
+                periods,
+                locked_states,
+            )
+            _save_confirmed_batch(batch, user, len(rows))
             _audit(batch, user, before, {"status": batch.status, "rows_imported": batch.rows_imported})
-        _log(batch, user, "confirmed")
+        _log(batch, user, "confirmed", active_months=len(periods))
         return batch
     except OneCImportBatch.DoesNotExist:
         raise

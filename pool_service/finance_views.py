@@ -2280,6 +2280,8 @@ def finance_onec_import_preview(request, batch_id):
         "warnings": batch.metadata.get("warnings", []),
         "warnings_hidden": batch.metadata.get("warnings_hidden", 0),
         "critical_errors": batch.metadata.get("critical_errors", []),
+        "overlap_months": batch.metadata.get("overlap_months", []),
+        "overlap_count": batch.metadata.get("overlap_count", 0),
         "can_confirm": batch.status == OneCImportBatch.STATUS_PREVIEWED and not batch.metadata.get("critical_errors"),
         "active_tab": "finance",
     })
@@ -2338,7 +2340,15 @@ def finance_onec_import_detail(request, batch_id):
         month_revenue = item["revenue"] or Decimal("0")
         item["profitability_percent"] = calculate_profitability(item["gross_profit"], month_revenue)
     page = Paginator(rows.order_by("period_month", "source_row_number"), 50).get_page(request.GET.get("page"))
+    batch_months = set(rows.values_list("period_month", flat=True).distinct())
+    active_months = set(
+        batch.active_period_states.filter(organization=organization).values_list(
+            "period_month", flat=True
+        )
+    )
     return render(request, "pool_service/finance/onec_import_detail.html", {
         "batch": batch, "totals": totals, "monthly": monthly, "page_obj": page,
+        "active_month_count": len(batch_months & active_months),
+        "replaced_month_count": len(batch_months - active_months),
         "active_tab": "finance",
     })
