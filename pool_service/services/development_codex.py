@@ -31,6 +31,11 @@ from pool_service.models import (
     DevelopmentTaskEvent,
 )
 from pool_service.services.development_ai import resolve_primary_analysis_iteration
+from pool_service.services.development_model_selection import (
+    ModelSelectionError,
+    effective_model,
+    selection_metadata,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -671,6 +676,17 @@ def dispatch_codex(task_id, actor_id):
         analysis = resolve_primary_analysis_iteration(task)
         if analysis is None or analysis.status != DevelopmentIteration.STATUS_ACCEPTED:
             return CodexOperationResult("not_available")
+        task_metadata = _metadata(task)
+        if "auto_complexity" not in task_metadata and "auto_selected_model" not in task_metadata:
+            task_metadata = selection_metadata(task, analysis.response)
+        try:
+            selected_model = effective_model(
+                task_metadata.get("model_selection_mode", "auto"),
+                task_metadata.get("auto_selected_model"),
+            )
+        except ModelSelectionError:
+            return CodexOperationResult("invalid_model")
+        task_metadata["effective_model"] = selected_model
         prompt = build_codex_prompt(task, analysis)
         next_number = (task.iterations.aggregate(value=Max("iteration_number"))["value"] or 0) + 1
         branch_name = _branch_name(task, launch_token)
@@ -689,14 +705,15 @@ def dispatch_codex(task_id, actor_id):
                 "launch_token": launch_token,
                 "branch_name": branch_name,
                 "launch_started_at": _now_iso(),
+                "effective_model": selected_model,
             },
         )
-        task_metadata = _metadata(task)
         task_metadata.update(
             {
                 "active_codex_iteration_id": iteration.pk,
                 "codex_launch_token": launch_token,
                 "codex_branch_name": branch_name,
+                "codex_model": selected_model,
             }
         )
         task.automation_metadata = task_metadata
@@ -709,6 +726,7 @@ def dispatch_codex(task_id, actor_id):
             "task_reference": task.reference,
             "launch_token": launch_token,
             "branch_name": branch_name,
+            "codex_model": selected_model,
             "prompt_b64": base64.b64encode(prompt.encode("utf-8")).decode("ascii"),
             "pr_title_b64": base64.b64encode(
                 _utf8_truncate(f"[{task.reference}] {task.title}", 240).encode("utf-8")

@@ -16,6 +16,10 @@ on:
         description: Server-generated feature branch
         required: true
         type: string
+      codex_model:
+        description: Server-selected Codex model
+        required: true
+        type: string
       prompt_b64:
         description: UTF-8 task prompt encoded as base64
         required: true
@@ -64,6 +68,7 @@ jobs:
       TASK_REFERENCE: ${{ inputs.task_reference }}
       LAUNCH_TOKEN: ${{ inputs.launch_token }}
       BRANCH_NAME: ${{ inputs.branch_name }}
+      CODEX_MODEL: ${{ inputs.codex_model }}
       PROMPT_B64: ${{ inputs.prompt_b64 }}
       PR_TITLE_B64: ${{ inputs.pr_title_b64 }}
     steps:
@@ -80,6 +85,13 @@ jobs:
           for name, pattern in checks.items():
               if re.fullmatch(pattern, os.environ.get(name, "")) is None:
                   raise SystemExit(f"Invalid {name}")
+          allowed_models = {
+              "gpt-5.6-luna",
+              "gpt-5.6-terra",
+              "gpt-5.6-sol",
+          }
+          if os.environ.get("CODEX_MODEL") not in allowed_models:
+              raise SystemExit("Invalid CODEX_MODEL")
           PY
 
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -129,6 +141,7 @@ jobs:
         uses: openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56 # v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          model: ${{ inputs.codex_model }}
           prompt-file: ${{ runner.temp }}/development-prompt.txt
           output-file: ${{ runner.temp }}/codex-final.txt
           permission-profile: ":workspace"
