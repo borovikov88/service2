@@ -145,6 +145,7 @@ from .development_views import (
     development_task_create,
     development_task_detail,
     development_task_list,
+    development_task_start,
     development_task_update,
 )
 
@@ -286,6 +287,7 @@ urlpatterns = [
     path("development/tasks/", development_task_list, name="development_task_list"),
     path("development/tasks/new/", development_task_create, name="development_task_create"),
     path("development/tasks/<int:task_id>/", development_task_detail, name="development_task_detail"),
+    path("development/tasks/<int:task_id>/start/", development_task_start, name="development_task_start"),
     path("development/tasks/<int:task_id>/update/", development_task_update, name="development_task_update"),
     path("development/tasks/<int:task_id>/iterations/new/", development_iteration_create, name="development_iteration_create"),
     path("clients/create/", client_create, name="client_create"),
