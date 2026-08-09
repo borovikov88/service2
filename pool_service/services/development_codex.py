@@ -2,12 +2,14 @@ import base64
 import json
 import logging
 import re
+import ssl
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
+import certifi
 from django.conf import settings
 from django.db import transaction
 from django.db.models import Max
@@ -65,6 +67,19 @@ class CodexPromptError(RuntimeError):
     pass
 
 
+class GitHubRequestError(RuntimeError):
+    """A diagnostic GitHub transport error containing only safe metadata."""
+
+    def __init__(self, *, category, status_code=None, cause_type):
+        self.category = category
+        self.status_code = status_code
+        self.cause_type = cause_type
+        status = f" status={status_code}" if status_code is not None else ""
+        super().__init__(
+            f"GitHub API request failed: category={category}{status} cause_type={cause_type}"
+        )
+
+
 @dataclass(frozen=True)
 class CodexOperationResult:
     state: str
@@ -94,6 +109,27 @@ def _configuration():
 def _metadata(instance):
     value = instance.automation_metadata
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _github_ssl_context():
+    return ssl.create_default_context(cafile=certifi.where())
+
+
+def _github_request_error(method, path, *, category, status_code=None, cause_type):
+    error = GitHubRequestError(
+        category=category,
+        status_code=status_code,
+        cause_type=cause_type,
+    )
+    logger.warning(
+        "GitHub API request failed: category=%s method=%s path=%s status_code=%s cause_type=%s",
+        category,
+        method,
+        path.partition("?")[0],
+        status_code,
+        cause_type,
+    )
+    return error
 
 
 def _now_iso():
@@ -188,15 +224,54 @@ def _github_request(method, path, *, payload=None, expected_status=200):
         headers["Content-Type"] = "application/json"
     request = Request(url, data=body, headers=headers, method=method)
     try:
-        with urlopen(request, timeout=settings.GITHUB_DEVELOPMENT_TIMEOUT_SECONDS) as response:
+        with urlopen(
+            request,
+            timeout=settings.GITHUB_DEVELOPMENT_TIMEOUT_SECONDS,
+            context=_github_ssl_context(),
+        ) as response:
             if response.status != expected_status:
-                raise RuntimeError("GitHub API returned an unexpected status")
+                raise _github_request_error(
+                    method,
+                    path,
+                    category="response",
+                    status_code=response.status,
+                    cause_type="UnexpectedStatus",
+                )
             raw = response.read()
             if not raw:
                 return None
             return json.loads(raw.decode("utf-8"))
-    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"GitHub API request failed ({type(exc).__name__})") from exc
+    except HTTPError as exc:
+        raise _github_request_error(
+            method,
+            path,
+            category="http",
+            status_code=exc.code,
+            cause_type="HTTPError",
+        ) from exc
+    except URLError as exc:
+        reason = getattr(exc, "reason", None)
+        cause_type = type(reason).__name__ if reason is not None else "URLError"
+        raise _github_request_error(
+            method,
+            path,
+            category="transport",
+            cause_type=cause_type,
+        ) from exc
+    except TimeoutError as exc:
+        raise _github_request_error(
+            method,
+            path,
+            category="transport",
+            cause_type="TimeoutError",
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise _github_request_error(
+            method,
+            path,
+            category="response",
+            cause_type="JSONDecodeError",
+        ) from exc
 
 
 def _dispatch_workflow(payload):
