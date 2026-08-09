@@ -1,10 +1,12 @@
 import contextlib
 import importlib.util
 import io
+import ssl
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from urllib.error import HTTPError, URLError
 
 from django.conf import settings
 from django.contrib.auth.models import User
@@ -575,11 +577,119 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
 
         request = urlopen.call_args.args[0]
         self.assertEqual(urlopen.call_args.kwargs["timeout"], 3)
+        context = urlopen.call_args.kwargs["context"]
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
         self.assertEqual(
             request.get_header("Authorization"),
             "Bearer github-test-token-never-sent",
         )
         self.assertNotIn(b"github-test-token-never-sent", request.data)
+
+    @patch("pool_service.services.development_codex.ssl.create_default_context")
+    @patch("pool_service.services.development_codex.certifi.where")
+    def test_github_ssl_context_uses_certifi_ca_bundle(self, certifi_where, create_context):
+        certifi_where.return_value = "trusted-certifi-ca.pem"
+        expected = MagicMock()
+        create_context.return_value = expected
+
+        context = development_codex._github_ssl_context()
+
+        self.assertIs(context, expected)
+        certifi_where.assert_called_once_with()
+        create_context.assert_called_once_with(cafile="trusted-certifi-ca.pem")
+
+    def test_github_ssl_context_requires_certificates_and_hostname_verification(self):
+        context = development_codex._github_ssl_context()
+
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+
+    @patch("pool_service.services.development_codex.urlopen")
+    def test_successful_github_get_uses_verified_context(self, urlopen):
+        response = MagicMock()
+        response.status = 200
+        response.read.return_value = b'{"state": "active"}'
+        urlopen.return_value.__enter__.return_value = response
+
+        result = development_codex._github_request("GET", "/repos/borovikov88/service2")
+
+        self.assertEqual(result, {"state": "active"})
+        context = urlopen.call_args.kwargs["context"]
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+
+    @patch("pool_service.services.development_codex.urlopen")
+    def test_http_error_exposes_only_safe_status_diagnostics(self, urlopen):
+        urlopen.side_effect = HTTPError(
+            "https://api.github.com/repos/borovikov88/service2?private_query=do-not-log",
+            403,
+            "forbidden",
+            {},
+            io.BytesIO(b"private response body github-test-token-never-sent"),
+        )
+
+        with self.assertLogs(development_codex.logger.name, level="WARNING") as logs:
+            with self.assertRaises(development_codex.GitHubRequestError) as caught:
+                development_codex._github_request(
+                    "GET", "/repos/borovikov88/service2?private_query=do-not-log"
+                )
+
+        error = caught.exception
+        self.assertEqual(error.category, "http")
+        self.assertEqual(error.status_code, 403)
+        self.assertEqual(error.cause_type, "HTTPError")
+        diagnostics = " ".join(logs.output) + " " + str(error)
+        self.assertNotIn("github-test-token-never-sent", diagnostics)
+        self.assertNotIn("private response body", diagnostics)
+        self.assertNotIn("private_query", diagnostics)
+
+    @patch("pool_service.services.development_codex.urlopen")
+    def test_ssl_failure_is_safe_transport_error(self, urlopen):
+        urlopen.side_effect = URLError(
+            ssl.SSLCertVerificationError("github-test-token-never-sent")
+        )
+
+        with self.assertLogs(development_codex.logger.name, level="WARNING") as logs:
+            with self.assertRaises(development_codex.GitHubRequestError) as caught:
+                development_codex._github_request("GET", "/repos/borovikov88/service2")
+
+        error = caught.exception
+        self.assertEqual(error.category, "transport")
+        self.assertIsNone(error.status_code)
+        self.assertEqual(error.cause_type, "SSLCertVerificationError")
+        diagnostics = " ".join(logs.output) + " " + str(error)
+        self.assertNotIn("github-test-token-never-sent", diagnostics)
+
+    @patch("pool_service.services.development_codex.urlopen")
+    def test_timeout_is_safe_transport_error(self, urlopen):
+        urlopen.side_effect = TimeoutError("github-test-token-never-sent")
+
+        with self.assertLogs(development_codex.logger.name, level="WARNING") as logs:
+            with self.assertRaises(development_codex.GitHubRequestError) as caught:
+                development_codex._github_request("GET", "/repos/borovikov88/service2")
+
+        error = caught.exception
+        self.assertEqual(error.category, "transport")
+        self.assertEqual(error.cause_type, "TimeoutError")
+        diagnostics = " ".join(logs.output) + " " + str(error)
+        self.assertNotIn("github-test-token-never-sent", diagnostics)
+
+    @patch("pool_service.services.development_codex.urlopen")
+    def test_post_transport_uncertainty_remains_unknown_without_retry(self, urlopen):
+        urlopen.side_effect = URLError(TimeoutError("uncertain POST"))
+        task = self.make_ready_task()
+
+        first = development_codex.dispatch_codex(task.pk, self.owner.pk)
+        second = development_codex.dispatch_codex(task.pk, self.owner.pk)
+
+        self.assertEqual(first.state, development_codex.STATE_DISPATCH_UNKNOWN)
+        self.assertFalse(second.changed)
+        self.assertEqual(urlopen.call_count, 1)
+        task.refresh_from_db()
+        iteration = task.iterations.get(executor_type=DevelopmentIteration.EXECUTOR_CODEX)
+        self.assertEqual(task.status, DevelopmentTask.STATUS_BLOCKED)
+        self.assertEqual(iteration.automation_metadata["state"], "dispatch_unknown")
 
     @patch("pool_service.services.development_codex._github_request")
     def test_workflow_outcome_job_provides_trusted_validation_state(self, request):
