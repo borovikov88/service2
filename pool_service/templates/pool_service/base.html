@@ -1361,6 +1361,9 @@
           {% if can_access_users %}
             <a class="text-decoration-none {% if active_tab == 'users' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'users' %}">&#1055;&#1086;&#1083;&#1100;&#1079;&#1086;&#1074;&#1072;&#1090;&#1077;&#1083;&#1080;</a>
           {% endif %}
+          {% if can_access_development %}
+            <a class="text-decoration-none {% if active_tab == 'development' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'development_task_list' %}">Разработка</a>
+          {% endif %}
           {% if user.is_superuser %}
             <a class="text-decoration-none {% if active_tab == 'billing_admin' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'billing_admin' %}">&#1055;&#1088;&#1086;&#1076;&#1083;&#1077;&#1085;&#1080;&#1103;</a>
           {% endif %}
@@ -1569,6 +1572,9 @@
           {% endif %}
           {% if can_access_users %}
             <a href="{% url 'users' %}" class="list-group-item list-group-item-action">&#1055;&#1086;&#1083;&#1100;&#1079;&#1086;&#1074;&#1072;&#1090;&#1077;&#1083;&#1080;</a>
+          {% endif %}
+          {% if can_access_development %}
+            <a href="{% url 'development_task_list' %}" class="list-group-item list-group-item-action {% if active_tab == 'development' %}active{% endif %}">Разработка</a>
           {% endif %}
           {% if user.is_superuser %}
             <a href="{% url 'billing_admin' %}" class="list-group-item list-group-item-action">&#1055;&#1088;&#1086;&#1076;&#1083;&#1077;&#1085;&#1080;&#1103;</a>
