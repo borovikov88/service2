@@ -1785,6 +1785,9 @@ class OneCMonthlyProfit(models.Model):
     source_row_number = models.PositiveIntegerField("Номер строки источника")
     nomenclature = models.CharField("Номенклатура", max_length=500)
     article = models.CharField("Артикул или код", max_length=120, blank=True)
+    nomenclature_type = models.CharField(
+        "Тип номенклатуры", max_length=100, blank=True, default=""
+    )
     quantity = models.DecimalField("Количество", max_digits=20, decimal_places=6, null=True, blank=True)
     revenue = models.DecimalField("Выручка", max_digits=20, decimal_places=2, null=True, blank=True)
     cost = models.DecimalField("Себестоимость", max_digits=20, decimal_places=2, null=True, blank=True)
