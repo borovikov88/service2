@@ -15,6 +15,7 @@ from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from openpyxl import Workbook
+from openpyxl.styles import Alignment
 
 from pool_service.finance_forms import MonthlyProfitUploadForm
 from pool_service.finance_imports.monthly_profit_parser import ParseResult, parse_decimal, parse_monthly_profit
@@ -48,6 +49,108 @@ def xlsx_bytes(
         ])
     for row in rows or [["Товар A", "A-1", "1 234,56", "10 000,00", "7 000,00", "3 000,00", "30%"]]:
         sheet.append(row)
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def vertical_xlsx_bytes(*, blocks=None, include_total=True, indent=2):
+    blocks = blocks or [
+        ("дек. 2025", [
+            ["Тестовый товар A", 10000, 7000, 3000, 30],
+            ["Тестовый товар B", 5000, None, 5000, 100],
+        ]),
+        ("янв. 2026", [
+            ["Тестовый товар A", 12000, 8000, 4000, "33,3333%"],
+            ["Тестовый товар C", 6000, 4500, 1500, 25],
+        ]),
+    ]
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Валовая прибыль"
+    sheet.append(["Месяц", "Выручка, ₽", "Себестоимость, ₽", "Валовая прибыль, ₽", "Рентабельность"])
+    sheet.append(["Номенклатура"])
+    for month, rows in blocks:
+        sheet.append([month])
+        for row in rows:
+            sheet.append(row)
+            if indent is not None:
+                sheet.cell(sheet.max_row, 1).alignment = Alignment(indent=indent)
+    if include_total:
+        sheet.append(["Итого", 33000, 19500, 13500, None])
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def vertical_hierarchy_xlsx(
+    *, parent_indent=None, child_indent=None, include_total=True, total=(100, 70, 30),
+):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Месяц", "Выручка, ₽", "Себестоимость, ₽", "Валовая прибыль, ₽", "Рентабельность"])
+    sheet.append(["дек. 2025"])
+    sheet.append(["Тестовая группа", 100, 70, 30, 30])
+    sheet.append(["Тестовый товар", 100, 70, 30, 30])
+    if parent_indent is not None:
+        sheet.cell(3, 1).alignment = Alignment(indent=parent_indent)
+    if child_indent is not None:
+        sheet.cell(4, 1).alignment = Alignment(indent=child_indent)
+    if include_total:
+        sheet.append(["Итого", *total, None])
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def vertical_counterexample_xlsx(rows):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Месяц", "Выручка, ₽", "Себестоимость, ₽", "Валовая прибыль, ₽", "Рентабельность"])
+    sheet.append(["дек. 2025"])
+    for row in rows:
+        sheet.append(row)
+    sheet.append(["Итого", 100, 70, 30, None])
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def vertical_counterexample_cases():
+    return {
+        "parent_instead_of_children": [
+            ["Тестовая группа", 100, 70, 30, 30],
+            ["Тестовый товар A", "=60", "=42", "=18", "=30"],
+            ["Тестовый товар B", "=40", "=28", "=12", "=30"],
+        ],
+        "aggregate_and_partial_children": [
+            ["Тестовая группа", 60, 42, 18, 30],
+            ["Тестовый товар A", 40, 28, 12, 30],
+            ["Тестовый товар B", "=60", "=42", "=18", "=30"],
+        ],
+        "parent_with_empty_children": [
+            ["Тестовая категория", 100, 70, 30, 30],
+            ["Тестовый товар A", None, None, None, None],
+            ["Тестовый товар B", None, None, None, None],
+        ],
+        "multiple_aggregates": [
+            ["Тестовая категория A", 60, 42, 18, 30],
+            ["Тестовая категория B", 40, 28, 12, 30],
+            ["Тестовый товар A", "=60", "=42", "=18", "=30"],
+            ["Тестовый товар B", "=40", "=28", "=12", "=30"],
+        ],
+    }
+
+
+def vertical_flat_xlsx(*, include_total=True, total=(100, 70, 30)):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Месяц", "Артикул", "Выручка, ₽", "Себестоимость, ₽", "Валовая прибыль, ₽", "Рентабельность"])
+    sheet.append(["дек. 2025"])
+    sheet.append(["Тестовый товар A", "A-1", 60, 42, 18, 30])
+    sheet.append(["Тестовый товар B", "B-1", 40, 28, 12, 30])
+    if include_total:
+        sheet.append(["Итого", None, *total, None])
     output = BytesIO()
     workbook.save(output)
     return output.getvalue()
@@ -174,6 +277,213 @@ class MonthlyProfitParserTests(TestCase):
         self.assertTrue(result.critical_errors)
         self.assertEqual(result.records, [])
 
+    def test_vertical_1c_report_is_normalized_and_totals_match(self):
+        result = parse_monthly_profit(BytesIO(vertical_xlsx_bytes()), filename="vertical.xlsx")
+        self.assertEqual(result.metadata["layout"], "vertical_1c")
+        self.assertEqual(len(result.records), 4)
+        self.assertEqual(result.metadata["months"], ["2025-12-01", "2026-01-01"])
+        self.assertEqual(result.metadata["month_count"], 2)
+        self.assertTrue(result.metadata["totals_match"])
+        self.assertEqual(result.metadata["source_totals"]["revenue"], "33000.00")
+        self.assertEqual(result.metadata["calculated_totals"]["gross_profit"], "13500.00")
+        second = result.records[1]
+        self.assertEqual(second["period_month"], date(2025, 12, 1))
+        self.assertEqual(second["source_row_number"], 5)
+        self.assertEqual(second["article"], "")
+        self.assertIsNone(second["quantity"])
+        self.assertIsNone(second["cost"])
+        self.assertEqual(second["gross_profit"], Decimal("5000.00"))
+        self.assertEqual(second["profitability_percent"], Decimal("100.0000"))
+        self.assertEqual(second["source_data"]["detected_layout"], "vertical_1c")
+
+    def test_vertical_months_can_be_unsorted_and_empty(self):
+        blocks = [
+            ("май 2026", [["Тестовый товар A", 10, 7, 3, 30]]),
+            ("дек. 2025", []),
+            ("февр. 2026", [["Тестовый товар B", 20, 15, 5, 25]]),
+        ]
+        result = parse_monthly_profit(
+            BytesIO(vertical_xlsx_bytes(blocks=blocks, include_total=False)), filename="vertical.xlsx"
+        )
+        self.assertEqual(
+            result.metadata["months"], ["2026-05-01", "2025-12-01", "2026-02-01"]
+        )
+        self.assertEqual([row["period_month"] for row in result.records], [date(2026, 5, 1), date(2026, 2, 1)])
+        self.assertNotIn("2025-12-01", result.metadata["month_totals"])
+        self.assertFalse(result.critical_errors)
+
+    def test_vertical_skips_service_rows_rows_without_month_and_exact_totals_only(self):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["Месяц", "Выручка, ₽", "Себестоимость, ₽", "Валовая прибыль, ₽", "Рентабельность"])
+        sheet.append(["Номенклатура"])
+        sheet.append(["Тестовый товар до месяца", 100, 50, 50, 50])
+        sheet.append(["нояб. 2025"])
+        sheet.append(["Средство Итого-Пул 1 л", 100, 120, -20, -20])
+        sheet.append(["Итого", 100, 120, -20, None])
+        output = BytesIO(); workbook.save(output)
+        result = parse_monthly_profit(BytesIO(output.getvalue()), filename="vertical.xlsx")
+        self.assertEqual(len(result.records), 1)
+        self.assertEqual(result.records[0]["nomenclature"], "Средство Итого-Пул 1 л")
+        self.assertEqual(result.records[0]["gross_profit"], Decimal("-20.00"))
+        self.assertEqual(result.records[0]["source_row_number"], 5)
+
+    def test_vertical_profitability_header_variants(self):
+        for label in ("% прибыли", "Процент прибыли", "Рентабельность", "Рентаб., %"):
+            with self.subTest(label=label):
+                workbook = Workbook(); sheet = workbook.active
+                sheet.append(["Месяц", "Выручка, ₽", "Себестоимость, ₽", "Валовая прибыль, ₽", label])
+                sheet.append(["дек. 2025"])
+                sheet.append(["Тестовый товар", 10000, 7000, 3000, 30])
+                output = BytesIO(); workbook.save(output)
+                result = parse_monthly_profit(BytesIO(output.getvalue()), filename="vertical.xlsx")
+                self.assertEqual(result.records[0]["gross_profit"], Decimal("3000.00"))
+                self.assertEqual(result.records[0]["profitability_percent"], Decimal("30.0000"))
+
+    def test_vertical_and_horizontal_records_have_same_schema(self):
+        horizontal = parse_monthly_profit(BytesIO(xlsx_bytes()), filename="horizontal.xlsx")
+        vertical = parse_monthly_profit(BytesIO(vertical_xlsx_bytes()), filename="vertical.xlsx")
+        self.assertEqual(set(horizontal.records[0]), set(vertical.records[0]))
+        self.assertEqual(horizontal.metadata["layout"], "horizontal")
+        self.assertEqual(vertical.metadata["layout"], "vertical_1c")
+
+    def test_vertical_material_with_month_word_is_not_treated_as_month(self):
+        blocks = [("дек. 2025", [["Тестовый товар мартовский", 10, 7, 3, 30]])]
+        result = parse_monthly_profit(
+            BytesIO(vertical_xlsx_bytes(blocks=blocks, include_total=False)), filename="vertical.xlsx"
+        )
+        self.assertEqual(len(result.records), 1)
+        self.assertEqual(result.records[0]["period_month"], date(2025, 12, 1))
+        self.assertFalse(result.critical_errors)
+
+    def test_vertical_unknown_year_is_critical(self):
+        blocks = [("янв.", [["Тестовый товар", 10, 7, 3, 30]])]
+        result = parse_monthly_profit(
+            BytesIO(vertical_xlsx_bytes(blocks=blocks, include_total=False)), filename="vertical.xlsx"
+        )
+        self.assertEqual(result.metadata["layout"], "vertical_1c")
+        self.assertTrue(result.critical_errors)
+        self.assertEqual(result.records, [])
+
+    def test_vertical_indent_skips_parent_aggregate_and_warns_on_total_mismatch(self):
+        workbook = Workbook(); sheet = workbook.active
+        sheet.append(["Месяц", "Выручка, ₽", "Себестоимость, ₽", "Валовая прибыль, ₽", "Рентабельность"])
+        sheet.append(["дек. 2025"])
+        sheet.append(["Тестовая группа", 100, 70, 30, 30])
+        sheet.append(["Тестовый товар", 100, 70, 30, 30])
+        sheet.cell(4, 1).alignment = Alignment(indent=2)
+        sheet.append(["Итого", 101, 70, 31, None])
+        output = BytesIO(); workbook.save(output)
+        result = parse_monthly_profit(BytesIO(output.getvalue()), filename="vertical.xlsx")
+        self.assertEqual(len(result.records), 1)
+        self.assertEqual(result.records[0]["source_row_number"], 4)
+        self.assertFalse(result.metadata["totals_match"])
+        self.assertGreaterEqual(result.warnings_total, 2)
+        self.assertTrue(result.critical_errors)
+
+    def test_vertical_parent_and_child_without_indent_are_critical(self):
+        result = parse_monthly_profit(
+            BytesIO(vertical_hierarchy_xlsx()), filename="vertical.xlsx"
+        )
+        self.assertEqual(result.metadata["hierarchy_status"], "ambiguous")
+        self.assertFalse(result.metadata["totals_match"])
+        self.assertTrue(result.critical_errors)
+
+    def test_vertical_parent_and_child_with_same_indent_are_critical(self):
+        result = parse_monthly_profit(
+            BytesIO(vertical_hierarchy_xlsx(parent_indent=2, child_indent=2)),
+            filename="vertical.xlsx",
+        )
+        self.assertEqual(result.metadata["hierarchy_status"], "ambiguous")
+        self.assertFalse(result.metadata["totals_match"])
+        self.assertTrue(result.critical_errors)
+
+    def test_vertical_ambiguous_hierarchy_without_source_totals_is_critical(self):
+        result = parse_monthly_profit(
+            BytesIO(vertical_hierarchy_xlsx(include_total=False)), filename="vertical.xlsx"
+        )
+        self.assertIsNone(result.metadata["totals_match"])
+        self.assertEqual(result.metadata["hierarchy_status"], "ambiguous")
+        self.assertTrue(result.critical_errors)
+
+    def test_vertical_reliable_indent_without_source_totals_is_allowed(self):
+        result = parse_monthly_profit(
+            BytesIO(vertical_xlsx_bytes(include_total=False)), filename="vertical.xlsx"
+        )
+        self.assertEqual(len(result.records), 4)
+        self.assertEqual(result.metadata["hierarchy_status"], "reliable")
+        self.assertIsNone(result.metadata["totals_match"])
+        self.assertFalse(result.critical_errors)
+
+    def test_vertical_report_with_only_empty_months_is_critical(self):
+        result = parse_monthly_profit(
+            BytesIO(vertical_xlsx_bytes(
+                blocks=[("янв. 2026", []), ("февр. 2026", [])], include_total=False,
+            )),
+            filename="vertical.xlsx",
+        )
+        self.assertEqual(result.metadata["month_count"], 2)
+        self.assertEqual(result.records, [])
+        self.assertTrue(result.critical_errors)
+
+    def test_vertical_realistic_hierarchy_with_matching_totals_is_reliable(self):
+        result = parse_monthly_profit(
+            BytesIO(vertical_hierarchy_xlsx(parent_indent=0, child_indent=2)),
+            filename="vertical.xlsx",
+        )
+        self.assertEqual([row["source_row_number"] for row in result.records], [4])
+        self.assertEqual(result.metadata["hierarchy_status"], "reliable")
+        self.assertEqual(result.metadata["hierarchy_reason"], "stable_positive_indent")
+        self.assertGreater(result.metadata["aggregate_rows_skipped"], 0)
+        self.assertTrue(result.metadata["totals_match"])
+        self.assertFalse(result.critical_errors)
+
+    def test_vertical_ambiguous_counterexamples_stay_critical_when_totals_match(self):
+        for name, rows in vertical_counterexample_cases().items():
+            with self.subTest(name=name):
+                result = parse_monthly_profit(
+                    BytesIO(vertical_counterexample_xlsx(rows)), filename="vertical.xlsx"
+                )
+                self.assertEqual(result.metadata["hierarchy_status"], "ambiguous")
+                self.assertEqual(result.metadata["hierarchy_reason"], "no_reliable_detail_level")
+                self.assertTrue(result.metadata["totals_match"])
+                self.assertTrue(result.critical_errors)
+
+    def test_vertical_explicit_flat_schema_is_allowed(self):
+        result = parse_monthly_profit(BytesIO(vertical_flat_xlsx()), filename="vertical.xlsx")
+        self.assertEqual(result.metadata["hierarchy_status"], "flat")
+        self.assertEqual(result.metadata["hierarchy_reason"], "explicit_flat_schema")
+        self.assertEqual(len(result.records), 2)
+        self.assertTrue(result.metadata["totals_match"])
+        self.assertFalse(result.critical_errors)
+
+    def test_vertical_without_indent_or_flat_evidence_is_ambiguous(self):
+        result = parse_monthly_profit(
+            BytesIO(vertical_xlsx_bytes(indent=None)), filename="vertical.xlsx"
+        )
+        self.assertEqual(result.metadata["hierarchy_status"], "ambiguous")
+        self.assertTrue(result.metadata["totals_match"])
+        self.assertTrue(result.critical_errors)
+
+    def test_vertical_hierarchy_and_totals_are_independent_checks(self):
+        cases = (
+            (vertical_hierarchy_xlsx(parent_indent=0, child_indent=2), "reliable", True, False),
+            (vertical_hierarchy_xlsx(parent_indent=0, child_indent=2, total=(101, 70, 31)), "reliable", False, True),
+            (vertical_xlsx_bytes(include_total=False), "reliable", None, False),
+            (vertical_flat_xlsx(), "flat", True, False),
+            (vertical_flat_xlsx(include_total=False), "flat", None, False),
+            (vertical_flat_xlsx(total=(101, 70, 31)), "flat", False, True),
+            (vertical_counterexample_xlsx(vertical_counterexample_cases()["parent_with_empty_children"]), "ambiguous", True, True),
+            (vertical_hierarchy_xlsx(), "ambiguous", False, True),
+            (vertical_hierarchy_xlsx(include_total=False), "ambiguous", None, True),
+        )
+        for payload, status, totals_match, has_critical in cases:
+            with self.subTest(status=status, totals_match=totals_match):
+                result = parse_monthly_profit(BytesIO(payload), filename="vertical.xlsx")
+                self.assertEqual(result.metadata["hierarchy_status"], status)
+                self.assertEqual(result.metadata["totals_match"], totals_match)
+                self.assertEqual(bool(result.critical_errors), has_critical)
+
 
 class MonthlyProfitFormTests(TestCase):
     def test_rejects_unsupported_file(self):
@@ -218,6 +528,76 @@ class MonthlyProfitWorkflowTests(TestCase):
         batch = self.create_preview()
         self.assertEqual(batch.status, OneCImportBatch.STATUS_PREVIEWED)
         self.assertEqual(OneCMonthlyProfit.objects.count(), 0)
+
+    def test_vertical_preview_does_not_create_rows_and_confirm_is_atomic(self):
+        batch = create_monthly_profit_preview(
+            upload(name="vertical.xlsx", data=vertical_xlsx_bytes()), self.organization, self.user
+        )
+        self.assertEqual(batch.metadata["report"]["layout"], "vertical_1c")
+        self.assertEqual(batch.rows_detected, 4)
+        self.assertEqual(OneCMonthlyProfit.objects.count(), 0)
+        confirmed = confirm_monthly_profit(batch.id, self.organization, self.user)
+        self.assertEqual(confirmed.rows_imported, 4)
+        self.assertEqual(OneCMonthlyProfit.objects.count(), 4)
+
+    def test_vertical_critical_preview_cannot_be_confirmed(self):
+        batch = create_monthly_profit_preview(
+            upload(name="ambiguous.xlsx", data=vertical_hierarchy_xlsx()),
+            self.organization,
+            self.user,
+        )
+        self.assertTrue(batch.metadata["critical_errors"])
+        self.assertEqual(OneCMonthlyProfit.objects.count(), 0)
+        with self.assertRaises(ValidationError):
+            confirm_monthly_profit(batch.id, self.organization, self.user)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, OneCImportBatch.STATUS_FAILED)
+        self.assertEqual(OneCMonthlyProfit.objects.count(), 0)
+
+    def test_vertical_ambiguous_matching_totals_cannot_be_confirmed(self):
+        for name, rows in vertical_counterexample_cases().items():
+            with self.subTest(name=name):
+                batch = create_monthly_profit_preview(
+                    upload(name=f"{name}.xlsx", data=vertical_counterexample_xlsx(rows)),
+                    self.organization,
+                    self.user,
+                )
+                self.assertEqual(
+                    batch.metadata["report"]["hierarchy_status"], "ambiguous"
+                )
+                self.assertTrue(batch.metadata["report"]["totals_match"])
+                self.assertTrue(batch.metadata["critical_errors"])
+                with self.assertRaises(ValidationError):
+                    confirm_monthly_profit(batch.id, self.organization, self.user)
+                batch.refresh_from_db()
+                self.assertEqual(batch.status, OneCImportBatch.STATUS_FAILED)
+                self.assertFalse(
+                    OneCMonthlyProfit.objects.filter(import_batch=batch).exists()
+                )
+
+    def test_vertical_cancel_deletes_source_and_creates_no_rows(self):
+        batch = create_monthly_profit_preview(
+            upload(name="vertical-cancel.xlsx", data=vertical_xlsx_bytes()), self.organization, self.user
+        )
+        storage = batch.stored_file.storage
+        stored_name = batch.stored_file.name
+        with self.captureOnCommitCallbacks(execute=True):
+            cancel_monthly_profit(batch, self.user)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, OneCImportBatch.STATUS_CANCELLED)
+        self.assertFalse(storage.exists(stored_name))
+        self.assertEqual(OneCMonthlyProfit.objects.count(), 0)
+
+    def test_vertical_duplicate_sha_is_rejected(self):
+        payload = vertical_xlsx_bytes()
+        batch = create_monthly_profit_preview(
+            upload(name="vertical.xlsx", data=payload), self.organization, self.user
+        )
+        with self.assertRaises(DuplicateImportError) as context:
+            create_monthly_profit_preview(
+                upload(name="same.xlsx", data=payload), self.organization, self.user
+            )
+        self.assertEqual(context.exception.batch.id, batch.id)
 
     def test_preview_metadata_has_explicit_limits(self):
         result = ParseResult(
