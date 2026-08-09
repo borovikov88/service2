@@ -53,6 +53,42 @@ class MonthlyProfitUploadForm(forms.Form):
         return uploaded_file
 
 
+class OneCCostControlFilterForm(forms.Form):
+    PROBLEM_GOODS_ZERO_COST = "goods_zero_cost"
+
+    period = forms.DateField(
+        label="Период",
+        required=False,
+        input_formats=["%Y-%m"],
+        widget=forms.DateInput(
+            format="%Y-%m",
+            attrs={"type": "month", "class": "form-control"},
+        ),
+    )
+    search = forms.CharField(
+        label="Поиск",
+        required=False,
+        max_length=200,
+        widget=forms.TextInput(
+            attrs={
+                "class": "form-control",
+                "placeholder": "Номенклатура или артикул",
+            }
+        ),
+    )
+    problem = forms.ChoiceField(
+        label="Требует проверки",
+        required=False,
+        choices=[
+            (PROBLEM_GOODS_ZERO_COST, "Товар продан без себестоимости"),
+        ],
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
+
+    def clean_problem(self):
+        return self.cleaned_data.get("problem") or self.PROBLEM_GOODS_ZERO_COST
+
+
 CASH_DENOMINATIONS = [
     ("bill_5000", "5000 ₽", Decimal("5000")),
     ("bill_2000", "2000 ₽", Decimal("2000")),

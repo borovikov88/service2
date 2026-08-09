@@ -34,6 +34,7 @@ from pool_service.finance_forms import (
     ManagerCashIncomeForm,
     ManagerCashTransferForm,
     MonthlyProfitUploadForm,
+    OneCCostControlFilterForm,
 )
 from pool_service.models import (
     AccountableTransaction,
@@ -59,6 +60,14 @@ from pool_service.finance_imports.services import (
     cancel_monthly_profit,
     confirm_monthly_profit,
     create_monthly_profit_preview,
+)
+from pool_service.finance_imports.cost_control import (
+    available_cost_control_months,
+    get_onec_cost_anomalies,
+    get_onec_cost_control_dataset,
+    monthly_cost_anomaly_summary,
+    summarize_active_dataset,
+    summarize_cost_anomalies,
 )
 from pool_service.services.finance import (
     accountable_balance,
@@ -2233,6 +2242,49 @@ def finance_onec_import_list(request):
     batches = OneCImportBatch.objects.filter(organization=organization).select_related("uploaded_by")
     return render(request, "pool_service/finance/onec_import_list.html", {
         "batches": batches,
+        "active_tab": "finance",
+    })
+
+
+@login_required
+def finance_onec_cost_control(request):
+    organization, denied = _onec_import_guard(request)
+    if denied:
+        return denied
+
+    form = OneCCostControlFilterForm(request.GET or None)
+    filters_valid = not form.is_bound or form.is_valid()
+    period_month = None
+    search = ""
+    if filters_valid and form.is_bound:
+        period_month = form.cleaned_data["period"]
+        search = form.cleaned_data["search"]
+
+    if filters_valid:
+        active_rows = get_onec_cost_control_dataset(
+            organization,
+            period_month=period_month,
+        )
+        anomaly_rows = get_onec_cost_anomalies(
+            organization,
+            period_month=period_month,
+            search=search,
+        )
+    else:
+        active_rows = OneCMonthlyProfit.objects.none()
+        anomaly_rows = OneCMonthlyProfit.objects.none()
+
+    page = Paginator(anomaly_rows, 50).get_page(request.GET.get("page"))
+    query_params = request.GET.copy()
+    query_params.pop("page", None)
+    return render(request, "pool_service/finance/onec_cost_control.html", {
+        "form": form,
+        "dataset_summary": summarize_active_dataset(active_rows),
+        "anomaly_summary": summarize_cost_anomalies(anomaly_rows),
+        "monthly_summary": monthly_cost_anomaly_summary(anomaly_rows),
+        "available_months": available_cost_control_months(organization),
+        "page_obj": page,
+        "filter_query": query_params.urlencode(),
         "active_tab": "finance",
     })
 

@@ -1336,6 +1336,10 @@
                   <i class="bi bi-file-earmark-spreadsheet"></i>
                   <span>Импорт из 1С</span>
                 </a>
+                <a href="{% url 'finance_onec_cost_control' %}" class="ui-dropdown__item {% if request.resolver_match.url_name == 'finance_onec_cost_control' %}is-active{% endif %}">
+                  <i class="bi bi-clipboard2-pulse"></i>
+                  <span>Контроль себестоимости 1С</span>
+                </a>
                 <a href="{% url 'finance_company_cash_dashboard' %}" class="ui-dropdown__item {% if request.resolver_match.url_name == 'finance_company_cash_dashboard' or request.resolver_match.url_name == 'finance_cash_count_create' and request.resolver_match.kwargs.cashbox_type == 'company' %}is-active{% endif %}">
                   <i class="bi bi-bank"></i>
                   <span>Касса организации</span>
