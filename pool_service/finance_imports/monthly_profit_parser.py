@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -344,11 +343,12 @@ def _parse_vertical_month(value, epoch, fallback_year=None):
     return None
 
 
-def _vertical_detail_indent(
-    rows, row_indents, start, name_col, metric_columns, epoch, fallback_year,
+def _detect_vertical_hierarchy(
+    rows, row_indents, start, name_col, article_col, metric_columns, epoch, fallback_year,
 ):
     current_month = None
     candidates = []
+    has_nomenclature_schema_marker = False
     for offset, row in enumerate(rows[start + 1:], start + 1):
         name = row[name_col] if name_col < len(row) else None
         month = _parse_vertical_month(name, epoch, fallback_year)
@@ -358,16 +358,47 @@ def _vertical_detail_indent(
         if isinstance(month, tuple):
             current_month = None
             continue
+        normalized_name = _text(name).lower().replace("ё", "е")
+        if current_month is None and normalized_name == "номенклатура":
+            has_nomenclature_schema_marker = True
         if not current_month or not _text(name) or _is_total_label(name):
             continue
         has_values = any(
             column < len(row) and row[column] not in (None, "", "-", "—", "–")
             for column in metric_columns.values()
         )
-        indent = row_indents[offset]
-        if has_values and indent > 0:
-            candidates.append(indent)
-    return Counter(candidates).most_common(1)[0][0] if candidates else None
+        if has_values:
+            article = _text(
+                row[article_col]
+                if article_col is not None and article_col < len(row)
+                else ""
+            )
+            candidates.append((row_indents[offset], bool(article)))
+
+    if candidates and article_col is not None and all(has_article for _, has_article in candidates):
+        return {
+            "status": "flat",
+            "detail_indent": None,
+            "reason": "explicit_flat_schema",
+        }
+
+    positive_indents = {indent for indent, _ in candidates if indent > 0}
+    has_lower_financial_level = any(
+        indent < next(iter(positive_indents)) for indent, _ in candidates
+    ) if len(positive_indents) == 1 else False
+    if len(positive_indents) == 1 and (
+        has_lower_financial_level or has_nomenclature_schema_marker
+    ):
+        return {
+            "status": "reliable",
+            "detail_indent": next(iter(positive_indents)),
+            "reason": "stable_positive_indent",
+        }
+    if len(positive_indents) > 1:
+        reason = "conflicting_detail_levels"
+    else:
+        reason = "no_reliable_detail_level"
+    return {"status": "ambiguous", "detail_indent": None, "reason": reason}
 
 
 def _serialized_totals(values):
@@ -388,9 +419,13 @@ def _parse_vertical_rows(
     monetary = ("revenue", "cost", "gross_profit")
     calculated = {key: Decimal("0") for key in monetary}
     month_totals = {}
-    detail_indent = _vertical_detail_indent(
-        rows, row_indents, start, name_col, metric_columns, epoch, report_year
+    hierarchy = _detect_vertical_hierarchy(
+        rows, row_indents, start, name_col, article_col, metric_columns, epoch, report_year
     )
+    detail_indent = hierarchy["detail_indent"]
+    hierarchy_status = hierarchy["status"]
+    hierarchy_reason = hierarchy["reason"]
+    aggregate_rows_skipped = 0
 
     for offset, row in enumerate(rows[start + 1:], start + 1):
         excel_row = offset + 1
@@ -437,6 +472,7 @@ def _parse_vertical_rows(
             continue
         if detail_indent is not None and row_indents[offset] != detail_indent:
             result.rows_skipped += 1
+            aggregate_rows_skipped += 1
             result.add_warning(
                 f"Строка {excel_row}: агрегированная строка пропущена для защиты от двойного учёта."
             )
@@ -488,22 +524,29 @@ def _parse_vertical_rows(
                 monthly[metric] += value
 
     totals_match = None
-    if source_totals:
+    if source_totals and any(source_totals.get(key) is not None for key in monetary):
         compared = [
             abs(calculated[key] - source_totals[key]) <= TOTAL_TOLERANCE
             for key in monetary if source_totals.get(key) is not None
         ]
         totals_match = bool(compared) and all(compared)
-        if compared and not totals_match:
-            result.add_warning(
-                "Итоги распознанных строк существенно отличаются от общего итога 1С."
-            )
+        if not totals_match:
+            message = "Итоги распознанных строк существенно отличаются от общего итога 1С."
+            result.add_warning(message)
+            result.critical_errors.append(message)
 
     _add_formula_warnings(result, rows, formula_cells, formulas_truncated)
     if not months:
         result.critical_errors.append("В вертикальном отчёте не обнаружены строки месяцев.")
     elif not result.records:
-        result.add_warning("В распознанных месяцах нет товарных строк с финансовыми показателями.")
+        result.critical_errors.append(
+            "Не найдено ни одной строки номенклатуры с финансовыми данными."
+        )
+    elif hierarchy_status == "ambiguous":
+        result.critical_errors.append(
+            "Не удалось надёжно определить уровень детальной номенклатуры; "
+            "подтверждение заблокировано для защиты от двойного учёта."
+        )
 
     years = {month.year for month in months}
     result.metadata = {
@@ -519,6 +562,9 @@ def _parse_vertical_rows(
         "source_totals": _serialized_totals(source_totals or {}),
         "calculated_totals": _serialized_totals(calculated),
         "totals_match": totals_match,
+        "hierarchy_status": hierarchy_status,
+        "hierarchy_reason": hierarchy_reason,
+        "aggregate_rows_skipped": aggregate_rows_skipped,
         "month_totals": {
             month.isoformat(): _serialized_totals(values)
             for month, values in month_totals.items()
