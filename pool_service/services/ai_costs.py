@@ -4,16 +4,16 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 
-PRICING_VERSION = "openai-2025-01"
+PRICING_VERSION = "openai-2026-08-10"
 _MILLION = Decimal("1000000")
 
 # Prices are USD per million tokens.  Only models listed here can produce a
 # calculated cost; metadata must never be able to add a price.
 PRICE_TABLE = {
-    "gpt-4.1": (Decimal("2.00"), Decimal("0.50"), Decimal("8.00")),
-    "gpt-4o": (Decimal("2.50"), Decimal("1.25"), Decimal("10.00")),
-    "gpt-4o-mini": (Decimal("0.15"), Decimal("0.075"), Decimal("0.60")),
-    "gpt-5.6": (Decimal("1.25"), Decimal("0.125"), Decimal("10.00")),
+    "gpt-5.6": (Decimal("5.00"), Decimal("0.50"), Decimal("30.00")),
+    "gpt-5.6-sol": (Decimal("5.00"), Decimal("0.50"), Decimal("30.00")),
+    "gpt-5.6-terra": (Decimal("2.50"), Decimal("0.25"), Decimal("15.00")),
+    "gpt-5.6-luna": (Decimal("1.00"), Decimal("0.10"), Decimal("6.00")),
 }
 
 
