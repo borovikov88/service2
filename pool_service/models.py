@@ -1768,6 +1768,20 @@ class OneCImportBatch(models.Model):
         return f"{self.get_import_type_display()}: {self.original_filename}"
 
 
+class OneCMonthlyProfitQuerySet(models.QuerySet):
+    def active_for(self, organization, report_type=OneCImportBatch.TYPE_MONTHLY_PROFIT):
+        active_state = OneCReportPeriodState.objects.filter(
+            organization_id=models.OuterRef("organization_id"),
+            report_type=report_type,
+            period_month=models.OuterRef("period_month"),
+            active_batch_id=models.OuterRef("import_batch_id"),
+        )
+        return self.filter(
+            organization=organization,
+            import_batch__import_type=report_type,
+        ).filter(models.Exists(active_state))
+
+
 class OneCMonthlyProfit(models.Model):
     import_batch = models.ForeignKey(
         OneCImportBatch,
@@ -1800,6 +1814,8 @@ class OneCMonthlyProfit(models.Model):
     source_data = models.JSONField("Исходные данные", default=dict, blank=True)
     created_at = models.DateTimeField("Создано", auto_now_add=True)
 
+    objects = OneCMonthlyProfitQuerySet.as_manager()
+
     class Meta:
         verbose_name = "Строка валовой прибыли 1С"
         verbose_name_plural = "Строки валовой прибыли 1С"
@@ -1817,3 +1833,88 @@ class OneCMonthlyProfit(models.Model):
 
     def __str__(self):
         return f"{self.period_month:%m.%Y}: {self.nomenclature}"
+
+
+class OneCReportPeriodState(models.Model):
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="onec_report_period_states",
+        verbose_name="Организация",
+    )
+    report_type = models.CharField(
+        "Тип отчёта",
+        max_length=40,
+        choices=OneCImportBatch.TYPE_CHOICES,
+        default=OneCImportBatch.TYPE_MONTHLY_PROFIT,
+    )
+    period_month = models.DateField("Месяц")
+    active_batch = models.ForeignKey(
+        OneCImportBatch,
+        on_delete=models.PROTECT,
+        related_name="active_period_states",
+        verbose_name="Активная загрузка",
+    )
+    updated_at = models.DateTimeField("Обновлено", auto_now=True)
+    updated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_onec_period_states",
+        verbose_name="Обновил",
+    )
+
+    class Meta:
+        verbose_name = "Активная версия месяца отчёта 1С"
+        verbose_name_plural = "Активные версии месяцев отчётов 1С"
+        ordering = ["organization_id", "report_type", "period_month"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "report_type", "period_month"],
+                name="unique_onec_period_state_org_type_month",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.organization_id}: {self.report_type} {self.period_month:%m.%Y}"
+
+
+class OneCReportPeriodActivation(models.Model):
+    period_state = models.ForeignKey(
+        OneCReportPeriodState,
+        on_delete=models.CASCADE,
+        related_name="activation_history",
+        verbose_name="Состояние месяца",
+    )
+    batch = models.ForeignKey(
+        OneCImportBatch,
+        on_delete=models.PROTECT,
+        related_name="period_activations",
+        verbose_name="Активированная загрузка",
+    )
+    replaced_batch = models.ForeignKey(
+        OneCImportBatch,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="replaced_period_activations",
+        verbose_name="Заменённая загрузка",
+    )
+    activated_at = models.DateTimeField("Активировано", auto_now_add=True)
+    activated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="onec_period_activations",
+        verbose_name="Активировал",
+    )
+
+    class Meta:
+        verbose_name = "Активация версии месяца отчёта 1С"
+        verbose_name_plural = "История активаций месяцев отчётов 1С"
+        ordering = ["period_state_id", "activated_at", "id"]
+
+    def __str__(self):
+        return f"{self.period_state_id}: {self.batch_id}"
