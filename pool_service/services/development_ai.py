@@ -12,6 +12,7 @@ from pool_service.models import (
     DevelopmentTask,
     DevelopmentTaskEvent,
 )
+from pool_service.services.development_model_selection import selection_metadata
 
 
 logger = logging.getLogger(__name__)
@@ -142,7 +143,9 @@ def _create_background_response(iteration, launch_token):
             "понимание задачи; технический контекст; предполагаемые части приложения; "
             "риски; безопасность, права и целостность данных; план реализации; "
             "проверка Definition of Done; рекомендации для Codex. Не выполняй действий "
-            "во внешних системах и production."
+            "во внешних системах и production. В самом конце добавь две строки: "
+            "AUTO_COMPLEXITY: simple, standard или complex; AUTO_REASON: краткая причина. "
+            "Оценивай фактический риск и сложность, а не количество файлов."
         ),
         input=iteration.prompt,
         metadata={
@@ -285,6 +288,7 @@ def _apply_response(iteration_id, response):
                     ]
                 )
                 old_status = task.status
+                task.automation_metadata = selection_metadata(task, output_text)
                 task.status = DevelopmentTask.STATUS_READY_FOR_CODEX
                 task.current_stage = DevelopmentTask.STAGE_DEVELOPMENT
                 task.completed_work = "Выполнен первичный технический AI-анализ задачи."
@@ -297,6 +301,7 @@ def _apply_response(iteration_id, response):
                         "completed_work",
                         "current_activity",
                         "blockers",
+                        "automation_metadata",
                         "updated_at",
                     ]
                 )

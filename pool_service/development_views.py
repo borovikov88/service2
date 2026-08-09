@@ -33,6 +33,7 @@ from pool_service.services.development_codex import (
     is_configured as codex_is_configured,
     resolve_codex_iteration,
 )
+from pool_service.services.development_model_selection import display_context, effective_model
 
 
 DEVELOPMENT_ROLES = {"owner", "admin"}
@@ -313,6 +314,7 @@ def development_task_detail(request, task_id):
     }
     context.update(_analysis_context(task, analysis_iteration))
     context.update(_codex_context(task))
+    context["model_selection"] = display_context(task)
     return render(
         request,
         "pool_service/development/task_detail.html",
@@ -476,6 +478,8 @@ def development_task_codex_start(request, task_id):
     result = dispatch_codex(task.pk, request.user.pk)
     if result.state == "not_configured":
         messages.error(request, "Интеграция GitHub Actions не настроена.")
+    elif result.state == "invalid_model":
+        messages.error(request, "Модель Codex не прошла серверную проверку.")
     elif result.state == "not_available":
         messages.info(request, "Задача недоступна для передачи в Codex.")
     elif result.state == "dispatch_unknown":
@@ -556,6 +560,13 @@ def development_task_update(request, task_id):
                 status=400,
             )
         task = form.save(commit=False)
+        metadata = dict(task.automation_metadata) if isinstance(task.automation_metadata, dict) else {}
+        mode = form.cleaned_data["model_selection_mode"]
+        if metadata.get("auto_selected_model"):
+            metadata["effective_model"] = effective_model(mode, metadata["auto_selected_model"])
+        if "model_selection_mode" in request.POST or metadata.get("auto_selected_model"):
+            metadata["model_selection_mode"] = mode
+        task.automation_metadata = metadata
         now = timezone.now()
         if task.status != DevelopmentTask.STATUS_NEW and task.started_at is None:
             task.started_at = now

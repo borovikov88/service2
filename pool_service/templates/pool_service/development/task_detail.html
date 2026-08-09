@@ -59,6 +59,10 @@
     <div>
       <h2 class="h5 mb-1">Выполнение в Codex</h2>
       <div class="text-muted">{{ codex_state_label }}</div>
+      <div class="small mt-2"><strong>Сложность:</strong> {{ model_selection.complexity_label }}</div>
+      <div class="small"><strong>Модель:</strong> {{ model_selection.model_label }}</div>
+      <div class="small"><strong>Причина:</strong> {{ model_selection.reason }}</div>
+      <div class="small"><strong>Режим:</strong> {{ model_selection.mode_label }}</div>
       {% if not codex_configured and not codex_iteration %}
       <div class="small text-warning mt-2">Интеграция GitHub Actions пока не настроена администратором.</div>
       {% elif codex_state == "dispatch_unknown" %}

@@ -1,6 +1,7 @@
 from django import forms
 
 from pool_service.models import DevelopmentIteration, DevelopmentTask
+from pool_service.services.development_model_selection import MODE_CHOICES
 
 
 class BootstrapModelForm(forms.ModelForm):
@@ -26,6 +27,10 @@ class DevelopmentTaskCreateForm(BootstrapModelForm):
 
 
 class DevelopmentTaskUpdateForm(BootstrapModelForm):
+    model_selection_mode = forms.ChoiceField(
+        label="Режим выбора модели", choices=MODE_CHOICES, required=False
+    )
+
     class Meta:
         model = DevelopmentTask
         fields = [
@@ -45,6 +50,18 @@ class DevelopmentTaskUpdateForm(BootstrapModelForm):
             "final_summary": forms.Textarea(attrs={"rows": 4}),
             "execution_result": forms.Textarea(attrs={"rows": 4}),
         }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        metadata = self.instance.automation_metadata if isinstance(self.instance.automation_metadata, dict) else {}
+        self.fields["model_selection_mode"].initial = metadata.get("model_selection_mode", "auto")
+
+    def clean_model_selection_mode(self):
+        value = self.cleaned_data.get("model_selection_mode")
+        if value:
+            return value
+        metadata = self.instance.automation_metadata if isinstance(self.instance.automation_metadata, dict) else {}
+        return metadata.get("model_selection_mode", "auto")
 
 
 class DevelopmentIterationForm(BootstrapModelForm):
