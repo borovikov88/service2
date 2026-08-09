@@ -9,6 +9,7 @@ import sys
 
 MAX_PATCH_BYTES = 5_000_000
 MAX_SUMMARY_BYTES = 100_000
+MAX_TITLE_BYTES = 255
 EXPECTED_FILES = {
     "codex.patch",
     "codex-final.txt",
@@ -116,15 +117,29 @@ def validate_manifest(artifact_dir, expected):
         "task_reference",
         "launch_token",
         "branch_name",
+        "result",
         "patch_sha256",
         "patch_size",
+        "final_sha256",
+        "final_size",
+        "title_sha256",
+        "title_size",
     }
     if set(manifest) != expected_keys:
         fail("manifest shape is invalid")
     for key in ("task_reference", "launch_token", "branch_name"):
         if manifest.get(key) != expected[key]:
             fail(f"artifact correlation mismatch: {key}", security=True)
+    if manifest.get("result") not in {"changes", "no_changes"}:
+        fail("manifest result is invalid")
     return manifest
+
+
+def validate_digest(manifest, name, content):
+    if manifest.get(f"{name}_size") != len(content):
+        fail(f"{name} size does not match manifest", security=True)
+    if manifest.get(f"{name}_sha256") != hashlib.sha256(content).hexdigest():
+        fail(f"{name} digest does not match manifest", security=True)
 
 
 def main():
@@ -146,21 +161,34 @@ def main():
         },
     )
     patch_file = artifact_dir / "codex.patch"
-    patch_size = patch_file.stat().st_size
-    if patch_size <= 0 or patch_size > MAX_PATCH_BYTES:
-        fail("patch size is outside allowed bounds")
-    patch_sha = hashlib.sha256(patch_file.read_bytes()).hexdigest()
-    if manifest.get("patch_size") != patch_size or manifest.get("patch_sha256") != patch_sha:
-        fail("patch digest does not match manifest", security=True)
-    if (artifact_dir / "codex-final.txt").stat().st_size > MAX_SUMMARY_BYTES:
-        fail("Codex summary is too large")
+    patch = patch_file.read_bytes()
+    final = (artifact_dir / "codex-final.txt").read_bytes()
     title = (artifact_dir / "pr-title.txt").read_bytes()
+    validate_digest(manifest, "patch", patch)
+    validate_digest(manifest, "final", final)
+    validate_digest(manifest, "title", title)
+    if len(patch) > MAX_PATCH_BYTES:
+        fail("patch exceeds allowed size")
+    if len(final) > MAX_SUMMARY_BYTES:
+        fail("Codex summary is too large")
     try:
         title_text = title.decode("utf-8")
     except UnicodeDecodeError:
         fail("PR title is not UTF-8")
-    if not title_text.strip() or len(title) > 255 or "\x00" in title_text:
+    if not title_text.strip() or len(title) > MAX_TITLE_BYTES or "\x00" in title_text:
         fail("PR title is invalid")
+    try:
+        final.decode("utf-8")
+    except UnicodeDecodeError:
+        fail("Codex summary is not UTF-8")
+    result = manifest["result"]
+    if result == "no_changes":
+        if patch:
+            fail("no_changes artifact contains a non-empty patch", security=True)
+        print(json.dumps({"state": "no_changes", "paths": []}, ensure_ascii=True))
+        return
+    if not patch:
+        fail("changes artifact contains an empty patch")
     paths = patch_paths(patch_file)
     check = subprocess.run(
         ["git", "apply", "--check", "--binary", str(patch_file)],
@@ -170,7 +198,7 @@ def main():
     )
     if check.returncode != 0:
         fail("patch does not apply cleanly to trusted base")
-    print(json.dumps({"state": "allowed", "paths": paths}, ensure_ascii=True))
+    print(json.dumps({"state": "changes", "paths": paths}, ensure_ascii=True))
 
 
 if __name__ == "__main__":

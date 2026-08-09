@@ -162,28 +162,38 @@ jobs:
           changed = subprocess.check_output(
               ["git", "diff", "--name-only", "--diff-filter=ACDMRTUXB"], text=True
           ).splitlines()
-          if not changed:
-              raise SystemExit("Codex produced no changes")
-          patch = subprocess.check_output(
-              [
-                  "git", "diff", "--binary", "--full-index", "--no-ext-diff",
-                  "--no-textconv",
-              ]
-          )
+          result = "changes" if changed else "no_changes"
+          patch = b""
+          if changed:
+              patch = subprocess.check_output(
+                  [
+                      "git", "diff", "--binary", "--full-index", "--no-ext-diff",
+                      "--no-textconv",
+                  ]
+              )
+              if not patch:
+                  raise SystemExit("Changed paths produced an empty patch")
           if len(patch) > 5_000_000:
               raise SystemExit("Patch exceeds 5 MB")
           target = pathlib.Path(os.environ["ARTIFACT_DIR"])
           target.mkdir(parents=True, exist_ok=True)
           (target / "codex.patch").write_bytes(patch)
+          contents = {}
           for source, name in (("FINAL_FILE", "codex-final.txt"), ("TITLE_FILE", "pr-title.txt")):
               content = pathlib.Path(os.environ[source]).read_bytes()
               (target / name).write_bytes(content)
+              contents[name] = content
           manifest = {
               "task_reference": os.environ["TASK_REFERENCE"],
               "launch_token": os.environ["LAUNCH_TOKEN"],
               "branch_name": os.environ["BRANCH_NAME"],
+              "result": result,
               "patch_sha256": hashlib.sha256(patch).hexdigest(),
               "patch_size": len(patch),
+              "final_sha256": hashlib.sha256(contents["codex-final.txt"]).hexdigest(),
+              "final_size": len(contents["codex-final.txt"]),
+              "title_sha256": hashlib.sha256(contents["pr-title.txt"]).hexdigest(),
+              "title_size": len(contents["pr-title.txt"]),
           }
           (target / "manifest.json").write_text(
               json.dumps(manifest, sort_keys=True), encoding="utf-8"
@@ -231,9 +241,21 @@ jobs:
             --task-reference "$TASK_REFERENCE" \
             --launch-token "$LAUNCH_TOKEN" \
             --branch-name "$BRANCH_NAME" \
-            > "${{ runner.temp }}/artifact-validation.log" 2>&1
+            > "${{ runner.temp }}/artifact-validation-result.json" \
+            2> "${{ runner.temp }}/artifact-validation.log"
           code=$?
-          if [[ $code -eq 0 ]]; then state=allowed
+          if [[ $code -eq 0 ]]; then
+            state="$(python - "${{ runner.temp }}/artifact-validation-result.json" <<'PY'
+          import json, pathlib, sys
+          try:
+              state = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["state"]
+          except Exception:
+              raise SystemExit(1)
+          if state not in {"changes", "no_changes"}:
+              raise SystemExit(1)
+          print(state)
+          PY
+            )" || state=infrastructure_failed
           elif [[ $code -eq 3 ]]; then state=security_blocked
           else state=infrastructure_failed
           fi
@@ -241,22 +263,22 @@ jobs:
           exit 0
 
       - name: Apply gated patch on fresh runner
-        if: ${{ steps.gate.outputs.state == 'allowed' }}
+        if: ${{ steps.gate.outputs.state == 'changes' }}
         run: git apply --index --binary "${{ runner.temp }}/codex-artifact/codex.patch"
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        if: ${{ steps.gate.outputs.state == 'allowed' }}
+        if: ${{ steps.gate.outputs.state == 'changes' }}
         with:
           python-version: "3.12"
           cache: pip
 
       - name: Install dependencies
-        if: ${{ steps.gate.outputs.state == 'allowed' }}
+        if: ${{ steps.gate.outputs.state == 'changes' }}
         run: python -m pip install -r requirements.txt
 
       - name: Run required checks
         id: tests
-        if: ${{ steps.gate.outputs.state == 'allowed' }}
+        if: ${{ steps.gate.outputs.state == 'changes' }}
         shell: bash
         run: |
           set +e
@@ -293,13 +315,15 @@ jobs:
           TEST_STATE: ${{ steps.tests.outputs.result }}
         shell: bash
         run: |
-          if [[ "$GATE_STATE" == "allowed" ]]; then
+          if [[ "$GATE_STATE" == "changes" ]]; then
             state="${TEST_STATE:-infrastructure_failed}"
+          elif [[ "$GATE_STATE" == "no_changes" ]]; then
+            state=no_changes
           else
             state="${GATE_STATE:-infrastructure_failed}"
           fi
           case "$state" in
-            passed|failed|security_blocked|infrastructure_failed) ;;
+            passed|failed|no_changes|security_blocked|infrastructure_failed) ;;
             *) state=infrastructure_failed ;;
           esac
           printf 'state=%s\n' "$state" >> "$GITHUB_OUTPUT"
@@ -312,6 +336,7 @@ jobs:
           path: |
             ${{ runner.temp }}/validation.log
             ${{ runner.temp }}/artifact-validation.log
+            ${{ runner.temp }}/artifact-validation-result.json
             ${{ runner.temp }}/test-result.txt
           if-no-files-found: error
           retention-days: 3
@@ -442,6 +467,10 @@ jobs:
         run: |
           printf 'validation_state=%s publish_result=%s\n' \
             "${VALIDATION_STATE:-infrastructure_failed}" "$PUBLISH_RESULT"
-          if [[ "$VALIDATION_STATE" != "passed" || "$PUBLISH_RESULT" != "success" ]]; then
-            exit 1
+          if [[ "$VALIDATION_STATE" == "passed" && "$PUBLISH_RESULT" == "success" ]]; then
+            exit 0
           fi
+          if [[ "$VALIDATION_STATE" == "no_changes" && "$PUBLISH_RESULT" == "skipped" ]]; then
+            exit 0
+          fi
+          exit 1

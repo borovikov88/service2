@@ -1,7 +1,12 @@
 import contextlib
+import hashlib
 import importlib.util
 import io
+import json
 import ssl
+import subprocess
+import tempfile
+import zipfile
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,6 +45,36 @@ def load_patch_validator():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def artifact_files(*, result="no_changes", patch_content=b"", final=b"Codex summary"):
+    title = b"Safe pull request title"
+    manifest = {
+        "task_reference": "DEV-0002",
+        "launch_token": "launch-token",
+        "branch_name": "codex/dev-2-123456789abc",
+        "result": result,
+        "patch_sha256": hashlib.sha256(patch_content).hexdigest(),
+        "patch_size": len(patch_content),
+        "final_sha256": hashlib.sha256(final).hexdigest(),
+        "final_size": len(final),
+        "title_sha256": hashlib.sha256(title).hexdigest(),
+        "title_size": len(title),
+    }
+    return {
+        "codex.patch": patch_content,
+        "codex-final.txt": final,
+        "manifest.json": json.dumps(manifest, sort_keys=True).encode("utf-8"),
+        "pr-title.txt": title,
+    }
+
+
+def artifact_zip(files):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zipped:
+        for name, content in files.items():
+            zipped.writestr(name, content)
+    return buffer.getvalue()
 
 
 class CodexTestMixin:
@@ -273,6 +308,63 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         self.assertIn("development_views.py", iteration.changed_files)
         self.assertIn("прошли успешно", iteration.test_result)
         self.assertTrue(task.events.filter(metadata__action="codex_completed").exists())
+
+    @patch("pool_service.services.development_codex._no_changes_summary")
+    @patch("pool_service.services.development_codex._workflow_validation_state", return_value="no_changes")
+    @patch("pool_service.services.development_codex._pull_request_files")
+    @patch("pool_service.services.development_codex._find_pull_request")
+    @patch("pool_service.services.development_codex._list_workflow_runs")
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_no_changes_advances_to_review_without_pull_request_metadata(
+        self, dispatch, runs, find_pr, pr_files, validation, summary
+    ):
+        task = self.make_ready_task()
+        development_codex.dispatch_codex(task.pk, self.owner.pk)
+        iteration = task.iterations.get(executor_type="codex")
+        runs.return_value = {
+            "workflow_runs": [
+                self.matching_run(task, iteration, status="completed", conclusion="success")
+            ]
+        }
+        summary.return_value = ("Codex verified that the implementation is already complete.", 901)
+
+        first = development_codex.check_codex(task.pk, self.admin.pk)
+        event_count = task.events.count()
+        second = development_codex.check_codex(task.pk, self.admin.pk)
+
+        task.refresh_from_db()
+        iteration.refresh_from_db()
+        self.assertEqual(first.state, development_codex.STATE_NO_CHANGES)
+        self.assertTrue(first.changed)
+        self.assertEqual(second.state, development_codex.STATE_NO_CHANGES)
+        self.assertFalse(second.changed)
+        self.assertEqual(task.status, DevelopmentTask.STATUS_REVIEW)
+        self.assertEqual(task.current_stage, DevelopmentTask.STAGE_REVIEW)
+        self.assertEqual(
+            task.current_activity,
+            "Codex не предложил изменений; требуется проверка результата",
+        )
+        self.assertEqual(iteration.status, DevelopmentIteration.STATUS_ACCEPTED)
+        self.assertEqual(
+            iteration.response,
+            "Codex verified that the implementation is already complete.",
+        )
+        self.assertEqual(iteration.changed_files, "")
+        self.assertEqual(iteration.automation_metadata["artifact_id"], 901)
+        self.assertNotIn("pr_number", iteration.automation_metadata)
+        self.assertNotIn("pr_url", iteration.automation_metadata)
+        self.assertEqual(task.events.count(), event_count)
+        self.assertTrue(task.events.filter(metadata__action="codex_no_changes").exists())
+        self.assertEqual(runs.call_count, 1)
+        self.assertEqual(summary.call_count, 1)
+        find_pr.assert_not_called()
+        pr_files.assert_not_called()
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("development_task_detail", args=[task.pk]))
+        self.assertContains(
+            response,
+            "Codex не предложил изменений; результат ожидает проверки",
+        )
 
     @patch(
         "pool_service.services.development_codex._workflow_validation_state",
@@ -691,6 +783,57 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         self.assertEqual(task.status, DevelopmentTask.STATUS_BLOCKED)
         self.assertEqual(iteration.automation_metadata["state"], "dispatch_unknown")
 
+    @patch("pool_service.services.development_codex._download_artifact_archive")
+    @patch("pool_service.services.development_codex._github_request")
+    def test_no_changes_summary_validates_correlated_trusted_artifact(self, request, download):
+        files = artifact_files(final=b"No repository changes are required.")
+        request.return_value = {
+            "artifacts": [
+                {
+                    "id": 44,
+                    "name": "codex-change-launch-token",
+                    "expired": False,
+                    "size_in_bytes": len(artifact_zip(files)),
+                }
+            ]
+        }
+        download.return_value = artifact_zip(files)
+
+        summary, artifact_id = development_codex._no_changes_summary(
+            501,
+            "DEV-0002",
+            "launch-token",
+            "codex/dev-2-123456789abc",
+        )
+
+        self.assertEqual(summary, "No repository changes are required.")
+        self.assertEqual(artifact_id, 44)
+        self.assertIn("/actions/runs/501/artifacts?", request.call_args.args[1])
+
+    @patch("pool_service.services.development_codex.urlopen")
+    @patch("pool_service.services.development_codex.build_opener")
+    def test_artifact_redirect_does_not_forward_authorization(self, build_opener, urlopen):
+        location = "https://trusted-artifacts.example/download?signature=value"
+        build_opener.return_value.open.side_effect = HTTPError(
+            "https://api.github.com/artifact",
+            302,
+            "redirect",
+            {"Location": location},
+            io.BytesIO(),
+        )
+        response = MagicMock()
+        response.status = 200
+        response.headers = {"Content-Length": "3"}
+        response.read.return_value = b"zip"
+        urlopen.return_value.__enter__.return_value = response
+
+        content = development_codex._download_artifact_archive(44)
+
+        self.assertEqual(content, b"zip")
+        redirected_request = urlopen.call_args.args[0]
+        self.assertEqual(redirected_request.full_url, location)
+        self.assertIsNone(redirected_request.get_header("Authorization"))
+
     @patch("pool_service.services.development_codex._github_request")
     def test_workflow_outcome_job_provides_trusted_validation_state(self, request):
         request.return_value = {
@@ -704,6 +847,19 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
 
         self.assertEqual(state, "security_blocked")
         self.assertIn("/actions/runs/501/jobs", request.call_args.args[1])
+
+    @patch("pool_service.services.development_codex._github_request")
+    def test_workflow_outcome_job_recognizes_no_changes(self, request):
+        request.return_value = {
+            "jobs": [
+                {"name": "codex"},
+                {"name": "outcome-no_changes"},
+            ]
+        }
+
+        state = development_codex._workflow_validation_state(501)
+
+        self.assertEqual(state, development_codex.STATE_NO_CHANGES)
 
     @override_settings(GITHUB_DEVELOPMENT_TOKEN="")
     def test_unconfigured_ui_hides_launch_button(self):
@@ -774,6 +930,134 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         self.assertNotIn("\n  push:", text)
         self.assertNotIn("\n  pull_request:", text)
         self.assertNotIn("\n  workflow_run:", text)
+
+    def test_validator_accepts_correlated_no_changes_artifact(self):
+        validator = load_patch_validator()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            artifact_dir = Path(temp_dir)
+            for name, content in artifact_files().items():
+                (artifact_dir / name).write_bytes(content)
+            argv = [
+                "validate_codex_patch.py",
+                "--artifact-dir",
+                str(artifact_dir),
+                "--task-reference",
+                "DEV-0002",
+                "--launch-token",
+                "launch-token",
+                "--branch-name",
+                "codex/dev-2-123456789abc",
+            ]
+            output = io.StringIO()
+            with patch.object(validator.sys, "argv", argv), contextlib.redirect_stdout(output):
+                validator.main()
+
+        self.assertEqual(json.loads(output.getvalue())["state"], "no_changes")
+
+    def test_validator_accepts_regular_changes_artifact(self):
+        validator = load_patch_validator()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir) / "repository"
+            artifact_dir = Path(temp_dir) / "artifact"
+            repository.mkdir()
+            artifact_dir.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+            source = repository / "application.py"
+            source.write_text("value = 1\n", encoding="utf-8")
+            subprocess.run(["git", "add", "application.py"], cwd=repository, check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "commit",
+                    "-qm",
+                    "base",
+                ],
+                cwd=repository,
+                check=True,
+            )
+            source.write_text("value = 2\n", encoding="utf-8")
+            patch_content = subprocess.check_output(
+                ["git", "diff", "--binary", "--full-index"], cwd=repository
+            )
+            subprocess.run(["git", "restore", "application.py"], cwd=repository, check=True)
+            for name, content in artifact_files(
+                result="changes", patch_content=patch_content
+            ).items():
+                (artifact_dir / name).write_bytes(content)
+            argv = [
+                "validate_codex_patch.py",
+                "--artifact-dir",
+                str(artifact_dir),
+                "--task-reference",
+                "DEV-0002",
+                "--launch-token",
+                "launch-token",
+                "--branch-name",
+                "codex/dev-2-123456789abc",
+            ]
+            output = io.StringIO()
+            with (
+                contextlib.chdir(repository),
+                patch.object(validator.sys, "argv", argv),
+                contextlib.redirect_stdout(output),
+            ):
+                validator.main()
+
+        self.assertEqual(json.loads(output.getvalue())["state"], "changes")
+
+    def test_validator_rejects_empty_patch_for_changes_result(self):
+        validator = load_patch_validator()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            artifact_dir = Path(temp_dir)
+            for name, content in artifact_files(result="changes").items():
+                (artifact_dir / name).write_bytes(content)
+            argv = [
+                "validate_codex_patch.py",
+                "--artifact-dir",
+                str(artifact_dir),
+                "--task-reference",
+                "DEV-0002",
+                "--launch-token",
+                "launch-token",
+                "--branch-name",
+                "codex/dev-2-123456789abc",
+            ]
+            with patch.object(validator.sys, "argv", argv), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                with self.assertRaises(SystemExit) as invalid:
+                    validator.main()
+
+        self.assertEqual(invalid.exception.code, 2)
+
+    def test_validator_rejects_nonempty_patch_for_no_changes_result(self):
+        validator = load_patch_validator()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            artifact_dir = Path(temp_dir)
+            for name, content in artifact_files(patch_content=b"untrusted patch").items():
+                (artifact_dir / name).write_bytes(content)
+            argv = [
+                "validate_codex_patch.py",
+                "--artifact-dir",
+                str(artifact_dir),
+                "--task-reference",
+                "DEV-0002",
+                "--launch-token",
+                "launch-token",
+                "--branch-name",
+                "codex/dev-2-123456789abc",
+            ]
+            with patch.object(validator.sys, "argv", argv), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                with self.assertRaises(SystemExit) as blocked:
+                    validator.main()
+
+        self.assertEqual(blocked.exception.code, validator.SECURITY_BLOCKED_EXIT)
 
     def test_forbidden_patch_path_policy_is_fail_closed(self):
         validator = load_patch_validator()
@@ -849,6 +1133,8 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
             encoding="utf-8"
         )
         self.assertIn('"patch_sha256": hashlib.sha256(patch).hexdigest()', workflow)
+        self.assertIn('"result": result', workflow)
+        self.assertIn('result = "changes" if changed else "no_changes"', workflow)
         self.assertGreaterEqual(workflow.count("validate_codex_patch.py"), 2)
         self.assertIn("security_blocked", workflow)
         self.assertIn(
@@ -857,6 +1143,10 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         )
         self.assertIn("outcome-${{ needs.validate.outputs.validation_state", workflow)
         self.assertIn("codex-change-${{ inputs.launch_token }}", workflow)
+        self.assertIn("steps.gate.outputs.state == 'changes'", workflow)
+        self.assertIn('VALIDATION_STATE" == "no_changes"', workflow)
+        publish = workflow.split("  publish:", 1)[1].split("  outcome:", 1)[0]
+        self.assertNotIn("no_changes", publish.split("steps:", 1)[0])
 
 
 @CODEX_SETTINGS

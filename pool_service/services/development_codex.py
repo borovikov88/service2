@@ -1,12 +1,22 @@
 import base64
+import hashlib
+import io
 import json
 import logging
 import re
 import ssl
+import stat
+import zipfile
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
-from urllib.request import Request, urlopen
+from urllib.parse import quote, urlencode, urlsplit
+from urllib.request import (
+    HTTPRedirectHandler,
+    HTTPSHandler,
+    Request,
+    build_opener,
+    urlopen,
+)
 from uuid import uuid4
 
 import certifi
@@ -39,6 +49,7 @@ STATE_TIMED_OUT = "timed_out"
 STATE_VALIDATION_FAILED = "validation_failed"
 STATE_SECURITY_BLOCKED = "security_blocked"
 STATE_INFRASTRUCTURE_FAILED = "infrastructure_failed"
+STATE_NO_CHANGES = "no_changes"
 ACTIVE_STATES = {
     STATE_DISPATCHING,
     STATE_DISPATCHED,
@@ -57,6 +68,16 @@ RUN_PAGE_SIZE = 50
 SAFE_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 SAFE_WORKFLOW_RE = re.compile(r"^[A-Za-z0-9_.-]+\.ya?ml$")
 SAFE_BRANCH_RE = re.compile(r"^codex/dev-[0-9]+-[a-f0-9]{12}$")
+CODEX_ARTIFACT_FILES = {
+    "codex.patch",
+    "codex-final.txt",
+    "manifest.json",
+    "pr-title.txt",
+}
+MAX_NO_CHANGES_ARCHIVE_BYTES = 500_000
+MAX_NO_CHANGES_CONTENT_BYTES = 250_000
+MAX_CODEX_SUMMARY_BYTES = 100_000
+MAX_PR_TITLE_BYTES = 255
 
 
 class CodexConfigurationError(RuntimeError):
@@ -78,6 +99,11 @@ class GitHubRequestError(RuntimeError):
         super().__init__(
             f"GitHub API request failed: category={category}{status} cause_type={cause_type}"
         )
+
+
+class _NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 @dataclass(frozen=True)
@@ -274,6 +300,221 @@ def _github_request(method, path, *, payload=None, expected_status=200):
         ) from exc
 
 
+def _read_limited_response(response, limit):
+    raw_length = response.headers.get("Content-Length")
+    try:
+        content_length = int(raw_length) if raw_length is not None else None
+    except (TypeError, ValueError):
+        raise GitHubRequestError(category="response", cause_type="InvalidContentLength")
+    if content_length is not None and content_length > limit:
+        raise GitHubRequestError(category="response", cause_type="ArtifactTooLarge")
+    content = response.read(limit + 1)
+    if len(content) > limit:
+        raise GitHubRequestError(category="response", cause_type="ArtifactTooLarge")
+    return content
+
+
+def _download_artifact_archive(artifact_id):
+    repository, _workflow = _configuration()
+    path = f"/repos/{repository}/actions/artifacts/{int(artifact_id)}/zip"
+    request = Request(
+        f"{GITHUB_API_URL}{path}",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {settings.GITHUB_DEVELOPMENT_TOKEN}",
+            "User-Agent": "service2-development-automation",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        method="GET",
+    )
+    opener = build_opener(
+        HTTPSHandler(context=_github_ssl_context()),
+        _NoRedirectHandler(),
+    )
+    try:
+        with opener.open(
+            request,
+            timeout=settings.GITHUB_DEVELOPMENT_TIMEOUT_SECONDS,
+        ) as response:
+            if response.status != 302:
+                raise _github_request_error(
+                    "GET",
+                    path,
+                    category="response",
+                    status_code=response.status,
+                    cause_type="ExpectedRedirect",
+                )
+            location = response.headers.get("Location")
+    except HTTPError as exc:
+        if exc.code != 302:
+            raise _github_request_error(
+                "GET",
+                path,
+                category="http",
+                status_code=exc.code,
+                cause_type="HTTPError",
+            ) from exc
+        location = exc.headers.get("Location")
+    except URLError as exc:
+        reason = getattr(exc, "reason", None)
+        raise _github_request_error(
+            "GET",
+            path,
+            category="transport",
+            cause_type=type(reason).__name__ if reason is not None else "URLError",
+        ) from exc
+    except TimeoutError as exc:
+        raise _github_request_error(
+            "GET", path, category="transport", cause_type="TimeoutError"
+        ) from exc
+    try:
+        parsed = urlsplit(location or "")
+        safe_redirect = (
+            parsed.scheme == "https"
+            and bool(parsed.hostname)
+            and parsed.username is None
+            and parsed.password is None
+            and parsed.port in {None, 443}
+            and not parsed.fragment
+        )
+    except ValueError:
+        safe_redirect = False
+    if not safe_redirect:
+        raise _github_request_error(
+            "GET", path, category="response", cause_type="UnsafeArtifactRedirect"
+        )
+    download = Request(
+        location,
+        headers={"Accept": "application/octet-stream", "User-Agent": "service2-development-automation"},
+        method="GET",
+    )
+    try:
+        with urlopen(
+            download,
+            timeout=settings.GITHUB_DEVELOPMENT_TIMEOUT_SECONDS,
+            context=_github_ssl_context(),
+        ) as response:
+            if response.status != 200:
+                raise _github_request_error(
+                    "GET",
+                    path,
+                    category="response",
+                    status_code=response.status,
+                    cause_type="UnexpectedArtifactStatus",
+                )
+            return _read_limited_response(response, MAX_NO_CHANGES_ARCHIVE_BYTES)
+    except HTTPError as exc:
+        raise _github_request_error(
+            "GET", path, category="http", status_code=exc.code, cause_type="HTTPError"
+        ) from exc
+    except URLError as exc:
+        reason = getattr(exc, "reason", None)
+        raise _github_request_error(
+            "GET",
+            path,
+            category="transport",
+            cause_type=type(reason).__name__ if reason is not None else "URLError",
+        ) from exc
+    except TimeoutError as exc:
+        raise _github_request_error(
+            "GET", path, category="transport", cause_type="TimeoutError"
+        ) from exc
+
+
+def _artifact_digest_matches(manifest, name, content):
+    return (
+        manifest.get(f"{name}_size") == len(content)
+        and manifest.get(f"{name}_sha256") == hashlib.sha256(content).hexdigest()
+    )
+
+
+def _no_changes_summary(run_id, task_reference, launch_token, branch_name):
+    repository, _workflow = _configuration()
+    artifact_name = f"codex-change-{launch_token}"
+    query = urlencode({"name": artifact_name, "per_page": 100})
+    data = _github_request(
+        "GET", f"/repos/{repository}/actions/runs/{int(run_id)}/artifacts?{query}"
+    ) or {}
+    artifacts = [
+        artifact
+        for artifact in (data.get("artifacts") or [])
+        if artifact.get("name") == artifact_name and not artifact.get("expired")
+    ]
+    if len(artifacts) != 1:
+        raise GitHubRequestError(category="response", cause_type="ArtifactIdentityMismatch")
+    artifact = artifacts[0]
+    if int(artifact.get("size_in_bytes") or 0) > MAX_NO_CHANGES_ARCHIVE_BYTES:
+        raise GitHubRequestError(category="response", cause_type="ArtifactTooLarge")
+    archive = _download_artifact_archive(artifact["id"])
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
+            infos = zipped.infolist()
+            names = [info.filename for info in infos]
+            if len(infos) != len(CODEX_ARTIFACT_FILES) or set(names) != CODEX_ARTIFACT_FILES:
+                raise GitHubRequestError(
+                    category="response", cause_type="ArtifactStructureMismatch"
+                )
+            if any(
+                info.is_dir()
+                or stat.S_ISLNK(info.external_attr >> 16)
+                or info.file_size > MAX_NO_CHANGES_CONTENT_BYTES
+                for info in infos
+            ):
+                raise GitHubRequestError(category="response", cause_type="UnsafeArtifactEntry")
+            if sum(info.file_size for info in infos) > MAX_NO_CHANGES_CONTENT_BYTES:
+                raise GitHubRequestError(category="response", cause_type="ArtifactTooLarge")
+            files = {name: zipped.read(name) for name in CODEX_ARTIFACT_FILES}
+    except GitHubRequestError:
+        raise
+    except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
+        raise GitHubRequestError(category="response", cause_type="InvalidArtifactZip") from exc
+    try:
+        manifest = json.loads(files["manifest.json"].decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise GitHubRequestError(category="response", cause_type="InvalidArtifactManifest") from exc
+    expected_keys = {
+        "task_reference",
+        "launch_token",
+        "branch_name",
+        "result",
+        "patch_sha256",
+        "patch_size",
+        "final_sha256",
+        "final_size",
+        "title_sha256",
+        "title_size",
+    }
+    correlation_ok = (
+        set(manifest) == expected_keys
+        and manifest.get("task_reference") == task_reference
+        and manifest.get("launch_token") == launch_token
+        and manifest.get("branch_name") == branch_name
+        and manifest.get("result") == STATE_NO_CHANGES
+    )
+    if not correlation_ok:
+        raise GitHubRequestError(category="response", cause_type="ArtifactCorrelationMismatch")
+    patch = files["codex.patch"]
+    final = files["codex-final.txt"]
+    title = files["pr-title.txt"]
+    if (
+        patch
+        or len(final) > MAX_CODEX_SUMMARY_BYTES
+        or len(title) > MAX_PR_TITLE_BYTES
+        or not _artifact_digest_matches(manifest, "patch", patch)
+        or not _artifact_digest_matches(manifest, "final", final)
+        or not _artifact_digest_matches(manifest, "title", title)
+    ):
+        raise GitHubRequestError(category="response", cause_type="ArtifactDigestMismatch")
+    try:
+        summary = final.decode("utf-8")
+        title_text = title.decode("utf-8")
+    except UnicodeError as exc:
+        raise GitHubRequestError(category="response", cause_type="ArtifactEncodingError") from exc
+    if not title_text.strip() or "\x00" in title_text:
+        raise GitHubRequestError(category="response", cause_type="ArtifactTitleInvalid")
+    return _compact(summary, 4000), artifact["id"]
+
+
 def _dispatch_workflow(payload):
     repository, workflow = _configuration()
     path = f"/repos/{repository}/actions/workflows/{quote(workflow, safe='')}/dispatches"
@@ -314,6 +555,7 @@ def _workflow_validation_state(run_id):
     allowed = {
         "passed",
         "failed",
+        STATE_NO_CHANGES,
         STATE_SECURITY_BLOCKED,
         STATE_INFRASTRUCTURE_FAILED,
     }
@@ -598,6 +840,8 @@ def check_codex(task_id, actor_id):
             return CodexOperationResult("check_failed")
         if validation_state == "passed" and conclusion == "success":
             remote_state = STATE_COMPLETED
+        elif validation_state == STATE_NO_CHANGES and conclusion == "success":
+            remote_state = STATE_NO_CHANGES
         elif validation_state == "failed":
             remote_state = STATE_VALIDATION_FAILED
         elif validation_state == STATE_SECURITY_BLOCKED:
@@ -609,6 +853,8 @@ def check_codex(task_id, actor_id):
 
     pull_request = None
     changed_files = []
+    no_changes_summary = ""
+    no_changes_artifact_id = None
     if remote_state in {STATE_COMPLETED, STATE_VALIDATION_FAILED}:
         try:
             pull_request = _find_pull_request(branch_name)
@@ -617,6 +863,20 @@ def check_codex(task_id, actor_id):
         except Exception as exc:
             logger.warning(
                 "Development Codex pull request lookup failed: task=%s iteration=%s error_type=%s",
+                task_id,
+                iteration_id,
+                type(exc).__name__,
+            )
+            return CodexOperationResult("check_failed")
+    elif remote_state == STATE_NO_CHANGES:
+        try:
+            no_changes_summary, no_changes_artifact_id = _no_changes_summary(
+                run["id"], task.reference, launch_token, branch_name
+            )
+        except Exception as exc:
+            logger.warning(
+                "Development Codex no-changes artifact lookup failed: "
+                "task=%s iteration=%s error_type=%s",
                 task_id,
                 iteration_id,
                 type(exc).__name__,
@@ -664,6 +924,52 @@ def check_codex(task_id, actor_id):
         old_status = task.status
         metadata.update({"applied": True, "completed_at": now.isoformat()})
         locked.completed_at = now
+        if remote_state == STATE_NO_CHANGES:
+            for key in ("pr_number", "pr_url", "pr_title"):
+                metadata.pop(key, None)
+            metadata["artifact_id"] = no_changes_artifact_id
+            locked.automation_metadata = metadata
+            locked.status = DevelopmentIteration.STATUS_ACCEPTED
+            locked.result_summary = "Codex не предложил изменений; результат передан на review."
+            locked.response = no_changes_summary or "Codex завершил анализ без изменений."
+            locked.changed_files = ""
+            locked.test_result = "Trusted artifact подтверждает отсутствие изменений."
+            locked.technical_errors = ""
+            locked.save(
+                update_fields=[
+                    "automation_metadata",
+                    "status",
+                    "result_summary",
+                    "response",
+                    "changed_files",
+                    "test_result",
+                    "technical_errors",
+                    "completed_at",
+                    "updated_at",
+                ]
+            )
+            task.status = DevelopmentTask.STATUS_REVIEW
+            task.current_stage = DevelopmentTask.STAGE_REVIEW
+            task.current_activity = "Codex не предложил изменений; требуется проверка результата"
+            task.blockers = ""
+            task.save(
+                update_fields=[
+                    "status",
+                    "current_stage",
+                    "current_activity",
+                    "blockers",
+                    "updated_at",
+                ]
+            )
+            _create_event(
+                task,
+                actor_id,
+                "Codex завершил работу без изменений",
+                action="codex_no_changes",
+                iteration=locked,
+                old_status=old_status,
+            )
+            return CodexOperationResult(STATE_NO_CHANGES, changed=True)
         if remote_state == STATE_COMPLETED and pull_request:
             pr_url = _safe_github_url(pull_request.get("html_url"), repository)
             metadata.update(

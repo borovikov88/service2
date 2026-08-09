@@ -171,6 +171,7 @@ def _codex_context(task):
         "queued": "Workflow ожидает запуска",
         "in_progress": "Codex выполняет задачу",
         "completed": "Codex создал Pull Request",
+        "no_changes": "Codex не предложил изменений; результат ожидает проверки",
         "failed": "Workflow завершился ошибкой",
         "cancelled": "Workflow отменён",
         "timed_out": "Workflow превысил лимит времени",
