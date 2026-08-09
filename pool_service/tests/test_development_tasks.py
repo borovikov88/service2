@@ -220,6 +220,257 @@ class DevelopmentTaskTests(TestCase):
         self.assertIn((True, True), lock_calls)
         self.assertEqual(task.iterations.get().iteration_number, 1)
 
+    def test_owner_starts_new_task_with_system_iteration_and_audit_event(self):
+        task = self.create_task(title="Запуск внутреннего анализа")
+        self.client.force_login(self.owner)
+
+        response = self.client.post(
+            reverse("development_task_start", args=[task.pk]),
+            {
+                "status": DevelopmentTask.STATUS_DONE,
+                "current_stage": DevelopmentTask.STAGE_COMPLETION,
+                "organization": 999999,
+                "iteration_number": 777,
+                "executor": self.admin.pk,
+                "automation_metadata": '{"spoofed": true}',
+            },
+        )
+        task.refresh_from_db()
+        iteration = task.iterations.get()
+        event = task.events.get(
+            event_type=DevelopmentTaskEvent.TYPE_STATUS_CHANGED
+        )
+
+        self.assertRedirects(
+            response, reverse("development_task_detail", args=[task.pk])
+        )
+        self.assertEqual(task.status, DevelopmentTask.STATUS_ANALYSIS)
+        self.assertEqual(task.current_stage, DevelopmentTask.STAGE_ANALYSIS)
+        self.assertIsNotNone(task.started_at)
+        self.assertEqual(
+            task.current_activity, "Выполняется первичный анализ задачи"
+        )
+        self.assertEqual(iteration.iteration_number, 1)
+        self.assertEqual(
+            iteration.executor_type, DevelopmentIteration.EXECUTOR_SYSTEM
+        )
+        self.assertIsNone(iteration.executor)
+        self.assertEqual(iteration.status, DevelopmentIteration.STATUS_WORKING)
+        self.assertIsNotNone(iteration.started_at)
+        self.assertEqual(iteration.automation_metadata, {})
+        for expected in (
+            task.reference,
+            task.title,
+            task.description,
+            task.business_goal,
+            task.definition_of_done,
+            task.get_priority_display(),
+            "первичный технический анализ",
+            "Не выполняй deploy",
+        ):
+            self.assertIn(expected, iteration.prompt)
+        self.assertEqual(event.actor, self.owner)
+        self.assertEqual(event.message, "Задача запущена")
+        self.assertEqual(event.metadata["old_status"], DevelopmentTask.STATUS_NEW)
+        self.assertEqual(
+            event.metadata["new_status"], DevelopmentTask.STATUS_ANALYSIS
+        )
+        self.assertEqual(event.metadata["iteration_id"], iteration.pk)
+        self.assertEqual(event.metadata["iteration_number"], 1)
+        self.assertEqual(event.metadata["action"], "start")
+
+    def test_admin_can_start_new_task(self):
+        task = self.create_task()
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            reverse("development_task_start", args=[task.pk])
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(task.iterations.count(), 1)
+        self.assertEqual(
+            task.events.get(
+                event_type=DevelopmentTaskEvent.TYPE_STATUS_CHANGED
+            ).actor,
+            self.admin,
+        )
+
+    def test_superuser_with_organization_can_start_new_task(self):
+        superuser = self.user_with_role("dev-start-root", "admin", is_superuser=True)
+        task = self.create_task()
+        self.client.force_login(superuser)
+
+        response = self.client.post(
+            reverse("development_task_start", args=[task.pk])
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(task.iterations.count(), 1)
+
+    def test_repeated_start_is_idempotent(self):
+        task = self.create_task()
+        self.client.force_login(self.owner)
+        url = reverse("development_task_start", args=[task.pk])
+
+        first_response = self.client.post(url)
+        task.refresh_from_db()
+        first_started_at = task.started_at
+        first_activity = task.current_activity
+        second_response = self.client.post(url, follow=True)
+        task.refresh_from_db()
+
+        self.assertEqual(first_response.status_code, 302)
+        self.assertEqual(second_response.status_code, 200)
+        self.assertContains(
+            second_response, "Задача уже запущена или недоступна для запуска."
+        )
+        self.assertEqual(task.iterations.count(), 1)
+        self.assertEqual(
+            task.events.filter(
+                event_type=DevelopmentTaskEvent.TYPE_STATUS_CHANGED,
+                metadata__action="start",
+            ).count(),
+            1,
+        )
+        self.assertEqual(task.started_at, first_started_at)
+        self.assertEqual(task.current_activity, first_activity)
+
+    def test_start_locks_parent_task_inside_atomic_block(self):
+        task = self.create_task()
+        self.client.force_login(self.owner)
+        lock_calls = []
+        real_getter = development_views._task_for_organization
+
+        def recording_getter(organization, task_id, *, lock=False):
+            lock_calls.append((lock, connection.in_atomic_block))
+            return real_getter(organization, task_id, lock=lock)
+
+        with patch(
+            "pool_service.development_views._task_for_organization",
+            side_effect=recording_getter,
+        ):
+            response = self.client.post(
+                reverse("development_task_start", args=[task.pk])
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn((True, True), lock_calls)
+        self.assertEqual(task.iterations.count(), 1)
+
+    def test_start_uses_next_iteration_number_after_manual_iteration(self):
+        task = self.create_task()
+        DevelopmentIteration.objects.create(
+            task=task,
+            iteration_number=1,
+            executor_type=DevelopmentIteration.EXECUTOR_HUMAN,
+        )
+        self.client.force_login(self.owner)
+
+        self.client.post(reverse("development_task_start", args=[task.pk]))
+
+        self.assertEqual(
+            list(task.iterations.values_list("iteration_number", flat=True)),
+            [1, 2],
+        )
+        self.assertEqual(
+            task.iterations.get(iteration_number=2).executor_type,
+            DevelopmentIteration.EXECUTOR_SYSTEM,
+        )
+
+    def test_cross_organization_cannot_start_task_by_post(self):
+        other_org = Organization.objects.create(
+            name="Другая организация запуска",
+            paid_until=timezone.now() + timedelta(days=30),
+        )
+        other_admin = self.user_with_role(
+            "other-start-admin", "admin", organization=other_org
+        )
+        task = self.create_task()
+        self.client.force_login(other_admin)
+
+        response = self.client.post(
+            reverse("development_task_start", args=[task.pk])
+        )
+        task.refresh_from_db()
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(task.status, DevelopmentTask.STATUS_NEW)
+        self.assertFalse(task.iterations.exists())
+        self.assertFalse(task.events.exists())
+
+    def test_non_administrative_roles_cannot_start_task(self):
+        task = self.create_task()
+        url = reverse("development_task_start", args=[task.pk])
+
+        for user in (self.manager, self.accountant, self.service, self.installer):
+            with self.subTest(role=user.username):
+                self.client.force_login(user)
+                response = self.client.post(url)
+                self.assertIn(response.status_code, {302, 403})
+
+        task.refresh_from_db()
+        self.assertEqual(task.status, DevelopmentTask.STATUS_NEW)
+        self.assertFalse(task.iterations.exists())
+        self.assertFalse(task.events.exists())
+
+    def test_anonymous_cannot_start_task_and_get_is_not_allowed(self):
+        task = self.create_task()
+        url = reverse("development_task_start", args=[task.pk])
+
+        anonymous_response = self.client.post(url)
+        self.client.force_login(self.owner)
+        get_response = self.client.get(url)
+        task.refresh_from_db()
+
+        self.assertEqual(anonymous_response.status_code, 302)
+        self.assertIn("/accounts/login/", anonymous_response.url)
+        self.assertEqual(get_response.status_code, 405)
+        self.assertEqual(task.status, DevelopmentTask.STATUS_NEW)
+        self.assertFalse(task.iterations.exists())
+
+    def test_start_rolls_back_task_and_iteration_when_event_fails(self):
+        task = self.create_task()
+        self.client.force_login(self.owner)
+
+        with patch(
+            "pool_service.development_views.DevelopmentTaskEvent.objects.create",
+            side_effect=RuntimeError("event unavailable"),
+        ):
+            with self.assertRaises(RuntimeError):
+                self.client.post(
+                    reverse("development_task_start", args=[task.pk])
+                )
+
+        task.refresh_from_db()
+        self.assertEqual(task.status, DevelopmentTask.STATUS_NEW)
+        self.assertEqual(task.current_stage, DevelopmentTask.STAGE_ANALYSIS)
+        self.assertIsNone(task.started_at)
+        self.assertEqual(task.current_activity, "")
+        self.assertFalse(task.iterations.exists())
+        self.assertFalse(task.events.exists())
+
+    def test_start_button_is_visible_only_for_new_task(self):
+        task = self.create_task()
+        self.client.force_login(self.owner)
+        detail_url = reverse("development_task_detail", args=[task.pk])
+        start_url = reverse("development_task_start", args=[task.pk])
+
+        before = self.client.get(detail_url)
+        self.assertContains(before, "▶ Запустить")
+        self.assertContains(before, 'method="post"', html=False)
+        self.assertContains(before, f'action="{start_url}"', html=False)
+        self.assertContains(before, "csrfmiddlewaretoken")
+
+        self.client.post(start_url)
+        after = self.client.get(detail_url)
+
+        self.assertNotContains(after, "▶ Запустить")
+        self.assertContains(after, "Анализ")
+        self.assertContains(after, "Выполняется первичный анализ задачи")
+        self.assertContains(after, "Система")
+        self.assertContains(after, "Задача запущена")
+
     def test_iteration_number_has_database_unique_constraint(self):
         task = self.create_task()
         DevelopmentIteration.objects.create(task=task, iteration_number=1)

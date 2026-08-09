@@ -65,6 +65,30 @@ def _stage_rows(task):
     ]
 
 
+def _initial_analysis_prompt(task):
+    return "\n".join(
+        [
+            "Выполни первичный технический анализ задачи разработки.",
+            "",
+            f"Задача: {task.reference}",
+            f"Название: {task.title}",
+            f"Приоритет: {task.get_priority_display()}",
+            "",
+            "Исходная задача:",
+            task.description,
+            "",
+            "Бизнес-цель:",
+            task.business_goal or "Не указана.",
+            "",
+            "Definition of Done:",
+            task.definition_of_done or "Не указано.",
+            "",
+            "Определи технический контекст, риски и план реализации.",
+            "Не выполняй deploy, миграции production или другие действия в production.",
+        ]
+    )
+
+
 @login_required
 def development_task_list(request):
     organization, denied = _development_guard(request)
@@ -166,6 +190,64 @@ def development_task_detail(request, task_id):
             "active_tab": "development",
         },
     )
+
+
+@login_required
+@require_POST
+def development_task_start(request, task_id):
+    organization, denied = _development_guard(request)
+    if denied:
+        return denied
+
+    with transaction.atomic():
+        task = _task_for_organization(organization, task_id, lock=True)
+        if task.status != DevelopmentTask.STATUS_NEW:
+            messages.info(request, "Задача уже запущена или недоступна для запуска.")
+            return redirect("development_task_detail", task_id=task.pk)
+
+        old_status = task.status
+        now = timezone.now()
+        next_number = (task.iterations.aggregate(value=Max("iteration_number"))["value"] or 0) + 1
+
+        task.status = DevelopmentTask.STATUS_ANALYSIS
+        task.current_stage = DevelopmentTask.STAGE_ANALYSIS
+        task.started_at = task.started_at or now
+        task.current_activity = "Выполняется первичный анализ задачи"
+        task.save(
+            update_fields=[
+                "status",
+                "current_stage",
+                "started_at",
+                "current_activity",
+                "updated_at",
+            ]
+        )
+
+        iteration = DevelopmentIteration.objects.create(
+            task=task,
+            iteration_number=next_number,
+            executor_type=DevelopmentIteration.EXECUTOR_SYSTEM,
+            status=DevelopmentIteration.STATUS_WORKING,
+            prompt=_initial_analysis_prompt(task),
+            result_summary="Задача принята системой для первичного анализа.",
+            started_at=now,
+        )
+        DevelopmentTaskEvent.objects.create(
+            task=task,
+            event_type=DevelopmentTaskEvent.TYPE_STATUS_CHANGED,
+            message="Задача запущена",
+            actor=request.user,
+            metadata={
+                "old_status": old_status,
+                "new_status": task.status,
+                "iteration_id": iteration.pk,
+                "iteration_number": iteration.iteration_number,
+                "action": "start",
+            },
+        )
+
+    messages.success(request, "Задача запущена и передана на первичный анализ.")
+    return redirect("development_task_detail", task_id=task.pk)
 
 
 @login_required
