@@ -29,7 +29,7 @@
     <div class="col-6 col-lg-2"><label class="form-label small">Месяц</label><input type="month" name="month" value="{{ month_value }}" class="form-control"></div>
     <div class="col-6 col-lg-2"><label class="form-label small">Сотрудник</label><select name="employee" class="form-select"><option value="">Все</option>{% for item in employees %}<option value="{{ item.id }}" {% if filters.employee == item.id %}selected{% endif %}>{{ item|finance_employee_name }}</option>{% endfor %}</select></div>
     <div class="col-6 col-lg-2"><label class="form-label small">Категория</label><select name="category" class="form-select"><option value="">Все</option>{% for item in categories %}<option value="{{ item.id }}" {% if filters.category == item.id %}selected{% endif %}>{{ item.name }}</option>{% endfor %}</select></div>
-    <div class="col-6 col-lg-2"><label class="form-label small">Клиент</label><select name="client" class="form-select"><option value="">Все</option>{% for item in clients %}<option value="{{ item.id }}" {% if filters.client == item.id %}selected{% endif %}>{{ item.name }}</option>{% endfor %}</select></div>
+    <div class="col-6 col-lg-2"><label class="form-label small">Клиент</label><select name="client" class="form-select"><option value="">Все</option><option value="office" {% if filters.destination == "office" %}selected{% endif %}>Офисные расходы</option>{% for item in clients %}<option value="{{ item.id }}" {% if filters.client == item.id %}selected{% endif %}>{{ item.name }}</option>{% endfor %}</select></div>
     <div class="col-6 col-lg-2"><label class="form-label small">Статус</label><select name="status" class="form-select"><option value="">Все</option><option value="approved" {% if filters.status == "approved" %}selected{% endif %}>Подтверждён</option><option value="pending" {% if filters.status == "pending" %}selected{% endif %}>На проверке</option><option value="rejected" {% if filters.status == "rejected" %}selected{% endif %}>Отклонён</option></select></div>
     <div class="col-6 col-lg-2"><button type="submit" class="btn btn-primary w-100">Показать</button></div>
   </div>
@@ -74,12 +74,14 @@
       <button type="submit" name="decision" value="pending" class="btn btn-outline-warning btn-sm">На проверке</button>
       <button type="submit" name="decision" value="approved" class="btn btn-success btn-sm">Подтвердить</button>
       <button type="submit" name="decision" value="rejected" class="btn btn-outline-danger btn-sm">Отклонить</button>
+      <button type="submit" data-onec-action="true" class="btn btn-outline-primary btn-sm">Внести в 1С</button>
+      <button type="submit" data-onec-action="false" class="btn btn-outline-secondary btn-sm">Снять отметку 1С</button>
       <button type="button" class="btn btn-outline-secondary btn-sm" data-expense-bulk-clear>Отменить выделение</button>
     </form>
   </div>
   <div class="table-responsive">
     <table class="table align-middle mb-0 expense-report-table">
-      <thead class="small text-muted"><tr><th class="expense-select-cell"></th><th>Дата</th><th>Сотрудник</th><th>Назначение</th><th>Чек</th><th>Статус</th><th class="text-end">Сумма</th></tr></thead>
+      <thead class="small text-muted"><tr><th class="expense-select-cell"></th><th>Дата</th><th>Сотрудник</th><th>Назначение</th><th>Чек</th><th>Статус</th><th>1С</th><th class="text-end">Сумма</th></tr></thead>
       <tbody>
         {% for expense in expenses %}
           <tr data-row-href="{% url 'finance_expense_detail' expense.uuid %}" data-expense-bulk-row>
@@ -104,14 +106,21 @@
             </td>
             <td>{% if expense.receipts.all %}<span class="expense-inline-icon text-success" title="Чек приложен"><i class="bi bi-check-circle"></i></span>{% elif expense.receipt_missing_confirmed %}<span class="expense-inline-icon text-warning" title="Чек отсутствует"><i class="bi bi-exclamation-circle"></i></span>{% else %}<span class="expense-inline-icon text-danger" title="Нет чека"><i class="bi bi-x-circle"></i></span>{% endif %}</td>
             <td>{% finance_status_icon expense %}</td>
+            <td>
+              {% if expense.posted_to_1c %}
+                <span class="expense-inline-icon text-success" title="Внесено в 1С: {{ expense.posted_to_1c_by|finance_employee_name }} · {{ expense.posted_to_1c_at|date:'d.m.Y H:i' }}"><i class="bi bi-check-circle-fill"></i><span class="visually-hidden">Внесено в 1С</span></span>
+              {% else %}
+                <span class="text-muted" title="Не внесено в 1С">—</span>
+              {% endif %}
+            </td>
             <td class="text-end fw-semibold">{{ expense.amount|money }}</td>
           </tr>
-        {% empty %}<tr><td colspan="7" class="text-center text-muted py-4">Расходов за период нет</td></tr>{% endfor %}
+        {% empty %}<tr><td colspan="8" class="text-center text-muted py-4">Расходов за период нет</td></tr>{% endfor %}
       </tbody>
     </table>
   </div>
 </div>
-<form id="expense-bulk-hidden-form" method="post" action="{% url 'finance_expense_bulk_review' %}" class="d-none">{% csrf_token %}</form>
+<form id="expense-bulk-hidden-form" method="post" action="{% url 'finance_expense_bulk_review' %}" data-review-url="{% url 'finance_expense_bulk_review' %}" data-onec-url="{% url 'finance_expense_bulk_onec' %}" class="d-none">{% csrf_token %}</form>
 <script>
   document.addEventListener("DOMContentLoaded", function () {
     const root = document.querySelector("[data-expense-bulk-root]");
@@ -194,8 +203,19 @@
       event.preventDefault();
       if (!hiddenForm) return;
       if (!selectedCheckboxes().length) return;
-      hiddenForm.querySelectorAll("input[name='decision'], input[name='review_comment']").forEach((item) => item.remove());
+      hiddenForm.querySelectorAll("input[name='decision'], input[name='review_comment'], input[name='posted_to_1c']").forEach((item) => item.remove());
       const submitter = event.submitter;
+      const onecAction = submitter?.dataset.onecAction;
+      hiddenForm.action = onecAction === undefined ? hiddenForm.dataset.reviewUrl : hiddenForm.dataset.onecUrl;
+      if (onecAction !== undefined) {
+        const postedToOnec = document.createElement("input");
+        postedToOnec.type = "hidden";
+        postedToOnec.name = "posted_to_1c";
+        postedToOnec.value = onecAction;
+        hiddenForm.appendChild(postedToOnec);
+        hiddenForm.submit();
+        return;
+      }
       const decision = document.createElement("input");
       decision.type = "hidden";
       decision.name = "decision";

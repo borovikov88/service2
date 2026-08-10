@@ -23,6 +23,7 @@ from pool_service.models import (
     Client,
     Expense,
     ExpenseCategory,
+    ExpenseChange,
     ExpensePeriod,
     ExpenseReceipt,
     Organization,
@@ -1305,6 +1306,7 @@ class FinanceTests(TestCase):
         self.assertContains(response, 'expense-inline-icon')
         self.assertContains(response, 'expense-status-icon')
         self.assertContains(response, 'value="pending"')
+        self.assertContains(response, 'name="csrfmiddlewaretoken"')
         self.assertContains(response, reverse("finance_expense_bulk_review"))
         self.assertEqual(response.context["approved_total"], 3000)
         self.assertEqual(response.context["office_total"], 500)
@@ -1349,6 +1351,204 @@ class FinanceTests(TestCase):
         expense.refresh_from_db()
         self.assertEqual(expense.status, Expense.STATUS_PENDING)
         self.assertIsNone(expense.reviewed_by)
+
+    def test_bulk_onec_marker_is_independent_and_idempotent(self):
+        self.create_expense()
+        expense = Expense.objects.get()
+        original_status = expense.status
+        self.assertFalse(expense.posted_to_1c)
+        self.assertIsNone(expense.posted_to_1c_by)
+        self.assertIsNone(expense.posted_to_1c_at)
+        self.client.force_login(self.accountant)
+
+        response = self.client.post(
+            reverse("finance_expense_bulk_onec"),
+            {"expense_ids": [str(expense.uuid)], "posted_to_1c": "true"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        expense.refresh_from_db()
+        first_posted_at = expense.posted_to_1c_at
+        self.assertTrue(expense.posted_to_1c)
+        self.assertEqual(expense.posted_to_1c_by, self.accountant)
+        self.assertEqual(expense.status, original_status)
+        self.assertTrue(ExpenseChange.objects.filter(expense=expense, action=ExpenseChange.ACTION_POSTED_TO_1C).exists())
+
+        self.client.post(
+            reverse("finance_expense_bulk_onec"),
+            {"expense_ids": [str(expense.uuid)], "posted_to_1c": "true"},
+        )
+        expense.refresh_from_db()
+        self.assertEqual(expense.posted_to_1c_at, first_posted_at)
+        self.assertEqual(ExpenseChange.objects.filter(expense=expense, action=ExpenseChange.ACTION_POSTED_TO_1C).count(), 1)
+
+        self.client.post(
+            reverse("finance_expense_bulk_onec"),
+            {"expense_ids": [str(expense.uuid)], "posted_to_1c": "false"},
+        )
+        expense.refresh_from_db()
+        self.assertFalse(expense.posted_to_1c)
+        self.assertIsNone(expense.posted_to_1c_by)
+        self.assertIsNone(expense.posted_to_1c_at)
+        self.assertEqual(
+            ExpenseChange.objects.filter(
+                expense=expense,
+                action=ExpenseChange.ACTION_UNPOSTED_FROM_1C,
+            ).count(),
+            1,
+        )
+
+    def test_bulk_onec_endpoint_role_matrix_and_post_only(self):
+        endpoint = reverse("finance_expense_bulk_onec")
+
+        self.client.force_login(self.accountant)
+        self.assertEqual(self.client.get(endpoint).status_code, 405)
+
+        for user in (self.owner, self.admin, self.accountant):
+            expense = Expense.objects.create(
+                organization=self.organization,
+                source=Expense.SOURCE_COMPANY_CASH,
+                employee=user,
+                category=self.category,
+                amount="10.00",
+                spent_on=date.today(),
+                destination_type=Expense.DESTINATION_OFFICE,
+                destination_name="Офисные расходы",
+                created_by=user,
+            )
+            self.client.force_login(user)
+            response = self.client.post(
+                endpoint,
+                {"expense_ids": [str(expense.uuid)], "posted_to_1c": "true"},
+            )
+            expense.refresh_from_db()
+            self.assertEqual(response.status_code, 302)
+            self.assertTrue(expense.posted_to_1c)
+            self.assertEqual(expense.posted_to_1c_by, user)
+
+        for user in (self.manager, self.service, self.installer):
+            expense = Expense.objects.create(
+                organization=self.organization,
+                source=Expense.SOURCE_ACCOUNTABLE,
+                employee=user,
+                category=self.category,
+                amount="10.00",
+                spent_on=date.today(),
+                destination_type=Expense.DESTINATION_OFFICE,
+                destination_name="Офисные расходы",
+                created_by=user,
+            )
+            self.client.force_login(user)
+            response = self.client.post(
+                endpoint,
+                {"expense_ids": [str(expense.uuid)], "posted_to_1c": "true"},
+            )
+            expense.refresh_from_db()
+            self.assertEqual(response.status_code, 403)
+            self.assertFalse(expense.posted_to_1c)
+
+    def test_bulk_onec_requires_manage_permission_and_rejects_foreign_expense(self):
+        self.create_expense()
+        local_expense = Expense.objects.get()
+        foreign_organization = Organization.objects.create(name="Foreign organization")
+        foreign_category = ExpenseCategory.objects.create(organization=foreign_organization, name="Foreign")
+        foreign_expense = Expense.objects.create(
+            organization=foreign_organization,
+            source=Expense.SOURCE_ACCOUNTABLE,
+            employee=self.service,
+            category=foreign_category,
+            amount="1.00",
+            spent_on=date.today(),
+            destination_type=Expense.DESTINATION_OFFICE,
+            destination_name="Офисные расходы",
+            created_by=self.service,
+        )
+
+        self.client.force_login(self.manager)
+        self.assertEqual(
+            self.client.post(reverse("finance_expense_bulk_onec"), {"expense_ids": [str(local_expense.uuid)], "posted_to_1c": "true"}).status_code,
+            403,
+        )
+        self.client.force_login(self.accountant)
+        self.assertEqual(
+            self.client.post(
+                reverse("finance_expense_bulk_onec"),
+                {"expense_ids": [str(local_expense.uuid), str(foreign_expense.uuid)], "posted_to_1c": "true"},
+            ).status_code,
+            403,
+        )
+        local_expense.refresh_from_db()
+        self.assertFalse(local_expense.posted_to_1c)
+
+    def test_report_office_filter_uses_office_destination(self):
+        self.create_expense(
+            user=self.owner,
+            amount="500.00",
+            source=Expense.SOURCE_COMPANY_CASH,
+            employee=self.owner.id,
+            destination_type=Expense.DESTINATION_OFFICE,
+            destination_query="",
+        )
+        self.create_expense()
+        client_count = Client.objects.filter(organization=self.organization).count()
+        self.client.force_login(self.accountant)
+
+        response = self.client.get(reverse("finance_report"), {"client": "office"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["filters"]["destination"], Expense.DESTINATION_OFFICE)
+        self.assertEqual(list(response.context["expenses"])[0].destination_type, Expense.DESTINATION_OFFICE)
+        self.assertEqual(len(response.context["expenses"]), 1)
+        self.assertContains(response, "Офисные расходы")
+        self.assertEqual(Client.objects.filter(organization=self.organization).count(), client_count)
+
+    def test_report_client_filter_combines_with_existing_filters(self):
+        selected_client = Client.objects.create(organization=self.organization, name="Selected client")
+        other_client = Client.objects.create(organization=self.organization, name="Other client")
+        target = Expense.objects.create(
+            organization=self.organization,
+            source=Expense.SOURCE_ACCOUNTABLE,
+            employee=self.service,
+            category=self.category,
+            amount="100.00",
+            spent_on=date.today(),
+            destination_type=Expense.DESTINATION_CLIENT,
+            client=selected_client,
+            destination_name=selected_client.name,
+            vendor="Unique vendor",
+            status=Expense.STATUS_APPROVED,
+            created_by=self.service,
+        )
+        Expense.objects.create(
+            organization=self.organization,
+            source=Expense.SOURCE_ACCOUNTABLE,
+            employee=self.service,
+            category=self.category,
+            amount="200.00",
+            spent_on=date.today(),
+            destination_type=Expense.DESTINATION_CLIENT,
+            client=other_client,
+            destination_name=other_client.name,
+            vendor="Unique vendor",
+            status=Expense.STATUS_APPROVED,
+            created_by=self.service,
+        )
+        self.client.force_login(self.accountant)
+
+        response = self.client.get(
+            reverse("finance_report"),
+            {
+                "client": str(selected_client.id),
+                "employee": str(self.service.id),
+                "category": str(self.category.id),
+                "source": Expense.SOURCE_ACCOUNTABLE,
+                "status": Expense.STATUS_APPROVED,
+                "q": "Unique vendor",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(response.context["expenses"]), [target])
 
     def test_closed_month_blocks_new_expenses(self):
         self.client.force_login(self.owner)

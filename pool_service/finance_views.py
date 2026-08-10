@@ -4,6 +4,7 @@ from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
 import logging
+import uuid
 
 import tablib
 from PIL import Image, ImageOps
@@ -2038,6 +2039,64 @@ def finance_expense_bulk_review(request):
     return redirect(request.META.get("HTTP_REFERER") or reverse("finance_report"))
 
 
+@require_POST
+@login_required
+def finance_expense_bulk_onec(request):
+    """Atomically set the independent 1C posting marker for selected expenses."""
+    organization, denied = _finance_guard(request, manage=True)
+    if denied:
+        return denied
+
+    posted_value = request.POST.get("posted_to_1c", "").strip()
+    if posted_value not in {"true", "false"}:
+        return HttpResponseForbidden("Некорректное действие с отметкой 1С.")
+    expense_ids = [value for value in request.POST.getlist("expense_ids") if value]
+    if not expense_ids:
+        messages.error(request, "Выберите расходы.")
+        return redirect(request.META.get("HTTP_REFERER") or reverse("finance_report"))
+    try:
+        requested_ids = {uuid.UUID(value) for value in expense_ids}
+    except (TypeError, ValueError, AttributeError):
+        return HttpResponseForbidden("Некорректный список расходов.")
+
+    target_posted = posted_value == "true"
+    with transaction.atomic():
+        expenses = list(
+            Expense.objects.select_for_update().filter(
+                organization=organization,
+                uuid__in=requested_ids,
+            )
+        )
+        # A mixed-tenant or nonexistent set must never be partially updated.
+        if len(expenses) != len(requested_ids):
+            return HttpResponseForbidden("Часть расходов недоступна.")
+
+        changed_count = 0
+        now = timezone.now()
+        for expense in expenses:
+            if expense.posted_to_1c == target_posted:
+                continue
+            expense.posted_to_1c = target_posted
+            if target_posted:
+                expense.posted_to_1c_by = request.user
+                expense.posted_to_1c_at = now
+                action = ExpenseChange.ACTION_POSTED_TO_1C
+            else:
+                expense.posted_to_1c_by = None
+                expense.posted_to_1c_at = None
+                action = ExpenseChange.ACTION_UNPOSTED_FROM_1C
+            expense.save(update_fields=["posted_to_1c", "posted_to_1c_by", "posted_to_1c_at", "updated_at"])
+            ExpenseChange.objects.create(expense=expense, actor=request.user, action=action)
+            changed_count += 1
+
+    if changed_count:
+        label = "внесёнными в 1С" if target_posted else "не внесёнными в 1С"
+        messages.success(request, f"Обработано расходов: {changed_count}; отмечены как {label}.")
+    else:
+        messages.success(request, "Выбранные расходы уже имеют нужную отметку 1С.")
+    return redirect(request.META.get("HTTP_REFERER") or reverse("finance_report"))
+
+
 @login_required
 @xframe_options_sameorigin
 def finance_receipt_download(request, receipt_id):
@@ -2066,10 +2125,12 @@ def _report_filters(request):
             return None
         return value if value > 0 else None
 
+    client_value = request.GET.get("client", "").strip()
     return {
         "employee": optional_id("employee"),
         "category": optional_id("category"),
         "client": optional_id("client"),
+        "destination": Expense.DESTINATION_OFFICE if client_value == Expense.DESTINATION_OFFICE else "",
         "source": request.GET.get("source", "").strip(),
         "status": request.GET.get("status", "").strip(),
         "search": request.GET.get("q", "").strip(),
