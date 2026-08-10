@@ -630,6 +630,8 @@ class DevelopmentAIAnalysisTests(TestCase):
             "Не удалось однозначно подтвердить запуск AI-анализа. "
             "Повторный запуск заблокирован для защиты от двойного запроса.",
         )
+        self.assertNotContains(response, "Проверить анализ")
+        self.assertNotContains(response, self.check_url(task))
         self.assertNotContains(response, ">Запустить AI-анализ<", html=False)
 
     @AI_SETTINGS
@@ -671,7 +673,7 @@ class DevelopmentAIAnalysisTests(TestCase):
 
     @AI_SETTINGS
     @patch("pool_service.services.development_ai._create_background_response")
-    def test_detail_shows_safe_analysis_controls_without_response_id(self, create_response):
+    def test_detail_shows_automatic_polling_state_without_manual_check(self, create_response):
         create_response.return_value = provider_response("resp_not_exposed")
         task = self.create_task()
         self.client.force_login(self.owner)
@@ -679,7 +681,10 @@ class DevelopmentAIAnalysisTests(TestCase):
 
         response = self.client.get(reverse("development_task_detail", args=[task.pk]))
 
-        self.assertContains(response, "Проверить анализ")
+        self.assertEqual(response.context["analysis_state"], "queued")
+        self.assertNotContains(response, "Проверить анализ")
+        self.assertNotContains(response, self.check_url(task))
+        self.assertNotContains(response, ">Запустить AI-анализ<", html=False)
         self.assertContains(response, "AI-анализ поставлен в очередь")
         self.assertNotContains(response, "resp_not_exposed")
         self.assertNotContains(response, "test-api-key-never-sent")

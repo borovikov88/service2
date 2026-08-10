@@ -42,12 +42,6 @@
         <button class="btn btn-success" type="submit">Запустить AI-анализ</button>
       </form>
       {% endif %}
-      {% if analysis_can_check %}
-      <form method="post" action="{% url 'development_task_analysis_check' task.id %}">
-        {% csrf_token %}
-        <button class="btn btn-outline-primary" type="submit">Проверить анализ</button>
-      </form>
-      {% endif %}
     </div>
   </div>
 </div>

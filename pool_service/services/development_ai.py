@@ -14,6 +14,7 @@ from pool_service.models import (
 )
 from pool_service.services.development_model_selection import selection_metadata
 from pool_service.services.ai_costs import usage_record
+from pool_service.services.development_notifications import notify_analysis_ready
 
 
 logger = logging.getLogger(__name__)
@@ -330,6 +331,7 @@ def _apply_response(iteration_id, response):
                         "action": "ai_analysis_completed",
                     },
                 )
+                notify_analysis_ready(task, iteration)
                 return AnalysisOperationResult(STATE_COMPLETED, changed=True)
 
         if remote_state not in REMOTE_FAILURE_STATES:
