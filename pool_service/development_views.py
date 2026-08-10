@@ -342,7 +342,7 @@ def development_task_detail(request, task_id):
         costs["total"] if costs["total"] is not None else costs["partial_total"],
         partial=costs["partial_total"] is not None and costs["total"] is None,
     )
-    for stage in ("analysis", "codex"):
+    for stage in ("analysis", "codex", "review"):
         costs[stage]["amount_display"] = display_amount(costs[stage]["amount"])
     return render(
         request,

@@ -7,6 +7,7 @@ from pool_service.services.push_notifications import send_push_to_users
 
 ANALYSIS_READY = "analysis_ready"
 READY_FOR_DEPLOY = "ready_for_deploy"
+HUMAN_REQUIRED = "human_required"
 DEVELOPMENT_ROLES = {"owner", "admin"}
 
 
@@ -80,4 +81,13 @@ def notify_ready_for_deploy(task):
         title=f"{task.reference} готова к деплою",
         message=f"Задача «{task.title}» готова к production deployment.",
         dedupe_suffix="ready-for-deploy",
+    )
+
+
+def notify_human_required(task, reason, *, dedupe_suffix=HUMAN_REQUIRED):
+    return _notify(
+        task,
+        title=f"{task.reference}: требуется решение",
+        message=f"Задача «{task.title}» остановлена: {reason}",
+        dedupe_suffix=dedupe_suffix,
     )

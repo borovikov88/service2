@@ -222,7 +222,7 @@ def cost_context(iterations, *, codex_expected=False):
     stages = {}
     known_total = Decimal("0")
     known_count = 0
-    for stage, expected in (("primary_analysis", True), ("codex", codex_expected)):
+    for stage, expected in (("primary_analysis", True), ("codex", codex_expected), ("ai_review", False)):
         records = _records(iterations, stage)
         amounts = []
         for record in records:
@@ -243,7 +243,7 @@ def cost_context(iterations, *, codex_expected=False):
         stages[stage] = {"known": amount is not None, "amount": amount, "records": records, "expected": expected}
     partial = known_count > 0 and any(stage["expected"] and not stage["known"] for stage in stages.values())
     total = known_total if known_count and not partial else None
-    return {"analysis": stages["primary_analysis"], "codex": stages["codex"], "total": total, "partial_total": known_total if partial else None}
+    return {"analysis": stages["primary_analysis"], "codex": stages["codex"], "review": stages["ai_review"], "total": total, "partial_total": known_total if partial else None}
 
 
 def display_amount(amount, partial=False):
