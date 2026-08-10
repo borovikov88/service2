@@ -31,6 +31,7 @@ from pool_service.models import (
     DevelopmentTaskEvent,
 )
 from pool_service.services.development_ai import resolve_primary_analysis_iteration
+from pool_service.services.ai_costs import codex_usage_record
 from pool_service.services.development_model_selection import (
     ModelSelectionError,
     effective_model,
@@ -76,11 +77,14 @@ SAFE_BRANCH_RE = re.compile(r"^codex/dev-[0-9]+-[a-f0-9]{12}$")
 CODEX_ARTIFACT_FILES = {
     "codex.patch",
     "codex-final.txt",
+    "codex-usage.json",
     "manifest.json",
     "pr-title.txt",
 }
-MAX_NO_CHANGES_ARCHIVE_BYTES = 500_000
-MAX_NO_CHANGES_CONTENT_BYTES = 250_000
+CODEX_MODELS = {"gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"}
+CODEX_USAGE_SOURCE = "codex_exec_jsonl_turn_completed"
+MAX_CODEX_ARCHIVE_BYTES = 6_000_000
+MAX_CODEX_CONTENT_BYTES = 5_500_000
 MAX_CODEX_SUMMARY_BYTES = 100_000
 MAX_PR_TITLE_BYTES = 255
 PROMPT_TRUNCATION_MARKER = "[сокращено системой из-за лимита prompt]"
@@ -488,7 +492,7 @@ def _download_artifact_archive(artifact_id):
                     status_code=response.status,
                     cause_type="UnexpectedArtifactStatus",
                 )
-            return _read_limited_response(response, MAX_NO_CHANGES_ARCHIVE_BYTES)
+            return _read_limited_response(response, MAX_CODEX_ARCHIVE_BYTES)
     except HTTPError as exc:
         raise _github_request_error(
             "GET", path, category="http", status_code=exc.code, cause_type="HTTPError"
@@ -514,7 +518,7 @@ def _artifact_digest_matches(manifest, name, content):
     )
 
 
-def _no_changes_summary(run_id, task_reference, launch_token, branch_name):
+def _codex_artifact(run_id, task_reference, launch_token, branch_name, model, *, required=False):
     repository, _workflow = _configuration()
     artifact_name = f"codex-change-{launch_token}"
     query = urlencode({"name": artifact_name, "per_page": 100})
@@ -526,10 +530,12 @@ def _no_changes_summary(run_id, task_reference, launch_token, branch_name):
         for artifact in (data.get("artifacts") or [])
         if artifact.get("name") == artifact_name and not artifact.get("expired")
     ]
+    if not artifacts and not required:
+        return None
     if len(artifacts) != 1:
         raise GitHubRequestError(category="response", cause_type="ArtifactIdentityMismatch")
     artifact = artifacts[0]
-    if int(artifact.get("size_in_bytes") or 0) > MAX_NO_CHANGES_ARCHIVE_BYTES:
+    if int(artifact.get("size_in_bytes") or 0) > MAX_CODEX_ARCHIVE_BYTES:
         raise GitHubRequestError(category="response", cause_type="ArtifactTooLarge")
     archive = _download_artifact_archive(artifact["id"])
     try:
@@ -543,11 +549,11 @@ def _no_changes_summary(run_id, task_reference, launch_token, branch_name):
             if any(
                 info.is_dir()
                 or stat.S_ISLNK(info.external_attr >> 16)
-                or info.file_size > MAX_NO_CHANGES_CONTENT_BYTES
+                or info.file_size > MAX_CODEX_CONTENT_BYTES
                 for info in infos
             ):
                 raise GitHubRequestError(category="response", cause_type="UnsafeArtifactEntry")
-            if sum(info.file_size for info in infos) > MAX_NO_CHANGES_CONTENT_BYTES:
+            if sum(info.file_size for info in infos) > MAX_CODEX_CONTENT_BYTES:
                 raise GitHubRequestError(category="response", cause_type="ArtifactTooLarge")
             files = {name: zipped.read(name) for name in CODEX_ARTIFACT_FILES}
     except GitHubRequestError:
@@ -562,6 +568,8 @@ def _no_changes_summary(run_id, task_reference, launch_token, branch_name):
         "task_reference",
         "launch_token",
         "branch_name",
+        "workflow_run_id",
+        "model",
         "result",
         "patch_sha256",
         "patch_size",
@@ -569,26 +577,33 @@ def _no_changes_summary(run_id, task_reference, launch_token, branch_name):
         "final_size",
         "title_sha256",
         "title_size",
+        "usage_sha256",
+        "usage_size",
     }
     correlation_ok = (
         set(manifest) == expected_keys
         and manifest.get("task_reference") == task_reference
         and manifest.get("launch_token") == launch_token
         and manifest.get("branch_name") == branch_name
-        and manifest.get("result") == STATE_NO_CHANGES
+        and manifest.get("workflow_run_id") == int(run_id)
+        and manifest.get("model") == model
+        and manifest.get("result") in {"changes", STATE_NO_CHANGES}
     )
     if not correlation_ok:
         raise GitHubRequestError(category="response", cause_type="ArtifactCorrelationMismatch")
     patch = files["codex.patch"]
     final = files["codex-final.txt"]
     title = files["pr-title.txt"]
+    usage_content = files["codex-usage.json"]
     if (
-        patch
+        (manifest.get("result") == STATE_NO_CHANGES and patch)
+        or (manifest.get("result") == "changes" and not patch)
         or len(final) > MAX_CODEX_SUMMARY_BYTES
         or len(title) > MAX_PR_TITLE_BYTES
         or not _artifact_digest_matches(manifest, "patch", patch)
         or not _artifact_digest_matches(manifest, "final", final)
         or not _artifact_digest_matches(manifest, "title", title)
+        or not _artifact_digest_matches(manifest, "usage", usage_content)
     ):
         raise GitHubRequestError(category="response", cause_type="ArtifactDigestMismatch")
     try:
@@ -598,7 +613,48 @@ def _no_changes_summary(run_id, task_reference, launch_token, branch_name):
         raise GitHubRequestError(category="response", cause_type="ArtifactEncodingError") from exc
     if not title_text.strip() or "\x00" in title_text:
         raise GitHubRequestError(category="response", cause_type="ArtifactTitleInvalid")
-    return _compact(summary, 4000), artifact["id"]
+    try:
+        usage = json.loads(usage_content.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise GitHubRequestError(category="response", cause_type="InvalidUsageArtifact") from exc
+    usage_keys = {
+        "schema_version",
+        "task_reference",
+        "launch_token",
+        "branch_name",
+        "workflow_run_id",
+        "model",
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "usage_source",
+    }
+    usage_correlation_ok = (
+        isinstance(usage, dict)
+        and set(usage) == usage_keys
+        and usage.get("schema_version") == 1
+        and usage.get("task_reference") == task_reference
+        and usage.get("launch_token") == launch_token
+        and usage.get("branch_name") == branch_name
+        and usage.get("workflow_run_id") == int(run_id)
+        and usage.get("model") == model
+        and model in CODEX_MODELS
+        and usage.get("usage_source") == CODEX_USAGE_SOURCE
+    )
+    if not usage_correlation_ok:
+        raise GitHubRequestError(category="response", cause_type="UsageCorrelationMismatch")
+    for key in ("input_tokens", "cached_input_tokens", "output_tokens"):
+        value = usage.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise GitHubRequestError(category="response", cause_type="InvalidUsageTokens")
+    if usage["cached_input_tokens"] > usage["input_tokens"]:
+        raise GitHubRequestError(category="response", cause_type="InvalidCachedUsage")
+    return {
+        "summary": _compact(summary, 4000),
+        "artifact_id": artifact["id"],
+        "result": manifest["result"],
+        "usage": usage,
+    }
 
 
 def _dispatch_workflow(payload):
@@ -944,6 +1000,36 @@ def _remember_workflow_run(iteration_id, launch_token, run_id):
     return True
 
 
+def _store_codex_usage(metadata, usage):
+    record = codex_usage_record(usage)
+    if record is None:
+        raise GitHubRequestError(category="response", cause_type="InvalidUsageRecord")
+    ai_usage = metadata.get("ai_usage")
+    if ai_usage is None:
+        metadata["ai_usage"] = {"stage": "codex", "status": "known", "calls": [record]}
+        return
+    if not isinstance(ai_usage, dict) or ai_usage.get("stage") != "codex":
+        raise GitHubRequestError(category="response", cause_type="UsageHistoryMismatch")
+    calls = ai_usage.get("calls")
+    if not isinstance(calls, list):
+        raise GitHubRequestError(category="response", cause_type="UsageHistoryMismatch")
+    identity = (record["launch_token"], record["workflow_run_id"])
+    matching = [
+        call for call in calls
+        if isinstance(call, dict)
+        and (call.get("launch_token"), call.get("workflow_run_id")) == identity
+    ]
+    if matching:
+        if len(matching) != 1 or matching[0] != record:
+            raise GitHubRequestError(category="response", cause_type="UsageHistoryMismatch")
+        return
+    if calls:
+        raise GitHubRequestError(category="response", cause_type="UsageExecutionMismatch")
+    ai_usage["status"] = "known"
+    ai_usage["calls"] = [record]
+    metadata["ai_usage"] = ai_usage
+
+
 def check_codex(task_id, actor_id):
     if not is_configured():
         return CodexOperationResult("not_configured")
@@ -1013,8 +1099,38 @@ def check_codex(task_id, actor_id):
 
     pull_request = None
     changed_files = []
-    no_changes_summary = ""
-    no_changes_artifact_id = None
+    codex_artifact = None
+    if run_status == "completed":
+        try:
+            codex_artifact = _codex_artifact(
+                run_id,
+                task.reference,
+                launch_token,
+                branch_name,
+                metadata.get("effective_model"),
+                required=remote_state == STATE_NO_CHANGES,
+            )
+            expected_artifact_result = (
+                STATE_NO_CHANGES if validation_state == STATE_NO_CHANGES
+                else "changes" if validation_state in {"passed", "failed", STATE_SECURITY_BLOCKED}
+                else None
+            )
+            if (
+                codex_artifact
+                and expected_artifact_result
+                and codex_artifact["result"] != expected_artifact_result
+            ):
+                raise GitHubRequestError(
+                    category="response", cause_type="ArtifactOutcomeMismatch"
+                )
+        except Exception as exc:
+            logger.warning(
+                "Development Codex artifact lookup failed: task=%s iteration=%s error_type=%s",
+                task_id,
+                iteration_id,
+                type(exc).__name__,
+            )
+            return CodexOperationResult("check_failed")
     if remote_state in {STATE_COMPLETED, STATE_VALIDATION_FAILED}:
         try:
             pull_request = _find_pull_request(branch_name)
@@ -1023,20 +1139,6 @@ def check_codex(task_id, actor_id):
         except Exception as exc:
             logger.warning(
                 "Development Codex pull request lookup failed: task=%s iteration=%s error_type=%s",
-                task_id,
-                iteration_id,
-                type(exc).__name__,
-            )
-            return CodexOperationResult("check_failed")
-    elif remote_state == STATE_NO_CHANGES:
-        try:
-            no_changes_summary, no_changes_artifact_id = _no_changes_summary(
-                run["id"], task.reference, launch_token, branch_name
-            )
-        except Exception as exc:
-            logger.warning(
-                "Development Codex no-changes artifact lookup failed: "
-                "task=%s iteration=%s error_type=%s",
                 task_id,
                 iteration_id,
                 type(exc).__name__,
@@ -1059,6 +1161,12 @@ def check_codex(task_id, actor_id):
                 "validation_state": validation_state,
             }
         )
+        if codex_artifact:
+            try:
+                _store_codex_usage(metadata, codex_artifact["usage"])
+            except GitHubRequestError:
+                return CodexOperationResult("check_failed")
+            metadata["artifact_id"] = codex_artifact["artifact_id"]
         locked.automation_metadata = metadata
         if remote_state in {STATE_QUEUED, STATE_IN_PROGRESS}:
             locked.save(update_fields=["automation_metadata", "updated_at"])
@@ -1086,11 +1194,10 @@ def check_codex(task_id, actor_id):
         if remote_state == STATE_NO_CHANGES:
             for key in ("pr_number", "pr_url", "pr_title"):
                 metadata.pop(key, None)
-            metadata["artifact_id"] = no_changes_artifact_id
             locked.automation_metadata = metadata
             locked.status = DevelopmentIteration.STATUS_ACCEPTED
             locked.result_summary = "Codex не предложил изменений; результат передан на review."
-            locked.response = no_changes_summary or "Codex завершил анализ без изменений."
+            locked.response = codex_artifact["summary"] or "Codex завершил анализ без изменений."
             locked.changed_files = ""
             locked.test_result = "Trusted artifact подтверждает отсутствие изменений."
             locked.technical_errors = ""

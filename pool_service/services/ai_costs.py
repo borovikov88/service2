@@ -124,6 +124,45 @@ def usage_record(response):
     return usage
 
 
+def codex_usage_record(usage):
+    """Price trusted cumulative Codex usage without guessing request boundaries."""
+    if not isinstance(usage, dict):
+        return None
+    model = str(usage.get("model") or "").strip() or None
+    input_tokens = _nonnegative_int(usage.get("input_tokens"))
+    cached_input_tokens = _nonnegative_int(usage.get("cached_input_tokens"))
+    output_tokens = _nonnegative_int(usage.get("output_tokens"))
+    if (
+        model not in PRICE_TABLE
+        or input_tokens is None
+        or cached_input_tokens is None
+        or output_tokens is None
+        or cached_input_tokens > input_tokens
+    ):
+        return None
+    unknown_reason = None
+    if input_tokens > LONG_CONTEXT_THRESHOLD:
+        cost = None
+        unknown_reason = "long_context_per_request_usage_unavailable"
+    else:
+        cost = calculate_usage_cost(
+            model, input_tokens, cached_input_tokens, output_tokens
+        )
+    return {
+        "model": model,
+        "input_tokens": input_tokens,
+        "cached_input_tokens": cached_input_tokens,
+        "output_tokens": output_tokens,
+        "calculated_cost_usd": str(cost) if cost is not None else None,
+        "pricing_version": PRICING_VERSION if cost is not None else None,
+        "usage_source": usage.get("usage_source"),
+        "workflow_run_id": usage.get("workflow_run_id"),
+        "launch_token": usage.get("launch_token"),
+        "cost_status": "known" if cost is not None else "unknown",
+        "cost_unknown_reason": unknown_reason,
+    }
+
+
 def codex_cost_estimate(complexity, model):
     """Build a versioned forecast through the same trusted pricing engine."""
     ranges = CODEX_ESTIMATE_TOKENS.get(complexity)
@@ -140,6 +179,7 @@ def codex_cost_estimate(complexity, model):
         "complexity": complexity,
         "estimator_version": CODEX_ESTIMATOR_VERSION,
         "pricing_version": PRICING_VERSION,
+        "source": "complexity_baseline",
     }
 
 
@@ -175,7 +215,7 @@ def _records(iterations, stage):
         usage = metadata.get("ai_usage") if isinstance(metadata.get("ai_usage"), dict) else {}
         if usage.get("stage") == stage:
             records.extend(usage.get("calls", []))
-    return [record for record in records if isinstance(record, dict)]
+    return [dict(record) for record in records if isinstance(record, dict)]
 
 
 def cost_context(iterations, *, codex_expected=False):
@@ -194,6 +234,12 @@ def cost_context(iterations, *, codex_expected=False):
         if amount is not None:
             known_total += amount
             known_count += 1
+        for record in records:
+            if record.get("cost_unknown_reason") == "long_context_per_request_usage_unavailable":
+                record["cost_unknown_message"] = (
+                    "Токены получены, но точную стоимость нельзя определить по "
+                    "доступным aggregate usage данным."
+                )
         stages[stage] = {"known": amount is not None, "amount": amount, "records": records, "expected": expected}
     partial = known_count > 0 and any(stage["expected"] and not stage["known"] for stage in stages.values())
     total = known_total if known_count and not partial else None

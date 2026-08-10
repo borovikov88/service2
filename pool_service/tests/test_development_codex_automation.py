@@ -47,12 +47,35 @@ def load_patch_validator():
     return module
 
 
+def load_usage_builder():
+    path = Path(settings.BASE_DIR) / ".github/scripts/build_codex_usage.py"
+    spec = importlib.util.spec_from_file_location("build_codex_usage", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def artifact_files(*, result="no_changes", patch_content=b"", final=b"Codex summary"):
     title = b"Safe pull request title"
+    usage = {
+        "schema_version": 1,
+        "task_reference": "DEV-0002",
+        "launch_token": "launch-token",
+        "branch_name": "codex/dev-2-123456789abc",
+        "workflow_run_id": 501,
+        "model": "gpt-5.6-sol",
+        "input_tokens": 1000,
+        "cached_input_tokens": 100,
+        "output_tokens": 200,
+        "usage_source": "codex_exec_jsonl_turn_completed",
+    }
+    usage_content = json.dumps(usage, sort_keys=True).encode("utf-8")
     manifest = {
         "task_reference": "DEV-0002",
         "launch_token": "launch-token",
         "branch_name": "codex/dev-2-123456789abc",
+        "workflow_run_id": 501,
+        "model": "gpt-5.6-sol",
         "result": result,
         "patch_sha256": hashlib.sha256(patch_content).hexdigest(),
         "patch_size": len(patch_content),
@@ -60,10 +83,13 @@ def artifact_files(*, result="no_changes", patch_content=b"", final=b"Codex summ
         "final_size": len(final),
         "title_sha256": hashlib.sha256(title).hexdigest(),
         "title_size": len(title),
+        "usage_sha256": hashlib.sha256(usage_content).hexdigest(),
+        "usage_size": len(usage_content),
     }
     return {
         "codex.patch": patch_content,
         "codex-final.txt": final,
+        "codex-usage.json": usage_content,
         "manifest.json": json.dumps(manifest, sort_keys=True).encode("utf-8"),
         "pr-title.txt": title,
     }
@@ -75,6 +101,18 @@ def artifact_zip(files):
         for name, content in files.items():
             zipped.writestr(name, content)
     return buffer.getvalue()
+
+
+def validator_argv(artifact_dir):
+    return [
+        "validate_codex_patch.py",
+        "--artifact-dir", str(artifact_dir),
+        "--task-reference", "DEV-0002",
+        "--launch-token", "launch-token",
+        "--branch-name", "codex/dev-2-123456789abc",
+        "--workflow-run-id", "501",
+        "--model", "gpt-5.6-sol",
+    ]
 
 
 class CodexTestMixin:
@@ -128,6 +166,24 @@ class CodexTestMixin:
             "html_url": "https://github.com/borovikov88/service2/actions/runs/501",
         }
 
+    def usage_artifact(self, iteration, *, result="changes", input_tokens=1000,
+                       cached_input_tokens=100, output_tokens=200):
+        metadata = iteration.automation_metadata
+        return {
+            "summary": "Trusted Codex summary",
+            "artifact_id": 901,
+            "result": result,
+            "usage": {
+                "model": metadata["effective_model"],
+                "input_tokens": input_tokens,
+                "cached_input_tokens": cached_input_tokens,
+                "output_tokens": output_tokens,
+                "usage_source": "codex_exec_jsonl_turn_completed",
+                "workflow_run_id": 501,
+                "launch_token": metadata["launch_token"],
+            },
+        }
+
 
 @CODEX_SETTINGS
 class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
@@ -138,6 +194,12 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         self.owner = self.make_user("codex-owner", "owner")
         self.admin = self.make_user("codex-admin", "admin")
         self.manager = self.make_user("codex-manager", "manager")
+        self.artifact_lookup_patcher = patch(
+            "pool_service.services.development_codex._codex_artifact",
+            return_value=None,
+        )
+        self.artifact_lookup = self.artifact_lookup_patcher.start()
+        self.addCleanup(self.artifact_lookup_patcher.stop)
 
     @patch("pool_service.services.development_codex._dispatch_workflow")
     def test_dispatch_creates_separate_codex_iteration_and_structured_prompt(self, dispatch):
@@ -486,6 +548,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
             "html_url": "https://github.com/borovikov88/service2/pull/17",
         }
         pr_files.return_value = ["pool_service/development_views.py", "pool_service/tests/test_x.py"]
+        self.artifact_lookup.return_value = self.usage_artifact(iteration)
 
         result = development_codex.check_codex(task.pk, self.admin.pk)
 
@@ -496,18 +559,22 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         self.assertEqual(task.current_stage, DevelopmentTask.STAGE_REVIEW)
         self.assertEqual(iteration.status, DevelopmentIteration.STATUS_ACCEPTED)
         self.assertEqual(iteration.automation_metadata["pr_number"], 17)
+        usage = iteration.automation_metadata["ai_usage"]
+        self.assertEqual(usage["stage"], "codex")
+        self.assertEqual(len(usage["calls"]), 1)
+        self.assertEqual(usage["calls"][0]["workflow_run_id"], 501)
+        self.assertIsNotNone(usage["calls"][0]["calculated_cost_usd"])
         self.assertIn("development_views.py", iteration.changed_files)
         self.assertIn("прошли успешно", iteration.test_result)
         self.assertTrue(task.events.filter(metadata__action="codex_completed").exists())
 
-    @patch("pool_service.services.development_codex._no_changes_summary")
     @patch("pool_service.services.development_codex._workflow_validation_state", return_value="no_changes")
     @patch("pool_service.services.development_codex._pull_request_files")
     @patch("pool_service.services.development_codex._find_pull_request")
     @patch("pool_service.services.development_codex._list_workflow_runs")
     @patch("pool_service.services.development_codex._dispatch_workflow")
     def test_no_changes_advances_to_review_without_pull_request_metadata(
-        self, dispatch, runs, find_pr, pr_files, validation, summary
+        self, dispatch, runs, find_pr, pr_files, validation
     ):
         task = self.make_ready_task()
         development_codex.dispatch_codex(task.pk, self.owner.pk)
@@ -517,7 +584,20 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
                 self.matching_run(task, iteration, status="completed", conclusion="success")
             ]
         }
-        summary.return_value = ("Codex verified that the implementation is already complete.", 901)
+        self.artifact_lookup.return_value = {
+            "summary": "Codex verified that the implementation is already complete.",
+            "artifact_id": 901,
+            "result": "no_changes",
+            "usage": {
+                "model": "gpt-5.6-sol",
+                "input_tokens": 1000,
+                "cached_input_tokens": 100,
+                "output_tokens": 200,
+                "usage_source": "codex_exec_jsonl_turn_completed",
+                "workflow_run_id": 501,
+                "launch_token": iteration.automation_metadata["launch_token"],
+            },
+        }
 
         first = development_codex.check_codex(task.pk, self.admin.pk)
         event_count = task.events.count()
@@ -530,6 +610,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         self.assertEqual(second.state, development_codex.STATE_NO_CHANGES)
         self.assertFalse(second.changed)
         self.assertEqual(task.status, DevelopmentTask.STATUS_REVIEW)
+        self.assertEqual(len(iteration.automation_metadata["ai_usage"]["calls"]), 1)
         self.assertEqual(task.current_stage, DevelopmentTask.STAGE_REVIEW)
         self.assertEqual(
             task.current_activity,
@@ -542,12 +623,12 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         )
         self.assertEqual(iteration.changed_files, "")
         self.assertEqual(iteration.automation_metadata["artifact_id"], 901)
+        self.assertEqual(self.artifact_lookup.call_count, 1)
         self.assertNotIn("pr_number", iteration.automation_metadata)
         self.assertNotIn("pr_url", iteration.automation_metadata)
         self.assertEqual(task.events.count(), event_count)
         self.assertTrue(task.events.filter(metadata__action="codex_no_changes").exists())
         self.assertEqual(runs.call_count, 1)
-        self.assertEqual(summary.call_count, 1)
         find_pr.assert_not_called()
         pr_files.assert_not_called()
         self.client.force_login(self.admin)
@@ -578,6 +659,30 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         iteration.refresh_from_db()
         self.assertEqual(task.status, DevelopmentTask.STATUS_BLOCKED)
         self.assertEqual(iteration.status, DevelopmentIteration.STATUS_FAILED)
+        self.assertNotIn("ai_usage", iteration.automation_metadata)
+
+    @patch(
+        "pool_service.services.development_codex._workflow_validation_state",
+        return_value="passed",
+    )
+    @patch("pool_service.services.development_codex._list_workflow_runs")
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_publish_failure_still_records_actual_usage(self, dispatch, runs, validation):
+        task = self.make_ready_task()
+        development_codex.dispatch_codex(task.pk, self.owner.pk)
+        iteration = task.iterations.get(executor_type="codex")
+        runs.return_value = {
+            "workflow_runs": [
+                self.matching_run(task, iteration, status="completed", conclusion="failure")
+            ]
+        }
+        self.artifact_lookup.return_value = self.usage_artifact(iteration)
+
+        result = development_codex.check_codex(task.pk, self.owner.pk)
+
+        self.assertEqual(result.state, "infrastructure_failed")
+        iteration.refresh_from_db()
+        self.assertEqual(len(iteration.automation_metadata["ai_usage"]["calls"]), 1)
 
     @patch(
         "pool_service.services.development_codex._workflow_validation_state",
@@ -626,6 +731,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
             "html_url": "https://github.com/borovikov88/service2/pull/19",
         }
         files.return_value = ["pool_service/development_views.py"]
+        self.artifact_lookup.return_value = self.usage_artifact(iteration)
 
         first = development_codex.check_codex(task.pk, self.admin.pk)
         event_count = task.events.count()
@@ -642,6 +748,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         )
         self.assertEqual(iteration.automation_metadata["pr_number"], 19)
         self.assertEqual(iteration.automation_metadata["validation_state"], "failed")
+        self.assertEqual(len(iteration.automation_metadata["ai_usage"]["calls"]), 1)
         self.assertIn("проверки", iteration.technical_errors.lower())
         self.assertEqual(task.events.count(), event_count)
         self.assertEqual(runs.call_count, 1)
@@ -977,6 +1084,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
     @patch("pool_service.services.development_codex._download_artifact_archive")
     @patch("pool_service.services.development_codex._github_request")
     def test_no_changes_summary_validates_correlated_trusted_artifact(self, request, download):
+        self.artifact_lookup_patcher.stop()
         files = artifact_files(final=b"No repository changes are required.")
         request.return_value = {
             "artifacts": [
@@ -990,15 +1098,18 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         }
         download.return_value = artifact_zip(files)
 
-        summary, artifact_id = development_codex._no_changes_summary(
+        artifact = development_codex._codex_artifact(
             501,
             "DEV-0002",
             "launch-token",
             "codex/dev-2-123456789abc",
+            "gpt-5.6-sol",
+            required=True,
         )
 
-        self.assertEqual(summary, "No repository changes are required.")
-        self.assertEqual(artifact_id, 44)
+        self.assertEqual(artifact["summary"], "No repository changes are required.")
+        self.assertEqual(artifact["artifact_id"], 44)
+        self.assertEqual(artifact["usage"]["input_tokens"], 1000)
         self.assertIn("/actions/runs/501/artifacts?", request.call_args.args[1])
 
     @patch("pool_service.services.development_codex.urlopen")
@@ -1124,28 +1235,127 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         self.assertNotIn("\n  pull_request:", text)
         self.assertNotIn("\n  workflow_run:", text)
 
+    def test_codex_jsonl_usage_parser_accepts_trusted_completed_usage(self):
+        builder = load_usage_builder()
+        jsonl = "\n".join(
+            [
+                json.dumps({"type": "thread.started", "thread_id": "untrusted"}),
+                json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {
+                            "input_tokens": 1200,
+                            "cached_input_tokens": 300,
+                            "output_tokens": 400,
+                        },
+                    }
+                ),
+            ]
+        )
+        for model in ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"):
+            with self.subTest(model=model):
+                usage = builder.build_usage(
+                    jsonl_text=jsonl,
+                    process_exit_code=0,
+                    task_reference="DEV-0002",
+                    launch_token="launch-token",
+                    branch_name="codex/dev-2-123456789abc",
+                    workflow_run_id=501,
+                    model=model,
+                )
+                self.assertEqual(usage["cached_input_tokens"], 300)
+                self.assertEqual(usage["model"], model)
+                self.assertEqual(usage["usage_source"], builder.USAGE_SOURCE)
+
+    def test_codex_jsonl_usage_parser_fails_closed(self):
+        builder = load_usage_builder()
+        cases = {
+            "missing completion": json.dumps({"type": "turn.started"}),
+            "missing usage": json.dumps({"type": "turn.completed"}),
+            "malformed json": "{not-json",
+            "negative tokens": json.dumps({"type": "turn.completed", "usage": {
+                "input_tokens": -1, "cached_input_tokens": 0, "output_tokens": 0,
+            }}),
+            "cached exceeds input": json.dumps({"type": "turn.completed", "usage": {
+                "input_tokens": 1, "cached_input_tokens": 2, "output_tokens": 0,
+            }}),
+        }
+        for name, jsonl in cases.items():
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                builder.parse_codex_usage(jsonl)
+        valid = json.dumps({"type": "turn.completed", "usage": {
+            "input_tokens": 1, "cached_input_tokens": 0, "output_tokens": 1,
+        }})
+        with self.assertRaisesRegex(ValueError, "did not exit successfully"):
+            builder.build_usage(
+                jsonl_text=valid, process_exit_code=1, task_reference="DEV-0002",
+                launch_token="launch-token", branch_name="codex/dev-2-123456789abc",
+                workflow_run_id=501, model="gpt-5.6-sol",
+            )
+
+    def test_workflow_bootstraps_action_then_executes_codex_once_with_jsonl(self):
+        workflow = (Path(settings.BASE_DIR) / ".github/workflows/development-codex.yml").read_text(
+            encoding="utf-8"
+        )
+        codex_job = workflow.split("  codex:", 1)[1].split("\n  validate:", 1)[0]
+        action = codex_job.split("uses: openai/codex-action@", 1)[1].split(
+            "Run Codex once", 1
+        )[0]
+        self.assertNotIn("prompt-file:", action)
+        self.assertEqual(codex_job.count("codex exec \\"), 1)
+        self.assertIn("--json", codex_job)
+        self.assertIn('> "$JSONL_FILE"', codex_job)
+        self.assertIn("codex-usage.json", codex_job)
+        self.assertIn("usage_sha256", codex_job)
+        self.assertNotIn("calculated_cost_usd", codex_job)
+
     def test_validator_accepts_correlated_no_changes_artifact(self):
         validator = load_patch_validator()
         with tempfile.TemporaryDirectory() as temp_dir:
             artifact_dir = Path(temp_dir)
             for name, content in artifact_files().items():
                 (artifact_dir / name).write_bytes(content)
-            argv = [
-                "validate_codex_patch.py",
-                "--artifact-dir",
-                str(artifact_dir),
-                "--task-reference",
-                "DEV-0002",
-                "--launch-token",
-                "launch-token",
-                "--branch-name",
-                "codex/dev-2-123456789abc",
-            ]
+            argv = validator_argv(artifact_dir)
             output = io.StringIO()
             with patch.object(validator.sys, "argv", argv), contextlib.redirect_stdout(output):
                 validator.main()
 
         self.assertEqual(json.loads(output.getvalue())["state"], "no_changes")
+
+    def test_validator_rejects_usage_correlation_and_digest_mismatches(self):
+        validator = load_patch_validator()
+        expected = {
+            "task_reference": "DEV-0002",
+            "launch_token": "launch-token",
+            "branch_name": "codex/dev-2-123456789abc",
+            "workflow_run_id": 501,
+            "model": "gpt-5.6-sol",
+        }
+        valid_usage = json.loads(artifact_files()["codex-usage.json"])
+        for key, invalid in (
+            ("task_reference", "DEV-9999"),
+            ("launch_token", "other-token"),
+            ("branch_name", "codex/dev-9-deadbeefdead"),
+            ("workflow_run_id", 999),
+            ("model", "gpt-5.6-terra"),
+        ):
+            usage = {**valid_usage, key: invalid}
+            with self.subTest(key=key), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as blocked:
+                    validator.validate_usage(json.dumps(usage).encode("utf-8"), expected)
+                self.assertEqual(blocked.exception.code, validator.SECURITY_BLOCKED_EXIT)
+
+        manifest = json.loads(artifact_files()["manifest.json"])
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as blocked:
+            validator.validate_digest(manifest, "usage", b"tampered")
+        self.assertEqual(blocked.exception.code, validator.SECURITY_BLOCKED_EXIT)
+
+        for forbidden in ("calculated_cost_usd", "pricing_version"):
+            usage = {**valid_usage, forbidden: "untrusted"}
+            with self.subTest(forbidden=forbidden), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as blocked:
+                    validator.validate_usage(json.dumps(usage).encode("utf-8"), expected)
+                self.assertEqual(blocked.exception.code, validator.SECURITY_BLOCKED_EXIT)
 
     def test_validator_accepts_regular_changes_artifact(self):
         validator = load_patch_validator()
@@ -1181,17 +1391,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
                 result="changes", patch_content=patch_content
             ).items():
                 (artifact_dir / name).write_bytes(content)
-            argv = [
-                "validate_codex_patch.py",
-                "--artifact-dir",
-                str(artifact_dir),
-                "--task-reference",
-                "DEV-0002",
-                "--launch-token",
-                "launch-token",
-                "--branch-name",
-                "codex/dev-2-123456789abc",
-            ]
+            argv = validator_argv(artifact_dir)
             output = io.StringIO()
             with (
                 contextlib.chdir(repository),
@@ -1208,17 +1408,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
             artifact_dir = Path(temp_dir)
             for name, content in artifact_files(result="changes").items():
                 (artifact_dir / name).write_bytes(content)
-            argv = [
-                "validate_codex_patch.py",
-                "--artifact-dir",
-                str(artifact_dir),
-                "--task-reference",
-                "DEV-0002",
-                "--launch-token",
-                "launch-token",
-                "--branch-name",
-                "codex/dev-2-123456789abc",
-            ]
+            argv = validator_argv(artifact_dir)
             with patch.object(validator.sys, "argv", argv), contextlib.redirect_stderr(
                 io.StringIO()
             ):
@@ -1233,17 +1423,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
             artifact_dir = Path(temp_dir)
             for name, content in artifact_files(patch_content=b"untrusted patch").items():
                 (artifact_dir / name).write_bytes(content)
-            argv = [
-                "validate_codex_patch.py",
-                "--artifact-dir",
-                str(artifact_dir),
-                "--task-reference",
-                "DEV-0002",
-                "--launch-token",
-                "launch-token",
-                "--branch-name",
-                "codex/dev-2-123456789abc",
-            ]
+            argv = validator_argv(artifact_dir)
             with patch.object(validator.sys, "argv", argv), contextlib.redirect_stderr(
                 io.StringIO()
             ):

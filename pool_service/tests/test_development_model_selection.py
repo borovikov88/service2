@@ -120,7 +120,7 @@ class DevelopmentModelDispatchTests(TestCase):
         )
         self.assertIn('if os.environ.get("CODEX_MODEL") not in allowed_models:', codex_job)
         self.assertIn('raise SystemExit("Invalid CODEX_MODEL")', codex_job)
-        self.assertIn('model: ${{ inputs.codex_model }}', codex_job)
+        self.assertIn('--model "$CODEX_MODEL"', codex_job)
         self.assertNotIn("user-controlled-model", codex_job)
 
     def test_ui_displays_effective_model(self):
@@ -167,5 +167,35 @@ class DevelopmentModelDispatchTests(TestCase):
         self.client.force_login(self.user)
         response = self.client.get(reverse("development_task_detail", args=[self.task.pk]))
         self.assertContains(response, "$0.33")
-        self.assertContains(response, "Исходный прогноз:")
+        self.assertContains(response, "Прогноз Codex был:")
         self.assertNotContains(response, "Итого прогноз")
+
+    def test_actual_tokens_with_unknown_cost_do_not_display_forecast_as_actual(self):
+        metadata = dict(self.task.automation_metadata)
+        metadata["codex_cost_estimate"] = selection_metadata(self.task)["codex_cost_estimate"]
+        self.task.automation_metadata = metadata
+        self.task.save(update_fields=["automation_metadata"])
+        DevelopmentIteration.objects.create(
+            task=self.task,
+            iteration_number=2,
+            executor_type=DevelopmentIteration.EXECUTOR_CODEX,
+            automation_metadata={
+                "ai_usage": {
+                    "stage": "codex",
+                    "status": "known",
+                    "calls": [{
+                        "model": "gpt-5.6-terra",
+                        "input_tokens": 300000,
+                        "cached_input_tokens": 0,
+                        "output_tokens": 1000,
+                        "calculated_cost_usd": None,
+                        "cost_unknown_reason": "long_context_per_request_usage_unavailable",
+                    }],
+                }
+            },
+        )
+        self.client.force_login(self.user)
+        response = self.client.get(reverse("development_task_detail", args=[self.task.pk]))
+        self.assertContains(response, "Input tokens: 300000")
+        self.assertContains(response, "Токены получены, но точную стоимость нельзя определить")
+        self.assertContains(response, "Прогноз Codex был:")
