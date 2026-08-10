@@ -1,5 +1,7 @@
 import re
 
+from pool_service.services.ai_costs import codex_cost_estimate
+
 COMPLEXITY_MODELS = {"simple": "gpt-5.6-luna", "standard": "gpt-5.6-terra", "complex": "gpt-5.6-sol"}
 MODE_MODELS = {"economy": "gpt-5.6-luna", "standard": "gpt-5.6-terra", "maximum": "gpt-5.6-sol"}
 MODE_CHOICES = (("auto", "Авто"), ("economy", "Эконом"), ("standard", "Стандарт"), ("maximum", "Максимум"))
@@ -63,9 +65,11 @@ def selection_metadata(task, analysis_text=""):
     mode = metadata.get("model_selection_mode", "auto")
     if mode not in dict(MODE_CHOICES):
         mode = "auto"
+    model = effective_model(mode, auto_model)
     metadata.update(auto_complexity=complexity, auto_selected_model=auto_model, classification_reason=reason,
                     classifier_version=metadata.get("classifier_version") or CLASSIFIER_VERSION,
-                    model_selection_mode=mode, effective_model=effective_model(mode, auto_model))
+                    model_selection_mode=mode, effective_model=model)
+    metadata["codex_cost_estimate"] = codex_cost_estimate(complexity, model)
     return metadata
 
 

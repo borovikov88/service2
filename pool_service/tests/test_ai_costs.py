@@ -4,10 +4,12 @@ from types import SimpleNamespace
 from django.test import SimpleTestCase
 
 from pool_service.services.ai_costs import (
+    CODEX_ESTIMATOR_VERSION,
     LONG_CONTEXT_THRESHOLD,
     PRICE_TABLE,
     PRICING_VERSION,
     calculate_usage_cost,
+    codex_cost_estimate,
     cost_context,
     usage_record,
 )
@@ -27,6 +29,32 @@ class AICostTests(SimpleTestCase):
             set(PRICE_TABLE),
             {"gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
         )
+
+    def test_codex_forecast_is_deterministic_for_complexity_and_model(self):
+        expected = {
+            ("simple", "gpt-5.6-luna"): ("0.04400000", "0.20000000"),
+            ("standard", "gpt-5.6-terra"): ("0.27500000", "1.40000000"),
+            ("complex", "gpt-5.6-sol"): ("1.10000000", "9.40000000"),
+        }
+        for (complexity, model), amounts in expected.items():
+            with self.subTest(complexity=complexity, model=model):
+                first = codex_cost_estimate(complexity, model)
+                self.assertEqual(first, codex_cost_estimate(complexity, model))
+                self.assertEqual((first["min_usd"], first["max_usd"]), amounts)
+                self.assertEqual(first["estimator_version"], CODEX_ESTIMATOR_VERSION)
+                self.assertEqual(first["pricing_version"], PRICING_VERSION)
+
+    def test_codex_forecast_supports_every_complexity_model_combination(self):
+        for complexity in ("simple", "standard", "complex"):
+            for model in ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"):
+                with self.subTest(complexity=complexity, model=model):
+                    estimate = codex_cost_estimate(complexity, model)
+                    self.assertEqual(estimate["complexity"], complexity)
+                    self.assertEqual(estimate["model"], model)
+
+    def test_codex_forecast_fails_closed_for_unknown_inputs(self):
+        self.assertIsNone(codex_cost_estimate("unknown", "gpt-5.6-sol"))
+        self.assertIsNone(codex_cost_estimate("simple", "unknown"))
 
     def test_gpt_5_6_alias_uses_sol_pricing(self):
         self.assertEqual(PRICE_TABLE["gpt-5.6"], PRICE_TABLE["gpt-5.6-sol"])

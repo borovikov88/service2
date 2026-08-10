@@ -5,6 +5,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 
 PRICING_VERSION = "openai-2026-08-10-long-context-v2"
+CODEX_ESTIMATOR_VERSION = "development-codex-complexity-v1"
 _MILLION = Decimal("1000000")
 LONG_CONTEXT_THRESHOLD = 272_000
 LONG_CONTEXT_INPUT_MULTIPLIER = Decimal("2")
@@ -17,6 +18,14 @@ PRICE_TABLE = {
     "gpt-5.6-sol": (Decimal("5.00"), Decimal("0.50"), Decimal("30.00")),
     "gpt-5.6-terra": (Decimal("2.50"), Decimal("0.25"), Decimal("15.00")),
     "gpt-5.6-luna": (Decimal("1.00"), Decimal("0.10"), Decimal("6.00")),
+}
+
+# Deterministic planning envelopes, not measured usage. Cached input is kept at
+# zero because it cannot be predicted safely before an execution.
+CODEX_ESTIMATE_TOKENS = {
+    "simple": ((20_000, 4_000), (80_000, 20_000)),
+    "standard": ((50_000, 10_000), (200_000, 60_000)),
+    "complex": ((100_000, 20_000), (400_000, 120_000)),
 }
 
 
@@ -113,6 +122,50 @@ def usage_record(response):
         usage_source="openai_responses",
     )
     return usage
+
+
+def codex_cost_estimate(complexity, model):
+    """Build a versioned forecast through the same trusted pricing engine."""
+    ranges = CODEX_ESTIMATE_TOKENS.get(complexity)
+    if ranges is None or model not in PRICE_TABLE:
+        return None
+    minimum = calculate_usage_cost(model, ranges[0][0], 0, ranges[0][1])
+    maximum = calculate_usage_cost(model, ranges[1][0], 0, ranges[1][1])
+    if minimum is None or maximum is None:
+        return None
+    return {
+        "min_usd": str(minimum),
+        "max_usd": str(maximum),
+        "model": model,
+        "complexity": complexity,
+        "estimator_version": CODEX_ESTIMATOR_VERSION,
+        "pricing_version": PRICING_VERSION,
+    }
+
+
+def estimate_context(metadata, analysis_amount=None):
+    estimate = metadata.get("codex_cost_estimate") if isinstance(metadata, dict) else None
+    if not isinstance(estimate, dict):
+        return None
+    try:
+        minimum = Decimal(str(estimate["min_usd"]))
+        maximum = Decimal(str(estimate["max_usd"]))
+    except (KeyError, InvalidOperation, TypeError):
+        return None
+    if minimum < 0 or maximum < minimum:
+        return None
+    total_min = minimum + analysis_amount if analysis_amount is not None else None
+    total_max = maximum + analysis_amount if analysis_amount is not None else None
+    return {
+        **estimate,
+        "min": minimum,
+        "max": maximum,
+        "amount_display": f"≈ {display_amount(minimum)}–{display_amount(maximum)}",
+        "total_display": (
+            f"≈ {display_amount(total_min)}–{display_amount(total_max)}"
+            if total_min is not None else None
+        ),
+    }
 
 
 def _records(iterations, stage):

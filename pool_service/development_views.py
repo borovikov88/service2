@@ -34,7 +34,12 @@ from pool_service.services.development_codex import (
     resolve_codex_iteration,
 )
 from pool_service.services.development_model_selection import display_context, effective_model
-from pool_service.services.ai_costs import cost_context, display_amount
+from pool_service.services.ai_costs import (
+    codex_cost_estimate,
+    cost_context,
+    display_amount,
+    estimate_context,
+)
 
 
 DEVELOPMENT_ROLES = {"owner", "admin"}
@@ -330,6 +335,9 @@ def development_task_detail(request, task_id):
         codex_expected=task.status not in {DevelopmentTask.STATUS_NEW, DevelopmentTask.STATUS_ANALYSIS},
     )
     context["ai_costs"] = costs
+    context["codex_cost_estimate"] = estimate_context(
+        task.automation_metadata, costs["analysis"]["amount"]
+    )
     context["ai_costs_total_display"] = display_amount(
         costs["total"] if costs["total"] is not None else costs["partial_total"],
         partial=costs["partial_total"] is not None and costs["total"] is None,
@@ -590,6 +598,9 @@ def development_task_update(request, task_id):
         mode = form.cleaned_data["model_selection_mode"]
         if metadata.get("auto_selected_model"):
             metadata["effective_model"] = effective_model(mode, metadata["auto_selected_model"])
+            metadata["codex_cost_estimate"] = codex_cost_estimate(
+                metadata.get("auto_complexity"), metadata["effective_model"]
+            )
         if "model_selection_mode" in request.POST or metadata.get("auto_selected_model"):
             metadata["model_selection_mode"] = mode
         task.automation_metadata = metadata
