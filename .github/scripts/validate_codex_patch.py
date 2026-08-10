@@ -13,9 +13,12 @@ MAX_TITLE_BYTES = 255
 EXPECTED_FILES = {
     "codex.patch",
     "codex-final.txt",
+    "codex-usage.json",
     "manifest.json",
     "pr-title.txt",
 }
+ALLOWED_MODELS = {"gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"}
+USAGE_SOURCE = "codex_exec_jsonl_turn_completed"
 SECURITY_BLOCKED_EXIT = 3
 
 
@@ -117,6 +120,8 @@ def validate_manifest(artifact_dir, expected):
         "task_reference",
         "launch_token",
         "branch_name",
+        "workflow_run_id",
+        "model",
         "result",
         "patch_sha256",
         "patch_size",
@@ -124,15 +129,52 @@ def validate_manifest(artifact_dir, expected):
         "final_size",
         "title_sha256",
         "title_size",
+        "usage_sha256",
+        "usage_size",
     }
     if set(manifest) != expected_keys:
         fail("manifest shape is invalid")
-    for key in ("task_reference", "launch_token", "branch_name"):
+    for key in ("task_reference", "launch_token", "branch_name", "workflow_run_id", "model"):
         if manifest.get(key) != expected[key]:
             fail(f"artifact correlation mismatch: {key}", security=True)
     if manifest.get("result") not in {"changes", "no_changes"}:
         fail("manifest result is invalid")
     return manifest
+
+
+def validate_usage(content, expected):
+    try:
+        usage = json.loads(content.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        fail("Codex usage is unreadable")
+    expected_keys = {
+        "schema_version",
+        "task_reference",
+        "launch_token",
+        "branch_name",
+        "workflow_run_id",
+        "model",
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "usage_source",
+    }
+    if not isinstance(usage, dict) or set(usage) != expected_keys:
+        fail("Codex usage shape is invalid", security=True)
+    for key in ("task_reference", "launch_token", "branch_name", "workflow_run_id", "model"):
+        if usage.get(key) != expected[key]:
+            fail(f"usage correlation mismatch: {key}", security=True)
+    if usage.get("schema_version") != 1 or usage.get("usage_source") != USAGE_SOURCE:
+        fail("Codex usage schema is invalid", security=True)
+    if usage.get("model") not in ALLOWED_MODELS:
+        fail("Codex usage model is not allowed", security=True)
+    for key in ("input_tokens", "cached_input_tokens", "output_tokens"):
+        value = usage.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            fail(f"Codex usage {key} is invalid", security=True)
+    if usage["cached_input_tokens"] > usage["input_tokens"]:
+        fail("Codex cached usage exceeds input usage", security=True)
+    return usage
 
 
 def validate_digest(manifest, name, content):
@@ -148,6 +190,8 @@ def main():
     parser.add_argument("--task-reference", required=True)
     parser.add_argument("--launch-token", required=True)
     parser.add_argument("--branch-name", required=True)
+    parser.add_argument("--workflow-run-id", required=True, type=int)
+    parser.add_argument("--model", required=True, choices=sorted(ALLOWED_MODELS))
     args = parser.parse_args()
     artifact_dir = Path(args.artifact_dir).resolve()
     if not artifact_dir.is_dir():
@@ -158,15 +202,29 @@ def main():
             "task_reference": args.task_reference,
             "launch_token": args.launch_token,
             "branch_name": args.branch_name,
+            "workflow_run_id": args.workflow_run_id,
+            "model": args.model,
         },
     )
     patch_file = artifact_dir / "codex.patch"
     patch = patch_file.read_bytes()
     final = (artifact_dir / "codex-final.txt").read_bytes()
     title = (artifact_dir / "pr-title.txt").read_bytes()
+    usage_content = (artifact_dir / "codex-usage.json").read_bytes()
     validate_digest(manifest, "patch", patch)
     validate_digest(manifest, "final", final)
     validate_digest(manifest, "title", title)
+    validate_digest(manifest, "usage", usage_content)
+    validate_usage(
+        usage_content,
+        {
+            "task_reference": args.task_reference,
+            "launch_token": args.launch_token,
+            "branch_name": args.branch_name,
+            "workflow_run_id": args.workflow_run_id,
+            "model": args.model,
+        },
+    )
     if len(patch) > MAX_PATCH_BYTES:
         fail("patch exceeds allowed size")
     if len(final) > MAX_SUMMARY_BYTES:

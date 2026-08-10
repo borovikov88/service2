@@ -35,6 +35,8 @@ class DevelopmentModelSelectionTests(TestCase):
             self.assertEqual(metadata["auto_complexity"], complexity)
             self.assertEqual(metadata["auto_selected_model"], model)
             self.assertEqual(metadata["effective_model"], model)
+            self.assertEqual(metadata["codex_cost_estimate"]["complexity"], complexity)
+            self.assertEqual(metadata["codex_cost_estimate"]["model"], model)
 
     def test_overrides_and_invalid_model(self):
         self.assertEqual(effective_model("economy", "gpt-5.6-sol"), "gpt-5.6-luna")
@@ -118,7 +120,7 @@ class DevelopmentModelDispatchTests(TestCase):
         )
         self.assertIn('if os.environ.get("CODEX_MODEL") not in allowed_models:', codex_job)
         self.assertIn('raise SystemExit("Invalid CODEX_MODEL")', codex_job)
-        self.assertIn('model: ${{ inputs.codex_model }}', codex_job)
+        self.assertIn('--model "$CODEX_MODEL"', codex_job)
         self.assertNotIn("user-controlled-model", codex_job)
 
     def test_ui_displays_effective_model(self):
@@ -127,3 +129,73 @@ class DevelopmentModelDispatchTests(TestCase):
         self.assertContains(response, "GPT-5.6 Terra")
         self.assertContains(response, "Сложность:")
         self.assertContains(response, "Режим:")
+
+    def test_model_override_recalculates_forecast(self):
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("development_task_update", args=[self.task.pk]),
+            {
+                "priority": self.task.priority,
+                "status": self.task.status,
+                "current_stage": self.task.current_stage,
+                "model_selection_mode": "maximum",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        self.task.refresh_from_db()
+        estimate = self.task.automation_metadata["codex_cost_estimate"]
+        self.assertEqual(estimate["model"], "gpt-5.6-sol")
+        self.assertEqual(estimate["complexity"], "standard")
+
+    def test_actual_codex_cost_replaces_forecast_in_primary_ui(self):
+        metadata = dict(self.task.automation_metadata)
+        metadata["codex_cost_estimate"] = selection_metadata(self.task)["codex_cost_estimate"]
+        self.task.automation_metadata = metadata
+        self.task.save(update_fields=["automation_metadata"])
+        DevelopmentIteration.objects.create(
+            task=self.task,
+            iteration_number=2,
+            executor_type=DevelopmentIteration.EXECUTOR_CODEX,
+            automation_metadata={
+                "ai_usage": {
+                    "stage": "codex",
+                    "status": "known",
+                    "calls": [{"model": "gpt-5.6-terra", "calculated_cost_usd": "0.33000000"}],
+                }
+            },
+        )
+        self.client.force_login(self.user)
+        response = self.client.get(reverse("development_task_detail", args=[self.task.pk]))
+        self.assertContains(response, "$0.33")
+        self.assertContains(response, "Прогноз Codex был:")
+        self.assertNotContains(response, "Итого прогноз")
+
+    def test_actual_tokens_with_unknown_cost_do_not_display_forecast_as_actual(self):
+        metadata = dict(self.task.automation_metadata)
+        metadata["codex_cost_estimate"] = selection_metadata(self.task)["codex_cost_estimate"]
+        self.task.automation_metadata = metadata
+        self.task.save(update_fields=["automation_metadata"])
+        DevelopmentIteration.objects.create(
+            task=self.task,
+            iteration_number=2,
+            executor_type=DevelopmentIteration.EXECUTOR_CODEX,
+            automation_metadata={
+                "ai_usage": {
+                    "stage": "codex",
+                    "status": "known",
+                    "calls": [{
+                        "model": "gpt-5.6-terra",
+                        "input_tokens": 300000,
+                        "cached_input_tokens": 0,
+                        "output_tokens": 1000,
+                        "calculated_cost_usd": None,
+                        "cost_unknown_reason": "long_context_per_request_usage_unavailable",
+                    }],
+                }
+            },
+        )
+        self.client.force_login(self.user)
+        response = self.client.get(reverse("development_task_detail", args=[self.task.pk]))
+        self.assertContains(response, "Input tokens: 300000")
+        self.assertContains(response, "Токены получены, но точную стоимость нельзя определить")
+        self.assertContains(response, "Прогноз Codex был:")

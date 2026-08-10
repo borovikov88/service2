@@ -4,10 +4,13 @@ from types import SimpleNamespace
 from django.test import SimpleTestCase
 
 from pool_service.services.ai_costs import (
+    CODEX_ESTIMATOR_VERSION,
     LONG_CONTEXT_THRESHOLD,
     PRICE_TABLE,
     PRICING_VERSION,
     calculate_usage_cost,
+    codex_usage_record,
+    codex_cost_estimate,
     cost_context,
     usage_record,
 )
@@ -27,6 +30,33 @@ class AICostTests(SimpleTestCase):
             set(PRICE_TABLE),
             {"gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
         )
+
+    def test_codex_forecast_is_deterministic_for_complexity_and_model(self):
+        expected = {
+            ("simple", "gpt-5.6-luna"): ("0.04400000", "0.20000000"),
+            ("standard", "gpt-5.6-terra"): ("0.27500000", "1.40000000"),
+            ("complex", "gpt-5.6-sol"): ("1.10000000", "9.40000000"),
+        }
+        for (complexity, model), amounts in expected.items():
+            with self.subTest(complexity=complexity, model=model):
+                first = codex_cost_estimate(complexity, model)
+                self.assertEqual(first, codex_cost_estimate(complexity, model))
+                self.assertEqual((first["min_usd"], first["max_usd"]), amounts)
+                self.assertEqual(first["estimator_version"], CODEX_ESTIMATOR_VERSION)
+                self.assertEqual(first["pricing_version"], PRICING_VERSION)
+                self.assertEqual(first["source"], "complexity_baseline")
+
+    def test_codex_forecast_supports_every_complexity_model_combination(self):
+        for complexity in ("simple", "standard", "complex"):
+            for model in ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"):
+                with self.subTest(complexity=complexity, model=model):
+                    estimate = codex_cost_estimate(complexity, model)
+                    self.assertEqual(estimate["complexity"], complexity)
+                    self.assertEqual(estimate["model"], model)
+
+    def test_codex_forecast_fails_closed_for_unknown_inputs(self):
+        self.assertIsNone(codex_cost_estimate("unknown", "gpt-5.6-sol"))
+        self.assertIsNone(codex_cost_estimate("simple", "unknown"))
 
     def test_gpt_5_6_alias_uses_sol_pricing(self):
         self.assertEqual(PRICE_TABLE["gpt-5.6"], PRICE_TABLE["gpt-5.6-sol"])
@@ -111,6 +141,37 @@ class AICostTests(SimpleTestCase):
         self.assertIsNone(unknown["calculated_cost_usd"])
         self.assertIsNone(unknown["pricing_version"])
 
+    def test_cumulative_codex_usage_prices_only_unambiguous_base_context(self):
+        usage = {
+            "model": "gpt-5.6-sol",
+            "input_tokens": 272_000,
+            "cached_input_tokens": 20_000,
+            "output_tokens": 10_000,
+            "usage_source": "codex_exec_jsonl_turn_completed",
+            "workflow_run_id": 501,
+            "launch_token": "launch-token",
+        }
+        record = codex_usage_record(usage)
+        self.assertEqual(record["calculated_cost_usd"], "1.57000000")
+        self.assertEqual(record["cost_status"], "known")
+
+        usage["input_tokens"] = 272_001
+        record = codex_usage_record(usage)
+        self.assertIsNone(record["calculated_cost_usd"])
+        self.assertIsNone(record["pricing_version"])
+        self.assertEqual(
+            record["cost_unknown_reason"],
+            "long_context_per_request_usage_unavailable",
+        )
+
+    def test_cumulative_codex_usage_unknown_model_fails_closed(self):
+        self.assertIsNone(codex_usage_record({
+            "model": "gpt-5.6-snapshot",
+            "input_tokens": 1,
+            "cached_input_tokens": 0,
+            "output_tokens": 1,
+        }))
+
     def test_long_context_boundary_for_each_model(self):
         expected_at_threshold = {
             "gpt-5.6-sol": "4.36000000",
@@ -188,3 +249,19 @@ class AICostTests(SimpleTestCase):
         context = cost_context([iteration])
         self.assertEqual(context["analysis"]["amount"], Decimal("1.23450000"))
         self.assertEqual(context["total"], Decimal("1.23450000"))
+
+    def test_separate_codex_iterations_count_separate_real_executions(self):
+        iterations = [
+            SimpleNamespace(automation_metadata={"ai_usage": {
+                "stage": "codex", "status": "known",
+                "calls": [{"workflow_run_id": run_id, "launch_token": token,
+                           "calculated_cost_usd": amount}],
+            }})
+            for run_id, token, amount in (
+                (501, "first", "0.10000000"),
+                (502, "second", "0.20000000"),
+            )
+        ]
+        context = cost_context(iterations, codex_expected=True)
+        self.assertEqual(len(context["codex"]["records"]), 2)
+        self.assertEqual(context["codex"]["amount"], Decimal("0.30000000"))

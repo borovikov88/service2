@@ -136,18 +136,48 @@ jobs:
         run: |
           cp .git/config "${{ runner.temp }}/trusted-git-config"
           cp .git/index "${{ runner.temp }}/trusted-git-index"
+          cp .github/scripts/build_codex_usage.py "${{ runner.temp }}/build-codex-usage.py"
 
-      - name: Run Codex in workspace-only sandbox
+      - name: Bootstrap Codex CLI and protected Responses proxy
         uses: openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56 # v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          model: ${{ inputs.codex_model }}
-          prompt-file: ${{ runner.temp }}/development-prompt.txt
-          output-file: ${{ runner.temp }}/codex-final.txt
+          codex-home: ${{ runner.temp }}/codex-home
           permission-profile: ":workspace"
           safety-strategy: "drop-sudo"
           allow-users: "borovikov88"
           allow-bots: "false"
+
+      - name: Run Codex once and capture machine-readable usage
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          PROMPT_FILE: ${{ runner.temp }}/development-prompt.txt
+          FINAL_FILE: ${{ runner.temp }}/codex-final.txt
+          JSONL_FILE: ${{ runner.temp }}/codex-events.jsonl
+          USAGE_FILE: ${{ runner.temp }}/codex-usage.json
+          TRUSTED_USAGE_BUILDER: ${{ runner.temp }}/build-codex-usage.py
+        shell: bash
+        run: |
+          set +e
+          codex exec \
+            --skip-git-repo-check \
+            --cd "$GITHUB_WORKSPACE" \
+            --output-last-message "$FINAL_FILE" \
+            --model "$CODEX_MODEL" \
+            --json \
+            --config 'default_permissions=":workspace"' \
+            < "$PROMPT_FILE" > "$JSONL_FILE"
+          codex_status=$?
+          set -e
+          python "$TRUSTED_USAGE_BUILDER" \
+            --jsonl-file "$JSONL_FILE" \
+            --output-file "$USAGE_FILE" \
+            --process-exit-code "$codex_status" \
+            --task-reference "$TASK_REFERENCE" \
+            --launch-token "$LAUNCH_TOKEN" \
+            --branch-name "$BRANCH_NAME" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --model "$CODEX_MODEL"
 
       # This is the only post-Codex step besides artifact upload. It has no secrets or
       # repository write credentials and only serializes an inert binary patch.
@@ -155,6 +185,7 @@ jobs:
         env:
           FINAL_FILE: ${{ runner.temp }}/codex-final.txt
           TITLE_FILE: ${{ runner.temp }}/pr-title.txt
+          USAGE_FILE: ${{ runner.temp }}/codex-usage.json
           ARTIFACT_DIR: ${{ runner.temp }}/codex-artifact
           TRUSTED_GIT_CONFIG: ${{ runner.temp }}/trusted-git-config
           TRUSTED_GIT_INDEX: ${{ runner.temp }}/trusted-git-index
@@ -192,7 +223,11 @@ jobs:
           target.mkdir(parents=True, exist_ok=True)
           (target / "codex.patch").write_bytes(patch)
           contents = {}
-          for source, name in (("FINAL_FILE", "codex-final.txt"), ("TITLE_FILE", "pr-title.txt")):
+          for source, name in (
+              ("FINAL_FILE", "codex-final.txt"),
+              ("TITLE_FILE", "pr-title.txt"),
+              ("USAGE_FILE", "codex-usage.json"),
+          ):
               content = pathlib.Path(os.environ[source]).read_bytes()
               (target / name).write_bytes(content)
               contents[name] = content
@@ -200,6 +235,8 @@ jobs:
               "task_reference": os.environ["TASK_REFERENCE"],
               "launch_token": os.environ["LAUNCH_TOKEN"],
               "branch_name": os.environ["BRANCH_NAME"],
+              "workflow_run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "model": os.environ["CODEX_MODEL"],
               "result": result,
               "patch_sha256": hashlib.sha256(patch).hexdigest(),
               "patch_size": len(patch),
@@ -207,6 +244,8 @@ jobs:
               "final_size": len(contents["codex-final.txt"]),
               "title_sha256": hashlib.sha256(contents["pr-title.txt"]).hexdigest(),
               "title_size": len(contents["pr-title.txt"]),
+              "usage_sha256": hashlib.sha256(contents["codex-usage.json"]).hexdigest(),
+              "usage_size": len(contents["codex-usage.json"]),
           }
           (target / "manifest.json").write_text(
               json.dumps(manifest, sort_keys=True), encoding="utf-8"
@@ -246,6 +285,7 @@ jobs:
           TASK_REFERENCE: ${{ inputs.task_reference }}
           LAUNCH_TOKEN: ${{ inputs.launch_token }}
           BRANCH_NAME: ${{ inputs.branch_name }}
+          CODEX_MODEL: ${{ inputs.codex_model }}
         shell: bash
         run: |
           set +e
@@ -254,6 +294,8 @@ jobs:
             --task-reference "$TASK_REFERENCE" \
             --launch-token "$LAUNCH_TOKEN" \
             --branch-name "$BRANCH_NAME" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --model "$CODEX_MODEL" \
             > "${{ runner.temp }}/artifact-validation-result.json" \
             2> "${{ runner.temp }}/artifact-validation.log"
           code=$?
@@ -386,13 +428,16 @@ jobs:
       - name: Revalidate artifact before privileged apply
         env:
           ARTIFACT_DIR: ${{ runner.temp }}/codex-artifact
+          CODEX_MODEL: ${{ inputs.codex_model }}
         shell: bash
         run: |
           python .github/scripts/validate_codex_patch.py \
             --artifact-dir "$ARTIFACT_DIR" \
             --task-reference "$TASK_REFERENCE" \
             --launch-token "$LAUNCH_TOKEN" \
-            --branch-name "$BRANCH_NAME"
+            --branch-name "$BRANCH_NAME" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --model "$CODEX_MODEL"
 
       - name: Prepare trusted Pull Request metadata before patch apply
         env:
