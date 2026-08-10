@@ -154,6 +154,13 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         self.assertIn(task.business_goal, iteration.prompt)
         self.assertIn("первичный анализ", iteration.prompt.lower())
         self.assertIn("Не выполняй deploy", iteration.prompt)
+        self.assertEqual(
+            iteration.automation_metadata["prompt_bytes"],
+            len(iteration.prompt.encode("utf-8")),
+        )
+        self.assertEqual(iteration.automation_metadata["prompt_limit_bytes"], 40000)
+        self.assertFalse(iteration.automation_metadata["prompt_truncated"])
+        self.assertEqual(iteration.automation_metadata["truncated_sections"], [])
         payload = dispatch.call_args.args[0]
         self.assertEqual(payload["ref"], "main")
         self.assertEqual(payload["inputs"]["branch_name"], iteration.automation_metadata["branch_name"])
@@ -244,16 +251,118 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
             task.events.filter(metadata__action="codex_dispatched_task_state_changed").exists()
         )
 
+    def test_short_prompt_is_unchanged_at_exact_byte_boundary(self):
+        task = self.make_ready_task()
+        analysis = task.iterations.get(executor_type=DevelopmentIteration.EXECUTOR_SYSTEM)
+        original = development_codex.build_codex_prompt(task, analysis)
+        exact_limit = len(original.encode("utf-8"))
+
+        with override_settings(GITHUB_DEVELOPMENT_PROMPT_MAX_BYTES=exact_limit):
+            built = development_codex._build_codex_prompt(task, analysis)
+
+        self.assertEqual(built.prompt, original)
+        self.assertEqual(built.prompt_bytes, exact_limit)
+        self.assertFalse(built.truncated)
+        self.assertEqual(built.truncated_sections, ())
+
+    @override_settings(GITHUB_DEVELOPMENT_PROMPT_MAX_BYTES=5000)
+    def test_oversized_prompt_is_budgeted_with_utf8_safe_marker(self):
+        task = self.make_ready_task()
+        task.description = "Подробное описание задачи. " * 500
+        analysis = task.iterations.get(executor_type=DevelopmentIteration.EXECUTOR_SYSTEM)
+        analysis.response = "Технический анализ с кириллицей. " * 1000
+
+        built = development_codex._build_codex_prompt(task, analysis)
+
+        self.assertLessEqual(len(built.prompt.encode("utf-8")), 5000)
+        self.assertEqual(built.prompt.encode("utf-8").decode("utf-8"), built.prompt)
+        self.assertIn(development_codex.PROMPT_TRUNCATION_MARKER, built.prompt)
+        self.assertTrue(built.truncated)
+
+    @override_settings(GITHUB_DEVELOPMENT_PROMPT_MAX_BYTES=6000)
+    def test_analysis_is_truncated_before_description_and_definition_of_done(self):
+        task = self.make_ready_task()
+        task.description = "Критически важное исходное описание. " * 20
+        task.definition_of_done = "Проверяемый критерий готовности. " * 20
+        analysis = task.iterations.get(executor_type=DevelopmentIteration.EXECUTOR_SYSTEM)
+        analysis.response = "Избыточный результат анализа. " * 2000
+
+        built = development_codex._build_codex_prompt(task, analysis)
+
+        self.assertEqual(built.truncated_sections, ("analysis",))
+        self.assertIn(task.description, built.prompt)
+        self.assertIn(task.definition_of_done, built.prompt)
+        self.assertIn(development_codex.PROMPT_TRUNCATION_MARKER, built.prompt)
+
+    @override_settings(GITHUB_DEVELOPMENT_PROMPT_MAX_BYTES=5000)
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_successful_budgeting_saves_only_prompt_metadata(self, dispatch):
+        task = self.make_ready_task()
+        original_description = "Исходный пользовательский текст. " * 400
+        task.description = original_description
+        task.save(update_fields=["description", "updated_at"])
+        analysis = task.iterations.get(executor_type=DevelopmentIteration.EXECUTOR_SYSTEM)
+        analysis.response = "Большой результат AI-анализа. " * 1000
+        analysis.save(update_fields=["response", "updated_at"])
+
+        result = development_codex.dispatch_codex(task.pk, self.owner.pk)
+
+        self.assertEqual(result.state, development_codex.STATE_DISPATCHED)
+        iteration = task.iterations.get(executor_type=DevelopmentIteration.EXECUTOR_CODEX)
+        metadata = iteration.automation_metadata
+        self.assertLessEqual(metadata["prompt_bytes"], metadata["prompt_limit_bytes"])
+        self.assertTrue(metadata["prompt_truncated"])
+        self.assertIn("analysis", metadata["truncated_sections"])
+        task.refresh_from_db()
+        self.assertEqual(task.description, original_description)
+        dispatch.assert_called_once()
+
     @override_settings(GITHUB_DEVELOPMENT_PROMPT_MAX_BYTES=1000)
     @patch("pool_service.services.development_codex._dispatch_workflow")
-    def test_prompt_size_limit_blocks_dispatch_before_external_call(self, dispatch):
+    @patch("pool_service.services.development_codex.uuid4")
+    def test_impossible_prompt_returns_safe_state_without_mutation(self, uuid4, dispatch):
         task = self.make_ready_task()
         task.description = "я" * 2000
         task.save(update_fields=["description", "updated_at"])
+        before = {
+            "status": task.status,
+            "stage": task.current_stage,
+            "metadata": task.automation_metadata,
+            "iterations": task.iterations.count(),
+            "events": task.events.count(),
+        }
 
-        with self.assertRaises(development_codex.CodexPromptError):
-            development_codex.dispatch_codex(task.pk, self.owner.pk)
+        result = development_codex.dispatch_codex(task.pk, self.owner.pk)
 
+        self.assertEqual(result.state, "prompt_too_large")
+        self.assertFalse(result.changed)
+        dispatch.assert_not_called()
+        uuid4.assert_not_called()
+        self.assertFalse(task.iterations.filter(executor_type="codex").exists())
+        task.refresh_from_db()
+        self.assertEqual(task.status, before["status"])
+        self.assertEqual(task.current_stage, before["stage"])
+        self.assertEqual(task.automation_metadata, before["metadata"])
+        self.assertEqual(task.iterations.count(), before["iterations"])
+        self.assertEqual(task.events.count(), before["events"])
+        self.assertNotIn("codex_launch_token", task.automation_metadata)
+        self.assertNotIn("codex_branch_name", task.automation_metadata)
+
+    @override_settings(GITHUB_DEVELOPMENT_PROMPT_MAX_BYTES=1000)
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    def test_prompt_too_large_view_redirects_with_message_instead_of_500(self, dispatch):
+        task = self.make_ready_task()
+        task.description = "я" * 2000
+        task.save(update_fields=["description", "updated_at"])
+        self.client.force_login(self.owner)
+
+        response = self.client.post(self.start_url(task), follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            "Не удалось безопасно сформировать prompt Codex в пределах допустимого размера.",
+        )
         dispatch.assert_not_called()
         self.assertFalse(task.iterations.filter(executor_type="codex").exists())
 

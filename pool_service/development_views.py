@@ -501,6 +501,11 @@ def development_task_codex_start(request, task_id):
         messages.error(request, "Интеграция GitHub Actions не настроена.")
     elif result.state == "invalid_model":
         messages.error(request, "Модель Codex не прошла серверную проверку.")
+    elif result.state == "prompt_too_large":
+        messages.error(
+            request,
+            "Не удалось безопасно сформировать prompt Codex в пределах допустимого размера.",
+        )
     elif result.state == "not_available":
         messages.info(request, "Задача недоступна для передачи в Codex.")
     elif result.state == "dispatch_unknown":
