@@ -104,13 +104,21 @@
               <div class="expense-purpose-cell__main">{% if expense.description %}{{ expense.description }}{% elif expense.vendor %}{{ expense.vendor }}{% else %}—{% endif %}</div>
               <div class="expense-purpose-cell__sub small text-muted">{{ expense.destination_name }}</div>
             </td>
-            <td>{% if expense.receipts.all %}<span class="expense-inline-icon text-success" title="Чек приложен"><i class="bi bi-check-circle"></i></span>{% elif expense.receipt_missing_confirmed %}<span class="expense-inline-icon text-warning" title="Чек отсутствует"><i class="bi bi-exclamation-circle"></i></span>{% else %}<span class="expense-inline-icon text-danger" title="Нет чека"><i class="bi bi-x-circle"></i></span>{% endif %}</td>
+            <td>
+              {% if expense.receipts.all %}
+                <button type="button" class="expense-inline-icon finance-status-icon text-success" data-bs-toggle="tooltip" data-bs-trigger="manual" data-bs-title="Чек приложен" aria-label="Чек приложен"><i class="bi bi-check-circle"></i></button>
+              {% elif expense.receipt_missing_confirmed %}
+                <button type="button" class="expense-inline-icon finance-status-icon text-warning" data-bs-toggle="tooltip" data-bs-trigger="manual" data-bs-title="Чек отсутствует" aria-label="Чек отсутствует"><i class="bi bi-exclamation-circle"></i></button>
+              {% else %}
+                <button type="button" class="expense-inline-icon finance-status-icon text-danger" data-bs-toggle="tooltip" data-bs-trigger="manual" data-bs-title="Нет чека" aria-label="Нет чека"><i class="bi bi-x-circle"></i></button>
+              {% endif %}
+            </td>
             <td>{% finance_status_icon expense %}</td>
             <td>
               {% if expense.posted_to_1c %}
-                <span class="expense-inline-icon text-success" title="Внесено в 1С: {{ expense.posted_to_1c_by|finance_employee_name }} · {{ expense.posted_to_1c_at|date:'d.m.Y H:i' }}"><i class="bi bi-check-circle-fill"></i><span class="visually-hidden">Внесено в 1С</span></span>
+                <button type="button" class="expense-inline-icon finance-status-icon text-success" data-bs-toggle="tooltip" data-bs-trigger="manual" data-bs-title="Внесено в 1С: {{ expense.posted_to_1c_by|finance_employee_name }} · {{ expense.posted_to_1c_at|date:'d.m.Y H:i' }}" aria-label="Внесено в 1С"><i class="bi bi-check-circle"></i></button>
               {% else %}
-                <span class="text-muted" title="Не внесено в 1С">—</span>
+                <button type="button" class="expense-inline-icon finance-status-icon text-muted" data-bs-toggle="tooltip" data-bs-trigger="manual" data-bs-title="Не внесено в 1С" aria-label="Не внесено в 1С"><span aria-hidden="true">—</span></button>
               {% endif %}
             </td>
             <td class="text-end fw-semibold">{{ expense.amount|money }}</td>
