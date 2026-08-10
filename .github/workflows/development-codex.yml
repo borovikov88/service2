@@ -398,7 +398,7 @@ jobs:
 
   publish:
     needs: validate
-    if: ${{ needs.validate.outputs.validation_state == 'passed' || needs.validate.outputs.validation_state == 'failed' }}
+    if: ${{ needs.validate.outputs.validation_state == 'passed' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

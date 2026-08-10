@@ -1510,16 +1510,30 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         self.assertIn('result = "changes" if changed else "no_changes"', workflow)
         self.assertGreaterEqual(workflow.count("validate_codex_patch.py"), 2)
         self.assertIn("security_blocked", workflow)
+        publish = workflow.split("  publish:", 1)[1].split("  outcome:", 1)[0]
+        publish_condition = publish.split("runs-on:", 1)[0]
         self.assertIn(
-            "needs.validate.outputs.validation_state == 'passed' || needs.validate.outputs.validation_state == 'failed'",
-            workflow,
+            "if: ${{ needs.validate.outputs.validation_state == 'passed' }}",
+            publish_condition,
         )
+        for blocked_state in ("failed", "no_changes", "security_blocked", "infrastructure_failed"):
+            with self.subTest(blocked_state=blocked_state):
+                self.assertNotIn(blocked_state, publish_condition)
         self.assertIn("outcome-${{ needs.validate.outputs.validation_state", workflow)
         self.assertIn("codex-change-${{ inputs.launch_token }}", workflow)
         self.assertIn("steps.gate.outputs.state == 'changes'", workflow)
         self.assertIn('VALIDATION_STATE" == "no_changes"', workflow)
-        publish = workflow.split("  publish:", 1)[1].split("  outcome:", 1)[0]
         self.assertNotIn("no_changes", publish.split("steps:", 1)[0])
+        outcome = workflow.split("  outcome:", 1)[1]
+        self.assertIn(
+            'VALIDATION_STATE" == "passed" && "$PUBLISH_RESULT" == "success"',
+            outcome,
+        )
+        self.assertIn(
+            'VALIDATION_STATE" == "no_changes" && "$PUBLISH_RESULT" == "skipped"',
+            outcome,
+        )
+        self.assertIn("exit 1", outcome)
 
 
 @CODEX_SETTINGS
