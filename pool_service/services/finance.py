@@ -515,7 +515,7 @@ def report_expenses(organization, start, end, filters=None):
             organization=organization,
             spent_on__range=(start, end),
         )
-        .select_related("employee", "category", "client", "pool", "reviewed_by")
+        .select_related("employee", "category", "client", "pool", "reviewed_by", "posted_to_1c_by")
         .prefetch_related("receipts")
     )
     if filters.get("employee"):
@@ -524,6 +524,8 @@ def report_expenses(organization, start, end, filters=None):
         queryset = queryset.filter(category_id=filters["category"])
     if filters.get("client"):
         queryset = queryset.filter(client_id=filters["client"])
+    if filters.get("destination"):
+        queryset = queryset.filter(destination_type=filters["destination"])
     if filters.get("source"):
         queryset = queryset.filter(source=filters["source"])
     if filters.get("status"):

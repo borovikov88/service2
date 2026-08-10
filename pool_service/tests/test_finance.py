@@ -23,6 +23,7 @@ from pool_service.models import (
     Client,
     Expense,
     ExpenseCategory,
+    ExpenseChange,
     ExpensePeriod,
     ExpenseReceipt,
     Organization,
@@ -1349,6 +1350,95 @@ class FinanceTests(TestCase):
         expense.refresh_from_db()
         self.assertEqual(expense.status, Expense.STATUS_PENDING)
         self.assertIsNone(expense.reviewed_by)
+
+    def test_bulk_onec_marker_is_independent_and_idempotent(self):
+        self.create_expense()
+        expense = Expense.objects.get()
+        original_status = expense.status
+        self.client.force_login(self.accountant)
+
+        response = self.client.post(
+            reverse("finance_expense_bulk_onec"),
+            {"expense_ids": [str(expense.uuid)], "posted_to_1c": "true"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        expense.refresh_from_db()
+        first_posted_at = expense.posted_to_1c_at
+        self.assertTrue(expense.posted_to_1c)
+        self.assertEqual(expense.posted_to_1c_by, self.accountant)
+        self.assertEqual(expense.status, original_status)
+        self.assertTrue(ExpenseChange.objects.filter(expense=expense, action=ExpenseChange.ACTION_POSTED_TO_1C).exists())
+
+        self.client.post(
+            reverse("finance_expense_bulk_onec"),
+            {"expense_ids": [str(expense.uuid)], "posted_to_1c": "true"},
+        )
+        expense.refresh_from_db()
+        self.assertEqual(expense.posted_to_1c_at, first_posted_at)
+        self.assertEqual(ExpenseChange.objects.filter(expense=expense, action=ExpenseChange.ACTION_POSTED_TO_1C).count(), 1)
+
+        self.client.post(
+            reverse("finance_expense_bulk_onec"),
+            {"expense_ids": [str(expense.uuid)], "posted_to_1c": "false"},
+        )
+        expense.refresh_from_db()
+        self.assertFalse(expense.posted_to_1c)
+        self.assertIsNone(expense.posted_to_1c_by)
+        self.assertIsNone(expense.posted_to_1c_at)
+
+    def test_bulk_onec_requires_manage_permission_and_rejects_foreign_expense(self):
+        self.create_expense()
+        local_expense = Expense.objects.get()
+        foreign_organization = Organization.objects.create(name="Foreign organization")
+        foreign_category = ExpenseCategory.objects.create(organization=foreign_organization, name="Foreign")
+        foreign_expense = Expense.objects.create(
+            organization=foreign_organization,
+            source=Expense.SOURCE_ACCOUNTABLE,
+            employee=self.service,
+            category=foreign_category,
+            amount="1.00",
+            spent_on=date.today(),
+            destination_type=Expense.DESTINATION_OFFICE,
+            destination_name="Офисные расходы",
+            created_by=self.service,
+        )
+
+        self.client.force_login(self.manager)
+        self.assertEqual(
+            self.client.post(reverse("finance_expense_bulk_onec"), {"expense_ids": [str(local_expense.uuid)], "posted_to_1c": "true"}).status_code,
+            403,
+        )
+        self.client.force_login(self.accountant)
+        self.assertEqual(
+            self.client.post(
+                reverse("finance_expense_bulk_onec"),
+                {"expense_ids": [str(local_expense.uuid), str(foreign_expense.uuid)], "posted_to_1c": "true"},
+            ).status_code,
+            403,
+        )
+        local_expense.refresh_from_db()
+        self.assertFalse(local_expense.posted_to_1c)
+
+    def test_report_office_filter_uses_office_destination(self):
+        self.create_expense(
+            user=self.owner,
+            amount="500.00",
+            source=Expense.SOURCE_COMPANY_CASH,
+            employee=self.owner.id,
+            destination_type=Expense.DESTINATION_OFFICE,
+            destination_query="",
+        )
+        self.create_expense()
+        self.client.force_login(self.accountant)
+
+        response = self.client.get(reverse("finance_report"), {"client": "office"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["filters"]["destination"], Expense.DESTINATION_OFFICE)
+        self.assertEqual(list(response.context["expenses"])[0].destination_type, Expense.DESTINATION_OFFICE)
+        self.assertEqual(len(response.context["expenses"]), 1)
+        self.assertContains(response, "Офисные расходы")
 
     def test_closed_month_blocks_new_expenses(self):
         self.client.force_login(self.owner)

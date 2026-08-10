@@ -1433,6 +1433,15 @@ class Expense(models.Model):
     description = models.TextField(blank=True)
     receipt_missing_confirmed = models.BooleanField(default=False)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    posted_to_1c = models.BooleanField(default=False)
+    posted_to_1c_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="posted_expenses_to_1c",
+    )
+    posted_to_1c_at = models.DateTimeField(null=True, blank=True)
     created_by = models.ForeignKey(
         User,
         on_delete=models.PROTECT,
@@ -1553,11 +1562,15 @@ class ExpenseChange(models.Model):
     ACTION_UPDATED = "updated"
     ACTION_APPROVED = "approved"
     ACTION_REJECTED = "rejected"
+    ACTION_POSTED_TO_1C = "posted_1c"
+    ACTION_UNPOSTED_FROM_1C = "unposted_1c"
     ACTION_CHOICES = [
         (ACTION_CREATED, "Создан"),
         (ACTION_UPDATED, "Изменён"),
         (ACTION_APPROVED, "Подтверждён"),
         (ACTION_REJECTED, "Отклонён"),
+        (ACTION_POSTED_TO_1C, "Внесён в 1С"),
+        (ACTION_UNPOSTED_FROM_1C, "Снята отметка 1С"),
     ]
 
     expense = models.ForeignKey(Expense, on_delete=models.CASCADE, related_name="changes")
