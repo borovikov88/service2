@@ -277,6 +277,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         self.client.force_login(self.owner)
         response = self.client.get(reverse("development_task_detail", args=[task.pk]))
         self.assertContains(response, "Открыть запуск GitHub Actions")
+        self.assertContains(response, "Run #501")
         self.assertContains(
             response,
             'href="https://github.com/borovikov88/service2/actions/runs/501"',
@@ -347,6 +348,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         response = self.client.get(reverse("development_task_detail", args=[task.pk]))
 
         self.assertNotContains(response, "Открыть запуск GitHub Actions")
+        self.assertNotContains(response, "Run #")
         self.assertNotContains(response, "javascript:alert(1)")
 
     @override_settings(GITHUB_DEVELOPMENT_REPOSITORY="attacker/repo/actions/runs/9")
@@ -950,6 +952,8 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
 
         self.assertContains(response, "Интеграция GitHub Actions пока не настроена")
         self.assertNotContains(response, ">Передать в Codex<", html=False)
+        self.assertNotContains(response, "Открыть запуск GitHub Actions")
+        self.assertNotContains(response, "Run #")
 
     def test_workflow_has_pinned_actions_and_separates_secret_from_write_token(self):
         workflow = (Path(settings.BASE_DIR) / ".github/workflows/development-codex.yml").read_text(
