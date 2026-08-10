@@ -679,7 +679,7 @@ class DevelopmentAIAnalysisTests(TestCase):
 
         response = self.client.get(reverse("development_task_detail", args=[task.pk]))
 
-        self.assertContains(response, "Проверить анализ")
+        self.assertNotContains(response, "Проверить анализ")
         self.assertContains(response, "AI-анализ поставлен в очередь")
         self.assertNotContains(response, "resp_not_exposed")
         self.assertNotContains(response, "test-api-key-never-sent")
