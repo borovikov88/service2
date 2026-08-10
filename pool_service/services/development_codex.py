@@ -83,6 +83,16 @@ MAX_NO_CHANGES_ARCHIVE_BYTES = 500_000
 MAX_NO_CHANGES_CONTENT_BYTES = 250_000
 MAX_CODEX_SUMMARY_BYTES = 100_000
 MAX_PR_TITLE_BYTES = 255
+PROMPT_TRUNCATION_MARKER = "[сокращено системой из-за лимита prompt]"
+PROMPT_TRUNCATION_ORDER = (
+    "analysis",
+    "completed_work",
+    "current_activity",
+    "blockers",
+    "business_goal",
+    "description",
+    "definition_of_done",
+)
 
 
 class CodexConfigurationError(RuntimeError):
@@ -116,6 +126,18 @@ class CodexOperationResult:
     state: str
     changed: bool = False
     message: str = ""
+
+
+@dataclass(frozen=True)
+class CodexPromptBuild:
+    prompt: str
+    prompt_bytes: int
+    prompt_limit_bytes: int
+    truncated_sections: tuple[str, ...] = ()
+
+    @property
+    def truncated(self):
+        return bool(self.truncated_sections)
 
 
 def is_configured():
@@ -193,11 +215,8 @@ def _branch_name(task, launch_token):
     return branch
 
 
-def build_codex_prompt(task, analysis_iteration):
-    analysis = (analysis_iteration.response or analysis_iteration.result_summary or "").strip()
-    if not analysis:
-        raise CodexPromptError("Primary AI analysis has no usable result")
-    prompt = "\n".join(
+def _render_codex_prompt(task, sections):
+    return "\n".join(
         [
             "Выполни задачу разработки в текущем Django-репозитории.",
             "",
@@ -206,21 +225,21 @@ def build_codex_prompt(task, analysis_iteration):
             f"Приоритет: {task.get_priority_display()}",
             "",
             "Исходная задача:",
-            task.description,
+            sections["description"],
             "",
             "Бизнес-цель:",
-            task.business_goal or "Не указана.",
+            sections["business_goal"],
             "",
             "Definition of Done:",
-            task.definition_of_done or "Не указано.",
+            sections["definition_of_done"],
             "",
             "Результат первичного AI-анализа:",
-            analysis,
+            sections["analysis"],
             "",
             "Текущий технический контекст:",
-            f"Уже выполнено: {task.completed_work or 'Не указано.'}",
-            f"Текущая активность: {task.current_activity or 'Не указана.'}",
-            f"Blockers: {task.blockers or 'Нет.'}",
+            f"Уже выполнено: {sections['completed_work']}",
+            f"Текущая активность: {sections['current_activity']}",
+            f"Blockers: {sections['blockers']}",
             "",
             "Инженерные ограничения:",
             "- Сначала исследуй текущую структуру репозитория и связанные реализации.",
@@ -236,12 +255,69 @@ def build_codex_prompt(task, analysis_iteration):
             "Workflow сам создаст commit, push и Pull Request после изолированной проверки.",
         ]
     )
+
+
+def _truncate_prompt_section(text, target_bytes):
+    marker_bytes = len(PROMPT_TRUNCATION_MARKER.encode("utf-8"))
+    if target_bytes < marker_bytes:
+        return None
+    raw = text.encode("utf-8")
+    if len(raw) <= target_bytes:
+        return text
+    separator = "\n" if target_bytes >= marker_bytes + 1 else ""
+    content_limit = target_bytes - marker_bytes - len(separator.encode("utf-8"))
+    prefix = _utf8_truncate(text, max(content_limit, 0))
+    return f"{prefix}{separator}{PROMPT_TRUNCATION_MARKER}" if prefix else PROMPT_TRUNCATION_MARKER
+
+
+def _build_codex_prompt(task, analysis_iteration):
+    analysis = (analysis_iteration.response or analysis_iteration.result_summary or "").strip()
+    if not analysis:
+        raise CodexPromptError("Primary AI analysis has no usable result")
+    sections = {
+        "description": task.description,
+        "business_goal": task.business_goal or "Не указана.",
+        "definition_of_done": task.definition_of_done or "Не указано.",
+        "analysis": analysis,
+        "completed_work": task.completed_work or "Не указано.",
+        "current_activity": task.current_activity or "Не указана.",
+        "blockers": task.blockers or "Нет.",
+    }
+    limit = settings.GITHUB_DEVELOPMENT_PROMPT_MAX_BYTES
+    prompt = _render_codex_prompt(task, sections)
+    truncated_sections = []
+    for name in PROMPT_TRUNCATION_ORDER:
+        byte_count = len(prompt.encode("utf-8"))
+        if byte_count <= limit:
+            break
+        value = sections[name]
+        value_bytes = len(value.encode("utf-8"))
+        marker_bytes = len(PROMPT_TRUNCATION_MARKER.encode("utf-8"))
+        if value_bytes <= marker_bytes:
+            continue
+        target_bytes = max(marker_bytes, value_bytes - (byte_count - limit))
+        truncated = _truncate_prompt_section(value, target_bytes)
+        if truncated is None or truncated == value:
+            continue
+        sections[name] = truncated
+        truncated_sections.append(name)
+        prompt = _render_codex_prompt(task, sections)
+
     byte_count = len(prompt.encode("utf-8"))
-    if byte_count > settings.GITHUB_DEVELOPMENT_PROMPT_MAX_BYTES:
+    if byte_count > limit:
         raise CodexPromptError(
-            f"Codex prompt exceeds the configured {settings.GITHUB_DEVELOPMENT_PROMPT_MAX_BYTES}-byte limit"
+            f"Codex prompt exceeds the configured {limit}-byte limit"
         )
-    return prompt
+    return CodexPromptBuild(
+        prompt=prompt,
+        prompt_bytes=byte_count,
+        prompt_limit_bytes=limit,
+        truncated_sections=tuple(truncated_sections),
+    )
+
+
+def build_codex_prompt(task, analysis_iteration):
+    return _build_codex_prompt(task, analysis_iteration).prompt
 
 
 def _github_request(method, path, *, payload=None, expected_status=200):
@@ -663,7 +739,6 @@ def dispatch_codex(task_id, actor_id):
     if not is_configured():
         return CodexOperationResult("not_configured")
     _configuration()
-    launch_token = uuid4().hex
 
     with transaction.atomic():
         task = DevelopmentTask.objects.select_for_update().get(pk=task_id)
@@ -687,7 +762,11 @@ def dispatch_codex(task_id, actor_id):
         except ModelSelectionError:
             return CodexOperationResult("invalid_model")
         task_metadata["effective_model"] = selected_model
-        prompt = build_codex_prompt(task, analysis)
+        try:
+            prompt_build = _build_codex_prompt(task, analysis)
+        except CodexPromptError:
+            return CodexOperationResult("prompt_too_large")
+        launch_token = uuid4().hex
         next_number = (task.iterations.aggregate(value=Max("iteration_number"))["value"] or 0) + 1
         branch_name = _branch_name(task, launch_token)
         iteration = DevelopmentIteration.objects.create(
@@ -695,7 +774,7 @@ def dispatch_codex(task_id, actor_id):
             iteration_number=next_number,
             executor_type=DevelopmentIteration.EXECUTOR_CODEX,
             status=DevelopmentIteration.STATUS_WORKING,
-            prompt=prompt,
+            prompt=prompt_build.prompt,
             result_summary="Запрос на выполнение Codex подготавливается.",
             started_at=timezone.now(),
             automation_metadata={
@@ -706,6 +785,10 @@ def dispatch_codex(task_id, actor_id):
                 "branch_name": branch_name,
                 "launch_started_at": _now_iso(),
                 "effective_model": selected_model,
+                "prompt_bytes": prompt_build.prompt_bytes,
+                "prompt_limit_bytes": prompt_build.prompt_limit_bytes,
+                "prompt_truncated": prompt_build.truncated,
+                "truncated_sections": list(prompt_build.truncated_sections),
             },
         )
         task_metadata.update(
@@ -727,7 +810,7 @@ def dispatch_codex(task_id, actor_id):
             "launch_token": launch_token,
             "branch_name": branch_name,
             "codex_model": selected_model,
-            "prompt_b64": base64.b64encode(prompt.encode("utf-8")).decode("ascii"),
+            "prompt_b64": base64.b64encode(prompt_build.prompt.encode("utf-8")).decode("ascii"),
             "pr_title_b64": base64.b64encode(
                 _utf8_truncate(f"[{task.reference}] {task.title}", 240).encode("utf-8")
             ).decode("ascii"),
