@@ -40,9 +40,12 @@ from pool_service.services.development_audit import (
     human_audit_finalization_available,
 )
 from pool_service.services.development_review import (
+    HUMAN_RESOLUTION_NOTE_MAX_LENGTH,
     HUMAN_VERDICT_APPROVE,
     HUMAN_VERDICT_CORRECTIVE,
+    retry_unknown_ai_review,
     resolve_human_review,
+    resolve_unknown_ai_review,
 )
 from pool_service.services.ai_costs import (
     codex_cost_estimate,
@@ -249,11 +252,24 @@ def _human_review_context(task):
         and metadata.get("applied") is True
         and not metadata.get("human_resolution")
     )
+    recovery_available = bool(
+        review
+        and task.status == DevelopmentTask.STATUS_BLOCKED
+        and metadata.get("purpose") == "ai_review"
+        and metadata.get("decision") == "human_required"
+        and metadata.get("state") == "launch_unknown"
+        and metadata.get("applied") is True
+        and not metadata.get("human_resolution")
+    )
     return {
         "human_review_resolution_available": available,
         "human_review_iteration": review if available else None,
         "human_review_summary": review.result_summary if available else "",
         "human_review_reason": metadata.get("human_reason", "") if available else "",
+        "unknown_review_recovery_available": recovery_available,
+        "unknown_review_iteration": review if recovery_available else None,
+        "unknown_review_reason": metadata.get("human_reason", "") if recovery_available else "",
+        "human_review_note_max_length": HUMAN_RESOLUTION_NOTE_MAX_LENGTH,
     }
 
 
@@ -634,6 +650,55 @@ def development_task_review_resolve(request, task_id, review_id):
         messages.error(request, "Комментарий слишком длинный.")
     else:
         messages.info(request, "AI Review недоступна для разрешения.")
+    return redirect("development_task_detail", task_id=task.pk)
+
+
+@login_required
+@require_POST
+def development_task_review_retry_unknown(request, task_id, review_id):
+    organization, denied = _development_guard(request)
+    if denied:
+        return denied
+    task = _task_for_organization(organization, task_id)
+    get_object_or_404(task.iterations, pk=review_id)
+    result = retry_unknown_ai_review(task.pk, review_id, request.user.pk)
+    if result.state == "retry_authorized":
+        if result.changed:
+            messages.success(request, "Повторный AI Review разрешён и ожидает запуска.")
+        else:
+            messages.info(request, "Повторный AI Review уже был разрешён.")
+    else:
+        messages.error(request, "Повторный AI Review недоступен для текущего состояния.")
+    return redirect("development_task_detail", task_id=task.pk)
+
+
+@login_required
+@require_POST
+def development_task_review_resolve_unknown(request, task_id, review_id):
+    organization, denied = _development_guard(request)
+    if denied:
+        return denied
+    task = _task_for_organization(organization, task_id)
+    get_object_or_404(task.iterations, pk=review_id)
+    result = resolve_unknown_ai_review(
+        task.pk,
+        review_id,
+        request.user.pk,
+        request.POST.get("verdict"),
+        request.POST.get("note", ""),
+    )
+    if result.state == HUMAN_VERDICT_APPROVE:
+        messages.success(request, "Ручная проверка принята: задача готова к деплою.")
+    elif result.state == HUMAN_VERDICT_CORRECTIVE:
+        messages.success(request, "Запрошена корректировка; задача возвращена в разработку.")
+    elif result.state == "note_required":
+        messages.error(request, "Укажите обязательный комментарий технического руководителя.")
+    elif result.state == "invalid_note":
+        messages.error(request, "Комментарий слишком длинный.")
+    elif result.state == "conflict":
+        messages.error(request, "Неопределённый AI Review уже разрешён другим решением.")
+    else:
+        messages.error(request, "Ручное разрешение недоступно для текущего состояния.")
     return redirect("development_task_detail", task_id=task.pk)
 
 

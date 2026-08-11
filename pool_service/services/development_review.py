@@ -46,6 +46,254 @@ class HumanReviewResolutionResult:
     review_id: int | None = None
 
 
+def unresolved_launch_unknown_review(task):
+    """Return the current unresolved uncertain AI Review, if any."""
+    if task.status != DevelopmentTask.STATUS_BLOCKED:
+        return None
+    review = task.iterations.filter(
+        executor_type=DevelopmentIteration.EXECUTOR_CHATGPT,
+        automation_metadata__purpose=PURPOSE,
+    ).order_by("-id").first()
+    metadata = _metadata(review) if review is not None else {}
+    if (
+        metadata.get("state") == STATE_LAUNCH_UNKNOWN
+        and metadata.get("decision") == "human_required"
+        and metadata.get("applied") is True
+        and not metadata.get("human_resolution")
+    ):
+        return review
+    return None
+
+
+def retry_unknown_ai_review(task_id, review_id, actor_id):
+    """Authorize exactly one new AI Review attempt without external I/O."""
+    with transaction.atomic():
+        task = DevelopmentTask.objects.select_for_update().get(pk=task_id)
+        reviews = DevelopmentIteration.objects.select_for_update().filter(
+            task=task,
+            executor_type=DevelopmentIteration.EXECUTOR_CHATGPT,
+            automation_metadata__purpose=PURPOSE,
+        ).order_by("-id")
+        review = reviews.filter(pk=review_id).first()
+        if review is None:
+            return HumanReviewResolutionResult("not_available", review_id=review_id)
+
+        existing_retry = reviews.filter(
+            automation_metadata__retry_of_review_id=review.pk,
+        ).first()
+        if existing_retry is not None:
+            return HumanReviewResolutionResult(
+                "retry_authorized", False, existing_retry.pk
+            )
+
+        metadata = _metadata(review)
+        if (
+            reviews.first().pk != review.pk
+            or task.status != DevelopmentTask.STATUS_BLOCKED
+            or metadata.get("state") != STATE_LAUNCH_UNKNOWN
+            or metadata.get("decision") != "human_required"
+            or metadata.get("applied") is not True
+            or metadata.get("human_resolution")
+        ):
+            return HumanReviewResolutionResult("not_available", review_id=review.pk)
+
+        codex_id = metadata.get("codex_iteration_id")
+        codex = task.iterations.filter(
+            pk=codex_id,
+            executor_type=DevelopmentIteration.EXECUTOR_CODEX,
+        ).first()
+        if codex is None:
+            return HumanReviewResolutionResult("not_available", review_id=review.pk)
+
+        retry_attempt = reviews.filter(
+            automation_metadata__codex_iteration_id=codex.pk,
+        ).count()
+        operation_key = (
+            f"task:{task.pk}:codex:{codex.pk}:review-retry:{retry_attempt}"
+        )
+        number = (task.iterations.aggregate(n=Max("iteration_number"))["n"] or 0) + 1
+        new_review = DevelopmentIteration.objects.create(
+            task=task,
+            iteration_number=number,
+            executor_type=DevelopmentIteration.EXECUTOR_CHATGPT,
+            status=DevelopmentIteration.STATUS_WORKING,
+            prompt=review.prompt,
+            started_at=timezone.now(),
+            result_summary="AI Review retry is waiting to start.",
+            automation_metadata={
+                "purpose": PURPOSE,
+                "operation_key": operation_key,
+                "state": STATE_PENDING,
+                "codex_iteration_id": codex.pk,
+                "retry_of_review_id": review.pk,
+                "retry_attempt": retry_attempt,
+            },
+        )
+        old_status = task.status
+        task_metadata = _metadata(task)
+        task_metadata["auto_cycle_enabled"] = True
+        task.automation_metadata = task_metadata
+        task.status = DevelopmentTask.STATUS_REVIEW
+        task.current_stage = DevelopmentTask.STAGE_REVIEW
+        task.current_activity = "AI Review retry is waiting to start"
+        task.blockers = ""
+        task.save(
+            update_fields=[
+                "automation_metadata",
+                "status",
+                "current_stage",
+                "current_activity",
+                "blockers",
+                "updated_at",
+            ]
+        )
+        DevelopmentTaskEvent.objects.create(
+            task=task,
+            event_type=DevelopmentTaskEvent.TYPE_STATUS_CHANGED,
+            message="AI Review retry authorized",
+            actor_id=actor_id,
+            metadata={
+                "action": "ai_review_retry_authorized",
+                "actor_id": actor_id,
+                "old_status": old_status,
+                "new_status": task.status,
+                "old_review_id": review.pk,
+                "new_review_id": new_review.pk,
+                "operation_key": operation_key,
+            },
+        )
+    return HumanReviewResolutionResult("retry_authorized", True, new_review.pk)
+
+
+def resolve_unknown_ai_review(task_id, review_id, actor_id, verdict, note=""):
+    """Resolve an uncertain AI Review while preserving its evidence unchanged."""
+    verdict = str(verdict or "").strip()
+    note = str(note or "").strip()
+    if verdict not in HUMAN_VERDICTS:
+        return HumanReviewResolutionResult("invalid_verdict", review_id=review_id)
+    if not note:
+        return HumanReviewResolutionResult("note_required", review_id=review_id)
+    if len(note) > HUMAN_RESOLUTION_NOTE_MAX_LENGTH:
+        return HumanReviewResolutionResult("invalid_note", review_id=review_id)
+
+    operation_key = f"task:{task_id}:review:{review_id}:launch-unknown-resolution"
+    notify_ready = False
+    with transaction.atomic():
+        task = DevelopmentTask.objects.select_for_update().get(pk=task_id)
+        existing = task.events.filter(
+            metadata__action="ai_review_launch_unknown_resolved",
+            metadata__operation_key=operation_key,
+        ).first()
+        if existing is not None:
+            existing_verdict = existing.metadata.get("resolution")
+            state = verdict if existing_verdict == verdict else "conflict"
+            return HumanReviewResolutionResult(state, False, review_id)
+
+        reviews = DevelopmentIteration.objects.select_for_update().filter(
+            task=task,
+            executor_type=DevelopmentIteration.EXECUTOR_CHATGPT,
+            automation_metadata__purpose=PURPOSE,
+        ).order_by("-id")
+        review = reviews.filter(pk=review_id).first()
+        metadata = _metadata(review) if review is not None else {}
+        if (
+            review is None
+            or reviews.first().pk != review.pk
+            or task.status != DevelopmentTask.STATUS_BLOCKED
+            or metadata.get("state") != STATE_LAUNCH_UNKNOWN
+            or metadata.get("decision") != "human_required"
+            or metadata.get("applied") is not True
+            or metadata.get("human_resolution")
+        ):
+            return HumanReviewResolutionResult("not_available", review_id=review_id)
+
+        old_status = task.status
+        task_metadata = _metadata(task)
+        resolution_review_id = None
+        if verdict == HUMAN_VERDICT_APPROVE:
+            task.status = DevelopmentTask.STATUS_READY_FOR_DEPLOY
+            task.current_stage = DevelopmentTask.STAGE_COMPLETION
+            task.current_activity = "Human review approved; task is ready for deployment"
+            notify_ready = True
+        else:
+            codex_id = metadata.get("codex_iteration_id")
+            if not task.iterations.filter(
+                pk=codex_id,
+                executor_type=DevelopmentIteration.EXECUTOR_CODEX,
+            ).exists():
+                return HumanReviewResolutionResult("not_available", review_id=review_id)
+            number = (
+                task.iterations.aggregate(n=Max("iteration_number"))["n"] or 0
+            ) + 1
+            resolution_operation_key = f"{operation_key}:corrective"
+            resolution_review = DevelopmentIteration.objects.create(
+                task=task,
+                iteration_number=number,
+                executor_type=DevelopmentIteration.EXECUTOR_CHATGPT,
+                status=DevelopmentIteration.STATUS_REVISION,
+                result_summary="Human requested corrective changes",
+                next_prompt=note,
+                started_at=timezone.now(),
+                completed_at=timezone.now(),
+                automation_metadata={
+                    "purpose": PURPOSE,
+                    "state": STATE_COMPLETED,
+                    "decision": "human_required",
+                    "applied": True,
+                    "human_resolution": HUMAN_VERDICT_CORRECTIVE,
+                    "human_resolution_actor_id": actor_id,
+                    "human_resolution_at": timezone.now().isoformat(),
+                    "human_resolution_note": note,
+                    "human_resolution_fingerprint": _fingerprint([], [note]),
+                    "operation_key": resolution_operation_key,
+                    "codex_iteration_id": codex_id,
+                    "launch_unknown_review_id": review.pk,
+                },
+            )
+            resolution_review_id = resolution_review.pk
+            task_metadata["auto_cycle_enabled"] = True
+            task_metadata["human_corrective_review_id"] = resolution_review.pk
+            task.status = DevelopmentTask.STATUS_REVISION
+            task.current_stage = DevelopmentTask.STAGE_DEVELOPMENT
+            task.current_activity = "Human requested corrective changes"
+        task.automation_metadata = task_metadata
+        task.blockers = ""
+        task.save(
+            update_fields=[
+                "automation_metadata",
+                "status",
+                "current_stage",
+                "current_activity",
+                "blockers",
+                "updated_at",
+            ]
+        )
+        DevelopmentTaskEvent.objects.create(
+            task=task,
+            event_type=DevelopmentTaskEvent.TYPE_STATUS_CHANGED,
+            message=(
+                "Uncertain AI Review approved by human"
+                if verdict == HUMAN_VERDICT_APPROVE
+                else "Human requested corrective changes after uncertain AI Review"
+            ),
+            actor_id=actor_id,
+            metadata={
+                "action": "ai_review_launch_unknown_resolved",
+                "actor_id": actor_id,
+                "old_status": old_status,
+                "new_status": task.status,
+                "review_iteration_id": review.pk,
+                "resolution_review_id": resolution_review_id,
+                "resolution": verdict,
+                "note": note,
+                "operation_key": operation_key,
+            },
+        )
+        if notify_ready:
+            notify_ready_for_deploy(task)
+    return HumanReviewResolutionResult(verdict, True, review_id)
+
+
 def _metadata(value):
     data = value.automation_metadata
     return dict(data) if isinstance(data, dict) else {}
@@ -522,12 +770,14 @@ def run_review(task_id):
         operation_key = f"task:{task.pk}:codex:{codex.pk}:review"
         existing = task.iterations.filter(
             executor_type=DevelopmentIteration.EXECUTOR_CHATGPT,
-            automation_metadata__operation_key=operation_key,
-        ).first()
+            automation_metadata__purpose=PURPOSE,
+            automation_metadata__codex_iteration_id=codex.pk,
+        ).order_by("-id").first()
         if existing:
             review = existing
             prompt = review.prompt
             existing_metadata = _metadata(review)
+            operation_key = existing_metadata.get("operation_key") or operation_key
             if existing_metadata.get("applied"):
                 return ReviewResult(
                     existing_metadata.get("decision") or STATE_COMPLETED,

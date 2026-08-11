@@ -152,6 +152,8 @@ from .development_views import (
     development_task_finalize_audit,
     development_task_list,
     development_task_review_resolve,
+    development_task_review_resolve_unknown,
+    development_task_review_retry_unknown,
     development_task_start,
     development_task_update,
 )
@@ -301,6 +303,8 @@ urlpatterns = [
     path("development/tasks/<int:task_id>/codex/start/", development_task_codex_start, name="development_task_codex_start"),
     path("development/tasks/<int:task_id>/codex/check/", development_task_codex_check, name="development_task_codex_check"),
     path("development/tasks/<int:task_id>/reviews/<int:review_id>/resolve/", development_task_review_resolve, name="development_task_review_resolve"),
+    path("development/tasks/<int:task_id>/reviews/<int:review_id>/retry-unknown/", development_task_review_retry_unknown, name="development_task_review_retry_unknown"),
+    path("development/tasks/<int:task_id>/reviews/<int:review_id>/resolve-unknown/", development_task_review_resolve_unknown, name="development_task_review_resolve_unknown"),
     path("development/tasks/<int:task_id>/finalize-audit/", development_task_finalize_audit, name="development_task_finalize_audit"),
     path("development/tasks/<int:task_id>/update/", development_task_update, name="development_task_update"),
     path("development/tasks/<int:task_id>/iterations/new/", development_iteration_create, name="development_iteration_create"),

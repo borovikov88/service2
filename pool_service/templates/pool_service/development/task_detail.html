@@ -47,6 +47,29 @@
 </div>
 {% endif %}
 
+{% if unknown_review_recovery_available %}
+<div class="card card-soft border-danger p-3 p-lg-4 mb-4">
+  <h2 class="h5 mb-2">Не удалось подтвердить запуск AI Review</h2>
+  <div class="alert alert-warning py-2">
+    Неизвестно, был ли запрос AI Review принят внешним сервисом. Автоматический повтор отключён для защиты от дублирующего платного запроса.
+  </div>
+  {% if unknown_review_reason %}<div class="mb-3">{{ unknown_review_reason|linebreaksbr }}</div>{% endif %}
+  <form class="mb-3" method="post" action="{% url 'development_task_review_retry_unknown' task.id unknown_review_iteration.id %}">
+    {% csrf_token %}
+    <button class="btn btn-outline-primary" type="submit">Повторить AI Review</button>
+  </form>
+  <form method="post" action="{% url 'development_task_review_resolve_unknown' task.id unknown_review_iteration.id %}">
+    {% csrf_token %}
+    <label class="form-label" for="unknown-review-note">Комментарий технического руководителя</label>
+    <textarea class="form-control mb-3" id="unknown-review-note" name="note" rows="4" maxlength="{{ human_review_note_max_length }}" required></textarea>
+    <div class="d-flex flex-wrap gap-2">
+      <button class="btn btn-success" type="submit" name="verdict" value="approve">Решить вручную — готово к деплою</button>
+      <button class="btn btn-outline-warning" type="submit" name="verdict" value="corrective">Решить вручную — запросить корректировку</button>
+    </div>
+  </form>
+</div>
+{% endif %}
+
 {% if human_review_resolution_available %}
 <div class="card card-soft border-warning p-3 p-lg-4 mb-4">
   <h2 class="h5 mb-2">Требуется решение по AI Review</h2>
