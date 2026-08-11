@@ -11,7 +11,10 @@ from pool_service.services.development_codex import (
     dispatch_corrective_codex,
 )
 from pool_service.services.development_db import database_error_code
-from pool_service.services.development_review import run_review
+from pool_service.services.development_review import (
+    run_review,
+    unresolved_launch_unknown_review,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -41,7 +44,8 @@ class Command(BaseCommand):
             ids = [requested_task_id]
             self.stdout.write(f"target_task_id={requested_task_id}")
         else:
-            ids = list(
+            ids = []
+            candidates = (
                 DevelopmentTask.objects.filter(
                     status__in=[
                         DevelopmentTask.STATUS_CODEX_WORKING,
@@ -52,8 +56,13 @@ class Command(BaseCommand):
                     **{f"automation_metadata__{AUTO_CYCLE_METADATA_KEY}": True},
                 )
                 .order_by("id")
-                .values_list("id", flat=True)[:batch_size]
             )
+            for candidate in candidates.iterator():
+                if unresolved_launch_unknown_review(candidate) is not None:
+                    continue
+                ids.append(candidate.pk)
+                if len(ids) >= batch_size:
+                    break
         counts = {"checked": 0, "reviewed": 0, "corrective": 0, "errors": 0}
         for task_id in ids:
             task = None

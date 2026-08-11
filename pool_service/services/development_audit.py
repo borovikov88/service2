@@ -4,6 +4,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from pool_service.models import DevelopmentTask, DevelopmentTaskEvent
+from pool_service.services.development_review import unresolved_launch_unknown_review
 
 
 HUMAN_AUDIT_NOTE_MAX_LENGTH = 2000
@@ -25,7 +26,10 @@ class HumanAuditFinalizationResult:
 
 
 def human_audit_finalization_available(task):
-    return task.status in HUMAN_AUDIT_ALLOWED_STATUSES
+    return (
+        task.status in HUMAN_AUDIT_ALLOWED_STATUSES
+        and unresolved_launch_unknown_review(task) is None
+    )
 
 
 def finalize_development_task_after_audit(task_id, actor_id, note):
