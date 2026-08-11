@@ -1,10 +1,14 @@
 import logging
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import close_old_connections
 
 from pool_service.models import DevelopmentTask
-from pool_service.services.development_codex import check_codex, dispatch_corrective_codex
+from pool_service.services.development_codex import (
+    AUTO_CYCLE_METADATA_KEY,
+    check_codex,
+    dispatch_corrective_codex,
+)
 from pool_service.services.development_db import database_error_code
 from pool_service.services.development_review import run_review
 
@@ -17,18 +21,38 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--batch-size", type=int, default=25)
+        parser.add_argument(
+            "--task-id",
+            type=int,
+            help="Process exactly one DevelopmentTask, including a legacy task.",
+        )
 
     def handle(self, *args, **options):
         batch_size = max(1, min(options["batch_size"], 200))
+        requested_task_id = options.get("task_id")
         close_old_connections()
-        ids = list(
-            DevelopmentTask.objects.filter(status__in=[
-                DevelopmentTask.STATUS_CODEX_WORKING,
-                DevelopmentTask.STATUS_REVIEW,
-                DevelopmentTask.STATUS_REVISION,
-                DevelopmentTask.STATUS_BLOCKED,
-            ]).order_by("id").values_list("id", flat=True)[:batch_size]
-        )
+        if requested_task_id is not None:
+            if not DevelopmentTask.objects.filter(pk=requested_task_id).exists():
+                raise CommandError(
+                    f"DevelopmentTask id={requested_task_id} was not found; "
+                    "no tasks were processed."
+                )
+            ids = [requested_task_id]
+            self.stdout.write(f"target_task_id={requested_task_id}")
+        else:
+            ids = list(
+                DevelopmentTask.objects.filter(
+                    status__in=[
+                        DevelopmentTask.STATUS_CODEX_WORKING,
+                        DevelopmentTask.STATUS_REVIEW,
+                        DevelopmentTask.STATUS_REVISION,
+                        DevelopmentTask.STATUS_BLOCKED,
+                    ],
+                    **{f"automation_metadata__{AUTO_CYCLE_METADATA_KEY}": True},
+                )
+                .order_by("id")
+                .values_list("id", flat=True)[:batch_size]
+            )
         counts = {"checked": 0, "reviewed": 0, "corrective": 0, "errors": 0}
         for task_id in ids:
             task = None

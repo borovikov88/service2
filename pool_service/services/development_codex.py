@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 
 PROVIDER = "github_actions"
 PURPOSE = "codex_execution"
+AUTO_CYCLE_METADATA_KEY = "auto_cycle_enabled"
 STATE_DISPATCHING = "dispatching"
 STATE_DISPATCHED = "dispatched"
 STATE_DISPATCH_UNKNOWN = "dispatch_unknown"
@@ -853,6 +854,7 @@ def dispatch_codex(task_id, actor_id):
         )
         task_metadata.update(
             {
+                AUTO_CYCLE_METADATA_KEY: True,
                 "active_codex_iteration_id": iteration.pk,
                 "codex_launch_token": launch_token,
                 "codex_branch_name": branch_name,
@@ -1245,7 +1247,15 @@ def _dispatch_new_corrective_codex(task_id, review_id):
                 "prompt_bytes": len(prompt.encode("utf-8")),
             },
         )
-        task_meta.update({"active_codex_iteration_id": iteration.pk, "codex_launch_token": launch_token, "codex_branch_name": branch_name, "codex_model": selected_model})
+        task_meta.update(
+            {
+                AUTO_CYCLE_METADATA_KEY: True,
+                "active_codex_iteration_id": iteration.pk,
+                "codex_launch_token": launch_token,
+                "codex_branch_name": branch_name,
+                "codex_model": selected_model,
+            }
+        )
         task.automation_metadata = task_meta
         task.current_activity = f"Запускается корректировка Codex {corrective_number}"
         task.save(update_fields=["automation_metadata", "current_activity", "updated_at"])
