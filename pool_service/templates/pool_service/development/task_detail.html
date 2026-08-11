@@ -64,6 +64,19 @@
 </div>
 {% endif %}
 
+{% if human_audit_finalization_available %}
+<div class="card card-soft border-success p-3 p-lg-4 mb-4">
+  <h2 class="h5 mb-2">Завершение после human audit</h2>
+  <p class="text-muted">Используйте это действие только после независимого подтверждения результата.</p>
+  <form method="post" action="{% url 'development_task_finalize_audit' task.id %}">
+    {% csrf_token %}
+    <label class="form-label" for="human-audit-note">Комментарий по аудиту</label>
+    <textarea class="form-control mb-3" id="human-audit-note" name="note" rows="4" maxlength="{{ human_audit_note_max_length }}" required></textarea>
+    <button class="btn btn-success" type="submit">Завершить после аудита</button>
+  </form>
+</div>
+{% endif %}
+
 <div class="card card-soft p-3 p-lg-4 mb-4">
   <h2 class="h5 mb-3">Стоимость AI</h2>
   <div class="row g-3">

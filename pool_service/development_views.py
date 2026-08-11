@@ -34,6 +34,11 @@ from pool_service.services.development_codex import (
     resolve_codex_iteration,
 )
 from pool_service.services.development_model_selection import display_context, effective_model
+from pool_service.services.development_audit import (
+    HUMAN_AUDIT_NOTE_MAX_LENGTH,
+    finalize_development_task_after_audit,
+    human_audit_finalization_available,
+)
 from pool_service.services.development_review import (
     HUMAN_VERDICT_APPROVE,
     HUMAN_VERDICT_CORRECTIVE,
@@ -362,6 +367,8 @@ def development_task_detail(request, task_id):
     context.update(_analysis_context(task, analysis_iteration))
     context.update(_codex_context(task))
     context.update(_human_review_context(task))
+    context["human_audit_finalization_available"] = human_audit_finalization_available(task)
+    context["human_audit_note_max_length"] = HUMAN_AUDIT_NOTE_MAX_LENGTH
     context["model_selection"] = display_context(task)
     costs = cost_context(
         iterations,
@@ -627,6 +634,33 @@ def development_task_review_resolve(request, task_id, review_id):
         messages.error(request, "Комментарий слишком длинный.")
     else:
         messages.info(request, "AI Review недоступна для разрешения.")
+    return redirect("development_task_detail", task_id=task.pk)
+
+
+@login_required
+@require_POST
+def development_task_finalize_audit(request, task_id):
+    organization, denied = _development_guard(request)
+    if denied:
+        return denied
+    task = _task_for_organization(organization, task_id)
+    result = finalize_development_task_after_audit(
+        task.pk,
+        request.user.pk,
+        request.POST.get("note", ""),
+    )
+    if result.state == "finalized":
+        messages.success(request, "Задача завершена после подтверждённого аудита.")
+    elif result.state == "already_finalized":
+        messages.info(request, "Задача уже завершена этим аудитом.")
+    elif result.state == "already_done":
+        messages.info(request, "Задача уже была завершена ранее.")
+    elif result.state == "note_required":
+        messages.error(request, "Укажите комментарий по аудиту.")
+    elif result.state == "invalid_note":
+        messages.error(request, "Комментарий по аудиту слишком длинный.")
+    else:
+        messages.error(request, "Текущее состояние задачи не допускает завершение после аудита.")
     return redirect("development_task_detail", task_id=task.pk)
 
 
