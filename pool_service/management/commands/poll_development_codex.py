@@ -2,6 +2,7 @@ import logging
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import close_old_connections
+from django.db.models import Q
 
 from pool_service.models import DevelopmentTask
 from pool_service.services.development_codex import (
@@ -93,7 +94,12 @@ class Command(BaseCommand):
                     review = task.iterations.filter(
                         executor_type="chatgpt",
                         automation_metadata__purpose="ai_review",
-                        automation_metadata__decision="corrective_required",
+                    ).filter(
+                        Q(automation_metadata__decision="corrective_required")
+                        | Q(
+                            automation_metadata__decision="human_required",
+                            automation_metadata__human_resolution="corrective",
+                        )
                     ).order_by("-id").first()
                     if review:
                         iteration_id = review.pk
