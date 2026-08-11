@@ -92,7 +92,7 @@ def _trimmed_source_text(value):
 
 def classify_nomenclature_type(value):
     normalized = _normalized_text(value)
-    if normalized == "запас":
+    if normalized in {"запас", "товар"}:
         return "goods"
     if normalized in {"услуга", "работа"}:
         return "service"

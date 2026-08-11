@@ -3,6 +3,7 @@ from django.template.defaultfilters import date as date_filter
 from django.utils.html import format_html
 
 from pool_service.services.finance import format_money, user_display_name
+from decimal import Decimal, InvalidOperation
 
 
 register = template.Library()
@@ -18,6 +19,14 @@ def finance_employee_name(user):
 @register.filter
 def money(value):
     return format_money(value)
+
+
+@register.filter
+def ratio_percent(value):
+    try:
+        return f"{(Decimal(value) * 100).quantize(Decimal('0.1'))}".replace(".", ",")
+    except (InvalidOperation, TypeError, ValueError):
+        return "—"
 
 
 @register.filter
