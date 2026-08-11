@@ -4,6 +4,7 @@
 
 ```bash
 python manage.py poll_development_analyses --batch-size 50
+python manage.py poll_development_codex --batch-size 25
 ```
 
 Для production её следует запускать cron/scheduler примерно раз в минуту. Чтобы не

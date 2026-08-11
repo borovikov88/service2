@@ -1953,6 +1953,7 @@ class DevelopmentTask(models.Model):
     STATUS_TESTING = "testing"
     STATUS_REVIEW = "review"
     STATUS_REVISION = "revision"
+    STATUS_READY_FOR_DEPLOY = "ready_for_deploy"
     STATUS_BLOCKED = "blocked"
     STATUS_DONE = "done"
     STATUS_FAILED = "failed"
@@ -1965,6 +1966,7 @@ class DevelopmentTask(models.Model):
         (STATUS_TESTING, "Тестирование"),
         (STATUS_REVIEW, "Проверка"),
         (STATUS_REVISION, "Требуется доработка"),
+        (STATUS_READY_FOR_DEPLOY, "Готова к деплою"),
         (STATUS_BLOCKED, "Заблокирована"),
         (STATUS_DONE, "Выполнена"),
         (STATUS_FAILED, "Не выполнена"),

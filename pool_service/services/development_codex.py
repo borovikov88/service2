@@ -8,6 +8,7 @@ import ssl
 import stat
 import zipfile
 from dataclasses import dataclass
+from datetime import timedelta
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import (
@@ -24,6 +25,7 @@ from django.conf import settings
 from django.db import transaction
 from django.db.models import Max
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from pool_service.models import (
     DevelopmentIteration,
@@ -37,6 +39,7 @@ from pool_service.services.development_model_selection import (
     effective_model,
     selection_metadata,
 )
+from pool_service.services.development_notifications import notify_human_required
 
 
 logger = logging.getLogger(__name__)
@@ -964,6 +967,319 @@ def dispatch_codex(task_id, actor_id):
     return CodexOperationResult(STATE_DISPATCHED, changed=True)
 
 
+def _corrective_dispatch_is_stale(iteration, metadata):
+    started_at = parse_datetime(str(metadata.get("launch_started_at") or ""))
+    if started_at is None:
+        started_at = iteration.updated_at
+    if timezone.is_naive(started_at):
+        started_at = timezone.make_aware(started_at, timezone.get_current_timezone())
+    grace_seconds = max(
+        60,
+        int(settings.GITHUB_DEVELOPMENT_TIMEOUT_SECONDS) * 2,
+    )
+    return timezone.now() - started_at >= timedelta(seconds=grace_seconds)
+
+
+def _mark_corrective_dispatch_unknown(iteration_id, *, error_type):
+    message = "Не удалось однозначно подтвердить запуск corrective Codex."
+    with transaction.atomic():
+        locked = (
+            DevelopmentIteration.objects.select_for_update()
+            .select_related("task")
+            .get(pk=iteration_id)
+        )
+        metadata = _metadata(locked)
+        if metadata.get("state") != STATE_DISPATCHING:
+            return CodexOperationResult(
+                metadata.get("state", STATE_DISPATCH_UNKNOWN), changed=False
+            )
+        metadata.update(
+            {
+                "state": STATE_DISPATCH_UNKNOWN,
+                "dispatch_checked_at": _now_iso(),
+                "dispatch_error_type": error_type,
+            }
+        )
+        locked.automation_metadata = metadata
+        locked.technical_errors = message
+        locked.save(
+            update_fields=["automation_metadata", "technical_errors", "updated_at"]
+        )
+        task = locked.task
+        old_status = task.status
+        task.status = DevelopmentTask.STATUS_BLOCKED
+        task.current_stage = DevelopmentTask.STAGE_DEVELOPMENT
+        task.current_activity = "Требуется ручная проверка запуска corrective Codex"
+        task.blockers = message
+        task.save(
+            update_fields=[
+                "status",
+                "current_stage",
+                "current_activity",
+                "blockers",
+                "updated_at",
+            ]
+        )
+        _create_event(
+            task,
+            None,
+            "Запуск corrective Codex требует проверки",
+            action="corrective_codex_dispatch_unknown",
+            iteration=locked,
+            old_status=old_status,
+            extra={"error_type": error_type},
+        )
+        notify_human_required(
+            task,
+            message,
+            dedupe_suffix=f"corrective-dispatch-unknown:{locked.pk}",
+        )
+    return CodexOperationResult(STATE_DISPATCH_UNKNOWN, changed=True)
+
+
+def _reconcile_corrective_dispatch(iteration_id):
+    with transaction.atomic():
+        iteration = (
+            DevelopmentIteration.objects.select_for_update()
+            .select_related("task")
+            .get(pk=iteration_id)
+        )
+        metadata = _metadata(iteration)
+        if metadata.get("state") != STATE_DISPATCHING:
+            return CodexOperationResult(
+                metadata.get("state", STATE_DISPATCHED), changed=False
+            )
+        if iteration.task.status != DevelopmentTask.STATUS_REVISION:
+            return CodexOperationResult("task_state_changed", changed=False)
+        if not _corrective_dispatch_is_stale(iteration, metadata):
+            return CodexOperationResult(STATE_DISPATCHING, changed=False)
+        launch_token = metadata.get("launch_token")
+        task = iteration.task
+
+    try:
+        run = _find_matching_run(task, iteration)
+    except Exception as exc:
+        logger.warning(
+            "Corrective Codex reconciliation failed: task=%s iteration=%s error_type=%s",
+            task.pk,
+            iteration.pk,
+            type(exc).__name__,
+        )
+        return _mark_corrective_dispatch_unknown(
+            iteration.pk, error_type=type(exc).__name__
+        )
+    run_id = _workflow_run_id(run.get("id")) if run else None
+    if run_id is None or not _remember_workflow_run(
+        iteration.pk, launch_token, run_id
+    ):
+        return _mark_corrective_dispatch_unknown(
+            iteration.pk, error_type="WorkflowRunNotFound"
+        )
+
+    with transaction.atomic():
+        locked = (
+            DevelopmentIteration.objects.select_for_update()
+            .select_related("task")
+            .get(pk=iteration.pk)
+        )
+        metadata = _metadata(locked)
+        if metadata.get("launch_token") != launch_token:
+            return CodexOperationResult("ownership_changed", changed=False)
+        if metadata.get("state") != STATE_DISPATCHING:
+            return CodexOperationResult(
+                metadata.get("state", STATE_DISPATCHED), changed=False
+            )
+        metadata.update(
+            {
+                "state": STATE_DISPATCHED,
+                "dispatched_at": _now_iso(),
+                "dispatch_reconciled": True,
+            }
+        )
+        locked.automation_metadata = metadata
+        locked.result_summary = "Corrective Codex найден в GitHub Actions."
+        locked.save(
+            update_fields=["automation_metadata", "result_summary", "updated_at"]
+        )
+        task = locked.task
+        if task.status != DevelopmentTask.STATUS_REVISION:
+            return CodexOperationResult("task_state_changed", changed=True)
+        old_status = task.status
+        corrective_number = metadata.get("corrective_number")
+        task.status = DevelopmentTask.STATUS_CODEX_WORKING
+        task.current_stage = DevelopmentTask.STAGE_DEVELOPMENT
+        task.current_activity = f"Codex выполняет корректировку {corrective_number}"
+        task.blockers = ""
+        task.save(
+            update_fields=[
+                "status",
+                "current_stage",
+                "current_activity",
+                "blockers",
+                "updated_at",
+            ]
+        )
+        _create_event(
+            task,
+            None,
+            "Автоматический запуск corrective Codex восстановлен",
+            action="corrective_codex_dispatch_reconciled",
+            iteration=locked,
+            old_status=old_status,
+            extra={
+                "review_id": metadata.get("corrective_review_id"),
+                "corrective_number": corrective_number,
+                "workflow_run_id": run_id,
+            },
+        )
+    return CodexOperationResult(STATE_DISPATCHED, changed=True)
+
+
+def dispatch_corrective_codex(task_id, review_id):
+    """Launch or safely reconcile one corrective execution per AI Review."""
+    if not is_configured():
+        return CodexOperationResult("not_configured")
+    _configuration()
+    existing = DevelopmentIteration.objects.filter(
+        task_id=task_id,
+        executor_type=DevelopmentIteration.EXECUTOR_CODEX,
+        automation_metadata__corrective_review_id=review_id,
+    ).first()
+    if existing is not None:
+        state = _metadata(existing).get("state", STATE_DISPATCHED)
+        if state == STATE_DISPATCHING:
+            return _reconcile_corrective_dispatch(existing.pk)
+        return CodexOperationResult(state, changed=False)
+    return _dispatch_new_corrective_codex(task_id, review_id)
+
+
+def _dispatch_new_corrective_codex(task_id, review_id):
+    """Launch one bounded corrective execution; the review row is its idempotency key."""
+    if not is_configured():
+        return CodexOperationResult("not_configured")
+    _configuration()
+    with transaction.atomic():
+        task = DevelopmentTask.objects.select_for_update().get(pk=task_id)
+        if task.status != DevelopmentTask.STATUS_REVISION:
+            return CodexOperationResult("not_available")
+        review = task.iterations.filter(
+            pk=review_id,
+            executor_type=DevelopmentIteration.EXECUTOR_CHATGPT,
+            automation_metadata__purpose="ai_review",
+            automation_metadata__decision="corrective_required",
+        ).first()
+        if review is None:
+            return CodexOperationResult("not_available")
+        existing = task.iterations.filter(
+            executor_type=DevelopmentIteration.EXECUTOR_CODEX,
+            automation_metadata__corrective_review_id=review.pk,
+        ).first()
+        if existing:
+            return CodexOperationResult(_metadata(existing).get("state", STATE_DISPATCHED))
+        previous = task.iterations.filter(
+            executor_type=DevelopmentIteration.EXECUTOR_CODEX,
+            automation_metadata__purpose=PURPOSE,
+        )
+        corrective_number = previous.filter(automation_metadata__corrective_number__gt=0).count() + 1
+        if corrective_number > settings.DEVELOPMENT_MAX_CORRECTIVE_ITERATIONS:
+            task.status = DevelopmentTask.STATUS_BLOCKED
+            task.current_activity = "Достигнут лимит автоматических корректировок"
+            task.blockers = "Требуется решение человека после достижения лимита корректировок."
+            task.save(update_fields=["status", "current_activity", "blockers", "updated_at"])
+            DevelopmentTaskEvent.objects.create(
+                task=task, event_type=DevelopmentTaskEvent.TYPE_STATUS_CHANGED,
+                message="Достигнут лимит автоматических корректировок",
+                metadata={"action": "corrective_limit_reached", "review_id": review.pk},
+            )
+            return CodexOperationResult("limit_reached", changed=True)
+        fingerprint = _metadata(review).get("fingerprint")
+        earlier = task.iterations.filter(
+            executor_type=DevelopmentIteration.EXECUTOR_CHATGPT,
+            automation_metadata__purpose="ai_review",
+            automation_metadata__decision="corrective_required",
+            automation_metadata__fingerprint=fingerprint,
+        ).exclude(pk=review.pk)
+        if fingerprint and earlier.exists():
+            task.status = DevelopmentTask.STATUS_BLOCKED
+            task.current_activity = "Автоматическая корректировка остановлена"
+            task.blockers = "AI Review повторил те же замечания; требуется решение человека."
+            task.save(update_fields=["status", "current_activity", "blockers", "updated_at"])
+            DevelopmentTaskEvent.objects.create(
+                task=task, event_type=DevelopmentTaskEvent.TYPE_STATUS_CHANGED,
+                message="Обнаружен повторяющийся цикл замечаний",
+                metadata={"action": "corrective_loop_detected", "review_id": review.pk, "fingerprint": fingerprint},
+            )
+            return CodexOperationResult("loop_detected", changed=True)
+        task_meta = _metadata(task)
+        selected_model = task_meta.get("effective_model") or task_meta.get("codex_model")
+        if selected_model not in CODEX_MODELS:
+            return CodexOperationResult("invalid_model")
+        instructions = _metadata(review).get("corrective_instructions") or []
+        previous_codex_id = _metadata(review).get("codex_iteration_id")
+        prompt = "\n".join([
+            "Выполни только необходимые исправления по результатам AI Review.",
+            f"Задача: {task.reference} — {task.title}",
+            "Замечания и критерии исправления:",
+            *[f"- {item}" for item in instructions],
+            f"Предыдущая Codex iteration: {previous_codex_id}",
+            "Не выполняй deploy, merge, push или commit вручную. Не изменяй нерелевантную область.",
+            "Добавь/обнови локальные тесты и кратко перечисли проверки.",
+        ])
+        if len(prompt.encode("utf-8")) > settings.GITHUB_DEVELOPMENT_PROMPT_MAX_BYTES:
+            return CodexOperationResult("prompt_too_large")
+        launch_token = uuid4().hex
+        number = (task.iterations.aggregate(value=Max("iteration_number"))["value"] or 0) + 1
+        branch_name = _branch_name(task, launch_token)
+        iteration = DevelopmentIteration.objects.create(
+            task=task, iteration_number=number,
+            executor_type=DevelopmentIteration.EXECUTOR_CODEX,
+            status=DevelopmentIteration.STATUS_WORKING, prompt=prompt,
+            result_summary="Корректировка Codex подготавливается.", started_at=timezone.now(),
+            automation_metadata={
+                "purpose": PURPOSE, "provider": PROVIDER, "state": STATE_DISPATCHING,
+                "launch_token": launch_token, "branch_name": branch_name,
+                "launch_started_at": _now_iso(), "effective_model": selected_model,
+                "corrective_number": corrective_number, "corrective_review_id": review.pk,
+                "previous_codex_iteration_id": previous_codex_id,
+                "prompt_bytes": len(prompt.encode("utf-8")),
+            },
+        )
+        task_meta.update({"active_codex_iteration_id": iteration.pk, "codex_launch_token": launch_token, "codex_branch_name": branch_name, "codex_model": selected_model})
+        task.automation_metadata = task_meta
+        task.current_activity = f"Запускается корректировка Codex {corrective_number}"
+        task.save(update_fields=["automation_metadata", "current_activity", "updated_at"])
+
+    payload = {"ref": BASE_BRANCH, "inputs": {
+        "task_reference": task.reference, "launch_token": launch_token,
+        "branch_name": branch_name, "codex_model": selected_model,
+        "prompt_b64": base64.b64encode(prompt.encode()).decode("ascii"),
+        "pr_title_b64": base64.b64encode(_utf8_truncate(f"[{task.reference}] corrective {corrective_number}: {task.title}", 240).encode()).decode("ascii"),
+    }}
+    try:
+        _dispatch_workflow(payload)
+    except Exception as exc:
+        logger.warning("Corrective Codex dispatch outcome unknown: task=%s iteration=%s error_type=%s", task_id, iteration.pk, type(exc).__name__)
+        return _mark_corrective_dispatch_unknown(
+            iteration.pk, error_type=type(exc).__name__
+        )
+    with transaction.atomic():
+        locked = DevelopmentIteration.objects.select_for_update().select_related("task").get(pk=iteration.pk)
+        metadata = _metadata(locked)
+        metadata.update({"state": STATE_DISPATCHED, "dispatched_at": _now_iso()})
+        locked.automation_metadata = metadata
+        locked.result_summary = "Corrective Codex передан в GitHub Actions."
+        locked.save(update_fields=["automation_metadata", "result_summary", "updated_at"])
+        task = locked.task
+        old_status = task.status
+        task.status = DevelopmentTask.STATUS_CODEX_WORKING
+        task.current_stage = DevelopmentTask.STAGE_DEVELOPMENT
+        task.current_activity = f"Codex выполняет корректировку {corrective_number}"
+        task.blockers = ""
+        task.save(update_fields=["status", "current_stage", "current_activity", "blockers", "updated_at"])
+        _create_event(task, None, "Автоматическая корректировка передана в Codex", action="corrective_codex_dispatched", iteration=locked, old_status=old_status, extra={"review_id": review.pk, "corrective_number": corrective_number})
+    return CodexOperationResult(STATE_DISPATCHED, changed=True)
+
+
 def _find_matching_run(task, iteration):
     metadata = _metadata(iteration)
     expected_title = f"development-{task.reference}-{metadata.get('launch_token', '')}"
@@ -1366,5 +1682,10 @@ def check_codex(task_id, actor_id):
             iteration=locked,
             old_status=old_status,
             extra={"provider_state": remote_state},
+        )
+        notify_human_required(
+            task,
+            message,
+            dedupe_suffix=f"codex-attention:{locked.pk}:{remote_state}",
         )
         return CodexOperationResult(remote_state, changed=True, message=message)

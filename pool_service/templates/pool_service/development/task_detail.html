@@ -82,10 +82,10 @@
         <button class="btn btn-success" type="submit">Передать в Codex</button>
       </form>
       {% endif %}
-      {% if codex_can_check %}
+      {% if codex_can_check and request.user.is_staff %}
       <form method="post" action="{% url 'development_task_codex_check' task.id %}">
         {% csrf_token %}
-        <button class="btn btn-outline-primary" type="submit">Проверить Codex</button>
+        <button class="btn btn-outline-primary" type="submit">Проверить Codex (аварийный режим)</button>
       </form>
       {% endif %}
     </div>
