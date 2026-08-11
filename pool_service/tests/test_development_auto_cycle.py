@@ -1,9 +1,11 @@
 import json
+from io import StringIO
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
+from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -21,7 +23,7 @@ SETTINGS = override_settings(
 )
 
 
-class DevelopmentAutoCycleTests(TestCase):
+class AutoCycleFixtureMixin:
     def setUp(self):
         self.org = Organization.objects.create(name="Auto", paid_until=timezone.now() + timedelta(days=3))
         self.user = User.objects.create_user("auto-owner")
@@ -51,6 +53,8 @@ class DevelopmentAutoCycleTests(TestCase):
         usage = SimpleNamespace(input_tokens=100, output_tokens=20, input_tokens_details=SimpleNamespace(cached_tokens=0))
         return SimpleNamespace(id=response_id, model="gpt-5.6-luna", output_text=json.dumps(body), usage=usage)
 
+
+class DevelopmentAutoCycleTests(AutoCycleFixtureMixin, TestCase):
     @SETTINGS
     @patch("pool_service.services.development_review._create_response")
     def test_accepted_is_idempotent_and_notifies_once(self, create):
@@ -107,3 +111,344 @@ class DevelopmentAutoCycleTests(TestCase):
         self.task.refresh_from_db()
         self.assertEqual(result.state, "limit_reached")
         self.assertEqual(self.task.status, DevelopmentTask.STATUS_BLOCKED)
+
+
+class PollDevelopmentCodexCommandTests(AutoCycleFixtureMixin, TestCase):
+    def run_command(self):
+        output = StringIO()
+        call_command("poll_development_codex", batch_size=25, stdout=output)
+        return output.getvalue().strip()
+
+    @SETTINGS
+    @patch("pool_service.services.development_review._create_response")
+    def test_completed_codex_is_reviewed_and_accepted(self, create):
+        create.return_value = self.response("accepted")
+
+        first = self.run_command()
+        second = self.run_command()
+
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, DevelopmentTask.STATUS_READY_FOR_DEPLOY)
+        self.assertIn("reviewed=1", first)
+        self.assertIn("errors=0", first)
+        self.assertIn("reviewed=0", second)
+        self.assertEqual(create.call_count, 1)
+        self.assertEqual(
+            Notification.objects.filter(
+                dedupe_key=f"development-task:{self.task.pk}:ready-for-deploy"
+            ).count(),
+            1,
+        )
+
+    @SETTINGS
+    @patch("pool_service.services.development_codex._find_matching_run")
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    @patch("pool_service.services.development_review._create_response")
+    def test_corrective_review_dispatches_exactly_one_iteration(self, create, dispatch, runs):
+        create.return_value = self.response(
+            "corrective_required", instructions=["Fix trusted regression"]
+        )
+        runs.return_value = {"id": 12345, "status": "in_progress"}
+
+        first = self.run_command()
+        event_count = self.task.events.count()
+        second = self.run_command()
+
+        self.task.refresh_from_db()
+        corrective = self.task.iterations.filter(
+            executor_type=DevelopmentIteration.EXECUTOR_CODEX,
+            automation_metadata__corrective_number=1,
+        )
+        self.assertEqual(corrective.count(), 1)
+        self.assertEqual(self.task.status, DevelopmentTask.STATUS_CODEX_WORKING)
+        self.assertIn("reviewed=1", first)
+        self.assertIn("corrective=1", first)
+        self.assertIn("corrective=0", second)
+        self.assertEqual(dispatch.call_count, 1)
+        self.assertEqual(self.task.events.count(), event_count)
+
+    @SETTINGS
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    @patch("pool_service.services.development_review._create_response")
+    def test_human_review_blocks_without_corrective_dispatch(self, create, dispatch):
+        create.return_value = self.response(
+            "human_required", human_reason="Ambiguous security requirement"
+        )
+
+        self.run_command()
+        self.run_command()
+
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, DevelopmentTask.STATUS_BLOCKED)
+        self.assertFalse(
+            self.task.iterations.filter(
+                executor_type=DevelopmentIteration.EXECUTOR_CODEX,
+                automation_metadata__corrective_number__gt=0,
+            ).exists()
+        )
+        self.assertEqual(dispatch.call_count, 0)
+        self.assertEqual(
+            Notification.objects.filter(
+                dedupe_key=f"development-task:{self.task.pk}:review-human:3"
+            ).count(),
+            1,
+        )
+
+    @SETTINGS
+    def test_security_and_infrastructure_failures_stop_the_cycle(self):
+        for state in ("security_blocked", "infrastructure_failed"):
+            with self.subTest(state=state):
+                metadata = dict(self.codex.automation_metadata)
+                metadata.update({"state": state, "applied": True})
+                self.codex.automation_metadata = metadata
+                self.codex.save(update_fields=["automation_metadata"])
+                self.task.status = DevelopmentTask.STATUS_BLOCKED
+                self.task.save(update_fields=["status"])
+                with patch(
+                    "pool_service.management.commands.poll_development_codex.run_review"
+                ) as review, patch(
+                    "pool_service.management.commands.poll_development_codex.dispatch_corrective_codex"
+                ) as dispatch:
+                    output = self.run_command()
+                self.assertIn("errors=0", output)
+                review.assert_not_called()
+                dispatch.assert_not_called()
+
+    @SETTINGS
+    @patch("pool_service.services.development_review._create_response")
+    def test_pending_review_is_resumed_without_creating_a_duplicate(self, create):
+        create.return_value = self.response("accepted", response_id="resp-recovered")
+        operation_key = f"task:{self.task.pk}:codex:{self.codex.pk}:review"
+        review = DevelopmentIteration.objects.create(
+            task=self.task,
+            iteration_number=3,
+            executor_type=DevelopmentIteration.EXECUTOR_CHATGPT,
+            status=DevelopmentIteration.STATUS_WORKING,
+            prompt="stored review prompt",
+            started_at=timezone.now(),
+            automation_metadata={
+                "purpose": "ai_review",
+                "operation_key": operation_key,
+                "state": "pending",
+                "codex_iteration_id": self.codex.pk,
+            },
+        )
+
+        self.run_command()
+        self.run_command()
+
+        self.task.refresh_from_db()
+        review.refresh_from_db()
+        self.assertEqual(self.task.status, DevelopmentTask.STATUS_READY_FOR_DEPLOY)
+        self.assertEqual(review.automation_metadata["state"], "completed")
+        self.assertEqual(
+            self.task.iterations.filter(
+                executor_type=DevelopmentIteration.EXECUTOR_CHATGPT,
+                automation_metadata__operation_key=operation_key,
+            ).count(),
+            1,
+        )
+        self.assertEqual(create.call_count, 1)
+        self.assertEqual(len(review.automation_metadata["ai_usage"]["calls"]), 1)
+        self.assertEqual(
+            Notification.objects.filter(
+                dedupe_key=f"development-task:{self.task.pk}:ready-for-deploy"
+            ).count(),
+            1,
+        )
+
+    @SETTINGS
+    @patch("pool_service.services.development_review._create_response")
+    def test_response_ready_review_is_applied_after_crash(self, create):
+        create.return_value = self.response("accepted", response_id="resp-stored")
+
+        with patch(
+            "pool_service.services.development_review._apply_stored_review",
+            side_effect=RuntimeError("simulated process crash"),
+        ):
+            first = self.run_command()
+        review = self.task.iterations.get(
+            executor_type=DevelopmentIteration.EXECUTOR_CHATGPT
+        )
+        self.assertEqual(review.automation_metadata["state"], "response_ready")
+        self.assertIn("errors=1", first)
+
+        second = self.run_command()
+        third = self.run_command()
+
+        self.task.refresh_from_db()
+        review.refresh_from_db()
+        self.assertEqual(self.task.status, DevelopmentTask.STATUS_READY_FOR_DEPLOY)
+        self.assertEqual(review.automation_metadata["state"], "completed")
+        self.assertIn("reviewed=1", second)
+        self.assertIn("reviewed=0", third)
+        self.assertEqual(create.call_count, 1)
+        self.assertEqual(len(review.automation_metadata["ai_usage"]["calls"]), 1)
+        self.assertEqual(
+            Notification.objects.filter(
+                dedupe_key=f"development-task:{self.task.pk}:ready-for-deploy"
+            ).count(),
+            1,
+        )
+
+    @SETTINGS
+    @patch("pool_service.services.development_review._create_response")
+    def test_stale_launching_review_fails_closed_without_second_create(self, create):
+        operation_key = f"task:{self.task.pk}:codex:{self.codex.pk}:review"
+        review = DevelopmentIteration.objects.create(
+            task=self.task,
+            iteration_number=3,
+            executor_type=DevelopmentIteration.EXECUTOR_CHATGPT,
+            status=DevelopmentIteration.STATUS_WORKING,
+            prompt="stored review prompt",
+            started_at=timezone.now() - timedelta(minutes=5),
+            automation_metadata={
+                "purpose": "ai_review",
+                "operation_key": operation_key,
+                "state": "launching",
+                "launch_token": "review-launch-token",
+                "launch_started_at": (timezone.now() - timedelta(minutes=5)).isoformat(),
+                "codex_iteration_id": self.codex.pk,
+            },
+        )
+
+        self.run_command()
+        event_count = self.task.events.filter(
+            metadata__action="ai_review_launch_unknown"
+        ).count()
+        self.run_command()
+
+        self.task.refresh_from_db()
+        review.refresh_from_db()
+        self.assertEqual(self.task.status, DevelopmentTask.STATUS_BLOCKED)
+        self.assertEqual(review.automation_metadata["state"], "launch_unknown")
+        self.assertEqual(create.call_count, 0)
+        self.assertEqual(
+            self.task.events.filter(
+                metadata__action="ai_review_launch_unknown"
+            ).count(),
+            event_count,
+        )
+        self.assertEqual(event_count, 1)
+        self.assertEqual(
+            Notification.objects.filter(
+                dedupe_key=(
+                    f"development-task:{self.task.pk}:"
+                    f"review-launch-unknown:{review.pk}"
+                )
+            ).count(),
+            1,
+        )
+
+    def make_stale_corrective_dispatch(self):
+        review = DevelopmentIteration.objects.create(
+            task=self.task,
+            iteration_number=3,
+            executor_type=DevelopmentIteration.EXECUTOR_CHATGPT,
+            status=DevelopmentIteration.STATUS_REVISION,
+            automation_metadata={
+                "purpose": "ai_review",
+                "decision": "corrective_required",
+                "corrective_instructions": ["Fix trusted regression"],
+                "fingerprint": "unique-corrective-review",
+                "codex_iteration_id": self.codex.pk,
+                "applied": True,
+                "state": "completed",
+            },
+        )
+        corrective = DevelopmentIteration.objects.create(
+            task=self.task,
+            iteration_number=4,
+            executor_type=DevelopmentIteration.EXECUTOR_CODEX,
+            status=DevelopmentIteration.STATUS_WORKING,
+            prompt="corrective prompt",
+            started_at=timezone.now() - timedelta(minutes=5),
+            automation_metadata={
+                "purpose": "codex_execution",
+                "provider": "github_actions",
+                "state": "dispatching",
+                "launch_token": "a" * 32,
+                "branch_name": "codex/dev-1-aaaaaaaaaaaa",
+                "launch_started_at": (timezone.now() - timedelta(minutes=5)).isoformat(),
+                "effective_model": "gpt-5.6-luna",
+                "corrective_number": 1,
+                "corrective_review_id": review.pk,
+                "previous_codex_iteration_id": self.codex.pk,
+            },
+        )
+        metadata = dict(self.task.automation_metadata)
+        metadata["active_codex_iteration_id"] = corrective.pk
+        self.task.automation_metadata = metadata
+        self.task.status = DevelopmentTask.STATUS_REVISION
+        self.task.save(update_fields=["automation_metadata", "status"])
+        return review, corrective
+
+    @SETTINGS
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    @patch("pool_service.services.development_codex._find_matching_run")
+    def test_stale_corrective_dispatch_reconciles_without_second_post(self, runs, dispatch):
+        review, corrective = self.make_stale_corrective_dispatch()
+        runs.return_value = {"id": 12345, "status": "in_progress"}
+
+        first = self.run_command()
+        event_count = self.task.events.filter(
+            metadata__action="corrective_codex_dispatch_reconciled"
+        ).count()
+        second = self.run_command()
+
+        self.task.refresh_from_db()
+        corrective.refresh_from_db()
+        self.assertIn("corrective=1", first)
+        self.assertIn("corrective=0", second)
+        self.assertEqual(self.task.status, DevelopmentTask.STATUS_CODEX_WORKING)
+        self.assertEqual(corrective.automation_metadata["state"], "in_progress")
+        self.assertEqual(corrective.automation_metadata["workflow_run_id"], 12345)
+        self.assertTrue(corrective.automation_metadata["dispatch_reconciled"])
+        self.assertEqual(dispatch.call_count, 0)
+        self.assertEqual(
+            self.task.events.filter(
+                metadata__action="corrective_codex_dispatch_reconciled"
+            ).count(),
+            event_count,
+        )
+        self.assertEqual(event_count, 1)
+        self.assertEqual(
+            self.task.iterations.filter(
+                automation_metadata__corrective_review_id=review.pk
+            ).count(),
+            1,
+        )
+
+    @SETTINGS
+    @patch("pool_service.services.development_codex._dispatch_workflow")
+    @patch("pool_service.services.development_codex._find_matching_run", return_value=None)
+    def test_ambiguous_corrective_dispatch_blocks_without_retry(self, runs, dispatch):
+        _review, corrective = self.make_stale_corrective_dispatch()
+
+        self.run_command()
+        event_count = self.task.events.filter(
+            metadata__action="corrective_codex_dispatch_unknown"
+        ).count()
+        self.run_command()
+
+        self.task.refresh_from_db()
+        corrective.refresh_from_db()
+        self.assertEqual(self.task.status, DevelopmentTask.STATUS_BLOCKED)
+        self.assertEqual(corrective.automation_metadata["state"], "dispatch_unknown")
+        self.assertEqual(dispatch.call_count, 0)
+        self.assertEqual(
+            self.task.events.filter(
+                metadata__action="corrective_codex_dispatch_unknown"
+            ).count(),
+            event_count,
+        )
+        self.assertEqual(event_count, 1)
+        self.assertEqual(
+            Notification.objects.filter(
+                dedupe_key=(
+                    f"development-task:{self.task.pk}:"
+                    f"corrective-dispatch-unknown:{corrective.pk}"
+                )
+            ).count(),
+            1,
+        )
