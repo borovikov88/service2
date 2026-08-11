@@ -1556,7 +1556,10 @@ class DevelopmentCodexTransactionTests(CodexTestMixin, TransactionTestCase):
         with patch(
             "pool_service.services.development_codex._dispatch_workflow",
             side_effect=observe,
-        ):
+        ), patch(
+            "pool_service.services.development_db.close_old_connections"
+        ) as close_connections:
             development_codex.dispatch_codex(task.pk, self.owner.pk)
 
         self.assertEqual(atomic_states, [False])
+        self.assertEqual(close_connections.call_count, 2)

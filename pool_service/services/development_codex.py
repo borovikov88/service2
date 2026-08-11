@@ -34,6 +34,7 @@ from pool_service.models import (
 )
 from pool_service.services.development_ai import resolve_primary_analysis_iteration
 from pool_service.services.ai_costs import codex_usage_record
+from pool_service.services.development_db import run_external_io
 from pool_service.services.development_model_selection import (
     ModelSelectionError,
     effective_model,
@@ -876,7 +877,7 @@ def dispatch_codex(task_id, actor_id):
         },
     }
     try:
-        _dispatch_workflow(payload)
+        run_external_io(_dispatch_workflow, payload)
     except Exception as exc:
         logger.warning(
             "Development Codex dispatch outcome unknown: task=%s iteration=%s error_type=%s",
@@ -1057,7 +1058,7 @@ def _reconcile_corrective_dispatch(iteration_id):
         task = iteration.task
 
     try:
-        run = _find_matching_run(task, iteration)
+        run = run_external_io(_find_matching_run, task, iteration)
     except Exception as exc:
         logger.warning(
             "Corrective Codex reconciliation failed: task=%s iteration=%s error_type=%s",
@@ -1256,7 +1257,7 @@ def _dispatch_new_corrective_codex(task_id, review_id):
         "pr_title_b64": base64.b64encode(_utf8_truncate(f"[{task.reference}] corrective {corrective_number}: {task.title}", 240).encode()).decode("ascii"),
     }}
     try:
-        _dispatch_workflow(payload)
+        run_external_io(_dispatch_workflow, payload)
     except Exception as exc:
         logger.warning("Corrective Codex dispatch outcome unknown: task=%s iteration=%s error_type=%s", task_id, iteration.pk, type(exc).__name__)
         return _mark_corrective_dispatch_unknown(
@@ -1367,7 +1368,7 @@ def check_codex(task_id, actor_id):
         branch_name = metadata.get("branch_name")
 
     try:
-        run = _find_matching_run(task, iteration)
+        run = run_external_io(_find_matching_run, task, iteration)
     except Exception as exc:
         logger.warning(
             "Development Codex check failed: task=%s iteration=%s error_type=%s",
@@ -1391,7 +1392,9 @@ def check_codex(task_id, actor_id):
     remote_state = STATE_QUEUED if run_status == "queued" else STATE_IN_PROGRESS
     if run_status == "completed":
         try:
-            validation_state = _workflow_validation_state(run["id"])
+            validation_state = run_external_io(
+                _workflow_validation_state, run["id"]
+            )
         except Exception as exc:
             logger.warning(
                 "Development Codex outcome lookup failed: task=%s iteration=%s error_type=%s",
@@ -1418,7 +1421,8 @@ def check_codex(task_id, actor_id):
     codex_artifact = None
     if run_status == "completed":
         try:
-            codex_artifact = _codex_artifact(
+            codex_artifact = run_external_io(
+                _codex_artifact,
                 run_id,
                 task.reference,
                 launch_token,
@@ -1449,9 +1453,11 @@ def check_codex(task_id, actor_id):
             return CodexOperationResult("check_failed")
     if remote_state in {STATE_COMPLETED, STATE_VALIDATION_FAILED}:
         try:
-            pull_request = _find_pull_request(branch_name)
+            pull_request = run_external_io(_find_pull_request, branch_name)
             if pull_request:
-                changed_files = _pull_request_files(pull_request["number"])
+                changed_files = run_external_io(
+                    _pull_request_files, pull_request["number"]
+                )
         except Exception as exc:
             logger.warning(
                 "Development Codex pull request lookup failed: task=%s iteration=%s error_type=%s",

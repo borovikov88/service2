@@ -6,7 +6,7 @@ from datetime import timedelta
 from uuid import uuid4
 
 from django.conf import settings
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, InterfaceError, OperationalError, transaction
 from django.db.models import Max
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -14,6 +14,7 @@ from django.utils.dateparse import parse_datetime
 from pool_service.models import DevelopmentIteration, DevelopmentTask, DevelopmentTaskEvent
 from pool_service.services.ai_costs import usage_record
 from pool_service.services.development_ai import resolve_primary_analysis_iteration
+from pool_service.services.development_db import database_error_code, run_external_io
 from pool_service.services.development_notifications import notify_human_required, notify_ready_for_deploy
 
 
@@ -457,7 +458,7 @@ def run_review(task_id):
         return ReviewResult(claim_state, False, review.pk)
 
     try:
-        response = _create_response(prompt, operation_key)
+        response = run_external_io(_create_response, prompt, operation_key)
     except Exception as exc:
         logger.warning("Development AI Review failed: task=%s review=%s error_type=%s", task_id, review.pk, type(exc).__name__)
         return _mark_review_launch_unknown(review.pk, require_stale=False)
@@ -465,7 +466,18 @@ def run_review(task_id):
         decision = _parse(response)
     except ValueError:
         decision = {"decision": "human_required", "summary": "AI Review не дал однозначного структурированного результата.", "findings": [], "corrective_instructions": [], "human_reason": "Требуется ручная проверка результата AI Review."}
-    stored = _store_review_response(review.pk, launch_token, response, decision)
+    try:
+        stored = _store_review_response(review.pk, launch_token, response, decision)
+    except (OperationalError, InterfaceError) as exc:
+        logger.warning(
+            "Development AI Review persistence failed: task=%s review=%s "
+            "error_type=%s db_error_code=%s",
+            task_id,
+            review.pk,
+            type(exc).__name__,
+            database_error_code(exc),
+        )
+        raise
     if stored.state != STATE_RESPONSE_READY:
         return stored
     return _apply_stored_review(review.pk)

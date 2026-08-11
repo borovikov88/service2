@@ -6,11 +6,12 @@ from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.core.management import call_command
+from django.db import OperationalError
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from pool_service.models import DevelopmentIteration, DevelopmentTask, Notification, Organization, OrganizationAccess
-from pool_service.services.development_review import run_review
+from pool_service.services.development_review import ReviewResult, run_review
 from pool_service.services.development_codex import dispatch_corrective_codex
 
 
@@ -55,6 +56,62 @@ class AutoCycleFixtureMixin:
 
 
 class DevelopmentAutoCycleTests(AutoCycleFixtureMixin, TestCase):
+    @SETTINGS
+    @patch("pool_service.services.development_db.close_old_connections")
+    @patch("pool_service.services.development_review._create_response")
+    def test_review_recycles_database_connection_around_external_io(
+        self, create, close_connections
+    ):
+        create.return_value = self.response("accepted")
+
+        result = run_review(self.task.pk)
+
+        self.assertEqual(result.state, "accepted")
+        self.assertEqual(close_connections.call_count, 2)
+
+    @SETTINGS
+    @patch("pool_service.services.development_db.close_old_connections")
+    @patch("pool_service.services.development_review._create_response")
+    def test_review_external_failure_recycles_connection_before_recovery_orm(
+        self, create, close_connections
+    ):
+        create.side_effect = TimeoutError("uncertain external result")
+
+        result = run_review(self.task.pk)
+
+        self.task.refresh_from_db()
+        self.assertEqual(result.state, "launch_unknown")
+        self.assertEqual(self.task.status, DevelopmentTask.STATUS_BLOCKED)
+        self.assertEqual(close_connections.call_count, 2)
+
+    @SETTINGS
+    @patch("pool_service.services.development_db.close_old_connections")
+    @patch(
+        "pool_service.services.development_review._store_review_response",
+        side_effect=OperationalError(2006, "password=must-not-be-logged"),
+    )
+    @patch("pool_service.services.development_review._create_response")
+    def test_database_failure_after_review_response_is_safe_and_observable(
+        self, create, _store, close_connections
+    ):
+        create.return_value = self.response("accepted")
+
+        with self.assertLogs(
+            "pool_service.services.development_review", level="WARNING"
+        ) as captured, self.assertRaises(OperationalError):
+            run_review(self.task.pk)
+
+        review = self.task.iterations.get(
+            executor_type=DevelopmentIteration.EXECUTOR_CHATGPT
+        )
+        logs = "\n".join(captured.output)
+        self.assertEqual(review.automation_metadata["state"], "launching")
+        self.assertIn(f"review={review.pk}", logs)
+        self.assertIn("error_type=OperationalError", logs)
+        self.assertIn("db_error_code=2006", logs)
+        self.assertNotIn("must-not-be-logged", logs)
+        self.assertEqual(close_connections.call_count, 2)
+
     @SETTINGS
     @patch("pool_service.services.development_review._create_response")
     def test_accepted_is_idempotent_and_notifies_once(self, create):
@@ -118,6 +175,46 @@ class PollDevelopmentCodexCommandTests(AutoCycleFixtureMixin, TestCase):
         output = StringIO()
         call_command("poll_development_codex", batch_size=25, stdout=output)
         return output.getvalue().strip()
+
+    @SETTINGS
+    @patch(
+        "pool_service.management.commands.poll_development_codex."
+        "close_old_connections"
+    )
+    @patch("pool_service.management.commands.poll_development_codex.run_review")
+    def test_database_failure_is_isolated_from_the_next_task(
+        self, review, close_connections
+    ):
+        second_task = DevelopmentTask.objects.create(
+            organization=self.org,
+            initiator=self.user,
+            title="Second cycle",
+            description="Process after a broken connection",
+            status=DevelopmentTask.STATUS_REVIEW,
+            current_stage=DevelopmentTask.STAGE_REVIEW,
+        )
+        review.side_effect = [
+            OperationalError(2006, "password=must-not-be-logged"),
+            ReviewResult("accepted", changed=True, review_id=999),
+        ]
+
+        with self.assertLogs(
+            "pool_service.management.commands.poll_development_codex",
+            level="WARNING",
+        ) as captured:
+            output = self.run_command()
+
+        logs = "\n".join(captured.output)
+        self.assertEqual(review.call_count, 2)
+        self.assertEqual(review.call_args_list[1].args, (second_task.pk,))
+        self.assertIn("reviewed=1", output)
+        self.assertIn("errors=1", output)
+        self.assertIn("stage=run_review", logs)
+        self.assertIn("error_type=OperationalError", logs)
+        self.assertIn("db_error_code=2006", logs)
+        self.assertNotIn("must-not-be-logged", logs)
+        # One initial boundary plus before/after boundaries for both tasks.
+        self.assertGreaterEqual(close_connections.call_count, 5)
 
     @SETTINGS
     @patch("pool_service.services.development_review._create_response")
