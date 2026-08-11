@@ -26,10 +26,21 @@ STATE_LAUNCHING = "launching"
 STATE_RESPONSE_READY = "response_ready"
 STATE_COMPLETED = "completed"
 STATE_LAUNCH_UNKNOWN = "launch_unknown"
+HUMAN_VERDICT_APPROVE = "approve"
+HUMAN_VERDICT_CORRECTIVE = "corrective"
+HUMAN_VERDICTS = {HUMAN_VERDICT_APPROVE, HUMAN_VERDICT_CORRECTIVE}
+HUMAN_RESOLUTION_NOTE_MAX_LENGTH = 2000
 
 
 @dataclass(frozen=True)
 class ReviewResult:
+    state: str
+    changed: bool = False
+    review_id: int | None = None
+
+
+@dataclass(frozen=True)
+class HumanReviewResolutionResult:
     state: str
     changed: bool = False
     review_id: int | None = None
@@ -46,6 +57,114 @@ def _fingerprint(findings, instructions):
         ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     ).casefold()
     return hashlib.sha256(normalized.encode()).hexdigest()
+
+
+def resolve_human_review(task_id, review_id, actor_id, verdict, note=""):
+    """Resolve one completed human-required AI Review without external I/O."""
+    verdict = str(verdict or "").strip()
+    note = str(note or "").strip()
+    if verdict not in HUMAN_VERDICTS:
+        return HumanReviewResolutionResult("invalid_verdict", review_id=review_id)
+    if len(note) > HUMAN_RESOLUTION_NOTE_MAX_LENGTH:
+        return HumanReviewResolutionResult("invalid_note", review_id=review_id)
+    if verdict == HUMAN_VERDICT_CORRECTIVE and not note:
+        return HumanReviewResolutionResult("note_required", review_id=review_id)
+
+    with transaction.atomic():
+        task = DevelopmentTask.objects.select_for_update().get(pk=task_id)
+        reviews = DevelopmentIteration.objects.select_for_update().filter(
+            task=task,
+            executor_type=DevelopmentIteration.EXECUTOR_CHATGPT,
+            automation_metadata__purpose=PURPOSE,
+        ).order_by("-id")
+        review = reviews.filter(pk=review_id).first()
+        if review is None:
+            return HumanReviewResolutionResult("not_available", review_id=review_id)
+
+        metadata = _metadata(review)
+        existing_verdict = metadata.get("human_resolution")
+        if existing_verdict:
+            state = verdict if existing_verdict == verdict else "conflict"
+            return HumanReviewResolutionResult(state, False, review.pk)
+
+        current_review = reviews.first()
+        if (
+            current_review is None
+            or current_review.pk != review.pk
+            or metadata.get("decision") != "human_required"
+            or metadata.get("state") != STATE_COMPLETED
+            or metadata.get("applied") is not True
+            or task.status != DevelopmentTask.STATUS_BLOCKED
+        ):
+            return HumanReviewResolutionResult("not_available", review_id=review.pk)
+
+        now = timezone.now()
+        operation_key = f"task:{task.pk}:review:{review.pk}:human-resolution"
+        metadata.update(
+            {
+                "human_resolution": verdict,
+                "human_resolution_actor_id": actor_id,
+                "human_resolution_at": now.isoformat(),
+                "human_resolution_note": note,
+                "human_resolution_operation_key": operation_key,
+            }
+        )
+        if verdict == HUMAN_VERDICT_CORRECTIVE:
+            metadata["human_resolution_fingerprint"] = _fingerprint([], [note])
+        review.automation_metadata = metadata
+        review.save(update_fields=["automation_metadata", "updated_at"])
+
+        old_status = task.status
+        task_metadata = _metadata(task)
+        if verdict == HUMAN_VERDICT_APPROVE:
+            task.status = DevelopmentTask.STATUS_READY_FOR_DEPLOY
+            task.current_stage = DevelopmentTask.STAGE_COMPLETION
+            task.current_activity = "Human review approved; task is ready for deployment"
+            task.blockers = ""
+        else:
+            # A human corrective verdict is an explicit server-controlled opt-in
+            # to the existing automatic corrective orchestration.
+            task_metadata["auto_cycle_enabled"] = True
+            task_metadata["human_corrective_review_id"] = review.pk
+            task.status = DevelopmentTask.STATUS_REVISION
+            task.current_stage = DevelopmentTask.STAGE_DEVELOPMENT
+            task.current_activity = "Human requested corrective changes"
+            task.blockers = ""
+        task.automation_metadata = task_metadata
+        task.save(
+            update_fields=[
+                "automation_metadata",
+                "status",
+                "current_stage",
+                "current_activity",
+                "blockers",
+                "updated_at",
+            ]
+        )
+        DevelopmentTaskEvent.objects.create(
+            task=task,
+            event_type=DevelopmentTaskEvent.TYPE_STATUS_CHANGED,
+            message=(
+                "Human review approved; task is ready for deployment"
+                if verdict == HUMAN_VERDICT_APPROVE
+                else "Human requested corrective changes"
+            ),
+            actor_id=actor_id,
+            metadata={
+                "action": "human_review_resolved",
+                "review_iteration_id": review.pk,
+                "ai_decision": "human_required",
+                "human_verdict": verdict,
+                "actor_id": actor_id,
+                "old_status": old_status,
+                "new_status": task.status,
+                "note": note,
+                "operation_key": operation_key,
+            },
+        )
+        if verdict == HUMAN_VERDICT_APPROVE:
+            notify_ready_for_deploy(task)
+    return HumanReviewResolutionResult(verdict, True, review.pk)
 
 
 def _review_payload(task, codex_iteration):

@@ -1156,6 +1156,29 @@ def dispatch_corrective_codex(task_id, review_id):
     return _dispatch_new_corrective_codex(task_id, review_id)
 
 
+def _corrective_review_data(review):
+    metadata = _metadata(review)
+    if metadata.get("decision") == "corrective_required":
+        instructions = metadata.get("corrective_instructions") or []
+        fingerprint = metadata.get("fingerprint")
+    elif (
+        metadata.get("decision") == "human_required"
+        and metadata.get("human_resolution") == "corrective"
+    ):
+        note = str(metadata.get("human_resolution_note") or "").strip()
+        if not note:
+            return None
+        instructions = [note]
+        fingerprint = metadata.get("human_resolution_fingerprint")
+    else:
+        return None
+    if not instructions or not all(
+        isinstance(item, str) and item.strip() for item in instructions
+    ):
+        return None
+    return {"instructions": instructions, "fingerprint": fingerprint}
+
+
 def _dispatch_new_corrective_codex(task_id, review_id):
     """Launch one bounded corrective execution; the review row is its idempotency key."""
     if not is_configured():
@@ -1169,9 +1192,9 @@ def _dispatch_new_corrective_codex(task_id, review_id):
             pk=review_id,
             executor_type=DevelopmentIteration.EXECUTOR_CHATGPT,
             automation_metadata__purpose="ai_review",
-            automation_metadata__decision="corrective_required",
         ).first()
-        if review is None:
+        review_data = _corrective_review_data(review) if review is not None else None
+        if review is None or review_data is None:
             return CodexOperationResult("not_available")
         existing = task.iterations.filter(
             executor_type=DevelopmentIteration.EXECUTOR_CODEX,
@@ -1195,14 +1218,20 @@ def _dispatch_new_corrective_codex(task_id, review_id):
                 metadata={"action": "corrective_limit_reached", "review_id": review.pk},
             )
             return CodexOperationResult("limit_reached", changed=True)
-        fingerprint = _metadata(review).get("fingerprint")
-        earlier = task.iterations.filter(
+        fingerprint = review_data["fingerprint"]
+        earlier_reviews = task.iterations.filter(
             executor_type=DevelopmentIteration.EXECUTOR_CHATGPT,
             automation_metadata__purpose="ai_review",
-            automation_metadata__decision="corrective_required",
-            automation_metadata__fingerprint=fingerprint,
         ).exclude(pk=review.pk)
-        if fingerprint and earlier.exists():
+        repeated_fingerprint = bool(
+            fingerprint
+            and any(
+                (data := _corrective_review_data(item))
+                and data["fingerprint"] == fingerprint
+                for item in earlier_reviews
+            )
+        )
+        if repeated_fingerprint:
             task.status = DevelopmentTask.STATUS_BLOCKED
             task.current_activity = "Автоматическая корректировка остановлена"
             task.blockers = "AI Review повторил те же замечания; требуется решение человека."
@@ -1217,7 +1246,7 @@ def _dispatch_new_corrective_codex(task_id, review_id):
         selected_model = task_meta.get("effective_model") or task_meta.get("codex_model")
         if selected_model not in CODEX_MODELS:
             return CodexOperationResult("invalid_model")
-        instructions = _metadata(review).get("corrective_instructions") or []
+        instructions = review_data["instructions"]
         previous_codex_id = _metadata(review).get("codex_iteration_id")
         prompt = "\n".join([
             "Выполни только необходимые исправления по результатам AI Review.",

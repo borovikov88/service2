@@ -34,6 +34,11 @@ from pool_service.services.development_codex import (
     resolve_codex_iteration,
 )
 from pool_service.services.development_model_selection import display_context, effective_model
+from pool_service.services.development_review import (
+    HUMAN_VERDICT_APPROVE,
+    HUMAN_VERDICT_CORRECTIVE,
+    resolve_human_review,
+)
 from pool_service.services.ai_costs import (
     codex_cost_estimate,
     cost_context,
@@ -220,6 +225,33 @@ def _codex_context(task):
     }
 
 
+def _human_review_context(task):
+    review = task.iterations.filter(
+        executor_type=DevelopmentIteration.EXECUTOR_CHATGPT,
+        automation_metadata__purpose="ai_review",
+    ).order_by("-id").first()
+    metadata = (
+        dict(review.automation_metadata)
+        if review and isinstance(review.automation_metadata, dict)
+        else {}
+    )
+    available = bool(
+        review
+        and task.status == DevelopmentTask.STATUS_BLOCKED
+        and metadata.get("purpose") == "ai_review"
+        and metadata.get("decision") == "human_required"
+        and metadata.get("state") == "completed"
+        and metadata.get("applied") is True
+        and not metadata.get("human_resolution")
+    )
+    return {
+        "human_review_resolution_available": available,
+        "human_review_iteration": review if available else None,
+        "human_review_summary": review.result_summary if available else "",
+        "human_review_reason": metadata.get("human_reason", "") if available else "",
+    }
+
+
 @login_required
 def development_task_list(request):
     organization, denied = _development_guard(request)
@@ -329,6 +361,7 @@ def development_task_detail(request, task_id):
     }
     context.update(_analysis_context(task, analysis_iteration))
     context.update(_codex_context(task))
+    context.update(_human_review_context(task))
     context["model_selection"] = display_context(task)
     costs = cost_context(
         iterations,
@@ -564,6 +597,36 @@ def development_task_codex_check(request, task_id):
         messages.warning(request, "Результат не применён: состояние задачи уже изменилось.")
     else:
         messages.info(request, "Запуск Codex недоступен для проверки.")
+    return redirect("development_task_detail", task_id=task.pk)
+
+
+@login_required
+@require_POST
+def development_task_review_resolve(request, task_id, review_id):
+    organization, denied = _development_guard(request)
+    if denied:
+        return denied
+    task = _task_for_organization(organization, task_id)
+    get_object_or_404(task.iterations, pk=review_id)
+    result = resolve_human_review(
+        task.pk,
+        review_id,
+        request.user.pk,
+        request.POST.get("verdict"),
+        request.POST.get("note", ""),
+    )
+    if result.state == HUMAN_VERDICT_APPROVE:
+        messages.success(request, "Решение принято: задача готова к деплою.")
+    elif result.state == HUMAN_VERDICT_CORRECTIVE:
+        messages.success(request, "Запрошена корректировка; задача возвращена в разработку.")
+    elif result.state == "conflict":
+        messages.error(request, "AI Review уже разрешена другим решением.")
+    elif result.state == "note_required":
+        messages.error(request, "Для корректировки необходимо указать инструкции.")
+    elif result.state == "invalid_note":
+        messages.error(request, "Комментарий слишком длинный.")
+    else:
+        messages.info(request, "AI Review недоступна для разрешения.")
     return redirect("development_task_detail", task_id=task.pk)
 
 

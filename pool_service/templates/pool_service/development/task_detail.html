@@ -47,6 +47,23 @@
 </div>
 {% endif %}
 
+{% if human_review_resolution_available %}
+<div class="card card-soft border-warning p-3 p-lg-4 mb-4">
+  <h2 class="h5 mb-2">Требуется решение по AI Review</h2>
+  {% if human_review_summary %}<div class="mb-2">{{ human_review_summary|linebreaksbr }}</div>{% endif %}
+  {% if human_review_reason %}<div class="alert alert-warning py-2">{{ human_review_reason|linebreaksbr }}</div>{% endif %}
+  <form method="post" action="{% url 'development_task_review_resolve' task.id human_review_iteration.id %}">
+    {% csrf_token %}
+    <label class="form-label" for="human-review-note">Комментарий технического руководителя</label>
+    <textarea class="form-control mb-3" id="human-review-note" name="note" rows="4" maxlength="2000"></textarea>
+    <div class="d-flex flex-wrap gap-2">
+      <button class="btn btn-success" type="submit" name="verdict" value="approve">Принять — готово к деплою</button>
+      <button class="btn btn-outline-warning" type="submit" name="verdict" value="corrective">Запросить корректировку</button>
+    </div>
+  </form>
+</div>
+{% endif %}
+
 <div class="card card-soft p-3 p-lg-4 mb-4">
   <h2 class="h5 mb-3">Стоимость AI</h2>
   <div class="row g-3">
@@ -143,7 +160,7 @@
     <div class="small text-muted mb-2">{{ iteration.tests_passed }} passed / {{ iteration.tests_failed }} failed{% if iteration.started_at %} · {{ iteration.started_at|date:"d.m.Y H:i" }}{% endif %}</div>
     <div>{{ iteration.result_summary|default:"Резюме пока не заполнено."|linebreaksbr }}</div>
     <details class="mt-3"><summary class="text-primary">Технические подробности</summary>
-      <div class="mt-3"><h3 class="h6">Prompt</h3><div class="text-break">{{ iteration.prompt|default:"—"|linebreaksbr }}</div></div>
+      <div class="mt-3"><h3 class="h6">Prompt</h3><div class="text-break">{% if iteration.automation_metadata.purpose == "ai_review" %}Внутренний prompt AI Review скрыт.{% else %}{{ iteration.prompt|default:"—"|linebreaksbr }}{% endif %}</div></div>
       <div class="mt-3"><h3 class="h6">Ответ AI / Codex</h3><div class="text-break">{{ iteration.response|default:"—"|linebreaksbr }}</div></div>
       <div class="mt-3"><h3 class="h6">Изменённые файлы</h3><div class="text-break">{{ iteration.changed_files|default:"—"|linebreaksbr }}</div></div>
       <div class="mt-3"><h3 class="h6">Тесты</h3><div>{{ iteration.test_result|default:"—"|linebreaksbr }}</div></div>
