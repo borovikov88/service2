@@ -207,7 +207,12 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
 
         result = development_codex.dispatch_codex(task.pk, self.owner.pk)
 
+        task.refresh_from_db()
         self.assertEqual(result.state, development_codex.STATE_DISPATCHED)
+        self.assertIs(
+            task.automation_metadata[development_codex.AUTO_CYCLE_METADATA_KEY],
+            True,
+        )
         self.assertEqual(task.iterations.count(), 2)
         iteration = task.iterations.get(executor_type=DevelopmentIteration.EXECUTOR_CODEX)
         self.assertEqual(iteration.automation_metadata["purpose"], development_codex.PURPOSE)
@@ -253,6 +258,11 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         self.assertFalse(second.changed)
         self.assertEqual(dispatch.call_count, 1)
         self.assertEqual(task.iterations.filter(executor_type="codex").count(), 1)
+        task.refresh_from_db()
+        self.assertIs(
+            task.automation_metadata[development_codex.AUTO_CYCLE_METADATA_KEY],
+            True,
+        )
 
     @patch("pool_service.services.development_codex._dispatch_workflow")
     def test_uncertain_dispatch_is_not_retried_and_becomes_recoverable(self, dispatch):
@@ -268,6 +278,10 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         task.refresh_from_db()
         iteration = task.iterations.get(executor_type="codex")
         self.assertEqual(task.status, DevelopmentTask.STATUS_BLOCKED)
+        self.assertIs(
+            task.automation_metadata[development_codex.AUTO_CYCLE_METADATA_KEY],
+            True,
+        )
         self.assertEqual(iteration.automation_metadata["state"], "dispatch_unknown")
         self.assertNotIn("transport uncertainty", iteration.technical_errors)
 

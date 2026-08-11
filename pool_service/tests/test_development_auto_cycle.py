@@ -5,11 +5,15 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
-from django.core.management import call_command
+from django.core.management import call_command, CommandError
 from django.db import OperationalError
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
+from pool_service.development_forms import (
+    DevelopmentTaskCreateForm,
+    DevelopmentTaskUpdateForm,
+)
 from pool_service.models import DevelopmentIteration, DevelopmentTask, Notification, Organization, OrganizationAccess
 from pool_service.services.development_review import ReviewResult, run_review
 from pool_service.services.development_codex import dispatch_corrective_codex
@@ -33,7 +37,10 @@ class AutoCycleFixtureMixin:
             organization=self.org, initiator=self.user, title="Cycle", description="Implement",
             business_goal="Automate", definition_of_done="Tests pass",
             status=DevelopmentTask.STATUS_REVIEW, current_stage=DevelopmentTask.STAGE_REVIEW,
-            automation_metadata={"effective_model": "gpt-5.6-luna"},
+            automation_metadata={
+                "effective_model": "gpt-5.6-luna",
+                "auto_cycle_enabled": True,
+            },
         )
         DevelopmentIteration.objects.create(
             task=self.task, iteration_number=1, executor_type="system", status="accepted",
@@ -56,6 +63,18 @@ class AutoCycleFixtureMixin:
 
 
 class DevelopmentAutoCycleTests(AutoCycleFixtureMixin, TestCase):
+    def test_auto_cycle_marker_is_not_user_editable(self):
+        self.assertNotIn("automation_metadata", DevelopmentTaskCreateForm().fields)
+        self.assertNotIn(
+            "automation_metadata",
+            DevelopmentTaskUpdateForm(instance=self.task).fields,
+        )
+        self.assertNotIn("auto_cycle_enabled", DevelopmentTaskCreateForm().fields)
+        self.assertNotIn(
+            "auto_cycle_enabled",
+            DevelopmentTaskUpdateForm(instance=self.task).fields,
+        )
+
     @SETTINGS
     @patch("pool_service.services.development_db.close_old_connections")
     @patch("pool_service.services.development_review._create_response")
@@ -151,11 +170,17 @@ class DevelopmentAutoCycleTests(AutoCycleFixtureMixin, TestCase):
     def test_corrective_launch_is_deduplicated(self, create, dispatch):
         create.return_value = self.response("corrective_required", instructions=["Fix test"])
         review_id = run_review(self.task.pk).review_id
+        metadata = dict(self.task.automation_metadata)
+        metadata.pop("auto_cycle_enabled")
+        self.task.automation_metadata = metadata
+        self.task.save(update_fields=["automation_metadata"])
         first = dispatch_corrective_codex(self.task.pk, review_id)
         second = dispatch_corrective_codex(self.task.pk, review_id)
+        self.task.refresh_from_db()
         self.assertTrue(first.changed)
         self.assertFalse(second.changed)
         self.assertEqual(dispatch.call_count, 1)
+        self.assertIs(self.task.automation_metadata["auto_cycle_enabled"], True)
         self.assertEqual(self.task.iterations.filter(automation_metadata__corrective_review_id=review_id).count(), 1)
 
     @SETTINGS
@@ -171,10 +196,85 @@ class DevelopmentAutoCycleTests(AutoCycleFixtureMixin, TestCase):
 
 
 class PollDevelopmentCodexCommandTests(AutoCycleFixtureMixin, TestCase):
-    def run_command(self):
+    def run_command(self, **options):
         output = StringIO()
-        call_command("poll_development_codex", batch_size=25, stdout=output)
+        command_options = {"batch_size": 25, **options}
+        call_command("poll_development_codex", stdout=output, **command_options)
         return output.getvalue().strip()
+
+    @SETTINGS
+    @patch("pool_service.management.commands.poll_development_codex.run_review")
+    def test_regular_poll_processes_explicitly_enabled_task(self, review):
+        review.return_value = ReviewResult("accepted", changed=True, review_id=3)
+
+        output = self.run_command()
+
+        review.assert_called_once_with(self.task.pk)
+        self.assertIn("reviewed=1", output)
+
+    @SETTINGS
+    @patch("pool_service.management.commands.poll_development_codex.run_review")
+    def test_regular_poll_skips_historical_task_without_marker(self, review):
+        metadata = dict(self.task.automation_metadata)
+        metadata.pop("auto_cycle_enabled")
+        self.task.automation_metadata = metadata
+        self.task.save(update_fields=["automation_metadata"])
+
+        output = self.run_command()
+
+        review.assert_not_called()
+        self.assertEqual(output, "checked=0 reviewed=0 corrective=0 errors=0")
+
+    @SETTINGS
+    @patch("pool_service.management.commands.poll_development_codex.run_review")
+    def test_regular_poll_skips_explicitly_disabled_task(self, review):
+        metadata = dict(self.task.automation_metadata)
+        metadata["auto_cycle_enabled"] = False
+        self.task.automation_metadata = metadata
+        self.task.save(update_fields=["automation_metadata"])
+
+        output = self.run_command()
+
+        review.assert_not_called()
+        self.assertEqual(output, "checked=0 reviewed=0 corrective=0 errors=0")
+
+    @SETTINGS
+    @patch("pool_service.management.commands.poll_development_codex.run_review")
+    def test_task_id_processes_only_requested_legacy_task(self, review):
+        metadata = dict(self.task.automation_metadata)
+        metadata.pop("auto_cycle_enabled")
+        self.task.automation_metadata = metadata
+        self.task.save(update_fields=["automation_metadata"])
+        other = DevelopmentTask.objects.create(
+            organization=self.org,
+            initiator=self.user,
+            title="Other eligible cycle",
+            description="Must not be processed by targeted polling",
+            status=DevelopmentTask.STATUS_REVIEW,
+            current_stage=DevelopmentTask.STAGE_REVIEW,
+            automation_metadata={"auto_cycle_enabled": True},
+        )
+        review.return_value = ReviewResult("accepted", changed=True, review_id=3)
+
+        output = self.run_command(task_id=self.task.pk)
+
+        review.assert_called_once_with(self.task.pk)
+        self.assertNotEqual(other.pk, self.task.pk)
+        self.assertIn(f"target_task_id={self.task.pk}", output)
+        self.assertIn("reviewed=1", output)
+
+    @SETTINGS
+    @patch("pool_service.management.commands.poll_development_codex.run_review")
+    def test_missing_task_id_fails_without_batch_processing(self, review):
+        missing_id = self.task.pk + 1000
+
+        with self.assertRaisesMessage(
+            CommandError,
+            f"DevelopmentTask id={missing_id} was not found; no tasks were processed.",
+        ):
+            self.run_command(task_id=missing_id)
+
+        review.assert_not_called()
 
     @SETTINGS
     @patch(
@@ -192,6 +292,7 @@ class PollDevelopmentCodexCommandTests(AutoCycleFixtureMixin, TestCase):
             description="Process after a broken connection",
             status=DevelopmentTask.STATUS_REVIEW,
             current_stage=DevelopmentTask.STAGE_REVIEW,
+            automation_metadata={"auto_cycle_enabled": True},
         )
         review.side_effect = [
             OperationalError(2006, "password=must-not-be-logged"),
