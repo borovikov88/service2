@@ -57,3 +57,178 @@ jobs:
           }
           git --version
           python --version
+
+  chatgpt-inference:
+    name: Run one isolated ChatGPT-authenticated Codex turn
+    needs: auth-environment
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+      - rovikpool-codex
+    timeout-minutes: 10
+
+    steps:
+      - name: Run and validate one isolated Codex turn
+        id: inference
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ github.event_name }}" -ne "workflow_dispatch") {
+            throw "Unexpected workflow event"
+          }
+          if ("${{ github.repository }}" -ne "borovikov88/service2") {
+            throw "Unexpected repository"
+          }
+          if ($env:RUNNER_NAME -ne "rovikpool-codex-win") {
+            throw "Unexpected runner"
+          }
+
+          $apiKeyPresent = -not [string]::IsNullOrEmpty($env:OPENAI_API_KEY)
+          Write-Output "API key present: $($apiKeyPresent.ToString().ToLowerInvariant())"
+          if ($apiKeyPresent) {
+            throw "OPENAI_API_KEY must not be supplied to the canary"
+          }
+          Write-Output "billing_mode_expected = chatgpt_session"
+
+          $model = "gpt-5.6-sol"
+          $prompt = "Return exactly CHATGPT_CODEX_CANARY_OK. Do not modify files. Do not run shell commands. Do not inspect repository contents."
+          $tempRoot = Join-Path $env:RUNNER_TEMP ("codex-chatgpt-canary-" + [guid]::NewGuid().ToString("N"))
+          $workDir = Join-Path $tempRoot "empty-workdir"
+          $jsonlPath = Join-Path $tempRoot "codex.jsonl"
+          $stderrPath = Join-Path $tempRoot "codex.stderr.log"
+          $finalPath = Join-Path $tempRoot "final.txt"
+          $resultPath = Join-Path $tempRoot "canary-result.json"
+          New-Item -ItemType Directory -Path $workDir -Force | Out-Null
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "temp_dir=$tempRoot`n", $utf8NoBom)
+
+          $previousErrorActionPreference = $ErrorActionPreference
+          $ErrorActionPreference = "Continue"
+          & codex --ask-for-approval never exec `
+            --json `
+            --ephemeral `
+            --ignore-user-config `
+            --ignore-rules `
+            --sandbox read-only `
+            --skip-git-repo-check `
+            --cd $workDir `
+            --model $model `
+            --color never `
+            --output-last-message $finalPath `
+            $prompt 1> $jsonlPath 2> $stderrPath
+          $codexExitCode = $LASTEXITCODE
+          $ErrorActionPreference = $previousErrorActionPreference
+
+          if ($codexExitCode -ne 0) {
+            throw "Codex inference failed with exit code $codexExitCode"
+          }
+          if (-not (Test-Path -LiteralPath $jsonlPath -PathType Leaf)) {
+            throw "Codex JSONL output is missing"
+          }
+          if (-not (Test-Path -LiteralPath $finalPath -PathType Leaf)) {
+            throw "Codex final response is missing"
+          }
+
+          $events = @(
+            Get-Content -LiteralPath $jsonlPath | ForEach-Object {
+              if ([string]::IsNullOrWhiteSpace($_)) {
+                return
+              }
+              try {
+                $_ | ConvertFrom-Json
+              } catch {
+                throw "Codex emitted invalid JSONL"
+              }
+            }
+          )
+          $completed = @($events | Where-Object { $_.type -eq "turn.completed" })
+          if ($completed.Count -ne 1) {
+            throw "Expected exactly one turn.completed event"
+          }
+          $forbiddenItems = @(
+            $events | Where-Object {
+              $_.item -and $_.item.type -in @("command_execution", "file_change")
+            }
+          )
+          if ($forbiddenItems.Count -ne 0) {
+            throw "Canary attempted a command or file change"
+          }
+
+          $finalResponse = (Get-Content -LiteralPath $finalPath -Raw).Trim()
+          if ($finalResponse -cne "CHATGPT_CODEX_CANARY_OK") {
+            throw "Unexpected Codex final response"
+          }
+
+          $usage = $completed[0].usage
+          if ($null -eq $usage) {
+            throw "turn.completed usage is missing"
+          }
+          $tokenNames = @("input_tokens", "cached_input_tokens", "output_tokens")
+          $tokens = @{}
+          foreach ($name in $tokenNames) {
+            if ($usage.PSObject.Properties.Name -notcontains $name) {
+              throw "Usage field is missing: $name"
+            }
+            $rawValue = [string]$usage.$name
+            if ($rawValue -notmatch "^\d+$") {
+              throw "Usage field is not a non-negative integer: $name"
+            }
+            $tokens[$name] = [long]$rawValue
+          }
+          if ($tokens.output_tokens -le 0) {
+            throw "output_tokens must be positive"
+          }
+          if ($tokens.cached_input_tokens -gt $tokens.input_tokens) {
+            throw "cached_input_tokens exceeds input_tokens"
+          }
+
+          $uncachedInputTokens = $tokens.input_tokens - $tokens.cached_input_tokens
+          $totalTokens = $tokens.input_tokens + $tokens.output_tokens
+          $result = [ordered]@{
+            schema_version = 1
+            canary = "chatgpt_codex_inference"
+            billing_mode = "chatgpt_session"
+            model = $model
+            input_tokens = $tokens.input_tokens
+            cached_input_tokens = $tokens.cached_input_tokens
+            uncached_input_tokens = $uncachedInputTokens
+            output_tokens = $tokens.output_tokens
+            total_tokens = $totalTokens
+            usage_source = "codex_exec_jsonl_turn_completed"
+            result = $finalResponse
+          }
+          $resultJson = $result | ConvertTo-Json
+          [System.IO.File]::WriteAllText($resultPath, $resultJson, $utf8NoBom)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "artifact_path=$resultPath`n", $utf8NoBom)
+
+          Write-Output "model = $model"
+          Write-Output "input_tokens = $($tokens.input_tokens)"
+          Write-Output "cached_input_tokens = $($tokens.cached_input_tokens)"
+          Write-Output "derived_uncached_input_tokens = $uncachedInputTokens"
+          Write-Output "output_tokens = $($tokens.output_tokens)"
+          Write-Output "total_tokens = $totalTokens"
+          Write-Output "usage_source = codex_exec_jsonl_turn_completed"
+
+      - name: Upload validated canary result
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: chatgpt-codex-inference-canary
+          path: ${{ steps.inference.outputs.artifact_path }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove temporary canary files
+        if: always()
+        shell: powershell
+        run: |
+          $tempRoot = "${{ steps.inference.outputs.temp_dir }}"
+          if (-not [string]::IsNullOrWhiteSpace($tempRoot)) {
+            $resolvedRunnerTemp = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\'
+            $resolvedTarget = [System.IO.Path]::GetFullPath($tempRoot)
+            if (-not $resolvedTarget.StartsWith($resolvedRunnerTemp, [System.StringComparison]::OrdinalIgnoreCase)) {
+              throw "Refusing to remove a path outside RUNNER_TEMP"
+            }
+            Remove-Item -LiteralPath $resolvedTarget -Recurse -Force
+          }
