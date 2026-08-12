@@ -152,10 +152,11 @@ jobs:
           }
 
           $model = "gpt-5.6-sol"
-          $prompt = @"
-          You are running a controlled repository canary.
+          $prompt = @'
+          You are running a controlled Windows repository canary.
 
           Create exactly one new file:
+
           docs/codex-chatgpt-repo-canary.txt
 
           Its entire byte content must be UTF-8 without BOM:
@@ -164,21 +165,25 @@ jobs:
 
           followed by exactly one LF newline.
 
-          Use Codex's built-in file editing / apply_patch mechanism to create this file.
+          You MAY use a PowerShell command to create exactly this file. Use only
+          [System.IO.File]::WriteAllText with Join-Path $env:GITHUB_WORKSPACE,
+          the relative target path above, and New-Object System.Text.UTF8Encoding($false).
 
-          Do not use shell commands.
+          Do not modify, delete, rename, inspect, or format any other repository file.
           Do not run git commands.
           Do not run tests.
           Do not access network resources.
-          Do not modify, delete, rename, inspect, or format any other repository file.
-          Do not commit, push, create branches, or create pull requests.
+          Do not commit.
+          Do not push.
+          Do not create branches.
+          Do not create pull requests.
 
           After the file is successfully created, respond exactly:
 
           CHATGPT_CODEX_REPO_CANARY_OK
 
-          Do not claim success unless the file-edit operation succeeded.
-          "@
+          Do not claim success unless the file exists.
+          '@
           $tempRoot = Join-Path $env:RUNNER_TEMP ("codex-chatgpt-repo-canary-${{ github.run_id }}")
           if (Test-Path -LiteralPath $tempRoot) {
             throw "Canary temporary directory already exists"
@@ -235,8 +240,66 @@ jobs:
           $commandExecutions = @(
             $events | Where-Object { $_.item -and $_.item.type -eq "command_execution" }
           )
-          if ($commandExecutions.Count -ne 0) {
-            throw "Codex attempted a shell command"
+          if ($commandExecutions.Count -lt 1) {
+            throw "Codex produced no repository command"
+          }
+          $workspacePath = [System.IO.Path]::GetFullPath($env:GITHUB_WORKSPACE).TrimEnd('\')
+          $targetFile = "docs/codex-chatgpt-repo-canary.txt"
+          $bannedCommandPattern = '(?i)(^|[^a-z0-9_])(git|gh|curl|wget|Invoke-WebRequest|Invoke-RestMethod|ssh|scp|python|python3|manage\.py|pip|npm|node)(\.exe)?($|[^a-z0-9_])|https?://|cmd\s+/c|Start-Process'
+          $bannedFileOperationPattern = '(?i)(Remove-Item|Set-Content|Out-File|Add-Content|Move-Item|Copy-Item|Rename-Item|New-Item|Get-(ChildItem|Item|Content)|Test-Path|Resolve-Path|Read(AllText|AllBytes|Lines)|WriteAllBytes)'
+          $commandPolicyPassed = 0
+          foreach ($commandExecution in $commandExecutions) {
+            $rawCommand = $commandExecution.item.command
+            if ($rawCommand -is [System.Array]) {
+              $commandText = ($rawCommand | ForEach-Object { [string]$_ }) -join " "
+            } else {
+              $commandText = [string]$rawCommand
+            }
+            $commandLength = $commandText.Length
+            $commandBytes = $utf8NoBom.GetBytes($commandText)
+            $commandSha = [System.Security.Cryptography.SHA256]::Create()
+            try {
+              $commandSha256 = ([BitConverter]::ToString($commandSha.ComputeHash($commandBytes))).Replace("-", "").ToLowerInvariant()
+            } finally {
+              $commandSha.Dispose()
+            }
+
+            $commandStatusSuccessful = $true
+            if ($commandExecution.item.PSObject.Properties.Name -contains "status") {
+              $commandStatusSuccessful = ([string]$commandExecution.item.status) -in @("completed", "success", "succeeded")
+            }
+            $commandCwdSafe = $true
+            if (
+              $commandExecution.item.PSObject.Properties.Name -contains "cwd" -and
+              -not [string]::IsNullOrWhiteSpace([string]$commandExecution.item.cwd)
+            ) {
+              $commandCwdSafe = [System.IO.Path]::GetFullPath([string]$commandExecution.item.cwd).TrimEnd('\') -ceq $workspacePath
+            }
+            $writeAllTextCount = [regex]::Matches($commandText, '(?i)WriteAllText').Count
+            $commandShapeSafe = (
+              $commandText -match '(?i)(powershell|pwsh)' -and
+              $writeAllTextCount -eq 1 -and
+              $commandText -match [regex]::Escape($targetFile) -and
+              $commandText -match [regex]::Escape('CHATGPT_CODEX_REPO_CANARY_OK') -and
+              $commandText -match '(?i)Join-Path' -and
+              $commandText -match '(?i)GITHUB_WORKSPACE' -and
+              $commandText -match '(?i)UTF8Encoding\s*\(\s*\$false\s*\)' -and
+              $commandText -notmatch $bannedCommandPattern -and
+              $commandText -notmatch $bannedFileOperationPattern -and
+              $commandText -notmatch '(?i)([a-z]:\\|\\\\|/(home|tmp|var|etc)/|\$env:(?!GITHUB_WORKSPACE\b))' -and
+              $commandText -notmatch '(\.\.|&&|\|\||[|><;&;])'
+            )
+            $commandPolicyResult = $commandStatusSuccessful -and $commandCwdSafe -and $commandShapeSafe
+            Write-Output "command_sha256 = $commandSha256"
+            Write-Output "command_length = $commandLength"
+            Write-Output "command_policy_result = $($commandPolicyResult.ToString().ToLowerInvariant())"
+            if (-not $commandPolicyResult) {
+              throw "Codex command violated canary command policy"
+            }
+            $commandPolicyPassed++
+          }
+          if ($commandPolicyPassed -ne $commandExecutions.Count) {
+            throw "Codex command violated canary command policy"
           }
           $networkItems = @(
             $events | Where-Object { $_.item -and $_.item.type -in @("web_search", "mcp_tool_call") }
@@ -247,9 +310,6 @@ jobs:
           $fileChangeItems = @(
             $events | Where-Object { $_.item -and $_.item.type -eq "file_change" }
           )
-          if ($fileChangeItems.Count -lt 1) {
-            throw "Codex did not report a file_change event"
-          }
           foreach ($fileChangeItem in $fileChangeItems) {
             if (
               $fileChangeItem.item.PSObject.Properties.Name -contains "status" -and
@@ -271,6 +331,7 @@ jobs:
               if ($normalizedPath -cne "docs/codex-chatgpt-repo-canary.txt") {
                 throw "Codex reported a change outside the target file"
               }
+              Write-Output "file_change_path = $normalizedPath"
             }
           }
 
@@ -364,7 +425,7 @@ jobs:
             throw "Codex produced more than one repository change"
           }
           if ($statusLines[0] -cne $expectedStatus) {
-            throw "Codex changed an unexpected repository path"
+            throw "Codex changed unexpected repository path"
           }
 
           $actualBytes = [System.IO.File]::ReadAllBytes((Join-Path $env:GITHUB_WORKSPACE $targetFile))
@@ -530,6 +591,10 @@ jobs:
             output_tokens = [long]"${{ steps.codex.outputs.output_tokens }}"
             total_tokens = [long]"${{ steps.codex.outputs.total_tokens }}"
             codex_exit_code = [int]"${{ steps.codex.outputs.codex_exit_code }}"
+            command_execution_count = [long]"${{ steps.codex.outputs.command_execution_count }}"
+            network_event_count = [long]"${{ steps.codex.outputs.network_event_count }}"
+            file_change_count = [long]"${{ steps.codex.outputs.file_change_count }}"
+            final_response_matches_expected = [System.Convert]::ToBoolean("${{ steps.codex.outputs.final_response_matches_expected }}")
             target_file = "${{ steps.preflight.outputs.target_file }}"
             target_sha256 = "${{ steps.validate.outputs.target_sha256 }}"
             commit_sha = "${{ steps.publish.outputs.commit_sha }}"
