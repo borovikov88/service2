@@ -13,7 +13,7 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Case, DecimalField, F, Sum, Value, When
 from django.core.paginator import Paginator
 from django.http import FileResponse, HttpResponse, HttpResponseForbidden, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -2442,12 +2442,24 @@ def finance_onec_import_detail(request, batch_id):
         return denied
     batch = get_object_or_404(OneCImportBatch, id=batch_id, organization=organization)
     rows = OneCMonthlyProfit.objects.filter(import_batch=batch, organization=organization)
-    totals = rows.aggregate(revenue=Sum("revenue"), cost=Sum("cost"), gross_profit=Sum("gross_profit"))
+    money_field = DecimalField(max_digits=20, decimal_places=2)
+    analytical_cost = Case(
+        When(cost_source=OneCMonthlyProfit.COST_SOURCE_CALCULATED, then=F("calculated_cost")),
+        When(cost_source=OneCMonthlyProfit.COST_SOURCE_UNDEFINED, then=Value(None)),
+        default=F("cost"), output_field=money_field,
+    )
+    analytical_profit = Case(
+        When(cost_source="", then=F("gross_profit")),
+        default=F("analytical_gross_profit"), output_field=money_field,
+    )
+    totals = rows.aggregate(
+        revenue=Sum("revenue"), cost=Sum(analytical_cost), gross_profit=Sum(analytical_profit)
+    )
     revenue = totals["revenue"] or Decimal("0")
     gross_profit = totals["gross_profit"] or Decimal("0")
     totals["profitability_percent"] = calculate_profitability(gross_profit, revenue)
     monthly = list(rows.values("period_month").annotate(
-        revenue=Sum("revenue"), cost=Sum("cost"), gross_profit=Sum("gross_profit")
+        revenue=Sum("revenue"), cost=Sum(analytical_cost), gross_profit=Sum(analytical_profit)
     ).order_by("period_month"))
     for item in monthly:
         month_revenue = item["revenue"] or Decimal("0")

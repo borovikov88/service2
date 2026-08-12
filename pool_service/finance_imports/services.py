@@ -18,6 +18,7 @@ from pool_service.models import (
     Organization,
 )
 from .monthly_profit_parser import PARSER_VERSION, MonthlyProfitParseError, parse_monthly_profit
+from .monthly_profit_parser import classify_nomenclature_type
 from .validators import delete_private_batch_file, delete_private_file, safe_original_filename, stream_sha256
 
 logger = logging.getLogger(__name__)
@@ -26,12 +27,59 @@ METADATA_WARNING_LIMIT = 50
 METADATA_WARNING_MAX_LENGTH = 300
 ERROR_MESSAGE_MAX_LENGTH = 500
 PROFITABILITY_QUANTUM = Decimal("0.0001")
+MONEY_QUANTUM = Decimal("0.01")
+RATIO_QUANTUM = Decimal("0.0000000001")
 
 
 class DuplicateImportError(ValidationError):
     def __init__(self, batch):
         self.batch = batch
         super().__init__("Этот файл уже был загружен для текущей организации.")
+
+
+def apply_period_weighted_goods_cost(records):
+    """Add deterministic analytics without changing source 1C values."""
+    bases = {}
+    for row in records:
+        if (
+            classify_nomenclature_type(row.get("nomenclature_type")) == "goods"
+            and row.get("cost") is not None and row["cost"] > 0
+            and row.get("revenue") is not None and row["revenue"] > 0
+        ):
+            revenue, cost = bases.get(row["period_month"], (Decimal("0"), Decimal("0")))
+            bases[row["period_month"]] = (revenue + row["revenue"], cost + row["cost"])
+
+    ratios = {
+        period: (cost / revenue).quantize(RATIO_QUANTUM, rounding=ROUND_HALF_UP)
+        for period, (revenue, cost) in bases.items() if revenue > 0
+    }
+    for row in records:
+        row["calculated_cost"] = None
+        row["cost_calculation_method"] = ""
+        row["cost_calculation_ratio"] = None
+        row["analytical_gross_profit"] = row.get("gross_profit")
+        is_zero_cost_goods = (
+            classify_nomenclature_type(row.get("nomenclature_type")) == "goods"
+            and row.get("cost") == 0
+        )
+        if not is_zero_cost_goods:
+            row["cost_source"] = OneCMonthlyProfit.COST_SOURCE_ACTUAL
+            continue
+        ratio = ratios.get(row["period_month"])
+        revenue = row.get("revenue")
+        if ratio is None or revenue is None or revenue <= 0:
+            row["cost_source"] = OneCMonthlyProfit.COST_SOURCE_UNDEFINED
+            row["analytical_gross_profit"] = None
+            continue
+        calculated = (revenue * ratio).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+        row["cost_source"] = OneCMonthlyProfit.COST_SOURCE_CALCULATED
+        row["calculated_cost"] = calculated
+        row["cost_calculation_method"] = OneCMonthlyProfit.COST_METHOD_PERIOD_WEIGHTED_GOODS
+        row["cost_calculation_ratio"] = ratio
+        row["analytical_gross_profit"] = (revenue - calculated).quantize(
+            MONEY_QUANTUM, rounding=ROUND_HALF_UP
+        )
+    return records
 
 
 def _log(batch, user, event, **details):
@@ -53,7 +101,19 @@ def _audit(batch, user, before, after):
 def _preview_metadata(result, overlap_months=()):
     totals = {key: Decimal("0") for key in ("revenue", "cost", "gross_profit")}
     for row in result.records:
-        for key in totals: totals[key] += row.get(key) or Decimal("0")
+        totals["revenue"] += row.get("revenue") or Decimal("0")
+        effective_cost = (
+            row.get("calculated_cost")
+            if row.get("cost_source") == OneCMonthlyProfit.COST_SOURCE_CALCULATED
+            else row.get("cost")
+        )
+        effective_profit = (
+            row.get("analytical_gross_profit")
+            if row.get("cost_source")
+            else row.get("gross_profit")
+        )
+        totals["cost"] += effective_cost or Decimal("0")
+        totals["gross_profit"] += effective_profit or Decimal("0")
     sample = []
     for row in result.records[:PREVIEW_ROW_LIMIT]:
         sample.append({
@@ -213,6 +273,7 @@ def create_monthly_profit_preview(uploaded_file, organization, user):
     try:
         with batch.stored_file.open("rb") as source:
             result = parse_monthly_profit(source, filename=batch.original_filename, size=batch.file_size)
+        apply_period_weighted_goods_cost(result.records)
         periods = _result_periods(result)
         overlap_months = overlap_months_for(
             organization, batch.import_type, periods
@@ -257,6 +318,7 @@ def confirm_monthly_profit(batch_id, organization, user):
                 raise ValidationError("Контрольная сумма исходного файла изменилась.")
             with batch.stored_file.open("rb") as source:
                 result = parse_monthly_profit(source, filename=batch.original_filename, size=batch.file_size)
+            apply_period_weighted_goods_cost(result.records)
             if result.critical_errors: raise ValidationError("; ".join(result.critical_errors))
             periods = _result_periods(result)
             locked_states = list(
