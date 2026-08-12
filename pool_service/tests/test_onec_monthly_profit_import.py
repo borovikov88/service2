@@ -193,6 +193,28 @@ def vertical_article_type_xlsx(*, include_parent=True, articles=None):
     return output.getvalue()
 
 
+def vertical_calculated_cost_xlsx():
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append([
+        "Месяц", None, None, "Количество", "Выручка", "Себестоимость",
+        "Валовая прибыль", "Рентабельность",
+    ])
+    sheet.append(["Артикул", "Тип", "Номенклатура"])
+    sheet.append(["янв. 2026", None, None, 2, 120, 50, 70, None])
+    rows = [
+        ["ACTUAL", "Товар", "Фактический товар", 1, 100, 50, 50, 50],
+        ["ZERO", "Товар", "Товар без себестоимости", 1, 20, 0, 20, 100],
+    ]
+    for row in rows:
+        sheet.append(row)
+        sheet.cell(sheet.max_row, 3).alignment = Alignment(indent=2)
+    sheet.append(["Итого", None, None, 2, 120, 50, 70, None])
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
 def upload(name="monthly-profit.xlsx", data=None, **kwargs):
     return SimpleUploadedFile(
         name, data if data is not None else xlsx_bytes(**kwargs),
@@ -234,6 +256,28 @@ class MonthlyProfitParserTests(TestCase):
         ])
         self.assertEqual(rows[1]["calculated_cost"], Decimal("50000.00"))
         self.assertEqual(rows[2]["calculated_cost"], Decimal("10.00"))
+
+    def test_only_exact_goods_with_positive_source_values_enter_base(self):
+        rows = self.analytics([
+            {"nomenclature_type": "Запас", "revenue": Decimal("100"), "cost": Decimal("50")},
+            {"nomenclature_type": "Товар", "revenue": Decimal("100"), "cost": Decimal("70")},
+            {"nomenclature_type": "Услуга", "revenue": Decimal("10000"), "cost": Decimal("9000")},
+            {"nomenclature_type": "Работа", "revenue": Decimal("10000"), "cost": Decimal("9000")},
+            {"nomenclature_type": "Неизвестный тип", "revenue": Decimal("10000"), "cost": Decimal("9000")},
+            {"nomenclature_type": "Товар", "revenue": Decimal("0"), "cost": Decimal("9000")},
+            {"nomenclature_type": "Товар", "revenue": Decimal("-1"), "cost": Decimal("9000")},
+            {"nomenclature_type": "Товар", "revenue": Decimal("10000"), "cost": Decimal("0")},
+            {"nomenclature_type": "Товар", "revenue": Decimal("10000"), "cost": Decimal("-1")},
+        ])
+
+        self.assertEqual(rows[0]["cost_source"], OneCMonthlyProfit.COST_SOURCE_ACTUAL)
+        self.assertEqual(rows[1]["cost_source"], OneCMonthlyProfit.COST_SOURCE_ACTUAL)
+        # Only the first two rows form the 120/200 monthly base.
+        self.assertEqual(rows[7]["cost_calculation_ratio"], Decimal("0.6000000000"))
+        self.assertEqual(rows[7]["calculated_cost"], Decimal("6000.00"))
+        self.assertEqual(rows[5]["cost_source"], OneCMonthlyProfit.COST_SOURCE_ACTUAL)
+        self.assertEqual(rows[6]["cost_source"], OneCMonthlyProfit.COST_SOURCE_ACTUAL)
+        self.assertEqual(rows[8]["cost_source"], OneCMonthlyProfit.COST_SOURCE_ACTUAL)
 
     def test_missing_base_leaves_cost_and_analytical_profit_undefined(self):
         row = self.analytics([{"cost": Decimal("0")}])[0]
@@ -604,6 +648,8 @@ class MonthlyProfitParserTests(TestCase):
         cases = (
             ("Запас", "goods"),
             ("  запас  ", "goods"),
+            ("Товар", "goods"),
+            ("  товар  ", "goods"),
             ("Услуга", "service"),
             ("Работа", "service"),
             ("Новый тип", "unknown"),
@@ -749,6 +795,33 @@ class MonthlyProfitWorkflowTests(TestCase):
         self.assertEqual(rows[0].nomenclature_type, "Запас")
         self.assertEqual(rows[1].article, "")
         self.assertEqual(rows[1].nomenclature_type, "Услуга")
+
+    def test_preview_and_confirm_use_identical_calculated_cost(self):
+        batch = create_monthly_profit_preview(
+            upload(name="calculated-cost.xlsx", data=vertical_calculated_cost_xlsx()),
+            self.organization,
+            self.user,
+        )
+        preview = next(
+            row for row in batch.metadata["preview"] if row["article"] == "ZERO"
+        )
+        self.assertEqual(preview["cost"], "0.00")
+        self.assertEqual(preview["calculated_cost"], "10.00")
+        self.assertEqual(preview["cost_calculation_ratio"], "0.5000000000")
+        self.assertEqual(preview["analytical_gross_profit"], "10.00")
+
+        confirm_monthly_profit(batch.id, self.organization, self.user)
+        stored = OneCMonthlyProfit.objects.get(import_batch=batch, article="ZERO")
+        self.assertEqual(stored.cost, Decimal("0.00"))
+        self.assertEqual(stored.calculated_cost, Decimal(preview["calculated_cost"]))
+        self.assertEqual(
+            stored.cost_calculation_ratio,
+            Decimal(preview["cost_calculation_ratio"]),
+        )
+        self.assertEqual(
+            stored.analytical_gross_profit,
+            Decimal(preview["analytical_gross_profit"]),
+        )
 
     def test_monthly_profit_model_defaults_nomenclature_type_to_empty(self):
         batch = self.create_preview()
