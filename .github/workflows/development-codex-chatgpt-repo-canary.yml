@@ -154,20 +154,30 @@ jobs:
           $model = "gpt-5.6-sol"
           $prompt = @"
           You are running a controlled repository canary.
+
           Create exactly one new file:
           docs/codex-chatgpt-repo-canary.txt
 
-          Its entire content must be:
-          CHATGPT_CODEX_REPO_CANARY_OK
-          followed by one newline.
+          Its entire byte content must be UTF-8 without BOM:
 
-          Do not modify, delete, rename, inspect, or format any other file.
-          Do not run tests.
+          CHATGPT_CODEX_REPO_CANARY_OK
+
+          followed by exactly one LF newline.
+
+          Use Codex's built-in file editing / apply_patch mechanism to create this file.
+
+          Do not use shell commands.
           Do not run git commands.
-          Do not commit or push.
-          Do not create a branch or PR.
+          Do not run tests.
           Do not access network resources.
-          Stop after creating this one file.
+          Do not modify, delete, rename, inspect, or format any other repository file.
+          Do not commit, push, create branches, or create pull requests.
+
+          After the file is successfully created, respond exactly:
+
+          CHATGPT_CODEX_REPO_CANARY_OK
+
+          Do not claim success unless the file-edit operation succeeded.
           "@
           $tempRoot = Join-Path $env:RUNNER_TEMP ("codex-chatgpt-repo-canary-${{ github.run_id }}")
           if (Test-Path -LiteralPath $tempRoot) {
@@ -237,7 +247,16 @@ jobs:
           $fileChangeItems = @(
             $events | Where-Object { $_.item -and $_.item.type -eq "file_change" }
           )
+          if ($fileChangeItems.Count -lt 1) {
+            throw "Codex did not report a file_change event"
+          }
           foreach ($fileChangeItem in $fileChangeItems) {
+            if (
+              $fileChangeItem.item.PSObject.Properties.Name -contains "status" -and
+              ([string]$fileChangeItem.item.status) -notin @("completed", "success", "succeeded")
+            ) {
+              throw "Codex reported an unsuccessful file_change event"
+            }
             $reportedPaths = @()
             if ($fileChangeItem.item.changes) {
               $reportedPaths += @($fileChangeItem.item.changes | ForEach-Object { $_.path })
@@ -279,7 +298,24 @@ jobs:
 
           $uncachedInputTokens = $tokens.input_tokens - $tokens.cached_input_tokens
           $totalTokens = $tokens.input_tokens + $tokens.output_tokens
-          $finalResponseLength = (Get-Content -LiteralPath $finalPath -Raw).Length
+          $finalResponse = (Get-Content -LiteralPath $finalPath -Raw).Trim()
+          $finalResponseLength = $finalResponse.Length
+          $finalResponseBytes = $utf8NoBom.GetBytes($finalResponse)
+          $sha256 = [System.Security.Cryptography.SHA256]::Create()
+          try {
+            $finalResponseSha256 = ([BitConverter]::ToString($sha256.ComputeHash($finalResponseBytes))).Replace("-", "").ToLowerInvariant()
+          } finally {
+            $sha256.Dispose()
+          }
+          $finalResponseMatchesExpected = $finalResponse -ceq "CHATGPT_CODEX_REPO_CANARY_OK"
+
+          Write-Output "final_response_length = $finalResponseLength"
+          Write-Output "final_response_sha256 = $finalResponseSha256"
+          Write-Output "final_response_matches_expected = $($finalResponseMatchesExpected.ToString().ToLowerInvariant())"
+          if (-not $finalResponseMatchesExpected) {
+            throw "Unexpected Codex final response"
+          }
+
           [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "model=$model`n", $utf8NoBom)
           [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "codex_exit_code=$codexExitCode`n", $utf8NoBom)
           [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "input_tokens=$($tokens.input_tokens)`n", $utf8NoBom)
@@ -289,14 +325,18 @@ jobs:
           [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "total_tokens=$totalTokens`n", $utf8NoBom)
           [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "turn_completed_count=$($completed.Count)`n", $utf8NoBom)
           [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "command_execution_count=$($commandExecutions.Count)`n", $utf8NoBom)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "network_event_count=$($networkItems.Count)`n", $utf8NoBom)
           [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "file_change_count=$($fileChangeItems.Count)`n", $utf8NoBom)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "final_response_length=$finalResponseLength`n", $utf8NoBom)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "final_response_sha256=$finalResponseSha256`n", $utf8NoBom)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "final_response_matches_expected=true`n", $utf8NoBom)
 
           Write-Output "model = $model"
           Write-Output "codex_exit_code = $codexExitCode"
           Write-Output "turn.completed = $($completed.Count)"
           Write-Output "command_execution = $($commandExecutions.Count)"
+          Write-Output "network_event = $($networkItems.Count)"
           Write-Output "file_change = $($fileChangeItems.Count)"
-          Write-Output "final_response_length = $finalResponseLength"
           Write-Output "input_tokens = $($tokens.input_tokens)"
           Write-Output "cached_input_tokens = $($tokens.cached_input_tokens)"
           Write-Output "uncached_input_tokens = $uncachedInputTokens"
@@ -312,8 +352,19 @@ jobs:
           $targetFile = "${{ steps.preflight.outputs.target_file }}"
           $expectedStatus = "?? $targetFile"
           $statusLines = @(git status --porcelain=v1 --untracked-files=all)
-          if ($LASTEXITCODE -ne 0 -or $statusLines.Count -ne 1 -or $statusLines[0] -cne $expectedStatus) {
-            throw "Repository contains changes other than the one new target file"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to inspect repository changes"
+          }
+          Write-Output "repository_changed_path_count = $($statusLines.Count)"
+          Write-Output "target_exists = $((Test-Path -LiteralPath $targetFile -PathType Leaf).ToString().ToLowerInvariant())"
+          if ($statusLines.Count -eq 0) {
+            throw "Codex produced no repository change"
+          }
+          if ($statusLines.Count -gt 1) {
+            throw "Codex produced more than one repository change"
+          }
+          if ($statusLines[0] -cne $expectedStatus) {
+            throw "Codex changed an unexpected repository path"
           }
 
           $actualBytes = [System.IO.File]::ReadAllBytes((Join-Path $env:GITHUB_WORKSPACE $targetFile))
