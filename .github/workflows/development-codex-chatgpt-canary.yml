@@ -42,9 +42,16 @@ jobs:
 
           whoami
           codex --version
+          $previousErrorActionPreference = $ErrorActionPreference
+          $ErrorActionPreference = "Continue"
           $loginStatus = codex login status 2>&1 | Out-String
+          $loginExitCode = $LASTEXITCODE
+          $ErrorActionPreference = $previousErrorActionPreference
           $loginStatus = $loginStatus.Trim()
           Write-Output $loginStatus
+          if ($loginExitCode -ne 0) {
+            throw "Codex login status failed with exit code $loginExitCode"
+          }
           if ($loginStatus -notmatch "Logged in using ChatGPT") {
             throw "Codex is not authenticated through ChatGPT"
           }
