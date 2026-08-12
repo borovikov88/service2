@@ -8,7 +8,7 @@ from pool_service.models import OneCImportBatch, OneCMonthlyProfit
 
 
 TYPE_PATTERNS = {
-    "goods": r"^\s*запас\s*$",
+    "goods": r"^\s*(запас|товар)\s*$",
     "service": r"^\s*услуга\s*$",
     "work": r"^\s*работа\s*$",
 }
@@ -37,7 +37,11 @@ def get_onec_cost_anomalies(organization, *, period_month=None, search=""):
     ).filter(
         _type_q("goods"),
         revenue__gt=0,
-    ).filter(Q(cost__isnull=True) | Q(cost=0))
+    ).filter(
+        Q(cost__isnull=True)
+        | Q(cost_source=OneCMonthlyProfit.COST_SOURCE_UNDEFINED)
+        | Q(cost=0, cost_source="")  # Historical rows imported before analytics.
+    )
     search = (search or "").strip()
     if search:
         rows = rows.filter(

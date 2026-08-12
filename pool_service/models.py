@@ -1797,6 +1797,15 @@ class OneCMonthlyProfitQuerySet(models.QuerySet):
 
 
 class OneCMonthlyProfit(models.Model):
+    COST_SOURCE_ACTUAL = "actual"
+    COST_SOURCE_CALCULATED = "calculated"
+    COST_SOURCE_UNDEFINED = "undefined"
+    COST_SOURCE_CHOICES = [
+        (COST_SOURCE_ACTUAL, "Фактическая"),
+        (COST_SOURCE_CALCULATED, "Расчётная"),
+        (COST_SOURCE_UNDEFINED, "Не определена"),
+    ]
+    COST_METHOD_PERIOD_WEIGHTED_GOODS = "period_weighted_goods_v1"
     import_batch = models.ForeignKey(
         OneCImportBatch,
         on_delete=models.CASCADE,
@@ -1821,6 +1830,23 @@ class OneCMonthlyProfit(models.Model):
     cost = models.DecimalField("Себестоимость", max_digits=20, decimal_places=2, null=True, blank=True)
     gross_profit = models.DecimalField(
         "Валовая прибыль", max_digits=20, decimal_places=2, null=True, blank=True
+    )
+    calculated_cost = models.DecimalField(
+        "Расчётная себестоимость", max_digits=20, decimal_places=2, null=True, blank=True
+    )
+    cost_source = models.CharField(
+        "Источник себестоимости", max_length=16, choices=COST_SOURCE_CHOICES, blank=True, default=""
+    )
+    cost_calculation_method = models.CharField(
+        "Метод расчёта себестоимости", max_length=40, blank=True, default=""
+    )
+    cost_calculation_ratio = models.DecimalField(
+        "Коэффициент расчёта себестоимости", max_digits=16, decimal_places=10,
+        null=True, blank=True,
+    )
+    analytical_gross_profit = models.DecimalField(
+        "Аналитическая валовая прибыль", max_digits=20, decimal_places=2,
+        null=True, blank=True,
     )
     profitability_percent = models.DecimalField(
         "Рентабельность, %", max_digits=12, decimal_places=4, null=True, blank=True
@@ -1847,6 +1873,18 @@ class OneCMonthlyProfit(models.Model):
 
     def __str__(self):
         return f"{self.period_month:%m.%Y}: {self.nomenclature}"
+
+    @property
+    def analytical_cost(self):
+        if self.cost_source == self.COST_SOURCE_CALCULATED:
+            return self.calculated_cost
+        if self.cost_source == self.COST_SOURCE_UNDEFINED:
+            return None
+        return self.cost
+
+    @property
+    def displayed_gross_profit(self):
+        return self.analytical_gross_profit if self.cost_source else self.gross_profit
 
 
 class OneCReportPeriodState(models.Model):

@@ -31,6 +31,7 @@ from pool_service.finance_imports.services import (
     cancel_monthly_profit,
     confirm_monthly_profit,
     create_monthly_profit_preview,
+    apply_period_weighted_goods_cost,
 )
 from pool_service.finance_imports.validators import delete_private_batch_file
 from pool_service.models import OneCImportBatch, OneCMonthlyProfit, Organization, OrganizationAccess
@@ -200,6 +201,67 @@ def upload(name="monthly-profit.xlsx", data=None, **kwargs):
 
 
 class MonthlyProfitParserTests(TestCase):
+    def analytics(self, rows):
+        defaults = {
+            "period_month": date(2026, 1, 1), "nomenclature_type": "Запас",
+            "revenue": Decimal("100"), "cost": Decimal("60"),
+            "gross_profit": Decimal("40"),
+        }
+        records = [{**defaults, **row} for row in rows]
+        apply_period_weighted_goods_cost(records)
+        return records
+
+    def test_weighted_cost_uses_only_actual_goods_in_same_period(self):
+        rows = self.analytics([
+            {"revenue": Decimal("100000"), "cost": Decimal("60000")},
+            {"revenue": Decimal("50000"), "cost": Decimal("35000")},
+            {"revenue": Decimal("30000"), "cost": Decimal("0"), "gross_profit": Decimal("30000")},
+            {"nomenclature_type": "Услуга", "revenue": Decimal("1000000"), "cost": Decimal("1")},
+            {"nomenclature_type": "Работа", "revenue": Decimal("1000000"), "cost": Decimal("1")},
+        ])
+        target = rows[2]
+        self.assertEqual(target["cost"], Decimal("0"))
+        self.assertEqual(target["calculated_cost"], Decimal("19000.00"))
+        self.assertEqual(target["analytical_gross_profit"], Decimal("11000.00"))
+        self.assertEqual(target["cost_source"], OneCMonthlyProfit.COST_SOURCE_CALCULATED)
+        self.assertEqual(target["cost_calculation_ratio"], Decimal("0.6333333333"))
+
+    def test_zero_cost_and_precalculated_values_never_enter_base(self):
+        rows = self.analytics([
+            {"revenue": Decimal("100"), "cost": Decimal("50")},
+            {"revenue": Decimal("100000"), "cost": Decimal("0"), "calculated_cost": Decimal("99999")},
+            {"revenue": Decimal("20"), "cost": Decimal("0")},
+        ])
+        self.assertEqual(rows[1]["calculated_cost"], Decimal("50000.00"))
+        self.assertEqual(rows[2]["calculated_cost"], Decimal("10.00"))
+
+    def test_missing_base_leaves_cost_and_analytical_profit_undefined(self):
+        row = self.analytics([{"cost": Decimal("0")}])[0]
+        self.assertEqual(row["cost"], Decimal("0"))
+        self.assertIsNone(row["calculated_cost"])
+        self.assertIsNone(row["analytical_gross_profit"])
+        self.assertEqual(row["cost_source"], OneCMonthlyProfit.COST_SOURCE_UNDEFINED)
+
+    def test_periods_are_independent_and_processing_is_idempotent(self):
+        february = date(2026, 2, 1)
+        rows = self.analytics([
+            {"revenue": Decimal("100"), "cost": Decimal("50")},
+            {"revenue": Decimal("20"), "cost": Decimal("0")},
+            {"period_month": february, "revenue": Decimal("100"), "cost": Decimal("80")},
+            {"period_month": february, "revenue": Decimal("20"), "cost": Decimal("0")},
+        ])
+        self.assertEqual(rows[1]["calculated_cost"], Decimal("10.00"))
+        self.assertEqual(rows[3]["calculated_cost"], Decimal("16.00"))
+        snapshot = [dict(row) for row in rows]
+        apply_period_weighted_goods_cost(rows)
+        self.assertEqual(rows, snapshot)
+
+    def test_positive_actual_cost_is_never_replaced(self):
+        row = self.analytics([{"cost": Decimal("60"), "calculated_cost": Decimal("999")}])[0]
+        self.assertEqual(row["cost"], Decimal("60"))
+        self.assertIsNone(row["calculated_cost"])
+        self.assertEqual(row["cost_source"], OneCMonthlyProfit.COST_SOURCE_ACTUAL)
+
     def test_simple_report_and_multilevel_header(self):
         result = parse_monthly_profit(BytesIO(xlsx_bytes()), filename="report.xlsx")
         self.assertEqual(len(result.records), 1)
@@ -780,6 +842,26 @@ class MonthlyProfitWorkflowTests(TestCase):
         ):
             with self.subTest(url=url):
                 self.assertEqual(self.client.get(url).status_code, 200)
+
+    def test_detail_marks_calculated_cost_with_ratio_and_explanation(self):
+        batch = self.create_preview()
+        batch.status = OneCImportBatch.STATUS_CONFIRMED
+        batch.save(update_fields=["status"])
+        OneCMonthlyProfit.objects.create(
+            import_batch=batch, organization=self.organization,
+            period_month=date(2026, 1, 1), source_row_number=99,
+            nomenclature="Товар с расчётной стоимостью", nomenclature_type="Товар",
+            revenue=Decimal("30000"), cost=Decimal("0"), gross_profit=Decimal("30000"),
+            calculated_cost=Decimal("19000"),
+            cost_source=OneCMonthlyProfit.COST_SOURCE_CALCULATED,
+            cost_calculation_method=OneCMonthlyProfit.COST_METHOD_PERIOD_WEIGHTED_GOODS,
+            cost_calculation_ratio=Decimal("0.6333333333"),
+            analytical_gross_profit=Decimal("11000"),
+        )
+        response = self.client.get(reverse("finance_onec_import_detail", args=[batch.id]))
+        self.assertContains(response, "Расчётная · 63,3%")
+        self.assertContains(response, "Исходная себестоимость в 1С равна 0")
+        self.assertEqual(response.context["page_obj"][0].displayed_gross_profit, Decimal("11000.00"))
 
     def test_admin_and_accountant_can_access(self):
         for role in ("admin", "accountant"):
