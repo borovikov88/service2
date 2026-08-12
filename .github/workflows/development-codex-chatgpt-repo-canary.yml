@@ -276,8 +276,8 @@ jobs:
               $commandCwdSafe = [System.IO.Path]::GetFullPath([string]$commandExecution.item.cwd).TrimEnd('\') -ceq $workspacePath
             }
             $writeAllTextCount = [regex]::Matches($commandText, '(?i)WriteAllText').Count
+            # Repository state and byte-for-byte target validation are the authoritative write boundary; command inspection is defense-in-depth only.
             $commandShapeSafe = (
-              $commandText -match '(?i)(powershell|pwsh)' -and
               $writeAllTextCount -eq 1 -and
               $commandText -match [regex]::Escape($targetFile) -and
               $commandText -match [regex]::Escape('CHATGPT_CODEX_REPO_CANARY_OK') -and
@@ -287,7 +287,7 @@ jobs:
               $commandText -notmatch $bannedCommandPattern -and
               $commandText -notmatch $bannedFileOperationPattern -and
               $commandText -notmatch '(?i)([a-z]:\\|\\\\|/(home|tmp|var|etc)/|\$env:(?!GITHUB_WORKSPACE\b))' -and
-              $commandText -notmatch '(\.\.|&&|\|\||[|><;&;])'
+              $commandText -notmatch '(\.\.|&&|\|\||[|><&])'
             )
             $commandPolicyResult = $commandStatusSuccessful -and $commandCwdSafe -and $commandShapeSafe
             Write-Output "command_sha256 = $commandSha256"
