@@ -1,0 +1,513 @@
+name: Development Codex ChatGPT repository canary
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: rovikpool-codex-chatgpt
+  cancel-in-progress: false
+
+jobs:
+  repository-canary:
+    name: Run controlled ChatGPT-authenticated repository canary
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+      - rovikpool-codex
+    timeout-minutes: 15
+
+    steps:
+      - name: Authorize trusted canary actor
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ github.event_name }}" -ne "workflow_dispatch") {
+            throw "Unexpected workflow event"
+          }
+          if ("${{ github.repository }}" -ne "borovikov88/service2") {
+            throw "Unexpected repository"
+          }
+          if ("${{ github.actor }}" -ne "borovikov88") {
+            throw "Unauthorized workflow actor"
+          }
+          if ($env:RUNNER_NAME -ne "rovikpool-codex-win") {
+            throw "Unexpected runner"
+          }
+          if (-not [string]::IsNullOrEmpty($env:OPENAI_API_KEY)) {
+            throw "OPENAI_API_KEY must not be supplied to the canary"
+          }
+
+      - name: Checkout trusted main
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+        with:
+          repository: borovikov88/service2
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate trusted checkout and authentication
+        id: preflight
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ github.event_name }}" -ne "workflow_dispatch") {
+            throw "Unexpected workflow event"
+          }
+          if ("${{ github.repository }}" -ne "borovikov88/service2") {
+            throw "Unexpected repository"
+          }
+          if ($env:RUNNER_NAME -ne "rovikpool-codex-win") {
+            throw "Unexpected runner"
+          }
+
+          $expectedWorkspace = [System.IO.Path]::GetFullPath($env:GITHUB_WORKSPACE).TrimEnd('\')
+          $actualWorkspace = [System.IO.Path]::GetFullPath((git rev-parse --show-toplevel)).TrimEnd('\')
+          if ($LASTEXITCODE -ne 0 -or $actualWorkspace -cne $expectedWorkspace) {
+            throw "Unexpected repository workspace"
+          }
+          $remoteUrl = (git remote get-url origin).Trim()
+          if ($LASTEXITCODE -ne 0 -or $remoteUrl -notmatch '^https://github\.com/borovikov88/service2(?:\.git)?$') {
+            throw "Unexpected origin repository"
+          }
+
+          $baseSha = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $baseSha -notmatch '^[0-9a-f]{40}$') {
+            throw "Invalid checkout SHA"
+          }
+          $remoteMainLine = git ls-remote --exit-code origin refs/heads/main
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to resolve origin/main"
+          }
+          $remoteMainSha = (($remoteMainLine -split '\s+')[0]).Trim()
+          if ($remoteMainSha -cne $baseSha) {
+            throw "Checkout does not match current origin/main"
+          }
+          if (-not [string]::IsNullOrEmpty((git status --porcelain=v1 --untracked-files=all))) {
+            throw "Checkout is not clean"
+          }
+
+          $targetFile = "docs/codex-chatgpt-repo-canary.txt"
+          if (Test-Path -LiteralPath $targetFile) {
+            throw "Canary target already exists in base branch"
+          }
+          $branchName = "canary/chatgpt-codex-repo-${{ github.run_id }}"
+          if ($branchName -cnotmatch '^canary/chatgpt-codex-repo-[0-9]+$') {
+            throw "Invalid server-controlled branch name"
+          }
+          $existingBranch = git ls-remote --heads origin "refs/heads/$branchName"
+          if ($LASTEXITCODE -ne 0 -or -not [string]::IsNullOrWhiteSpace(($existingBranch | Out-String))) {
+            throw "Canary branch already exists or cannot be checked"
+          }
+          git switch -c $branchName
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to create local canary branch"
+          }
+
+          $apiKeyPresent = -not [string]::IsNullOrEmpty($env:OPENAI_API_KEY)
+          Write-Output "API key present = $($apiKeyPresent.ToString().ToLowerInvariant())"
+          if ($apiKeyPresent) {
+            throw "OPENAI_API_KEY must not be supplied to the canary"
+          }
+          Write-Output "billing_mode_expected = chatgpt_session"
+
+          $previousErrorActionPreference = $ErrorActionPreference
+          $ErrorActionPreference = "Continue"
+          $loginStatus = codex login status 2>&1 | Out-String
+          $loginExitCode = $LASTEXITCODE
+          $ErrorActionPreference = $previousErrorActionPreference
+          $loginStatus = $loginStatus.Trim()
+          if ($loginExitCode -ne 0) {
+            throw "Codex login status failed with exit code $loginExitCode"
+          }
+          if ($loginStatus -notmatch "Logged in using ChatGPT") {
+            throw "Codex is not authenticated through ChatGPT"
+          }
+
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "base_sha=$baseSha`n", $utf8NoBom)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "branch_name=$branchName`n", $utf8NoBom)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "target_file=$targetFile`n", $utf8NoBom)
+
+      - name: Run exactly one Codex repository turn
+        id: codex
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (-not [string]::IsNullOrEmpty($env:OPENAI_API_KEY)) {
+            throw "OPENAI_API_KEY must not be supplied to Codex"
+          }
+          if ((git branch --show-current).Trim() -cne "${{ steps.preflight.outputs.branch_name }}") {
+            throw "Unexpected local branch before Codex"
+          }
+          if (-not [string]::IsNullOrEmpty((git status --porcelain=v1 --untracked-files=all))) {
+            throw "Workspace changed before Codex"
+          }
+
+          $model = "gpt-5.6-sol"
+          $prompt = @"
+          You are running a controlled repository canary.
+          Create exactly one new file:
+          docs/codex-chatgpt-repo-canary.txt
+
+          Its entire content must be:
+          CHATGPT_CODEX_REPO_CANARY_OK
+          followed by one newline.
+
+          Do not modify, delete, rename, inspect, or format any other file.
+          Do not run tests.
+          Do not run git commands.
+          Do not commit or push.
+          Do not create a branch or PR.
+          Do not access network resources.
+          Stop after creating this one file.
+          "@
+          $tempRoot = Join-Path $env:RUNNER_TEMP ("codex-chatgpt-repo-canary-${{ github.run_id }}")
+          if (Test-Path -LiteralPath $tempRoot) {
+            throw "Canary temporary directory already exists"
+          }
+          New-Item -ItemType Directory -Path $tempRoot | Out-Null
+          $jsonlPath = Join-Path $tempRoot "codex.jsonl"
+          $stderrPath = Join-Path $tempRoot "codex.stderr.log"
+          $finalPath = Join-Path $tempRoot "final.txt"
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "temp_dir=$tempRoot`n", $utf8NoBom)
+
+          $previousErrorActionPreference = $ErrorActionPreference
+          $ErrorActionPreference = "Continue"
+          & codex --ask-for-approval never exec `
+            --json `
+            --ephemeral `
+            --ignore-user-config `
+            --ignore-rules `
+            --sandbox workspace-write `
+            --cd $env:GITHUB_WORKSPACE `
+            --model $model `
+            --color never `
+            --output-last-message $finalPath `
+            $prompt 1> $jsonlPath 2> $stderrPath
+          $codexExitCode = $LASTEXITCODE
+          $ErrorActionPreference = $previousErrorActionPreference
+
+          if ($codexExitCode -ne 0) {
+            throw "Codex failed with exit code $codexExitCode"
+          }
+          if (-not (Test-Path -LiteralPath $jsonlPath -PathType Leaf)) {
+            throw "Codex JSONL output is missing"
+          }
+          if (-not (Test-Path -LiteralPath $finalPath -PathType Leaf)) {
+            throw "Codex final response is missing"
+          }
+
+          $events = @(
+            Get-Content -LiteralPath $jsonlPath | ForEach-Object {
+              if ([string]::IsNullOrWhiteSpace($_)) {
+                return
+              }
+              try {
+                $_ | ConvertFrom-Json
+              } catch {
+                throw "Codex emitted invalid JSONL"
+              }
+            }
+          )
+          $completed = @($events | Where-Object { $_.type -eq "turn.completed" })
+          if ($completed.Count -ne 1) {
+            throw "Expected exactly one turn.completed event"
+          }
+          $commandExecutions = @(
+            $events | Where-Object { $_.item -and $_.item.type -eq "command_execution" }
+          )
+          if ($commandExecutions.Count -ne 0) {
+            throw "Codex attempted a shell command"
+          }
+          $networkItems = @(
+            $events | Where-Object { $_.item -and $_.item.type -in @("web_search", "mcp_tool_call") }
+          )
+          if ($networkItems.Count -ne 0) {
+            throw "Codex attempted a network-capable tool"
+          }
+          $fileChangeItems = @(
+            $events | Where-Object { $_.item -and $_.item.type -eq "file_change" }
+          )
+          foreach ($fileChangeItem in $fileChangeItems) {
+            $reportedPaths = @()
+            if ($fileChangeItem.item.changes) {
+              $reportedPaths += @($fileChangeItem.item.changes | ForEach-Object { $_.path })
+            } elseif ($fileChangeItem.item.path) {
+              $reportedPaths += @($fileChangeItem.item.path)
+            }
+            if ($reportedPaths.Count -eq 0) {
+              throw "Codex file_change did not report a path"
+            }
+            foreach ($reportedPath in $reportedPaths) {
+              $normalizedPath = ([string]$reportedPath).Replace('\', '/').TrimStart('./')
+              if ($normalizedPath -cne "docs/codex-chatgpt-repo-canary.txt") {
+                throw "Codex reported a change outside the target file"
+              }
+            }
+          }
+
+          $usage = $completed[0].usage
+          if ($null -eq $usage) {
+            throw "turn.completed usage is missing"
+          }
+          $tokens = @{}
+          foreach ($name in @("input_tokens", "cached_input_tokens", "output_tokens")) {
+            if ($usage.PSObject.Properties.Name -notcontains $name) {
+              throw "Usage field is missing: $name"
+            }
+            $rawValue = [string]$usage.$name
+            if ($rawValue -notmatch '^\d+$') {
+              throw "Usage field is not a non-negative integer: $name"
+            }
+            $tokens[$name] = [long]$rawValue
+          }
+          if ($tokens.output_tokens -le 0) {
+            throw "output_tokens must be positive"
+          }
+          if ($tokens.cached_input_tokens -gt $tokens.input_tokens) {
+            throw "cached_input_tokens exceeds input_tokens"
+          }
+
+          $uncachedInputTokens = $tokens.input_tokens - $tokens.cached_input_tokens
+          $totalTokens = $tokens.input_tokens + $tokens.output_tokens
+          $finalResponseLength = (Get-Content -LiteralPath $finalPath -Raw).Length
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "model=$model`n", $utf8NoBom)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "codex_exit_code=$codexExitCode`n", $utf8NoBom)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "input_tokens=$($tokens.input_tokens)`n", $utf8NoBom)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "cached_input_tokens=$($tokens.cached_input_tokens)`n", $utf8NoBom)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "uncached_input_tokens=$uncachedInputTokens`n", $utf8NoBom)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "output_tokens=$($tokens.output_tokens)`n", $utf8NoBom)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "total_tokens=$totalTokens`n", $utf8NoBom)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "turn_completed_count=$($completed.Count)`n", $utf8NoBom)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "command_execution_count=$($commandExecutions.Count)`n", $utf8NoBom)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "file_change_count=$($fileChangeItems.Count)`n", $utf8NoBom)
+
+          Write-Output "model = $model"
+          Write-Output "codex_exit_code = $codexExitCode"
+          Write-Output "turn.completed = $($completed.Count)"
+          Write-Output "command_execution = $($commandExecutions.Count)"
+          Write-Output "file_change = $($fileChangeItems.Count)"
+          Write-Output "final_response_length = $finalResponseLength"
+          Write-Output "input_tokens = $($tokens.input_tokens)"
+          Write-Output "cached_input_tokens = $($tokens.cached_input_tokens)"
+          Write-Output "uncached_input_tokens = $uncachedInputTokens"
+          Write-Output "output_tokens = $($tokens.output_tokens)"
+          Write-Output "total_tokens = $totalTokens"
+
+      - name: Validate the only repository change
+        id: validate
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $targetFile = "${{ steps.preflight.outputs.target_file }}"
+          $expectedStatus = "?? $targetFile"
+          $statusLines = @(git status --porcelain=v1 --untracked-files=all)
+          if ($LASTEXITCODE -ne 0 -or $statusLines.Count -ne 1 -or $statusLines[0] -cne $expectedStatus) {
+            throw "Repository contains changes other than the one new target file"
+          }
+
+          $actualBytes = [System.IO.File]::ReadAllBytes((Join-Path $env:GITHUB_WORKSPACE $targetFile))
+          $expectedBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes("CHATGPT_CODEX_REPO_CANARY_OK`n")
+          if (-not [System.Linq.Enumerable]::SequenceEqual([byte[]]$actualBytes, [byte[]]$expectedBytes)) {
+            throw "Canary target content is not byte-for-byte exact"
+          }
+
+          git add -N -- $targetFile
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to mark target for diff validation"
+          }
+          git diff --check -- $targetFile
+          if ($LASTEXITCODE -ne 0) {
+            throw "git diff --check failed"
+          }
+          $changedPaths = @(git diff --name-only --)
+          if ($LASTEXITCODE -ne 0 -or $changedPaths.Count -ne 1 -or $changedPaths[0] -cne $targetFile) {
+            throw "git diff --name-only is outside the allowed target"
+          }
+          $statLines = @(git diff --stat -- $targetFile)
+          if ($LASTEXITCODE -ne 0 -or $statLines.Count -lt 1 -or ($statLines -join "`n") -notmatch '1 file changed') {
+            throw "git diff --stat does not describe exactly one file"
+          }
+
+          $targetSha256 = (Get-FileHash -LiteralPath $targetFile -Algorithm SHA256).Hash.ToLowerInvariant()
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "target_sha256=$targetSha256`n", $utf8NoBom)
+          Write-Output "validation_result = passed"
+          Write-Output "target_file = $targetFile"
+          Write-Output "target_sha256 = $targetSha256"
+
+      - name: Commit and push only the canary target
+        id: publish
+        shell: powershell
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $targetFile = "${{ steps.preflight.outputs.target_file }}"
+          $branchName = "${{ steps.preflight.outputs.branch_name }}"
+          $baseSha = "${{ steps.preflight.outputs.base_sha }}"
+          if ((git branch --show-current).Trim() -cne $branchName) {
+            throw "Unexpected branch before commit"
+          }
+          $remoteMainLine = git ls-remote --exit-code origin refs/heads/main
+          if ($LASTEXITCODE -ne 0 -or (($remoteMainLine -split '\s+')[0]).Trim() -cne $baseSha) {
+            throw "origin/main changed after checkout"
+          }
+          if (-not [string]::IsNullOrWhiteSpace((git ls-remote --heads origin "refs/heads/$branchName" | Out-String))) {
+            throw "Remote canary branch unexpectedly exists"
+          }
+
+          git add -- $targetFile
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to stage target file"
+          }
+          $stagedPaths = @(git diff --cached --name-only --)
+          if ($LASTEXITCODE -ne 0 -or $stagedPaths.Count -ne 1 -or $stagedPaths[0] -cne $targetFile) {
+            throw "Staged diff contains an unexpected path"
+          }
+          git config --local user.name "rovikpool-codex-canary"
+          git config --local user.email "actions@users.noreply.github.com"
+          git commit -m "Canary: verify ChatGPT Codex repository write" -- $targetFile
+          if ($LASTEXITCODE -ne 0) {
+            throw "Canary commit failed"
+          }
+          $commitSha = (git rev-parse HEAD).Trim()
+          $committedPaths = @(git diff-tree --no-commit-id --name-only -r HEAD)
+          if ($LASTEXITCODE -ne 0 -or $committedPaths.Count -ne 1 -or $committedPaths[0] -cne $targetFile) {
+            throw "Canary commit contains an unexpected path"
+          }
+          if (-not [string]::IsNullOrEmpty((git status --porcelain=v1 --untracked-files=all))) {
+            throw "Working tree is not clean after commit"
+          }
+
+          $basicCredential = [Convert]::ToBase64String(
+            [System.Text.Encoding]::ASCII.GetBytes("x-access-token:$env:GITHUB_TOKEN")
+          )
+          git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $basicCredential"
+          try {
+            git push origin "HEAD:refs/heads/$branchName"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Canary branch push failed"
+            }
+          } finally {
+            git config --local --unset-all http.https://github.com/.extraheader 2>$null
+          }
+
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "commit_sha=$commitSha`n", $utf8NoBom)
+          Write-Output "branch_name = $branchName"
+          Write-Output "commit_sha = $commitSha"
+
+      - name: Create draft canary pull request
+        id: pull_request
+        shell: powershell
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $branchName = "${{ steps.preflight.outputs.branch_name }}"
+          $body = @"
+          Canary #3.
+
+          This single-file change was created by ChatGPT-authenticated Codex without OPENAI_API_KEY.
+          Production was not accessed or modified.
+          The file exists only to verify the controlled repository-write path.
+          "@
+          $payload = @{
+            title = "Canary: ChatGPT Codex repository write"
+            head = $branchName
+            base = "main"
+            body = $body.Trim()
+            draft = $true
+            maintainer_can_modify = $false
+          } | ConvertTo-Json
+          $headers = @{
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            Accept = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          $pullRequest = Invoke-RestMethod `
+            -Method Post `
+            -Uri "https://api.github.com/repos/borovikov88/service2/pulls" `
+            -Headers $headers `
+            -ContentType "application/json" `
+            -Body $payload
+          if (-not $pullRequest.draft) {
+            throw "Created pull request is not a draft"
+          }
+          if ($pullRequest.base.ref -cne "main" -or $pullRequest.head.ref -cne $branchName) {
+            throw "Created pull request has unexpected refs"
+          }
+
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "pr_number=$($pullRequest.number)`n", $utf8NoBom)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "pr_url=$($pullRequest.html_url)`n", $utf8NoBom)
+          Write-Output "draft_pr_number = $($pullRequest.number)"
+          Write-Output "draft_pr_url = $($pullRequest.html_url)"
+
+      - name: Build sanitized canary artifact
+        id: artifact
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $tempRoot = "${{ steps.codex.outputs.temp_dir }}"
+          $resultPath = Join-Path $tempRoot "canary-result.json"
+          $result = [ordered]@{
+            schema_version = 1
+            canary = "chatgpt_codex_repository_write"
+            workflow_run_id = [long]"${{ github.run_id }}"
+            base_sha = "${{ steps.preflight.outputs.base_sha }}"
+            branch_name = "${{ steps.preflight.outputs.branch_name }}"
+            model = "${{ steps.codex.outputs.model }}"
+            billing_mode = "chatgpt_session"
+            input_tokens = [long]"${{ steps.codex.outputs.input_tokens }}"
+            cached_input_tokens = [long]"${{ steps.codex.outputs.cached_input_tokens }}"
+            uncached_input_tokens = [long]"${{ steps.codex.outputs.uncached_input_tokens }}"
+            output_tokens = [long]"${{ steps.codex.outputs.output_tokens }}"
+            total_tokens = [long]"${{ steps.codex.outputs.total_tokens }}"
+            codex_exit_code = [int]"${{ steps.codex.outputs.codex_exit_code }}"
+            target_file = "${{ steps.preflight.outputs.target_file }}"
+            target_sha256 = "${{ steps.validate.outputs.target_sha256 }}"
+            commit_sha = "${{ steps.publish.outputs.commit_sha }}"
+            pr_number = [long]"${{ steps.pull_request.outputs.pr_number }}"
+            pr_url = "${{ steps.pull_request.outputs.pr_url }}"
+            validation_result = "passed"
+          }
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText($resultPath, ($result | ConvertTo-Json), $utf8NoBom)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "artifact_path=$resultPath`n", $utf8NoBom)
+
+      - name: Upload sanitized canary artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: chatgpt-codex-repository-canary
+          path: ${{ steps.artifact.outputs.artifact_path }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove temporary canary files
+        if: always()
+        shell: powershell
+        run: |
+          $tempRoot = "${{ steps.codex.outputs.temp_dir }}"
+          if (-not [string]::IsNullOrWhiteSpace($tempRoot)) {
+            $resolvedRunnerTemp = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\'
+            $resolvedTarget = [System.IO.Path]::GetFullPath($tempRoot)
+            if (-not $resolvedTarget.StartsWith($resolvedRunnerTemp, [System.StringComparison]::OrdinalIgnoreCase)) {
+              throw "Refusing to remove a path outside RUNNER_TEMP"
+            }
+            Remove-Item -LiteralPath $resolvedTarget -Recurse -Force
+          }
