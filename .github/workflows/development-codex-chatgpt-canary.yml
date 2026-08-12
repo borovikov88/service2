@@ -1,0 +1,52 @@
+name: Development Codex ChatGPT auth canary
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: rovikpool-codex-chatgpt
+  cancel-in-progress: false
+
+jobs:
+  auth-environment:
+    name: Verify ChatGPT-authenticated Codex environment
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+      - rovikpool-codex
+    timeout-minutes: 10
+
+    steps:
+      - name: Validate trusted canary context
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ("${{ github.event_name }}" -ne "workflow_dispatch") {
+            throw "Unexpected workflow event"
+          }
+          if ("${{ github.repository }}" -ne "borovikov88/service2") {
+            throw "Unexpected repository"
+          }
+
+          Write-Output "billing_mode_expected = chatgpt_session"
+
+          $apiKeyPresent = -not [string]::IsNullOrEmpty($env:OPENAI_API_KEY)
+          Write-Output "API key present: $($apiKeyPresent.ToString().ToLowerInvariant())"
+          if ($apiKeyPresent) {
+            throw "OPENAI_API_KEY must not be supplied to the canary"
+          }
+
+          whoami
+          codex --version
+          $loginStatus = codex login status 2>&1 | Out-String
+          $loginStatus = $loginStatus.Trim()
+          Write-Output $loginStatus
+          if ($loginStatus -notmatch "Logged in using ChatGPT") {
+            throw "Codex is not authenticated through ChatGPT"
+          }
+          git --version
+          python --version
