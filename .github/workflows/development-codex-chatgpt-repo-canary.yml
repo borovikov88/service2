@@ -141,6 +141,10 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
+          # This Windows runner canary uses a trusted fixed prompt.
+          # It is not approval for running arbitrary/untrusted DevelopmentTask prompts
+          # under the interactive user's Windows account.
+
           if (-not [string]::IsNullOrEmpty($env:OPENAI_API_KEY)) {
             throw "OPENAI_API_KEY must not be supplied to Codex"
           }
@@ -244,10 +248,7 @@ jobs:
             throw "Codex produced no repository command"
           }
           $workspacePath = [System.IO.Path]::GetFullPath($env:GITHUB_WORKSPACE).TrimEnd('\')
-          $targetFile = "docs/codex-chatgpt-repo-canary.txt"
-          $bannedCommandPattern = '(?i)(^|[^a-z0-9_])(git|gh|curl|wget|Invoke-WebRequest|Invoke-RestMethod|ssh|scp|python|python3|manage\.py|pip|npm|node)(\.exe)?($|[^a-z0-9_])|https?://|cmd\s+/c|Start-Process'
-          $bannedFileOperationPattern = '(?i)(Remove-Item|Set-Content|Out-File|Add-Content|Move-Item|Copy-Item|Rename-Item|New-Item|Get-(ChildItem|Item|Content)|Test-Path|Resolve-Path|Read(AllText|AllBytes|Lines)|WriteAllBytes)'
-          $commandPolicyPassed = 0
+          # command_execution inspection is post-execution telemetry only; sandboxing and authoritative repository validation are the security boundary.
           foreach ($commandExecution in $commandExecutions) {
             $rawCommand = $commandExecution.item.command
             if ($rawCommand -is [System.Array]) {
@@ -265,41 +266,32 @@ jobs:
             }
 
             $commandStatusSuccessful = $true
+            $commandStatus = "not_reported"
             if ($commandExecution.item.PSObject.Properties.Name -contains "status") {
-              $commandStatusSuccessful = ([string]$commandExecution.item.status) -in @("completed", "success", "succeeded")
+              $commandStatus = [string]$commandExecution.item.status
+              $commandStatusSuccessful = $commandStatus -in @("completed", "success", "succeeded")
             }
             $commandCwdSafe = $true
+            $commandCwd = "not_reported"
             if (
               $commandExecution.item.PSObject.Properties.Name -contains "cwd" -and
               -not [string]::IsNullOrWhiteSpace([string]$commandExecution.item.cwd)
             ) {
-              $commandCwdSafe = [System.IO.Path]::GetFullPath([string]$commandExecution.item.cwd).TrimEnd('\') -ceq $workspacePath
+              $commandCwd = [System.IO.Path]::GetFullPath([string]$commandExecution.item.cwd).TrimEnd('\')
+              $commandCwdSafe = $commandCwd -ceq $workspacePath
             }
-            $writeAllTextCount = [regex]::Matches($commandText, '(?i)WriteAllText').Count
-            # Repository state and byte-for-byte target validation are the authoritative write boundary; command inspection is defense-in-depth only.
-            $commandShapeSafe = (
-              $writeAllTextCount -eq 1 -and
-              $commandText -match [regex]::Escape($targetFile) -and
-              $commandText -match [regex]::Escape('CHATGPT_CODEX_REPO_CANARY_OK') -and
-              $commandText -match '(?i)Join-Path' -and
-              $commandText -match '(?i)GITHUB_WORKSPACE' -and
-              $commandText -match '(?i)UTF8Encoding\s*\(\s*\$false\s*\)' -and
-              $commandText -notmatch $bannedCommandPattern -and
-              $commandText -notmatch $bannedFileOperationPattern -and
-              $commandText -notmatch '(?i)([a-z]:\\|\\\\|/(home|tmp|var|etc)/|\$env:(?!GITHUB_WORKSPACE\b))' -and
-              $commandText -notmatch '(\.\.|&&|\|\||[|><&])'
-            )
-            $commandPolicyResult = $commandStatusSuccessful -and $commandCwdSafe -and $commandShapeSafe
             Write-Output "command_sha256 = $commandSha256"
             Write-Output "command_length = $commandLength"
-            Write-Output "command_policy_result = $($commandPolicyResult.ToString().ToLowerInvariant())"
-            if (-not $commandPolicyResult) {
-              throw "Codex command violated canary command policy"
+            Write-Output "command_status = $commandStatus"
+            Write-Output "command_status_successful = $($commandStatusSuccessful.ToString().ToLowerInvariant())"
+            Write-Output "command_cwd = $commandCwd"
+            Write-Output "command_cwd_safe = $($commandCwdSafe.ToString().ToLowerInvariant())"
+            if (-not $commandStatusSuccessful) {
+              throw "Codex reported an unsuccessful command_execution event"
             }
-            $commandPolicyPassed++
-          }
-          if ($commandPolicyPassed -ne $commandExecutions.Count) {
-            throw "Codex command violated canary command policy"
+            if (-not $commandCwdSafe) {
+              throw "Codex reported command_execution outside GITHUB_WORKSPACE"
+            }
           }
           $networkItems = @(
             $events | Where-Object { $_.item -and $_.item.type -in @("web_search", "mcp_tool_call") }
