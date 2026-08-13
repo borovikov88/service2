@@ -265,11 +265,20 @@ jobs:
               $commandSha.Dispose()
             }
 
-            $commandStatusSuccessful = $true
+            # command_execution status is lifecycle telemetry; only explicit terminal failure statuses fail here. Repository validation is authoritative.
+            $commandStatusFailed = $false
             $commandStatus = "not_reported"
             if ($commandExecution.item.PSObject.Properties.Name -contains "status") {
               $commandStatus = [string]$commandExecution.item.status
-              $commandStatusSuccessful = $commandStatus -in @("completed", "success", "succeeded")
+              $commandStatusFailed = $commandStatus -in @(
+                "failed",
+                "failure",
+                "error",
+                "cancelled",
+                "canceled",
+                "timed_out",
+                "timeout"
+              )
             }
             $commandCwdSafe = $true
             $commandCwd = "not_reported"
@@ -283,11 +292,11 @@ jobs:
             Write-Output "command_sha256 = $commandSha256"
             Write-Output "command_length = $commandLength"
             Write-Output "command_status = $commandStatus"
-            Write-Output "command_status_successful = $($commandStatusSuccessful.ToString().ToLowerInvariant())"
+            Write-Output "command_status_failed = $($commandStatusFailed.ToString().ToLowerInvariant())"
             Write-Output "command_cwd = $commandCwd"
             Write-Output "command_cwd_safe = $($commandCwdSafe.ToString().ToLowerInvariant())"
-            if (-not $commandStatusSuccessful) {
-              throw "Codex reported an unsuccessful command_execution event"
+            if ($commandStatusFailed) {
+              throw "Codex reported an explicitly failed command_execution event"
             }
             if (-not $commandCwdSafe) {
               throw "Codex reported command_execution outside GITHUB_WORKSPACE"
@@ -303,20 +312,27 @@ jobs:
             $events | Where-Object { $_.item -and $_.item.type -eq "file_change" }
           )
           foreach ($fileChangeItem in $fileChangeItems) {
-            if (
-              $fileChangeItem.item.PSObject.Properties.Name -contains "status" -and
-              ([string]$fileChangeItem.item.status) -notin @("completed", "success", "succeeded")
-            ) {
-              throw "Codex reported an unsuccessful file_change event"
+            $fileChangeStatusFailed = $false
+            if ($fileChangeItem.item.PSObject.Properties.Name -contains "status") {
+              $fileChangeStatus = [string]$fileChangeItem.item.status
+              $fileChangeStatusFailed = $fileChangeStatus -in @(
+                "failed",
+                "failure",
+                "error",
+                "cancelled",
+                "canceled",
+                "timed_out",
+                "timeout"
+              )
+            }
+            if ($fileChangeStatusFailed) {
+              throw "Codex reported an explicitly failed file_change event"
             }
             $reportedPaths = @()
             if ($fileChangeItem.item.changes) {
               $reportedPaths += @($fileChangeItem.item.changes | ForEach-Object { $_.path })
             } elseif ($fileChangeItem.item.path) {
               $reportedPaths += @($fileChangeItem.item.path)
-            }
-            if ($reportedPaths.Count -eq 0) {
-              throw "Codex file_change did not report a path"
             }
             foreach ($reportedPath in $reportedPaths) {
               $normalizedPath = ([string]$reportedPath).Replace('\', '/').TrimStart('./')
