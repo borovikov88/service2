@@ -65,7 +65,6 @@ from pool_service.finance_imports.services import (
 from pool_service.finance_imports.profit_dashboard import (
     PERIOD_CHOICES,
     dashboard_data,
-    effective_values,
     resolve_period,
 )
 from pool_service.finance_imports.cost_control import (
@@ -2328,12 +2327,6 @@ def finance_onec_profit_dashboard(request):
     sort_name = sort.lstrip("-")
     if sort_name not in sort_fields:
         sort, sort_name = "-revenue", "revenue"
-    for row in data["rows"]:
-        revenue, analytical_cost, gross_profit = effective_values(row)
-        row.dashboard_revenue = revenue
-        row.dashboard_analytical_cost = analytical_cost
-        row.dashboard_gross_profit = gross_profit
-        row.dashboard_profitability = calculate_profitability(gross_profit, revenue)
     field = sort_fields[sort_name]
     valued_rows = [row for row in data["rows"] if getattr(row, field) is not None]
     empty_rows = [row for row in data["rows"] if getattr(row, field) is None]

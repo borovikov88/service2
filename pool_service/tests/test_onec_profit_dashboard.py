@@ -30,17 +30,22 @@ class ProfitDashboardTests(TestCase):
         )
 
     def add_row(self, month, *, name="Товар", kind="Товар", revenue="100",
-                cost="60", calculated=None, source=OneCMonthlyProfit.COST_SOURCE_ACTUAL):
+                cost="60", calculated=None, stored_ratio="0.5",
+                source=OneCMonthlyProfit.COST_SOURCE_ACTUAL):
+        revenue_value = Decimal(revenue) if revenue is not None else None
+        cost_value = Decimal(cost) if cost is not None else None
+        calculated_value = Decimal(calculated) if calculated is not None else None
         row = OneCMonthlyProfit.objects.create(
             import_batch=self.batch, organization=self.organization,
             period_month=month, source_row_number=OneCMonthlyProfit.objects.count() + 1,
             article=f"A-{OneCMonthlyProfit.objects.count() + 1}", nomenclature=name,
-            nomenclature_type=kind, quantity=Decimal("2"), revenue=Decimal(revenue),
-            cost=Decimal(cost), gross_profit=Decimal(revenue) - Decimal(cost),
-            calculated_cost=Decimal(calculated) if calculated is not None else None,
+            nomenclature_type=kind, quantity=Decimal("2"), revenue=revenue_value,
+            cost=cost_value,
+            gross_profit=(revenue_value - cost_value) if cost_value is not None else None,
+            calculated_cost=calculated_value,
             cost_source=source,
-            cost_calculation_ratio=Decimal("0.5") if calculated is not None else None,
-            analytical_gross_profit=(Decimal(revenue) - Decimal(calculated)) if calculated is not None else None,
+            cost_calculation_ratio=Decimal(stored_ratio) if calculated is not None else None,
+            analytical_gross_profit=(revenue_value - calculated_value) if calculated is not None else None,
         )
         OneCReportPeriodState.objects.get_or_create(
             organization=self.organization, period_month=month,
@@ -72,18 +77,72 @@ class ProfitDashboardTests(TestCase):
         })
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["totals"]["revenue"], Decimal("200"))
-        self.assertEqual(response.context["totals"]["gross_profit"], Decimal("120"))
+        self.assertEqual(response.context["totals"]["gross_profit"], Decimal("116.00"))
         self.assertEqual(response.context["comparison"]["revenue"]["absolute"], Decimal("150"))
         self.assertEqual(response.context["comparison"]["revenue"]["percent"], Decimal("300.00"))
         self.assertEqual(len(response.context["monthly"]), 1)
         self.assertEqual(response.context["split"][0]["revenue"], Decimal("140"))
         self.assertEqual(response.context["split"][1]["revenue"], Decimal("60"))
         self.assertContains(response, "Исходная себестоимость 1С")
-        self.assertContains(response, "Расчётная · 50,0%")
+        self.assertContains(response, "Расчётная · 60,0%")
         calculated.refresh_from_db(); service.refresh_from_db()
         self.assertEqual(calculated.cost, Decimal("0"))
         self.assertEqual(service.cost_source, OneCMonthlyProfit.COST_SOURCE_ACTUAL)
         self.assertIsNone(service.calculated_cost)
+
+    def test_selected_period_recalculates_analytical_cost_without_source_writes(self):
+        self.add_row(date(2025, 11, 1), name="Предыдущая база", revenue="100", cost="20")
+        self.add_row(
+            date(2025, 12, 1), name="Предыдущая расчётная", revenue="100", cost="0",
+            calculated="80", stored_ratio="0.8",
+            source=OneCMonthlyProfit.COST_SOURCE_CALCULATED,
+        )
+        self.add_row(date(2026, 1, 1), name="Товар A", revenue="100", cost="50")
+        self.add_row(date(2026, 2, 1), name="Товар B", revenue="300", cost="240")
+        calculated = self.add_row(
+            date(2026, 2, 1), name="Товар C", revenue="200", cost="0",
+            calculated="10", stored_ratio="0.05",
+            source=OneCMonthlyProfit.COST_SOURCE_CALCULATED,
+        )
+        service = self.add_row(
+            date(2026, 2, 1), name="Услуга без себестоимости", kind="Услуга",
+            revenue="100", cost=None, calculated="80", stored_ratio="0.8",
+            source=OneCMonthlyProfit.COST_SOURCE_CALCULATED,
+        )
+
+        response = self.client.get(reverse("finance_onec_profit_dashboard"), {
+            "period": "custom", "start": "2026-01-15", "end": "2026-02-02",
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["period_cost_ratio"], Decimal("0.7250000000"))
+        self.assertEqual(response.context["previous_period_cost_ratio"], Decimal("0.2000000000"))
+        self.assertEqual(response.context["totals"]["cost"], Decimal("435.00"))
+        self.assertEqual(response.context["comparison"]["cost"]["absolute"], Decimal("395.00"))
+        self.assertEqual(response.context["comparison"]["cost"]["percent"], Decimal("987.50"))
+
+        dashboard_rows = {row.pk: row for row in response.context["rows"]}
+        self.assertEqual(dashboard_rows[calculated.pk].dashboard_analytical_cost, Decimal("145.00"))
+        self.assertEqual(dashboard_rows[calculated.pk].dashboard_gross_profit, Decimal("55.00"))
+        self.assertTrue(dashboard_rows[calculated.pk].dashboard_cost_is_calculated)
+        self.assertEqual(
+            dashboard_rows[calculated.pk].dashboard_period_cost_ratio,
+            Decimal("0.7250000000"),
+        )
+        self.assertIsNone(dashboard_rows[service.pk].dashboard_analytical_cost)
+        self.assertFalse(dashboard_rows[service.pk].dashboard_cost_is_calculated)
+        self.assertContains(response, "Аналитическая себестоимость")
+        self.assertContains(response, "Расчётная · 72,5%")
+        self.assertContains(response, "выбранного анализируемого периода")
+
+        calculated.refresh_from_db()
+        service.refresh_from_db()
+        self.assertEqual(calculated.cost, Decimal("0"))
+        self.assertEqual(calculated.calculated_cost, Decimal("10"))
+        self.assertEqual(calculated.cost_calculation_ratio, Decimal("0.05"))
+        self.assertIsNone(service.cost)
+        self.assertEqual(service.calculated_cost, Decimal("80"))
+        self.assertEqual(service.cost_calculation_ratio, Decimal("0.8"))
 
     def test_sorting(self):
         low = self.add_row(date(2026, 1, 1), name="Низкая", revenue="10", cost="9")

@@ -1,6 +1,6 @@
 from calendar import monthrange
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from django.utils import timezone
 
@@ -16,6 +16,8 @@ PERIOD_CHOICES = (
     ("previous_year", "Прошлый год"),
     ("custom", "Произвольный период"),
 )
+MONEY_QUANTUM = Decimal("0.01")
+RATIO_QUANTUM = Decimal("0.0000000001")
 
 
 def add_months(value, offset):
@@ -61,14 +63,64 @@ def resolve_period(params, today=None):
     }
 
 
-def effective_values(row):
-    if row.cost_source == OneCMonthlyProfit.COST_SOURCE_CALCULATED:
-        cost, profit = row.calculated_cost, row.analytical_gross_profit
-    elif row.cost_source == OneCMonthlyProfit.COST_SOURCE_UNDEFINED:
-        cost, profit = None, None
-    else:
-        cost, profit = row.cost, row.gross_profit
-    return row.revenue or Decimal("0"), cost, profit
+def period_cost_ratio(rows):
+    revenue = Decimal("0")
+    cost = Decimal("0")
+    excluded_sources = {
+        OneCMonthlyProfit.COST_SOURCE_CALCULATED,
+        OneCMonthlyProfit.COST_SOURCE_UNDEFINED,
+    }
+    for row in rows:
+        if (
+            classify_nomenclature_type(row.nomenclature_type) == "goods"
+            and row.cost_source not in excluded_sources
+            and row.cost is not None
+            and row.cost != 0
+            and row.revenue is not None
+        ):
+            revenue += row.revenue
+            cost += row.cost
+    if revenue == 0:
+        return None
+    return (cost / revenue).quantize(RATIO_QUANTUM, rounding=ROUND_HALF_UP)
+
+
+def apply_period_analytics(rows):
+    ratio = period_cost_ratio(rows)
+    excluded_sources = {
+        OneCMonthlyProfit.COST_SOURCE_CALCULATED,
+        OneCMonthlyProfit.COST_SOURCE_UNDEFINED,
+    }
+    for row in rows:
+        revenue = row.revenue or Decimal("0")
+        is_goods = classify_nomenclature_type(row.nomenclature_type) == "goods"
+        has_nonzero_actual_cost = (
+            row.cost_source not in excluded_sources
+            and row.cost is not None
+            and row.cost != 0
+        )
+        use_period_ratio = is_goods and not has_nonzero_actual_cost and ratio is not None
+        if use_period_ratio:
+            analytical_cost = (revenue * ratio).quantize(
+                MONEY_QUANTUM, rounding=ROUND_HALF_UP
+            )
+            gross_profit = (revenue - analytical_cost).quantize(
+                MONEY_QUANTUM, rounding=ROUND_HALF_UP
+            )
+        elif is_goods and not has_nonzero_actual_cost:
+            analytical_cost = None
+            gross_profit = None
+        else:
+            analytical_cost = row.cost
+            gross_profit = row.gross_profit if row.cost is not None else None
+
+        row.dashboard_revenue = revenue
+        row.dashboard_analytical_cost = analytical_cost
+        row.dashboard_gross_profit = gross_profit
+        row.dashboard_profitability = calculate_profitability(gross_profit, revenue)
+        row.dashboard_cost_is_calculated = use_period_ratio
+        row.dashboard_period_cost_ratio = ratio if use_period_ratio else None
+    return ratio
 
 
 def summarize(rows):
@@ -76,10 +128,9 @@ def summarize(rows):
     cost = Decimal("0")
     gross_profit = Decimal("0")
     for row in rows:
-        row_revenue, row_cost, row_profit = effective_values(row)
-        revenue += row_revenue
-        cost += row_cost or Decimal("0")
-        gross_profit += row_profit or Decimal("0")
+        revenue += row.dashboard_revenue
+        cost += row.dashboard_analytical_cost or Decimal("0")
+        gross_profit += row.dashboard_gross_profit or Decimal("0")
     return {
         "revenue": revenue, "cost": cost, "gross_profit": gross_profit,
         "profitability": calculate_profitability(gross_profit, revenue),
@@ -88,7 +139,7 @@ def summarize(rows):
 
 def comparison(current, previous):
     result = {}
-    for key in ("revenue", "gross_profit", "profitability"):
+    for key in ("revenue", "cost", "gross_profit", "profitability"):
         value = current[key]
         old = previous[key]
         absolute = None if value is None or old is None else value - old
@@ -109,6 +160,8 @@ def dashboard_data(organization, period):
     previous_rows = list(all_rows.filter(
         period_month__range=(period["previous_first"], period["previous_last"])
     ))
+    current_ratio = apply_period_analytics(current_rows)
+    previous_ratio = apply_period_analytics(previous_rows)
     monthly = []
     for month_index in range(
         (period["last_month"].year - period["first_month"].year) * 12
@@ -128,4 +181,6 @@ def dashboard_data(organization, period):
     return {
         "rows": current_rows, "totals": current, "previous_totals": previous,
         "comparison": comparison(current, previous), "monthly": monthly, "split": split,
+        "period_cost_ratio": current_ratio,
+        "previous_period_cost_ratio": previous_ratio,
     }
