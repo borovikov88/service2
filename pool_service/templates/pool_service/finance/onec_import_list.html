@@ -3,7 +3,7 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
   <div><h1 class="h3 mb-1">Импорт из 1С</h1><div class="text-muted">Отчёты «Валовая прибыль по месяцам»</div></div>
-  <div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="{% url 'finance_onec_cost_control' %}">Контроль себестоимости</a><a class="btn btn-primary" href="{% url 'finance_onec_monthly_profit_upload' %}">Загрузить XLSX</a></div>
+  <div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="{% url 'finance_onec_gross_profit_dashboard' %}">Валовая прибыль</a><a class="btn btn-outline-secondary" href="{% url 'finance_onec_cost_control' %}">Контроль себестоимости</a><a class="btn btn-primary" href="{% url 'finance_onec_monthly_profit_upload' %}">Загрузить XLSX</a></div>
 </div>
 <div class="card card-soft p-3"><div class="table-responsive"><table class="table align-middle mb-0">
   <thead><tr><th>Дата</th><th>Тип</th><th>Файл</th><th>Статус</th><th>Пользователь</th><th>Строк</th><th>Период</th><th>Предупреждений</th></tr></thead>
