@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import re
 import ssl
 import subprocess
 import tempfile
@@ -53,6 +54,30 @@ def load_usage_builder():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def workflow_trigger_names(workflow_text):
+    """Return top-level workflow event names from a canonical ``on`` mapping."""
+    lines = workflow_text.splitlines()
+    try:
+        on_index = lines.index("on:")
+    except ValueError as exc:
+        raise AssertionError("Workflow must use an explicit top-level on mapping") from exc
+
+    triggers = []
+    for line in lines[on_index + 1:]:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indentation = len(line) - len(line.lstrip())
+        if indentation == 0:
+            break
+        if indentation != 2:
+            continue
+        match = re.fullmatch(r"  ([A-Za-z_][A-Za-z0-9_-]*):(?:\s.*)?", line)
+        if match is None:
+            raise AssertionError("Workflow trigger mapping has an unsupported shape")
+        triggers.append(match.group(1))
+    return triggers
 
 
 def artifact_files(*, result="no_changes", patch_content=b"", final=b"Codex summary"):
@@ -1242,12 +1267,22 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
     def test_repository_has_no_conflicting_automatic_workflows(self):
         workflow_dir = Path(settings.BASE_DIR) / ".github/workflows"
         workflows = sorted(workflow_dir.glob("*.y*ml"))
-        self.assertEqual([item.name for item in workflows], ["development-codex.yml"])
-        text = workflows[0].read_text(encoding="utf-8")
-        self.assertIn("workflow_dispatch:", text)
-        self.assertNotIn("\n  push:", text)
-        self.assertNotIn("\n  pull_request:", text)
-        self.assertNotIn("\n  workflow_run:", text)
+        production_workflow = "development-codex.yml"
+        manual_canary_workflows = {
+            "development-codex-chatgpt-canary.yml",
+            "development-codex-chatgpt-repo-canary.yml",
+        }
+        expected_workflows = manual_canary_workflows | {production_workflow}
+
+        self.assertEqual({item.name for item in workflows}, expected_workflows)
+        self.assertEqual(
+            [item.name for item in workflows if item.name not in manual_canary_workflows],
+            [production_workflow],
+        )
+        for workflow in workflows:
+            with self.subTest(workflow=workflow.name):
+                text = workflow.read_text(encoding="utf-8")
+                self.assertEqual(workflow_trigger_names(text), ["workflow_dispatch"])
 
     def test_codex_jsonl_usage_parser_accepts_trusted_completed_usage(self):
         builder = load_usage_builder()
