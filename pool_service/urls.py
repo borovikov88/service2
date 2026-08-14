@@ -140,6 +140,7 @@ from .finance_views import (
     finance_onec_import_confirm,
     finance_onec_import_cancel,
     finance_onec_import_detail,
+    finance_onec_profit_dashboard,
 )
 from .development_views import (
     development_iteration_create,
@@ -288,6 +289,7 @@ urlpatterns = [
     path("finance/period/close/", finance_period_close, name="finance_period_close"),
     path("finance/period/reopen/", finance_period_reopen, name="finance_period_reopen"),
     path("finance/1c-imports/", finance_onec_import_list, name="finance_onec_import_list"),
+    path("finance/1c-profit/", finance_onec_profit_dashboard, name="finance_onec_profit_dashboard"),
     path("finance/1c-imports/cost-control/", finance_onec_cost_control, name="finance_onec_cost_control"),
     path("finance/1c-imports/monthly-profit/upload/", finance_onec_monthly_profit_upload, name="finance_onec_monthly_profit_upload"),
     path("finance/1c-imports/<uuid:batch_id>/preview/", finance_onec_import_preview, name="finance_onec_import_preview"),
