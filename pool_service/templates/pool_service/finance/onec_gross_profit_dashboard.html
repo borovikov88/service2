@@ -1,0 +1,38 @@
+{% extends "pool_service/base.html" %}
+{% load finance_tags %}
+{% block title %}Валовая прибыль 1С{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+  <div>
+    <h1 class="h3 mb-1">Валовая прибыль 1С</h1>
+    <div class="text-muted">Показатели по активным версиям импортированных отчётов.</div>
+  </div>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-secondary" href="{% url 'finance_onec_cost_control' %}">Контроль себестоимости</a>
+    <a class="btn btn-outline-secondary" href="{% url 'finance_onec_import_list' %}">Импорты из 1С</a>
+  </div>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-6 col-lg-3"><div class="card card-soft p-3 h-100"><div class="text-muted small">Выручка</div><div class="fs-5 fw-semibold">{{ totals.revenue|money }}</div></div></div>
+  <div class="col-6 col-lg-3"><div class="card card-soft p-3 h-100"><div class="text-muted small">Себестоимость</div><div class="fs-5 fw-semibold">{{ totals.cost|money }}</div></div></div>
+  <div class="col-6 col-lg-3"><div class="card card-soft p-3 h-100"><div class="text-muted small">Валовая прибыль</div><div class="fs-5 fw-semibold">{{ totals.gross_profit|money }}</div></div></div>
+  <div class="col-6 col-lg-3"><div class="card card-soft p-3 h-100"><div class="text-muted small">Рентабельность</div><div class="fs-5 fw-semibold">{{ totals.profitability_percent }}%</div></div></div>
+</div>
+
+<div class="card card-soft p-3">
+  <h2 class="h5">Динамика по месяцам</h2>
+  <div class="table-responsive">
+    <table class="table align-middle mb-0">
+      <thead><tr><th>Месяц</th><th>Выручка</th><th>Себестоимость</th><th>Валовая прибыль</th><th>Рентабельность</th></tr></thead>
+      <tbody>
+        {% for item in monthly %}
+        <tr><td>{{ item.period_month|date:"m.Y" }}</td><td>{{ item.revenue|money }}</td><td>{{ item.cost|money }}</td><td>{{ item.gross_profit|money }}</td><td>{{ item.profitability_percent }}%</td></tr>
+        {% empty %}
+        <tr><td colspan="5" class="text-center text-muted py-4">Нет активных данных. Загрузите и подтвердите отчёт 1С.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

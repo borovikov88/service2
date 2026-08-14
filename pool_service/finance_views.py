@@ -70,6 +70,9 @@ from pool_service.finance_imports.cost_control import (
     summarize_active_dataset,
     summarize_cost_anomalies,
 )
+from pool_service.finance_imports.gross_profit_dashboard import (
+    get_gross_profit_dashboard,
+)
 from pool_service.services.finance import (
     accountable_balance,
     accountable_rows,
@@ -2293,6 +2296,19 @@ def finance_period_reopen(request):
     period.save(update_fields=["closed_at", "closed_by"])
     messages.success(request, "Месяц снова открыт.")
     return redirect(f"{reverse('finance_report')}?month={month}")
+
+
+@login_required
+def finance_onec_gross_profit_dashboard(request):
+    organization, denied = _onec_import_guard(request)
+    if denied:
+        return denied
+    dashboard = get_gross_profit_dashboard(organization)
+    return render(
+        request,
+        "pool_service/finance/onec_gross_profit_dashboard.html",
+        {**dashboard, "active_tab": "finance"},
+    )
 
 
 @login_required
