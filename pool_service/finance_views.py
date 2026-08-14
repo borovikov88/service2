@@ -62,6 +62,11 @@ from pool_service.finance_imports.services import (
     confirm_monthly_profit,
     create_monthly_profit_preview,
 )
+from pool_service.finance_imports.profit_dashboard import (
+    PERIOD_CHOICES,
+    dashboard_data,
+    resolve_period,
+)
 from pool_service.finance_imports.cost_control import (
     available_cost_control_months,
     get_onec_cost_anomalies,
@@ -2303,6 +2308,37 @@ def finance_onec_import_list(request):
     batches = OneCImportBatch.objects.filter(organization=organization).select_related("uploaded_by")
     return render(request, "pool_service/finance/onec_import_list.html", {
         "batches": batches,
+        "active_tab": "finance",
+    })
+
+
+@login_required
+def finance_onec_profit_dashboard(request):
+    organization, denied = _onec_import_guard(request)
+    if denied:
+        return denied
+    period = resolve_period(request.GET)
+    data = dashboard_data(organization, period)
+    sort = request.GET.get("sort", "-revenue")
+    sort_fields = {
+        "revenue": "dashboard_revenue", "gross_profit": "dashboard_gross_profit",
+        "profitability": "dashboard_profitability",
+    }
+    sort_name = sort.lstrip("-")
+    if sort_name not in sort_fields:
+        sort, sort_name = "-revenue", "revenue"
+    field = sort_fields[sort_name]
+    valued_rows = [row for row in data["rows"] if getattr(row, field) is not None]
+    empty_rows = [row for row in data["rows"] if getattr(row, field) is None]
+    valued_rows.sort(key=lambda row: getattr(row, field), reverse=sort.startswith("-"))
+    data["rows"] = valued_rows + empty_rows
+    page = Paginator(data["rows"], 50).get_page(request.GET.get("page"))
+    query_params = request.GET.copy()
+    query_params.pop("page", None)
+    query_params.pop("sort", None)
+    return render(request, "pool_service/finance/onec_profit_dashboard.html", {
+        **data, "period": period, "period_choices": PERIOD_CHOICES,
+        "page_obj": page, "sort": sort, "filter_query": query_params.urlencode(),
         "active_tab": "finance",
     })
 

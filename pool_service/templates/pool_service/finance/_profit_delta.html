@@ -1,0 +1,2 @@
+{% load finance_tags %}
+<div class="small mt-2 {% if delta.absolute > 0 %}text-success{% elif delta.absolute < 0 %}text-danger{% else %}text-muted{% endif %}">к предыдущему периоду: {% if delta.absolute == None %}—{% elif money_delta %}{{ delta.absolute|money }}{% else %}{{ delta.absolute }} п.п.{% endif %} · {% if delta.percent == None %}—{% else %}{{ delta.percent }}%{% endif %}</div>
