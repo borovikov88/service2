@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from pool_service.finance_imports.profit_dashboard import (
     apply_period_analytics,
+    comparison_period_label,
     dashboard_data,
     resolve_period,
     summarize,
@@ -112,6 +113,34 @@ class ProfitDashboardTests(TestCase):
                 self.assertEqual(period["previous_first"], previous_first)
                 self.assertEqual(period["previous_last"], previous_last)
 
+    def test_comparison_period_labels(self):
+        today = date(2026, 8, 15)
+        cases = (
+            ({"period": "current_month"}, "июл 2026"),
+            ({"period": "current_year"}, "янв–авг 2025"),
+            ({"period": "previous_year"}, "2024 год"),
+            ({"period": "last_12_months"}, "сен 2024 – авг 2025"),
+            ({"period": "custom", "start": "2026-05", "end": "2026-08"}, "май–авг 2025"),
+            ({"period": "custom", "start": "2025-11", "end": "2026-02"}, "ноя 2024 – фев 2025"),
+        )
+        for params, expected in cases:
+            with self.subTest(params=params):
+                period = resolve_period(params, today)
+                self.assertEqual(period["comparison_label"], expected)
+                self.assertEqual(
+                    comparison_period_label(period["previous_first"], period["previous_last"]),
+                    expected,
+                )
+
+        self.assertEqual(
+            resolve_period({"period": "current_month"}, today)["comparison_reference"],
+            "июлю 2026",
+        )
+        self.assertEqual(
+            resolve_period({"period": "previous_year"}, today)["comparison_reference"],
+            "2024 году",
+        )
+
     def test_previous_period_kpis_monthly_chart_split_details_and_calculated_cost(self):
         self.add_row(date(2025, 1, 1), revenue="50", cost="30")
         self.add_row(date(2026, 1, 1), revenue="100", cost="60")
@@ -133,6 +162,7 @@ class ProfitDashboardTests(TestCase):
         self.assertEqual(response.context["split"][1]["revenue"], Decimal("60"))
         self.assertContains(response, "Исходная себестоимость 1С")
         self.assertContains(response, "Расчётная · 60,0%")
+        self.assertContains(response, "к январю 2025", count=4)
         calculated.refresh_from_db(); service.refresh_from_db()
         self.assertEqual(calculated.cost, Decimal("0"))
         self.assertEqual(service.cost_source, OneCMonthlyProfit.COST_SOURCE_ACTUAL)

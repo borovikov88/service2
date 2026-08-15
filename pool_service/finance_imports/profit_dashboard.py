@@ -20,6 +20,14 @@ PERIOD_CHOICES = (
 )
 MONEY_QUANTUM = Decimal("0.01")
 RATIO_QUANTUM = Decimal("0.0000000001")
+MONTH_SHORT_NAMES = (
+    "", "янв", "фев", "мар", "апр", "май", "июн",
+    "июл", "авг", "сен", "окт", "ноя", "дек",
+)
+MONTH_DATIVE_NAMES = (
+    "", "январю", "февралю", "марту", "апрелю", "маю", "июню",
+    "июлю", "августу", "сентябрю", "октябрю", "ноябрю", "декабрю",
+)
 
 
 def add_months(value, offset):
@@ -29,6 +37,24 @@ def add_months(value, offset):
 
 def month_end(value):
     return date(value.year, value.month, monthrange(value.year, value.month)[1])
+
+
+def comparison_period_label(first_month, last_month, *, for_reference=False):
+    if (
+        first_month.year == last_month.year
+        and first_month.month == 1
+        and last_month.month == 12
+    ):
+        suffix = "году" if for_reference else "год"
+        return f"{first_month.year} {suffix}"
+    if first_month == last_month:
+        month_names = MONTH_DATIVE_NAMES if for_reference else MONTH_SHORT_NAMES
+        return f"{month_names[first_month.month]} {first_month.year}"
+    first_label = MONTH_SHORT_NAMES[first_month.month]
+    last_label = MONTH_SHORT_NAMES[last_month.month]
+    if first_month.year == last_month.year:
+        return f"{first_label}–{last_label} {last_month.year}"
+    return f"{first_label} {first_month.year} – {last_label} {last_month.year}"
 
 
 def resolve_period(params, today=None):
@@ -71,6 +97,10 @@ def resolve_period(params, today=None):
         "error": error,
         "first_month": first_month, "last_month": last_month,
         "previous_first": previous_first, "previous_last": previous_last,
+        "comparison_label": comparison_period_label(previous_first, previous_last),
+        "comparison_reference": comparison_period_label(
+            previous_first, previous_last, for_reference=True
+        ),
     }
 
 
