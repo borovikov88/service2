@@ -49,7 +49,7 @@ class AutoCycleFixtureMixin:
         self.codex = DevelopmentIteration.objects.create(
             task=self.task, iteration_number=2, executor_type="codex", status="accepted",
             result_summary="Done", response="PR body", test_result="passed",
-            automation_metadata={"purpose": "codex_execution", "state": "completed", "applied": True, "validation_state": "passed"},
+            automation_metadata={"purpose": "codex_execution", "state": "no_changes", "applied": True, "validation_state": "no_changes"},
         )
         data = dict(self.task.automation_metadata)
         data["active_codex_iteration_id"] = self.codex.pk
