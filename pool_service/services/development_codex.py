@@ -734,12 +734,26 @@ def _bounded_patch(value, remaining_bytes):
     return bounded, len(bounded.encode("utf-8")), True
 
 
+def is_valid_pull_request_linkage(pr_number, expected_head_ref):
+    return (
+        not isinstance(pr_number, bool)
+        and isinstance(pr_number, int)
+        and pr_number > 0
+        and isinstance(expected_head_ref, str)
+        and SAFE_BRANCH_RE.fullmatch(expected_head_ref) is not None
+    )
+
+
 def load_pull_request_evidence(pr_number, expected_head_ref):
     """Load a bounded, server-validated snapshot of the published PR."""
-    if isinstance(pr_number, bool) or not isinstance(pr_number, int) or pr_number <= 0:
-        raise _evidence_error("InvalidPullRequestNumber")
-    if not isinstance(expected_head_ref, str) or not SAFE_BRANCH_RE.fullmatch(expected_head_ref):
-        raise _evidence_error("InvalidExpectedHeadRef")
+    if not is_valid_pull_request_linkage(pr_number, expected_head_ref):
+        cause = (
+            "InvalidPullRequestNumber"
+            if isinstance(expected_head_ref, str)
+            and SAFE_BRANCH_RE.fullmatch(expected_head_ref)
+            else "InvalidExpectedHeadRef"
+        )
+        raise _evidence_error(cause)
 
     repository, _workflow = _configuration()
     path = f"/repos/{repository}/pulls/{pr_number}"

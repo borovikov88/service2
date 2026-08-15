@@ -18,6 +18,7 @@ from pool_service.services.development_db import database_error_code, run_extern
 from pool_service.services.development_codex import (
     AUTO_CYCLE_METADATA_KEY,
     GitHubRequestError,
+    is_valid_pull_request_linkage,
     load_pull_request_evidence,
 )
 from pool_service.services.development_notifications import notify_human_required, notify_ready_for_deploy
@@ -877,7 +878,20 @@ def run_review(task_id, *, allow_ready_for_deploy=False):
         )
 
     evidence = None
-    if pr_number is not None and resume_review_id is None:
+    evidence_required = codex_meta.get("state") in {"completed", "validation_failed"}
+    if resume_review_id is None and evidence_required and not is_valid_pull_request_linkage(
+        pr_number, expected_head_ref
+    ):
+        logger.warning(
+            "Development AI Review linkage failed: task=%s codex=%s state=%s",
+            task_id,
+            codex.pk,
+            codex_meta.get("state"),
+        )
+        return _mark_review_evidence_failure(
+            task_id, codex.pk, "InvalidPullRequestLinkage"
+        )
+    if resume_review_id is None and evidence_required:
         try:
             evidence = run_external_io(
                 load_pull_request_evidence, pr_number, expected_head_ref

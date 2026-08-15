@@ -186,6 +186,87 @@ class GitHubEvidenceReviewTests(TestCase):
 
     @patch("pool_service.services.development_review._create_response")
     @patch("pool_service.services.development_review.load_pull_request_evidence")
+    def test_completed_iteration_requires_valid_server_pr_linkage(self, loader, create):
+        invalid_values = (
+            (None, BRANCH),
+            ("16", BRANCH),
+            (True, BRANCH),
+            (0, BRANCH),
+            (16, None),
+            (16, "feature/untrusted"),
+        )
+        for state in ("completed", "validation_failed"):
+            for pr_number, branch_name in invalid_values:
+                with self.subTest(
+                    state=state, pr_number=pr_number, branch_name=branch_name
+                ):
+                    metadata = dict(self.codex.automation_metadata)
+                    metadata["state"] = state
+                    metadata["pr_number"] = pr_number
+                    metadata["branch_name"] = branch_name
+                    self.codex.automation_metadata = metadata
+                    self.codex.save(update_fields=["automation_metadata"])
+
+                    result = run_review(self.task.pk)
+
+                    self.assertEqual(result.state, "evidence_failed")
+                    create.assert_not_called()
+                    loader.assert_not_called()
+                    self.assertFalse(
+                        self.task.iterations.filter(
+                            automation_metadata__corrective_number__gt=0
+                        ).exists()
+                    )
+                    self.assertFalse(
+                        self.task.events.filter(
+                            metadata__action="corrective_limit_reached"
+                        ).exists()
+                    )
+
+    @patch("pool_service.services.development_review._create_response")
+    @patch("pool_service.services.development_review.load_pull_request_evidence")
+    def test_missing_linkage_is_retryable_after_server_metadata_appears(
+        self, loader, create
+    ):
+        metadata = dict(self.codex.automation_metadata)
+        metadata.pop("pr_number", None)
+        self.codex.automation_metadata = metadata
+        self.codex.save(update_fields=["automation_metadata"])
+        self.assertEqual(run_review(self.task.pk).state, "evidence_failed")
+        create.assert_not_called()
+
+        metadata["pr_number"] = 16
+        metadata["branch_name"] = BRANCH
+        self.codex.automation_metadata = metadata
+        self.codex.save(update_fields=["automation_metadata"])
+        loader.return_value = evidence(HEAD_A)
+        create.return_value = self.response()
+
+        result = run_review(self.task.pk)
+
+        self.assertEqual(result.state, "accepted")
+        self.assertEqual(create.call_count, 1)
+        loader.assert_called_once_with(16, BRANCH)
+
+    @patch("pool_service.services.development_review._create_response")
+    @patch("pool_service.services.development_review.load_pull_request_evidence")
+    def test_no_changes_intentionally_preserves_review_without_pr(self, loader, create):
+        metadata = dict(self.codex.automation_metadata)
+        metadata.update({"state": "no_changes"})
+        metadata.pop("pr_number", None)
+        metadata.pop("branch_name", None)
+        self.codex.automation_metadata = metadata
+        self.codex.save(update_fields=["automation_metadata"])
+        create.return_value = self.response()
+
+        result = run_review(self.task.pk)
+
+        self.assertEqual(result.state, "accepted")
+        loader.assert_not_called()
+        self.assertEqual(create.call_count, 1)
+
+    @patch("pool_service.services.development_review._create_response")
+    @patch("pool_service.services.development_review.load_pull_request_evidence")
     def test_actual_patch_is_in_payload_without_local_workspace(self, loader, create):
         loader.return_value = evidence(patch_text="@@ patch from github +actual")
         create.return_value = self.response()
