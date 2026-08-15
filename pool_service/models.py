@@ -2080,6 +2080,8 @@ class EmployeeOneCIdentity(models.Model):
     )
     raw_name = models.CharField(max_length=500)
     normalized_name = models.CharField(max_length=500, db_index=True)
+    normalized_department_name = models.CharField(max_length=300, blank=True)
+    source_identity_key = models.CharField(max_length=64, blank=True)
     onec_employee_id = models.CharField(max_length=120, null=True, blank=True)
     personnel_number = models.CharField(max_length=120, null=True, blank=True)
     department_name = models.CharField(max_length=300, blank=True)
@@ -2109,6 +2111,11 @@ class EmployeeOneCIdentity(models.Model):
                 fields=["organization", "personnel_number"],
                 condition=models.Q(personnel_number__isnull=False) & ~models.Q(personnel_number=""),
                 name="unique_personnel_number_per_org",
+            ),
+            models.UniqueConstraint(
+                fields=["organization", "source_identity_key"],
+                condition=~models.Q(source_identity_key=""),
+                name="unique_source_employee_per_org",
             ),
         ]
 

@@ -1,7 +1,8 @@
+import hashlib
 import re
 
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from pool_service.models import DataAuditLog, Employee, EmployeeOneCIdentity
@@ -15,6 +16,11 @@ def _employee_name(employee):
     return employee.display_name or " ".join(
         value for value in (employee.last_name, employee.first_name, employee.middle_name) if value
     )
+
+
+def _source_identity_key(normalized_name, normalized_department_name):
+    payload = f"{normalized_name}\x1f{normalized_department_name}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _stable_identity(organization, onec_employee_id="", personnel_number=""):
@@ -45,11 +51,24 @@ def resolve_employee_identity(
     personnel_number="",
 ):
     normalized_name = normalize_onec_name(raw_name)
+    normalized_department_name = normalize_onec_name(department_name)
     stable = _stable_identity(organization, onec_employee_id, personnel_number)
     if stable:
         return stable
 
-    confirmed = list(
+    has_stable_identifier = bool(onec_employee_id or personnel_number)
+    source_identity_key = "" if has_stable_identifier else _source_identity_key(
+        normalized_name, normalized_department_name
+    )
+    if source_identity_key:
+        canonical = EmployeeOneCIdentity.objects.filter(
+            organization=organization, source_identity_key=source_identity_key
+        ).first()
+        if canonical:
+            return canonical
+
+    confirmed = [
+        identity for identity in
         EmployeeOneCIdentity.objects.filter(
             organization=organization,
             normalized_name=normalized_name,
@@ -59,10 +78,23 @@ def resolve_employee_identity(
                 EmployeeOneCIdentity.STATUS_MANUALLY_MATCHED,
             ],
         ).order_by("id")
-    )
+        if identity.normalized_department_name in {"", normalized_department_name}
+    ]
     confirmed_employee_ids = {identity.employee_id for identity in confirmed}
-    if len(confirmed_employee_ids) == 1:
-        return confirmed[0]
+    if not has_stable_identifier and len(confirmed_employee_ids) == 1:
+        canonical = confirmed[0]
+        canonical.normalized_department_name = normalized_department_name
+        canonical.source_identity_key = source_identity_key
+        try:
+            with transaction.atomic():
+                canonical.save(update_fields=[
+                    "normalized_department_name", "source_identity_key", "updated_at",
+                ])
+            return canonical
+        except IntegrityError:
+            return EmployeeOneCIdentity.objects.get(
+                organization=organization, source_identity_key=source_identity_key
+            )
 
     candidates = [
         employee
@@ -79,17 +111,27 @@ def resolve_employee_identity(
     else:
         status = EmployeeOneCIdentity.STATUS_NOT_FOUND
         method = EmployeeOneCIdentity.MATCH_NONE
-    return EmployeeOneCIdentity.objects.create(
-        organization=organization,
-        employee=employee,
-        raw_name=raw_name,
-        normalized_name=normalized_name,
-        onec_employee_id=onec_employee_id,
-        personnel_number=personnel_number,
-        department_name=department_name,
-        status=status,
-        match_method=method,
-    )
+    values = {
+        "employee": employee,
+        "raw_name": raw_name,
+        "normalized_name": normalized_name,
+        "normalized_department_name": normalized_department_name,
+        "source_identity_key": source_identity_key,
+        "onec_employee_id": onec_employee_id,
+        "personnel_number": personnel_number,
+        "department_name": department_name,
+        "status": status,
+        "match_method": method,
+    }
+    try:
+        with transaction.atomic():
+            return EmployeeOneCIdentity.objects.create(organization=organization, **values)
+    except IntegrityError:
+        if not source_identity_key:
+            raise
+        return EmployeeOneCIdentity.objects.get(
+            organization=organization, source_identity_key=source_identity_key
+        )
 
 
 def confirm_employee_identity(identity, employee, user, *, comment=""):

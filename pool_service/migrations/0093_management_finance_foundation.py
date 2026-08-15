@@ -66,6 +66,8 @@ class Migration(migrations.Migration):
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('raw_name', models.CharField(max_length=500)),
                 ('normalized_name', models.CharField(db_index=True, max_length=500)),
+                ('normalized_department_name', models.CharField(blank=True, max_length=300)),
+                ('source_identity_key', models.CharField(blank=True, max_length=64)),
                 ('onec_employee_id', models.CharField(blank=True, max_length=120, null=True)),
                 ('personnel_number', models.CharField(blank=True, max_length=120, null=True)),
                 ('department_name', models.CharField(blank=True, max_length=300)),
@@ -172,6 +174,10 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name='employeeonecidentity',
             constraint=models.UniqueConstraint(condition=models.Q(('personnel_number__isnull', False), models.Q(('personnel_number', ''), _negated=True)), fields=('organization', 'personnel_number'), name='unique_personnel_number_per_org'),
+        ),
+        migrations.AddConstraint(
+            model_name='employeeonecidentity',
+            constraint=models.UniqueConstraint(condition=models.Q(('source_identity_key', ''), _negated=True), fields=('organization', 'source_identity_key'), name='unique_source_employee_per_org'),
         ),
         migrations.AddIndex(
             model_name='payrollrow',

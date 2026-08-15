@@ -45,7 +45,12 @@ from pool_service.services.finance import (
     can_view_payroll_personal,
     can_view_payroll_summary,
 )
-from pool_service.tests.fixtures.management_finance import cashflow_xlsx, payroll_xlsx
+from pool_service.tests.fixtures.management_finance import (
+    cashflow_xlsx,
+    payroll_160_rows_xlsx,
+    payroll_unmatched_months_xlsx,
+    payroll_xlsx,
+)
 
 
 def upload(name, data):
@@ -139,6 +144,40 @@ class EmployeeFoundationTests(TestCase):
             identity.pk,
         )
 
+    def test_conflicting_stable_ids_fail_closed(self):
+        first = self.employee("Первый Сотрудник")
+        second = self.employee("Второй Сотрудник")
+        EmployeeOneCIdentity.objects.create(
+            organization=self.organization,
+            employee=first,
+            raw_name=first.display_name,
+            normalized_name=normalize_onec_name(first.display_name),
+            onec_employee_id="onec-conflict",
+            status=EmployeeOneCIdentity.STATUS_MANUALLY_MATCHED,
+        )
+        EmployeeOneCIdentity.objects.create(
+            organization=self.organization,
+            employee=second,
+            raw_name=second.display_name,
+            normalized_name=normalize_onec_name(second.display_name),
+            personnel_number="personnel-conflict",
+            status=EmployeeOneCIdentity.STATUS_MANUALLY_MATCHED,
+        )
+        with self.assertRaises(ValidationError):
+            resolve_employee_identity(
+                self.organization,
+                "Любое имя",
+                onec_employee_id="onec-conflict",
+                personnel_number="personnel-conflict",
+            )
+
+    def test_fallback_identity_is_isolated_by_organization(self):
+        first = resolve_employee_identity(self.organization, "Шукшин Илья Сергеевич")
+        second = resolve_employee_identity(self.other, " ШУКШИН  ИЛЬЯ СЕРГЕЕВИЧ ")
+        self.assertNotEqual(first.pk, second.pk)
+        self.assertEqual(first.source_identity_key, second.source_identity_key)
+        self.assertNotEqual(first.organization_id, second.organization_id)
+
     def test_inactive_employee_matches_historically_and_cross_org_mapping_is_rejected(self):
         employee = self.employee("Петров Пётр Петрович", active=False)
         identity = resolve_employee_identity(self.organization, "Петров Петр Петрович")
@@ -195,6 +234,78 @@ class FoundationImportTests(TestCase):
             Decimal("300.00"),
         )
         self.assertTrue(PayrollRow.objects.filter(employee_identity__employee__isnull=True).exists())
+
+    def test_unmatched_source_identity_is_reused_for_all_months_and_replacement(self):
+        source = payroll_unmatched_months_xlsx()
+        first = create_payroll_preview(
+            upload("unmatched.xlsx", source), self.organization, self.user
+        )
+        confirm_payroll(first.pk, self.organization, self.user)
+        rows = PayrollRow.objects.filter(import_batch=first)
+        identity_ids = set(rows.values_list("employee_identity_id", flat=True))
+        self.assertEqual(rows.count(), 12)
+        self.assertEqual(len(identity_ids), 1)
+        identity = EmployeeOneCIdentity.objects.get(pk=identity_ids.pop())
+        self.assertEqual(identity.status, EmployeeOneCIdentity.STATUS_NOT_FOUND)
+
+        replacement = create_payroll_preview(
+            upload("unmatched-new.xlsx", payroll_unmatched_months_xlsx(accrued_delta=1)),
+            self.organization,
+            self.user,
+        )
+        confirm_payroll(replacement.pk, self.organization, self.user)
+        self.assertEqual(EmployeeOneCIdentity.objects.count(), 1)
+        self.assertEqual(
+            set(PayrollRow.objects.values_list("employee_identity_id", flat=True)),
+            {identity.pk},
+        )
+
+    def test_ambiguous_identity_is_reused_and_manual_remap_resolves_all_rows(self):
+        for suffix in ("A", "B"):
+            Employee.objects.create(
+                organization=self.organization,
+                display_name="Шукшин Илья Сергеевич",
+                first_name="Илья",
+                last_name="Шукшин",
+                middle_name="Сергеевич",
+                position_name=suffix,
+            )
+        batch = create_payroll_preview(
+            upload("ambiguous.xlsx", payroll_unmatched_months_xlsx()),
+            self.organization,
+            self.user,
+        )
+        confirm_payroll(batch.pk, self.organization, self.user)
+        rows = PayrollRow.objects.filter(import_batch=batch)
+        identity_ids = set(rows.values_list("employee_identity_id", flat=True))
+        self.assertEqual(len(identity_ids), 1)
+        identity = EmployeeOneCIdentity.objects.get(pk=identity_ids.pop())
+        self.assertEqual(identity.status, EmployeeOneCIdentity.STATUS_AMBIGUOUS)
+        self.assertIsNone(identity.employee)
+
+        selected = Employee.objects.order_by("id").first()
+        confirm_employee_identity(identity, selected, self.user)
+        self.assertEqual(
+            PayrollRow.objects.filter(
+                import_batch=batch, employee_identity__employee=selected
+            ).count(),
+            12,
+        )
+
+    def test_real_shape_fixture_creates_one_identity_per_distinct_source_employee(self):
+        batch = create_payroll_preview(
+            upload("payroll-160.xlsx", payroll_160_rows_xlsx()),
+            self.organization,
+            self.user,
+        )
+        confirm_payroll(batch.pk, self.organization, self.user)
+        self.assertEqual(PayrollRow.objects.filter(import_batch=batch).count(), 160)
+        self.assertEqual(EmployeeOneCIdentity.objects.count(), 17)
+        self.assertEqual(
+            PayrollRow.objects.filter(import_batch=batch)
+            .values("employee_identity_id").distinct().count(),
+            17,
+        )
 
     def test_payroll_duplicate_versioning_and_parser_lock(self):
         source = payroll_xlsx()
