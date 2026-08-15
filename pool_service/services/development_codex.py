@@ -92,6 +92,11 @@ MAX_CODEX_ARCHIVE_BYTES = 6_000_000
 MAX_CODEX_CONTENT_BYTES = 5_500_000
 MAX_CODEX_SUMMARY_BYTES = 100_000
 MAX_PR_TITLE_BYTES = 255
+MAX_REVIEW_EVIDENCE_FILES = 200
+MAX_REVIEW_EVIDENCE_PAGES = 3
+MAX_REVIEW_EVIDENCE_BYTES = 120_000
+REVIEW_EVIDENCE_PAGE_SIZE = 100
+SHA_RE = re.compile(r"^[a-f0-9]{40}$")
 PROMPT_TRUNCATION_MARKER = "[сокращено системой из-за лимита prompt]"
 PROMPT_TRUNCATION_ORDER = (
     "analysis",
@@ -147,6 +152,23 @@ class CodexPromptBuild:
     @property
     def truncated(self):
         return bool(self.truncated_sections)
+
+
+@dataclass(frozen=True)
+class PullRequestEvidence:
+    snapshot: dict
+
+    @property
+    def pr_number(self):
+        return self.snapshot["pr_number"]
+
+    @property
+    def head_sha(self):
+        return self.snapshot["head_sha"]
+
+    @property
+    def sufficient(self):
+        return self.snapshot["sufficient_for_automatic_acceptance"]
 
 
 def is_configured():
@@ -687,6 +709,140 @@ def _pull_request_files(number):
     repository, _workflow = _configuration()
     items = _github_request("GET", f"/repos/{repository}/pulls/{int(number)}/files?per_page=100") or []
     return [item.get("filename", "") for item in items if item.get("filename")][:100]
+
+
+def _validated_repo_identity(value):
+    if not isinstance(value, dict):
+        return None
+    name = value.get("full_name")
+    return name if isinstance(name, str) else None
+
+
+def _evidence_error(cause_type):
+    return GitHubRequestError(category="evidence", cause_type=cause_type)
+
+
+def _bounded_patch(value, remaining_bytes):
+    if not isinstance(value, str):
+        return None, 0, False
+    raw = value.encode("utf-8")
+    if len(raw) <= remaining_bytes:
+        return value, len(raw), False
+    if remaining_bytes <= 0:
+        return "", 0, True
+    bounded = raw[:remaining_bytes].decode("utf-8", errors="ignore")
+    return bounded, len(bounded.encode("utf-8")), True
+
+
+def load_pull_request_evidence(pr_number, expected_head_ref):
+    """Load a bounded, server-validated snapshot of the published PR."""
+    if isinstance(pr_number, bool) or not isinstance(pr_number, int) or pr_number <= 0:
+        raise _evidence_error("InvalidPullRequestNumber")
+    if not isinstance(expected_head_ref, str) or not SAFE_BRANCH_RE.fullmatch(expected_head_ref):
+        raise _evidence_error("InvalidExpectedHeadRef")
+
+    repository, _workflow = _configuration()
+    path = f"/repos/{repository}/pulls/{pr_number}"
+    pull = _github_request("GET", path)
+    if not isinstance(pull, dict):
+        raise _evidence_error("MalformedPullRequest")
+    base = pull.get("base")
+    head = pull.get("head")
+    if not isinstance(base, dict) or not isinstance(head, dict):
+        raise _evidence_error("MalformedPullRequestRefs")
+    if pull.get("number") != pr_number:
+        raise _evidence_error("PullRequestNumberMismatch")
+    if _validated_repo_identity(base.get("repo")) != repository:
+        raise _evidence_error("BaseRepositoryMismatch")
+    if base.get("ref") != BASE_BRANCH:
+        raise _evidence_error("BaseRefMismatch")
+    if _validated_repo_identity(head.get("repo")) != repository:
+        raise _evidence_error("HeadRepositoryMismatch")
+    if head.get("ref") != expected_head_ref:
+        raise _evidence_error("HeadRefMismatch")
+    base_sha = base.get("sha")
+    head_sha = head.get("sha")
+    if not isinstance(base_sha, str) or not SHA_RE.fullmatch(base_sha):
+        raise _evidence_error("InvalidBaseSha")
+    if not isinstance(head_sha, str) or not SHA_RE.fullmatch(head_sha):
+        raise _evidence_error("InvalidHeadSha")
+    state = pull.get("state")
+    if state not in {"open", "closed"}:
+        raise _evidence_error("InvalidPullRequestState")
+    total_files = pull.get("changed_files")
+    if isinstance(total_files, bool) or not isinstance(total_files, int) or total_files < 0:
+        raise _evidence_error("InvalidChangedFileCount")
+
+    files = []
+    included_bytes = 0
+    truncation_reasons = []
+    missing_patch = False
+    for page in range(1, MAX_REVIEW_EVIDENCE_PAGES + 1):
+        if len(files) >= min(total_files, MAX_REVIEW_EVIDENCE_FILES):
+            break
+        query = urlencode({"per_page": REVIEW_EVIDENCE_PAGE_SIZE, "page": page})
+        items = _github_request("GET", f"{path}/files?{query}")
+        if not isinstance(items, list):
+            raise _evidence_error("MalformedPullRequestFiles")
+        for item in items:
+            if not isinstance(item, dict) or not isinstance(item.get("filename"), str):
+                raise _evidence_error("MalformedPullRequestFile")
+            if len(files) >= MAX_REVIEW_EVIDENCE_FILES:
+                truncation_reasons.append("file_limit")
+                break
+            remaining = MAX_REVIEW_EVIDENCE_BYTES - included_bytes
+            patch, patch_bytes, patch_truncated = _bounded_patch(item.get("patch"), remaining)
+            if patch is None:
+                missing_patch = True
+            files.append(
+                {
+                    "filename": item["filename"],
+                    "status": str(item.get("status") or ""),
+                    "additions": int(item.get("additions") or 0),
+                    "deletions": int(item.get("deletions") or 0),
+                    "changes": int(item.get("changes") or 0),
+                    "patch": patch,
+                    "patch_truncated": patch_truncated,
+                }
+            )
+            included_bytes += patch_bytes
+            if patch_truncated:
+                truncation_reasons.append("byte_limit")
+                break
+        if "byte_limit" in truncation_reasons or len(items) < REVIEW_EVIDENCE_PAGE_SIZE:
+            break
+
+    if len(files) < total_files:
+        if len(files) >= MAX_REVIEW_EVIDENCE_FILES:
+            truncation_reasons.append("file_limit")
+        elif "byte_limit" not in truncation_reasons:
+            truncation_reasons.append("page_limit")
+    if missing_patch:
+        truncation_reasons.append("missing_patch")
+    reasons = tuple(dict.fromkeys(truncation_reasons))
+    evidence_body = {
+        "repository": repository,
+        "pr_number": pr_number,
+        "state": state,
+        "base_ref": base["ref"],
+        "base_sha": base_sha,
+        "head_ref": head["ref"],
+        "head_sha": head_sha,
+        "head_repository": repository,
+        "changed_files": files,
+        "truncated": bool(reasons),
+        "truncation_reason": list(reasons),
+        "included_file_count": len(files),
+        "total_file_count": total_files,
+        "included_bytes": included_bytes,
+        "sufficient_for_automatic_acceptance": not reasons and len(files) == total_files,
+    }
+    digest_source = json.dumps(
+        evidence_body, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    evidence_body["evidence_sha256"] = hashlib.sha256(digest_source).hexdigest()
+    evidence_body["fetched_at"] = _now_iso()
+    return PullRequestEvidence(evidence_body)
 
 
 def _workflow_validation_state(run_id):

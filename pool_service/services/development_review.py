@@ -15,6 +15,11 @@ from pool_service.models import DevelopmentIteration, DevelopmentTask, Developme
 from pool_service.services.ai_costs import usage_record
 from pool_service.services.development_ai import resolve_primary_analysis_iteration
 from pool_service.services.development_db import database_error_code, run_external_io
+from pool_service.services.development_codex import (
+    AUTO_CYCLE_METADATA_KEY,
+    GitHubRequestError,
+    load_pull_request_evidence,
+)
 from pool_service.services.development_notifications import notify_human_required, notify_ready_for_deploy
 
 
@@ -415,7 +420,7 @@ def resolve_human_review(task_id, review_id, actor_id, verdict, note=""):
     return HumanReviewResolutionResult(verdict, True, review.pk)
 
 
-def _review_payload(task, codex_iteration):
+def _review_payload(task, codex_iteration, evidence=None):
     analysis = resolve_primary_analysis_iteration(task)
     previous = []
     for item in task.iterations.filter(automation_metadata__purpose=PURPOSE).order_by("id"):
@@ -426,7 +431,7 @@ def _review_payload(task, codex_iteration):
             "corrective_instructions": metadata.get("corrective_instructions", []),
         })
     codex_metadata = _metadata(codex_iteration)
-    return {
+    payload = {
         "task": {
             "reference": task.reference, "title": task.title,
             "description": task.description, "business_goal": task.business_goal,
@@ -447,6 +452,14 @@ def _review_payload(task, codex_iteration):
         "corrective_iteration": int(codex_metadata.get("corrective_number") or 0),
         "corrective_limit": settings.DEVELOPMENT_MAX_CORRECTIVE_ITERATIONS,
     }
+    if evidence is not None:
+        payload["github_pr_evidence"] = evidence.snapshot
+        payload["evidence_notice"] = (
+            "GitHub PR evidence is truncated or incomplete. Automatic acceptance is forbidden."
+            if not evidence.sufficient
+            else "GitHub PR evidence is complete within configured safety bounds."
+        )
+    return payload
 
 
 def _create_response(prompt, operation_key):
@@ -489,6 +502,21 @@ def _parse(response):
     if value["decision"] == "human_required" and not value["human_reason"]:
         raise ValueError("Human review has no reason")
     return value
+
+
+def _enforce_evidence_safety(decision, evidence):
+    if evidence is None or evidence.sufficient or decision["decision"] != "accepted":
+        return decision
+    return {
+        "decision": "human_required",
+        "summary": "GitHub PR evidence недостаточно для автоматического принятия.",
+        "findings": list(decision["findings"]),
+        "corrective_instructions": [],
+        "human_reason": (
+            "GitHub PR evidence было ограничено или не содержало полный patch; "
+            "требуется ручная проверка фактических изменений."
+        ),
+    }
 
 
 def _launch_is_stale(review, metadata):
@@ -754,25 +782,91 @@ def _mark_review_launch_unknown(review_id, *, require_stale):
     return ReviewResult(STATE_LAUNCH_UNKNOWN, True, review.pk)
 
 
-def run_review(task_id):
+def run_review(task_id, *, allow_ready_for_deploy=False):
     if not settings.OPENAI_API_KEY:
         return ReviewResult("not_configured")
     with transaction.atomic():
         task = DevelopmentTask.objects.select_for_update().get(pk=task_id)
         task_meta = _metadata(task)
+        allowed_statuses = {DevelopmentTask.STATUS_REVIEW, DevelopmentTask.STATUS_BLOCKED}
+        if (
+            allow_ready_for_deploy
+            and task_meta.get(AUTO_CYCLE_METADATA_KEY) is True
+        ):
+            allowed_statuses.add(DevelopmentTask.STATUS_READY_FOR_DEPLOY)
         codex_id = task_meta.get("active_codex_iteration_id")
         codex = task.iterations.filter(pk=codex_id, executor_type="codex").first()
-        if codex is None or task.status not in {DevelopmentTask.STATUS_REVIEW, DevelopmentTask.STATUS_BLOCKED}:
+        if codex is None or task.status not in allowed_statuses:
             return ReviewResult("not_available")
         codex_meta = _metadata(codex)
         if codex_meta.get("state") not in {"completed", "no_changes", "validation_failed"}:
             return ReviewResult("not_available")
-        operation_key = f"task:{task.pk}:codex:{codex.pk}:review"
-        existing = task.iterations.filter(
+        pr_number = codex_meta.get("pr_number")
+        expected_head_ref = codex_meta.get("branch_name")
+        resumable = task.iterations.filter(
             executor_type=DevelopmentIteration.EXECUTOR_CHATGPT,
             automation_metadata__purpose=PURPOSE,
             automation_metadata__codex_iteration_id=codex.pk,
         ).order_by("-id").first()
+        resumable_metadata = _metadata(resumable) if resumable is not None else {}
+        resume_review_id = (
+            resumable.pk
+            if resumable is not None
+            and not resumable_metadata.get("applied")
+            and resumable_metadata.get("state") in {
+                STATE_PENDING,
+                STATE_LAUNCHING,
+                STATE_RESPONSE_READY,
+                STATE_LAUNCH_UNKNOWN,
+            }
+            else None
+        )
+
+    evidence = None
+    if pr_number is not None and resume_review_id is None:
+        try:
+            evidence = run_external_io(
+                load_pull_request_evidence, pr_number, expected_head_ref
+            )
+        except (GitHubRequestError, TypeError, ValueError) as exc:
+            logger.warning(
+                "Development AI Review evidence failed: task=%s codex=%s error_type=%s",
+                task_id,
+                codex.pk,
+                type(exc).__name__,
+            )
+            return ReviewResult("evidence_failed")
+
+    with transaction.atomic():
+        task = DevelopmentTask.objects.select_for_update().get(pk=task_id)
+        task_meta = _metadata(task)
+        if task_meta.get("active_codex_iteration_id") != codex.pk:
+            return ReviewResult("task_state_changed")
+        if resume_review_id is not None:
+            existing = task.iterations.filter(pk=resume_review_id).first()
+            operation_key = (
+                _metadata(existing).get("operation_key")
+                if existing is not None
+                else f"task:{task.pk}:codex:{codex.pk}:review"
+            )
+        elif evidence is not None:
+            operation_key = (
+                f"task:{task.pk}:pr:{evidence.pr_number}:"
+                f"head:{evidence.head_sha}:review"
+            )
+            existing = task.iterations.filter(
+                executor_type=DevelopmentIteration.EXECUTOR_CHATGPT,
+                automation_metadata__purpose=PURPOSE,
+                automation_metadata__pr_number=evidence.pr_number,
+                automation_metadata__head_sha=evidence.head_sha,
+            ).order_by("-id").first()
+        else:
+            operation_key = f"task:{task.pk}:codex:{codex.pk}:review"
+            existing = task.iterations.filter(
+                executor_type=DevelopmentIteration.EXECUTOR_CHATGPT,
+                automation_metadata__purpose=PURPOSE,
+                automation_metadata__codex_iteration_id=codex.pk,
+            ).order_by("-id").first()
         if existing:
             review = existing
             prompt = review.prompt
@@ -787,7 +881,23 @@ def run_review(task_id):
             existing_state = existing_metadata.get("state") or STATE_LAUNCHING
         else:
             number = (task.iterations.aggregate(n=Max("iteration_number"))["n"] or 0) + 1
-            prompt = json.dumps(_review_payload(task, codex), ensure_ascii=False)
+            prompt = json.dumps(_review_payload(task, codex, evidence), ensure_ascii=False)
+            review_metadata = {
+                "purpose": PURPOSE,
+                "operation_key": operation_key,
+                "state": STATE_PENDING,
+                "codex_iteration_id": codex.pk,
+            }
+            if evidence is not None:
+                review_metadata.update(
+                    {
+                        "pr_number": evidence.pr_number,
+                        "head_sha": evidence.head_sha,
+                        "base_sha": evidence.snapshot["base_sha"],
+                        "evidence_snapshot": evidence.snapshot,
+                        "evidence_sha256": evidence.snapshot["evidence_sha256"],
+                    }
+                )
             try:
                 review = DevelopmentIteration.objects.create(
                     task=task,
@@ -797,19 +907,18 @@ def run_review(task_id):
                     prompt=prompt,
                     started_at=timezone.now(),
                     result_summary="AI Review ожидает запуска.",
-                    automation_metadata={
-                        "purpose": PURPOSE,
-                        "operation_key": operation_key,
-                        "state": STATE_PENDING,
-                        "codex_iteration_id": codex.pk,
-                    },
+                    automation_metadata=review_metadata,
                 )
             except IntegrityError:
                 return ReviewResult("in_progress")
             existing_state = STATE_PENDING
             task.current_stage = DevelopmentTask.STAGE_REVIEW
             task.current_activity = "AI Review ожидает запуска"
-            task.save(update_fields=["current_stage", "current_activity", "updated_at"])
+            update_fields = ["current_stage", "current_activity", "updated_at"]
+            if task.status == DevelopmentTask.STATUS_READY_FOR_DEPLOY:
+                task.status = DevelopmentTask.STATUS_REVIEW
+                update_fields.append("status")
+            task.save(update_fields=update_fields)
 
     if existing_state == STATE_RESPONSE_READY:
         return _apply_stored_review(review.pk)
@@ -835,6 +944,7 @@ def run_review(task_id):
         decision = _parse(response)
     except ValueError:
         decision = {"decision": "human_required", "summary": "AI Review не дал однозначного структурированного результата.", "findings": [], "corrective_instructions": [], "human_reason": "Требуется ручная проверка результата AI Review."}
+    decision = _enforce_evidence_safety(decision, evidence)
     try:
         stored = _store_review_response(review.pk, launch_token, response, decision)
     except (OperationalError, InterfaceError) as exc:
@@ -850,3 +960,23 @@ def run_review(task_id):
     if stored.state != STATE_RESPONSE_READY:
         return stored
     return _apply_stored_review(review.pk)
+
+
+def review_updated_accepted_pull_request(task_id):
+    """Narrow auto-cycle path for re-reviewing a changed, already accepted PR."""
+    task = DevelopmentTask.objects.filter(pk=task_id).first()
+    if task is None or task.status != DevelopmentTask.STATUS_READY_FOR_DEPLOY:
+        return ReviewResult("not_available")
+    metadata = _metadata(task)
+    if metadata.get(AUTO_CYCLE_METADATA_KEY) is not True:
+        return ReviewResult("not_available")
+    codex = task.iterations.filter(
+        pk=metadata.get("active_codex_iteration_id"),
+        executor_type=DevelopmentIteration.EXECUTOR_CODEX,
+    ).first()
+    codex_metadata = _metadata(codex) if codex is not None else {}
+    if not isinstance(codex_metadata.get("pr_number"), int) or not isinstance(
+        codex_metadata.get("branch_name"), str
+    ):
+        return ReviewResult("not_available")
+    return run_review(task_id, allow_ready_for_deploy=True)

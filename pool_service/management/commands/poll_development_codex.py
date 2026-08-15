@@ -12,6 +12,7 @@ from pool_service.services.development_codex import (
 )
 from pool_service.services.development_db import database_error_code
 from pool_service.services.development_review import (
+    review_updated_accepted_pull_request,
     run_review,
     unresolved_launch_unknown_review,
 )
@@ -52,6 +53,7 @@ class Command(BaseCommand):
                         DevelopmentTask.STATUS_REVIEW,
                         DevelopmentTask.STATUS_REVISION,
                         DevelopmentTask.STATUS_BLOCKED,
+                        DevelopmentTask.STATUS_READY_FOR_DEPLOY,
                     ],
                     **{f"automation_metadata__{AUTO_CYCLE_METADATA_KEY}": True},
                 )
@@ -79,6 +81,16 @@ class Command(BaseCommand):
                     else {}
                 )
                 iteration_id = task_metadata.get("active_codex_iteration_id")
+                if task.status == DevelopmentTask.STATUS_READY_FOR_DEPLOY:
+                    stage = "review_updated_accepted_pull_request"
+                    result = review_updated_accepted_pull_request(task_id)
+                    if result.changed:
+                        counts["reviewed"] += 1
+                    if result.review_id is not None:
+                        iteration_id = result.review_id
+                    task.refresh_from_db()
+                    if task.status != DevelopmentTask.STATUS_REVISION:
+                        continue
                 if task.status in {DevelopmentTask.STATUS_CODEX_WORKING, DevelopmentTask.STATUS_BLOCKED}:
                     stage = "check_codex"
                     result = check_codex(task_id, None)
