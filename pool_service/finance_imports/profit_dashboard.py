@@ -1,6 +1,7 @@
 from calendar import monthrange
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
+import re
 
 from django.utils import timezone
 
@@ -14,6 +15,8 @@ PERIOD_CHOICES = (
     ("previous_month", "Прошлый месяц"),
     ("current_year", "Текущий год"),
     ("previous_year", "Прошлый год"),
+    ("last_12_months", "Последние 12 месяцев"),
+    ("all_history", "Вся доступная история"),
     ("custom", "Произвольный период"),
 )
 MONEY_QUANTUM = Decimal("0.01")
@@ -41,10 +44,17 @@ def resolve_period(params, today=None):
         start, end = date(today.year, 1, 1), today
     elif preset == "previous_year":
         start, end = date(today.year - 1, 1, 1), date(today.year - 1, 12, 31)
+    elif preset == "last_12_months":
+        start, end = add_months(today.replace(day=1), -11), today
+    elif preset == "all_history":
+        start, end = date(2000, 1, 1), today
     elif preset == "custom":
         try:
-            start = date.fromisoformat(params.get("start", ""))
-            end = date.fromisoformat(params.get("end", ""))
+            start_value = params.get("start", "")
+            end_value = params.get("end", "")
+            start = date.fromisoformat(start_value + "-01" if len(start_value) == 7 else start_value)
+            parsed_end = date.fromisoformat(end_value + "-01" if len(end_value) == 7 else end_value)
+            end = month_end(parsed_end) if len(end_value) == 7 else parsed_end
             if start > end:
                 raise ValueError
         except ValueError:
@@ -154,6 +164,41 @@ def comparison(current, previous):
     return result
 
 
+def _customer_key(value):
+    normalized = re.sub(r"\s+", " ", (value or "").strip()).lower().replace("ё", "е")
+    if normalized in {"", "<покупатель не указан>"}:
+        return ""
+    return normalized
+
+
+def customer_breakdown(rows):
+    grouped = {}
+    for row in rows:
+        key = _customer_key(row.customer_name)
+        customer = grouped.setdefault(key, {
+            "name": re.sub(r"\s+", " ", row.customer_name.strip()) if key else "Покупатель не указан",
+            "rows": [], "documents": {},
+        })
+        customer["rows"].append(row)
+        document_name = row.document_name.strip() or "Документ не указан"
+        customer["documents"].setdefault(document_name, []).append(row)
+    result = []
+    for customer in grouped.values():
+        totals = summarize(customer["rows"])
+        documents = []
+        for name, document_rows in customer["documents"].items():
+            documents.append({
+                "name": name,
+                "managers": sorted({row.manager_name for row in document_rows if row.manager_name}),
+                "rows": document_rows,
+                **summarize(document_rows),
+            })
+        documents.sort(key=lambda item: (-item["revenue"], item["name"].casefold()))
+        result.append({**customer, **totals, "documents": documents})
+    result.sort(key=lambda item: (-item["revenue"], item["name"].casefold()))
+    return result
+
+
 def dashboard_data(organization, period):
     all_rows = OneCMonthlyProfit.objects.active_for(organization).filter(
         period_month__range=(period["previous_first"], period["last_month"])
@@ -187,4 +232,5 @@ def dashboard_data(organization, period):
         "comparison": comparison(current, previous), "monthly": monthly, "split": split,
         "period_cost_ratio": current_ratio,
         "previous_period_cost_ratio": previous_ratio,
+        "customers": customer_breakdown(current_rows),
     }

@@ -1820,6 +1820,9 @@ class OneCMonthlyProfit(models.Model):
     )
     period_month = models.DateField("Месяц")
     source_row_number = models.PositiveIntegerField("Номер строки источника")
+    manager_name = models.CharField("Менеджер", max_length=300, blank=True, default="")
+    customer_name = models.CharField("Покупатель", max_length=500, blank=True, default="")
+    document_name = models.CharField("Документ", max_length=500, blank=True, default="")
     nomenclature = models.CharField("Номенклатура", max_length=500)
     article = models.CharField("Артикул или код", max_length=120, blank=True)
     nomenclature_type = models.CharField(

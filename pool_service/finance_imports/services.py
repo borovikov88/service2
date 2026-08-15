@@ -233,6 +233,64 @@ def _save_confirmed_batch(batch, user, rows_count):
     )
 
 
+def _repreview_obsolete_batch(batch_id, uploaded_file, organization, user, digest):
+    with transaction.atomic():
+        batch = OneCImportBatch.objects.select_for_update().get(
+            id=batch_id, organization=organization
+        )
+        if (
+            batch.status == OneCImportBatch.STATUS_CONFIRMED
+            or batch.parser_version == PARSER_VERSION
+        ):
+            raise DuplicateImportError(batch)
+
+        uploaded_file.seek(0)
+        result = parse_monthly_profit(
+            uploaded_file,
+            filename=safe_original_filename(uploaded_file.name),
+            size=uploaded_file.size,
+        )
+        apply_period_weighted_goods_cost(result.records)
+        periods = _result_periods(result)
+        overlap_months = overlap_months_for(
+            organization, batch.import_type, periods
+        )
+
+        stored_is_current = False
+        try:
+            stored_is_current = bool(batch.stored_file) and _stored_sha256(batch) == digest
+        except (OSError, ValueError):
+            stored_is_current = False
+        if not stored_is_current:
+            uploaded_file.seek(0)
+            generated_name = batch.stored_file.field.generate_filename(batch, "source.xlsx")
+            batch.stored_file.name = batch.stored_file.storage.save(
+                generated_name, uploaded_file
+            )
+
+        before = {"status": batch.status, "parser_version": batch.parser_version}
+        batch.original_filename = safe_original_filename(uploaded_file.name)
+        batch.file_size = uploaded_file.size
+        batch.uploaded_by = user
+        batch.parser_version = PARSER_VERSION
+        batch.status = OneCImportBatch.STATUS_PREVIEWED
+        batch.rows_detected = len(result.records)
+        batch.rows_imported = 0
+        batch.warnings_count = max(result.warnings_total, len(result.warnings))
+        batch.metadata = _preview_metadata(result, overlap_months)
+        batch.error_message = ""
+        batch.save(update_fields=[
+            "stored_file", "original_filename", "file_size", "uploaded_by",
+            "parser_version", "status", "rows_detected", "rows_imported",
+            "warnings_count", "metadata", "error_message",
+        ])
+        _audit(batch, user, before, {
+            "status": batch.status, "parser_version": batch.parser_version,
+        })
+    _log(batch, user, "repreviewed", obsolete_parser=before["parser_version"])
+    return batch
+
+
 def create_monthly_profit_preview(uploaded_file, organization, user):
     started = time.monotonic()
     digest = getattr(uploaded_file, "file_sha256", None) or stream_sha256(uploaded_file)
@@ -240,7 +298,15 @@ def create_monthly_profit_preview(uploaded_file, organization, user):
         organization=organization, import_type=OneCImportBatch.TYPE_MONTHLY_PROFIT,
         file_sha256=digest,
     ).first()
-    if duplicate: raise DuplicateImportError(duplicate)
+    if duplicate:
+        if (
+            duplicate.status != OneCImportBatch.STATUS_CONFIRMED
+            and duplicate.parser_version != PARSER_VERSION
+        ):
+            return _repreview_obsolete_batch(
+                duplicate.id, uploaded_file, organization, user, digest
+            )
+        raise DuplicateImportError(duplicate)
     batch = OneCImportBatch(
         organization=organization, original_filename=safe_original_filename(uploaded_file.name),
         file_sha256=digest, file_size=uploaded_file.size, uploaded_by=user, parser_version=PARSER_VERSION,
@@ -314,6 +380,11 @@ def confirm_monthly_profit(batch_id, organization, user):
             )
             if batch.status != OneCImportBatch.STATUS_PREVIEWED:
                 raise ValidationError("Подтвердить можно только импорт в статусе previewed.")
+            if batch.parser_version != PARSER_VERSION:
+                raise ValidationError(
+                    "Предпросмотр создан устаревшей версией парсера. "
+                    "Загрузите этот же файл повторно и проверьте новый предпросмотр."
+                )
             if _stored_sha256(batch) != batch.file_sha256:
                 raise ValidationError("Контрольная сумма исходного файла изменилась.")
             with batch.stored_file.open("rb") as source:

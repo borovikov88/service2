@@ -19,6 +19,7 @@ from openpyxl.styles import Alignment
 
 from pool_service.finance_forms import MonthlyProfitUploadForm
 from pool_service.finance_imports.monthly_profit_parser import (
+    PARSER_VERSION,
     ParseResult,
     classify_nomenclature_type,
     parse_decimal,
@@ -34,7 +35,13 @@ from pool_service.finance_imports.services import (
     apply_period_weighted_goods_cost,
 )
 from pool_service.finance_imports.validators import delete_private_batch_file
-from pool_service.models import OneCImportBatch, OneCMonthlyProfit, Organization, OrganizationAccess
+from pool_service.models import (
+    OneCImportBatch,
+    OneCMonthlyProfit,
+    OneCReportPeriodState,
+    Organization,
+    OrganizationAccess,
+)
 
 
 def xlsx_bytes(
@@ -215,6 +222,34 @@ def vertical_calculated_cost_xlsx():
     return output.getvalue()
 
 
+def multilevel_customer_xlsx():
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Месяц", None, None, "Количество", "Выручка", "Себестоимость", "Валовая прибыль", "Рентабельность"])
+    sheet.append(["Менеджер"])
+    sheet.append(["Покупатель"])
+    sheet.append(["Заказ покупателя"])
+    sheet.append(["Артикул", "Тип", "Номенклатура"])
+    rows = [
+        (["янв. 2026", None, None, 3, 100, 85, 15, 15], 0, 0),
+        (["Менеджер 1", None, None, 3, 100, 85, 15, 15], 0, 2),
+        (["Клиент А", None, None, 3, 100, 85, 15, 15], 0, 4),
+        (["Заказ покупателя 1", None, None, 2, 100, 60, 40, 40], 0, 6),
+        (["A-1", "Запас", "Товар", 1, 100, 60, 40, 40], 2, 8),
+        ([None, "Услуга", "Услуга", 1, 0, None, 0, None], 2, 8),
+        (["Заказ покупателя 2", None, None, 1, 0, 25, -25, None], 0, 6),
+        (["FREE", "Запас", "Скидка 100%", 1, 0, 25, -25, None], 2, 8),
+        (["Итого", None, None, 3, 100, 85, 15, None], 0, 0),
+    ]
+    for values, name_column, indent in rows:
+        sheet.append(values)
+        column = name_column + 1
+        sheet.cell(sheet.max_row, column).alignment = Alignment(indent=indent)
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
 def upload(name="monthly-profit.xlsx", data=None, **kwargs):
     return SimpleUploadedFile(
         name, data if data is not None else xlsx_bytes(**kwargs),
@@ -312,6 +347,20 @@ class MonthlyProfitParserTests(TestCase):
         self.assertEqual(result.records[0]["period_month"], date(2026, 1, 1))
         self.assertEqual(result.records[0]["revenue"], Decimal("10000.00"))
         self.assertEqual(result.records[0]["nomenclature_type"], "")
+
+    def test_multilevel_customer_report_preserves_context_without_double_counting(self):
+        result = parse_monthly_profit(BytesIO(multilevel_customer_xlsx()), filename="customers.xlsx")
+        self.assertEqual(result.critical_errors, [])
+        self.assertEqual(len(result.records), 3)
+        self.assertTrue(result.metadata["totals_match"])
+        self.assertEqual(sum(row["revenue"] or 0 for row in result.records), Decimal("100.00"))
+        self.assertEqual(result.records[0]["manager_name"], "Менеджер 1")
+        self.assertEqual(result.records[0]["customer_name"], "Клиент А")
+        self.assertEqual(result.records[0]["document_name"], "Заказ покупателя 1")
+        self.assertEqual(result.records[1]["cost"], None)
+        self.assertEqual(result.records[2]["revenue"], Decimal("0.00"))
+        self.assertEqual(result.records[2]["cost"], Decimal("25.00"))
+        self.assertEqual(result.records[2]["gross_profit"], Decimal("-25.00"))
 
     def test_russian_month_variants(self):
         for label, month in (("Янв. 2026", 1), ("сент 2026", 9), ("12.2026", 12), ("2026-04", 4)):
@@ -959,6 +1008,76 @@ class MonthlyProfitWorkflowTests(TestCase):
         with self.assertRaises(DuplicateImportError) as context:
             create_monthly_profit_preview(upload(data=payload), self.organization, self.user)
         self.assertEqual(context.exception.batch.id, batch.id)
+
+    def test_obsolete_preview_cannot_confirm_and_can_be_safely_repreviewed(self):
+        payload = xlsx_bytes()
+        previous_batch = OneCImportBatch.objects.create(
+            organization=self.organization,
+            original_filename="previous.xlsx",
+            file_sha256="b" * 64,
+            uploaded_by=self.user,
+            status=OneCImportBatch.STATUS_CONFIRMED,
+            parser_version=PARSER_VERSION,
+        )
+        OneCMonthlyProfit.objects.create(
+            import_batch=previous_batch,
+            organization=self.organization,
+            period_month=date(2026, 1, 1),
+            source_row_number=1,
+            nomenclature="Предыдущая активная строка",
+        )
+        active_state = OneCReportPeriodState.objects.create(
+            organization=self.organization,
+            period_month=date(2026, 1, 1),
+            active_batch=previous_batch,
+            updated_by=self.user,
+        )
+        batch = create_monthly_profit_preview(
+            upload(data=payload), self.organization, self.user
+        )
+        batch.parser_version = "3"
+        batch.save(update_fields=["parser_version"])
+
+        with self.assertRaisesMessage(ValidationError, "устаревшей версией парсера"):
+            confirm_monthly_profit(batch.id, self.organization, self.user)
+
+        batch.refresh_from_db()
+        active_state.refresh_from_db()
+        self.assertEqual(batch.status, OneCImportBatch.STATUS_FAILED)
+        self.assertEqual(batch.parser_version, "3")
+        self.assertEqual(active_state.active_batch_id, previous_batch.id)
+        self.assertFalse(OneCMonthlyProfit.objects.filter(import_batch=batch).exists())
+
+        refreshed = create_monthly_profit_preview(
+            upload(name="same-source.xlsx", data=payload), self.organization, self.user
+        )
+        self.assertEqual(refreshed.id, batch.id)
+        self.assertEqual(refreshed.status, OneCImportBatch.STATUS_PREVIEWED)
+        self.assertEqual(refreshed.parser_version, PARSER_VERSION)
+        active_state.refresh_from_db()
+        self.assertEqual(active_state.active_batch_id, previous_batch.id)
+
+        confirmed = confirm_monthly_profit(refreshed.id, self.organization, self.user)
+        self.assertEqual(confirmed.status, OneCImportBatch.STATUS_CONFIRMED)
+        self.assertTrue(OneCMonthlyProfit.objects.filter(import_batch=confirmed).exists())
+
+    def test_confirmed_duplicate_remains_rejected_even_with_obsolete_parser(self):
+        payload = xlsx_bytes()
+        batch = create_monthly_profit_preview(
+            upload(data=payload), self.organization, self.user
+        )
+        confirm_monthly_profit(batch.id, self.organization, self.user)
+        batch.parser_version = "3"
+        batch.save(update_fields=["parser_version"])
+
+        with self.assertRaises(DuplicateImportError) as context:
+            create_monthly_profit_preview(
+                upload(name="confirmed-copy.xlsx", data=payload),
+                self.organization,
+                self.user,
+            )
+        self.assertEqual(context.exception.batch.id, batch.id)
+        self.assertEqual(OneCMonthlyProfit.objects.filter(import_batch=batch).count(), 1)
 
     def test_integrity_error_race_returns_existing_batch_and_removes_orphan(self):
         payload = xlsx_bytes()
