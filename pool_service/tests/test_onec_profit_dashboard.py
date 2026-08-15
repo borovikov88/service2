@@ -92,8 +92,28 @@ class ProfitDashboardTests(TestCase):
         self.assertEqual(reversed_period["last_month"], date(2026, 8, 1))
         self.assertTrue(reversed_period["error"])
 
+    def test_comparison_period_rules(self):
+        today = date(2026, 8, 15)
+        cases = (
+            ({"period": "current_month"}, date(2026, 8, 1), date(2026, 8, 1), date(2026, 7, 1), date(2026, 7, 1)),
+            ({"period": "previous_month"}, date(2026, 7, 1), date(2026, 7, 1), date(2026, 6, 1), date(2026, 6, 1)),
+            ({"period": "current_year"}, date(2026, 1, 1), date(2026, 8, 1), date(2025, 1, 1), date(2025, 8, 1)),
+            ({"period": "previous_year"}, date(2025, 1, 1), date(2025, 12, 1), date(2024, 1, 1), date(2024, 12, 1)),
+            ({"period": "last_12_months"}, date(2025, 9, 1), date(2026, 8, 1), date(2024, 9, 1), date(2025, 8, 1)),
+            ({"period": "custom", "start": "2026-05", "end": "2026-05"}, date(2026, 5, 1), date(2026, 5, 1), date(2025, 5, 1), date(2025, 5, 1)),
+            ({"period": "custom", "start": "2026-05", "end": "2026-08"}, date(2026, 5, 1), date(2026, 8, 1), date(2025, 5, 1), date(2025, 8, 1)),
+            ({"period": "custom", "start": "2025-11", "end": "2026-02"}, date(2025, 11, 1), date(2026, 2, 1), date(2024, 11, 1), date(2025, 2, 1)),
+        )
+        for params, first, last, previous_first, previous_last in cases:
+            with self.subTest(params=params):
+                period = resolve_period(params, today)
+                self.assertEqual(period["first_month"], first)
+                self.assertEqual(period["last_month"], last)
+                self.assertEqual(period["previous_first"], previous_first)
+                self.assertEqual(period["previous_last"], previous_last)
+
     def test_previous_period_kpis_monthly_chart_split_details_and_calculated_cost(self):
-        self.add_row(date(2025, 12, 1), revenue="50", cost="30")
+        self.add_row(date(2025, 1, 1), revenue="50", cost="30")
         self.add_row(date(2026, 1, 1), revenue="100", cost="60")
         calculated = self.add_row(
             date(2026, 1, 1), name="Расчётный товар", revenue="40", cost="0",
@@ -119,9 +139,9 @@ class ProfitDashboardTests(TestCase):
         self.assertIsNone(service.calculated_cost)
 
     def test_selected_period_recalculates_analytical_cost_without_source_writes(self):
-        self.add_row(date(2025, 11, 1), name="Предыдущая база", revenue="100", cost="20")
+        self.add_row(date(2025, 1, 1), name="Предыдущая база", revenue="100", cost="20")
         self.add_row(
-            date(2025, 12, 1), name="Предыдущая расчётная", revenue="100", cost="0",
+            date(2025, 2, 1), name="Предыдущая расчётная", revenue="100", cost="0",
             calculated="80", stored_ratio="0.8",
             source=OneCMonthlyProfit.COST_SOURCE_CALCULATED,
         )
@@ -320,6 +340,40 @@ class ProfitDashboardTests(TestCase):
             "period": "custom", "start": "2026-05", "end": "2026-06",
         })
         self.assertEqual(all_response.context["totals"]["revenue"], Decimal("1050"))
+
+    def test_manager_filter_and_kpi_comparison_use_prior_year_range(self):
+        self.add_row(
+            date(2025, 5, 1), revenue="100", cost="60", customer="Клиент А",
+            manager="Менеджер А",
+        )
+        self.add_row(
+            date(2025, 5, 1), revenue="1000", cost="100", customer="Чужой клиент",
+            manager="Менеджер Б",
+        )
+        self.add_row(
+            date(2026, 5, 1), revenue="150", cost="75", customer="Клиент А",
+            manager="Менеджер А",
+        )
+        period = resolve_period({
+            "period": "custom", "start": "2026-05", "end": "2026-05",
+        }, today=date(2026, 8, 15))
+
+        data = dashboard_data(self.organization, period, manager="Менеджер А")
+
+        self.assertEqual(data["totals"]["revenue"], Decimal("150"))
+        self.assertEqual(data["previous_totals"]["revenue"], Decimal("100"))
+        self.assertEqual(data["comparison"]["revenue"], {
+            "absolute": Decimal("50"), "percent": Decimal("50.00"),
+        })
+        self.assertEqual(data["comparison"]["cost"], {
+            "absolute": Decimal("15"), "percent": Decimal("25.00"),
+        })
+        self.assertEqual(data["comparison"]["gross_profit"], {
+            "absolute": Decimal("35"), "percent": Decimal("87.50"),
+        })
+        self.assertEqual(data["comparison"]["profitability"], {
+            "absolute": Decimal("10.0000"), "percent": Decimal("25.00"),
+        })
 
     def test_customer_sorting_all_metrics_and_null_profitability_last(self):
         self.add_row(date(2026, 5, 1), revenue="100", cost="50", customer="Альфа", manager="Менеджер А")
