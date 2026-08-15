@@ -11,6 +11,7 @@ from django.utils import timezone
 
 from pool_service.models import DevelopmentIteration, DevelopmentTask, Organization
 from pool_service.services.development_codex import (
+    CodexOperationResult,
     GitHubRequestError,
     PullRequestEvidence,
     load_pull_request_evidence,
@@ -242,6 +243,112 @@ class GitHubEvidenceReviewTests(TestCase):
         loader.return_value = evidence()
         create.return_value = self.response()
         self.assertEqual(run_review(self.task.pk).state, "accepted")
+
+    @patch("pool_service.services.development_review._create_response")
+    @patch("pool_service.services.development_review.load_pull_request_evidence")
+    def test_ready_task_is_blocked_on_evidence_failure_then_reviews_recovered_head(
+        self, loader, create
+    ):
+        loader.return_value = evidence(HEAD_A)
+        create.return_value = self.response()
+        self.assertEqual(run_review(self.task.pk).state, "accepted")
+
+        loader.side_effect = GitHubRequestError(
+            category="transport", cause_type="TimeoutError"
+        )
+        failed = review_updated_accepted_pull_request(self.task.pk)
+        self.task.refresh_from_db()
+        self.assertEqual(failed.state, "evidence_failed")
+        self.assertTrue(failed.changed)
+        self.assertEqual(self.task.status, DevelopmentTask.STATUS_BLOCKED)
+        self.assertEqual(self.task.current_stage, DevelopmentTask.STAGE_REVIEW)
+        self.assertIn("evidence", self.task.blockers)
+        self.assertIs(self.task.automation_metadata["auto_cycle_enabled"], True)
+        self.assertFalse(
+            self.task.iterations.filter(automation_metadata__corrective_number__gt=0).exists()
+        )
+
+        loader.side_effect = None
+        loader.return_value = evidence(HEAD_B, patch_text="@@ recovered head B")
+        with patch(
+            "pool_service.management.commands.poll_development_codex.check_codex",
+            return_value=CodexOperationResult("completed"),
+        ):
+            call_command("poll_development_codex", stdout=StringIO())
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, DevelopmentTask.STATUS_READY_FOR_DEPLOY)
+        self.assertNotIn("review_evidence_failure", self.task.automation_metadata)
+        self.assertEqual(create.call_count, 2)
+        self.assertEqual(
+            set(
+                self.task.iterations.filter(automation_metadata__purpose="ai_review")
+                .values_list("automation_metadata__head_sha", flat=True)
+            ),
+            {HEAD_A, HEAD_B},
+        )
+
+    @patch("pool_service.services.development_review._create_response")
+    @patch("pool_service.services.development_review.load_pull_request_evidence")
+    def test_ready_task_is_revoked_for_http_and_malformed_evidence(
+        self, loader, create
+    ):
+        loader.return_value = evidence(HEAD_A)
+        create.return_value = self.response()
+        run_review(self.task.pk)
+        errors = (
+            GitHubRequestError(category="http", status_code=403, cause_type="HTTPError"),
+            GitHubRequestError(category="http", status_code=404, cause_type="HTTPError"),
+            GitHubRequestError(category="evidence", cause_type="MalformedPullRequest"),
+        )
+        for error in errors:
+            with self.subTest(error=str(error)):
+                self.task.refresh_from_db()
+                metadata = dict(self.task.automation_metadata)
+                metadata.pop("review_evidence_failure", None)
+                self.task.automation_metadata = metadata
+                self.task.status = DevelopmentTask.STATUS_READY_FOR_DEPLOY
+                self.task.blockers = ""
+                self.task.save(
+                    update_fields=["automation_metadata", "status", "blockers"]
+                )
+                loader.side_effect = error
+                result = review_updated_accepted_pull_request(self.task.pk)
+                self.task.refresh_from_db()
+                self.assertEqual(result.state, "evidence_failed")
+                self.assertEqual(self.task.status, DevelopmentTask.STATUS_BLOCKED)
+                self.assertFalse(
+                    self.task.iterations.filter(
+                        automation_metadata__corrective_number__gt=0
+                    ).exists()
+                )
+                self.assertFalse(
+                    self.task.events.filter(
+                        metadata__action="corrective_limit_reached"
+                    ).exists()
+                )
+
+    @patch("pool_service.services.development_review._create_response")
+    @patch("pool_service.services.development_review.load_pull_request_evidence")
+    def test_evidence_retry_same_reviewed_head_restores_ready_without_openai(
+        self, loader, create
+    ):
+        loader.return_value = evidence(HEAD_A)
+        create.return_value = self.response()
+        run_review(self.task.pk)
+        loader.side_effect = GitHubRequestError(
+            category="transport", cause_type="TimeoutError"
+        )
+        review_updated_accepted_pull_request(self.task.pk)
+        loader.side_effect = None
+        loader.return_value = evidence(HEAD_A)
+
+        recovered = run_review(self.task.pk)
+
+        self.task.refresh_from_db()
+        self.assertEqual(recovered.state, "accepted")
+        self.assertTrue(recovered.changed)
+        self.assertEqual(self.task.status, DevelopmentTask.STATUS_READY_FOR_DEPLOY)
+        self.assertEqual(create.call_count, 1)
 
     @patch("pool_service.services.development_review._create_response")
     @patch("pool_service.services.development_review.load_pull_request_evidence")

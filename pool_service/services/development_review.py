@@ -519,6 +519,60 @@ def _enforce_evidence_safety(decision, evidence):
     }
 
 
+def _mark_review_evidence_failure(task_id, codex_iteration_id, error_type):
+    message = (
+        "Не удалось проверить актуальное состояние GitHub Pull Request. "
+        "Готовность к deployment отозвана до успешной повторной проверки evidence."
+    )
+    with transaction.atomic():
+        task = DevelopmentTask.objects.select_for_update().get(pk=task_id)
+        if task.status != DevelopmentTask.STATUS_READY_FOR_DEPLOY:
+            return ReviewResult("evidence_failed")
+        metadata = _metadata(task)
+        metadata["review_evidence_failure"] = {
+            "codex_iteration_id": codex_iteration_id,
+            "failed_at": timezone.now().isoformat(),
+            "error_type": error_type,
+        }
+        task.automation_metadata = metadata
+        old_status = task.status
+        task.status = DevelopmentTask.STATUS_BLOCKED
+        task.current_stage = DevelopmentTask.STAGE_REVIEW
+        task.current_activity = "GitHub PR evidence ожидает повторной проверки"
+        task.blockers = message
+        task.save(
+            update_fields=[
+                "automation_metadata",
+                "status",
+                "current_stage",
+                "current_activity",
+                "blockers",
+                "updated_at",
+            ]
+        )
+        DevelopmentTaskEvent.objects.create(
+            task=task,
+            event_type=DevelopmentTaskEvent.TYPE_STATUS_CHANGED,
+            message="Готовность к deployment отозвана: GitHub PR evidence недоступно",
+            metadata={
+                "action": "ai_review_evidence_failed",
+                "old_status": old_status,
+                "new_status": task.status,
+                "codex_iteration_id": codex_iteration_id,
+                "error_type": error_type,
+            },
+        )
+    return ReviewResult("evidence_failed", changed=True)
+
+
+def _is_evidence_retry(task_metadata, codex_iteration_id):
+    failure = task_metadata.get("review_evidence_failure")
+    return (
+        isinstance(failure, dict)
+        and failure.get("codex_iteration_id") == codex_iteration_id
+    )
+
+
 def _launch_is_stale(review, metadata):
     started_at = parse_datetime(str(metadata.get("launch_started_at") or ""))
     if started_at is None:
@@ -835,13 +889,16 @@ def run_review(task_id, *, allow_ready_for_deploy=False):
                 codex.pk,
                 type(exc).__name__,
             )
-            return ReviewResult("evidence_failed")
+            return _mark_review_evidence_failure(
+                task_id, codex.pk, getattr(exc, "cause_type", type(exc).__name__)
+            )
 
     with transaction.atomic():
         task = DevelopmentTask.objects.select_for_update().get(pk=task_id)
         task_meta = _metadata(task)
         if task_meta.get("active_codex_iteration_id") != codex.pk:
             return ReviewResult("task_state_changed")
+        evidence_retry = _is_evidence_retry(task_meta, codex.pk)
         if resume_review_id is not None:
             existing = task.iterations.filter(pk=resume_review_id).first()
             operation_key = (
@@ -873,6 +930,39 @@ def run_review(task_id, *, allow_ready_for_deploy=False):
             existing_metadata = _metadata(review)
             operation_key = existing_metadata.get("operation_key") or operation_key
             if existing_metadata.get("applied"):
+                if (
+                    evidence is not None
+                    and evidence_retry
+                    and existing_metadata.get("decision") == "accepted"
+                ):
+                    task_meta.pop("review_evidence_failure", None)
+                    task.automation_metadata = task_meta
+                    task.status = DevelopmentTask.STATUS_READY_FOR_DEPLOY
+                    task.current_stage = DevelopmentTask.STAGE_COMPLETION
+                    task.current_activity = "Задача готова к production deployment"
+                    task.blockers = ""
+                    task.save(
+                        update_fields=[
+                            "automation_metadata",
+                            "status",
+                            "current_stage",
+                            "current_activity",
+                            "blockers",
+                            "updated_at",
+                        ]
+                    )
+                    DevelopmentTaskEvent.objects.create(
+                        task=task,
+                        event_type=DevelopmentTaskEvent.TYPE_STATUS_CHANGED,
+                        message="GitHub PR evidence повторно подтверждено",
+                        metadata={
+                            "action": "ai_review_evidence_revalidated",
+                            "new_status": task.status,
+                            "review_iteration_id": review.pk,
+                            "head_sha": evidence.head_sha,
+                        },
+                    )
+                    return ReviewResult("accepted", True, review.pk)
                 return ReviewResult(
                     existing_metadata.get("decision") or STATE_COMPLETED,
                     False,
@@ -915,9 +1005,14 @@ def run_review(task_id, *, allow_ready_for_deploy=False):
             task.current_stage = DevelopmentTask.STAGE_REVIEW
             task.current_activity = "AI Review ожидает запуска"
             update_fields = ["current_stage", "current_activity", "updated_at"]
-            if task.status == DevelopmentTask.STATUS_READY_FOR_DEPLOY:
+            if task.status == DevelopmentTask.STATUS_READY_FOR_DEPLOY or evidence_retry:
                 task.status = DevelopmentTask.STATUS_REVIEW
                 update_fields.append("status")
+            if evidence_retry:
+                task_meta.pop("review_evidence_failure", None)
+                task.automation_metadata = task_meta
+                task.blockers = ""
+                update_fields.extend(["automation_metadata", "blockers"])
             task.save(update_fields=update_fields)
 
     if existing_state == STATE_RESPONSE_READY:
