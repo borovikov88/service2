@@ -16,7 +16,6 @@ PERIOD_CHOICES = (
     ("current_year", "Текущий год"),
     ("previous_year", "Прошлый год"),
     ("last_12_months", "Последние 12 месяцев"),
-    ("all_history", "Вся доступная история"),
     ("custom", "Произвольный период"),
 )
 MONEY_QUANTUM = Decimal("0.01")
@@ -35,6 +34,7 @@ def month_end(value):
 def resolve_period(params, today=None):
     today = today or timezone.localdate()
     preset = params.get("period", "")
+    error = ""
     if preset == "current_month":
         start, end = today.replace(day=1), today
     elif preset == "previous_month":
@@ -46,8 +46,6 @@ def resolve_period(params, today=None):
         start, end = date(today.year - 1, 1, 1), date(today.year - 1, 12, 31)
     elif preset == "last_12_months":
         start, end = add_months(today.replace(day=1), -11), today
-    elif preset == "all_history":
-        start, end = date(2000, 1, 1), today
     elif preset == "custom":
         try:
             start_value = params.get("start", "")
@@ -56,9 +54,11 @@ def resolve_period(params, today=None):
             parsed_end = date.fromisoformat(end_value + "-01" if len(end_value) == 7 else end_value)
             end = month_end(parsed_end) if len(end_value) == 7 else parsed_end
             if start > end:
-                raise ValueError
+                start, end = end.replace(day=1), month_end(start)
+                error = "Начало периода было позднее окончания; границы переставлены местами."
         except ValueError:
-            start, end, preset = date(today.year, 1, 1), today, ""
+            start, end = today.replace(day=1), today
+            error = "Укажите корректные месяцы начала и окончания периода."
     else:
         start, end, preset = date(today.year, 1, 1), today, ""
     first_month = start.replace(day=1)
@@ -68,6 +68,7 @@ def resolve_period(params, today=None):
     previous_last = add_months(first_month, -1)
     return {
         "preset": preset, "start": start, "end": end,
+        "error": error,
         "first_month": first_month, "last_month": last_month,
         "previous_first": previous_first, "previous_last": previous_last,
     }
@@ -199,7 +200,11 @@ def customer_breakdown(rows):
     return result
 
 
-def dashboard_data(organization, period):
+def _manager_key(value):
+    return re.sub(r"\s+", " ", (value or "").strip()).casefold().replace("ё", "е")
+
+
+def dashboard_data(organization, period, manager=""):
     all_rows = OneCMonthlyProfit.objects.active_for(organization).filter(
         period_month__range=(period["previous_first"], period["last_month"])
     )
@@ -209,6 +214,10 @@ def dashboard_data(organization, period):
     previous_rows = list(all_rows.filter(
         period_month__range=(period["previous_first"], period["previous_last"])
     ))
+    manager_key = _manager_key(manager)
+    if manager_key:
+        current_rows = [row for row in current_rows if _manager_key(row.manager_name) == manager_key]
+        previous_rows = [row for row in previous_rows if _manager_key(row.manager_name) == manager_key]
     current_ratio = apply_period_analytics(current_rows)
     previous_ratio = apply_period_analytics(previous_rows)
     monthly = []
