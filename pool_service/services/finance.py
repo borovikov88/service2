@@ -32,6 +32,7 @@ FINANCE_MANAGE_ROLES = {"owner", "admin", "accountant"}
 FINANCE_CASH_ACCESS_ROLES = {"owner", "admin", "manager", "accountant"}
 FINANCE_ADVANCE_ISSUE_ROLES = {"owner", "admin", "manager", "accountant"}
 FINANCE_CLOSE_ROLES = {"owner", "admin", "accountant"}
+MANAGEMENT_FINANCE_ROLES = {"owner", "admin", "accountant"}
 
 
 def organization_roles(user, organization):
@@ -77,6 +78,40 @@ def can_access_cash(user, organization):
 
 def can_manage_cash(user, organization):
     return can_manage_finance(user, organization)
+
+
+def _has_management_finance_role(user, organization):
+    if user.is_superuser:
+        return bool(organization)
+    return bool(organization_roles(user, organization) & MANAGEMENT_FINANCE_ROLES)
+
+
+def can_view_cashflow(user, organization):
+    return _has_management_finance_role(user, organization)
+
+
+def can_import_cashflow(user, organization):
+    return _has_management_finance_role(user, organization)
+
+
+def can_manage_cashflow_classification(user, organization):
+    return _has_management_finance_role(user, organization)
+
+
+def can_view_payroll_summary(user, organization):
+    return _has_management_finance_role(user, organization)
+
+
+def can_view_payroll_personal(user, organization):
+    return _has_management_finance_role(user, organization)
+
+
+def can_import_payroll(user, organization):
+    return _has_management_finance_role(user, organization)
+
+
+def can_manage_employee_mapping(user, organization):
+    return _has_management_finance_role(user, organization)
 
 
 def can_review_card_transfer_payment(user, payment):

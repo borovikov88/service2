@@ -11,11 +11,13 @@ from django.utils import timezone
 
 from pool_service.models import (
     DataAuditLog,
+    CashFlowRow,
     OneCImportBatch,
     OneCMonthlyProfit,
     OneCReportPeriodActivation,
     OneCReportPeriodState,
     Organization,
+    PayrollRow,
 )
 from .monthly_profit_parser import PARSER_VERSION, MonthlyProfitParseError, parse_monthly_profit
 from .monthly_profit_parser import classify_nomenclature_type
@@ -175,7 +177,14 @@ def validate_period_assignment(batch, organization, report_type, period_month):
         raise ValidationError("Активной может быть только подтверждённая загрузка.")
     if period_month.day != 1:
         raise ValidationError("Месяц активной версии должен начинаться с первого числа.")
-    if not OneCMonthlyProfit.objects.filter(
+    row_model = {
+        OneCImportBatch.TYPE_MONTHLY_PROFIT: OneCMonthlyProfit,
+        OneCImportBatch.TYPE_PAYROLL: PayrollRow,
+        OneCImportBatch.TYPE_CASHFLOW: CashFlowRow,
+    }.get(report_type)
+    if row_model is None:
+        raise ValidationError("Неизвестный тип отчёта 1С.")
+    if not row_model.objects.filter(
         import_batch=batch,
         organization=organization,
         period_month=period_month,

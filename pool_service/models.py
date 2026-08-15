@@ -41,6 +41,17 @@ class Organization(models.Model):
     notify_pool_staff_daily = models.BooleanField(default=True)
     notify_pool_staff_daily_push = models.BooleanField(default=True)
 
+    class Meta:
+        permissions = [
+            ("view_cashflow", "Can view cash flow"),
+            ("import_cashflow", "Can import cash flow"),
+            ("manage_cashflow_classification", "Can manage cash flow classification"),
+            ("view_payroll_summary", "Can view payroll summary"),
+            ("view_payroll_personal", "Can view personal payroll data"),
+            ("import_payroll", "Can import payroll"),
+            ("manage_employee_mapping", "Can manage employee mapping"),
+        ]
+
     def __str__(self):
         return self.name
 
@@ -1709,7 +1720,13 @@ def onec_import_upload_to(instance, filename):
 
 class OneCImportBatch(models.Model):
     TYPE_MONTHLY_PROFIT = "monthly_profit"
-    TYPE_CHOICES = [(TYPE_MONTHLY_PROFIT, "Валовая прибыль по месяцам")]
+    TYPE_PAYROLL = "payroll"
+    TYPE_CASHFLOW = "cashflow"
+    TYPE_CHOICES = [
+        (TYPE_MONTHLY_PROFIT, "Валовая прибыль по месяцам"),
+        (TYPE_PAYROLL, "Расчёты с персоналом"),
+        (TYPE_CASHFLOW, "Движения по статьям и месяцам"),
+    ]
 
     STATUS_UPLOADED = "uploaded"
     STATUS_PREVIEWED = "previewed"
@@ -1759,6 +1776,8 @@ class OneCImportBatch(models.Model):
     warnings_count = models.PositiveIntegerField("Предупреждений", default=0)
     error_message = models.TextField("Сообщение об ошибке", blank=True)
     parser_version = models.CharField("Версия парсера", max_length=20, default="1")
+    period_first = models.DateField("Первый месяц", null=True, blank=True)
+    period_last = models.DateField("Последний месяц", null=True, blank=True)
     metadata = models.JSONField("Метаданные", default=dict, blank=True)
 
     class Meta:
@@ -1973,6 +1992,302 @@ class OneCReportPeriodActivation(models.Model):
 
     def __str__(self):
         return f"{self.period_state_id}: {self.batch_id}"
+
+
+class Employee(models.Model):
+    STATUS_EMPLOYED = "employed"
+    STATUS_ON_LEAVE = "on_leave"
+    STATUS_DISMISSED = "dismissed"
+    STATUS_CHOICES = [
+        (STATUS_EMPLOYED, "Работает"),
+        (STATUS_ON_LEAVE, "Временно отсутствует"),
+        (STATUS_DISMISSED, "Уволен"),
+    ]
+
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name="employees"
+    )
+    user = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="employee_profiles",
+    )
+    first_name = models.CharField(max_length=150, blank=True)
+    last_name = models.CharField(max_length=150, blank=True)
+    middle_name = models.CharField(max_length=150, blank=True)
+    display_name = models.CharField(max_length=500)
+    department_name = models.CharField(max_length=300, blank=True)
+    position_name = models.CharField(max_length=300, blank=True)
+    employment_status = models.CharField(
+        max_length=16, choices=STATUS_CHOICES, default=STATUS_EMPLOYED
+    )
+    hired_at = models.DateField(null=True, blank=True)
+    dismissed_at = models.DateField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["display_name", "id"]
+        indexes = [
+            models.Index(fields=["organization", "is_active"], name="employee_org_active_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "user"],
+                condition=models.Q(user__isnull=False),
+                name="unique_employee_user_per_org",
+            ),
+        ]
+
+    def __str__(self):
+        return self.display_name
+
+
+class EmployeeOneCIdentity(models.Model):
+    STATUS_AUTO_MATCHED = "auto_matched"
+    STATUS_MANUALLY_MATCHED = "manually_matched"
+    STATUS_NEEDS_CONFIRMATION = "needs_confirmation"
+    STATUS_NOT_FOUND = "not_found"
+    STATUS_AMBIGUOUS = "ambiguous"
+    STATUS_EXCLUDED = "excluded"
+    STATUS_CHOICES = [
+        (STATUS_AUTO_MATCHED, "Сопоставлен автоматически"),
+        (STATUS_MANUALLY_MATCHED, "Сопоставлен вручную"),
+        (STATUS_NEEDS_CONFIRMATION, "Требует подтверждения"),
+        (STATUS_NOT_FOUND, "Не найден"),
+        (STATUS_AMBIGUOUS, "Неоднозначное совпадение"),
+        (STATUS_EXCLUDED, "Исключён"),
+    ]
+    MATCH_EXACT = "exact_normalized"
+    MATCH_EXTERNAL_ID = "external_id"
+    MATCH_PERSONNEL_NUMBER = "personnel_number"
+    MATCH_MANUAL = "manual"
+    MATCH_NONE = "none"
+    MATCH_CHOICES = [
+        (MATCH_EXACT, "Точное нормализованное ФИО"),
+        (MATCH_EXTERNAL_ID, "Идентификатор 1С"),
+        (MATCH_PERSONNEL_NUMBER, "Табельный номер"),
+        (MATCH_MANUAL, "Вручную"),
+        (MATCH_NONE, "Нет сопоставления"),
+    ]
+
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name="employee_onec_identities"
+    )
+    employee = models.ForeignKey(
+        Employee, on_delete=models.PROTECT, null=True, blank=True,
+        related_name="onec_identities",
+    )
+    raw_name = models.CharField(max_length=500)
+    normalized_name = models.CharField(max_length=500, db_index=True)
+    onec_employee_id = models.CharField(max_length=120, null=True, blank=True)
+    personnel_number = models.CharField(max_length=120, null=True, blank=True)
+    department_name = models.CharField(max_length=300, blank=True)
+    status = models.CharField(max_length=24, choices=STATUS_CHOICES)
+    match_method = models.CharField(max_length=24, choices=MATCH_CHOICES, default=MATCH_NONE)
+    confirmed_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="confirmed_employee_onec_identities",
+    )
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    comment = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["normalized_name", "id"]
+        indexes = [
+            models.Index(fields=["organization", "normalized_name"], name="onec_emp_org_name_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "onec_employee_id"],
+                condition=models.Q(onec_employee_id__isnull=False) & ~models.Q(onec_employee_id=""),
+                name="unique_onec_employee_id_per_org",
+            ),
+            models.UniqueConstraint(
+                fields=["organization", "personnel_number"],
+                condition=models.Q(personnel_number__isnull=False) & ~models.Q(personnel_number=""),
+                name="unique_personnel_number_per_org",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.employee_id and self.employee.organization_id != self.organization_id:
+            raise ValidationError({"employee": "Сотрудник относится к другой организации."})
+
+    def __str__(self):
+        return self.raw_name
+
+
+class FoundationImportRowQuerySet(models.QuerySet):
+    def active_for(self, organization, report_type):
+        active_state = OneCReportPeriodState.objects.filter(
+            organization_id=models.OuterRef("organization_id"),
+            report_type=report_type,
+            period_month=models.OuterRef("period_month"),
+            active_batch_id=models.OuterRef("import_batch_id"),
+        )
+        return self.filter(
+            organization=organization,
+            import_batch__import_type=report_type,
+        ).filter(models.Exists(active_state))
+
+
+class PayrollRow(models.Model):
+    import_batch = models.ForeignKey(
+        OneCImportBatch, on_delete=models.PROTECT, related_name="payroll_rows"
+    )
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name="payroll_rows"
+    )
+    employee_identity = models.ForeignKey(
+        EmployeeOneCIdentity, on_delete=models.PROTECT, null=True, blank=True,
+        related_name="payroll_rows",
+    )
+    period_month = models.DateField()
+    source_row_number = models.PositiveIntegerField()
+    department_name = models.CharField(max_length=300, blank=True)
+    employee_raw_name = models.CharField(max_length=500)
+    employee_normalized_name = models.CharField(max_length=500, db_index=True)
+    opening_balance = models.DecimalField(max_digits=20, decimal_places=2)
+    accrued = models.DecimalField(max_digits=20, decimal_places=2)
+    paid = models.DecimalField(max_digits=20, decimal_places=2)
+    closing_balance = models.DecimalField(max_digits=20, decimal_places=2)
+    source_data = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = FoundationImportRowQuerySet.as_manager()
+
+    class Meta:
+        ordering = ["period_month", "source_row_number", "id"]
+        indexes = [
+            models.Index(fields=["organization", "period_month"], name="payroll_org_month_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["import_batch", "source_row_number", "period_month"],
+                name="unique_payroll_batch_row_month",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.import_batch_id and self.import_batch.organization_id != self.organization_id:
+            raise ValidationError({"import_batch": "Загрузка относится к другой организации."})
+        if self.employee_identity_id and self.employee_identity.organization_id != self.organization_id:
+            raise ValidationError({"employee_identity": "Identity относится к другой организации."})
+
+
+class CashFlowRow(models.Model):
+    import_batch = models.ForeignKey(
+        OneCImportBatch, on_delete=models.PROTECT, related_name="cashflow_rows"
+    )
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name="cashflow_rows"
+    )
+    period_month = models.DateField()
+    source_row_number = models.PositiveIntegerField()
+    source_reference = models.CharField(max_length=300, blank=True)
+    article_raw = models.CharField(max_length=500)
+    normalized_article_name = models.CharField(max_length=500, db_index=True)
+    document_raw = models.CharField(max_length=700)
+    receipts = models.DecimalField(max_digits=20, decimal_places=2)
+    payments = models.DecimalField(max_digits=20, decimal_places=2)
+    net_cash_flow = models.DecimalField(max_digits=20, decimal_places=2)
+    source_data = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = FoundationImportRowQuerySet.as_manager()
+
+    class Meta:
+        ordering = ["period_month", "source_row_number", "id"]
+        indexes = [
+            models.Index(fields=["organization", "period_month"], name="cashflow_org_month_idx"),
+            models.Index(fields=["organization", "normalized_article_name"], name="cashflow_org_article_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["import_batch", "source_row_number", "period_month"],
+                name="unique_cashflow_batch_row_month",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.import_batch_id and self.import_batch.organization_id != self.organization_id:
+            raise ValidationError({"import_batch": "Загрузка относится к другой организации."})
+
+
+class CashFlowArticleMapping(models.Model):
+    FLOW_OPERATING = "operating"
+    FLOW_INVESTING = "investing"
+    FLOW_FINANCING = "financing"
+    FLOW_INTERNAL = "internal"
+    FLOW_UNCLASSIFIED = "unclassified"
+    FLOW_CHOICES = [
+        (FLOW_OPERATING, "Операционный"),
+        (FLOW_INVESTING, "Инвестиционный"),
+        (FLOW_FINANCING, "Финансовый"),
+        (FLOW_INTERNAL, "Внутренний"),
+        (FLOW_UNCLASSIFIED, "Не классифицирован"),
+    ]
+    PNL_EXCLUDE = "exclude"
+    PNL_DIRECT_EXPENSE = "direct_expense"
+    PNL_DIRECT_INCOME = "direct_income"
+    PNL_RECONCILIATION = "reconciliation_only"
+    PNL_REQUIRES_ACCRUAL = "requires_accrual_source"
+    PNL_NEEDS_REVIEW = "needs_review"
+    PNL_CHOICES = [
+        (PNL_EXCLUDE, "Исключить"),
+        (PNL_DIRECT_EXPENSE, "Прямой расход"),
+        (PNL_DIRECT_INCOME, "Прямой доход"),
+        (PNL_RECONCILIATION, "Только сверка"),
+        (PNL_REQUIRES_ACCRUAL, "Требует источника начислений"),
+        (PNL_NEEDS_REVIEW, "Требует проверки"),
+    ]
+    CLASS_CONFIRMED = "confirmed"
+    CLASS_NEEDS_REVIEW = "needs_review"
+    CLASS_UNCLASSIFIED = "unclassified"
+    CLASS_CHOICES = [
+        (CLASS_CONFIRMED, "Подтверждена"),
+        (CLASS_NEEDS_REVIEW, "Требует проверки"),
+        (CLASS_UNCLASSIFIED, "Не классифицирована"),
+    ]
+
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name="cashflow_article_mappings"
+    )
+    article_name = models.CharField(max_length=500)
+    normalized_article_name = models.CharField(max_length=500)
+    management_category = models.CharField(max_length=300, blank=True)
+    flow_type = models.CharField(max_length=20, choices=FLOW_CHOICES, default=FLOW_UNCLASSIFIED)
+    pnl_treatment = models.CharField(max_length=32, choices=PNL_CHOICES, default=PNL_NEEDS_REVIEW)
+    classification_status = models.CharField(
+        max_length=20, choices=CLASS_CHOICES, default=CLASS_UNCLASSIFIED
+    )
+    is_internal_turnover = models.BooleanField(default=False)
+    include_in_external_cashflow = models.BooleanField(default=True)
+    is_dividend = models.BooleanField(default=False)
+    comment = models.TextField(blank=True)
+    updated_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="updated_cashflow_article_mappings",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["article_name", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "normalized_article_name"],
+                name="unique_cashflow_article_per_org",
+            ),
+        ]
+
+    def __str__(self):
+        return self.article_name
 
 
 class DevelopmentTask(models.Model):
