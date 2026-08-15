@@ -19,6 +19,7 @@ from openpyxl.styles import Alignment
 
 from pool_service.finance_forms import MonthlyProfitUploadForm
 from pool_service.finance_imports.monthly_profit_parser import (
+    PARSER_VERSION,
     ParseResult,
     classify_nomenclature_type,
     parse_decimal,
@@ -34,7 +35,13 @@ from pool_service.finance_imports.services import (
     apply_period_weighted_goods_cost,
 )
 from pool_service.finance_imports.validators import delete_private_batch_file
-from pool_service.models import OneCImportBatch, OneCMonthlyProfit, Organization, OrganizationAccess
+from pool_service.models import (
+    OneCImportBatch,
+    OneCMonthlyProfit,
+    OneCReportPeriodState,
+    Organization,
+    OrganizationAccess,
+)
 
 
 def xlsx_bytes(
@@ -1001,6 +1008,76 @@ class MonthlyProfitWorkflowTests(TestCase):
         with self.assertRaises(DuplicateImportError) as context:
             create_monthly_profit_preview(upload(data=payload), self.organization, self.user)
         self.assertEqual(context.exception.batch.id, batch.id)
+
+    def test_obsolete_preview_cannot_confirm_and_can_be_safely_repreviewed(self):
+        payload = xlsx_bytes()
+        previous_batch = OneCImportBatch.objects.create(
+            organization=self.organization,
+            original_filename="previous.xlsx",
+            file_sha256="b" * 64,
+            uploaded_by=self.user,
+            status=OneCImportBatch.STATUS_CONFIRMED,
+            parser_version=PARSER_VERSION,
+        )
+        OneCMonthlyProfit.objects.create(
+            import_batch=previous_batch,
+            organization=self.organization,
+            period_month=date(2026, 1, 1),
+            source_row_number=1,
+            nomenclature="Предыдущая активная строка",
+        )
+        active_state = OneCReportPeriodState.objects.create(
+            organization=self.organization,
+            period_month=date(2026, 1, 1),
+            active_batch=previous_batch,
+            updated_by=self.user,
+        )
+        batch = create_monthly_profit_preview(
+            upload(data=payload), self.organization, self.user
+        )
+        batch.parser_version = "3"
+        batch.save(update_fields=["parser_version"])
+
+        with self.assertRaisesMessage(ValidationError, "устаревшей версией парсера"):
+            confirm_monthly_profit(batch.id, self.organization, self.user)
+
+        batch.refresh_from_db()
+        active_state.refresh_from_db()
+        self.assertEqual(batch.status, OneCImportBatch.STATUS_FAILED)
+        self.assertEqual(batch.parser_version, "3")
+        self.assertEqual(active_state.active_batch_id, previous_batch.id)
+        self.assertFalse(OneCMonthlyProfit.objects.filter(import_batch=batch).exists())
+
+        refreshed = create_monthly_profit_preview(
+            upload(name="same-source.xlsx", data=payload), self.organization, self.user
+        )
+        self.assertEqual(refreshed.id, batch.id)
+        self.assertEqual(refreshed.status, OneCImportBatch.STATUS_PREVIEWED)
+        self.assertEqual(refreshed.parser_version, PARSER_VERSION)
+        active_state.refresh_from_db()
+        self.assertEqual(active_state.active_batch_id, previous_batch.id)
+
+        confirmed = confirm_monthly_profit(refreshed.id, self.organization, self.user)
+        self.assertEqual(confirmed.status, OneCImportBatch.STATUS_CONFIRMED)
+        self.assertTrue(OneCMonthlyProfit.objects.filter(import_batch=confirmed).exists())
+
+    def test_confirmed_duplicate_remains_rejected_even_with_obsolete_parser(self):
+        payload = xlsx_bytes()
+        batch = create_monthly_profit_preview(
+            upload(data=payload), self.organization, self.user
+        )
+        confirm_monthly_profit(batch.id, self.organization, self.user)
+        batch.parser_version = "3"
+        batch.save(update_fields=["parser_version"])
+
+        with self.assertRaises(DuplicateImportError) as context:
+            create_monthly_profit_preview(
+                upload(name="confirmed-copy.xlsx", data=payload),
+                self.organization,
+                self.user,
+            )
+        self.assertEqual(context.exception.batch.id, batch.id)
+        self.assertEqual(OneCMonthlyProfit.objects.filter(import_batch=batch).count(), 1)
 
     def test_integrity_error_race_returns_existing_batch_and_removes_orphan(self):
         payload = xlsx_bytes()
