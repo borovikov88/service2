@@ -61,7 +61,7 @@ class ProfitDashboardTests(TestCase):
         return row
 
     def test_period_presets_default_and_intersecting_custom_months(self):
-        today = date(2026, 8, 14)
+        today = date(2026, 8, 15)
         self.assertEqual(resolve_period({}, today)["start"], date(2026, 1, 1))
         self.assertEqual(resolve_period({}, today)["end"], today)
         self.assertEqual(resolve_period({"period": "current_month"}, today)["first_month"], date(2026, 8, 1))
@@ -73,6 +73,24 @@ class ProfitDashboardTests(TestCase):
         self.assertEqual((month_custom["first_month"], month_custom["last_month"]), (date(2025, 1, 1), date(2026, 8, 1)))
         custom = resolve_period({"period": "custom", "start": "2026-02-28", "end": "2026-03-02"}, today)
         self.assertEqual((custom["first_month"], custom["last_month"]), (date(2026, 2, 1), date(2026, 3, 1)))
+        for start, end, expected in (
+            ("2026-05", "2026-05", 1),
+            ("2026-05", "2026-08", 4),
+            ("2025-11", "2026-02", 4),
+        ):
+            with self.subTest(start=start, end=end):
+                selected = resolve_period({"period": "custom", "start": start, "end": end}, today)
+                months = (
+                    (selected["last_month"].year - selected["first_month"].year) * 12
+                    + selected["last_month"].month - selected["first_month"].month + 1
+                )
+                self.assertEqual(months, expected)
+        reversed_period = resolve_period(
+            {"period": "custom", "start": "2026-08", "end": "2026-05"}, today
+        )
+        self.assertEqual(reversed_period["first_month"], date(2026, 5, 1))
+        self.assertEqual(reversed_period["last_month"], date(2026, 8, 1))
+        self.assertTrue(reversed_period["error"])
 
     def test_previous_period_kpis_monthly_chart_split_details_and_calculated_cost(self):
         self.add_row(date(2025, 12, 1), revenue="50", cost="30")
@@ -266,6 +284,83 @@ class ProfitDashboardTests(TestCase):
         self.assertContains(response, 'type="month"')
         self.assertContains(response, "periodForm.requestSubmit()")
         self.assertContains(response, "period-loading")
+        self.assertContains(response, "document.getElementById('period').value='custom'")
+
+    def test_manager_filter_applies_to_all_dashboard_sections(self):
+        self.add_row(
+            date(2026, 5, 1), revenue="100", cost="60", customer="Клиент А",
+            manager="  Менеджер   А  ", document="Заказ А",
+        )
+        self.add_row(
+            date(2026, 6, 1), revenue="50", cost="20", customer="Клиент А",
+            manager="менеджер а", document="Заказ Б",
+        )
+        self.add_row(
+            date(2026, 6, 1), revenue="900", cost="100", customer="Скрытый клиент",
+            manager="Менеджер Б", document="Заказ В",
+        )
+        params = {
+            "period": "custom", "start": "2026-05", "end": "2026-06",
+            "manager": "Менеджер А",
+        }
+        response = self.client.get(reverse("finance_onec_profit_dashboard"), params)
+
+        self.assertEqual(response.context["manager"], "Менеджер А")
+        self.assertEqual(response.context["totals"]["revenue"], Decimal("150"))
+        self.assertEqual(
+            [item["revenue"] for item in response.context["monthly"]],
+            [Decimal("100"), Decimal("50")],
+        )
+        self.assertEqual(
+            [item["name"] for item in response.context["customers"]], ["Клиент А"]
+        )
+        self.assertNotContains(response, "Скрытый клиент")
+
+        all_response = self.client.get(reverse("finance_onec_profit_dashboard"), {
+            "period": "custom", "start": "2026-05", "end": "2026-06",
+        })
+        self.assertEqual(all_response.context["totals"]["revenue"], Decimal("1050"))
+
+    def test_customer_sorting_all_metrics_and_null_profitability_last(self):
+        self.add_row(date(2026, 5, 1), revenue="100", cost="50", customer="Альфа", manager="Менеджер А")
+        self.add_row(date(2026, 5, 1), revenue="200", cost="180", customer="Бета", manager="Менеджер А")
+        self.add_row(date(2026, 5, 1), revenue="0", cost="0", customer="Без выручки", manager="Менеджер А")
+        expected = {
+            "-revenue": ["Бета", "Альфа", "Без выручки"],
+            "revenue": ["Без выручки", "Альфа", "Бета"],
+            "-cost": ["Бета", "Альфа", "Без выручки"],
+            "cost": ["Без выручки", "Альфа", "Бета"],
+            "-gross_profit": ["Альфа", "Бета", "Без выручки"],
+            "gross_profit": ["Без выручки", "Бета", "Альфа"],
+            "-profitability": ["Альфа", "Бета", "Без выручки"],
+            "profitability": ["Бета", "Альфа", "Без выручки"],
+        }
+        for sort, names in expected.items():
+            with self.subTest(sort=sort):
+                response = self.client.get(reverse("finance_onec_profit_dashboard"), {
+                    "period": "custom", "start": "2026-05", "end": "2026-05",
+                    "manager": "Менеджер А", "sort": sort,
+                })
+                self.assertEqual(
+                    [item["name"] for item in response.context["page_obj"]], names
+                )
+                self.assertContains(response, "manager=%D0%9C%D0%B5%D0%BD%D0%B5%D0%B4%D0%B6%D0%B5%D1%80+%D0%90")
+                self.assertContains(response, "start=2026-05")
+                self.assertContains(response, "end=2026-05")
+
+    def test_pagination_preserves_filters_and_sort_without_duplicates(self):
+        for index in range(51):
+            self.add_row(
+                date(2026, 5, 1), revenue=str(index + 1), cost="1",
+                customer=f"Клиент {index:02d}", manager="Менеджер А",
+            )
+        response = self.client.get(reverse("finance_onec_profit_dashboard"), {
+            "period": "custom", "start": "2026-05", "end": "2026-05",
+            "manager": "Менеджер А", "sort": "gross_profit",
+        })
+        self.assertContains(response, "sort=gross_profit")
+        self.assertContains(response, "page=2")
+        self.assertNotContains(response, "sort=gross_profit&amp;sort=")
 
     def test_permissions_and_organization_isolation(self):
         self.add_row(date(2026, 1, 1))
@@ -278,13 +373,20 @@ class ProfitDashboardTests(TestCase):
         )
         OneCMonthlyProfit.objects.create(
             import_batch=other_batch, organization=other_org, period_month=date(2026, 1, 1),
-            source_row_number=1, nomenclature="Секрет", revenue=Decimal("999"), cost=Decimal("1"),
+            source_row_number=1, nomenclature="Секрет", manager_name="Чужой менеджер",
+            revenue=Decimal("999"), cost=Decimal("1"),
         )
         OneCReportPeriodState.objects.create(
             organization=other_org, period_month=date(2026, 1, 1), active_batch=other_batch,
         )
         response = self.client.get(reverse("finance_onec_profit_dashboard"), {"period": "custom", "start": "2026-01-01", "end": "2026-01-31"})
         self.assertNotContains(response, "Секрет")
+        self.assertNotContains(response, "Чужой менеджер")
+        invalid = self.client.get(reverse("finance_onec_profit_dashboard"), {
+            "period": "custom", "start": "2026-01", "end": "2026-01",
+            "manager": "Чужой менеджер",
+        })
+        self.assertEqual(invalid.context["manager"], "")
         manager = User.objects.create_user("manager", password="test")
         OrganizationAccess.objects.create(user=manager, organization=self.organization, role="manager")
         self.client.force_login(manager)

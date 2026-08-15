@@ -64,6 +64,7 @@ from pool_service.finance_imports.services import (
 )
 from pool_service.finance_imports.profit_dashboard import (
     PERIOD_CHOICES,
+    _manager_key,
     dashboard_data,
     resolve_period,
 )
@@ -2318,14 +2319,52 @@ def finance_onec_profit_dashboard(request):
     if denied:
         return denied
     period = resolve_period(request.GET)
-    data = dashboard_data(organization, period)
+    manager_values = (
+        OneCMonthlyProfit.objects.active_for(organization)
+        .exclude(manager_name="")
+        .order_by()
+        .values_list("manager_name", flat=True)
+        .distinct()
+    )
+    managers_by_key = {}
+    for value in manager_values:
+        display = " ".join((value or "").split())
+        key = _manager_key(display)
+        if key:
+            managers_by_key.setdefault(key, display)
+    managers = sorted(managers_by_key.values(), key=str.casefold)
+    requested_manager = request.GET.get("manager", "")
+    manager = managers_by_key.get(_manager_key(requested_manager), "")
+    data = dashboard_data(organization, period, manager=manager)
+
+    sort = request.GET.get("sort", "-revenue")
+    sort_fields = {
+        "revenue": "revenue",
+        "cost": "cost",
+        "gross_profit": "gross_profit",
+        "profitability": "profitability",
+    }
+    sort_name = sort.lstrip("-")
+    if sort_name not in sort_fields:
+        sort, sort_name = "-revenue", "revenue"
+    sort_field = sort_fields[sort_name]
+    customers = data["customers"]
+    customers.sort(key=lambda item: item["name"].casefold())
+    valued = [item for item in customers if item[sort_field] is not None]
+    empty = [item for item in customers if item[sort_field] is None]
+    valued.sort(key=lambda item: item[sort_field], reverse=sort.startswith("-"))
+    data["customers"] = valued + empty
     page = Paginator(data["customers"], 50).get_page(request.GET.get("page"))
-    query_params = request.GET.copy()
-    query_params.pop("page", None)
-    query_params.pop("sort", None)
+    filter_params = request.GET.copy()
+    filter_params.pop("page", None)
+    filter_params.pop("sort", None)
+    pagination_params = request.GET.copy()
+    pagination_params.pop("page", None)
     return render(request, "pool_service/finance/onec_profit_dashboard.html", {
         **data, "period": period, "period_choices": PERIOD_CHOICES,
-        "page_obj": page, "filter_query": query_params.urlencode(),
+        "page_obj": page, "filter_query": filter_params.urlencode(),
+        "pagination_query": pagination_params.urlencode(),
+        "managers": managers, "manager": manager, "sort": sort,
         "active_tab": "finance",
     })
 
