@@ -36,13 +36,15 @@ class ProfitDashboardTests(TestCase):
 
     def add_row(self, month, *, name="Товар", kind="Товар", revenue="100",
                 cost="60", calculated=None, stored_ratio="0.5",
-                source=OneCMonthlyProfit.COST_SOURCE_ACTUAL):
+                source=OneCMonthlyProfit.COST_SOURCE_ACTUAL,
+                customer="", manager="", document=""):
         revenue_value = Decimal(revenue) if revenue is not None else None
         cost_value = Decimal(cost) if cost is not None else None
         calculated_value = Decimal(calculated) if calculated is not None else None
         row = OneCMonthlyProfit.objects.create(
             import_batch=self.batch, organization=self.organization,
             period_month=month, source_row_number=OneCMonthlyProfit.objects.count() + 1,
+            customer_name=customer, manager_name=manager, document_name=document,
             article=f"A-{OneCMonthlyProfit.objects.count() + 1}", nomenclature=name,
             nomenclature_type=kind, quantity=Decimal("2"), revenue=revenue_value,
             cost=cost_value,
@@ -66,6 +68,9 @@ class ProfitDashboardTests(TestCase):
         self.assertEqual(resolve_period({"period": "previous_month"}, today)["first_month"], date(2026, 7, 1))
         self.assertEqual(resolve_period({"period": "current_year"}, today)["start"], date(2026, 1, 1))
         self.assertEqual(resolve_period({"period": "previous_year"}, today)["start"], date(2025, 1, 1))
+        self.assertEqual(resolve_period({"period": "last_12_months"}, today)["start"], date(2025, 9, 1))
+        month_custom = resolve_period({"period": "custom", "start": "2025-01", "end": "2026-08"}, today)
+        self.assertEqual((month_custom["first_month"], month_custom["last_month"]), (date(2025, 1, 1), date(2026, 8, 1)))
         custom = resolve_period({"period": "custom", "start": "2026-02-28", "end": "2026-03-02"}, today)
         self.assertEqual((custom["first_month"], custom["last_month"]), (date(2026, 2, 1), date(2026, 3, 1)))
 
@@ -227,15 +232,40 @@ class ProfitDashboardTests(TestCase):
             Decimal("120.52"),
         )
 
-    def test_sorting(self):
-        low = self.add_row(date(2026, 1, 1), name="Низкая", revenue="10", cost="9")
-        high = self.add_row(date(2026, 1, 1), name="Высокая", revenue="100", cost="20")
-        for sort, expected in (("-revenue", high), ("revenue", low), ("-gross_profit", high), ("-profitability", high)):
-            with self.subTest(sort=sort):
-                response = self.client.get(reverse("finance_onec_profit_dashboard"), {
-                    "period": "custom", "start": "2026-01-01", "end": "2026-01-31", "sort": sort,
-                })
-                self.assertEqual(response.context["page_obj"][0].pk, expected.pk)
+    def test_customer_breakdown_combines_months_managers_and_reconciles_totals(self):
+        self.add_row(date(2025, 12, 1), name="Товар A", revenue="100", cost="60",
+                     customer=" Клиент   А ", manager="Менеджер 1", document="Заказ 1")
+        self.add_row(date(2026, 1, 1), name="Услуга", kind="Услуга", revenue="50", cost=None,
+                     customer="клиент а", manager="Менеджер 2", document="Заказ 2")
+        service = OneCMonthlyProfit.objects.latest("id")
+        OneCMonthlyProfit.objects.filter(pk=service.pk).update(gross_profit=Decimal("50"))
+        self.add_row(date(2026, 1, 1), name="Скидка 100%", revenue="0", cost="25",
+                     customer="Клиент Б", manager="Менеджер 1", document="Заказ 3")
+        discounted = OneCMonthlyProfit.objects.latest("id")
+        OneCMonthlyProfit.objects.filter(pk=discounted.pk).update(gross_profit=Decimal("-25"))
+
+        data = dashboard_data(self.organization, resolve_period({
+            "period": "custom", "start": "2025-12", "end": "2026-01",
+        }, today=date(2026, 8, 15)))
+
+        self.assertEqual([item["name"] for item in data["customers"]], ["Клиент А", "Клиент Б"])
+        self.assertEqual(data["customers"][0]["revenue"], Decimal("150"))
+        self.assertEqual(data["customers"][0]["gross_profit"], Decimal("90"))
+        self.assertEqual(data["customers"][1]["gross_profit"], Decimal("-25"))
+        self.assertEqual(sum(item["revenue"] for item in data["customers"]), data["totals"]["revenue"])
+        self.assertEqual(sum(item["cost"] for item in data["customers"]), data["totals"]["cost"])
+        self.assertEqual(sum(item["gross_profit"] for item in data["customers"]), data["totals"]["gross_profit"])
+
+    def test_customer_sorting_and_automatic_month_filter_markup(self):
+        self.add_row(date(2026, 1, 1), revenue="10", cost="9", customer="Бета")
+        self.add_row(date(2026, 1, 1), revenue="100", cost="20", customer="Альфа")
+        response = self.client.get(reverse("finance_onec_profit_dashboard"), {
+            "period": "custom", "start": "2026-01", "end": "2026-01",
+        })
+        self.assertEqual(response.context["page_obj"][0]["name"], "Альфа")
+        self.assertContains(response, 'type="month"')
+        self.assertContains(response, "periodForm.requestSubmit()")
+        self.assertContains(response, "period-loading")
 
     def test_permissions_and_organization_isolation(self):
         self.add_row(date(2026, 1, 1))

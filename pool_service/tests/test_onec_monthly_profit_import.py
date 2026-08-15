@@ -215,6 +215,34 @@ def vertical_calculated_cost_xlsx():
     return output.getvalue()
 
 
+def multilevel_customer_xlsx():
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Месяц", None, None, "Количество", "Выручка", "Себестоимость", "Валовая прибыль", "Рентабельность"])
+    sheet.append(["Менеджер"])
+    sheet.append(["Покупатель"])
+    sheet.append(["Заказ покупателя"])
+    sheet.append(["Артикул", "Тип", "Номенклатура"])
+    rows = [
+        (["янв. 2026", None, None, 3, 100, 85, 15, 15], 0, 0),
+        (["Менеджер 1", None, None, 3, 100, 85, 15, 15], 0, 2),
+        (["Клиент А", None, None, 3, 100, 85, 15, 15], 0, 4),
+        (["Заказ покупателя 1", None, None, 2, 100, 60, 40, 40], 0, 6),
+        (["A-1", "Запас", "Товар", 1, 100, 60, 40, 40], 2, 8),
+        ([None, "Услуга", "Услуга", 1, 0, None, 0, None], 2, 8),
+        (["Заказ покупателя 2", None, None, 1, 0, 25, -25, None], 0, 6),
+        (["FREE", "Запас", "Скидка 100%", 1, 0, 25, -25, None], 2, 8),
+        (["Итого", None, None, 3, 100, 85, 15, None], 0, 0),
+    ]
+    for values, name_column, indent in rows:
+        sheet.append(values)
+        column = name_column + 1
+        sheet.cell(sheet.max_row, column).alignment = Alignment(indent=indent)
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
 def upload(name="monthly-profit.xlsx", data=None, **kwargs):
     return SimpleUploadedFile(
         name, data if data is not None else xlsx_bytes(**kwargs),
@@ -312,6 +340,20 @@ class MonthlyProfitParserTests(TestCase):
         self.assertEqual(result.records[0]["period_month"], date(2026, 1, 1))
         self.assertEqual(result.records[0]["revenue"], Decimal("10000.00"))
         self.assertEqual(result.records[0]["nomenclature_type"], "")
+
+    def test_multilevel_customer_report_preserves_context_without_double_counting(self):
+        result = parse_monthly_profit(BytesIO(multilevel_customer_xlsx()), filename="customers.xlsx")
+        self.assertEqual(result.critical_errors, [])
+        self.assertEqual(len(result.records), 3)
+        self.assertTrue(result.metadata["totals_match"])
+        self.assertEqual(sum(row["revenue"] or 0 for row in result.records), Decimal("100.00"))
+        self.assertEqual(result.records[0]["manager_name"], "Менеджер 1")
+        self.assertEqual(result.records[0]["customer_name"], "Клиент А")
+        self.assertEqual(result.records[0]["document_name"], "Заказ покупателя 1")
+        self.assertEqual(result.records[1]["cost"], None)
+        self.assertEqual(result.records[2]["revenue"], Decimal("0.00"))
+        self.assertEqual(result.records[2]["cost"], Decimal("25.00"))
+        self.assertEqual(result.records[2]["gross_profit"], Decimal("-25.00"))
 
     def test_russian_month_variants(self):
         for label, month in (("Янв. 2026", 1), ("сент 2026", 9), ("12.2026", 12), ("2026-04", 4)):

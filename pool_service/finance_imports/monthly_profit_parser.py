@@ -10,7 +10,7 @@ from openpyxl.utils.datetime import from_excel
 
 from .validators import validate_xlsx_archive
 
-PARSER_VERSION = "3"
+PARSER_VERSION = "4"
 FORMAT_HORIZONTAL = "horizontal"
 FORMAT_VERTICAL_1C = "vertical_1c"
 MAX_SHEETS = 10
@@ -281,6 +281,7 @@ def _parse_horizontal_rows(sheet_title, rows, epoch, formula_cells=None, formula
             if not any(v is not None for v in values.values()): continue
             result.records.append({
                 "period_month": month, "source_row_number": excel_row,
+                "manager_name": "", "customer_name": "", "document_name": "",
                 "nomenclature": name[:500], "article": article[:120],
                 "nomenclature_type": nomenclature_type[:100],
                 "quantity": values.get("quantity"), "revenue": values.get("revenue"),
@@ -420,7 +421,7 @@ def _vertical_month_for_row(row, month_col, name_col, epoch, fallback_year=None)
 
 
 def _detect_vertical_hierarchy(
-    rows, row_indents, start, depth, month_col, name_col, article_col,
+    rows, row_indents, start, depth, month_col, name_col, article_col, type_col,
     metric_columns, epoch, fallback_year,
 ):
     current_month = None
@@ -456,6 +457,12 @@ def _detect_vertical_hierarchy(
             candidates.append((row_indents[offset], bool(article)))
 
     positive_indents = {indent for indent, _ in candidates if indent > 0}
+    typed_candidates = [
+        row for row in rows[start + depth:]
+        if type_col is not None
+        and type_col < len(row)
+        and classify_nomenclature_type(row[type_col]) in {"goods", "service"}
+    ]
     has_lower_financial_level = any(
         indent < next(iter(positive_indents)) for indent, _ in candidates
     ) if len(positive_indents) == 1 else False
@@ -468,6 +475,12 @@ def _detect_vertical_hierarchy(
             "reason": "stable_positive_indent",
         }
     if len(positive_indents) > 1:
+        if typed_candidates:
+            return {
+                "status": "reliable",
+                "detail_indent": None,
+                "reason": "terminal_type_schema",
+            }
         return {"status": "ambiguous", "detail_indent": None, "reason": "conflicting_detail_levels"}
     if not positive_indents and candidates and article_col is not None and all(
         has_article for _, has_article in candidates
@@ -508,10 +521,19 @@ def _parse_vertical_rows(
     monetary = ("revenue", "cost", "gross_profit")
     calculated = {key: Decimal("0") for key in monetary}
     month_totals = {}
-    name_indents = [
-        indent_row[name_col] if name_col < len(indent_row) else 0
-        for indent_row in row_indents
-    ]
+    hierarchy_names = []
+    name_indents = []
+    for row, indent_row in zip(rows, row_indents):
+        selected_column = name_col
+        if not _text(row[name_col] if name_col < len(row) else None):
+            selected_column = next((
+                column for column in range(min(name_col + 1, len(row)))
+                if _text(row[column])
+            ), name_col)
+        hierarchy_names.append(_text(row[selected_column] if selected_column < len(row) else ""))
+        name_indents.append(
+            indent_row[selected_column] if selected_column < len(indent_row) else 0
+        )
     hierarchy = _detect_vertical_hierarchy(
         rows,
         name_indents,
@@ -520,6 +542,7 @@ def _parse_vertical_rows(
         month_col,
         name_col,
         article_col,
+        type_col,
         metric_columns,
         epoch,
         report_year,
@@ -528,15 +551,35 @@ def _parse_vertical_rows(
     hierarchy_status = hierarchy["status"]
     hierarchy_reason = hierarchy["reason"]
     aggregate_rows_skipped = 0
+    hierarchy_stack = {}
+
+    def hierarchy_context(indent):
+        ancestors = [(level, value) for level, value in hierarchy_stack.items() if level < indent]
+        ancestors.sort()
+        manager = ancestors[0][1] if ancestors else ""
+        document_index = next((
+            index for index in range(len(ancestors) - 1, -1, -1)
+            if _normalized_text(ancestors[index][1]).startswith("заказ покупателя")
+            or _normalized_text(ancestors[index][1]) == "<продажи без заказа>"
+        ), None)
+        document = ancestors[document_index][1] if document_index is not None else ""
+        if document_index is not None and document_index > 0:
+            customer = ancestors[document_index - 1][1]
+        elif len(ancestors) > 1:
+            customer = ancestors[-1][1]
+        else:
+            customer = ""
+        return manager, customer, document
 
     for offset, row in enumerate(rows[start + depth:], start + depth):
         excel_row = offset + 1
         result.rows_read += 1
-        name = _text(row[name_col] if name_col < len(row) else "")
+        name = hierarchy_names[offset]
         month_value = row[month_col] if month_col < len(row) else None
         month = _vertical_month_for_row(row, month_col, name_col, epoch, report_year)
         if isinstance(month, date):
             current_month = month
+            hierarchy_stack = {}
             if month not in months:
                 months.append(month)
             result.rows_skipped += 1
@@ -573,13 +616,33 @@ def _parse_vertical_rows(
         if current_month is None:
             result.rows_skipped += 1
             continue
-        if detail_indent is not None and name_indents[offset] != detail_indent:
+        indent = name_indents[offset]
+        row_type = classify_nomenclature_type(
+            row[type_col] if type_col is not None and type_col < len(row) else None
+        )
+        terminal_type_schema = hierarchy_reason == "terminal_type_schema"
+        is_terminal = row_type in {"goods", "service"}
+        if terminal_type_schema and not is_terminal:
+            hierarchy_stack = {
+                level: value for level, value in hierarchy_stack.items() if level < indent
+            }
+            hierarchy_stack[indent] = name
+            result.rows_skipped += 1
+            aggregate_rows_skipped += 1
+            continue
+        if not terminal_type_schema and detail_indent is not None and indent != detail_indent:
+            hierarchy_stack = {
+                level: value for level, value in hierarchy_stack.items() if level < indent
+            }
+            hierarchy_stack[indent] = name
             result.rows_skipped += 1
             aggregate_rows_skipped += 1
             result.add_warning(
                 f"Строка {excel_row}: агрегированная строка пропущена для защиты от двойного учёта."
             )
             continue
+
+        manager_name, customer_name, document_name = hierarchy_context(indent)
 
         values = {}
         for metric, column in metric_columns.items():
@@ -606,6 +669,9 @@ def _parse_vertical_rows(
         record = {
             "period_month": current_month,
             "source_row_number": excel_row,
+            "manager_name": manager_name[:300],
+            "customer_name": customer_name[:500],
+            "document_name": document_name[:500],
             "nomenclature": name[:500],
             "article": article,
             "nomenclature_type": nomenclature_type,
@@ -619,6 +685,9 @@ def _parse_vertical_rows(
                 "detected_layout": FORMAT_VERTICAL_1C,
                 "article": article,
                 "nomenclature_type": nomenclature_type,
+                "manager_name": manager_name[:300],
+                "customer_name": customer_name[:500],
+                "document_name": document_name[:500],
                 "cells": _source_cells(row),
             },
         }
