@@ -6,7 +6,12 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from pool_service.finance_imports.profit_dashboard import resolve_period
+from pool_service.finance_imports.profit_dashboard import (
+    apply_period_analytics,
+    dashboard_data,
+    resolve_period,
+    summarize,
+)
 from pool_service.models import (
     OneCImportBatch, OneCMonthlyProfit, OneCReportPeriodState, Organization,
     OrganizationAccess,
@@ -143,6 +148,84 @@ class ProfitDashboardTests(TestCase):
         self.assertIsNone(service.cost)
         self.assertEqual(service.calculated_cost, Decimal("80"))
         self.assertEqual(service.cost_calculation_ratio, Decimal("0.8"))
+
+    def test_services_preserve_imported_profit_when_cost_is_null(self):
+        january = date(2026, 1, 1)
+        primary = self.add_row(
+            january, name="Обслуживание бассейна", kind="Услуга",
+            revenue="100650", cost=None,
+        )
+        secondary = self.add_row(
+            january, name="Другие услуги", kind="Услуга",
+            revenue="29760", cost=None,
+        )
+        undefined = self.add_row(
+            january, name="Услуга без прибыли", kind="Услуга",
+            revenue="50", cost=None,
+        )
+        OneCMonthlyProfit.objects.filter(pk=primary.pk).update(
+            gross_profit=Decimal("100650")
+        )
+        OneCMonthlyProfit.objects.filter(pk=secondary.pk).update(
+            gross_profit=Decimal("29760")
+        )
+        rows = list(OneCMonthlyProfit.objects.filter(pk__in=[primary.pk, secondary.pk, undefined.pk]))
+
+        apply_period_analytics(rows)
+        by_id = {row.pk: row for row in rows}
+        totals = summarize(rows)
+
+        self.assertEqual(by_id[primary.pk].dashboard_revenue, Decimal("100650"))
+        self.assertIsNone(by_id[primary.pk].dashboard_analytical_cost)
+        self.assertEqual(by_id[primary.pk].dashboard_gross_profit, Decimal("100650"))
+        self.assertEqual(by_id[secondary.pk].dashboard_gross_profit, Decimal("29760"))
+        self.assertIsNone(by_id[undefined.pk].dashboard_gross_profit)
+        self.assertFalse(any(row.dashboard_cost_is_calculated for row in rows))
+        self.assertEqual(totals["gross_profit"], Decimal("130410"))
+
+    def test_january_aggregate_loses_only_calculated_goods_adjustment(self):
+        january = date(2026, 1, 1)
+        february = date(2026, 2, 1)
+        self.add_row(
+            january, name="Товары с фактической себестоимостью",
+            revenue="236768.44", cost="166655.08",
+        )
+        calculated_goods = self.add_row(
+            january, name="Товар без себестоимости",
+            revenue="199.00", cost=None,
+        )
+        service = self.add_row(
+            january, name="Услуги января", kind="Услуга",
+            revenue="130410.00", cost=None,
+        )
+        OneCMonthlyProfit.objects.filter(pk=calculated_goods.pk).update(
+            gross_profit=Decimal("199.00")
+        )
+        OneCMonthlyProfit.objects.filter(pk=service.pk).update(
+            gross_profit=Decimal("130410.00")
+        )
+        self.add_row(
+            february, name="База коэффициента февраля",
+            revenue="100000.00", cost="37300.93",
+        )
+        period = resolve_period(
+            {"period": "custom", "start": "2026-01-01", "end": "2026-02-28"},
+            today=date(2026, 8, 15),
+        )
+
+        data = dashboard_data(self.organization, period)
+        january_totals = next(
+            item for item in data["monthly"] if item["month"] == january
+        )
+
+        self.assertEqual(data["period_cost_ratio"], Decimal("0.6056268515"))
+        self.assertEqual(january_totals["revenue"], Decimal("367377.44"))
+        self.assertEqual(january_totals["cost"], Decimal("166775.60"))
+        self.assertEqual(january_totals["gross_profit"], Decimal("200601.84"))
+        self.assertEqual(
+            Decimal("200722.36") - january_totals["gross_profit"],
+            Decimal("120.52"),
+        )
 
     def test_sorting(self):
         low = self.add_row(date(2026, 1, 1), name="Низкая", revenue="10", cost="9")
