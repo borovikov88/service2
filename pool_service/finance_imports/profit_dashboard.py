@@ -107,12 +107,16 @@ def apply_period_analytics(rows):
             gross_profit = (revenue - analytical_cost).quantize(
                 MONEY_QUANTUM, rounding=ROUND_HALF_UP
             )
-        elif is_goods and not has_nonzero_actual_cost:
-            analytical_cost = None
-            gross_profit = None
+        elif is_goods:
+            if not has_nonzero_actual_cost:
+                analytical_cost = None
+                gross_profit = None
+            else:
+                analytical_cost = row.cost
+                gross_profit = row.gross_profit if row.cost is not None else None
         else:
             analytical_cost = row.cost
-            gross_profit = row.gross_profit if row.cost is not None else None
+            gross_profit = row.gross_profit
 
         row.dashboard_revenue = revenue
         row.dashboard_analytical_cost = analytical_cost
