@@ -63,9 +63,9 @@ def resolve_period(params, today=None):
         start, end, preset = date(today.year, 1, 1), today, ""
     first_month = start.replace(day=1)
     last_month = end.replace(day=1)
-    month_count = (last_month.year - first_month.year) * 12 + last_month.month - first_month.month + 1
-    previous_first = add_months(first_month, -month_count)
-    previous_last = add_months(first_month, -1)
+    comparison_offset = -1 if preset in {"current_month", "previous_month"} else -12
+    previous_first = add_months(first_month, comparison_offset)
+    previous_last = add_months(last_month, comparison_offset)
     return {
         "preset": preset, "start": start, "end": end,
         "error": error,
