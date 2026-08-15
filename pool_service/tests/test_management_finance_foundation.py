@@ -1,5 +1,6 @@
 from datetime import timedelta
 from decimal import Decimal
+from io import BytesIO
 from tempfile import TemporaryDirectory
 
 from django.contrib.auth.models import User
@@ -7,8 +8,9 @@ from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.utils import timezone
+from openpyxl import load_workbook
 
-from pool_service.finance_imports.cashflow_parser import parse_cashflow
+from pool_service.finance_imports.cashflow_parser import CashFlowParseError, parse_cashflow
 from pool_service.finance_imports.cashflow_services import (
     confirm_cashflow,
     create_cashflow_preview,
@@ -19,6 +21,7 @@ from pool_service.finance_imports.employee_matching import (
     resolve_employee_identity,
 )
 from pool_service.finance_imports.payroll_parser import PARSER_VERSION as PAYROLL_VERSION
+from pool_service.finance_imports.payroll_parser import PayrollParseError
 from pool_service.finance_imports.payroll_parser import parse_payroll
 from pool_service.finance_imports.payroll_services import (
     confirm_payroll,
@@ -58,6 +61,15 @@ def upload(name, data):
         name, data,
         content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+
+def replace_cell(data, coordinate, value):
+    source = BytesIO(data)
+    workbook = load_workbook(source)
+    workbook.active[coordinate] = value
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
 
 
 class EmployeeFoundationTests(TestCase):
@@ -222,6 +234,11 @@ class FoundationImportTests(TestCase):
         )
         self.assertEqual(len(parsed.records), 4)
         self.assertFalse(parsed.critical_errors)
+        self.assertEqual(parsed.records[0]["source_row_number"], 4)
+        self.assertNotIn(
+            "подразделение",
+            {row["employee_normalized_name"] for row in parsed.records},
+        )
         self.assertEqual(parsed.metadata["control_totals"]["accrued"], "300.00")
         batch = create_payroll_preview(
             upload("payroll.xlsx", payroll_xlsx()), self.organization, self.user
@@ -234,6 +251,13 @@ class FoundationImportTests(TestCase):
             Decimal("300.00"),
         )
         self.assertTrue(PayrollRow.objects.filter(employee_identity__employee__isnull=True).exists())
+
+    def test_malformed_payroll_header_fails_closed(self):
+        malformed = replace_cell(payroll_xlsx(), "A1", "Неизвестная структура")
+        with self.assertRaises(PayrollParseError):
+            create_payroll_preview(
+                upload("bad-payroll.xlsx", malformed), self.organization, self.user
+            )
 
     def test_unmatched_source_identity_is_reused_for_all_months_and_replacement(self):
         source = payroll_unmatched_months_xlsx()
@@ -352,6 +376,11 @@ class FoundationImportTests(TestCase):
         )
         self.assertEqual(len(parsed.records), 4)
         self.assertFalse(parsed.critical_errors)
+        self.assertEqual(parsed.records[0]["source_row_number"], 6)
+        labels = {row["normalized_article_name"] for row in parsed.records}
+        documents = {row["document_raw"].casefold() for row in parsed.records}
+        self.assertNotIn("статья", labels)
+        self.assertNotIn("документ движения", documents)
         self.assertEqual(parsed.metadata["control_totals"], {
             "receipts": "60.00", "payments": "150.00", "net_cash_flow": "-90.00",
         })
@@ -384,6 +413,13 @@ class FoundationImportTests(TestCase):
             ),
             source_values,
         )
+
+    def test_malformed_cashflow_header_fails_closed(self):
+        malformed = replace_cell(cashflow_xlsx(), "A2", "Неверный уровень")
+        with self.assertRaises(CashFlowParseError):
+            create_cashflow_preview(
+                upload("bad-cashflow.xlsx", malformed), self.organization, self.user
+            )
 
     def test_cashflow_parser_lock_and_version_replacement(self):
         source = cashflow_xlsx()

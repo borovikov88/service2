@@ -1,11 +1,12 @@
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal, InvalidOperation
 import re
 
 from openpyxl import load_workbook
 
 from .employee_matching import normalize_onec_name
+from .monthly_profit_parser import parse_month
 from .validators import validate_xlsx_archive
 
 
@@ -41,24 +42,35 @@ def _decimal(value):
         raise CashFlowParseError(f"Не удалось распознать сумму: {value!r}") from exc
 
 
-def _month(value):
-    if isinstance(value, (date, datetime)):
-        return date(value.year, value.month, 1)
-    text = _text(value)
-    match = re.search(r"\b(20\d{2})[-/.](0?[1-9]|1[0-2])\b", text)
-    if match:
-        return date(int(match.group(1)), int(match.group(2)), 1)
-    match = re.search(r"\b(0?[1-9]|1[0-2])[./-](20\d{2})\b", text)
-    if match:
-        return date(int(match.group(2)), int(match.group(1)), 1)
-    return None
-
-
 def _amounts(cells):
     receipts, payments, net = (_decimal(cell.value) for cell in cells)
     if abs((receipts - payments) - net) > CONTROL_TOLERANCE:
         raise CashFlowParseError("Чистый денежный поток не равен поступлениям минус платежи.")
     return receipts, payments, net
+
+
+def _normalized_header(value):
+    return _text(value).casefold().replace("ё", "е")
+
+
+def _validate_header(sheet):
+    expected = {
+        "A1": "статья",
+        "A2": "месяц",
+        "A3": "документ движения",
+        "B1": "поступления",
+        "C1": "платежи",
+        "D1": "чистый денежный поток",
+    }
+    for coordinate, marker in expected.items():
+        if _normalized_header(sheet[coordinate].value) != marker:
+            raise CashFlowParseError(
+                f"Некорректный заголовок cashflow: ожидалось {coordinate}={marker!r}."
+            )
+    merged = {str(cell_range) for cell_range in sheet.merged_cells.ranges}
+    if not {"B1:B3", "C1:C3", "D1:D3"}.issubset(merged):
+        raise CashFlowParseError("Некорректная merged-структура заголовка cashflow.")
+    return 4
 
 
 def parse_cashflow(file_obj, *, filename=None, size=None):
@@ -69,6 +81,7 @@ def parse_cashflow(file_obj, *, filename=None, size=None):
     sheet = workbook.worksheets[0]
     if sheet.max_row > MAX_ROWS or sheet.max_column != 4:
         raise CashFlowParseError("Неожиданная размерность отчёта ДДС.")
+    data_start = _validate_header(sheet)
     result = CashFlowParseResult()
     article = ""
     article_control = None
@@ -88,7 +101,9 @@ def parse_cashflow(file_obj, *, filename=None, size=None):
         ):
             result.critical_errors.append(f"Контрольные итоги не совпадают: {label}.")
 
-    for row_number, row in enumerate(sheet.iter_rows(min_row=1, max_col=4), 1):
+    for row_number, row in enumerate(
+        sheet.iter_rows(min_row=data_start, max_col=4), data_start
+    ):
         label = _text(row[0].value)
         if not label:
             continue
@@ -99,16 +114,16 @@ def parse_cashflow(file_obj, *, filename=None, size=None):
             article, article_control = label, _amounts(row[1:4])
             article_records = []
             period = None; month_control = None; month_records = []
-        elif indent == 1:
+        elif indent == 2:
             validate(month_control, month_records, f"месяц {period}")
             if not article:
                 raise CashFlowParseError(f"Месяц вне статьи, строка {row_number}.")
-            period = _month(label)
-            if period is None:
+            period = parse_month(label, workbook_epoch=workbook.epoch)
+            if not isinstance(period, date):
                 raise CashFlowParseError(f"Не удалось распознать месяц, строка {row_number}.")
             month_control = _amounts(row[1:4])
             month_records = []
-        elif indent == 2:
+        elif indent == 4:
             if not article or period is None:
                 raise CashFlowParseError(f"Документ вне Article/Month, строка {row_number}.")
             receipts, payments, net = _amounts(row[1:4])
