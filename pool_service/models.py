@@ -8,6 +8,10 @@ from django.contrib.auth.models import User
 from django_ckeditor_5.fields import CKEditor5Field
 from django.utils import timezone
 
+from pool_service.identity_normalization import (
+    normalize_source_identity_key,
+    normalize_stable_identifier,
+)
 from pool_service.storage import private_media_storage
 
 
@@ -2034,7 +2038,6 @@ class Employee(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=["organization", "user"],
-                condition=models.Q(user__isnull=False),
                 name="unique_employee_user_per_org",
             ),
         ]
@@ -2081,7 +2084,7 @@ class EmployeeOneCIdentity(models.Model):
     raw_name = models.CharField(max_length=500)
     normalized_name = models.CharField(max_length=500, db_index=True)
     normalized_department_name = models.CharField(max_length=300, blank=True)
-    source_identity_key = models.CharField(max_length=64, blank=True)
+    source_identity_key = models.CharField(max_length=64, null=True, blank=True)
     onec_employee_id = models.CharField(max_length=120, null=True, blank=True)
     personnel_number = models.CharField(max_length=120, null=True, blank=True)
     department_name = models.CharField(max_length=300, blank=True)
@@ -2104,25 +2107,31 @@ class EmployeeOneCIdentity(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=["organization", "onec_employee_id"],
-                condition=models.Q(onec_employee_id__isnull=False) & ~models.Q(onec_employee_id=""),
                 name="unique_onec_employee_id_per_org",
             ),
             models.UniqueConstraint(
                 fields=["organization", "personnel_number"],
-                condition=models.Q(personnel_number__isnull=False) & ~models.Q(personnel_number=""),
                 name="unique_personnel_number_per_org",
             ),
             models.UniqueConstraint(
                 fields=["organization", "source_identity_key"],
-                condition=~models.Q(source_identity_key=""),
                 name="unique_source_employee_per_org",
             ),
         ]
 
     def clean(self):
         super().clean()
+        self.onec_employee_id = normalize_stable_identifier(self.onec_employee_id)
+        self.personnel_number = normalize_stable_identifier(self.personnel_number)
+        self.source_identity_key = normalize_source_identity_key(self.source_identity_key)
         if self.employee_id and self.employee.organization_id != self.organization_id:
             raise ValidationError({"employee": "Сотрудник относится к другой организации."})
+
+    def save(self, *args, **kwargs):
+        self.onec_employee_id = normalize_stable_identifier(self.onec_employee_id)
+        self.personnel_number = normalize_stable_identifier(self.personnel_number)
+        self.source_identity_key = normalize_source_identity_key(self.source_identity_key)
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         return self.raw_name

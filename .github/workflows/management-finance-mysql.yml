@@ -1,0 +1,71 @@
+name: Management finance MySQL compatibility
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "pool_service/models.py"
+      - "pool_service/identity_normalization.py"
+      - "pool_service/finance_imports/**"
+      - "pool_service/migrations/0093_management_finance_foundation.py"
+      - "pool_service/migrations/0094_mysql_identity_unique_constraints.py"
+      - "pool_service/tests/test_management_finance_foundation.py"
+      - "pool_service/tests/test_management_finance_migrations.py"
+      - ".github/workflows/management-finance-mysql.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mysql-foundation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: service2_test
+          MYSQL_ROOT_PASSWORD: test-root-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -ptest-root-password"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      SECRET_KEY: mysql-ci-only-secret
+      DEBUG: "1"
+      DB_ENGINE: django.db.backends.mysql
+      DB_NAME: service2_test
+      DB_USER: root
+      DB_PASSWORD: test-root-password
+      DB_HOST: 127.0.0.1
+      DB_PORT: "3306"
+      ALLOWED_HOSTS: testserver,localhost,127.0.0.1
+      EMAIL_BACKEND: django.core.mail.backends.locmem.EmailBackend
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Verify MySQL model and migration state
+        run: |
+          python manage.py check
+          python manage.py makemigrations --check --dry-run
+          python manage.py migrate --plan
+
+      - name: Run management finance tests on MySQL
+        run: |
+          python manage.py test \
+            pool_service.tests.test_management_finance_foundation \
+            pool_service.tests.test_management_finance_migrations \
+            --verbosity 2

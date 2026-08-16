@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from openpyxl import load_workbook
@@ -111,6 +112,86 @@ class EmployeeFoundationTests(TestCase):
             EmployeeOneCIdentity.objects.filter(normalized_name="иванов иван").count(), 2
         )
 
+    def test_database_uniqueness_uses_null_semantics(self):
+        Employee.objects.create(
+            organization=self.organization, display_name="Без пользователя 1", user=None
+        )
+        Employee.objects.create(
+            organization=self.organization, display_name="Без пользователя 2", user=None
+        )
+        Employee.objects.create(
+            organization=self.organization, display_name="С пользователем", user=self.user
+        )
+        Employee.objects.create(
+            organization=self.other, display_name="Другой tenant", user=self.user
+        )
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Employee.objects.create(
+                organization=self.organization, display_name="Дубликат", user=self.user
+            )
+
+        for suffix in ("one", "two"):
+            EmployeeOneCIdentity.objects.create(
+                organization=self.organization,
+                raw_name=f"Нет идентификаторов {suffix}",
+                normalized_name=f"нет идентификаторов {suffix}",
+                onec_employee_id=None,
+                personnel_number=None,
+                source_identity_key=None,
+                status=EmployeeOneCIdentity.STATUS_NOT_FOUND,
+            )
+
+        for field, value in (
+            ("onec_employee_id", "onec-unique"),
+            ("personnel_number", "personnel-unique"),
+            ("source_identity_key", "a" * 64),
+        ):
+            values = {
+                "organization": self.organization,
+                "raw_name": field,
+                "normalized_name": field,
+                "status": EmployeeOneCIdentity.STATUS_NOT_FOUND,
+                field: value,
+            }
+            EmployeeOneCIdentity.objects.create(**values)
+            EmployeeOneCIdentity.objects.create(
+                **{**values, "organization": self.other, "raw_name": f"other-{field}"}
+            )
+            with self.assertRaises(IntegrityError), transaction.atomic():
+                EmployeeOneCIdentity.objects.create(
+                    **{**values, "raw_name": f"duplicate-{field}"}
+                )
+
+    def test_empty_optional_identifiers_are_persisted_as_null(self):
+        identity = EmployeeOneCIdentity.objects.create(
+            organization=self.organization,
+            raw_name="Пустые идентификаторы",
+            normalized_name="пустые идентификаторы",
+            onec_employee_id="  ",
+            personnel_number="",
+            source_identity_key="",
+            status=EmployeeOneCIdentity.STATUS_NOT_FOUND,
+        )
+        identity.refresh_from_db()
+        self.assertIsNone(identity.onec_employee_id)
+        self.assertIsNone(identity.personnel_number)
+        self.assertIsNone(identity.source_identity_key)
+
+    def test_model_uses_canonical_stable_id_but_preserves_source_key_interior(self):
+        identity = EmployeeOneCIdentity.objects.create(
+            organization=self.organization,
+            raw_name="Нормализация",
+            normalized_name="нормализация",
+            onec_employee_id=" AB\t  123 ",
+            personnel_number=" 123\n 45 ",
+            source_identity_key=" source  key ",
+            status=EmployeeOneCIdentity.STATUS_NOT_FOUND,
+        )
+        identity.refresh_from_db()
+        self.assertEqual(identity.onec_employee_id, "AB 123")
+        self.assertEqual(identity.personnel_number, "123 45")
+        self.assertEqual(identity.source_identity_key, "source  key")
+
     def test_normalization_ambiguity_no_partial_match_and_no_employee_creation(self):
         self.employee("Семёнов Иван Иванович")
         self.employee("Семенов Иван Иванович")
@@ -189,6 +270,34 @@ class EmployeeFoundationTests(TestCase):
         self.assertNotEqual(first.pk, second.pk)
         self.assertEqual(first.source_identity_key, second.source_identity_key)
         self.assertNotEqual(first.organization_id, second.organization_id)
+
+    def test_fallback_identity_is_enriched_when_stable_identifier_appears(self):
+        first = resolve_employee_identity(
+            self.organization,
+            "Шукшин Илья Сергеевич",
+            department_name="Сервис",
+        )
+        source_identity_key = first.source_identity_key
+
+        enriched = resolve_employee_identity(
+            self.organization,
+            " ШУКШИН  ИЛЬЯ СЕРГЕЕВИЧ ",
+            department_name=" сервис ",
+            onec_employee_id="  onec-17  ",
+        )
+
+        self.assertEqual(enriched.pk, first.pk)
+        self.assertEqual(enriched.onec_employee_id, "onec-17")
+        self.assertEqual(enriched.source_identity_key, source_identity_key)
+        self.assertEqual(EmployeeOneCIdentity.objects.count(), 1)
+
+    def test_new_stable_identity_does_not_store_fallback_key(self):
+        identity = resolve_employee_identity(
+            self.organization,
+            "Стабильный Сотрудник",
+            onec_employee_id="onec-stable",
+        )
+        self.assertIsNone(identity.source_identity_key)
 
     def test_inactive_employee_matches_historically_and_cross_org_mapping_is_rejected(self):
         employee = self.employee("Петров Пётр Петрович", active=False)
