@@ -23,6 +23,7 @@ from pool_service.models import (
     Client,
     Expense,
     ExpenseCategory,
+    Employee,
 )
 from pool_service.services.finance import (
     finance_staff,
@@ -721,3 +722,37 @@ class CashCountForm(forms.ModelForm):
         for name, _label, value in CASH_DENOMINATIONS:
             total += value * Decimal(self.cleaned_data.get(name) or 0)
         return total
+
+
+class PayrollUploadForm(MonthlyProfitUploadForm):
+    report = forms.FileField(
+        label="Отчёт «Расчёты с персоналом»",
+        help_text="Файл XLSX сначала будет проверен и показан в предпросмотре.",
+        widget=forms.ClearableFileInput(attrs={"class": "form-control", "accept": ".xlsx"}),
+    )
+
+    def clean_report(self):
+        return super().clean_report()
+
+
+class EmployeeIdentityMappingForm(forms.Form):
+    employee = forms.ModelChoiceField(
+        queryset=Employee.objects.none(),
+        required=True,
+        label="Сотрудник",
+        empty_label="Выберите сотрудника",
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
+    comment = forms.CharField(
+        required=False,
+        max_length=1000,
+        label="Комментарий",
+        widget=forms.Textarea(attrs={"class": "form-control", "rows": 2}),
+    )
+
+    def __init__(self, *args, organization, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.organization = organization
+        self.fields["employee"].queryset = Employee.objects.filter(
+            organization=organization, is_active=True
+        ).order_by("display_name", "id")

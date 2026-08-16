@@ -12,6 +12,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Case, DecimalField, F, Sum, Value, When
 from django.core.paginator import Paginator
@@ -36,6 +37,8 @@ from pool_service.finance_forms import (
     ManagerCashTransferForm,
     MonthlyProfitUploadForm,
     OneCCostControlFilterForm,
+    PayrollUploadForm,
+    EmployeeIdentityMappingForm,
 )
 from pool_service.models import (
     AccountableTransaction,
@@ -52,8 +55,19 @@ from pool_service.models import (
     ExpenseChange,
     ExpensePeriod,
     ExpenseReceipt,
+    Employee,
+    EmployeeOneCIdentity,
     OneCImportBatch,
     OneCMonthlyProfit,
+)
+from pool_service.finance_imports.payroll_services import create_payroll_preview, confirm_payroll
+from pool_service.finance_imports.payroll_parser import PARSER_VERSION as PAYROLL_PARSER_VERSION
+from pool_service.finance_imports.employee_matching import confirm_employee_identity
+from pool_service.finance_imports.payroll_dashboard import (
+    parse_payroll_period,
+    payroll_dashboard_data,
+    payroll_identity_rows,
+    unresolved_active_payroll_identity_count,
 )
 from pool_service.finance_imports.services import (
     DuplicateImportError,
@@ -92,6 +106,10 @@ from pool_service.services.finance import (
     can_review_expense,
     can_view_card_transfer_payment,
     can_view_expense,
+    can_view_payroll_summary,
+    can_view_payroll_personal,
+    can_import_payroll,
+    can_manage_employee_mapping,
     ensure_default_categories,
     finance_staff,
     find_client_by_name,
@@ -2311,6 +2329,173 @@ def finance_onec_import_list(request):
         "batches": batches,
         "active_tab": "finance",
     })
+
+
+def _payroll_access(request, permission):
+    organization = _organization_for_finance(request)
+    if not organization:
+        return None, HttpResponseForbidden("Организация не найдена.")
+    if not permission(request.user, organization):
+        return organization, HttpResponseForbidden("Недостаточно прав для раздела ФОТ.")
+    if is_org_access_blocked(request.user):
+        messages.error(request, "Доступ организации к сервису приостановлен.")
+        return organization, redirect("billing")
+    return organization, None
+
+
+@login_required
+def finance_payroll_dashboard(request):
+    organization, denied = _payroll_access(request, can_view_payroll_summary)
+    if denied:
+        return denied
+    error = ""
+    try:
+        period_from, period_to = parse_payroll_period(
+            request.GET.get("period_from"), request.GET.get("period_to")
+        )
+    except ValueError as exc:
+        error = str(exc)
+        period_from, period_to = parse_payroll_period(None, None)
+    show_personal = can_view_payroll_personal(request.user, organization)
+    data = payroll_dashboard_data(
+        organization, period_from, period_to, include_personal=show_personal
+    )
+    unresolved_count = None
+    mapping_access = can_manage_employee_mapping(request.user, organization)
+    if mapping_access:
+        unresolved_count = unresolved_active_payroll_identity_count(organization)
+    return render(request, "pool_service/finance/payroll_dashboard.html", {
+        "data": data,
+        "period_from": period_from,
+        "period_to": period_to,
+        "period_error": error,
+        "show_personal": show_personal,
+        "can_import_payroll": can_import_payroll(request.user, organization),
+        "can_manage_mapping": mapping_access,
+        "unresolved_count": unresolved_count,
+        "active_tab": "finance",
+    })
+
+
+@login_required
+def finance_payroll_import_list(request):
+    organization, denied = _payroll_access(request, can_import_payroll)
+    if denied:
+        return denied
+    batches = OneCImportBatch.objects.filter(
+        organization=organization, import_type=OneCImportBatch.TYPE_PAYROLL
+    ).select_related("uploaded_by").prefetch_related("active_period_states")
+    return render(request, "pool_service/finance/payroll_import_list.html", {
+        "batches": batches,
+        "active_tab": "finance",
+    })
+
+
+@login_required
+def finance_payroll_import_upload(request):
+    organization, denied = _payroll_access(request, can_import_payroll)
+    if denied:
+        return denied
+    form = PayrollUploadForm(request.POST or None, request.FILES or None)
+    if request.method == "POST" and form.is_valid():
+        try:
+            batch = create_payroll_preview(form.cleaned_data["report"], organization, request.user)
+        except DuplicateImportError as exc:
+            messages.error(request, "Этот файл уже загружался. Откройте существующий импорт.")
+            return redirect("finance_payroll_import_preview", batch_id=exc.batch.id)
+        except (ValidationError, ValueError) as exc:
+            form.add_error("report", getattr(exc, "messages", [str(exc)]))
+        else:
+            return redirect("finance_payroll_import_preview", batch_id=batch.id)
+    return render(request, "pool_service/finance/payroll_import_upload.html", {
+        "form": form, "active_tab": "finance",
+    })
+
+
+@login_required
+def finance_payroll_import_preview(request, batch_id):
+    organization, denied = _payroll_access(request, can_import_payroll)
+    if denied:
+        return denied
+    batch = get_object_or_404(
+        OneCImportBatch, pk=batch_id, organization=organization,
+        import_type=OneCImportBatch.TYPE_PAYROLL,
+    )
+    metadata = batch.metadata or {}
+    show_personal = can_view_payroll_personal(request.user, organization)
+    parser_version_current = batch.parser_version == PAYROLL_PARSER_VERSION
+    return render(request, "pool_service/finance/payroll_import_preview.html", {
+        "batch": batch,
+        "report": metadata.get("report", {}),
+        "summary": metadata.get("payroll_summary", {}),
+        "preview": metadata.get("preview", []) if show_personal else [],
+        "show_personal": show_personal,
+        "warnings": metadata.get("warnings", []),
+        "critical_errors": metadata.get("critical_errors", []),
+        "overlap_months": metadata.get("overlap_months", []),
+        "parser_version_current": parser_version_current,
+        "can_confirm": batch.status == OneCImportBatch.STATUS_PREVIEWED
+            and not metadata.get("critical_errors") and parser_version_current,
+        "active_tab": "finance",
+    })
+
+
+@require_POST
+@login_required
+def finance_payroll_import_confirm(request, batch_id):
+    organization, denied = _payroll_access(request, can_import_payroll)
+    if denied:
+        return denied
+    get_object_or_404(
+        OneCImportBatch, pk=batch_id, organization=organization,
+        import_type=OneCImportBatch.TYPE_PAYROLL,
+    )
+    try:
+        confirm_payroll(batch_id, organization, request.user)
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect("finance_payroll_import_preview", batch_id=batch_id)
+    messages.success(request, "Импорт расчётов с персоналом подтверждён.")
+    return redirect("finance_payroll_dashboard")
+
+
+@login_required
+def finance_payroll_employee_mapping(request):
+    organization, denied = _payroll_access(request, can_manage_employee_mapping)
+    if denied:
+        return denied
+    employees = Employee.objects.filter(organization=organization, is_active=True).order_by("display_name", "id")
+    return render(request, "pool_service/finance/payroll_employee_mapping.html", {
+        "identities": payroll_identity_rows(organization),
+        "employees": employees,
+        "employee_count": employees.count(),
+        "active_tab": "finance",
+    })
+
+
+@require_POST
+@login_required
+def finance_payroll_employee_map(request, identity_id):
+    organization, denied = _payroll_access(request, can_manage_employee_mapping)
+    if denied:
+        return denied
+    identity = get_object_or_404(
+        EmployeeOneCIdentity, pk=identity_id, organization=organization
+    )
+    form = EmployeeIdentityMappingForm(request.POST, organization=organization)
+    if not form.is_valid():
+        messages.error(request, "Выберите существующего сотрудника этой организации.")
+        return redirect("finance_payroll_employee_mapping")
+    try:
+        confirm_employee_identity(
+            identity, form.cleaned_data["employee"], request.user,
+            comment=form.cleaned_data["comment"],
+        )
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+    else:
+        messages.success(request, "Сопоставление сотрудника сохранено.")
+    return redirect("finance_payroll_employee_mapping")
 
 
 @login_required

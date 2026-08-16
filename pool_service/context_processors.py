@@ -146,6 +146,27 @@ def plan_status_context(request):
     if not org:
         return context
 
+    from pool_service.services.finance import (
+        can_import_payroll,
+        can_manage_employee_mapping,
+        can_view_payroll_summary,
+    )
+    payroll_summary_access = can_view_payroll_summary(user, org)
+    payroll_import_access = can_import_payroll(user, org)
+    payroll_mapping_access = can_manage_employee_mapping(user, org)
+    context["can_view_payroll_summary"] = payroll_summary_access
+    context["can_access_payroll"] = any((
+        payroll_summary_access,
+        payroll_import_access,
+        payroll_mapping_access,
+    ))
+    if payroll_summary_access:
+        context["payroll_entry_url"] = reverse("finance_payroll_dashboard")
+    elif payroll_import_access:
+        context["payroll_entry_url"] = reverse("finance_payroll_import_list")
+    elif payroll_mapping_access:
+        context["payroll_entry_url"] = reverse("finance_payroll_employee_mapping")
+
     context["can_access_development"] = user.is_superuser or OrganizationAccess.objects.filter(
         user=user,
         organization=org,
