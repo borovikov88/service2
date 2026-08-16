@@ -23,7 +23,11 @@ def _source_identity_key(normalized_name, normalized_department_name):
     return hashlib.sha256(payload).hexdigest()
 
 
-def _stable_identity(organization, onec_employee_id="", personnel_number=""):
+def _optional_identifier(value):
+    return re.sub(r"\s+", " ", str(value or "").strip()) or None
+
+
+def _stable_identity(organization, onec_employee_id=None, personnel_number=None):
     matches = []
     if onec_employee_id:
         match = EmployeeOneCIdentity.objects.filter(
@@ -42,30 +46,66 @@ def _stable_identity(organization, onec_employee_id="", personnel_number=""):
     return matches[0] if matches else None
 
 
+def _enrich_stable_identifiers(identity, *, onec_employee_id=None, personnel_number=None):
+    try:
+        with transaction.atomic():
+            locked = EmployeeOneCIdentity.objects.select_for_update().get(pk=identity.pk)
+            updates = []
+            for field, incoming in (
+                ("onec_employee_id", onec_employee_id),
+                ("personnel_number", personnel_number),
+            ):
+                current = getattr(locked, field)
+                if current and incoming and current != incoming:
+                    raise ValidationError(
+                        "Новые стабильные идентификаторы конфликтуют с identity."
+                    )
+                if incoming and not current:
+                    setattr(locked, field, incoming)
+                    updates.append(field)
+            if updates:
+                locked.save(update_fields=[*updates, "updated_at"])
+            return locked
+    except IntegrityError as exc:
+        raise ValidationError(
+            "Стабильный идентификатор уже относится к другой identity."
+        ) from exc
+
+
 def resolve_employee_identity(
     organization,
     raw_name,
     *,
     department_name="",
-    onec_employee_id="",
-    personnel_number="",
+    onec_employee_id=None,
+    personnel_number=None,
 ):
     normalized_name = normalize_onec_name(raw_name)
     normalized_department_name = normalize_onec_name(department_name)
+    onec_employee_id = _optional_identifier(onec_employee_id)
+    personnel_number = _optional_identifier(personnel_number)
     stable = _stable_identity(organization, onec_employee_id, personnel_number)
     if stable:
-        return stable
+        return _enrich_stable_identifiers(
+            stable,
+            onec_employee_id=onec_employee_id,
+            personnel_number=personnel_number,
+        )
 
     has_stable_identifier = bool(onec_employee_id or personnel_number)
-    source_identity_key = "" if has_stable_identifier else _source_identity_key(
+    fallback_key = _source_identity_key(
         normalized_name, normalized_department_name
     )
-    if source_identity_key:
-        canonical = EmployeeOneCIdentity.objects.filter(
-            organization=organization, source_identity_key=source_identity_key
-        ).first()
-        if canonical:
-            return canonical
+    canonical = EmployeeOneCIdentity.objects.filter(
+        organization=organization, source_identity_key=fallback_key
+    ).first()
+    if canonical:
+        return _enrich_stable_identifiers(
+            canonical,
+            onec_employee_id=onec_employee_id,
+            personnel_number=personnel_number,
+        )
+    source_identity_key = None if has_stable_identifier else fallback_key
 
     confirmed = [
         identity for identity in
