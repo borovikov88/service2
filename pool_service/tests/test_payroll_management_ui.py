@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 from decimal import Decimal
+from contextlib import contextmanager
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
@@ -9,7 +10,10 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from pool_service.finance_imports.payroll_dashboard import payroll_dashboard_data
+from pool_service.finance_imports.payroll_dashboard import (
+    payroll_dashboard_data, payroll_identity_rows,
+)
+from pool_service.finance_imports.payroll_parser import PARSER_VERSION as PAYROLL_PARSER_VERSION
 from pool_service.models import (
     DataAuditLog, Employee, EmployeeOneCIdentity, OneCImportBatch,
     OneCReportPeriodState, Organization, OrganizationAccess, PayrollRow,
@@ -66,6 +70,14 @@ class PayrollManagementUITests(TestCase):
                 period_month=month, defaults={"active_batch": batch, "updated_by": self.user},
             )
 
+    @contextmanager
+    def _permissions(self, *, summary=False, personal=False, import_access=False, mapping=False):
+        with patch("pool_service.finance_views.can_view_payroll_summary", return_value=summary), \
+                patch("pool_service.finance_views.can_view_payroll_personal", return_value=personal), \
+                patch("pool_service.finance_views.can_import_payroll", return_value=import_access), \
+                patch("pool_service.finance_views.can_manage_employee_mapping", return_value=mapping):
+            yield
+
     def test_stock_kpis_use_boundary_months_not_sum(self):
         identity = self._identity()
         batch = self._batch("a")
@@ -102,9 +114,57 @@ class PayrollManagementUITests(TestCase):
         self._row(replacement, identity, date(2026, 3, 1), 106, 300, 200, 206, 2)
         self._activate(first, date(2026, 1, 1))
         self._activate(replacement, date(2026, 2, 1), date(2026, 3, 1))
-        data = payroll_dashboard_data(self.organization, date(2026, 1, 1), date(2026, 3, 1))
+        data = payroll_dashboard_data(
+            self.organization, date(2026, 1, 1), date(2026, 3, 1), include_personal=True
+        )
         self.assertEqual(data["accrued"], Decimal("510"))
+        self.assertEqual(data["paid"], Decimal("305"))
+        self.assertEqual(data["opening"], Decimal("1"))
         self.assertEqual(data["closing"], Decimal("206"))
+        self.assertEqual(data["employees"][0]["accrued"], Decimal("510"))
+        identity_row = payroll_identity_rows(self.organization).get(pk=identity.pk)
+        self.assertEqual(identity_row.active_payroll_row_count, 3)
+        self.assertEqual(identity_row.first_active_period, date(2026, 1, 1))
+        self.assertEqual(identity_row.last_active_period, date(2026, 3, 1))
+
+    def test_identity_statistics_exclude_replaced_and_other_organization_rows(self):
+        identity = self._identity()
+        first = self._batch("identity-a")
+        replacement = self._batch("identity-b")
+        for index, month in enumerate((date(2026, 1, 1), date(2026, 2, 1)), 1):
+            self._row(first, identity, month, 1, 1, 1, 1, index)
+        self._row(replacement, identity, date(2026, 2, 1), 1, 2, 2, 1)
+        self._activate(first, date(2026, 1, 1))
+        self._activate(replacement, date(2026, 2, 1))
+        other_user = User.objects.create_user("identity-other")
+        other_identity = EmployeeOneCIdentity.objects.create(
+            organization=self.other, raw_name="Чужая версия", normalized_name="чужая версия",
+            source_identity_key="d" * 64, status=EmployeeOneCIdentity.STATUS_NOT_FOUND,
+        )
+        other_batch = OneCImportBatch.objects.create(
+            organization=self.other, import_type=OneCImportBatch.TYPE_PAYROLL,
+            original_filename="other.xlsx", stored_file="test/other.xlsx",
+            file_sha256="c" * 64, file_size=1,
+            status=OneCImportBatch.STATUS_CONFIRMED, uploaded_by=other_user,
+        )
+        PayrollRow.objects.create(
+            import_batch=other_batch, organization=self.other, employee_identity=other_identity,
+            period_month=date(2024, 1, 1), source_row_number=1,
+            employee_raw_name="Чужая версия", employee_normalized_name="чужая версия",
+            opening_balance=1, accrued=999, paid=999, closing_balance=1,
+        )
+        OneCReportPeriodState.objects.create(
+            organization=self.other, report_type=OneCImportBatch.TYPE_PAYROLL,
+            period_month=date(2024, 1, 1), active_batch=other_batch, updated_by=other_user,
+        )
+        with self.assertNumQueries(1):
+            row = payroll_identity_rows(self.organization).get(pk=identity.pk)
+        self.assertEqual(row.active_payroll_row_count, 2)
+        self.assertEqual(row.first_active_period, date(2026, 1, 1))
+        self.assertEqual(row.last_active_period, date(2026, 2, 1))
+        response = self.client.get(reverse("finance_payroll_employee_mapping"))
+        self.assertContains(response, "2 ·")
+        self.assertNotContains(response, "Чужая версия")
 
     def test_import_history_shows_status_period_rows_and_active_coverage(self):
         batch = self._batch("history")
@@ -155,6 +215,8 @@ class PayrollManagementUITests(TestCase):
         self.assertFalse(PayrollRow.objects.exists())
         preview = self.client.get(reverse("finance_payroll_import_preview", args=[batch.pk]))
         self.assertContains(preview, "Сотрудников источника")
+        self.assertContains(preview, "Подтвердить импорт")
+        self.assertEqual(batch.parser_version, PAYROLL_PARSER_VERSION)
         self.assertEqual(batch.metadata["payroll_summary"], {
             "distinct_employees": 2,
             "departments": ["Основное подразделение"],
@@ -169,6 +231,24 @@ class PayrollManagementUITests(TestCase):
         second = self.client.post(reverse("finance_payroll_import_confirm", args=[batch.pk]))
         self.assertEqual(second.status_code, 302)
         self.assertEqual(PayrollRow.objects.count(), 4)
+
+    def test_stale_parser_preview_blocks_button_and_direct_confirm(self):
+        upload = SimpleUploadedFile(
+            "stale-payroll.xlsx", payroll_xlsx(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.client.post(reverse("finance_payroll_import_upload"), {"report": upload})
+        batch = OneCImportBatch.objects.get(original_filename="stale-payroll.xlsx")
+        batch.parser_version = "obsolete"
+        batch.save(update_fields=["parser_version"])
+        preview = self.client.get(reverse("finance_payroll_import_preview", args=[batch.pk]))
+        self.assertNotContains(preview, "Подтвердить импорт")
+        self.assertContains(preview, "Предпросмотр создан устаревшей версией парсера")
+        response = self.client.post(reverse("finance_payroll_import_confirm", args=[batch.pk]))
+        self.assertEqual(response.status_code, 302)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, OneCImportBatch.STATUS_PREVIEWED)
+        self.assertFalse(PayrollRow.objects.exists())
 
     @patch("pool_service.finance_views.can_view_payroll_personal", return_value=False)
     @patch("pool_service.finance_views.can_import_payroll", return_value=True)
@@ -210,11 +290,111 @@ class PayrollManagementUITests(TestCase):
         self.assertEqual(self.client.get(
             reverse("finance_payroll_import_preview", args=[other_batch.pk])
         ).status_code, 404)
+        self.assertEqual(self.client.post(
+            reverse("finance_payroll_import_confirm", args=[other_batch.pk])
+        ).status_code, 404)
         response = self.client.post(
             reverse("finance_payroll_employee_map", args=[other_identity.pk]),
             {"employee": other_employee.pk},
         )
         self.assertEqual(response.status_code, 404)
+
+    def test_foreign_employee_id_is_rejected_for_local_identity(self):
+        identity = self._identity()
+        foreign = Employee.objects.create(organization=self.other, display_name="Чужой")
+        response = self.client.post(
+            reverse("finance_payroll_employee_map", args=[identity.pk]),
+            {"employee": foreign.pk},
+        )
+        self.assertEqual(response.status_code, 302)
+        identity.refresh_from_db()
+        self.assertIsNone(identity.employee)
+
+    def test_dashboard_excludes_other_organization_active_rows(self):
+        own_identity = self._identity("Свой")
+        own_batch = self._batch("own")
+        self._row(own_batch, own_identity, date(2026, 1, 1), 1, 10, 5, 6)
+        self._activate(own_batch, date(2026, 1, 1))
+        other_user = User.objects.create_user("dashboard-other")
+        other_identity = EmployeeOneCIdentity.objects.create(
+            organization=self.other, raw_name="Чужой", normalized_name="чужой",
+            source_identity_key="b" * 64, status=EmployeeOneCIdentity.STATUS_NOT_FOUND,
+        )
+        other_batch = OneCImportBatch.objects.create(
+            organization=self.other, import_type=OneCImportBatch.TYPE_PAYROLL,
+            original_filename="foreign.xlsx", stored_file="test/foreign.xlsx",
+            file_sha256="9" * 64, file_size=1,
+            status=OneCImportBatch.STATUS_CONFIRMED, uploaded_by=other_user,
+        )
+        PayrollRow.objects.create(
+            import_batch=other_batch, organization=self.other, employee_identity=other_identity,
+            period_month=date(2026, 1, 1), source_row_number=1,
+            employee_raw_name="Чужой", employee_normalized_name="чужой",
+            opening_balance=999, accrued=999, paid=999, closing_balance=999,
+        )
+        OneCReportPeriodState.objects.create(
+            organization=self.other, report_type=OneCImportBatch.TYPE_PAYROLL,
+            period_month=date(2026, 1, 1), active_batch=other_batch, updated_by=other_user,
+        )
+        data = payroll_dashboard_data(self.organization, date(2026, 1, 1), date(2026, 1, 1))
+        self.assertEqual(data["accrued"], Decimal("10"))
+
+    def test_missing_boundary_months_remain_none_and_visible(self):
+        identity = self._identity()
+        batch = self._batch("boundary")
+        self._row(batch, identity, date(2026, 2, 1), 10, 20, 5, 25)
+        self._activate(batch, date(2026, 2, 1))
+        data = payroll_dashboard_data(self.organization, date(2026, 1, 1), date(2026, 3, 1))
+        self.assertIsNone(data["opening"])
+        self.assertIsNone(data["closing"])
+        self.assertIsNone(data["debt_change"])
+        self.assertFalse(data["months"][0]["has_data"])
+        self.assertFalse(data["months"][2]["has_data"])
+
+    def test_permission_matrix_and_combinations(self):
+        identity = self._identity()
+        batch = self._batch("permissions")
+        month = date.today().replace(month=1, day=1)
+        self._row(batch, identity, month, 1, 777777, 2, 3)
+        self._activate(batch, month)
+        dashboard = reverse("finance_payroll_dashboard")
+        imports = reverse("finance_payroll_import_list")
+        mapping = reverse("finance_payroll_employee_mapping")
+
+        with self._permissions(summary=True):
+            response = self.client.get(dashboard)
+            self.assertEqual(response.status_code, 200)
+            self.assertNotContains(response, identity.raw_name)
+            self.assertEqual(self.client.get(imports).status_code, 403)
+            self.assertEqual(self.client.get(mapping).status_code, 403)
+        with self._permissions(summary=True, personal=True):
+            self.assertContains(self.client.get(dashboard), identity.raw_name)
+            self.assertEqual(self.client.get(imports).status_code, 403)
+            self.assertEqual(self.client.get(mapping).status_code, 403)
+        with self._permissions(import_access=True):
+            self.assertEqual(self.client.get(imports).status_code, 200)
+            self.assertEqual(self.client.get(dashboard).status_code, 403)
+        with self._permissions(mapping=True):
+            response = self.client.get(mapping)
+            self.assertEqual(response.status_code, 200)
+            self.assertNotContains(response, "777777")
+            self.assertEqual(self.client.get(dashboard).status_code, 403)
+        with self._permissions(summary=True, import_access=True):
+            self.assertEqual(self.client.get(dashboard).status_code, 200)
+            self.assertEqual(self.client.get(imports).status_code, 200)
+            self.assertNotContains(self.client.get(dashboard), identity.raw_name)
+        with self._permissions(summary=True, mapping=True):
+            self.assertEqual(self.client.get(dashboard).status_code, 200)
+            self.assertEqual(self.client.get(mapping).status_code, 200)
+            self.assertNotContains(self.client.get(dashboard), identity.raw_name)
+        with self._permissions(summary=True, personal=True, import_access=True, mapping=True):
+            self.assertContains(self.client.get(dashboard), identity.raw_name)
+            self.assertEqual(self.client.get(imports).status_code, 200)
+            self.assertEqual(self.client.get(mapping).status_code, 200)
+        with self._permissions():
+            self.assertEqual(self.client.get(dashboard).status_code, 403)
+            self.assertEqual(self.client.get(imports).status_code, 403)
+            self.assertEqual(self.client.get(mapping).status_code, 403)
 
     def test_manual_mapping_updates_all_historical_rows_through_identity_fk(self):
         identity = self._identity()

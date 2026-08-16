@@ -61,6 +61,7 @@ from pool_service.models import (
     OneCMonthlyProfit,
 )
 from pool_service.finance_imports.payroll_services import create_payroll_preview, confirm_payroll
+from pool_service.finance_imports.payroll_parser import PARSER_VERSION as PAYROLL_PARSER_VERSION
 from pool_service.finance_imports.employee_matching import confirm_employee_identity
 from pool_service.finance_imports.payroll_dashboard import (
     parse_payroll_period,
@@ -2428,6 +2429,7 @@ def finance_payroll_import_preview(request, batch_id):
     )
     metadata = batch.metadata or {}
     show_personal = can_view_payroll_personal(request.user, organization)
+    parser_version_current = batch.parser_version == PAYROLL_PARSER_VERSION
     return render(request, "pool_service/finance/payroll_import_preview.html", {
         "batch": batch,
         "report": metadata.get("report", {}),
@@ -2437,8 +2439,9 @@ def finance_payroll_import_preview(request, batch_id):
         "warnings": metadata.get("warnings", []),
         "critical_errors": metadata.get("critical_errors", []),
         "overlap_months": metadata.get("overlap_months", []),
+        "parser_version_current": parser_version_current,
         "can_confirm": batch.status == OneCImportBatch.STATUS_PREVIEWED
-            and not metadata.get("critical_errors"),
+            and not metadata.get("critical_errors") and parser_version_current,
         "active_tab": "finance",
     })
 

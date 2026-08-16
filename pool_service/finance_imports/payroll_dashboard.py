@@ -1,8 +1,8 @@
-from calendar import monthrange
 from datetime import date
 from decimal import Decimal
 
-from django.db.models import Count, Max, Min, Sum
+from django.db.models import Count, IntegerField, OuterRef, Subquery, Sum, Value
+from django.db.models.functions import Coalesce
 
 from pool_service.models import EmployeeOneCIdentity, OneCImportBatch, PayrollRow
 
@@ -112,10 +112,22 @@ def payroll_dashboard_data(organization, first, last, *, include_personal=False)
 
 
 def payroll_identity_rows(organization):
+    active_rows = PayrollRow.objects.active_for(
+        organization, OneCImportBatch.TYPE_PAYROLL
+    ).filter(employee_identity_id=OuterRef("pk"))
+    active_count = active_rows.values("employee_identity_id").annotate(
+        value=Count("pk")
+    ).values("value")[:1]
     return EmployeeOneCIdentity.objects.filter(organization=organization).select_related(
         "employee", "confirmed_by"
     ).annotate(
-        payroll_row_count=Count("payroll_rows"),
-        first_period=Min("payroll_rows__period_month"),
-        last_period=Max("payroll_rows__period_month"),
+        active_payroll_row_count=Coalesce(
+            Subquery(active_count, output_field=IntegerField()), Value(0)
+        ),
+        first_active_period=Subquery(
+            active_rows.order_by("period_month").values("period_month")[:1]
+        ),
+        last_active_period=Subquery(
+            active_rows.order_by("-period_month").values("period_month")[:1]
+        ),
     ).order_by("normalized_name", "id")
