@@ -169,8 +169,30 @@ def _build_rows(batch, organization, result):
     raise ValidationError("Неподдерживаемый тип foundation import.")
 
 
+def foundation_confirmation_state(batch, *, parser_version):
+    metadata = batch.metadata or {}
+    if batch.status == OneCImportBatch.STATUS_CONFIRMED:
+        return {"can_confirm": False, "code": "already_confirmed"}
+    if batch.status != OneCImportBatch.STATUS_PREVIEWED:
+        return {"can_confirm": False, "code": "invalid_status"}
+    if batch.parser_version != parser_version:
+        return {"can_confirm": False, "code": "stale_parser"}
+    if metadata.get("critical_errors"):
+        return {"can_confirm": False, "code": "critical_errors"}
+    if not batch.stored_file or not batch.stored_file.storage.exists(batch.stored_file.name):
+        return {"can_confirm": False, "code": "stored_file_missing"}
+    try:
+        stored_sha256 = _stored_sha256(batch)
+    except (OSError, ValueError):
+        return {"can_confirm": False, "code": "stored_file_missing"}
+    if stored_sha256 != batch.file_sha256:
+        return {"can_confirm": False, "code": "sha_mismatch"}
+    return {"can_confirm": True, "code": "ready"}
+
+
 def confirm_foundation_import(
-    batch_id, organization, user, *, import_type, parser, parser_version
+    batch_id, organization, user, *, import_type, parser, parser_version,
+    audit_context=None,
 ):
     with transaction.atomic():
         locked_organization = Organization.objects.select_for_update().get(pk=organization.pk)
@@ -183,10 +205,15 @@ def confirm_foundation_import(
             raise ValidationError(
                 "Предпросмотр создан устаревшей версией парсера. Повторите предпросмотр."
             )
-        if _stored_sha256(batch) != batch.file_sha256:
-            raise ValidationError("Контрольная сумма исходного файла изменилась.")
-        with batch.stored_file.open("rb") as source:
-            result = parser(source, filename=batch.original_filename, size=batch.file_size)
+        if (batch.metadata or {}).get("critical_errors"):
+            raise ValidationError("Подтверждение заблокировано из-за критических ошибок.")
+        try:
+            if _stored_sha256(batch) != batch.file_sha256:
+                raise ValidationError("Контрольная сумма исходного файла изменилась.")
+            with batch.stored_file.open("rb") as source:
+                result = parser(source, filename=batch.original_filename, size=batch.file_size)
+        except OSError as exc:
+            raise ValidationError("Сохранённый исходный файл недоступен.") from exc
         if result.critical_errors:
             raise ValidationError("; ".join(result.critical_errors))
         periods = sorted({row["period_month"] for row in result.records})
@@ -215,7 +242,26 @@ def confirm_foundation_import(
         _activate_period_states(
             batch, locked_organization, user, periods, locked_states
         )
+        request_context = audit_context or {}
+        confirmation_context = {
+            key: request_context.get(key)
+            for key in (
+                "action", "route", "remote_ip", "user_agent", "request_timestamp",
+            )
+            if request_context.get(key) is not None
+        }
+        confirmation_context.update({
+            "actor_user_id": user.pk,
+            "organization_id": locked_organization.pk,
+            "batch_id": str(batch.pk),
+            "batch_sha256": batch.file_sha256,
+            "parser_version": batch.parser_version,
+            "period_first": batch.period_first.isoformat(),
+            "period_last": batch.period_last.isoformat(),
+            "rows_detected": batch.rows_detected,
+            "overlap_months": list((batch.metadata or {}).get("overlap_months", [])),
+        })
         _audit(batch, user, before, {
             "status": batch.status, "rows_imported": batch.rows_imported,
-        })
+        }, audit_context=confirmation_context)
     return batch

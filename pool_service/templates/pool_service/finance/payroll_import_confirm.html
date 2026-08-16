@@ -1,0 +1,54 @@
+{% extends "pool_service/base.html" %}
+{% block title %}Подтверждение импорта ФОТ{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">Подтверждение импорта ФОТ</h1>
+{% if confirmation_state.code == "already_confirmed" %}
+<div class="alert alert-info"><strong>Импорт уже подтверждён.</strong> Повторное подтверждение недоступно.</div>
+{% elif confirmation_state.code == "stale_parser" %}
+<div class="alert alert-warning">Предпросмотр создан устаревшей версией парсера. Загрузите этот же файл повторно для нового предпросмотра.</div>
+{% elif confirmation_state.code == "critical_errors" %}
+<div class="alert alert-danger"><strong>Подтверждение заблокировано из-за критических ошибок.</strong></div>
+{% elif confirmation_state.code == "stored_file_missing" %}
+<div class="alert alert-danger">Сохранённый исходный файл недоступен. Подтверждение заблокировано.</div>
+{% elif confirmation_state.code == "sha_mismatch" %}
+<div class="alert alert-danger">Контрольная сумма сохранённого файла изменилась. Подтверждение заблокировано.</div>
+{% elif confirmation_state.code == "invalid_status" %}
+<div class="alert alert-warning">Этот импорт нельзя подтвердить в текущем статусе.</div>
+{% else %}
+<div class="alert alert-warning"><strong>Это финальный шаг.</strong> После подтверждения данные станут активными.</div>
+{% endif %}
+
+<div class="card card-soft p-3 mb-3">
+  <div><strong>Файл:</strong> {{ batch.original_filename }}</div>
+  <div><strong>SHA-256:</strong> {{ batch.file_sha256|slice:':12' }}…</div>
+  <div><strong>Статус:</strong> {{ batch.get_status_display }}</div>
+  <div><strong>Версия парсера:</strong> {{ batch.parser_version }}{% if parser_version_current %} · актуальная{% else %} · устаревшая{% endif %}</div>
+  <div><strong>Период:</strong> {{ batch.period_first|date:'m.Y' }} – {{ batch.period_last|date:'m.Y' }}</div>
+  <div><strong>Фактических строк:</strong> {{ batch.rows_detected }}</div>
+  <div><strong>Сотрудников источника:</strong> {{ summary.distinct_employees }}</div>
+  <div><strong>Подразделения:</strong> {{ summary.departments|join:', '|default:'—' }}</div>
+</div>
+
+<div class="small text-muted mb-2">Контрольные итоги исходного файла по строкам сотрудников и месяцев.</div>
+<div class="row g-3 mb-3">
+  <div class="col-md"><div class="card p-3">Контрольный начальный остаток: {{ summary.opening_balance }}</div></div>
+  <div class="col-md"><div class="card p-3">Начислено: {{ summary.accrued }}</div></div>
+  <div class="col-md"><div class="card p-3">Выплачено: {{ summary.paid }}</div></div>
+  <div class="col-md"><div class="card p-3">Контрольный конечный остаток: {{ summary.closing_balance }}</div></div>
+</div>
+
+{% if overlap_months %}<div class="alert alert-warning"><strong>Будут заменены активные данные за:</strong> {{ overlap_months|join:', ' }}.<br>Предыдущие импортированные строки останутся в истории.</div>{% endif %}
+{% if critical_errors %}<div class="alert alert-danger"><ul class="mb-0">{% for item in critical_errors %}<li>{{ item }}</li>{% endfor %}</ul></div>{% endif %}
+{% if warnings %}<div class="alert alert-warning"><ul class="mb-0">{% for item in warnings %}<li>{{ item }}</li>{% endfor %}</ul></div>{% endif %}
+
+<p><strong>После подтверждения этот файл станет активной версией данных ФОТ за указанные месяцы.</strong></p>
+{% if confirmation_state.can_confirm %}
+<form method="post" class="card card-soft p-3 mb-3">
+  {% csrf_token %}
+  <div class="form-check mb-3">{{ form.acknowledgement }} <label class="form-check-label" for="{{ form.acknowledgement.id_for_label }}">{{ form.acknowledgement.label }}</label></div>
+  {% if form.acknowledgement.errors %}<div class="text-danger mb-3">{{ form.acknowledgement.errors }}</div>{% endif %}
+  <div><button class="btn btn-success" type="submit">Подтвердить импорт</button></div>
+</form>
+{% endif %}
+<div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="{% url 'finance_payroll_import_preview' batch.id %}">К предпросмотру</a><a class="btn btn-outline-secondary" href="{% url 'finance_payroll_import_list' %}">К истории</a><a class="btn btn-outline-secondary" href="{% url 'finance_payroll_dashboard' %}">К ФОТ</a></div>
+{% endblock %}
