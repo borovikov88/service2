@@ -36,13 +36,30 @@ def _metadata(result, overlap_months):
         {key: _serialize(value) for key, value in row.items() if key != "source_data"}
         for row in result.records[:PREVIEW_ROW_LIMIT]
     ]
-    return {
+    metadata = {
         "report": result.metadata,
         "preview": preview,
         "warnings": [str(item)[:300] for item in result.warnings[:50]],
         "critical_errors": [str(item)[:300] for item in result.critical_errors[:20]],
         "overlap_months": [month.strftime("%Y-%m") for month in overlap_months],
     }
+    if result.records and "employee_raw_name" in result.records[0]:
+        metadata["payroll_summary"] = {
+            "distinct_employees": len({
+                (row["employee_normalized_name"], row["department_name"])
+                for row in result.records
+            }),
+            "departments": sorted({row["department_name"] for row in result.records if row["department_name"]}),
+            "opening_balance": str(sum(
+                (row["opening_balance"] for row in result.records), Decimal("0")
+            )),
+            "accrued": str(sum((row["accrued"] for row in result.records), Decimal("0"))),
+            "paid": str(sum((row["paid"] for row in result.records), Decimal("0"))),
+            "closing_balance": str(sum(
+                (row["closing_balance"] for row in result.records), Decimal("0")
+            )),
+        }
+    return metadata
 
 
 def _parse_upload(uploaded_file, parser):

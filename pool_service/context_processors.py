@@ -146,6 +146,9 @@ def plan_status_context(request):
     if not org:
         return context
 
+    from pool_service.services.finance import can_view_payroll_summary
+    context["can_view_payroll_summary"] = can_view_payroll_summary(user, org)
+
     context["can_access_development"] = user.is_superuser or OrganizationAccess.objects.filter(
         user=user,
         organization=org,

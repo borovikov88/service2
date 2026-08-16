@@ -1,0 +1,3 @@
+{% extends "pool_service/base.html" %}
+{% block title %}Загрузка ФОТ из 1С{% endblock %}
+{% block content %}<div class="mb-3"><h1 class="h3">Загрузка отчёта «Расчёты с персоналом»</h1><div class="text-muted">Данные не будут записаны до явного подтверждения предпросмотра.</div></div><div class="card card-soft p-4"><form method="post" enctype="multipart/form-data">{% csrf_token %}{{ form.non_field_errors }}<div class="mb-3">{{ form.report.label_tag }}{{ form.report }}<div class="form-text">{{ form.report.help_text }}</div>{{ form.report.errors }}</div><button class="btn btn-primary">Загрузить и проверить</button> <a class="btn btn-outline-secondary" href="{% url 'finance_payroll_import_list' %}">Отмена</a></form></div>{% endblock %}
