@@ -67,6 +67,7 @@ from pool_service.finance_imports.payroll_dashboard import (
     parse_payroll_period,
     payroll_dashboard_data,
     payroll_identity_rows,
+    unresolved_active_payroll_identity_count,
 )
 from pool_service.finance_imports.services import (
     DuplicateImportError,
@@ -2362,14 +2363,7 @@ def finance_payroll_dashboard(request):
     unresolved_count = None
     mapping_access = can_manage_employee_mapping(request.user, organization)
     if mapping_access:
-        unresolved_count = EmployeeOneCIdentity.objects.filter(
-            organization=organization,
-            status__in=[
-                EmployeeOneCIdentity.STATUS_NEEDS_CONFIRMATION,
-                EmployeeOneCIdentity.STATUS_NOT_FOUND,
-                EmployeeOneCIdentity.STATUS_AMBIGUOUS,
-            ],
-        ).count()
+        unresolved_count = unresolved_active_payroll_identity_count(organization)
     return render(request, "pool_service/finance/payroll_dashboard.html", {
         "data": data,
         "period_from": period_from,

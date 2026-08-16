@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
-from django.db.models import Count, IntegerField, OuterRef, Subquery, Sum, Value
+from django.db.models import Count, Exists, IntegerField, OuterRef, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
 
 from pool_service.models import EmployeeOneCIdentity, OneCImportBatch, PayrollRow
@@ -131,3 +131,17 @@ def payroll_identity_rows(organization):
             active_rows.order_by("-period_month").values("period_month")[:1]
         ),
     ).order_by("normalized_name", "id")
+
+
+def unresolved_active_payroll_identity_count(organization):
+    active_rows = PayrollRow.objects.active_for(
+        organization, OneCImportBatch.TYPE_PAYROLL
+    ).filter(employee_identity_id=OuterRef("pk"))
+    return EmployeeOneCIdentity.objects.filter(
+        organization=organization,
+        status__in=[
+            EmployeeOneCIdentity.STATUS_NEEDS_CONFIRMATION,
+            EmployeeOneCIdentity.STATUS_NOT_FOUND,
+            EmployeeOneCIdentity.STATUS_AMBIGUOUS,
+        ],
+    ).filter(Exists(active_rows)).count()

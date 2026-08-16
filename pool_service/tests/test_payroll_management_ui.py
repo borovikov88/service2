@@ -1,6 +1,6 @@
 from datetime import date, timedelta
 from decimal import Decimal
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
@@ -72,10 +72,20 @@ class PayrollManagementUITests(TestCase):
 
     @contextmanager
     def _permissions(self, *, summary=False, personal=False, import_access=False, mapping=False):
-        with patch("pool_service.finance_views.can_view_payroll_summary", return_value=summary), \
-                patch("pool_service.finance_views.can_view_payroll_personal", return_value=personal), \
-                patch("pool_service.finance_views.can_import_payroll", return_value=import_access), \
-                patch("pool_service.finance_views.can_manage_employee_mapping", return_value=mapping):
+        permissions = {
+            "can_view_payroll_summary": summary,
+            "can_view_payroll_personal": personal,
+            "can_import_payroll": import_access,
+            "can_manage_employee_mapping": mapping,
+        }
+        with ExitStack() as stack:
+            for name, value in permissions.items():
+                stack.enter_context(
+                    patch(f"pool_service.finance_views.{name}", return_value=value)
+                )
+                stack.enter_context(
+                    patch(f"pool_service.services.finance.{name}", return_value=value)
+                )
             yield
 
     def test_stock_kpis_use_boundary_months_not_sum(self):
@@ -165,6 +175,73 @@ class PayrollManagementUITests(TestCase):
         response = self.client.get(reverse("finance_payroll_employee_mapping"))
         self.assertContains(response, "2 ·")
         self.assertNotContains(response, "Чужая версия")
+
+    def test_dashboard_unresolved_count_excludes_replacement_only_identity(self):
+        identity_old = self._identity("Старая версия")
+        identity_active = self._identity("Активная версия")
+        old_batch = self._batch("unresolved-old")
+        active_batch = self._batch("unresolved-active")
+        month = date(2026, 1, 1)
+        self._row(old_batch, identity_old, month, 1, 1, 1, 1)
+        self._row(active_batch, identity_active, month, 1, 1, 1, 1)
+        self._activate(active_batch, month)
+
+        with self._permissions(summary=True, mapping=True):
+            response = self.client.get(reverse("finance_payroll_dashboard"))
+
+        self.assertEqual(response.context["unresolved_count"], 1)
+
+    def test_dashboard_unresolved_count_excludes_foreign_active_identity(self):
+        other_user = User.objects.create_user("unresolved-other")
+        foreign_identity = EmployeeOneCIdentity.objects.create(
+            organization=self.other, raw_name="Чужой сотрудник",
+            normalized_name="чужой сотрудник", source_identity_key="e" * 64,
+            status=EmployeeOneCIdentity.STATUS_NOT_FOUND,
+        )
+        foreign_batch = OneCImportBatch.objects.create(
+            organization=self.other, import_type=OneCImportBatch.TYPE_PAYROLL,
+            original_filename="foreign.xlsx", stored_file="test/foreign.xlsx",
+            file_sha256="f" * 64, file_size=1,
+            status=OneCImportBatch.STATUS_CONFIRMED, uploaded_by=other_user,
+        )
+        PayrollRow.objects.create(
+            import_batch=foreign_batch, organization=self.other,
+            employee_identity=foreign_identity, period_month=date(2026, 1, 1),
+            source_row_number=1, employee_raw_name=foreign_identity.raw_name,
+            employee_normalized_name=foreign_identity.normalized_name,
+            opening_balance=1, accrued=1, paid=1, closing_balance=1,
+        )
+        OneCReportPeriodState.objects.create(
+            organization=self.other, report_type=OneCImportBatch.TYPE_PAYROLL,
+            period_month=date(2026, 1, 1), active_batch=foreign_batch,
+            updated_by=other_user,
+        )
+
+        with self._permissions(summary=True, mapping=True):
+            response = self.client.get(reverse("finance_payroll_dashboard"))
+
+        self.assertEqual(response.context["unresolved_count"], 0)
+
+    def test_dashboard_unresolved_count_excludes_manually_mapped_identity(self):
+        identity = self._identity("Сопоставляемый сотрудник")
+        employee = Employee.objects.create(
+            organization=self.organization, display_name="Сопоставленный сотрудник"
+        )
+        batch = self._batch("unresolved-mapped")
+        month = date(2026, 1, 1)
+        self._row(batch, identity, month, 1, 1, 1, 1)
+        self._activate(batch, month)
+
+        with self._permissions(summary=True, mapping=True):
+            before = self.client.get(reverse("finance_payroll_dashboard"))
+            self.client.post(
+                reverse("finance_payroll_employee_map", args=[identity.pk]),
+                {"employee": employee.pk, "comment": "Подтверждено"},
+            )
+            after = self.client.get(reverse("finance_payroll_dashboard"))
+
+        self.assertEqual(before.context["unresolved_count"], 1)
+        self.assertEqual(after.context["unresolved_count"], 0)
 
     def test_import_history_shows_status_period_rows_and_active_coverage(self):
         batch = self._batch("history")
@@ -395,6 +472,28 @@ class PayrollManagementUITests(TestCase):
             self.assertEqual(self.client.get(dashboard).status_code, 403)
             self.assertEqual(self.client.get(imports).status_code, 403)
             self.assertEqual(self.client.get(mapping).status_code, 403)
+
+    def test_payroll_navigation_uses_first_accessible_destination(self):
+        dashboard = reverse("finance_payroll_dashboard")
+        imports = reverse("finance_payroll_import_list")
+        mapping = reverse("finance_payroll_employee_mapping")
+        label = "ФОТ / Расчёты с персоналом"
+
+        with self._permissions(summary=True):
+            response = self.client.get(dashboard)
+            self.assertContains(response, f'href="{dashboard}"')
+            self.assertContains(response, label)
+        with self._permissions(import_access=True):
+            response = self.client.get(imports)
+            self.assertContains(response, f'href="{imports}"')
+            self.assertContains(response, label)
+        with self._permissions(mapping=True):
+            response = self.client.get(mapping)
+            self.assertContains(response, f'href="{mapping}"')
+            self.assertContains(response, label)
+        with self._permissions():
+            response = self.client.get(reverse("finance_dashboard"))
+            self.assertNotContains(response, label)
 
     def test_manual_mapping_updates_all_historical_rows_through_identity_fk(self):
         identity = self._identity()

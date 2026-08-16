@@ -1331,7 +1331,7 @@
                   <i class="bi bi-cash-stack"></i>
                   <span>Подотчёт</span>
                 </a>
-                {% if can_view_payroll_summary %}<a href="{% url 'finance_payroll_dashboard' %}" class="ui-dropdown__item {% if request.resolver_match.url_name|slice:':15' == 'finance_payroll' %}is-active{% endif %}"><i class="bi bi-people"></i><span>ФОТ / Расчёты с персоналом</span></a>{% endif %}
+                {% if can_access_payroll %}<a href="{{ payroll_entry_url }}" class="ui-dropdown__item {% if request.resolver_match.url_name|slice:':15' == 'finance_payroll' %}is-active{% endif %}"><i class="bi bi-people"></i><span>ФОТ / Расчёты с персоналом</span></a>{% endif %}
                 {% if can_manage_company_cash %}
                 <a href="{% url 'finance_onec_import_list' %}" class="ui-dropdown__item {% if request.resolver_match.url_name|slice:':20' == 'finance_onec_import' %}is-active{% endif %}">
                   <i class="bi bi-file-earmark-spreadsheet"></i>
@@ -1548,7 +1548,7 @@
                 <i class="bi bi-cash-stack"></i>
                 <span>Подотчёт</span>
               </a>
-              {% if can_view_payroll_summary %}<a href="{% url 'finance_payroll_dashboard' %}" class="mobile-submenu__item"><i class="bi bi-people"></i><span>ФОТ / Расчёты с персоналом</span></a>{% endif %}
+              {% if can_access_payroll %}<a href="{{ payroll_entry_url }}" class="mobile-submenu__item"><i class="bi bi-people"></i><span>ФОТ / Расчёты с персоналом</span></a>{% endif %}
               {% if can_manage_company_cash %}
               <a href="{% url 'finance_onec_import_list' %}" class="mobile-submenu__item">
                 <i class="bi bi-file-earmark-spreadsheet"></i>
