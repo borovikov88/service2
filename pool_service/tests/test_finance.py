@@ -107,7 +107,7 @@ class FinanceTests(TestCase):
     def test_installer_has_finance_access(self):
         self.client.force_login(self.installer)
 
-        response = self.client.get(reverse("finance_dashboard"))
+        response = self.client.get(reverse("finance_my"))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Добавить расход")
@@ -156,7 +156,7 @@ class FinanceTests(TestCase):
     def test_finance_create_forms_support_desktop_modal(self):
         self.client.force_login(self.manager)
 
-        dashboard = self.client.get(reverse("finance_dashboard"))
+        dashboard = self.client.get(reverse("finance_my"))
         transaction = self.client.get(reverse("finance_transaction_create"), {"modal": "1"})
         income = self.client.get(reverse("finance_income_create"), {"modal": "1"})
         expense = self.client.get(reverse("finance_expense_create"), {"modal": "1"})
@@ -186,7 +186,7 @@ class FinanceTests(TestCase):
     def test_accountant_has_full_finance_access(self):
         self.client.force_login(self.accountant)
 
-        dashboard = self.client.get(reverse("finance_dashboard"))
+        dashboard = self.client.get(reverse("finance_my"))
         report = self.client.get(reverse("finance_report"))
         transaction = self.client.post(
             reverse("finance_transaction_create"),
@@ -352,7 +352,7 @@ class FinanceTests(TestCase):
         )
         self.client.force_login(self.owner)
 
-        dashboard = self.client.get(reverse("finance_dashboard"))
+        dashboard = self.client.get(reverse("finance_my"))
         detail = self.client.get(reverse("finance_employee_detail", kwargs={"employee_id": self.service.id}))
 
         self.assertContains(
@@ -473,7 +473,7 @@ class FinanceTests(TestCase):
         )
         self.client.force_login(self.manager)
 
-        dashboard = self.client.get(reverse("finance_dashboard"))
+        dashboard = self.client.get(reverse("finance_my"))
         detail = self.client.get(reverse("finance_employee_detail", kwargs={"employee_id": self.service.id}))
         report = self.client.get(reverse("finance_report"))
         transaction_form = self.client.get(reverse("finance_transaction_create"))
@@ -974,7 +974,7 @@ class FinanceTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.url, reverse("finance_dashboard"))
+        self.assertEqual(response.url, reverse("finance_my"))
         movement = AccountableTransaction.objects.get(transaction_type=AccountableTransaction.TYPE_RETURN)
         operation = CashOperation.objects.get(operation_type=CashOperation.TYPE_ACCOUNTABLE_RETURN)
         self.assertEqual(movement.employee, self.service)

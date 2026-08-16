@@ -114,6 +114,127 @@ def can_manage_employee_mapping(user, organization):
     return _has_management_finance_role(user, organization)
 
 
+def can_view_gross_profit(user, organization):
+    """Semantic analytics capability; effective access remains unchanged."""
+    return can_manage_finance(user, organization)
+
+
+def can_import_gross_profit(user, organization):
+    """Semantic import capability; effective access remains unchanged."""
+    return can_manage_finance(user, organization)
+
+
+def can_view_cost_control(user, organization):
+    """Semantic cost-control capability; effective access remains unchanged."""
+    return can_manage_finance(user, organization)
+
+
+def can_access_finance_overview(user, organization):
+    return can_manage_finance(user, organization)
+
+
+def can_access_my_finances(user, organization):
+    return can_access_finance(user, organization) or can_access_cash(user, organization)
+
+
+def can_access_finance_data(user, organization):
+    return any((
+        can_import_gross_profit(user, organization),
+        can_import_payroll(user, organization),
+        can_manage_employee_mapping(user, organization),
+        can_import_cashflow(user, organization),
+    ))
+
+
+def can_access_finance_section(user, organization):
+    return any((
+        can_access_finance_overview(user, organization),
+        can_access_my_finances(user, organization),
+        can_access_finance_data(user, organization),
+    ))
+
+
+def finance_navigation(user, organization, *, current_route=""):
+    """Return the shared, permission-filtered Finance navigation model."""
+
+    def item(label, route_name, active_routes=()):
+        routes = (route_name, *active_routes)
+        return {
+            "label": label,
+            "route_name": route_name,
+            "url": reverse(route_name),
+            "active": current_route in routes,
+        }
+
+    analytics = []
+    if can_access_finance_overview(user, organization):
+        analytics.append(item("Обзор", "finance_overview"))
+    if can_view_gross_profit(user, organization):
+        analytics.append(item("Валовая прибыль", "finance_onec_profit_dashboard"))
+    if can_view_payroll_summary(user, organization):
+        analytics.append(item(
+            "Фонд оплаты труда",
+            "finance_payroll_dashboard",
+            ("finance_payroll_employee_mapping", "finance_payroll_employee_map"),
+        ))
+    if can_view_cost_control(user, organization):
+        analytics.append(item("Контроль себестоимости", "finance_onec_cost_control"))
+
+    operations = []
+    if can_access_my_finances(user, organization):
+        operations.append(item(
+            "Мои финансы",
+            "finance_my",
+            (
+                "finance_transaction_create", "finance_transaction_confirm",
+                "finance_transaction_review", "finance_transaction_void",
+                "finance_employee_detail", "finance_income_create",
+                "finance_income_edit", "finance_income_delete",
+                "finance_expense_create", "finance_expense_detail",
+                "finance_expense_edit", "finance_expense_delete",
+                "finance_expense_review", "finance_report", "finance_report_export",
+            ),
+        ))
+    if can_access_cash(user, organization):
+        operations.append(item(
+            "Касса ККМ", "finance_kkm_cash_dashboard",
+            (
+                "finance_cash_dashboard", "finance_cash_income_create",
+                "finance_cash_transfer_create", "finance_cash_accountable_issue_create",
+                "finance_accountable_return_create", "finance_cash_operation_detail",
+                "finance_cash_operation_edit", "finance_cash_operation_review",
+            ),
+        ))
+        operations.append(item(
+            "Перечисления", "finance_card_transfer_dashboard",
+            (
+                "finance_card_transfer_create", "finance_card_transfer_detail",
+                "finance_card_transfer_review", "finance_card_transfer_attachment_download",
+            ),
+        ))
+    if can_manage_cash(user, organization):
+        operations.append(item("Касса организации", "finance_company_cash_dashboard"))
+
+    data = []
+    if can_access_finance_data(user, organization):
+        data.append(item(
+            "Данные 1С", "finance_data",
+            (
+                "finance_onec_import_list", "finance_onec_monthly_profit_upload",
+                "finance_onec_import_preview", "finance_onec_import_confirm",
+                "finance_onec_import_cancel", "finance_onec_import_detail",
+                "finance_payroll_import_list", "finance_payroll_import_upload",
+                "finance_payroll_import_preview", "finance_payroll_import_confirm",
+            ),
+        ))
+
+    return [
+        {"key": "analytics", "label": "АНАЛИТИКА", "items": analytics},
+        {"key": "operations", "label": "ОПЕРАЦИИ", "items": operations},
+        {"key": "data", "label": "ДАННЫЕ", "items": data},
+    ]
+
+
 def can_review_card_transfer_payment(user, payment):
     if not payment:
         return False
@@ -585,7 +706,7 @@ def notify_advance(transaction):
         title=title,
         message=message,
         kind="finance",
-        action_url=reverse("finance_dashboard"),
+        action_url=reverse("finance_my"),
         organization=transaction.organization,
     )
 

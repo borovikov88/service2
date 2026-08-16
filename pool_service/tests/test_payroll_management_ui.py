@@ -630,23 +630,23 @@ class PayrollManagementUITests(TestCase):
         dashboard = reverse("finance_payroll_dashboard")
         imports = reverse("finance_payroll_import_list")
         mapping = reverse("finance_payroll_employee_mapping")
-        label = "ФОТ / Расчёты с персоналом"
+        data = reverse("finance_data")
 
         with self._permissions(summary=True):
             response = self.client.get(dashboard)
             self.assertContains(response, f'href="{dashboard}"')
-            self.assertContains(response, label)
+            self.assertContains(response, "Фонд оплаты труда")
         with self._permissions(import_access=True):
             response = self.client.get(imports)
-            self.assertContains(response, f'href="{imports}"')
-            self.assertContains(response, label)
+            self.assertContains(response, f'href="{data}"')
+            self.assertContains(response, "Данные 1С")
         with self._permissions(mapping=True):
             response = self.client.get(mapping)
-            self.assertContains(response, f'href="{mapping}"')
-            self.assertContains(response, label)
+            self.assertContains(response, f'href="{data}"')
+            self.assertContains(response, "Данные 1С")
         with self._permissions():
-            response = self.client.get(reverse("finance_dashboard"))
-            self.assertNotContains(response, label)
+            response = self.client.get(reverse("finance_overview"))
+            self.assertNotContains(response, "Фонд оплаты труда")
 
     def test_manual_mapping_updates_all_historical_rows_through_identity_fk(self):
         identity = self._identity()

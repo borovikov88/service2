@@ -7,7 +7,7 @@
     <h1 class="h3 mb-1">Контроль себестоимости 1С</h1>
     <div class="text-muted">Отчёт показывает товары, которые проданы, но в активных импортированных данных 1С отсутствует себестоимость.</div>
   </div>
-  <a class="btn btn-outline-secondary" href="{% url 'finance_onec_import_list' %}">Импорты из 1С</a>
+  {% if can_import_gross_profit %}<a class="btn btn-outline-secondary" href="{% url 'finance_onec_import_list' %}">Обновить данные</a>{% endif %}
 </div>
 
 <form method="get" class="card card-soft p-3 mb-4">

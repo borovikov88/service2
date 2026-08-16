@@ -147,9 +147,16 @@ def plan_status_context(request):
         return context
 
     from pool_service.services.finance import (
+        can_access_finance_section,
         can_import_payroll,
         can_manage_employee_mapping,
         can_view_payroll_summary,
+        finance_navigation,
+    )
+    current_route = getattr(getattr(request, "resolver_match", None), "url_name", "") or ""
+    context["can_access_finance"] = can_access_finance_section(user, org)
+    context["finance_navigation"] = finance_navigation(
+        user, org, current_route=current_route
     )
     payroll_summary_access = can_view_payroll_summary(user, org)
     payroll_import_access = can_import_payroll(user, org)

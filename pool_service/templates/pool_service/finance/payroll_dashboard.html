@@ -4,7 +4,7 @@
 {% block content %}
 <div class="d-flex flex-wrap justify-content-between gap-2 mb-3">
   <div><h1 class="h3 mb-1">ФОТ / Расчёты с персоналом</h1><div class="text-muted">Начисления, выплаты и задолженность по активным данным 1С</div></div>
-  <div class="d-flex gap-2">{% if can_manage_mapping %}<a class="btn btn-outline-secondary" href="{% url 'finance_payroll_employee_mapping' %}">Сопоставление{% if unresolved_count %} · {{ unresolved_count }}{% endif %}</a>{% endif %}{% if can_import_payroll %}<a class="btn btn-primary" href="{% url 'finance_payroll_import_list' %}">Импорты</a>{% endif %}</div>
+  <div class="d-flex gap-2">{% if can_manage_mapping %}<a class="btn btn-outline-secondary" href="{% url 'finance_payroll_employee_mapping' %}">Сопоставление{% if unresolved_count %} · {{ unresolved_count }}{% endif %}</a>{% endif %}{% if can_import_payroll %}<a class="btn btn-outline-secondary" href="{% url 'finance_payroll_import_list' %}">Обновить данные</a>{% endif %}</div>
 </div>
 <form method="get" class="card card-soft p-3 mb-3"><div class="row g-2 align-items-end"><div class="col-sm-4 col-lg-3"><label class="form-label">С месяца</label><input class="form-control" type="month" name="period_from" value="{{ period_from|date:'Y-m' }}"></div><div class="col-sm-4 col-lg-3"><label class="form-label">По месяц</label><input class="form-control" type="month" name="period_to" value="{{ period_to|date:'Y-m' }}"></div><div class="col-sm-4 col-lg-2"><button class="btn btn-primary w-100">Показать</button></div></div>{% if period_error %}<div class="text-danger mt-2">{{ period_error }}</div>{% endif %}</form>
 <div class="row g-3 mb-4">

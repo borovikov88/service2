@@ -20,7 +20,7 @@
       <h1 class="h3 fw-bold mb-1">Приход денег</h1>
       <div class="text-muted">Если клиент рассчитался с сервисником или монтажником</div>
     </div>
-    <a href="{% url 'finance_dashboard' %}" class="btn btn-outline-secondary">Назад</a>
+    <a href="{% url 'finance_my' %}" class="btn btn-outline-secondary">Назад</a>
   </div>
   {% endif %}
   <form method="post" class="{% if not finance_modal %}card card-soft p-3 p-lg-4{% endif %}">
@@ -44,7 +44,7 @@
     {% for error in form.non_field_errors %}<div class="alert alert-danger mt-3 mb-0">{{ error }}</div>{% endfor %}
     <div class="d-flex gap-2 mt-4">
       <button type="submit" class="btn btn-primary">{{ submit_label|default:"Сохранить приход" }}</button>
-      <a href="{% url 'finance_dashboard' %}" class="btn btn-outline-secondary">Отмена</a>
+      <a href="{% url 'finance_my' %}" class="btn btn-outline-secondary">Отмена</a>
     </div>
   </form>
 </div>
