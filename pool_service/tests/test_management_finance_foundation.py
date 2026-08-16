@@ -177,6 +177,21 @@ class EmployeeFoundationTests(TestCase):
         self.assertIsNone(identity.personnel_number)
         self.assertIsNone(identity.source_identity_key)
 
+    def test_model_uses_canonical_stable_id_but_preserves_source_key_interior(self):
+        identity = EmployeeOneCIdentity.objects.create(
+            organization=self.organization,
+            raw_name="Нормализация",
+            normalized_name="нормализация",
+            onec_employee_id=" AB\t  123 ",
+            personnel_number=" 123\n 45 ",
+            source_identity_key=" source  key ",
+            status=EmployeeOneCIdentity.STATUS_NOT_FOUND,
+        )
+        identity.refresh_from_db()
+        self.assertEqual(identity.onec_employee_id, "AB 123")
+        self.assertEqual(identity.personnel_number, "123 45")
+        self.assertEqual(identity.source_identity_key, "source  key")
+
     def test_normalization_ambiguity_no_partial_match_and_no_employee_creation(self):
         self.employee("Семёнов Иван Иванович")
         self.employee("Семенов Иван Иванович")

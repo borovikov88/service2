@@ -27,6 +27,15 @@ class ManagementFinanceMigrationTests(TransactionTestCase):
                 personnel_number="",
                 status="not_found",
             )
+        Identity.objects.create(
+            organization=organization,
+            raw_name="Canonical identity",
+            normalized_name="canonical identity",
+            source_identity_key=" source  key ",
+            onec_employee_id=" AB\t  123 ",
+            personnel_number=" 987 65 ",
+            status="not_found",
+        )
 
     def tearDown(self):
         MigrationExecutor(connection).migrate(
@@ -43,6 +52,10 @@ class ManagementFinanceMigrationTests(TransactionTestCase):
         self.assertEqual(Identity.objects.filter(onec_employee_id__isnull=True).count(), 2)
         self.assertEqual(Identity.objects.filter(personnel_number__isnull=True).count(), 2)
         self.assertEqual(Identity.objects.filter(source_identity_key__isnull=True).count(), 2)
+        canonical = Identity.objects.get(normalized_name="canonical identity")
+        self.assertEqual(canonical.onec_employee_id, "AB 123")
+        self.assertEqual(canonical.personnel_number, "987 65")
+        self.assertEqual(canonical.source_identity_key, "source  key")
 
         expected = {
             "unique_employee_user_per_org",
@@ -68,6 +81,39 @@ class ManagementFinanceMigrationTests(TransactionTestCase):
                     if details.get("unique")
                 )
         self.assertTrue(expected.issubset(found), expected - found)
+
+
+class ManagementFinanceCanonicalCollisionMigrationTests(TransactionTestCase):
+    migrate_from = [("pool_service", "0093_management_finance_foundation")]
+    migrate_to = [("pool_service", "0094_mysql_identity_unique_constraints")]
+
+    def setUp(self):
+        super().setUp()
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_from)
+        old_apps = executor.loader.project_state(self.migrate_from).apps
+        Organization = old_apps.get_model("pool_service", "Organization")
+        Identity = old_apps.get_model("pool_service", "EmployeeOneCIdentity")
+        organization = Organization.objects.create(name="Canonical conflict organization")
+        for suffix, personnel_number in (("one", "123  45"), ("two", "123 45")):
+            Identity.objects.create(
+                organization=organization,
+                raw_name=f"Canonical conflict {suffix}",
+                normalized_name=f"canonical conflict {suffix}",
+                personnel_number=personnel_number,
+                status="not_found",
+            )
+
+    def tearDown(self):
+        executor = MigrationExecutor(connection)
+        old_apps = executor.loader.project_state(self.migrate_from).apps
+        old_apps.get_model("pool_service", "EmployeeOneCIdentity").objects.all().delete()
+        executor.migrate(executor.loader.graph.leaf_nodes())
+        super().tearDown()
+
+    def test_canonicalized_duplicate_fails_closed(self):
+        with self.assertRaisesRegex(RuntimeError, "unique_personnel_number_per_org"):
+            MigrationExecutor(connection).migrate(self.migrate_to)
 
 
 @skipUnless(connection.vendor == "mysql", "MySQL-specific skipped-constraint regression")

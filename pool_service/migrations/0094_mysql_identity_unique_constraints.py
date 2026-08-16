@@ -1,3 +1,5 @@
+import re
+
 from django.db import migrations, models
 from django.db.models import Count
 
@@ -16,20 +18,51 @@ class RemoveConstraintIfExists(migrations.RemoveConstraint):
         super().database_forwards(app_label, schema_editor, from_state, to_state)
 
 
+def _normalize_stable_identifier(value):
+    if value is None:
+        return None
+    return re.sub(r"\s+", " ", str(value).strip()) or None
+
+
+def _normalize_source_identity_key(value):
+    if value is None:
+        return None
+    return str(value).strip() or None
+
+
 def normalize_and_validate_identity_keys(apps, schema_editor):
     Employee = apps.get_model("pool_service", "Employee")
     Identity = apps.get_model("pool_service", "EmployeeOneCIdentity")
 
     identity_fields = ("onec_employee_id", "personnel_number", "source_identity_key")
+    constraint_names = {
+        "onec_employee_id": "unique_onec_employee_id_per_org",
+        "personnel_number": "unique_personnel_number_per_org",
+        "source_identity_key": "unique_source_employee_per_org",
+    }
     changed = []
-    for identity in Identity.objects.only("pk", *identity_fields).iterator(chunk_size=500):
+    seen = {}
+    for identity in Identity.objects.only(
+        "pk", "organization_id", *identity_fields
+    ).iterator(chunk_size=500):
         dirty = False
         for field in identity_fields:
             value = getattr(identity, field)
-            normalized = (str(value).strip() or None) if value is not None else None
+            if field == "source_identity_key":
+                normalized = _normalize_source_identity_key(value)
+            else:
+                normalized = _normalize_stable_identifier(value)
             if value != normalized:
                 setattr(identity, field, normalized)
                 dirty = True
+            if normalized is not None:
+                key = (field, identity.organization_id, normalized)
+                if key in seen:
+                    raise RuntimeError(
+                        f"Cannot create {constraint_names[field]}: duplicate non-NULL "
+                        f"value for organization_id={identity.organization_id}."
+                    )
+                seen[key] = identity.pk
         if dirty:
             changed.append(identity)
     if changed:

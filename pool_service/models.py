@@ -8,6 +8,10 @@ from django.contrib.auth.models import User
 from django_ckeditor_5.fields import CKEditor5Field
 from django.utils import timezone
 
+from pool_service.identity_normalization import (
+    normalize_source_identity_key,
+    normalize_stable_identifier,
+)
 from pool_service.storage import private_media_storage
 
 
@@ -2117,16 +2121,16 @@ class EmployeeOneCIdentity(models.Model):
 
     def clean(self):
         super().clean()
-        self.onec_employee_id = (self.onec_employee_id or "").strip() or None
-        self.personnel_number = (self.personnel_number or "").strip() or None
-        self.source_identity_key = (self.source_identity_key or "").strip() or None
+        self.onec_employee_id = normalize_stable_identifier(self.onec_employee_id)
+        self.personnel_number = normalize_stable_identifier(self.personnel_number)
+        self.source_identity_key = normalize_source_identity_key(self.source_identity_key)
         if self.employee_id and self.employee.organization_id != self.organization_id:
             raise ValidationError({"employee": "Сотрудник относится к другой организации."})
 
     def save(self, *args, **kwargs):
-        self.onec_employee_id = (self.onec_employee_id or "").strip() or None
-        self.personnel_number = (self.personnel_number or "").strip() or None
-        self.source_identity_key = (self.source_identity_key or "").strip() or None
+        self.onec_employee_id = normalize_stable_identifier(self.onec_employee_id)
+        self.personnel_number = normalize_stable_identifier(self.personnel_number)
+        self.source_identity_key = normalize_source_identity_key(self.source_identity_key)
         return super().save(*args, **kwargs)
 
     def __str__(self):

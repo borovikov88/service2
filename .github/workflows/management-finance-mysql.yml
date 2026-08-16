@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "pool_service/models.py"
+      - "pool_service/identity_normalization.py"
       - "pool_service/finance_imports/**"
       - "pool_service/migrations/0093_management_finance_foundation.py"
       - "pool_service/migrations/0094_mysql_identity_unique_constraints.py"

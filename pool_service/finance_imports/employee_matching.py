@@ -5,6 +5,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
+from pool_service.identity_normalization import normalize_stable_identifier
 from pool_service.models import DataAuditLog, Employee, EmployeeOneCIdentity
 
 
@@ -21,10 +22,6 @@ def _employee_name(employee):
 def _source_identity_key(normalized_name, normalized_department_name):
     payload = f"{normalized_name}\x1f{normalized_department_name}".encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
-
-
-def _optional_identifier(value):
-    return re.sub(r"\s+", " ", str(value or "").strip()) or None
 
 
 def _stable_identity(organization, onec_employee_id=None, personnel_number=None):
@@ -82,8 +79,8 @@ def resolve_employee_identity(
 ):
     normalized_name = normalize_onec_name(raw_name)
     normalized_department_name = normalize_onec_name(department_name)
-    onec_employee_id = _optional_identifier(onec_employee_id)
-    personnel_number = _optional_identifier(personnel_number)
+    onec_employee_id = normalize_stable_identifier(onec_employee_id)
+    personnel_number = normalize_stable_identifier(personnel_number)
     stable = _stable_identity(organization, onec_employee_id, personnel_number)
     if stable:
         return _enrich_stable_identifiers(
