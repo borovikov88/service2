@@ -735,6 +735,18 @@ class PayrollUploadForm(MonthlyProfitUploadForm):
         return super().clean_report()
 
 
+class PayrollConfirmForm(forms.Form):
+    acknowledgement = forms.BooleanField(
+        required=True,
+        label=(
+            "Я проверил период, количество строк и контрольные суммы "
+            "и подтверждаю импорт."
+        ),
+        widget=forms.CheckboxInput(attrs={"class": "form-check-input"}),
+        error_messages={"required": "Подтвердите, что проверили параметры импорта."},
+    )
+
+
 class EmployeeIdentityMappingForm(forms.Form):
     employee = forms.ModelChoiceField(
         queryset=Employee.objects.none(),

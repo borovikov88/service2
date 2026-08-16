@@ -13,6 +13,7 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
 from django.core.exceptions import ValidationError
+from django.core.validators import validate_ipv46_address
 from django.db import transaction
 from django.db.models import Case, DecimalField, F, Sum, Value, When
 from django.core.paginator import Paginator
@@ -38,6 +39,7 @@ from pool_service.finance_forms import (
     MonthlyProfitUploadForm,
     OneCCostControlFilterForm,
     PayrollUploadForm,
+    PayrollConfirmForm,
     EmployeeIdentityMappingForm,
 )
 from pool_service.models import (
@@ -60,7 +62,11 @@ from pool_service.models import (
     OneCImportBatch,
     OneCMonthlyProfit,
 )
-from pool_service.finance_imports.payroll_services import create_payroll_preview, confirm_payroll
+from pool_service.finance_imports.payroll_services import (
+    confirm_payroll,
+    create_payroll_preview,
+    payroll_confirmation_state,
+)
 from pool_service.finance_imports.payroll_parser import PARSER_VERSION as PAYROLL_PARSER_VERSION
 from pool_service.finance_imports.employee_matching import confirm_employee_identity
 from pool_service.finance_imports.payroll_dashboard import (
@@ -2424,6 +2430,7 @@ def finance_payroll_import_preview(request, batch_id):
     metadata = batch.metadata or {}
     show_personal = can_view_payroll_personal(request.user, organization)
     parser_version_current = batch.parser_version == PAYROLL_PARSER_VERSION
+    confirmation_state = payroll_confirmation_state(batch)
     return render(request, "pool_service/finance/payroll_import_preview.html", {
         "batch": batch,
         "report": metadata.get("report", {}),
@@ -2434,29 +2441,61 @@ def finance_payroll_import_preview(request, batch_id):
         "critical_errors": metadata.get("critical_errors", []),
         "overlap_months": metadata.get("overlap_months", []),
         "parser_version_current": parser_version_current,
-        "can_confirm": batch.status == OneCImportBatch.STATUS_PREVIEWED
-            and not metadata.get("critical_errors") and parser_version_current,
+        "can_confirm": confirmation_state["can_confirm"],
+        "confirmation_state": confirmation_state,
         "active_tab": "finance",
     })
 
 
-@require_POST
 @login_required
 def finance_payroll_import_confirm(request, batch_id):
     organization, denied = _payroll_access(request, can_import_payroll)
     if denied:
         return denied
-    get_object_or_404(
+    batch = get_object_or_404(
         OneCImportBatch, pk=batch_id, organization=organization,
         import_type=OneCImportBatch.TYPE_PAYROLL,
     )
-    try:
-        confirm_payroll(batch_id, organization, request.user)
-    except ValidationError as exc:
-        messages.error(request, "; ".join(exc.messages))
-        return redirect("finance_payroll_import_preview", batch_id=batch_id)
-    messages.success(request, "Импорт расчётов с персоналом подтверждён.")
-    return redirect("finance_payroll_dashboard")
+    metadata = batch.metadata or {}
+    confirmation_state = payroll_confirmation_state(batch)
+    form = PayrollConfirmForm(request.POST if request.method == "POST" else None)
+    if request.method == "POST" and form.is_valid():
+        remote_ip = request.META.get("REMOTE_ADDR") or None
+        try:
+            if remote_ip:
+                validate_ipv46_address(remote_ip)
+        except ValidationError:
+            remote_ip = None
+        audit_context = {
+            "action": "payroll_confirm",
+            "route": request.resolver_match.view_name if request.resolver_match else "",
+            "remote_ip": remote_ip,
+            "user_agent": (request.META.get("HTTP_USER_AGENT") or "")[:512],
+            "request_timestamp": timezone.now().isoformat(),
+        }
+        try:
+            confirm_payroll(
+                batch_id, organization, request.user, audit_context=audit_context
+            )
+        except ValidationError as exc:
+            messages.error(request, "; ".join(exc.messages))
+            batch.refresh_from_db()
+            metadata = batch.metadata or {}
+            confirmation_state = payroll_confirmation_state(batch)
+        else:
+            messages.success(request, "Импорт подтверждён.")
+            return redirect("finance_payroll_dashboard")
+    return render(request, "pool_service/finance/payroll_import_confirm.html", {
+        "batch": batch,
+        "summary": metadata.get("payroll_summary", {}),
+        "warnings": metadata.get("warnings", []),
+        "critical_errors": metadata.get("critical_errors", []),
+        "overlap_months": metadata.get("overlap_months", []),
+        "parser_version_current": batch.parser_version == PAYROLL_PARSER_VERSION,
+        "confirmation_state": confirmation_state,
+        "form": form,
+        "active_tab": "finance",
+    })
 
 
 @login_required

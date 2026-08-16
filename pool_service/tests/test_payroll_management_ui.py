@@ -292,7 +292,9 @@ class PayrollManagementUITests(TestCase):
         self.assertFalse(PayrollRow.objects.exists())
         preview = self.client.get(reverse("finance_payroll_import_preview", args=[batch.pk]))
         self.assertContains(preview, "Сотрудников источника")
-        self.assertContains(preview, "Подтвердить импорт")
+        self.assertContains(preview, "Данные ещё не импортированы")
+        self.assertContains(preview, "Перейти к подтверждению")
+        self.assertNotContains(preview, "<form method=\"post\" action=", html=False)
         self.assertEqual(batch.parser_version, PAYROLL_PARSER_VERSION)
         self.assertEqual(batch.metadata["payroll_summary"], {
             "distinct_employees": 2,
@@ -302,12 +304,29 @@ class PayrollManagementUITests(TestCase):
             "paid": "240.00",
             "closing_balance": "90.00",
         })
-        first = self.client.post(reverse("finance_payroll_import_confirm", args=[batch.pk]))
+        confirm_url = reverse("finance_payroll_import_confirm", args=[batch.pk])
+        confirmation = self.client.get(confirm_url)
+        self.assertContains(confirmation, "Это финальный шаг")
+        self.assertContains(confirmation, "Подтвердить импорт")
+        self.assertNotContains(confirmation, "Иванов Иван Иванович")
+
+        missing_acknowledgement = self.client.post(confirm_url)
+        self.assertEqual(missing_acknowledgement.status_code, 200)
+        self.assertContains(missing_acknowledgement, "Подтвердите, что проверили")
+        self.assertFalse(PayrollRow.objects.exists())
+
+        first = self.client.post(confirm_url, {"acknowledgement": "on"})
         self.assertEqual(first.status_code, 302)
         self.assertEqual(PayrollRow.objects.count(), 4)
-        second = self.client.post(reverse("finance_payroll_import_confirm", args=[batch.pk]))
-        self.assertEqual(second.status_code, 302)
+        second = self.client.post(confirm_url, {"acknowledgement": "on"})
+        self.assertEqual(second.status_code, 200)
+        self.assertContains(second, "Импорт уже подтверждён")
+        self.assertNotContains(second, "Подтвердить импорт")
         self.assertEqual(PayrollRow.objects.count(), 4)
+        self.assertEqual(DataAuditLog.objects.filter(
+            entity_type="OneCImportBatch", entity_id=str(batch.pk),
+            after__status=OneCImportBatch.STATUS_CONFIRMED,
+        ).count(), 1)
 
     def test_stale_parser_preview_blocks_button_and_direct_confirm(self):
         upload = SimpleUploadedFile(
@@ -319,10 +338,144 @@ class PayrollManagementUITests(TestCase):
         batch.parser_version = "obsolete"
         batch.save(update_fields=["parser_version"])
         preview = self.client.get(reverse("finance_payroll_import_preview", args=[batch.pk]))
-        self.assertNotContains(preview, "Подтвердить импорт")
+        self.assertNotContains(preview, "Перейти к подтверждению")
         self.assertContains(preview, "Предпросмотр создан устаревшей версией парсера")
-        response = self.client.post(reverse("finance_payroll_import_confirm", args=[batch.pk]))
+        confirm_url = reverse("finance_payroll_import_confirm", args=[batch.pk])
+        confirmation = self.client.get(confirm_url)
+        self.assertContains(confirmation, "устаревшей версией парсера")
+        self.assertNotContains(confirmation, "Подтвердить импорт")
+        response = self.client.post(confirm_url, {"acknowledgement": "on"})
+        self.assertEqual(response.status_code, 200)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, OneCImportBatch.STATUS_PREVIEWED)
+        self.assertFalse(PayrollRow.objects.exists())
+
+    def test_confirmation_audit_contains_only_safe_request_context(self):
+        upload = SimpleUploadedFile(
+            "audit-payroll.xlsx", payroll_xlsx(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.client.post(reverse("finance_payroll_import_upload"), {"report": upload})
+        batch = OneCImportBatch.objects.get(original_filename="audit-payroll.xlsx")
+        self.client.cookies["sensitive_test_cookie"] = "must-not-be-audited"
+        response = self.client.post(
+            reverse("finance_payroll_import_confirm", args=[batch.pk]),
+            {"acknowledgement": "on", "csrfmiddlewaretoken": "must-not-be-audited"},
+            REMOTE_ADDR="192.0.2.25",
+            HTTP_X_FORWARDED_FOR="198.51.100.99",
+            HTTP_USER_AGENT="Payroll Test Browser/1.0",
+        )
         self.assertEqual(response.status_code, 302)
+        audit = DataAuditLog.objects.get(
+            entity_type="OneCImportBatch", entity_id=str(batch.pk),
+            after__status=OneCImportBatch.STATUS_CONFIRMED,
+        )
+        context = audit.after["confirmation_context"]
+        self.assertEqual(audit.ip_address, "192.0.2.25")
+        self.assertEqual(audit.user_agent, "Payroll Test Browser/1.0")
+        self.assertEqual(context["remote_ip"], "192.0.2.25")
+        self.assertEqual(context["actor_user_id"], self.user.pk)
+        self.assertEqual(context["organization_id"], self.organization.pk)
+        self.assertEqual(context["batch_id"], str(batch.pk))
+        self.assertEqual(context["batch_sha256"], batch.file_sha256)
+        self.assertEqual(context["parser_version"], PAYROLL_PARSER_VERSION)
+        self.assertEqual(context["rows_detected"], 4)
+        self.assertEqual(context["period_first"], "2024-12-01")
+        self.assertEqual(context["period_last"], "2025-01-01")
+        self.assertEqual(context["route"], "finance_payroll_import_confirm")
+        serialized = str(audit.after).casefold()
+        self.assertNotIn("cookie", serialized)
+        self.assertNotIn("sessionid", serialized)
+        self.assertNotIn("csrf", serialized)
+        self.assertNotIn("198.51.100.99", serialized)
+
+    def test_critical_error_blocks_confirmation_page_and_post(self):
+        upload = SimpleUploadedFile(
+            "critical-payroll.xlsx", payroll_xlsx(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.client.post(reverse("finance_payroll_import_upload"), {"report": upload})
+        batch = OneCImportBatch.objects.get(original_filename="critical-payroll.xlsx")
+        metadata = dict(batch.metadata)
+        metadata["critical_errors"] = ["Контрольная ошибка"]
+        batch.metadata = metadata
+        batch.save(update_fields=["metadata"])
+        preview = self.client.get(reverse("finance_payroll_import_preview", args=[batch.pk]))
+        self.assertContains(preview, "Контрольная ошибка")
+        self.assertNotContains(preview, "Перейти к подтверждению")
+        confirm_url = reverse("finance_payroll_import_confirm", args=[batch.pk])
+        confirmation = self.client.get(confirm_url)
+        self.assertContains(confirmation, "Подтверждение заблокировано")
+        self.assertNotContains(confirmation, "Подтвердить импорт")
+        post = self.client.post(confirm_url, {"acknowledgement": "on"})
+        self.assertEqual(post.status_code, 200)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, OneCImportBatch.STATUS_PREVIEWED)
+        self.assertFalse(PayrollRow.objects.exists())
+
+    @patch("pool_service.finance_views.can_view_payroll_personal", return_value=False)
+    @patch("pool_service.finance_views.can_import_payroll", return_value=True)
+    def test_import_only_confirmation_is_aggregate_only(self, _import, _personal):
+        upload = SimpleUploadedFile(
+            "aggregate-payroll.xlsx", payroll_xlsx(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.client.post(reverse("finance_payroll_import_upload"), {"report": upload})
+        batch = OneCImportBatch.objects.get(original_filename="aggregate-payroll.xlsx")
+        response = self.client.get(reverse("finance_payroll_import_confirm", args=[batch.pk]))
+        self.assertContains(response, "Сотрудников источника")
+        self.assertContains(response, "300.00")
+        self.assertNotContains(response, "Иванов Иван Иванович")
+        self.assertNotContains(response, "Петров Пётр Петрович")
+
+    def test_overlap_months_are_prominent_on_confirmation_page(self):
+        existing = self._batch("overlap-existing")
+        self._activate(existing, date(2024, 12, 1), date(2025, 1, 1))
+        upload = SimpleUploadedFile(
+            "overlap-payroll.xlsx", payroll_xlsx(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.client.post(reverse("finance_payroll_import_upload"), {"report": upload})
+        batch = OneCImportBatch.objects.get(original_filename="overlap-payroll.xlsx")
+        response = self.client.get(reverse("finance_payroll_import_confirm", args=[batch.pk]))
+        self.assertContains(response, "Будут заменены активные данные за")
+        self.assertContains(response, "2024-12")
+        self.assertContains(response, "2025-01")
+        self.assertContains(response, "останутся в истории")
+
+    def test_confirmation_requires_import_permission_and_is_aggregate_for_personal_user(self):
+        upload = SimpleUploadedFile(
+            "permission-confirm.xlsx", payroll_xlsx(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.client.post(reverse("finance_payroll_import_upload"), {"report": upload})
+        batch = OneCImportBatch.objects.get(original_filename="permission-confirm.xlsx")
+        confirm_url = reverse("finance_payroll_import_confirm", args=[batch.pk])
+        with self._permissions():
+            self.assertEqual(self.client.get(confirm_url).status_code, 403)
+            self.assertEqual(self.client.post(
+                confirm_url, {"acknowledgement": "on"}
+            ).status_code, 403)
+        with self._permissions(import_access=True, personal=True):
+            response = self.client.get(confirm_url)
+            self.assertEqual(response.status_code, 200)
+            self.assertContains(response, "Сотрудников источника")
+            self.assertNotContains(response, "Иванов Иван Иванович")
+
+    def test_missing_stored_file_blocks_confirmation_get_and_post(self):
+        upload = SimpleUploadedFile(
+            "missing-source.xlsx", payroll_xlsx(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.client.post(reverse("finance_payroll_import_upload"), {"report": upload})
+        batch = OneCImportBatch.objects.get(original_filename="missing-source.xlsx")
+        batch.stored_file.storage.delete(batch.stored_file.name)
+        confirm_url = reverse("finance_payroll_import_confirm", args=[batch.pk])
+        response = self.client.get(confirm_url)
+        self.assertContains(response, "Сохранённый исходный файл недоступен")
+        self.assertNotContains(response, "Подтвердить импорт")
+        post = self.client.post(confirm_url, {"acknowledgement": "on"})
+        self.assertEqual(post.status_code, 200)
         batch.refresh_from_db()
         self.assertEqual(batch.status, OneCImportBatch.STATUS_PREVIEWED)
         self.assertFalse(PayrollRow.objects.exists())

@@ -92,11 +92,16 @@ def _log(batch, user, event, **details):
     )
 
 
-def _audit(batch, user, before, after):
+def _audit(batch, user, before, after, *, audit_context=None):
+    audit_after = dict(after)
+    if audit_context:
+        audit_after["confirmation_context"] = dict(audit_context)
     DataAuditLog.objects.create(
         entity_type="OneCImportBatch", entity_id=str(batch.id), action=DataAuditLog.ACTION_UPDATE,
-        organization=batch.organization, actor=user, before=before, after=after,
-        changed_fields=sorted(set(before) | set(after)),
+        organization=batch.organization, actor=user, before=before, after=audit_after,
+        changed_fields=sorted(set(before) | set(audit_after)),
+        ip_address=(audit_context or {}).get("remote_ip"),
+        user_agent=(audit_context or {}).get("user_agent", "")[:512],
     )
 
 
