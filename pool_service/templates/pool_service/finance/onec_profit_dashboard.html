@@ -4,7 +4,7 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
   <div><h1 class="h3 mb-1">Валовая прибыль 1С</h1><div class="text-muted">Помесячные данные · {{ period.start|date:"d.m.Y" }} — {{ period.end|date:"d.m.Y" }}</div></div>
-  <a class="btn btn-outline-secondary" href="{% url 'finance_onec_import_list' %}">Импорты</a>
+  {% if can_import_gross_profit %}<a class="btn btn-outline-secondary" href="{% url 'finance_onec_import_list' %}">Обновить данные</a>{% endif %}
 </div>
 <form method="get" id="profit-period-form" class="card card-soft p-3 mb-4"><div class="row g-3 align-items-end">
   <div class="col-lg-3 col-md-6"><label class="form-label" for="period">Период</label><select class="form-select" id="period" name="period">{% for value,label in period_choices %}<option value="{{ value }}"{% if period.preset == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>

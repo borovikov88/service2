@@ -11,7 +11,7 @@
   </div>
   <div class="d-flex flex-wrap gap-2">
     <a href="{% url 'finance_report_export' %}?{{ request.GET.urlencode }}" class="btn btn-success"><i class="bi bi-file-earmark-excel me-2"></i>Excel</a>
-    <a href="{% url 'finance_dashboard' %}" class="btn btn-outline-secondary">К финансам</a>
+    <a href="{% url 'finance_my' %}" class="btn btn-outline-secondary">К моим финансам</a>
     {% if can_close_finance %}
       {% if period.is_closed %}
         <form method="post" action="{% url 'finance_period_reopen' %}?month={{ month_value }}">{% csrf_token %}<button class="btn btn-outline-warning" type="submit">Открыть месяц</button></form>

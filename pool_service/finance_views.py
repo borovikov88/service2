@@ -101,6 +101,10 @@ from pool_service.services.finance import (
     accountable_rows,
     can_access_cash,
     can_access_finance,
+    can_access_finance_data,
+    can_access_finance_overview,
+    can_access_finance_section,
+    can_access_my_finances,
     can_close_finance_period,
     can_confirm_accountable_issue,
     can_edit_expense,
@@ -116,6 +120,9 @@ from pool_service.services.finance import (
     can_view_payroll_personal,
     can_import_payroll,
     can_manage_employee_mapping,
+    can_import_gross_profit,
+    can_view_cost_control,
+    can_view_gross_profit,
     ensure_default_categories,
     finance_staff,
     find_client_by_name,
@@ -141,7 +148,19 @@ def _organization_for_finance(request):
 
 
 def _onec_import_guard(request):
-    return _finance_guard(request, manage=True)
+    return _capability_guard(request, can_import_gross_profit)
+
+
+def _capability_guard(request, permission, *, denied_message="Недостаточно прав."):
+    organization = _organization_for_finance(request)
+    if not organization:
+        return None, HttpResponseForbidden("Организация не найдена.")
+    if not permission(request.user, organization):
+        return organization, HttpResponseForbidden(denied_message)
+    if is_org_access_blocked(request.user):
+        messages.error(request, "Доступ организации к сервису приостановлен.")
+        return organization, redirect("billing")
+    return organization, None
 
 
 def _finance_guard(request, *, manage=False, close=False, issue=False):
@@ -447,7 +466,7 @@ def _render_cash_dashboard(request, section):
     roles = organization_roles(request.user, organization)
     can_create_kkm_operations = can_access_cash(request.user, organization)
     if section not in {"company", "kkm"}:
-        return redirect("finance_kkm_cash_dashboard" if can_access_cash(request.user, organization) else "finance_dashboard")
+        return redirect("finance_kkm_cash_dashboard" if can_access_cash(request.user, organization) else "finance_my")
 
     operations = []
     manager_rows = []
@@ -508,9 +527,65 @@ def _render_cash_dashboard(request, section):
 
 
 @login_required
-@xframe_options_sameorigin
 def finance_dashboard(request):
-    organization, denied = _finance_guard(request)
+    organization, denied = _capability_guard(
+        request, can_access_finance_section,
+        denied_message="Недостаточно прав для раздела Финансы.",
+    )
+    if denied:
+        return denied
+    if can_access_finance_overview(request.user, organization):
+        return redirect("finance_overview")
+    if can_access_my_finances(request.user, organization):
+        return redirect("finance_my")
+    if can_access_finance_data(request.user, organization):
+        return redirect("finance_data")
+    return HttpResponseForbidden("Недостаточно прав для раздела Финансы.")
+
+
+@login_required
+def finance_overview(request):
+    organization, denied = _capability_guard(
+        request, can_access_finance_overview,
+        denied_message="Недостаточно прав для финансового обзора.",
+    )
+    if denied:
+        return denied
+    return render(request, "pool_service/finance/overview.html", {
+        "organization": organization,
+        "can_view_gross_profit": can_view_gross_profit(request.user, organization),
+        "can_view_payroll": can_view_payroll_summary(request.user, organization),
+        "can_view_cost_control": can_view_cost_control(request.user, organization),
+        "active_tab": "finance",
+        "show_add_button": False,
+    })
+
+
+@login_required
+def finance_data(request):
+    organization, denied = _capability_guard(
+        request, can_access_finance_data,
+        denied_message="Недостаточно прав для данных 1С.",
+    )
+    if denied:
+        return denied
+    return render(request, "pool_service/finance/data.html", {
+        "organization": organization,
+        "can_import_gross_profit": can_import_gross_profit(request.user, organization),
+        "can_import_payroll": can_import_payroll(request.user, organization),
+        "can_manage_employee_mapping": can_manage_employee_mapping(request.user, organization),
+        "active_tab": "finance",
+        "show_add_button": False,
+    })
+
+
+@login_required
+@xframe_options_sameorigin
+def finance_my(request):
+    organization, denied = _capability_guard(
+        request, can_access_my_finances,
+        denied_message="Недостаточно прав для операционных финансов.",
+    )
     if denied:
         return denied
     ensure_default_categories(organization)
@@ -1086,13 +1161,13 @@ def finance_accountable_return_create(request):
             messages.success(request, "Возврат подотчёта отправлен менеджеру на подтверждение.")
         else:
             messages.success(request, "Возврат подотчёта сохранён без подтверждения.")
-        return redirect("finance_kkm_cash_dashboard" if can_access_cash(request.user, organization) else "finance_dashboard")
+        return redirect("finance_kkm_cash_dashboard" if can_access_cash(request.user, organization) else "finance_my")
     context = {
         "form": form,
         "title": "Возврат подотчёта",
         "subtitle": "Деньги попадут в кассу ККМ после подтверждения менеджером",
         "submit_label": "Отправить возврат",
-        "back_url_name": "finance_kkm_cash_dashboard" if can_access_cash(request.user, organization) else "finance_dashboard",
+        "back_url_name": "finance_kkm_cash_dashboard" if can_access_cash(request.user, organization) else "finance_my",
         "active_tab": "finance",
         "show_add_button": False,
     }
@@ -1423,7 +1498,7 @@ def finance_transaction_create(request):
             messages.success(request, "Выдача подотчёта отправлена сотруднику на подтверждение.")
         else:
             messages.success(request, "Операция подотчёта сохранена.")
-        return redirect("finance_dashboard")
+        return redirect("finance_my")
     context = {
         "form": form,
         "active_tab": "finance",
@@ -1444,11 +1519,11 @@ def finance_transaction_confirm(request, transaction_id):
         return HttpResponseForbidden("Подтвердить выдачу может только сотрудник, которому выданы деньги.")
     if period_is_closed(movement.organization, movement.occurred_on):
         messages.error(request, "Месяц закрыт. Для подтверждения нужно открыть период.")
-        return redirect(request.META.get("HTTP_REFERER") or reverse("finance_dashboard"))
+        return redirect(request.META.get("HTTP_REFERER") or reverse("finance_my"))
     decision = request.POST.get("decision")
     if decision not in {AccountableTransaction.STATUS_APPROVED, AccountableTransaction.STATUS_REJECTED}:
         messages.error(request, "Выберите решение.")
-        return redirect(request.META.get("HTTP_REFERER") or reverse("finance_dashboard"))
+        return redirect(request.META.get("HTTP_REFERER") or reverse("finance_my"))
     review_comment = (request.POST.get("review_comment") or "").strip()
     with transaction.atomic():
         cash_operation = (
@@ -1494,7 +1569,7 @@ def finance_transaction_confirm(request, transaction_id):
         messages.success(request, "Получение подотчёта подтверждено.")
     else:
         messages.success(request, "Выдача подотчёта отклонена.")
-    return redirect(request.META.get("HTTP_REFERER") or reverse("finance_dashboard"))
+    return redirect(request.META.get("HTTP_REFERER") or reverse("finance_my"))
 
 
 @login_required
@@ -1530,7 +1605,7 @@ def finance_income_create(request):
             payload=_income_payload(form, client),
         )
         messages.success(request, "Приход денег сохранён.")
-        return redirect("finance_dashboard")
+        return redirect("finance_my")
     context = {
         "form": form,
         "client_options": _client_options(organization),
@@ -1640,11 +1715,11 @@ def finance_transaction_review(request, transaction_id):
         return HttpResponseForbidden("Нельзя подтвердить собственную операцию.")
     if period_is_closed(organization, movement.occurred_on):
         messages.error(request, "Месяц закрыт.")
-        return redirect("finance_dashboard")
+        return redirect("finance_my")
     decision = request.POST.get("decision")
     if decision not in {AccountableTransaction.STATUS_APPROVED, AccountableTransaction.STATUS_REJECTED}:
         messages.error(request, "Выберите решение.")
-        return redirect("finance_dashboard")
+        return redirect("finance_my")
     review_comment = (request.POST.get("review_comment") or "").strip()
 
     if movement.pending_action:
@@ -1689,14 +1764,14 @@ def finance_transaction_review(request, transaction_id):
 
     if movement.status != AccountableTransaction.STATUS_PENDING:
         messages.error(request, "Эта операция уже рассмотрена.")
-        return redirect("finance_dashboard")
+        return redirect("finance_my")
     movement.status = decision
     movement.reviewed_by = request.user
     movement.reviewed_at = timezone.now()
     movement.review_comment = review_comment
     movement.save(update_fields=["status", "review_comment", "reviewed_by", "reviewed_at"])
     messages.success(request, "Решение по приходу денег сохранено.")
-    return redirect("finance_dashboard")
+    return redirect("finance_my")
 
 
 @require_POST
@@ -1707,14 +1782,14 @@ def finance_transaction_void(request, transaction_id):
         return denied
     movement = get_object_or_404(AccountableTransaction, id=transaction_id, organization=organization)
     if movement.is_voided:
-        return redirect("finance_dashboard")
+        return redirect("finance_my")
     if period_is_closed(organization, movement.occurred_on):
         messages.error(request, "Операцию из закрытого месяца аннулировать нельзя.")
-        return redirect("finance_dashboard")
+        return redirect("finance_my")
     reason = (request.POST.get("reason") or "").strip()
     if not reason:
         messages.error(request, "Укажите причину аннулирования.")
-        return redirect("finance_dashboard")
+        return redirect("finance_my")
     movement.is_voided = True
     movement.voided_at = timezone.now()
     movement.voided_by = request.user
@@ -1727,7 +1802,7 @@ def finance_transaction_void(request, transaction_id):
         note=reason,
     )
     messages.success(request, "Операция аннулирована. История сохранена.")
-    return redirect("finance_dashboard")
+    return redirect("finance_my")
 
 
 @login_required
@@ -1973,7 +2048,7 @@ def finance_expense_delete(request, expense_uuid):
     for receipt in receipts:
         receipt.file.delete(save=False)
     messages.success(request, "Расход удалён.")
-    return redirect("finance_dashboard")
+    return redirect("finance_my")
 
 
 @require_POST
@@ -2539,7 +2614,10 @@ def finance_payroll_employee_map(request, identity_id):
 
 @login_required
 def finance_onec_profit_dashboard(request):
-    organization, denied = _onec_import_guard(request)
+    organization, denied = _capability_guard(
+        request, can_view_gross_profit,
+        denied_message="Недостаточно прав для аналитики валовой прибыли.",
+    )
     if denied:
         return denied
     period = resolve_period(request.GET)
@@ -2589,13 +2667,17 @@ def finance_onec_profit_dashboard(request):
         "page_obj": page, "filter_query": filter_params.urlencode(),
         "pagination_query": pagination_params.urlencode(),
         "managers": managers, "manager": manager, "sort": sort,
+        "can_import_gross_profit": can_import_gross_profit(request.user, organization),
         "active_tab": "finance",
     })
 
 
 @login_required
 def finance_onec_cost_control(request):
-    organization, denied = _onec_import_guard(request)
+    organization, denied = _capability_guard(
+        request, can_view_cost_control,
+        denied_message="Недостаточно прав для контроля себестоимости.",
+    )
     if denied:
         return denied
 
@@ -2632,6 +2714,7 @@ def finance_onec_cost_control(request):
         "available_months": available_cost_control_months(organization),
         "page_obj": page,
         "filter_query": query_params.urlencode(),
+        "can_import_gross_profit": can_import_gross_profit(request.user, organization),
         "active_tab": "finance",
     })
 

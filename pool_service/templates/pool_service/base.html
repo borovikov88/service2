@@ -1327,35 +1327,10 @@
               <a class="crm-nav__link text-decoration-none {% if active_tab == 'finance' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'finance_dashboard' %}">Финансы</a>
               <span class="crm-nav__toggle" aria-hidden="true"><i class="bi bi-chevron-down"></i></span>
               <div class="crm-nav__menu">
-                <a href="{% url 'finance_dashboard' %}" class="ui-dropdown__item {% if request.resolver_match.url_name == 'finance_dashboard' or request.resolver_match.url_name == 'finance_transaction_create' or request.resolver_match.url_name == 'finance_employee_detail' or request.resolver_match.url_name == 'finance_income_create' or request.resolver_match.url_name == 'finance_expense_create' or request.resolver_match.url_name == 'finance_expense_detail' or request.resolver_match.url_name == 'finance_report' %}is-active{% endif %}">
-                  <i class="bi bi-cash-stack"></i>
-                  <span>Подотчёт</span>
-                </a>
-                {% if can_access_payroll %}<a href="{{ payroll_entry_url }}" class="ui-dropdown__item {% if request.resolver_match.url_name|slice:':15' == 'finance_payroll' %}is-active{% endif %}"><i class="bi bi-people"></i><span>ФОТ / Расчёты с персоналом</span></a>{% endif %}
-                {% if can_manage_company_cash %}
-                <a href="{% url 'finance_onec_import_list' %}" class="ui-dropdown__item {% if request.resolver_match.url_name|slice:':20' == 'finance_onec_import' %}is-active{% endif %}">
-                  <i class="bi bi-file-earmark-spreadsheet"></i>
-                  <span>Импорт из 1С</span>
-                </a>
-                <a href="{% url 'finance_onec_cost_control' %}" class="ui-dropdown__item {% if request.resolver_match.url_name == 'finance_onec_cost_control' %}is-active{% endif %}">
-                  <i class="bi bi-clipboard2-pulse"></i>
-                  <span>Контроль себестоимости 1С</span>
-                </a>
-                <a href="{% url 'finance_company_cash_dashboard' %}" class="ui-dropdown__item {% if request.resolver_match.url_name == 'finance_company_cash_dashboard' or request.resolver_match.url_name == 'finance_cash_count_create' and request.resolver_match.kwargs.cashbox_type == 'company' %}is-active{% endif %}">
-                  <i class="bi bi-bank"></i>
-                  <span>Касса организации</span>
-                </a>
-                {% endif %}
-                {% if can_access_kkm_cash %}
-                <a href="{% url 'finance_kkm_cash_dashboard' %}" class="ui-dropdown__item {% if request.resolver_match.url_name == 'finance_kkm_cash_dashboard' or request.resolver_match.url_name == 'finance_cash_dashboard' or request.resolver_match.url_name == 'finance_cash_income_create' or request.resolver_match.url_name == 'finance_cash_transfer_create' or request.resolver_match.url_name == 'finance_cash_accountable_issue_create' or request.resolver_match.url_name == 'finance_accountable_return_create' or request.resolver_match.url_name == 'finance_cash_count_create' and request.resolver_match.kwargs.cashbox_type == 'kkm' or request.resolver_match.url_name == 'finance_cash_operation_detail' or request.resolver_match.url_name == 'finance_cash_operation_edit' %}is-active{% endif %}">
-                  <i class="bi bi-wallet2"></i>
-                  <span>Касса ККМ</span>
-                </a>
-                <a href="{% url 'finance_card_transfer_dashboard' %}" class="ui-dropdown__item {% if request.resolver_match.url_name == 'finance_card_transfer_dashboard' or request.resolver_match.url_name == 'finance_card_transfer_create' or request.resolver_match.url_name == 'finance_card_transfer_detail' %}is-active{% endif %}">
-                  <i class="bi bi-credit-card"></i>
-                  <span>Перечисления</span>
-                </a>
-                {% endif %}
+                {% for group in finance_navigation %}{% if group.items %}
+                  <div class="small text-muted fw-semibold px-3 pt-2 pb-1">{{ group.label }}</div>
+                  {% for item in group.items %}<a href="{{ item.url }}" class="ui-dropdown__item {% if item.active %}is-active{% endif %}"><span>{{ item.label }}</span></a>{% endfor %}
+                {% endif %}{% endfor %}
               </div>
             </div>
           {% endif %}
@@ -1544,31 +1519,10 @@
               <i class="bi bi-chevron-down"></i>
             </summary>
             <div class="mobile-submenu__body">
-              <a href="{% url 'finance_dashboard' %}" class="mobile-submenu__item {% if request.resolver_match.url_name == 'finance_dashboard' or request.resolver_match.url_name == 'finance_transaction_create' or request.resolver_match.url_name == 'finance_employee_detail' or request.resolver_match.url_name == 'finance_income_create' or request.resolver_match.url_name == 'finance_expense_create' or request.resolver_match.url_name == 'finance_expense_detail' or request.resolver_match.url_name == 'finance_report' %}is-active{% endif %}">
-                <i class="bi bi-cash-stack"></i>
-                <span>Подотчёт</span>
-              </a>
-              {% if can_access_payroll %}<a href="{{ payroll_entry_url }}" class="mobile-submenu__item"><i class="bi bi-people"></i><span>ФОТ / Расчёты с персоналом</span></a>{% endif %}
-              {% if can_manage_company_cash %}
-              <a href="{% url 'finance_onec_import_list' %}" class="mobile-submenu__item">
-                <i class="bi bi-file-earmark-spreadsheet"></i>
-                <span>Импорт из 1С</span>
-              </a>
-              <a href="{% url 'finance_company_cash_dashboard' %}" class="mobile-submenu__item {% if request.resolver_match.url_name == 'finance_company_cash_dashboard' or request.resolver_match.url_name == 'finance_cash_count_create' and request.resolver_match.kwargs.cashbox_type == 'company' %}is-active{% endif %}">
-                <i class="bi bi-bank"></i>
-                <span>Касса организации</span>
-              </a>
-              {% endif %}
-              {% if can_access_kkm_cash %}
-              <a href="{% url 'finance_kkm_cash_dashboard' %}" class="mobile-submenu__item {% if request.resolver_match.url_name == 'finance_kkm_cash_dashboard' or request.resolver_match.url_name == 'finance_cash_dashboard' or request.resolver_match.url_name == 'finance_cash_income_create' or request.resolver_match.url_name == 'finance_cash_transfer_create' or request.resolver_match.url_name == 'finance_cash_accountable_issue_create' or request.resolver_match.url_name == 'finance_accountable_return_create' or request.resolver_match.url_name == 'finance_cash_count_create' and request.resolver_match.kwargs.cashbox_type == 'kkm' or request.resolver_match.url_name == 'finance_cash_operation_detail' or request.resolver_match.url_name == 'finance_cash_operation_edit' %}is-active{% endif %}">
-                <i class="bi bi-wallet2"></i>
-                <span>Касса ККМ</span>
-              </a>
-              <a href="{% url 'finance_card_transfer_dashboard' %}" class="mobile-submenu__item {% if request.resolver_match.url_name == 'finance_card_transfer_dashboard' or request.resolver_match.url_name == 'finance_card_transfer_create' or request.resolver_match.url_name == 'finance_card_transfer_detail' %}is-active{% endif %}">
-                <i class="bi bi-credit-card"></i>
-                <span>Перечисления</span>
-              </a>
-              {% endif %}
+              {% for group in finance_navigation %}{% if group.items %}
+                <div class="small text-muted fw-semibold px-3 pt-2 pb-1">{{ group.label }}</div>
+                {% for item in group.items %}<a href="{{ item.url }}" class="mobile-submenu__item {% if item.active %}is-active{% endif %}"><span>{{ item.label }}</span></a>{% endfor %}
+              {% endif %}{% endfor %}
             </div>
           </details>
           {% endif %}

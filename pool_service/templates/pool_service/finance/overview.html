@@ -1,0 +1,21 @@
+{% extends "pool_service/base.html" %}
+{% block title %}Финансы — Обзор{% endblock %}
+{% block content %}
+<div class="mb-4">
+  <div class="text-muted small mb-1">Финансы</div>
+  <h1 class="h3 mb-1">Обзор</h1>
+  <div class="text-muted">Основные финансовые показатели компании.</div>
+</div>
+
+<div class="row g-3">
+  {% if can_view_gross_profit %}
+  <div class="col-md-6 col-xl-4"><a class="card card-soft p-4 h-100 text-decoration-none text-body" href="{% url 'finance_onec_profit_dashboard' %}"><div class="h5 mb-2">Валовая прибыль</div><div class="text-muted">Выручка, себестоимость и рентабельность →</div></a></div>
+  {% endif %}
+  {% if can_view_payroll %}
+  <div class="col-md-6 col-xl-4"><a class="card card-soft p-4 h-100 text-decoration-none text-body" href="{% url 'finance_payroll_dashboard' %}"><div class="h5 mb-2">Фонд оплаты труда</div><div class="text-muted">Начисления, выплаты и задолженность →</div></a></div>
+  {% endif %}
+  {% if can_view_cost_control %}
+  <div class="col-md-6 col-xl-4"><a class="card card-soft p-4 h-100 text-decoration-none text-body" href="{% url 'finance_onec_cost_control' %}"><div class="h5 mb-2">Контроль себестоимости</div><div class="text-muted">Продажи товаров без себестоимости →</div></a></div>
+  {% endif %}
+</div>
+{% endblock %}
