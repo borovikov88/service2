@@ -142,7 +142,6 @@ def can_access_finance_data(user, organization):
         can_import_gross_profit(user, organization),
         can_import_payroll(user, organization),
         can_manage_employee_mapping(user, organization),
-        can_import_cashflow(user, organization),
     ))
 
 
