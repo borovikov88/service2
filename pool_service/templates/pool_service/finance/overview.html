@@ -1,21 +1,38 @@
 {% extends "pool_service/base.html" %}
+{% load finance_tags %}
 {% block title %}Финансы — Обзор{% endblock %}
 {% block content %}
 <div class="mb-4">
   <div class="text-muted small mb-1">Финансы</div>
   <h1 class="h3 mb-1">Обзор</h1>
-  <div class="text-muted">Основные финансовые показатели компании.</div>
+  <div class="text-muted">Основные финансовые показатели компании. Данные учитываются по полным месяцам: {{ effective_period_label }}.</div>
 </div>
 
-<div class="row g-3">
+<form method="get" class="card card-soft p-3 mb-3"><div class="row g-2 align-items-end"><div class="col-md-3"><label class="form-label" for="period">Период</label><select class="form-select" id="period" name="period"><option value="">Текущий год</option><option value="current_month"{% if period.preset == "current_month" %} selected{% endif %}>Текущий месяц</option><option value="previous_month"{% if period.preset == "previous_month" %} selected{% endif %}>Прошлый месяц</option><option value="current_year"{% if period.preset == "current_year" %} selected{% endif %}>Текущий год</option><option value="previous_year"{% if period.preset == "previous_year" %} selected{% endif %}>Прошлый год</option><option value="custom"{% if period.preset == "custom" %} selected{% endif %}>Произвольный период</option></select></div><div class="col-md-3"><label class="form-label" for="start">С</label><input class="form-control" type="date" id="start" name="start" value="{{ period.start|date:'Y-m-d' }}"></div><div class="col-md-3"><label class="form-label" for="end">По</label><input class="form-control" type="date" id="end" name="end" value="{{ period.end|date:'Y-m-d' }}"></div><div class="col-md-3"><button class="btn btn-primary w-100">Показать</button></div></div>{% if period.error %}<div class="alert alert-warning py-2 mt-3 mb-0">{{ period.error }}</div>{% endif %}</form>
+
+<div class="card card-soft p-3 mb-3"><div class="row g-2 small text-muted">
+  {% if can_view_gross_profit %}<div class="col-md-6"><strong class="text-body">Валовая прибыль:</strong> {% if freshness.gross_profit.data_through %}данные по {{ freshness.gross_profit.data_through|date:"m.Y" }} · обновлено {{ freshness.gross_profit.last_updated|date:"d.m.Y H:i" }}{% else %}нет данных{% endif %}</div>{% endif %}
+  {% if can_view_payroll %}<div class="col-md-6"><strong class="text-body">ФОТ:</strong> {% if freshness.payroll.data_through %}данные по {{ freshness.payroll.data_through|date:"m.Y" }} · обновлено {{ freshness.payroll.last_updated|date:"d.m.Y H:i" }}{% else %}нет данных{% endif %}</div>{% endif %}
+</div></div>
+
+<div class="row g-3 mb-3">
   {% if can_view_gross_profit %}
-  <div class="col-md-6 col-xl-4"><a class="card card-soft p-4 h-100 text-decoration-none text-body" href="{% url 'finance_onec_profit_dashboard' %}"><div class="h5 mb-2">Валовая прибыль</div><div class="text-muted">Выручка, себестоимость и рентабельность →</div></a></div>
+    <div class="col-sm-6 col-xl-3"><div class="card card-soft p-3 h-100"><div class="text-muted">Выручка</div><div class="fs-3 fw-bold">{% if has_gross_profit_data %}{{ gross_profit.totals.revenue|money }}{% else %}—{% endif %}</div>{% include "pool_service/finance/_profit_delta.html" with delta=gross_profit.comparison.revenue money_delta=True %}</div></div>
+    <div class="col-sm-6 col-xl-3"><div class="card card-soft p-3 h-100"><div class="text-muted">Валовая прибыль</div><div class="fs-3 fw-bold">{% if has_gross_profit_data %}{{ gross_profit.totals.gross_profit|money }}{% else %}—{% endif %}</div>{% include "pool_service/finance/_profit_delta.html" with delta=gross_profit.comparison.gross_profit money_delta=True %}</div></div>
+    <div class="col-sm-6 col-xl-3"><div class="card card-soft p-3 h-100"><div class="text-muted">Валовая рентабельность</div><div class="fs-3 fw-bold">{% if has_gross_profit_data %}{{ gross_profit.totals.profitability|default_if_none:"—" }}{% if gross_profit.totals.profitability != None %}%{% endif %}{% else %}—{% endif %}</div>{% include "pool_service/finance/_profit_delta.html" with delta=gross_profit.comparison.profitability %}</div></div>
   {% endif %}
-  {% if can_view_payroll %}
-  <div class="col-md-6 col-xl-4"><a class="card card-soft p-4 h-100 text-decoration-none text-body" href="{% url 'finance_payroll_dashboard' %}"><div class="h5 mb-2">Фонд оплаты труда</div><div class="text-muted">Начисления, выплаты и задолженность →</div></a></div>
-  {% endif %}
-  {% if can_view_cost_control %}
-  <div class="col-md-6 col-xl-4"><a class="card card-soft p-4 h-100 text-decoration-none text-body" href="{% url 'finance_onec_cost_control' %}"><div class="h5 mb-2">Контроль себестоимости</div><div class="text-muted">Продажи товаров без себестоимости →</div></a></div>
-  {% endif %}
+  {% if can_view_payroll %}<div class="col-sm-6 col-xl-3"><div class="card card-soft p-3 h-100"><div class="text-muted">Начисленный ФОТ</div><div class="fs-3 fw-bold">{% if payroll_accrued != None %}{{ payroll_accrued|money }}{% else %}—{% endif %}</div><div class="small text-muted">Сравнение не рассчитывается в V1</div></div></div>{% endif %}
 </div>
+
+{% if can_view_gross_profit %}<div class="card card-soft p-3 mb-3"><h2 class="h5">Выручка и валовая прибыль по месяцам</h2>{% if has_gross_profit_data %}<div style="height:280px"><canvas id="overviewProfitChart"></canvas></div>{% else %}<div class="text-muted py-4">Нет данных валовой прибыли за выбранный период.</div>{% endif %}</div>{% endif %}
+
+{% if can_view_cost_control or can_view_gross_profit %}<div class="card card-soft p-3 mb-3"><h2 class="h5">Требует внимания</h2><div class="row g-3">
+  {% if can_view_cost_control %}<div class="col-md-6"><a class="text-decoration-none" href="{% url 'finance_onec_cost_control' %}"><strong>Товары проданы без себестоимости</strong><div class="text-muted">Строк: {{ missing_cost.row_count }} · выручка: {{ missing_cost.revenue|money }} →</div></a></div>{% endif %}
+  {% if can_view_gross_profit %}<div class="col-md-6"><strong>Валовая рентабельность</strong><div class="text-muted">{% if gross_profit.comparison.profitability.absolute != None %}{{ gross_profit.comparison.profitability.absolute|floatformat:2 }} п.п. к {{ period.comparison_label }}{% else %}Нет сопоставимых данных{% endif %}</div></div>{% endif %}
+</div></div>{% endif %}
+
+<div class="d-flex flex-wrap gap-3 small">{% if can_view_gross_profit %}<a href="{% url 'finance_onec_profit_dashboard' %}">Валовая прибыль →</a>{% endif %}{% if can_view_payroll %}<a href="{% url 'finance_payroll_dashboard' %}">Фонд оплаты труда →</a>{% endif %}{% if can_view_cost_control %}<a href="{% url 'finance_onec_cost_control' %}">Контроль себестоимости →</a>{% endif %}{% if can_access_finance_data %}<a href="{% url 'finance_data' %}">Данные 1С →</a>{% endif %}</div>
+{% if can_view_gross_profit %}{{ gross_profit.monthly|json_script:"overview-monthly-profit-data" }}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script>{const overviewRows=JSON.parse(document.getElementById('overview-monthly-profit-data').textContent);if(overviewRows.length){new Chart(document.getElementById('overviewProfitChart'),{type:'line',data:{labels:overviewRows.map(x=>new Date(x.month).toLocaleDateString('ru-RU',{month:'short',year:'numeric'})),datasets:[{label:'Выручка',data:overviewRows.map(x=>x.revenue),borderColor:'#0d6efd'},{label:'Валовая прибыль',data:overviewRows.map(x=>x.gross_profit),borderColor:'#198754'}]},options:{responsive:true,maintainAspectRatio:false}});}</script>{% endif %}
 {% endblock %}

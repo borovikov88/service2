@@ -74,7 +74,8 @@ class FinanceInformationArchitectureTests(TestCase):
         self.assertRedirects(response, reverse("finance_overview"), fetch_redirect_response=False)
         self.assertEqual(overview.status_code, 200)
         self.assertContains(overview, "Основные финансовые показатели компании")
-        self.assertNotContains(overview, "₽")
+        self.assertNotContains(overview, "Чистая прибыль")
+        self.assertNotContains(overview, "Денежный поток")
 
     def test_operational_root_routes_to_existing_my_finances(self):
         self.client.force_login(self.operational)
