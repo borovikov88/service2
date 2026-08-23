@@ -366,13 +366,17 @@ class FinanceTests(TestCase):
         self.client.force_login(self.accountant)
         finance_url = reverse("finance_dashboard")
 
-        for route_name in ("pool_list", "readings_all", "clients_list", "crm_index", "users"):
+        for route_name in ("readings_all", "clients_list", "crm_index", "users"):
             response = self.client.get(reverse(route_name))
             self.assertRedirects(response, finance_url, fetch_redirect_response=False)
 
+        dashboard = self.client.get(reverse("finance_overview"))
+        pool_list = self.client.get(reverse("pool_list"))
+        forbidden_pool_post = self.client.post(reverse("pool_list"), {})
         forbidden_post = self.client.post(reverse("client_create"), {})
-        dashboard = self.client.get(finance_url)
 
+        self.assertEqual(pool_list.status_code, 200)
+        self.assertEqual(forbidden_pool_post.status_code, 403)
         self.assertEqual(forbidden_post.status_code, 403)
         self.assertTrue(dashboard.context["finance_only_user"])
         self.assertNotContains(dashboard, f'href="{reverse("crm_index")}"')
