@@ -138,6 +138,7 @@ from pool_service.services.finance import (
     report_expenses,
     user_display_name,
 )
+from pool_service.finance_imports.overview import finance_overview_data
 from pool_service.services.permissions import is_org_access_blocked, organization_for_user
 
 logger = logging.getLogger(__name__)
@@ -551,11 +552,14 @@ def finance_overview(request):
     )
     if denied:
         return denied
+    overview = finance_overview_data(organization, request.GET)
     return render(request, "pool_service/finance/overview.html", {
+        **overview,
         "organization": organization,
         "can_view_gross_profit": can_view_gross_profit(request.user, organization),
         "can_view_payroll": can_view_payroll_summary(request.user, organization),
         "can_view_cost_control": can_view_cost_control(request.user, organization),
+        "can_access_finance_data": can_access_finance_data(request.user, organization),
         "active_tab": "finance",
         "show_add_button": False,
     })
