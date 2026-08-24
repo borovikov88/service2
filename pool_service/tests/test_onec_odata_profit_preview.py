@@ -24,6 +24,7 @@ ORG_B = "22222222-2222-2222-2222-222222222222"
 ITEM = "33333333-3333-3333-3333-333333333333"
 CUSTOMER = "44444444-4444-4444-4444-444444444444"
 RECORDER = "55555555-5555-5555-5555-555555555555"
+RESPONSIBLE = "66666666-6666-6666-6666-666666666666"
 ZERO_GUID = "00000000-0000-0000-0000-000000000000"
 BASE_URL = "https://fresh.example/odata/standard.odata/"
 
@@ -67,6 +68,8 @@ def row(
         "Организация_Key": organization,
         "Номенклатура_Key": ITEM,
         "Контрагент_Key": customer,
+        "Ответственный_Key": RESPONSIBLE,
+        "Документ": "Документ 1",
         "Количество": quantity,
         "Сумма": revenue,
         "СуммаНДС": vat,
@@ -101,10 +104,11 @@ class ODataProfitReaderTests(SimpleTestCase):
             '{"Recorder":"%s","LineNumber":1,"Period":"2026-05-15T00:00:00Z",'
             '"Active":true,"Организация_Key":"%s","Номенклатура_Key":"%s",'
             '"Контрагент_Key":"%s","Количество":1.125,"Сумма":10.25,'
+            '"Ответственный_Key":"%s","Документ":"Документ 1",'
             '"СуммаНДС":1.25,"Себестоимость":0},'
             '{"Recorder":"%s","LineNumber":2,"Period":"2026-05-15T00:00:00Z",'
             '"Active":false}]}'
-        ) % (RECORDER, ORG_A, ITEM, ZERO_GUID, RECORDER)
+        ) % (RECORDER, ORG_A, ITEM, ZERO_GUID, RESPONSIBLE, RECORDER)
         result, _ = self.preview([raw.encode()])
         self.assertEqual(result["total"]["row_count"], 1)
         self.assertEqual(result["total"]["quantity"], Decimal("1.125"))
@@ -130,6 +134,8 @@ class ODataProfitReaderTests(SimpleTestCase):
         self.assertNotIn("+", raw_query)
         self.assertIn("%20", raw_query)
         query = parse_qs(raw_query)
+        self.assertIn("Ответственный_Key", query["$select"][0])
+        self.assertIn("Документ", query["$select"][0])
         filter_value = query["$filter"][0]
         self.assertIn("Active eq true", filter_value)
         self.assertIn("Period ge datetime'2026-05-01T00:00:00'", filter_value)

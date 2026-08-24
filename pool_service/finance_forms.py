@@ -54,6 +54,42 @@ class MonthlyProfitUploadForm(forms.Form):
         return uploaded_file
 
 
+class ODataProfitDraftForm(forms.Form):
+    start_month = forms.DateField(
+        label="С месяца",
+        input_formats=["%Y-%m"],
+        widget=forms.DateInput(format="%Y-%m", attrs={"type": "month", "class": "form-control"}),
+    )
+    end_month = forms.DateField(
+        label="По месяц",
+        input_formats=["%Y-%m"],
+        widget=forms.DateInput(format="%Y-%m", attrs={"type": "month", "class": "form-control"}),
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        today = date.today().replace(day=1)
+        start_month = date(
+            today.year - (11 > today.month - 1),
+            ((today.month - 12) % 12) + 1,
+            1,
+        )
+        self.fields["start_month"].initial = start_month
+        self.fields["end_month"].initial = today
+
+    def clean(self):
+        cleaned = super().clean()
+        start = cleaned.get("start_month")
+        end = cleaned.get("end_month")
+        if start and end and end < start:
+            raise forms.ValidationError("Конечный месяц не может быть раньше начального.")
+        if start and end:
+            month_count = (end.year - start.year) * 12 + end.month - start.month + 1
+            if month_count > 12:
+                raise forms.ValidationError("За один раз можно получить не более 12 месяцев.")
+        return cleaned
+
+
 class OneCCostControlFilterForm(forms.Form):
     PROBLEM_GOODS_ZERO_COST = "goods_zero_cost"
 
