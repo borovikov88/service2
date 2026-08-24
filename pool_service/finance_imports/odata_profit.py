@@ -46,6 +46,7 @@ class ODataConfig:
     organization_guids: tuple[str, ...] = ()
     timeout_seconds: float = 15
     max_pages: int = 100
+    max_rows: int = 100000
 
 
 @dataclass(frozen=True)
@@ -142,22 +143,32 @@ def validate_config(config: ODataConfig) -> ODataConfig:
         raise ODataPreviewError("OData max pages must be an integer") from exc
     if not 1 <= max_pages <= 10000:
         raise ODataPreviewError("OData max pages must be between 1 and 10000")
+    try:
+        max_rows = int(config.max_rows)
+    except (TypeError, ValueError) as exc:
+        raise ODataPreviewError("OData max rows must be an integer") from exc
+    if not 1 <= max_rows <= 1000000:
+        raise ODataPreviewError("OData max rows must be between 1 and 1000000")
     organizations = tuple(dict.fromkeys(
         normalize_guid(value, field="Organization allowlist GUID")
         for value in config.organization_guids
     ))
     if not organizations:
         raise ODataPreviewError("At least one organization GUID must be configured")
+    try:
+        explicit_port = parts.port
+    except ValueError as exc:
+        raise ODataPreviewError("OData base URL contains an invalid port") from exc
     canonical_url = urlunsplit((
         parts.scheme.lower(),
-        parts.hostname.lower() + (f":{parts.port}" if parts.port else ""),
+        parts.hostname.lower() + (f":{explicit_port}" if explicit_port else ""),
         parts.path,
         "",
         "",
     ))
     return ODataConfig(
         canonical_url, config.username, config.password, organizations,
-        timeout, max_pages,
+        timeout, max_pages, max_rows,
     )
 
 
@@ -324,6 +335,8 @@ def read_profit_preview(
                 continue
             if row.identity in seen_rows:
                 raise ODataPreviewError("Duplicate Recorder + LineNumber identity")
+            if len(rows) >= config.max_rows:
+                raise ODataPreviewError("OData response exceeded the configured row limit")
             seen_rows.add(row.identity)
             rows.append(row)
         current_url = (
