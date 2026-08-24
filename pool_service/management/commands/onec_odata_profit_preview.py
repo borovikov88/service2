@@ -27,6 +27,7 @@ class Command(BaseCommand):
             organization_guids=tuple(settings.ONEC_ODATA_ORGANIZATION_GUIDS),
             timeout_seconds=settings.ONEC_ODATA_TIMEOUT_SECONDS,
             max_pages=settings.ONEC_ODATA_MAX_PAGES,
+            max_rows=settings.ONEC_ODATA_MAX_ROWS,
         )
         try:
             result = read_profit_preview(
