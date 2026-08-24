@@ -127,6 +127,8 @@ class ODataProfitReaderTests(SimpleTestCase):
         self.assertIn("$select=", raw_query)
         self.assertIn("&$filter=", raw_query)
         self.assertNotIn("%24", raw_query)
+        self.assertNotIn("+", raw_query)
+        self.assertIn("%20", raw_query)
         query = parse_qs(raw_query)
         filter_value = query["$filter"][0]
         self.assertIn("Active eq true", filter_value)
