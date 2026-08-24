@@ -998,6 +998,11 @@ class MonthlyProfitWorkflowTests(TestCase):
         confirmed = confirm_monthly_profit(batch.id, self.organization, self.user)
         self.assertEqual(confirmed.rows_imported, 1)
         self.assertEqual(OneCMonthlyProfit.objects.count(), 1)
+        row = OneCMonthlyProfit.objects.get(import_batch=confirmed)
+        self.assertEqual(
+            row.source_identity,
+            f"xlsx:{row.period_month.isoformat()}:{row.source_row_number}",
+        )
         with self.assertRaises(ValidationError):
             confirm_monthly_profit(batch.id, self.organization, self.user)
         self.assertEqual(OneCMonthlyProfit.objects.count(), 1)

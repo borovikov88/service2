@@ -20,7 +20,7 @@ ODATA_BASE_PATH = "/odata/standard.odata/"
 ENTITY_SET = "AccumulationRegister_Продажи_RecordType"
 FIELDS = (
     "Recorder", "LineNumber", "Period", "Active", "Организация_Key",
-    "Номенклатура_Key", "Контрагент_Key", "Количество", "Сумма",
+    "Номенклатура_Key", "Контрагент_Key", "Ответственный_Key", "Документ", "Количество", "Сумма",
     "СуммаНДС", "Себестоимость",
 )
 ZERO_GUID = "00000000-0000-0000-0000-000000000000"
@@ -54,9 +54,12 @@ class ProfitRow:
     recorder: str
     line_number: int
     period: datetime
+    source_date: date
     organization_guid: str
     nomenclature_guid: str
     customer_guid: str
+    responsible_guid: str
+    document: str
     quantity: Decimal
     revenue: Decimal
     vat: Decimal
@@ -199,9 +202,12 @@ def _decimal(value, *, field: str) -> Decimal:
     if isinstance(value, bool) or value is None:
         raise ODataPreviewError(f"{field} must be numeric")
     try:
-        return Decimal(str(value))
+        parsed = Decimal(str(value))
     except (InvalidOperation, ValueError) as exc:
         raise ODataPreviewError(f"{field} must be decimal") from exc
+    if not parsed.is_finite():
+        raise ODataPreviewError(f"{field} must be a finite decimal")
+    return parsed
 
 
 def _period(value) -> tuple[datetime, date]:
@@ -253,64 +259,12 @@ def _payload_page(raw: bytes):
     return rows, payload.get("@odata.nextLink") or payload.get("odata.nextLink")
 
 
-def _parse_row(raw, start: date, end_exclusive: date, allowed_organizations) -> ProfitRow | None:
-    if not isinstance(raw, dict):
-        raise ODataPreviewError("OData row must be an object")
-    if raw.get("Active") is not True:
-        return None
-    period, calendar_date = _period(raw.get("Period"))
-    if not start <= calendar_date < end_exclusive:
-        raise ODataPreviewError("OData returned a row outside the requested month range")
-    organization = normalize_guid(raw.get("Организация_Key"), field="Организация_Key")
-    if organization not in allowed_organizations:
-        raise ODataPreviewError("OData returned an organization outside the allowlist")
-    try:
-        line_number = int(raw.get("LineNumber"))
-    except (TypeError, ValueError) as exc:
-        raise ODataPreviewError("LineNumber must be an integer") from exc
-    if isinstance(raw.get("LineNumber"), float) or line_number < 0:
-        raise ODataPreviewError("LineNumber must be a non-negative integer")
-    return ProfitRow(
-        recorder=normalize_guid(raw.get("Recorder"), field="Recorder"),
-        line_number=line_number,
-        period=period,
-        organization_guid=organization,
-        nomenclature_guid=normalize_guid(raw.get("Номенклатура_Key"), field="Номенклатура_Key"),
-        customer_guid=normalize_guid(
-            raw.get("Контрагент_Key"), field="Контрагент_Key", allow_zero=True
-        ),
-        quantity=_decimal(raw.get("Количество"), field="Количество"),
-        revenue=_decimal(raw.get("Сумма"), field="Сумма"),
-        vat=_decimal(raw.get("СуммаНДС"), field="СуммаНДС"),
-        cost=_decimal(raw.get("Себестоимость"), field="Себестоимость"),
-    )
-
-
-def read_profit_preview(
-    config: ODataConfig,
-    start_month: str,
-    end_month: str,
-    organization_guids: Iterable[str] | None = None,
-    *,
-    opener=None,
-):
+def read_odata_pages(config: ODataConfig, initial_url: str, *, opener=None):
+    """Read a bounded same-origin OData result using GET without redirects."""
     config = validate_config(config)
-    start = parse_month(start_month)
-    end = parse_month(end_month)
-    if end < start:
-        raise ODataPreviewError("End month must not precede start month")
-    end_exclusive = next_month(end)
-    requested = tuple(dict.fromkeys(
-        normalize_guid(value, field="Requested organization GUID")
-        for value in (organization_guids or config.organization_guids)
-    ))
-    if not requested or not set(requested).issubset(config.organization_guids):
-        raise ODataPreviewError("Requested organizations must be in the configured allowlist")
-    current_url = _build_initial_url(config.base_url, start, end_exclusive, requested)
+    current_url = _safe_next_url(config.base_url, config.base_url, initial_url)
     client = opener or build_opener(NoRedirectHandler())
     seen_urls = set()
-    seen_rows = set()
-    rows = []
     page_count = 0
     while current_url:
         if current_url in seen_urls:
@@ -333,6 +287,93 @@ def read_profit_preview(
             raise ODataPreviewError(f"OData HTTP error {exc.code}") from exc
         except URLError as exc:
             raise ODataPreviewError("OData request failed") from exc
+        yield raw_rows, page_count
+        current_url = (
+            _safe_next_url(config.base_url, current_url, next_link)
+            if next_link else None
+        )
+
+
+def _parse_row(raw, start: date, end_exclusive: date, allowed_organizations) -> ProfitRow | None:
+    if not isinstance(raw, dict):
+        raise ODataPreviewError("OData row must be an object")
+    if raw.get("Active") is not True:
+        return None
+    period, calendar_date = _period(raw.get("Period"))
+    if not start <= calendar_date < end_exclusive:
+        raise ODataPreviewError("OData returned a row outside the requested month range")
+    organization = normalize_guid(raw.get("Организация_Key"), field="Организация_Key")
+    if organization not in allowed_organizations:
+        raise ODataPreviewError("OData returned an organization outside the allowlist")
+    try:
+        line_number = int(raw.get("LineNumber"))
+    except (TypeError, ValueError) as exc:
+        raise ODataPreviewError("LineNumber must be an integer") from exc
+    if isinstance(raw.get("LineNumber"), (float, bool)) or line_number < 0:
+        raise ODataPreviewError("LineNumber must be a non-negative integer")
+    document = raw.get("Документ")
+    if document is not None and not isinstance(document, str):
+        raise ODataPreviewError("Документ must be a string")
+    return ProfitRow(
+        recorder=normalize_guid(raw.get("Recorder"), field="Recorder"),
+        line_number=line_number,
+        period=period,
+        source_date=calendar_date,
+        organization_guid=organization,
+        nomenclature_guid=normalize_guid(raw.get("Номенклатура_Key"), field="Номенклатура_Key"),
+        customer_guid=normalize_guid(
+            raw.get("Контрагент_Key"), field="Контрагент_Key", allow_zero=True
+        ),
+        responsible_guid=normalize_guid(
+            raw.get("Ответственный_Key"), field="Ответственный_Key"
+        ),
+        document=(document or "").strip()[:500],
+        quantity=_decimal(raw.get("Количество"), field="Количество"),
+        revenue=_decimal(raw.get("Сумма"), field="Сумма"),
+        vat=_decimal(raw.get("СуммаНДС"), field="СуммаНДС"),
+        cost=_decimal(raw.get("Себестоимость"), field="Себестоимость"),
+    )
+
+
+def read_profit_preview(
+    config: ODataConfig,
+    start_month: str,
+    end_month: str,
+    organization_guids: Iterable[str] | None = None,
+    *,
+    opener=None,
+):
+    rows, page_count = read_profit_rows(
+        config, start_month, end_month, organization_guids, opener=opener
+    )
+    return summarize_profit(rows, page_count)
+
+
+def read_profit_rows(
+    config: ODataConfig,
+    start_month: str,
+    end_month: str,
+    organization_guids: Iterable[str] | None = None,
+    *,
+    opener=None,
+):
+    config = validate_config(config)
+    start = parse_month(start_month)
+    end = parse_month(end_month)
+    if end < start:
+        raise ODataPreviewError("End month must not precede start month")
+    end_exclusive = next_month(end)
+    requested = tuple(dict.fromkeys(
+        normalize_guid(value, field="Requested organization GUID")
+        for value in (organization_guids or config.organization_guids)
+    ))
+    if not requested or not set(requested).issubset(config.organization_guids):
+        raise ODataPreviewError("Requested organizations must be in the configured allowlist")
+    initial_url = _build_initial_url(config.base_url, start, end_exclusive, requested)
+    seen_rows = set()
+    rows = []
+    page_count = 0
+    for raw_rows, page_count in read_odata_pages(config, initial_url, opener=opener):
         for raw_row in raw_rows:
             row = _parse_row(raw_row, start, end_exclusive, set(requested))
             if row is None:
@@ -343,11 +384,7 @@ def read_profit_preview(
                 raise ODataPreviewError("OData response exceeded the configured row limit")
             seen_rows.add(row.identity)
             rows.append(row)
-        current_url = (
-            _safe_next_url(config.base_url, current_url, next_link)
-            if next_link else None
-        )
-    return summarize_profit(rows, page_count)
+    return rows, page_count
 
 
 def summarize_profit(rows: Iterable[ProfitRow], page_count: int):

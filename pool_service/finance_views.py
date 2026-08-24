@@ -37,6 +37,7 @@ from pool_service.finance_forms import (
     ManagerCashIncomeForm,
     ManagerCashTransferForm,
     MonthlyProfitUploadForm,
+    ODataProfitDraftForm,
     OneCCostControlFilterForm,
     PayrollUploadForm,
     PayrollConfirmForm,
@@ -81,6 +82,13 @@ from pool_service.finance_imports.services import (
     cancel_monthly_profit,
     confirm_monthly_profit,
     create_monthly_profit_preview,
+)
+from pool_service.finance_imports.odata_profit import ODataPreviewError
+from pool_service.finance_imports.odata_profit_drafts import (
+    ODataDraftError,
+    confirm_odata_profit,
+    create_odata_profit_draft,
+    is_odata_target_organization,
 )
 from pool_service.finance_imports.profit_dashboard import (
     PERIOD_CHOICES,
@@ -2412,8 +2420,43 @@ def finance_onec_import_list(request):
     batches = OneCImportBatch.objects.filter(organization=organization).select_related("uploaded_by")
     return render(request, "pool_service/finance/onec_import_list.html", {
         "batches": batches,
+        "odata_form": ODataProfitDraftForm() if is_odata_target_organization(organization) else None,
+        "show_odata_draft": is_odata_target_organization(organization),
         "active_tab": "finance",
     })
+
+
+@require_POST
+@login_required
+def finance_onec_odata_profit_draft(request):
+    organization, denied = _onec_import_guard(request)
+    if denied:
+        return denied
+    form = ODataProfitDraftForm(request.POST)
+    if not form.is_valid():
+        batches = OneCImportBatch.objects.filter(organization=organization).select_related("uploaded_by")
+        return render(request, "pool_service/finance/onec_import_list.html", {
+            "batches": batches,
+            "odata_form": form,
+            "show_odata_draft": is_odata_target_organization(organization),
+            "active_tab": "finance",
+        }, status=400)
+    start_month = form.cleaned_data["start_month"].strftime("%Y-%m")
+    end_month = form.cleaned_data["end_month"].strftime("%Y-%m")
+    try:
+        batch = create_odata_profit_draft(
+            start_month, end_month, organization, request.user
+        )
+    except ODataDraftError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        if exc.batch:
+            return redirect("finance_onec_import_preview", batch_id=exc.batch.id)
+        return redirect("finance_onec_import_list")
+    except ODataPreviewError as exc:
+        messages.error(request, str(exc))
+        return redirect("finance_onec_import_list")
+    messages.success(request, "Черновик OData создан. Активные данные не изменены.")
+    return redirect("finance_onec_import_preview", batch_id=batch.id)
 
 
 def _payroll_access(request, permission):
@@ -2768,6 +2811,7 @@ def finance_onec_import_preview(request, batch_id):
         "critical_errors": batch.metadata.get("critical_errors", []),
         "overlap_months": batch.metadata.get("overlap_months", []),
         "overlap_count": batch.metadata.get("overlap_count", 0),
+        "monthly_comparison": batch.metadata.get("monthly", []),
         "can_confirm": batch.status == OneCImportBatch.STATUS_PREVIEWED and not batch.metadata.get("critical_errors"),
         "active_tab": "finance",
     })
@@ -2784,7 +2828,10 @@ def finance_onec_import_confirm(request, batch_id):
         messages.error(request, "Этот импорт уже обработан или недоступен для подтверждения.")
         return redirect("finance_onec_import_detail", batch_id=batch.id)
     try:
-        batch = confirm_monthly_profit(batch.id, organization, request.user)
+        if batch.source_type == OneCImportBatch.SOURCE_ODATA:
+            batch = confirm_odata_profit(batch.id, organization, request.user)
+        else:
+            batch = confirm_monthly_profit(batch.id, organization, request.user)
     except Exception:
         messages.error(request, "Импорт не выполнен. Частичные данные не сохранены.")
         return redirect("finance_onec_import_preview", batch_id=batch.id)

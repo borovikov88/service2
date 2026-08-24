@@ -1719,10 +1719,39 @@ class CardTransferPaymentChange(models.Model):
 
 
 def onec_import_upload_to(instance, filename):
-    return f"onec_imports/{instance.organization_id}/{instance.id}/{uuid.uuid4().hex}.xlsx"
+    suffix = ".json" if instance.source_type == OneCImportBatch.SOURCE_ODATA else ".xlsx"
+    return f"onec_imports/{instance.organization_id}/{instance.id}/{uuid.uuid4().hex}{suffix}"
+
+
+def onec_monthly_profit_source_identity(
+    *, period_month, source_row_number, source_recorder=None
+):
+    if isinstance(source_row_number, bool):
+        raise ValidationError("Номер строки источника должен быть целым числом.")
+    try:
+        line_number = int(source_row_number)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Номер строки источника должен быть целым числом.") from exc
+    if line_number < 0:
+        raise ValidationError("Номер строки источника не может быть отрицательным.")
+    if source_recorder is not None:
+        try:
+            recorder = str(uuid.UUID(str(source_recorder))).lower()
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ValidationError("Регистратор 1С должен быть GUID.") from exc
+        return f"odata:{recorder}:{line_number}"
+    if period_month is None or not hasattr(period_month, "isoformat"):
+        raise ValidationError("Для XLSX identity необходим месяц отчёта.")
+    return f"xlsx:{period_month.isoformat()}:{line_number}"
 
 
 class OneCImportBatch(models.Model):
+    SOURCE_XLSX = "xlsx"
+    SOURCE_ODATA = "odata"
+    SOURCE_CHOICES = [
+        (SOURCE_XLSX, "XLSX"),
+        (SOURCE_ODATA, "OData"),
+    ]
     TYPE_MONTHLY_PROFIT = "monthly_profit"
     TYPE_PAYROLL = "payroll"
     TYPE_CASHFLOW = "cashflow"
@@ -1754,6 +1783,9 @@ class OneCImportBatch(models.Model):
     )
     import_type = models.CharField(
         "Тип импорта", max_length=40, choices=TYPE_CHOICES, default=TYPE_MONTHLY_PROFIT
+    )
+    source_type = models.CharField(
+        "Источник", max_length=10, choices=SOURCE_CHOICES, default=SOURCE_XLSX
     )
     original_filename = models.CharField("Исходное имя файла", max_length=255)
     stored_file = models.FileField(
@@ -1842,6 +1874,8 @@ class OneCMonthlyProfit(models.Model):
         verbose_name="Организация",
     )
     period_month = models.DateField("Месяц")
+    source_recorder = models.UUIDField("Регистратор 1С", null=True, blank=True)
+    source_identity = models.CharField("Идентификатор строки источника", max_length=80)
     source_row_number = models.PositiveIntegerField("Номер строки источника")
     manager_name = models.CharField("Менеджер", max_length=300, blank=True, default="")
     customer_name = models.CharField("Покупатель", max_length=500, blank=True, default="")
@@ -1892,10 +1926,20 @@ class OneCMonthlyProfit(models.Model):
         ]
         constraints = [
             models.UniqueConstraint(
-                fields=["import_batch", "source_row_number", "period_month"],
-                name="unique_onec_batch_row_month",
+                fields=["import_batch", "source_identity"],
+                name="unique_onec_batch_source_identity",
             ),
         ]
+
+    def save(self, *args, **kwargs):
+        self.source_identity = onec_monthly_profit_source_identity(
+            period_month=self.period_month,
+            source_row_number=self.source_row_number,
+            source_recorder=self.source_recorder,
+        )
+        if kwargs.get("update_fields") is not None:
+            kwargs["update_fields"] = set(kwargs["update_fields"]) | {"source_identity"}
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.period_month:%m.%Y}: {self.nomenclature}"

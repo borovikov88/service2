@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
+from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.core.exceptions import ValidationError
@@ -18,6 +19,7 @@ from pool_service.models import (
     OneCReportPeriodState,
     Organization,
     PayrollRow,
+    onec_monthly_profit_source_identity,
 )
 from .monthly_profit_parser import PARSER_VERSION, MonthlyProfitParseError, parse_monthly_profit
 from .monthly_profit_parser import classify_nomenclature_type
@@ -189,15 +191,43 @@ def validate_period_assignment(batch, organization, report_type, period_month):
     }.get(report_type)
     if row_model is None:
         raise ValidationError("Неизвестный тип отчёта 1С.")
-    if not row_model.objects.filter(
+    has_rows = row_model.objects.filter(
         import_batch=batch,
         organization=organization,
         period_month=period_month,
-    ).exists():
+    ).exists()
+    if has_rows:
+        return
+    scope_months = batch.metadata.get("scope_months", [])
+    expected_scope = []
+    current = batch.period_first
+    while current is not None and batch.period_last is not None and current <= batch.period_last:
+        expected_scope.append(current.isoformat())
+        current = date(
+            current.year + (current.month == 12),
+            1 if current.month == 12 else current.month + 1,
+            1,
+        )
+    is_explicit_empty_odata_month = (
+        report_type == OneCImportBatch.TYPE_MONTHLY_PROFIT
+        and batch.source_type == OneCImportBatch.SOURCE_ODATA
+        and scope_months == expected_scope
+        and period_month.isoformat() in scope_months
+        and batch.period_first is not None
+        and batch.period_last is not None
+        and batch.period_first <= period_month <= batch.period_last
+    )
+    if not is_explicit_empty_odata_month:
         raise ValidationError("В активной загрузке отсутствуют строки указанного месяца.")
 
 
 def _bulk_create_monthly_rows(rows):
+    for row in rows:
+        row.source_identity = onec_monthly_profit_source_identity(
+            period_month=row.period_month,
+            source_row_number=row.source_row_number,
+            source_recorder=row.source_recorder,
+        )
     OneCMonthlyProfit.objects.bulk_create(rows, batch_size=500)
 
 
