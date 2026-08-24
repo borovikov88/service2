@@ -11,7 +11,7 @@ import posixpath
 import re
 from typing import Iterable
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode, urljoin, urlsplit, urlunsplit, unquote
+from urllib.parse import quote, quote_plus, urljoin, urlsplit, urlunsplit, unquote
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import UUID
 
@@ -228,7 +228,10 @@ def _build_initial_url(base_url: str, start: date, end_exclusive: date, organiza
         f"Period lt datetime'{end_exclusive.isoformat()}T00:00:00' and "
         f"({organization_filter})"
     )
-    query = urlencode({"$select": ",".join(FIELDS), "$filter": filters})
+    query = "&".join((
+        f"$select={quote_plus(','.join(FIELDS))}",
+        f"$filter={quote_plus(filters)}",
+    ))
     return f"{base_url}{quote(ENTITY_SET, safe='')}?{query}"
 
 
