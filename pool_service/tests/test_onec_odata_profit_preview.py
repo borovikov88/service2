@@ -80,7 +80,7 @@ def config(**overrides):
         "organization_guids": (ORG_A,),
         "timeout_seconds": 7,
         "max_pages": 10,
-        "max_rows": 100,
+        "max_rows": 1000,
     }
     values.update(overrides)
     return ODataConfig(**values)
@@ -238,6 +238,17 @@ class ODataProfitReaderTests(SimpleTestCase):
             self.preview([{"value": [row(period="2026-06-01T00:00:00Z")]}])
         with self.assertRaisesRegex(ODataPreviewError, "outside the allowlist"):
             self.preview([{"value": [row(organization=ORG_B)]}])
+
+    def test_month_range_uses_source_calendar_date_before_utc_normalization(self):
+        result, _ = self.preview([
+            {"value": [row(period="2026-05-01T00:30:00+03:00")]}
+        ])
+        self.assertEqual(result["total"]["row_count"], 1)
+
+        with self.assertRaisesRegex(ODataPreviewError, "outside the requested month"):
+            self.preview([
+                {"value": [row(period="2026-06-01T00:00:00+03:00")]}
+            ])
 
     def test_requested_guid_must_be_allowlisted(self):
         with self.assertRaisesRegex(ODataPreviewError, "configured allowlist"):
