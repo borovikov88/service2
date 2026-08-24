@@ -1,6 +1,6 @@
 from calendar import monthrange
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 import re
 
 from django.utils import timezone
@@ -18,8 +18,6 @@ PERIOD_CHOICES = (
     ("last_12_months", "Последние 12 месяцев"),
     ("custom", "Произвольный период"),
 )
-MONEY_QUANTUM = Decimal("0.01")
-RATIO_QUANTUM = Decimal("0.0000000001")
 MONTH_SHORT_NAMES = (
     "", "янв", "фев", "мар", "апр", "май", "июн",
     "июл", "авг", "сен", "окт", "ноя", "дек",
@@ -104,57 +102,24 @@ def resolve_period(params, today=None):
     }
 
 
-def period_cost_ratio(rows):
-    revenue = Decimal("0")
-    cost = Decimal("0")
-    excluded_sources = {
-        OneCMonthlyProfit.COST_SOURCE_CALCULATED,
-        OneCMonthlyProfit.COST_SOURCE_UNDEFINED,
-    }
-    for row in rows:
-        if (
-            classify_nomenclature_type(row.nomenclature_type) == "goods"
-            and row.cost_source not in excluded_sources
-            and row.cost is not None
-            and row.cost != 0
-            and row.revenue is not None
-        ):
-            revenue += row.revenue
-            cost += row.cost
-    if revenue == 0:
-        return None
-    return (cost / revenue).quantize(RATIO_QUANTUM, rounding=ROUND_HALF_UP)
-
-
 def apply_period_analytics(rows):
-    ratio = period_cost_ratio(rows)
-    excluded_sources = {
-        OneCMonthlyProfit.COST_SOURCE_CALCULATED,
-        OneCMonthlyProfit.COST_SOURCE_UNDEFINED,
-    }
+    """Expose the persisted per-month import analytics for dashboard summaries."""
+    calculated_ratios = set()
     for row in rows:
         revenue = row.revenue or Decimal("0")
         is_goods = classify_nomenclature_type(row.nomenclature_type) == "goods"
-        has_nonzero_actual_cost = (
-            row.cost_source not in excluded_sources
-            and row.cost is not None
-            and row.cost != 0
+        use_stored_calculation = (
+            is_goods
+            and row.cost_source == OneCMonthlyProfit.COST_SOURCE_CALCULATED
         )
-        use_period_ratio = is_goods and not has_nonzero_actual_cost and ratio is not None
-        if use_period_ratio:
-            analytical_cost = (revenue * ratio).quantize(
-                MONEY_QUANTUM, rounding=ROUND_HALF_UP
-            )
-            gross_profit = (revenue - analytical_cost).quantize(
-                MONEY_QUANTUM, rounding=ROUND_HALF_UP
-            )
-        elif is_goods:
-            if not has_nonzero_actual_cost:
-                analytical_cost = None
-                gross_profit = None
-            else:
-                analytical_cost = row.cost
-                gross_profit = row.gross_profit if row.cost is not None else None
+        if use_stored_calculation:
+            analytical_cost = row.calculated_cost
+            gross_profit = row.analytical_gross_profit
+            if row.cost_calculation_ratio is not None:
+                calculated_ratios.add(row.cost_calculation_ratio)
+        elif row.cost_source == OneCMonthlyProfit.COST_SOURCE_UNDEFINED:
+            analytical_cost = None
+            gross_profit = None
         else:
             analytical_cost = row.cost
             gross_profit = row.gross_profit
@@ -163,9 +128,11 @@ def apply_period_analytics(rows):
         row.dashboard_analytical_cost = analytical_cost
         row.dashboard_gross_profit = gross_profit
         row.dashboard_profitability = calculate_profitability(gross_profit, revenue)
-        row.dashboard_cost_is_calculated = use_period_ratio
-        row.dashboard_period_cost_ratio = ratio if use_period_ratio else None
-    return ratio
+        row.dashboard_cost_is_calculated = use_stored_calculation
+        row.dashboard_period_cost_ratio = (
+            row.cost_calculation_ratio if use_stored_calculation else None
+        )
+    return next(iter(calculated_ratios)) if len(calculated_ratios) == 1 else None
 
 
 def summarize(rows):
