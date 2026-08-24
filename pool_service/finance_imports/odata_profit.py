@@ -204,7 +204,7 @@ def _decimal(value, *, field: str) -> Decimal:
         raise ODataPreviewError(f"{field} must be decimal") from exc
 
 
-def _period(value) -> datetime:
+def _period(value) -> tuple[datetime, date]:
     if not isinstance(value, str):
         raise ODataPreviewError("Period must be an ISO datetime string")
     candidate = value.replace("Z", "+00:00")
@@ -212,9 +212,10 @@ def _period(value) -> datetime:
         parsed = datetime.fromisoformat(candidate)
     except ValueError as exc:
         raise ODataPreviewError("Period must be an ISO datetime string") from exc
+    calendar_date = parsed.date()
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+    return parsed.astimezone(timezone.utc), calendar_date
 
 
 def _build_initial_url(base_url: str, start: date, end_exclusive: date, organizations) -> str:
@@ -254,8 +255,8 @@ def _parse_row(raw, start: date, end_exclusive: date, allowed_organizations) -> 
         raise ODataPreviewError("OData row must be an object")
     if raw.get("Active") is not True:
         return None
-    period = _period(raw.get("Period"))
-    if not start <= period.date() < end_exclusive:
+    period, calendar_date = _period(raw.get("Period"))
+    if not start <= calendar_date < end_exclusive:
         raise ODataPreviewError("OData returned a row outside the requested month range")
     organization = normalize_guid(raw.get("Организация_Key"), field="Организация_Key")
     if organization not in allowed_organizations:
