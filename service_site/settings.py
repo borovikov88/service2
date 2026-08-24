@@ -109,6 +109,16 @@ GITHUB_DEVELOPMENT_PROMPT_MAX_BYTES = _env_int(
     minimum=1000,
     maximum=50000,
 )
+ONEC_ODATA_BASE_URL = os.getenv("ONEC_ODATA_BASE_URL", "")
+ONEC_ODATA_USERNAME = os.getenv("ONEC_ODATA_USERNAME", "")
+ONEC_ODATA_PASSWORD = os.getenv("ONEC_ODATA_PASSWORD", "")
+ONEC_ODATA_ORGANIZATION_GUIDS = tuple(
+    value.strip()
+    for value in os.getenv("ONEC_ODATA_ORGANIZATION_GUIDS", "").split(",")
+    if value.strip()
+)
+ONEC_ODATA_TIMEOUT_SECONDS = os.getenv("ONEC_ODATA_TIMEOUT_SECONDS", "15")
+ONEC_ODATA_MAX_PAGES = os.getenv("ONEC_ODATA_MAX_PAGES", "100")
 SITE_URL = os.getenv("SITE_URL", "")
 SMS_RU_API_ID = os.getenv("SMS_RU_API_ID", "")
 SMS_RU_TIMEOUT = int(os.getenv("SMS_RU_TIMEOUT", "8"))
