@@ -42,6 +42,11 @@ class ProfitDashboardTests(TestCase):
         revenue_value = Decimal(revenue) if revenue is not None else None
         cost_value = Decimal(cost) if cost is not None else None
         calculated_value = Decimal(calculated) if calculated is not None else None
+        gross_profit = (
+            revenue_value - cost_value
+            if revenue_value is not None and cost_value is not None
+            else None
+        )
         row = OneCMonthlyProfit.objects.create(
             import_batch=self.batch, organization=self.organization,
             period_month=month, source_row_number=OneCMonthlyProfit.objects.count() + 1,
@@ -49,11 +54,15 @@ class ProfitDashboardTests(TestCase):
             article=f"A-{OneCMonthlyProfit.objects.count() + 1}", nomenclature=name,
             nomenclature_type=kind, quantity=Decimal("2"), revenue=revenue_value,
             cost=cost_value,
-            gross_profit=(revenue_value - cost_value) if cost_value is not None else None,
+            gross_profit=gross_profit,
             calculated_cost=calculated_value,
             cost_source=source,
             cost_calculation_ratio=Decimal(stored_ratio) if calculated is not None else None,
-            analytical_gross_profit=(revenue_value - calculated_value) if calculated is not None else None,
+            analytical_gross_profit=(
+                revenue_value - calculated_value
+                if calculated_value is not None
+                else gross_profit
+            ),
         )
         OneCReportPeriodState.objects.get_or_create(
             organization=self.organization, period_month=month,
@@ -154,21 +163,21 @@ class ProfitDashboardTests(TestCase):
         })
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["totals"]["revenue"], Decimal("200"))
-        self.assertEqual(response.context["totals"]["gross_profit"], Decimal("116.00"))
+        self.assertEqual(response.context["totals"]["gross_profit"], Decimal("120.00"))
         self.assertEqual(response.context["comparison"]["revenue"]["absolute"], Decimal("150"))
         self.assertEqual(response.context["comparison"]["revenue"]["percent"], Decimal("300.00"))
         self.assertEqual(len(response.context["monthly"]), 1)
         self.assertEqual(response.context["split"][0]["revenue"], Decimal("140"))
         self.assertEqual(response.context["split"][1]["revenue"], Decimal("60"))
         self.assertContains(response, "Исходная себестоимость 1С")
-        self.assertContains(response, "Расчётная · 60,0%")
+        self.assertContains(response, "Расчётная · 50,0%")
         self.assertContains(response, "к январю 2025", count=4)
         calculated.refresh_from_db(); service.refresh_from_db()
         self.assertEqual(calculated.cost, Decimal("0"))
         self.assertEqual(service.cost_source, OneCMonthlyProfit.COST_SOURCE_ACTUAL)
         self.assertIsNone(service.calculated_cost)
 
-    def test_selected_period_recalculates_analytical_cost_without_source_writes(self):
+    def test_selected_period_uses_stored_monthly_analytics_without_source_writes(self):
         self.add_row(date(2025, 1, 1), name="Предыдущая база", revenue="100", cost="20")
         self.add_row(
             date(2025, 2, 1), name="Предыдущая расчётная", revenue="100", cost="0",
@@ -193,25 +202,25 @@ class ProfitDashboardTests(TestCase):
         })
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context["period_cost_ratio"], Decimal("0.7250000000"))
-        self.assertEqual(response.context["previous_period_cost_ratio"], Decimal("0.2000000000"))
-        self.assertEqual(response.context["totals"]["cost"], Decimal("435.00"))
-        self.assertEqual(response.context["comparison"]["cost"]["absolute"], Decimal("395.00"))
-        self.assertEqual(response.context["comparison"]["cost"]["percent"], Decimal("987.50"))
+        self.assertEqual(response.context["period_cost_ratio"], Decimal("0.05"))
+        self.assertEqual(response.context["previous_period_cost_ratio"], Decimal("0.8"))
+        self.assertEqual(response.context["totals"]["cost"], Decimal("300.00"))
+        self.assertEqual(response.context["comparison"]["cost"]["absolute"], Decimal("200.00"))
+        self.assertEqual(response.context["comparison"]["cost"]["percent"], Decimal("200.00"))
 
         dashboard_rows = {row.pk: row for row in response.context["rows"]}
-        self.assertEqual(dashboard_rows[calculated.pk].dashboard_analytical_cost, Decimal("145.00"))
-        self.assertEqual(dashboard_rows[calculated.pk].dashboard_gross_profit, Decimal("55.00"))
+        self.assertEqual(dashboard_rows[calculated.pk].dashboard_analytical_cost, Decimal("10.00"))
+        self.assertEqual(dashboard_rows[calculated.pk].dashboard_gross_profit, Decimal("190.00"))
         self.assertTrue(dashboard_rows[calculated.pk].dashboard_cost_is_calculated)
         self.assertEqual(
             dashboard_rows[calculated.pk].dashboard_period_cost_ratio,
-            Decimal("0.7250000000"),
+            Decimal("0.05"),
         )
         self.assertIsNone(dashboard_rows[service.pk].dashboard_analytical_cost)
         self.assertFalse(dashboard_rows[service.pk].dashboard_cost_is_calculated)
         self.assertContains(response, "Аналитическая себестоимость")
-        self.assertContains(response, "Расчётная · 72,5%")
-        self.assertContains(response, "выбранного анализируемого периода")
+        self.assertContains(response, "Расчётная · 5,0%")
+        self.assertContains(response, "месяца импорта")
 
         calculated.refresh_from_db()
         service.refresh_from_db()
@@ -256,7 +265,7 @@ class ProfitDashboardTests(TestCase):
         self.assertFalse(any(row.dashboard_cost_is_calculated for row in rows))
         self.assertEqual(totals["gross_profit"], Decimal("130410"))
 
-    def test_january_aggregate_loses_only_calculated_goods_adjustment(self):
+    def test_monthly_aggregate_is_invariant_when_selected_range_changes(self):
         january = date(2026, 1, 1)
         february = date(2026, 2, 1)
         self.add_row(
@@ -272,10 +281,12 @@ class ProfitDashboardTests(TestCase):
             revenue="130410.00", cost=None,
         )
         OneCMonthlyProfit.objects.filter(pk=calculated_goods.pk).update(
-            gross_profit=Decimal("199.00")
+            gross_profit=Decimal("199.00"),
+            analytical_gross_profit=Decimal("199.00"),
         )
         OneCMonthlyProfit.objects.filter(pk=service.pk).update(
-            gross_profit=Decimal("130410.00")
+            gross_profit=Decimal("130410.00"),
+            analytical_gross_profit=Decimal("130410.00"),
         )
         self.add_row(
             february, name="База коэффициента февраля",
@@ -287,18 +298,28 @@ class ProfitDashboardTests(TestCase):
         )
 
         data = dashboard_data(self.organization, period)
-        january_totals = next(
-            item for item in data["monthly"] if item["month"] == january
+        january_only = dashboard_data(
+            self.organization,
+            resolve_period(
+                {"period": "custom", "start": "2026-01-01", "end": "2026-01-31"},
+                today=date(2026, 8, 15),
+            ),
+        )
+        january_totals = next(item for item in data["monthly"] if item["month"] == january)
+        detail_response = self.client.get(
+            reverse("finance_onec_import_detail", args=[self.batch.id])
+        )
+        detail_january = next(
+            item for item in detail_response.context["monthly"]
+            if item["period_month"] == january
         )
 
-        self.assertEqual(data["period_cost_ratio"], Decimal("0.6056268515"))
+        self.assertIsNone(data["period_cost_ratio"])
         self.assertEqual(january_totals["revenue"], Decimal("367377.44"))
-        self.assertEqual(january_totals["cost"], Decimal("166775.60"))
-        self.assertEqual(january_totals["gross_profit"], Decimal("200601.84"))
-        self.assertEqual(
-            Decimal("200722.36") - january_totals["gross_profit"],
-            Decimal("120.52"),
-        )
+        self.assertEqual(january_totals["cost"], Decimal("166655.08"))
+        self.assertEqual(january_totals["gross_profit"], Decimal("200722.36"))
+        self.assertEqual(january_totals, january_only["monthly"][0])
+        self.assertEqual(january_totals["gross_profit"], detail_january["gross_profit"])
 
     def test_customer_breakdown_combines_months_managers_and_reconciles_totals(self):
         self.add_row(date(2025, 12, 1), name="Товар A", revenue="100", cost="60",
