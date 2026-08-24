@@ -14,7 +14,8 @@
 - `ONEC_ODATA_USERNAME` и `ONEC_ODATA_PASSWORD` — либо оба заданы, либо оба пусты;
 - `ONEC_ODATA_ORGANIZATION_GUIDS` — allowlist GUID через запятую;
 - `ONEC_ODATA_TIMEOUT_SECONDS` — timeout одного GET;
-- `ONEC_ODATA_MAX_PAGES` — предел страниц.
+- `ONEC_ODATA_MAX_PAGES` — предел страниц;
+- `ONEC_ODATA_MAX_ROWS` — общий предел строк preview.
 
 Реальные endpoint и credentials нельзя добавлять в Git.
 
@@ -38,5 +39,5 @@ allowlist. Диапазон месяцев обязателен и включи�
 - identity строки — `Recorder + LineNumber`;
 - нулевой GUID контрагента означает «без контрагента»;
 - nextLink остаётся на исходных scheme/host/port и внутри OData base path;
-- pagination ограничена и защищена от циклов;
+- pagination и общий объём строк ограничены, pagination защищена от циклов;
 - stdout содержит только агрегаты, не endpoint, credentials или строки регистра.
