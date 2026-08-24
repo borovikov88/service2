@@ -123,11 +123,16 @@ class ODataProfitReaderTests(SimpleTestCase):
         self.assertEqual(result["total"]["gross_profit"], Decimal("5058.00"))
         request = opener.requests[0][0]
         self.assertEqual(request.get_method(), "GET")
-        query = parse_qs(urlsplit(request.full_url).query)
+        raw_query = urlsplit(request.full_url).query
+        self.assertIn("$select=", raw_query)
+        self.assertIn("&$filter=", raw_query)
+        self.assertNotIn("%24", raw_query)
+        query = parse_qs(raw_query)
         filter_value = query["$filter"][0]
+        self.assertIn("Active eq true", filter_value)
+        self.assertIn("Period ge datetime'2026-05-01T00:00:00'", filter_value)
+        self.assertIn("Period lt datetime'2026-06-01T00:00:00'", filter_value)
         self.assertIn(ORG_A, filter_value)
-        self.assertIn("2026-05-01", filter_value)
-        self.assertIn("2026-06-01", filter_value)
         self.assertNotIn(ORG_B, filter_value)
         self.assertIn("AccumulationRegister_Продажи_RecordType", unquote(request.full_url))
 
@@ -234,6 +239,8 @@ class ODataProfitReaderTests(SimpleTestCase):
             )
 
     def test_out_of_range_and_non_allowlisted_response_rows_are_rejected(self):
+        with self.assertRaisesRegex(ODataPreviewError, "outside the requested month"):
+            self.preview([{"value": [row(period="2025-05-05T00:00:00")]}])
         with self.assertRaisesRegex(ODataPreviewError, "outside the requested month"):
             self.preview([{"value": [row(period="2026-06-01T00:00:00Z")]}])
         with self.assertRaisesRegex(ODataPreviewError, "outside the allowlist"):
