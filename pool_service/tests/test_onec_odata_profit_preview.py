@@ -80,6 +80,7 @@ def config(**overrides):
         "organization_guids": (ORG_A,),
         "timeout_seconds": 7,
         "max_pages": 10,
+        "max_rows": 100,
     }
     values.update(overrides)
     return ODataConfig(**values)
@@ -214,6 +215,7 @@ class ODataProfitReaderTests(SimpleTestCase):
             "https://fresh.example/odata/standard.odata/#fragment",
             "https://fresh.example/odata/other/",
             "https://fresh.example/odata/%2e%2e/odata/standard.odata/",
+            "https://fresh.example:invalid/odata/standard.odata/",
         )
         for base_url in invalid_urls:
             with self.subTest(base_url=base_url), self.assertRaises(ODataPreviewError):
@@ -223,6 +225,13 @@ class ODataProfitReaderTests(SimpleTestCase):
                 ODataPreviewError, "set together"
             ):
                 validate_config(config(username=username, password=password))
+
+    def test_row_limit_is_rejected(self):
+        with self.assertRaisesRegex(ODataPreviewError, "row limit"):
+            self.preview(
+                [{"value": [row(1), row(2)]}],
+                config=config(max_rows=1),
+            )
 
     def test_out_of_range_and_non_allowlisted_response_rows_are_rejected(self):
         with self.assertRaisesRegex(ODataPreviewError, "outside the requested month"):
@@ -242,6 +251,7 @@ class ODataProfitReaderTests(SimpleTestCase):
     ONEC_ODATA_ORGANIZATION_GUIDS=(ORG_A,),
     ONEC_ODATA_TIMEOUT_SECONDS="5",
     ONEC_ODATA_MAX_PAGES="2",
+    ONEC_ODATA_MAX_ROWS="100",
 )
 class ODataProfitCommandTests(TestCase):
     def test_command_outputs_aggregates_only_and_does_not_write_database(self):
