@@ -10,6 +10,7 @@ from pool_service.models import (
     OneCReportPeriodState,
     Organization,
     PayrollRow,
+    cashflow_source_identity,
 )
 from .employee_matching import resolve_employee_identity
 from .services import (
@@ -162,10 +163,17 @@ def _build_rows(batch, organization, result):
             ))
         return PayrollRow, rows
     if batch.import_type == OneCImportBatch.TYPE_CASHFLOW:
-        return CashFlowRow, [
-            CashFlowRow(import_batch=batch, organization=organization, **record)
-            for record in result.records
-        ]
+        rows = []
+        for parsed in result.records:
+            record = dict(parsed)
+            record["source_identity"] = cashflow_source_identity(
+                period_month=record["period_month"],
+                source_row_number=record["source_row_number"],
+            )
+            rows.append(CashFlowRow(
+                import_batch=batch, organization=organization, **record
+            ))
+        return CashFlowRow, rows
     raise ValidationError("Неподдерживаемый тип foundation import.")
 
 
