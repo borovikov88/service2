@@ -9,7 +9,11 @@ from django.urls import reverse
 from django.utils import timezone
 
 from pool_service.finance_imports.overview import finance_overview_data
-from pool_service.finance_imports.cashflow_dashboard import cashflow_dashboard_data
+from pool_service.finance_imports.cashflow_dashboard import (
+    MAX_ARTICLE_CHART_SERIES,
+    cashflow_article_trend_data,
+    cashflow_dashboard_data,
+)
 from pool_service.finance_imports.owner_dashboard import resolve_owner_period
 from pool_service.finance_imports.profit_dashboard import dashboard_data, resolve_period
 from pool_service.finance_imports.payroll_dashboard import payroll_dashboard_data
@@ -323,6 +327,148 @@ class FinanceOverviewTests(TestCase):
         })
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["totals"], data["cashflow"]["totals"])
+
+    def test_cashflow_detail_formats_every_money_value(self):
+        CashFlowRow.objects.create(
+            organization=self.organization,
+            import_batch=self.cashflow_batch,
+            period_month=date(2026, 2, 1),
+            source_row_number=99,
+            article_raw="Крупное поступление",
+            normalized_article_name="крупное поступление",
+            document_raw="Документ",
+            receipts=Decimal("22786721.74"),
+            payments=Decimal("0.00"),
+            net_cash_flow=Decimal("22786721.74"),
+        )
+        self.client.force_login(self.manager)
+        response = self.client.get(reverse("finance_onec_cashflow_dashboard"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "22\u00a0786\u00a0921,74\u00a0₽")
+        self.assertContains(response, "120,00\u00a0₽")
+
+    def test_cashflow_article_trend_all_is_one_aggregate_series(self):
+        trend = cashflow_article_trend_data(
+            self.organization, date(2026, 1, 1), date(2026, 2, 1)
+        )
+        self.assertEqual(trend["labels"], ["2026-01-01", "2026-02-01"])
+        self.assertEqual(len(trend["datasets"]), 1)
+        self.assertEqual(trend["datasets"][0]["label"], "Все статьи")
+        self.assertEqual(
+            trend["datasets"][0]["values"],
+            [Decimal("30.00"), Decimal("50.00")],
+        )
+
+    def test_cashflow_article_trend_selected_series_fill_active_empty_month(self):
+        CashFlowRow.objects.create(
+            organization=self.organization,
+            import_batch=self.cashflow_batch,
+            period_month=date(2026, 1, 1),
+            source_row_number=99,
+            article_raw="Поставщики",
+            normalized_article_name="поставщики",
+            document_raw="Документ",
+            receipts=Decimal("0.00"),
+            payments=Decimal("20.00"),
+            net_cash_flow=Decimal("-20.00"),
+        )
+        trend = cashflow_article_trend_data(
+            self.organization,
+            date(2026, 1, 1),
+            date(2026, 2, 1),
+            mode="selected",
+            selected_articles=["продажи", "поставщики"],
+        )
+        self.assertEqual([item["label"] for item in trend["datasets"]], [
+            "Продажи", "Поставщики",
+        ])
+        self.assertEqual(trend["datasets"][0]["values"], [
+            Decimal("30.00"), Decimal("50.00"),
+        ])
+        self.assertEqual(trend["datasets"][1]["values"], [
+            Decimal("-20.00"), Decimal("0.00"),
+        ])
+
+    def test_cashflow_article_selection_changes_only_chart(self):
+        self.client.force_login(self.manager)
+        baseline = self.client.get(reverse("finance_onec_cashflow_dashboard"), {
+            "period_from": "2026-01", "period_to": "2026-02",
+        })
+        selected = self.client.get(reverse("finance_onec_cashflow_dashboard"), {
+            "period_from": "2026-01", "period_to": "2026-02",
+            "article_mode": "selected", "article": ["продажи"],
+        })
+        self.assertEqual(selected.status_code, 200)
+        self.assertEqual(selected.context["totals"], baseline.context["totals"])
+        self.assertEqual(selected.context["monthly"], baseline.context["monthly"])
+        self.assertEqual(selected.context["articles"], baseline.context["articles"])
+        self.assertEqual(
+            selected.context["article_trend"]["datasets"][0]["label"],
+            "Продажи",
+        )
+        self.assertContains(selected, "Выбранные статьи")
+
+    def test_cashflow_article_series_limit_is_enforced_server_side(self):
+        selected = []
+        for index in range(MAX_ARTICLE_CHART_SERIES + 1):
+            normalized = f"статья {index}"
+            selected.append(normalized)
+            CashFlowRow.objects.create(
+                organization=self.organization,
+                import_batch=self.cashflow_batch,
+                period_month=date(2026, 1, 1),
+                source_row_number=100 + index,
+                article_raw=f"Статья {index}",
+                normalized_article_name=normalized,
+                document_raw="Документ",
+                receipts=Decimal("1.00"),
+                payments=Decimal("0.00"),
+                net_cash_flow=Decimal("1.00"),
+            )
+        self.client.force_login(self.manager)
+        response = self.client.get(reverse("finance_onec_cashflow_dashboard"), {
+            "article_mode": "selected", "article": selected,
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            f"Можно одновременно показать не более {MAX_ARTICLE_CHART_SERIES} статей.",
+        )
+        self.assertEqual(response.context["article_trend"]["datasets"], [])
+
+    def test_cashflow_chart_access_and_get_remain_read_only(self):
+        self.client.force_login(self.employee)
+        self.assertEqual(
+            self.client.get(reverse("finance_onec_cashflow_dashboard")).status_code,
+            403,
+        )
+        self.client.force_login(self.manager)
+        with CaptureQueriesContext(connection) as queries:
+            response = self.client.get(
+                reverse("finance_onec_cashflow_dashboard"),
+                {"article_mode": "selected", "article": ["продажи"]},
+            )
+        self.assertEqual(response.status_code, 200)
+        writes = [
+            query["sql"] for query in queries.captured_queries
+            if query["sql"].lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE"))
+            and "django_session" not in query["sql"].lower()
+        ]
+        self.assertEqual(writes, [])
+
+    def test_all_chartjs_pages_use_month_index_hover(self):
+        self.client.force_login(self.manager)
+        for route in (
+            "finance_overview",
+            "finance_onec_profit_dashboard",
+            "finance_onec_cashflow_dashboard",
+        ):
+            with self.subTest(route=route):
+                response = self.client.get(reverse(route))
+                self.assertEqual(response.status_code, 200)
+                self.assertContains(response, "interaction:{mode:'index',intersect:false}")
+                self.assertContains(response, "hover:{mode:'index',intersect:false}")
+                self.assertContains(response, "tooltip:{mode:'index',intersect:false")
 
     def test_non_active_and_other_organization_rows_never_enter_totals(self):
         historical = self._batch(OneCImportBatch.TYPE_MONTHLY_PROFIT, "historical")

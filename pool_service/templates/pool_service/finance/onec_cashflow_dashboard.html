@@ -1,10 +1,117 @@
 {% extends "pool_service/base.html" %}
+{% load finance_tags %}
 {% block title %}ДДС{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-1">ДДС</h1><div class="text-muted">Фактические движения денег из активных подтверждённых версий 1С</div></div><a class="btn btn-outline-secondary" href="{% url 'finance_onec_import_list' %}">Импорты 1С</a></div>
+<style>
+  .cashflow-article-options { max-height:16rem; overflow-y:auto; }
+  .cashflow-article-chip { display:inline-flex; align-items:center; gap:.35rem; border:1px solid var(--bs-border-color); border-radius:999px; padding:.3rem .65rem; background:var(--bs-tertiary-bg); color:var(--bs-body-color); font-size:.8rem; }
+  .cashflow-article-chip:hover { border-color:var(--bs-primary); }
+  .cashflow-chart-wrap { position:relative; min-height:340px; }
+</style>
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div><h1 class="h3 mb-1">ДДС</h1><div class="text-muted">Фактические движения денег из активных подтверждённых версий 1С</div></div>
+  <a class="btn btn-outline-secondary" href="{% url 'finance_onec_import_list' %}">Импорты 1С</a>
+</div>
 <div class="alert alert-info">Внутренние обороты не исключаются автоматически и отражаются в исходных статьях 1С.</div>
-<form method="get" class="card card-soft p-3 mb-3"><div class="row g-2 align-items-end"><div class="col-sm-4 col-lg-3"><label class="form-label" for="cashflow-period-from">С месяца</label><input class="form-control" id="cashflow-period-from" type="month" name="period_from" value="{{ period_from|date:'Y-m' }}"></div><div class="col-sm-4 col-lg-3"><label class="form-label" for="cashflow-period-to">По месяц</label><input class="form-control" id="cashflow-period-to" type="month" name="period_to" value="{{ period_to|date:'Y-m' }}"></div><div class="col-sm-4 col-lg-2"><button class="btn btn-primary w-100">Показать</button></div></div>{% if period_error %}<div class="text-danger mt-2">{{ period_error }}</div>{% endif %}</form>
-<div class="row g-3 mb-3"><div class="col-md-4"><div class="card p-3"><div class="text-muted">Поступления</div><div class="h4 mb-0">{{ totals.receipts }}</div></div></div><div class="col-md-4"><div class="card p-3"><div class="text-muted">Платежи</div><div class="h4 mb-0">{{ totals.payments }}</div></div></div><div class="col-md-4"><div class="card p-3"><div class="text-muted">Чистый поток</div><div class="h4 mb-0">{{ totals.net_cash_flow }}</div></div></div></div>
-<div class="card card-soft p-3 mb-3"><h2 class="h5">По месяцам</h2><div class="table-responsive"><table class="table table-sm"><thead><tr><th>Месяц</th><th>Поступления</th><th>Платежи</th><th>Чистый поток</th></tr></thead><tbody>{% for item in monthly %}<tr><td>{{ item.period_month|date:"m.Y" }}</td><td>{{ item.receipts }}</td><td>{{ item.payments }}</td><td>{{ item.net_cash_flow }}</td></tr>{% empty %}<tr><td colspan="4">Нет активных данных.</td></tr>{% endfor %}</tbody></table></div></div>
-<div class="card card-soft p-3"><h2 class="h5">По статьям 1С</h2><div class="table-responsive"><table class="table table-sm"><thead><tr><th>Категория V1</th><th>Статья</th><th>Поступления</th><th>Платежи</th><th>Чистый поток</th></tr></thead><tbody>{% for item in articles %}<tr><td>Неклассифицировано</td><td>{{ item.article_raw }}</td><td>{{ item.receipts }}</td><td>{{ item.payments }}</td><td>{{ item.net_cash_flow }}</td></tr>{% empty %}<tr><td colspan="5">Нет данных.</td></tr>{% endfor %}</tbody></table></div></div>
+
+<form method="get" class="card card-soft p-3 mb-3" id="cashflow-period-form">
+  <input type="hidden" name="article_mode" value="{{ article_trend.mode }}">
+  {% for item in article_trend.selected %}<input type="hidden" name="article" value="{{ item.value }}">{% endfor %}
+  <div class="row g-2 align-items-end">
+    <div class="col-sm-4 col-lg-3"><label class="form-label" for="cashflow-period-from">С месяца</label><input class="form-control" id="cashflow-period-from" type="month" name="period_from" value="{{ period_from|date:'Y-m' }}"></div>
+    <div class="col-sm-4 col-lg-3"><label class="form-label" for="cashflow-period-to">По месяц</label><input class="form-control" id="cashflow-period-to" type="month" name="period_to" value="{{ period_to|date:'Y-m' }}"></div>
+    <div class="col-sm-4 col-lg-2"><button class="btn btn-primary w-100">Показать</button></div>
+  </div>
+  {% if period_error %}<div class="text-danger mt-2">{{ period_error }}</div>{% endif %}
+</form>
+
+<div class="row g-3 mb-3">
+  <div class="col-md-4"><div class="card p-3"><div class="text-muted">Поступления</div><div class="h4 mb-0">{{ totals.receipts|money }}</div></div></div>
+  <div class="col-md-4"><div class="card p-3"><div class="text-muted">Платежи</div><div class="h4 mb-0">{{ totals.payments|money }}</div></div></div>
+  <div class="col-md-4"><div class="card p-3"><div class="text-muted">Чистый поток</div><div class="h4 mb-0">{{ totals.net_cash_flow|money }}</div></div></div>
+</div>
+
+<div class="card card-soft p-3 mb-3">
+  <h2 class="h5">По месяцам</h2>
+  <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Месяц</th><th class="text-end">Поступления</th><th class="text-end">Платежи</th><th class="text-end">Чистый поток</th></tr></thead><tbody>
+    {% for item in monthly %}<tr><td>{{ item.period_month|date:"m.Y" }}</td><td class="text-end">{{ item.receipts|money }}</td><td class="text-end">{{ item.payments|money }}</td><td class="text-end">{{ item.net_cash_flow|money }}</td></tr>{% empty %}<tr><td colspan="4">Нет активных данных.</td></tr>{% endfor %}
+  </tbody></table></div>
+</div>
+
+<div class="card card-soft p-3 mb-3">
+  <div class="d-flex flex-wrap align-items-start justify-content-between gap-2 mb-3">
+    <div><h2 class="h5 mb-1">Динамика по статьям</h2><div class="small text-muted">Аналитический график чистого потока; выбор не меняет итоговые показатели ДДС.</div></div>
+    <span class="badge text-bg-light">до {{ article_trend.max_series }} серий</span>
+  </div>
+  <form method="get" id="cashflow-article-form">
+    {% if period_from %}<input type="hidden" name="period_from" value="{{ period_from|date:'Y-m' }}">{% endif %}
+    {% if period_to %}<input type="hidden" name="period_to" value="{{ period_to|date:'Y-m' }}">{% endif %}
+    <div class="d-flex flex-wrap gap-3 mb-3">
+      <div class="form-check"><input class="form-check-input" type="radio" name="article_mode" id="cashflow-mode-all" value="all"{% if article_trend.mode == 'all' %} checked{% endif %}><label class="form-check-label" for="cashflow-mode-all">Все статьи одной серией</label></div>
+      <div class="form-check"><input class="form-check-input" type="radio" name="article_mode" id="cashflow-mode-selected" value="selected"{% if article_trend.mode == 'selected' %} checked{% endif %}><label class="form-check-label" for="cashflow-mode-selected">Выбранные статьи</label></div>
+    </div>
+    <div class="row g-3 align-items-stretch">
+      <div class="col-lg-8">
+        <label class="form-label" for="cashflow-article-search">Найти статью</label>
+        <input class="form-control mb-2" id="cashflow-article-search" type="search" placeholder="Начните вводить название" autocomplete="off">
+        <div class="cashflow-article-options border rounded-3 p-2" id="cashflow-article-options">
+          {% for item in article_trend.options %}<div class="form-check cashflow-article-option py-1" data-search="{{ item.label|lower }}"><input class="form-check-input cashflow-article-checkbox" type="checkbox" name="article" value="{{ item.normalized_article_name }}" id="cashflow-article-{{ forloop.counter }}"{% if item.selected %} checked{% endif %}><label class="form-check-label" for="cashflow-article-{{ forloop.counter }}">{{ item.label }}</label></div>{% empty %}<div class="text-muted small">Нет статей за выбранный период.</div>{% endfor %}
+        </div>
+      </div>
+      <div class="col-lg-4 d-flex flex-column justify-content-end">
+        <div class="small text-muted mb-2" id="cashflow-article-limit">Можно выбрать не более {{ article_trend.max_series }} статей.</div>
+        <button class="btn btn-outline-primary">Построить график</button>
+      </div>
+    </div>
+  </form>
+  {% if article_trend.selection_error %}<div class="alert alert-warning py-2 mt-3 mb-0" role="alert">{{ article_trend.selection_error }}</div>{% endif %}
+  {% if article_trend.selected %}<div class="d-flex flex-wrap gap-2 mt-3" aria-label="Выбранные статьи">{% for item in article_trend.selected %}<button class="cashflow-article-chip" type="button" data-remove-article="{{ item.value }}">{{ item.label }} <span aria-hidden="true">×</span><span class="visually-hidden">Удалить</span></button>{% endfor %}</div>{% endif %}
+  {% if article_trend.datasets %}<div class="cashflow-chart-wrap mt-3"><canvas id="cashflow-article-chart"></canvas></div>{% elif article_trend.mode == 'selected' and not article_trend.selection_error %}<div class="text-muted small mt-3">Выберите хотя бы одну статью.</div>{% elif not article_trend.has_active_months %}<div class="text-muted small mt-3">Нет активных данных за выбранный период.</div>{% endif %}
+</div>
+
+<div class="card card-soft p-3">
+  <h2 class="h5">По статьям 1С</h2>
+  <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Категория V1</th><th>Статья</th><th class="text-end">Поступления</th><th class="text-end">Платежи</th><th class="text-end">Чистый поток</th></tr></thead><tbody>
+    {% for item in articles %}<tr><td>Неклассифицировано</td><td>{{ item.article_raw }}</td><td class="text-end">{{ item.receipts|money }}</td><td class="text-end">{{ item.payments|money }}</td><td class="text-end">{{ item.net_cash_flow|money }}</td></tr>{% empty %}<tr><td colspan="5">Нет данных.</td></tr>{% endfor %}
+  </tbody></table></div>
+</div>
+
+{{ article_trend|json_script:"cashflow-article-trend-data" }}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script>
+const cashflowArticleTrend=JSON.parse(document.getElementById('cashflow-article-trend-data').textContent);
+const cashflowArticleCanvas=document.getElementById('cashflow-article-chart');
+if(cashflowArticleCanvas && cashflowArticleTrend.datasets.length){
+  const colors=['#1769aa','#118b88','#8064a2','#bd4b56','#d2952d','#526478'];
+  const moneyFormatter=new Intl.NumberFormat('ru-RU',{style:'currency',currency:'RUB',minimumFractionDigits:2});
+  new Chart(cashflowArticleCanvas,{
+    type:'line',
+    data:{
+      labels:cashflowArticleTrend.labels.map(value=>new Date(`${value}T00:00:00`).toLocaleDateString('ru-RU',{month:'short',year:'numeric'})),
+      datasets:cashflowArticleTrend.datasets.map((item,index)=>({label:item.label,data:item.values,borderColor:colors[index%colors.length],backgroundColor:`${colors[index%colors.length]}22`,tension:.25,spanGaps:false,pointRadius:3}))
+    },
+    options:{
+      responsive:true,
+      maintainAspectRatio:false,
+      interaction:{mode:'index',intersect:false},
+      hover:{mode:'index',intersect:false},
+      plugins:{tooltip:{mode:'index',intersect:false,callbacks:{label:context=>`${context.dataset.label}: ${moneyFormatter.format(context.parsed.y)}`}}},
+      scales:{y:{ticks:{callback:value=>moneyFormatter.format(value)}}}
+    }
+  });
+}
+const cashflowArticleForm=document.getElementById('cashflow-article-form');
+const cashflowArticleSearch=document.getElementById('cashflow-article-search');
+const cashflowArticleCheckboxes=[...document.querySelectorAll('.cashflow-article-checkbox')];
+const cashflowArticleLimit={{ article_trend.max_series }};
+const refreshCashflowArticleLimit=()=>{
+  const selected=cashflowArticleCheckboxes.filter(item=>item.checked).length;
+  for(const item of cashflowArticleCheckboxes) item.disabled=!item.checked && selected>=cashflowArticleLimit;
+  document.getElementById('cashflow-article-limit').textContent=`Выбрано ${selected} из ${cashflowArticleLimit}.`;
+};
+for(const item of cashflowArticleCheckboxes) item.addEventListener('change',()=>{document.getElementById('cashflow-mode-selected').checked=true;refreshCashflowArticleLimit();});
+cashflowArticleSearch.addEventListener('input',()=>{const query=cashflowArticleSearch.value.trim().toLocaleLowerCase('ru-RU');for(const item of document.querySelectorAll('.cashflow-article-option')) item.classList.toggle('d-none',!item.dataset.search.includes(query));});
+for(const chip of document.querySelectorAll('[data-remove-article]')) chip.addEventListener('click',()=>{const checkbox=cashflowArticleCheckboxes.find(item=>item.value===chip.dataset.removeArticle);if(checkbox) checkbox.checked=false;cashflowArticleForm.requestSubmit();});
+refreshCashflowArticleLimit();
+</script>
 {% endblock %}

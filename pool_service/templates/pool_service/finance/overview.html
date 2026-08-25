@@ -166,7 +166,7 @@
   const seasonal = JSON.parse(document.getElementById('owner-seasonality-data').textContent);
   const labels = monthly.map(row => row.label);
   const moneyTooltip = value => new Intl.NumberFormat('ru-RU', {style:'currency', currency:'RUB', maximumFractionDigits:0}).format(value);
-  const chartOptions = {responsive:true, maintainAspectRatio:false, animation:false, plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>`${ctx.dataset.label}: ${moneyTooltip(ctx.parsed.y)}`}}},scales:{x:{grid:{display:false},ticks:{maxRotation:0,font:{size:9}}},y:{beginAtZero:false,ticks:{callback:value=>`${Math.round(value/100000)/10} млн`,font:{size:9}}}}};
+  const chartOptions = {responsive:true, maintainAspectRatio:false, animation:false, interaction:{mode:'index',intersect:false},hover:{mode:'index',intersect:false},plugins:{legend:{display:false},tooltip:{mode:'index',intersect:false,callbacks:{label:ctx=>`${ctx.dataset.label}: ${moneyTooltip(ctx.parsed.y)}`}}},scales:{x:{grid:{display:false},ticks:{maxRotation:0,font:{size:9}}},y:{beginAtZero:false,ticks:{callback:value=>`${Math.round(value/100000)/10} млн`,font:{size:9}}}}};
   const lineChart = (id, field, label, color) => new Chart(document.getElementById(id), {type:'line',data:{labels,datasets:[{label,data:monthly.map(row=>row[field]),borderColor:color,backgroundColor:`${color}22`,fill:true,tension:.28,spanGaps:false,pointRadius:2}]},options:chartOptions});
   lineChart('owner-revenue-chart','revenue','Выручка','#1769aa');
   lineChart('owner-profit-chart','gross_profit','Валовая прибыль','#118b88');
