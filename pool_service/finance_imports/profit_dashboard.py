@@ -162,6 +162,30 @@ def comparison(current, previous):
     return result
 
 
+def monthly_profit_summary(organization, first_month, last_month):
+    """Return active import-time analytics without building detail breakdowns."""
+    rows = list(OneCMonthlyProfit.objects.active_for(organization).filter(
+        period_month__range=(first_month, last_month)
+    ))
+    period_cost_ratio = apply_period_analytics(rows)
+    monthly = []
+    for month_index in range(
+        (last_month.year - first_month.year) * 12
+        + last_month.month - first_month.month + 1
+    ):
+        month = add_months(first_month, month_index)
+        monthly.append({
+            "month": month,
+            **summarize(row for row in rows if row.period_month == month),
+        })
+    return {
+        "rows": rows,
+        "totals": summarize(rows),
+        "monthly": monthly,
+        "period_cost_ratio": period_cost_ratio,
+    }
+
+
 def _customer_key(value):
     normalized = re.sub(r"\s+", " ", (value or "").strip()).lower().replace("ё", "е")
     if normalized in {"", "<покупатель не указан>"}:
