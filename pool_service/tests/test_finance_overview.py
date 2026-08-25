@@ -9,10 +9,12 @@ from django.urls import reverse
 from django.utils import timezone
 
 from pool_service.finance_imports.overview import finance_overview_data
+from pool_service.finance_imports.cashflow_dashboard import cashflow_dashboard_data
+from pool_service.finance_imports.owner_dashboard import resolve_owner_period
 from pool_service.finance_imports.profit_dashboard import dashboard_data, resolve_period
 from pool_service.finance_imports.payroll_dashboard import payroll_dashboard_data
 from pool_service.models import (
-    EmployeeOneCIdentity, OneCImportBatch, OneCMonthlyProfit,
+    CashFlowRow, EmployeeOneCIdentity, OneCImportBatch, OneCMonthlyProfit,
     OneCReportPeriodState, Organization, OrganizationAccess, PayrollRow,
 )
 
@@ -29,28 +31,13 @@ class FinanceOverviewTests(TestCase):
         OrganizationAccess.objects.create(user=self.employee, organization=self.organization, role="service")
         self.profit_batch = self._batch(OneCImportBatch.TYPE_MONTHLY_PROFIT, "profit")
         self.payroll_batch = self._batch(OneCImportBatch.TYPE_PAYROLL, "payroll")
+        self.cashflow_batch = self._batch(OneCImportBatch.TYPE_CASHFLOW, "cashflow")
         self.identity = EmployeeOneCIdentity.objects.create(
             organization=self.organization, raw_name="Тест", normalized_name="тест",
             normalized_department_name="", source_identity_key="a" * 64,
         )
-        for month, revenue, cost in ((date(2026, 1, 1), 100, 60), (date(2026, 2, 1), 200, 100)):
-            OneCMonthlyProfit.objects.create(
-                organization=self.organization, import_batch=self.profit_batch,
-                period_month=month, source_row_number=month.month, nomenclature="Товар",
-                nomenclature_type="Товар", revenue=Decimal(revenue), cost=Decimal(cost),
-                gross_profit=Decimal(revenue - cost), cost_source="actual",
-            )
-            PayrollRow.objects.create(
-                organization=self.organization, import_batch=self.payroll_batch,
-                employee_identity=self.identity, period_month=month, source_row_number=month.month,
-                employee_raw_name="Тест", employee_normalized_name="тест", accrued=Decimal("10.00"),
-                paid=Decimal("7.00"), opening_balance=Decimal("1.00"), closing_balance=Decimal("4.00"),
-            )
-            for report_type, batch in ((OneCImportBatch.TYPE_MONTHLY_PROFIT, self.profit_batch), (OneCImportBatch.TYPE_PAYROLL, self.payroll_batch)):
-                OneCReportPeriodState.objects.create(
-                    organization=self.organization, report_type=report_type, period_month=month,
-                    active_batch=batch, updated_by=self.manager,
-                )
+        self._add_month(date(2026, 1, 1), revenue=100, cost=60, accrued=10, receipts=80, payments=50)
+        self._add_month(date(2026, 2, 1), revenue=200, cost=100, accrued=10, receipts=120, payments=70)
 
     def _batch(self, import_type, suffix):
         return OneCImportBatch.objects.create(
@@ -60,6 +47,54 @@ class FinanceOverviewTests(TestCase):
             status=OneCImportBatch.STATUS_CONFIRMED,
         )
 
+    def _add_month(
+        self, month, *, revenue, cost, accrued, receipts, payments,
+        profit_batch=None, payroll_batch=None, cashflow_batch=None,
+        cost_source=OneCMonthlyProfit.COST_SOURCE_ACTUAL,
+    ):
+        profit_batch = profit_batch or self.profit_batch
+        payroll_batch = payroll_batch or self.payroll_batch
+        cashflow_batch = cashflow_batch or self.cashflow_batch
+        OneCMonthlyProfit.objects.create(
+            organization=self.organization, import_batch=profit_batch,
+            period_month=month, source_row_number=month.month, nomenclature="Товар",
+            nomenclature_type="Товар", revenue=Decimal(revenue), cost=Decimal(cost),
+            gross_profit=Decimal(revenue - cost), cost_source=cost_source,
+            analytical_gross_profit=(
+                Decimal(revenue - cost)
+                if cost_source != OneCMonthlyProfit.COST_SOURCE_UNDEFINED else None
+            ),
+        )
+        PayrollRow.objects.create(
+            organization=self.organization, import_batch=payroll_batch,
+            employee_identity=self.identity, period_month=month, source_row_number=month.month,
+            employee_raw_name="Тест", employee_normalized_name="тест", accrued=Decimal(accrued),
+            paid=Decimal("7.00"), opening_balance=Decimal("1.00"), closing_balance=Decimal("4.00"),
+        )
+        CashFlowRow.objects.create(
+            organization=self.organization, import_batch=cashflow_batch,
+            period_month=month, source_row_number=month.month,
+            article_raw="Продажи", normalized_article_name="продажи", document_raw="Документ",
+            receipts=Decimal(receipts), payments=Decimal(payments),
+            net_cash_flow=Decimal(receipts) - Decimal(payments),
+        )
+        for report_type, batch in (
+            (OneCImportBatch.TYPE_MONTHLY_PROFIT, profit_batch),
+            (OneCImportBatch.TYPE_PAYROLL, payroll_batch),
+            (OneCImportBatch.TYPE_CASHFLOW, cashflow_batch),
+        ):
+            OneCReportPeriodState.objects.update_or_create(
+                organization=self.organization, report_type=report_type, period_month=month,
+                defaults={"active_batch": batch, "updated_by": self.manager},
+            )
+
+    @staticmethod
+    def _card(data, key):
+        return next(
+            card for card in data["economy_cards"] + data["cashflow_cards"]
+            if card["key"] == key
+        )
+
     def test_composes_existing_trusted_services_with_monthly_periods(self):
         params = {"period": "custom", "start": "2026-01-15", "end": "2026-02-02"}
         data = finance_overview_data(self.organization, params, today=date(2026, 8, 16))
@@ -67,19 +102,33 @@ class FinanceOverviewTests(TestCase):
 
         self.assertEqual(data["gross_profit"]["totals"], dashboard_data(self.organization, period)["totals"])
         self.assertEqual(data["payroll"]["accrued"], payroll_dashboard_data(self.organization, date(2026, 1, 1), date(2026, 2, 1))["accrued"])
+        self.assertEqual(
+            data["cashflow"]["totals"],
+            cashflow_dashboard_data(
+                self.organization, date(2026, 1, 1), date(2026, 2, 1)
+            )["totals"],
+        )
         self.assertEqual(data["payroll_accrued"], Decimal("20.00"))
+        self.assertEqual(self._card(data, "revenue")["value"], Decimal("300.00"))
+        self.assertEqual(self._card(data, "gross_profit")["value"], Decimal("140.00"))
+        self.assertEqual(self._card(data, "receipts")["value"], Decimal("200.00"))
+        self.assertEqual(self._card(data, "payments")["value"], Decimal("120.00"))
+        self.assertEqual(self._card(data, "net_cash_flow")["value"], Decimal("80.00"))
         self.assertEqual(data["period"]["first_month"], date(2026, 1, 1))
         self.assertEqual(data["period"]["last_month"], date(2026, 2, 1))
         self.assertEqual(data["freshness"]["gross_profit"]["data_through"], date(2026, 2, 1))
         self.assertEqual(data["freshness"]["payroll"]["data_through"], date(2026, 2, 1))
 
-    def test_overview_permissions_and_no_expense_or_cashflow_kpis(self):
+    def test_overview_permissions_and_owner_kpis(self):
         self.client.force_login(self.manager)
         response = self.client.get(reverse("finance_overview"), {"period": "current_year"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Начисленный ФОТ")
+        self.assertContains(response, "Движение денег")
+        self.assertContains(response, "Чистый денежный поток")
+        self.assertContains(response, "Группа Аквалайн")
         self.assertNotContains(response, "Чистая прибыль")
-        self.assertNotContains(response, "Денежный поток")
+        self.assertNotContains(response, "Операционная прибыль")
         self.assertNotContains(response, "Расходы компании")
         self.client.force_login(self.employee)
         self.assertEqual(self.client.get(reverse("finance_overview")).status_code, 403)
@@ -90,6 +139,7 @@ class FinanceOverviewTests(TestCase):
         data = finance_overview_data(self.organization, {"period": "current_year"}, today=date(2026, 2, 20))
         self.assertFalse(data["has_payroll_data"])
         self.assertIsNone(data["payroll_accrued"])
+        self.assertIsNone(self._card(data, "payroll")["value"])
 
     def test_period_controls_keep_the_trusted_monthly_boundaries(self):
         today = date(2026, 8, 16)
@@ -98,6 +148,8 @@ class FinanceOverviewTests(TestCase):
             "previous_month": (date(2026, 7, 1), date(2026, 7, 1)),
             "current_year": (date(2026, 1, 1), date(2026, 8, 1)),
             "previous_year": (date(2025, 1, 1), date(2025, 12, 1)),
+            "last_12_months": (date(2025, 9, 1), date(2026, 8, 1)),
+            "off_season": (date(2025, 11, 1), date(2026, 3, 1)),
         }
         for preset, expected in cases.items():
             with self.subTest(preset=preset):
@@ -112,6 +164,13 @@ class FinanceOverviewTests(TestCase):
             today=today,
         )
         self.assertEqual(custom["effective_period_label"], "янв–фев 2026")
+        self.assertEqual(
+            resolve_owner_period(
+                {"period": "custom", "start": "2026-03", "end": "2026-04"},
+                today=today,
+            )["months"],
+            [date(2026, 3, 1), date(2026, 4, 1)],
+        )
 
     def test_no_gross_profit_data_is_unknown_not_zero(self):
         OneCMonthlyProfit.objects.all().delete()
@@ -123,6 +182,184 @@ class FinanceOverviewTests(TestCase):
         )
         self.assertFalse(data["has_gross_profit_data"])
         self.assertIsNone(data["freshness"]["gross_profit"]["data_through"])
+        self.assertIsNone(self._card(data, "revenue")["value"])
+
+    def test_no_cashflow_data_is_unknown_not_zero(self):
+        CashFlowRow.objects.all().delete()
+        OneCReportPeriodState.objects.filter(
+            report_type=OneCImportBatch.TYPE_CASHFLOW
+        ).delete()
+        data = finance_overview_data(
+            self.organization, {"period": "current_year"}, today=date(2026, 2, 20)
+        )
+        self.assertFalse(data["has_cashflow_data"])
+        self.assertIsNone(self._card(data, "receipts")["value"])
+
+    def test_incomplete_comparison_keeps_partial_fact_and_hides_all_deltas(self):
+        data = finance_overview_data(
+            self.organization, {"period": "last_12_months"}, today=date(2026, 8, 20)
+        )
+        revenue = self._card(data, "revenue")
+        self.assertEqual(revenue["value"], Decimal("300.00"))
+        self.assertTrue(revenue["partial"])
+        for card in data["economy_cards"] + data["cashflow_cards"]:
+            self.assertFalse(card["comparisons"][0]["available"])
+            self.assertEqual(
+                card["comparisons"][0]["label"],
+                "Нет полного сопоставимого периода",
+            )
+            self.assertIsNone(card["comparisons"][0]["absolute"])
+            self.assertIsNone(card["comparisons"][0]["percent"])
+            self.assertEqual(card["comparisons"][0]["tone"], "neutral")
+
+    def test_preliminary_month_has_neutral_month_and_year_comparisons(self):
+        self._add_month(
+            date(2025, 8, 1), revenue=90, cost=40, accrued=9,
+            receipts=80, payments=50,
+        )
+        self._add_month(
+            date(2026, 7, 1), revenue=100, cost=40, accrued=10,
+            receipts=90, payments=60,
+        )
+        self._add_month(
+            date(2026, 8, 1), revenue=120, cost=50, accrued=11,
+            receipts=95, payments=70,
+        )
+        data = finance_overview_data(
+            self.organization, {"period": "current_month"}, today=date(2026, 8, 20)
+        )
+        self.assertTrue(data["period"]["is_preliminary"])
+        for key in ("revenue", "payments"):
+            card = self._card(data, key)
+            self.assertEqual(len(card["comparisons"]), 2)
+            self.assertTrue(all(item["available"] for item in card["comparisons"]))
+            self.assertTrue(all(item["tone"] == "neutral" for item in card["comparisons"]))
+
+    def test_payment_growth_in_closed_month_is_not_positive(self):
+        self._add_month(
+            date(2025, 12, 1), revenue=80, cost=30, accrued=8,
+            receipts=70, payments=40,
+        )
+        data = finance_overview_data(
+            self.organization,
+            {"period": "custom", "start": "2026-01", "end": "2026-01"},
+            today=date(2026, 8, 20),
+        )
+        comparison = self._card(data, "payments")["comparisons"][0]
+        self.assertTrue(comparison["available"])
+        self.assertEqual(comparison["absolute"], Decimal("10.00"))
+        self.assertEqual(comparison["tone"], "negative")
+
+    def test_missing_months_remain_null_and_create_missing_and_stale_signals(self):
+        data = finance_overview_data(
+            self.organization, {"period": "current_year"}, today=date(2026, 8, 20)
+        )
+        march = next(item for item in data["monthly"] if item["month"] == date(2026, 3, 1))
+        self.assertIsNone(march["revenue"])
+        self.assertIsNone(march["payroll"])
+        self.assertIsNone(march["net_cash_flow"])
+        titles = [signal["title"] for signal in data["signals"]]
+        self.assertIn("Отсутствуют данные: Валовая прибыль", titles)
+        self.assertIn("Отсутствуют данные: ФОТ", titles)
+        self.assertIn("Отсутствуют данные: ДДС", titles)
+        self.assertIn("Источник отстаёт: Валовая прибыль", titles)
+        self.assertIn("Источник отстаёт: ФОТ", titles)
+        self.assertIn("Источник отстаёт: ДДС", titles)
+
+    def test_negative_cash_and_undefined_cost_are_the_only_value_signals(self):
+        self._add_month(
+            date(2026, 3, 1), revenue=100, cost=0, accrued=15,
+            receipts=30, payments=70,
+            cost_source=OneCMonthlyProfit.COST_SOURCE_UNDEFINED,
+        )
+        data = finance_overview_data(
+            self.organization,
+            {"period": "custom", "start": "2026-03", "end": "2026-03"},
+            today=date(2026, 8, 20),
+        )
+        titles = [signal["title"] for signal in data["signals"]]
+        self.assertIn("Отрицательный чистый денежный поток", titles)
+        self.assertIn("Продажи без определённой себестоимости", titles)
+        self.assertNotIn("Падение валовой прибыли", titles)
+        self.assertNotIn("Рост ФОТ", titles)
+
+    def test_seasonality_requires_every_matching_month_for_each_source(self):
+        for year in (2025, 2026):
+            first_month = 1 if year == 2025 else 3
+            for month_number in range(first_month, 9):
+                self._add_month(
+                    date(year, month_number, 1), revenue=100 + month_number,
+                    cost=40, accrued=10, receipts=90, payments=60,
+                )
+        data = finance_overview_data(
+            self.organization, {"period": "current_month"}, today=date(2026, 8, 20)
+        )
+        for metric in ("gross_profit", "payroll", "net_cash_flow"):
+            self.assertTrue(data["seasonality"][metric]["available"])
+            self.assertEqual(len(data["seasonality"][metric]["rows"]), 8)
+
+        OneCReportPeriodState.objects.filter(
+            organization=self.organization,
+            report_type=OneCImportBatch.TYPE_PAYROLL,
+            period_month=date(2025, 4, 1),
+        ).delete()
+        incomplete = finance_overview_data(
+            self.organization, {"period": "current_month"}, today=date(2026, 8, 20)
+        )
+        self.assertFalse(incomplete["seasonality"]["payroll"]["available"])
+        self.assertEqual(incomplete["seasonality"]["payroll"]["rows"], [])
+        self.assertTrue(incomplete["seasonality"]["gross_profit"]["available"])
+        self.assertTrue(incomplete["seasonality"]["net_cash_flow"]["available"])
+
+    def test_overview_and_filtered_cashflow_detail_use_identical_totals(self):
+        data = finance_overview_data(
+            self.organization,
+            {"period": "custom", "start": "2026-01", "end": "2026-02"},
+            today=date(2026, 8, 20),
+        )
+        self.client.force_login(self.manager)
+        response = self.client.get(reverse("finance_onec_cashflow_dashboard"), {
+            "period_from": "2026-01", "period_to": "2026-02",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["totals"], data["cashflow"]["totals"])
+
+    def test_non_active_and_other_organization_rows_never_enter_totals(self):
+        historical = self._batch(OneCImportBatch.TYPE_MONTHLY_PROFIT, "historical")
+        OneCMonthlyProfit.objects.create(
+            organization=self.organization, import_batch=historical,
+            period_month=date(2026, 1, 1), source_row_number=1,
+            nomenclature="История", nomenclature_type="Товар",
+            revenue=Decimal("9999"), cost=Decimal("1"), gross_profit=Decimal("9998"),
+            cost_source=OneCMonthlyProfit.COST_SOURCE_ACTUAL,
+            analytical_gross_profit=Decimal("9998"),
+        )
+        other = Organization.objects.create(name="Другая организация")
+        other_batch = OneCImportBatch.objects.create(
+            organization=other, import_type=OneCImportBatch.TYPE_MONTHLY_PROFIT,
+            original_filename="other.xlsx", stored_file="test/other.xlsx",
+            file_sha256="f" * 64, uploaded_by=self.manager,
+            status=OneCImportBatch.STATUS_CONFIRMED,
+        )
+        OneCMonthlyProfit.objects.create(
+            organization=other, import_batch=other_batch,
+            period_month=date(2026, 1, 1), source_row_number=1,
+            nomenclature="Чужие данные", nomenclature_type="Товар",
+            revenue=Decimal("7777"), cost=Decimal("1"), gross_profit=Decimal("7776"),
+            cost_source=OneCMonthlyProfit.COST_SOURCE_ACTUAL,
+            analytical_gross_profit=Decimal("7776"),
+        )
+        OneCReportPeriodState.objects.create(
+            organization=other, report_type=OneCImportBatch.TYPE_MONTHLY_PROFIT,
+            period_month=date(2026, 1, 1), active_batch=other_batch,
+            updated_by=self.manager,
+        )
+        data = finance_overview_data(
+            self.organization,
+            {"period": "custom", "start": "2026-01", "end": "2026-01"},
+            today=date(2026, 8, 20),
+        )
+        self.assertEqual(self._card(data, "revenue")["value"], Decimal("100.00"))
 
     def test_overview_get_is_read_only(self):
         self.client.force_login(self.manager)

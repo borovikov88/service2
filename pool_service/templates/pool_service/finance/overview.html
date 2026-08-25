@@ -1,38 +1,197 @@
 {% extends "pool_service/base.html" %}
 {% load finance_tags %}
-{% block title %}Финансы — Обзор{% endblock %}
+{% block title %}Группа Аквалайн — Финансы{% endblock %}
 {% block content %}
-<div class="mb-4">
-  <div class="text-muted small mb-1">Финансы</div>
-  <h1 class="h3 mb-1">Обзор</h1>
-  <div class="text-muted">Основные финансовые показатели компании. Данные учитываются по полным месяцам: {{ effective_period_label }}.</div>
+<style>
+  .owner-dashboard { --owner-navy:#132b49; --owner-blue:#1769aa; --owner-teal:#118b88; --owner-green:#278257; --owner-red:#bd4b56; --owner-amber:#a7670b; --owner-muted:#68778a; }
+  .owner-dashboard h1,.owner-dashboard h2 { color:var(--owner-navy); letter-spacing:-.025em; }
+  .owner-eyebrow { color:var(--owner-blue); font-size:.68rem; font-weight:700; letter-spacing:.11em; text-transform:uppercase; }
+  .owner-heading { display:flex; align-items:flex-end; justify-content:space-between; gap:1.5rem; }
+  .owner-scope { padding:.4rem .7rem; border:1px solid var(--bs-border-color); border-radius:999px; color:var(--owner-muted); background:var(--bs-body-bg); font-size:.75rem; font-weight:600; white-space:nowrap; }
+  .owner-period-presets { display:flex; flex-wrap:wrap; gap:.4rem; }
+  .owner-period-button { min-height:2.25rem; padding:.42rem .75rem; border:1px solid var(--bs-border-color); border-radius:.55rem; color:#526478; background:var(--bs-tertiary-bg); font-size:.75rem; font-weight:600; }
+  .owner-period-button:hover,.owner-period-button:focus-visible { border-color:#8db6d4; }
+  .owner-period-button.active { color:#fff; border-color:var(--owner-blue); background:var(--owner-blue); }
+  .owner-more-periods,.owner-more-panel { display:contents; }
+  .owner-more-periods summary { display:none; }
+  .owner-preliminary { display:flex; gap:.65rem; align-items:flex-start; padding:.7rem .8rem; border:1px solid #e7d18f; border-radius:.65rem; color:#765317; background:#fff4dc; font-size:.76rem; }
+  .owner-preliminary-icon { width:1.25rem; height:1.25rem; flex:0 0 1.25rem; display:grid; place-items:center; border-radius:50%; color:#fff; background:#d2952d; font-weight:700; }
+  .owner-section-header { display:flex; align-items:flex-end; justify-content:space-between; gap:1rem; margin:1.8rem 0 .8rem; }
+  .owner-section-help { color:var(--owner-muted); font-size:.72rem; text-align:right; }
+  .owner-kpi-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.75rem; }
+  .owner-kpi { min-width:0; min-height:14.5rem; display:flex; flex-direction:column; padding:1rem; border-top:3px solid #a6c8df; }
+  .owner-kpi-label { color:#5d6e80; font-size:.78rem; font-weight:650; }
+  .owner-kpi-value { margin:.65rem 0 .25rem; color:var(--owner-navy); font-size:clamp(1.55rem,2.2vw,2rem); font-weight:750; letter-spacing:-.04em; overflow-wrap:anywhere; }
+  .owner-badge { width:max-content; padding:.18rem .45rem; border-radius:999px; font-size:.63rem; font-weight:650; }
+  .owner-badge.preliminary { color:#765317; background:#fff4dc; }
+  .owner-badge.partial { color:#7b5416; background:#fff0d2; }
+  .owner-comparisons { display:grid; gap:.45rem; margin-top:.75rem; padding-top:.7rem; border-top:1px solid var(--bs-border-color); }
+  .owner-comparison { display:flex; justify-content:space-between; gap:.65rem; color:var(--owner-muted); font-size:.67rem; }
+  .owner-comparison strong { display:block; color:#526478; font-size:.69rem; font-weight:600; }
+  .owner-delta { flex:0 0 auto; text-align:right; font-weight:700; }
+  .owner-delta small { display:block; font-weight:500; }
+  .owner-delta.positive { color:var(--owner-green); }
+  .owner-delta.negative { color:var(--owner-red); }
+  .owner-delta.neutral { color:#637487; }
+  .owner-no-comparison { color:#718092; font-size:.7rem; font-weight:600; }
+  .owner-freshness { display:flex; flex-wrap:wrap; gap:.25rem .55rem; margin-top:auto; padding-top:.65rem; color:#7b8998; font-size:.63rem; }
+  .owner-report-link { display:inline-flex; align-items:center; gap:.25rem; margin-top:.55rem; color:var(--owner-blue); font-size:.68rem; font-weight:700; text-decoration:none; }
+  .owner-report-link:hover { text-decoration:underline; }
+  .owner-chart-grid { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr); gap:.8rem; margin-top:1.8rem; }
+  .owner-chart-card { min-width:0; padding:1rem; }
+  .owner-chart-card h2 { font-size:1.05rem; }
+  .owner-small-multiples { display:grid; gap:.65rem; }
+  .owner-mini-chart { height:9.2rem; padding:.65rem; border-radius:.65rem; background:var(--bs-tertiary-bg); }
+  .owner-mini-chart-head { color:#526478; font-size:.7rem; font-weight:650; }
+  .owner-mini-chart canvas { max-height:7.5rem; }
+  .owner-cash-chart { height:29rem; }
+  .owner-seasonality { grid-column:1/-1; }
+  .owner-season-tabs { display:flex; flex-wrap:wrap; gap:.4rem; margin:.8rem 0; }
+  .owner-season-tab { padding:.38rem .65rem; border:1px solid var(--bs-border-color); border-radius:.5rem; color:#637386; background:var(--bs-tertiary-bg); font-size:.7rem; font-weight:650; }
+  .owner-season-tab.active { color:#fff; border-color:var(--owner-navy); background:var(--owner-navy); }
+  .owner-season-chart { height:17rem; }
+  .owner-empty-chart { min-height:14rem; display:grid; place-items:center; border:1px dashed var(--bs-border-color); border-radius:.65rem; color:var(--owner-muted); background:var(--bs-tertiary-bg); text-align:center; }
+  .owner-signals { display:grid; gap:.5rem; }
+  .owner-signal { display:grid; grid-template-columns:2rem minmax(0,1fr) auto; align-items:center; gap:.7rem; padding:.7rem; border:1px solid var(--bs-border-color); border-radius:.65rem; color:inherit; text-decoration:none; }
+  .owner-signal:hover { border-color:#b7c9d8; background:var(--bs-tertiary-bg); }
+  .owner-signal-icon { width:2rem; height:2rem; display:grid; place-items:center; border-radius:.55rem; color:#fff; background:var(--owner-blue); font-weight:750; }
+  .owner-signal.negative .owner-signal-icon { background:var(--owner-red); }
+  .owner-signal.cost .owner-signal-icon,.owner-signal.stale .owner-signal-icon { background:var(--owner-amber); }
+  .owner-signal-title { display:block; color:var(--owner-navy); font-size:.76rem; }
+  .owner-signal-detail { color:var(--owner-muted); font-size:.7rem; }
+  .owner-signal-link { color:var(--owner-blue); font-size:.68rem; font-weight:700; white-space:nowrap; }
+  @media (max-width:991.98px) { .owner-kpi-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .owner-chart-grid { grid-template-columns:1fr; } .owner-seasonality { grid-column:auto; } }
+  @media (max-width:575.98px) {
+    .owner-heading { display:block; }
+    .owner-scope { width:max-content; margin-top:.75rem; }
+    .owner-period-presets > .owner-period-button { flex:1 1 calc(50% - .4rem); }
+    .owner-more-periods { position:relative; display:block; flex:1 1 100%; }
+    .owner-more-periods summary { display:flex; justify-content:center; align-items:center; min-height:2.25rem; border:1px solid var(--bs-border-color); border-radius:.55rem; color:#526478; background:var(--bs-tertiary-bg); font-size:.75rem; font-weight:700; list-style:none; }
+    .owner-more-periods summary::-webkit-details-marker { display:none; }
+    .owner-more-periods summary::after { content:"⌄"; margin-left:.4rem; color:var(--owner-blue); }
+    .owner-more-periods[open] summary::after { content:"⌃"; }
+    .owner-more-panel { display:grid; grid-template-columns:1fr; gap:.4rem; margin-top:.4rem; }
+    .owner-more-periods:not([open]) .owner-more-panel { display:none; }
+    .owner-kpi-grid { grid-template-columns:1fr; }
+    .owner-kpi { min-height:13rem; }
+    .owner-section-help { display:none; }
+    .owner-cash-chart { height:22rem; }
+    .owner-signal { grid-template-columns:2rem minmax(0,1fr); }
+    .owner-signal-link { grid-column:2; }
+  }
+</style>
+
+<div class="owner-dashboard">
+  <header class="owner-heading mb-4">
+    <div><div class="owner-eyebrow mb-1">Финансы · контур собственника</div><h1 class="h2 mb-1">Группа Аквалайн</h1><div class="text-muted small">Основные финансовые показатели компании: консолидированная экономика и движение денег по действующим активным импортам.</div></div>
+    <div class="owner-scope">Консолидировано: 4 юрлица</div>
+  </header>
+
+  <form method="get" class="card card-soft p-3 mb-3" id="owner-period-form">
+    <div class="d-flex justify-content-between align-items-start gap-3 mb-3"><div><div class="owner-eyebrow">Единый фильтр</div><h2 class="h5 mb-0">Период</h2></div><div class="text-end"><strong>{{ effective_period_label }}</strong><div class="text-muted small">полные календарные месяцы</div></div></div>
+    <div class="owner-period-presets">
+      <button class="owner-period-button{% if period.preset == 'current_month' %} active{% endif %}" name="period" value="current_month">Текущий месяц</button>
+      <button class="owner-period-button{% if period.preset == 'previous_month' %} active{% endif %}" name="period" value="previous_month">Предыдущий месяц</button>
+      <button class="owner-period-button{% if period.preset == 'current_year' %} active{% endif %}" name="period" value="current_year">Текущий год</button>
+      <button class="owner-period-button{% if period.preset == 'previous_year' %} active{% endif %}" name="period" value="previous_year">Предыдущий год</button>
+      <details class="owner-more-periods" open><summary>Ещё периоды</summary><div class="owner-more-panel">
+        <button class="owner-period-button{% if period.preset == 'last_12_months' %} active{% endif %}" name="period" value="last_12_months">Последние 12 месяцев</button>
+        <button class="owner-period-button{% if period.preset == 'off_season' %} active{% endif %}" name="period" value="off_season">Несезон · ноя–мар</button>
+        <button class="owner-period-button{% if period.preset == 'custom' %} active{% endif %}" type="button" id="owner-show-custom">Свой период</button>
+      </div></details>
+    </div>
+    <div class="row g-2 align-items-end mt-2{% if period.preset != 'custom' %} d-none{% endif %}" id="owner-custom-period">
+      <div class="col-sm-4"><label class="form-label small" for="owner-start">С месяца</label><input class="form-control" id="owner-start" type="month" name="start" value="{{ period.first_month|date:'Y-m' }}"></div>
+      <div class="col-sm-4"><label class="form-label small" for="owner-end">По месяц</label><input class="form-control" id="owner-end" type="month" name="end" value="{{ period.last_month|date:'Y-m' }}"></div>
+      <div class="col-sm-4"><button class="btn btn-primary w-100" name="period" value="custom">Применить</button></div>
+    </div>
+    {% if period.error %}<div class="alert alert-warning py-2 mt-3 mb-0">{{ period.error }}</div>{% endif %}
+    {% if period.is_preliminary %}<div class="owner-preliminary mt-3"><span class="owner-preliminary-icon">i</span><span><strong>{{ period.last_month|date:'F' }} — предварительный месяц.</strong> Значения могут измениться после следующего подтверждённого импорта. Сравнения показаны без зелёной или красной оценки.</span></div>{% endif %}
+  </form>
+
+  <section aria-labelledby="owner-economy-title">
+    <div class="owner-section-header"><div><div class="owner-eyebrow">Результат</div><h2 class="h5 mb-0" id="owner-economy-title">Экономика</h2></div><div class="owner-section-help">Начисления и валовая экономика</div></div>
+    <div class="owner-kpi-grid">
+      {% for card in economy_cards %}
+        <article class="card card-soft owner-kpi">
+          <div class="owner-kpi-label">{{ card.label }}</div>
+          <div class="owner-kpi-value">{% if card.has_data %}{% if card.value_type == 'money' %}{{ card.value|money }}{% else %}{{ card.value|floatformat:2 }}%{% endif %}{% else %}—{% endif %}</div>
+          {% if card.preliminary %}<span class="owner-badge preliminary">Предварительно</span>{% endif %}{% if card.partial %}<span class="owner-badge partial mt-1">Неполные данные</span>{% endif %}
+          <div class="owner-comparisons">
+            {% for comparison in card.comparisons %}
+              {% if comparison.available %}<div class="owner-comparison"><span>{{ comparison.label }}</span><span class="owner-delta {{ comparison.tone }}">{% if comparison.absolute > 0 %}+{% endif %}{% if card.absolute_type == 'money' %}{{ comparison.absolute|money }}{% else %}{{ comparison.absolute|floatformat:2 }} п.п.{% endif %}<small>{% if comparison.percent != None %}{% if comparison.percent > 0 %}+{% endif %}{{ comparison.percent|floatformat:2 }}%{% else %}без процентного изменения{% endif %}</small></span></div>{% else %}<div class="owner-no-comparison">Нет полного сопоставимого периода</div>{% endif %}
+            {% endfor %}
+          </div>
+          <div class="owner-freshness">{% for source in card.freshness %}<span>{{ source.label }}: {% if source.data_through %}по {{ source.data_through|date:'m.Y' }} · {{ source.last_updated|date:'d.m.Y H:i' }}{% else %}нет данных{% endif %}</span>{% endfor %}</div>
+          {% url card.route_name as card_url %}<a class="owner-report-link" href="{{ card_url }}{% if card.query %}?{{ card.query }}{% endif %}">Открыть детальный отчёт ↗</a>
+        </article>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section aria-labelledby="owner-cash-title">
+    <div class="owner-section-header"><div><div class="owner-eyebrow">ДДС</div><h2 class="h5 mb-0" id="owner-cash-title">Движение денег</h2></div><div class="owner-section-help">Денежные потоки показаны отдельно от валовой прибыли</div></div>
+    <div class="owner-kpi-grid">
+      {% for card in cashflow_cards %}
+        <article class="card card-soft owner-kpi">
+          <div class="owner-kpi-label">{{ card.label }}</div>
+          <div class="owner-kpi-value">{% if card.has_data %}{{ card.value|money }}{% else %}—{% endif %}</div>
+          {% if card.preliminary %}<span class="owner-badge preliminary">Предварительно</span>{% endif %}{% if card.partial %}<span class="owner-badge partial mt-1">Неполные данные</span>{% endif %}
+          <div class="owner-comparisons">{% for comparison in card.comparisons %}{% if comparison.available %}<div class="owner-comparison"><span>{{ comparison.label }}</span><span class="owner-delta {{ comparison.tone }}">{% if comparison.absolute > 0 %}+{% endif %}{{ comparison.absolute|money }}<small>{% if comparison.percent != None %}{% if comparison.percent > 0 %}+{% endif %}{{ comparison.percent|floatformat:2 }}%{% else %}без процентного изменения{% endif %}</small></span></div>{% else %}<div class="owner-no-comparison">Нет полного сопоставимого периода</div>{% endif %}{% endfor %}</div>
+          <div class="owner-freshness">{% for source in card.freshness %}<span>{{ source.label }}: {% if source.data_through %}по {{ source.data_through|date:'m.Y' }} · {{ source.last_updated|date:'d.m.Y H:i' }}{% else %}нет данных{% endif %}</span>{% endfor %}</div>
+          {% url card.route_name as card_url %}<a class="owner-report-link" href="{{ card_url }}{% if card.query %}?{{ card.query }}{% endif %}">Открыть детальный отчёт ↗</a>
+        </article>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="owner-chart-grid" aria-label="Графики финансового обзора">
+    <article class="card card-soft owner-chart-card"><div class="owner-eyebrow">Динамика</div><h2>Экономика по месяцам</h2><div class="owner-small-multiples"><div class="owner-mini-chart"><div class="owner-mini-chart-head">Выручка</div><canvas id="owner-revenue-chart"></canvas></div><div class="owner-mini-chart"><div class="owner-mini-chart-head">Валовая прибыль</div><canvas id="owner-profit-chart"></canvas></div><div class="owner-mini-chart"><div class="owner-mini-chart-head">Начисленный ФОТ</div><canvas id="owner-payroll-chart"></canvas></div></div></article>
+    <article class="card card-soft owner-chart-card"><div class="owner-eyebrow">Динамика</div><h2>Денежные потоки</h2><div class="owner-cash-chart"><canvas id="owner-cashflow-chart"></canvas></div></article>
+    <article class="card card-soft owner-chart-card owner-seasonality"><div class="d-flex justify-content-between align-items-start gap-3"><div><div class="owner-eyebrow">Сезонность</div><h2>Текущий и предыдущий год</h2></div><div class="owner-section-help">Только одинаковые полностью доступные месяцы</div></div><div class="owner-season-tabs" role="tablist"><button class="owner-season-tab active" type="button" data-metric="gross_profit">Валовая прибыль</button><button class="owner-season-tab" type="button" data-metric="payroll">ФОТ</button><button class="owner-season-tab" type="button" data-metric="net_cash_flow">Чистый денежный поток</button></div><div class="owner-season-chart"><canvas id="owner-season-chart"></canvas><div class="owner-empty-chart d-none" id="owner-season-empty"><strong>Нет полного сопоставимого периода</strong></div></div></article>
+  </section>
+
+  <section class="card card-soft p-3 mt-3" aria-labelledby="owner-signals-title">
+    <div class="owner-section-header mt-0"><div><div class="owner-eyebrow">Объективные сигналы</div><h2 class="h5 mb-0" id="owner-signals-title">Требует внимания</h2></div><div class="owner-section-help">Без несогласованных числовых порогов</div></div>
+    <div class="owner-signals">{% for signal in signals %}{% url signal.route_name as signal_url %}<a class="owner-signal {{ signal.kind }}" href="{{ signal_url }}{% if signal.query %}?{{ signal.query }}{% endif %}"><span class="owner-signal-icon">{% if signal.kind == 'negative' %}−{% elif signal.kind == 'cost' %}!{% else %}i{% endif %}</span><span><strong class="owner-signal-title">{{ signal.title }}</strong><span class="owner-signal-detail">{% if signal.detail_type == 'money' %}{{ signal.detail|money }}{% elif signal.detail_type == 'rows' %}Строк: {{ signal.detail }}{% else %}{{ signal.detail }}{% endif %}</span></span><span class="owner-signal-link">Открыть отчёт ↗</span></a>{% empty %}<div class="text-muted small py-2">Объективных сигналов для выбранного периода нет.</div>{% endfor %}</div>
+  </section>
 </div>
 
-<form method="get" class="card card-soft p-3 mb-3"><div class="row g-2 align-items-end"><div class="col-md-3"><label class="form-label" for="period">Период</label><select class="form-select" id="period" name="period"><option value="">Текущий год</option><option value="current_month"{% if period.preset == "current_month" %} selected{% endif %}>Текущий месяц</option><option value="previous_month"{% if period.preset == "previous_month" %} selected{% endif %}>Прошлый месяц</option><option value="current_year"{% if period.preset == "current_year" %} selected{% endif %}>Текущий год</option><option value="previous_year"{% if period.preset == "previous_year" %} selected{% endif %}>Прошлый год</option><option value="custom"{% if period.preset == "custom" %} selected{% endif %}>Произвольный период</option></select></div><div class="col-md-3"><label class="form-label" for="start">С</label><input class="form-control" type="date" id="start" name="start" value="{{ period.start|date:'Y-m-d' }}"></div><div class="col-md-3"><label class="form-label" for="end">По</label><input class="form-control" type="date" id="end" name="end" value="{{ period.end|date:'Y-m-d' }}"></div><div class="col-md-3"><button class="btn btn-primary w-100">Показать</button></div></div>{% if period.error %}<div class="alert alert-warning py-2 mt-3 mb-0">{{ period.error }}</div>{% endif %}</form>
-
-<div class="card card-soft p-3 mb-3"><div class="row g-2 small text-muted">
-  {% if can_view_gross_profit %}<div class="col-md-6"><strong class="text-body">Валовая прибыль:</strong> {% if freshness.gross_profit.data_through %}данные по {{ freshness.gross_profit.data_through|date:"m.Y" }} · обновлено {{ freshness.gross_profit.last_updated|date:"d.m.Y H:i" }}{% else %}нет данных{% endif %}</div>{% endif %}
-  {% if can_view_payroll %}<div class="col-md-6"><strong class="text-body">ФОТ:</strong> {% if freshness.payroll.data_through %}данные по {{ freshness.payroll.data_through|date:"m.Y" }} · обновлено {{ freshness.payroll.last_updated|date:"d.m.Y H:i" }}{% else %}нет данных{% endif %}</div>{% endif %}
-</div></div>
-
-<div class="row g-3 mb-3">
-  {% if can_view_gross_profit %}
-    <div class="col-sm-6 col-xl-3"><div class="card card-soft p-3 h-100"><div class="text-muted">Выручка</div><div class="fs-3 fw-bold">{% if has_gross_profit_data %}{{ gross_profit.totals.revenue|money }}{% else %}—{% endif %}</div>{% include "pool_service/finance/_profit_delta.html" with delta=gross_profit.comparison.revenue money_delta=True %}</div></div>
-    <div class="col-sm-6 col-xl-3"><div class="card card-soft p-3 h-100"><div class="text-muted">Валовая прибыль</div><div class="fs-3 fw-bold">{% if has_gross_profit_data %}{{ gross_profit.totals.gross_profit|money }}{% else %}—{% endif %}</div>{% include "pool_service/finance/_profit_delta.html" with delta=gross_profit.comparison.gross_profit money_delta=True %}</div></div>
-    <div class="col-sm-6 col-xl-3"><div class="card card-soft p-3 h-100"><div class="text-muted">Валовая рентабельность</div><div class="fs-3 fw-bold">{% if has_gross_profit_data %}{{ gross_profit.totals.profitability|default_if_none:"—" }}{% if gross_profit.totals.profitability != None %}%{% endif %}{% else %}—{% endif %}</div>{% include "pool_service/finance/_profit_delta.html" with delta=gross_profit.comparison.profitability %}</div></div>
-  {% endif %}
-  {% if can_view_payroll %}<div class="col-sm-6 col-xl-3"><div class="card card-soft p-3 h-100"><div class="text-muted">Начисленный ФОТ</div><div class="fs-3 fw-bold">{% if payroll_accrued != None %}{{ payroll_accrued|money }}{% else %}—{% endif %}</div><div class="small text-muted">Сравнение не рассчитывается в V1</div></div></div>{% endif %}
-</div>
-
-{% if can_view_gross_profit %}<div class="card card-soft p-3 mb-3"><h2 class="h5">Выручка и валовая прибыль по месяцам</h2>{% if has_gross_profit_data %}<div style="height:280px"><canvas id="overviewProfitChart"></canvas></div>{% else %}<div class="text-muted py-4">Нет данных валовой прибыли за выбранный период.</div>{% endif %}</div>{% endif %}
-
-{% if can_view_cost_control or can_view_gross_profit %}<div class="card card-soft p-3 mb-3"><h2 class="h5">Требует внимания</h2><div class="row g-3">
-  {% if can_view_cost_control %}<div class="col-md-6"><a class="text-decoration-none" href="{% url 'finance_onec_cost_control' %}"><strong>Товары проданы без себестоимости</strong><div class="text-muted">Строк: {{ missing_cost.row_count }} · выручка: {{ missing_cost.revenue|money }} →</div></a></div>{% endif %}
-  {% if can_view_gross_profit %}<div class="col-md-6"><strong>Валовая рентабельность</strong><div class="text-muted">{% if gross_profit.comparison.profitability.absolute != None %}{{ gross_profit.comparison.profitability.absolute|floatformat:2 }} п.п. к {{ period.comparison_label }}{% else %}Нет сопоставимых данных{% endif %}</div></div>{% endif %}
-</div></div>{% endif %}
-
-<div class="d-flex flex-wrap gap-3 small">{% if can_view_gross_profit %}<a href="{% url 'finance_onec_profit_dashboard' %}">Валовая прибыль →</a>{% endif %}{% if can_view_payroll %}<a href="{% url 'finance_payroll_dashboard' %}">Фонд оплаты труда →</a>{% endif %}{% if can_view_cost_control %}<a href="{% url 'finance_onec_cost_control' %}">Контроль себестоимости →</a>{% endif %}{% if can_access_finance_data %}<a href="{% url 'finance_data' %}">Данные 1С →</a>{% endif %}</div>
-{% if can_view_gross_profit %}{{ gross_profit.monthly|json_script:"overview-monthly-profit-data" }}
+{{ monthly|json_script:"owner-monthly-data" }}
+{{ seasonality|json_script:"owner-seasonality-data" }}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-<script>const overviewRows=JSON.parse(document.getElementById('overview-monthly-profit-data').textContent);if(overviewRows.length){new Chart(document.getElementById('overviewProfitChart'),{type:'line',data:{labels:overviewRows.map(x=>new Date(x.month).toLocaleDateString('ru-RU',{month:'short',year:'numeric'})),datasets:[{label:'Выручка',data:overviewRows.map(x=>x.revenue),borderColor:'#0d6efd'},{label:'Валовая прибыль',data:overviewRows.map(x=>x.gross_profit),borderColor:'#198754'}]},options:{responsive:true,maintainAspectRatio:false}});}</script>{% endif %}
+<script>
+(() => {
+  const monthly = JSON.parse(document.getElementById('owner-monthly-data').textContent);
+  const seasonal = JSON.parse(document.getElementById('owner-seasonality-data').textContent);
+  const labels = monthly.map(row => row.label);
+  const moneyTooltip = value => new Intl.NumberFormat('ru-RU', {style:'currency', currency:'RUB', maximumFractionDigits:0}).format(value);
+  const chartOptions = {responsive:true, maintainAspectRatio:false, animation:false, plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>`${ctx.dataset.label}: ${moneyTooltip(ctx.parsed.y)}`}}},scales:{x:{grid:{display:false},ticks:{maxRotation:0,font:{size:9}}},y:{beginAtZero:false,ticks:{callback:value=>`${Math.round(value/100000)/10} млн`,font:{size:9}}}}};
+  const lineChart = (id, field, label, color) => new Chart(document.getElementById(id), {type:'line',data:{labels,datasets:[{label,data:monthly.map(row=>row[field]),borderColor:color,backgroundColor:`${color}22`,fill:true,tension:.28,spanGaps:false,pointRadius:2}]},options:chartOptions});
+  lineChart('owner-revenue-chart','revenue','Выручка','#1769aa');
+  lineChart('owner-profit-chart','gross_profit','Валовая прибыль','#118b88');
+  lineChart('owner-payroll-chart','payroll','ФОТ','#8064a2');
+  const netValues = monthly.map(row=>row.net_cash_flow);
+  new Chart(document.getElementById('owner-cashflow-chart'),{data:{labels,datasets:[{type:'line',label:'Поступления',data:monthly.map(row=>row.receipts),borderColor:'#1769aa',tension:.25,spanGaps:false},{type:'line',label:'Платежи',data:monthly.map(row=>row.payments),borderColor:'#8a9aae',tension:.25,spanGaps:false},{type:'bar',label:'Чистый поток',data:netValues,backgroundColor:netValues.map(value=>value == null ? 'transparent' : value >= 0 ? '#278257' : '#bd4b56'),borderRadius:3}]},options:{...chartOptions,plugins:{...chartOptions.plugins,legend:{display:true,labels:{boxWidth:10,font:{size:10}}}}}});
+  let seasonChart;
+  const seasonCanvas=document.getElementById('owner-season-chart');
+  const seasonEmpty=document.getElementById('owner-season-empty');
+  function renderSeason(metric){
+    const item=seasonal[metric];
+    if(seasonChart) seasonChart.destroy();
+    seasonCanvas.classList.toggle('d-none',!item.available);
+    seasonEmpty.classList.toggle('d-none',item.available);
+    if(!item.available) return;
+    seasonChart=new Chart(seasonCanvas,{type:'line',data:{labels:item.rows.map(row=>row.label),datasets:[{label:String(item.current_year),data:item.rows.map(row=>row.current),borderColor:'#1769aa',tension:.25},{label:String(item.previous_year),data:item.rows.map(row=>row.previous),borderColor:'#a8b5c2',tension:.25}]},options:{...chartOptions,plugins:{...chartOptions.plugins,legend:{display:true,labels:{boxWidth:10}}}}});
+  }
+  document.querySelectorAll('.owner-season-tab').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('.owner-season-tab').forEach(item=>item.classList.toggle('active',item===button));renderSeason(button.dataset.metric);}));
+  renderSeason('gross_profit');
+  const custom=document.getElementById('owner-custom-period');
+  document.getElementById('owner-show-custom').addEventListener('click',()=>custom.classList.remove('d-none'));
+  const more=document.querySelector('.owner-more-periods');
+  const mobile=window.matchMedia('(max-width:575.98px)');
+  const syncMore=event=>more.toggleAttribute('open',!event.matches);
+  syncMore(mobile); mobile.addEventListener('change',syncMore);
+})();
+</script>
 {% endblock %}

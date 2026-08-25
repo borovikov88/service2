@@ -63,7 +63,6 @@ from pool_service.models import (
     EmployeeOneCIdentity,
     OneCImportBatch,
     OneCMonthlyProfit,
-    CashFlowRow,
 )
 from pool_service.finance_imports.payroll_services import (
     confirm_payroll,
@@ -78,6 +77,7 @@ from pool_service.finance_imports.payroll_dashboard import (
     payroll_identity_rows,
     unresolved_active_payroll_identity_count,
 )
+from pool_service.finance_imports.cashflow_dashboard import cashflow_dashboard_data
 from pool_service.finance_imports.services import (
     DuplicateImportError,
     calculate_profitability,
@@ -616,6 +616,7 @@ def finance_overview(request):
         "organization": organization,
         "can_view_gross_profit": can_view_gross_profit(request.user, organization),
         "can_view_payroll": can_view_payroll_summary(request.user, organization),
+        "can_view_cashflow": can_view_cashflow(request.user, organization),
         "can_view_cost_control": can_view_cost_control(request.user, organization),
         "can_access_finance_data": can_access_finance_data(request.user, organization),
         "active_tab": "finance",
@@ -2675,28 +2676,21 @@ def finance_onec_cashflow_dashboard(request):
     organization, denied = _capability_guard(request, can_view_cashflow)
     if denied:
         return denied
-    rows = CashFlowRow.objects.active_for(
-        organization, OneCImportBatch.TYPE_CASHFLOW
-    )
-    totals = rows.aggregate(
-        receipts=Sum("receipts"),
-        payments=Sum("payments"),
-        net_cash_flow=Sum("net_cash_flow"),
-    )
-    for key in ("receipts", "payments", "net_cash_flow"):
-        totals[key] = totals[key] or Decimal("0.00")
-    monthly = rows.values("period_month").annotate(
-        receipts=Sum("receipts"), payments=Sum("payments"),
-        net_cash_flow=Sum("net_cash_flow"),
-    ).order_by("period_month")
-    articles = rows.values("article_raw").annotate(
-        receipts=Sum("receipts"), payments=Sum("payments"),
-        net_cash_flow=Sum("net_cash_flow"),
-    ).order_by("article_raw")
+    period_from = period_to = None
+    period_error = ""
+    if request.GET.get("period_from") or request.GET.get("period_to"):
+        try:
+            period_from, period_to = parse_payroll_period(
+                request.GET.get("period_from"), request.GET.get("period_to")
+            )
+        except ValueError as exc:
+            period_error = str(exc)
+    data = cashflow_dashboard_data(organization, period_from, period_to)
     return render(request, "pool_service/finance/onec_cashflow_dashboard.html", {
-        "totals": totals,
-        "monthly": monthly,
-        "articles": articles,
+        **data,
+        "period_from": period_from,
+        "period_to": period_to,
+        "period_error": period_error,
         "active_tab": "finance",
     })
 
