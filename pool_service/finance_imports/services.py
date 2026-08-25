@@ -209,7 +209,10 @@ def validate_period_assignment(batch, organization, report_type, period_month):
             1,
         )
     is_explicit_empty_odata_month = (
-        report_type == OneCImportBatch.TYPE_MONTHLY_PROFIT
+        report_type in (
+            OneCImportBatch.TYPE_MONTHLY_PROFIT,
+            OneCImportBatch.TYPE_CASHFLOW,
+        )
         and batch.source_type == OneCImportBatch.SOURCE_ODATA
         and scope_months == expected_scope
         and period_month.isoformat() in scope_months
@@ -486,7 +489,7 @@ def confirm_monthly_profit(batch_id, organization, user):
         raise
 
 
-def cancel_monthly_profit(batch, user):
+def cancel_onec_import_batch(batch, user):
     with transaction.atomic():
         locked = OneCImportBatch.objects.select_for_update().get(
             id=batch.id, organization_id=batch.organization_id
@@ -513,3 +516,7 @@ def cancel_monthly_profit(batch, user):
             )
     _log(locked, user, "cancelled")
     return locked
+
+
+def cancel_monthly_profit(batch, user):
+    return cancel_onec_import_batch(batch, user)

@@ -2,8 +2,8 @@
 {% block title %}Импорт из 1С{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
-  <div><h1 class="h3 mb-1">Импорт из 1С</h1><div class="text-muted">Отчёты «Валовая прибыль по месяцам»</div></div>
-  <div class="d-flex gap-2"><a class="btn btn-outline-primary" href="{% url 'finance_onec_profit_dashboard' %}">Валовая прибыль</a><a class="btn btn-outline-secondary" href="{% url 'finance_onec_cost_control' %}">Контроль себестоимости</a><a class="btn btn-primary" href="{% url 'finance_onec_monthly_profit_upload' %}">Загрузить XLSX</a></div>
+  <div><h1 class="h3 mb-1">Импорт из 1С</h1><div class="text-muted">Валовая прибыль и движение денежных средств</div></div>
+  <div class="d-flex gap-2">{% if show_profit_import %}<a class="btn btn-outline-primary" href="{% url 'finance_onec_profit_dashboard' %}">Валовая прибыль</a><a class="btn btn-outline-secondary" href="{% url 'finance_onec_cost_control' %}">Контроль себестоимости</a><a class="btn btn-primary" href="{% url 'finance_onec_monthly_profit_upload' %}">Загрузить XLSX</a>{% endif %}{% if show_cashflow_odata_draft %}<a class="btn btn-outline-primary" href="{% url 'finance_onec_cashflow_dashboard' %}">ДДС</a>{% endif %}</div>
 </div>
 {% if show_odata_draft %}<div class="card card-soft p-3 mb-3">
   <form method="post" action="{% url 'finance_onec_odata_profit_draft' %}" class="row g-3 align-items-end">
@@ -15,11 +15,21 @@
     <div class="col-12 small text-muted">Создаётся только черновик. Активные показатели не меняются до отдельного подтверждения.</div>
   </form>
 </div>{% endif %}
+{% if show_cashflow_odata_draft %}<div class="card card-soft p-3 mb-3">
+  <h2 class="h5">Движение денежных средств</h2>
+  <form method="post" action="{% url 'finance_onec_odata_cashflow_draft' %}" class="row g-3 align-items-end">
+    {% csrf_token %}
+    <div class="col-md-3"><label class="form-label">{{ cashflow_odata_form.start_month.label }}</label>{{ cashflow_odata_form.start_month }}{{ cashflow_odata_form.start_month.errors }}</div>
+    <div class="col-md-3"><label class="form-label">{{ cashflow_odata_form.end_month.label }}</label>{{ cashflow_odata_form.end_month }}{{ cashflow_odata_form.end_month.errors }}</div>
+    <div class="col-md-3"><button class="btn btn-success" type="submit">Получить ДДС из 1С</button></div>
+    <div class="col-12 small text-muted">Создаётся только черновик. Активная версия ДДС не изменяется до подтверждения.</div>
+  </form>
+</div>{% endif %}
 <div class="card card-soft p-3"><div class="table-responsive"><table class="table align-middle mb-0">
   <thead><tr><th>Дата</th><th>Тип</th><th>Файл</th><th>Статус</th><th>Пользователь</th><th>Строк</th><th>Период</th><th>Предупреждений</th></tr></thead>
   <tbody>{% for batch in batches %}<tr>
     <td>{{ batch.uploaded_at|date:"d.m.Y H:i" }}</td><td>{{ batch.get_import_type_display }} ({{ batch.get_source_type_display }})</td>
-    <td><a href="{% if batch.status == 'previewed' %}{% url 'finance_onec_import_preview' batch.id %}{% else %}{% url 'finance_onec_import_detail' batch.id %}{% endif %}">{{ batch.original_filename }}</a></td>
+    <td><a href="{% if batch.import_type == 'cashflow' and batch.status == 'previewed' %}{% url 'finance_onec_cashflow_preview' batch.id %}{% elif batch.import_type == 'cashflow' %}{% url 'finance_onec_cashflow_detail' batch.id %}{% elif batch.status == 'previewed' %}{% url 'finance_onec_import_preview' batch.id %}{% else %}{% url 'finance_onec_import_detail' batch.id %}{% endif %}">{{ batch.original_filename }}</a></td>
     <td>{{ batch.get_status_display }}</td><td>{{ batch.uploaded_by.get_full_name|default:batch.uploaded_by.username }}</td>
     <td>{{ batch.rows_imported|default:batch.rows_detected }}</td><td>{% for month in batch.metadata.report.months %}{{ month|slice:":7" }}{% if not forloop.last %}, {% endif %}{% empty %}—{% endfor %}</td>
     <td>{{ batch.warnings_count }}</td>

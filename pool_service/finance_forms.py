@@ -90,6 +90,10 @@ class ODataProfitDraftForm(forms.Form):
         return cleaned
 
 
+class ODataCashFlowDraftForm(ODataProfitDraftForm):
+    """Separate form contract for a cash-flow OData draft."""
+
+
 class OneCCostControlFilterForm(forms.Form):
     PROBLEM_GOODS_ZERO_COST = "goods_zero_cost"
 

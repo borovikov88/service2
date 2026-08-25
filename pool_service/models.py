@@ -1745,6 +1745,32 @@ def onec_monthly_profit_source_identity(
     return f"xlsx:{period_month.isoformat()}:{line_number}"
 
 
+def cashflow_source_identity(
+    *, period_month, source_row_number, source_recorder=None,
+    source_recorder_type=None,
+):
+    if isinstance(source_row_number, bool):
+        raise ValidationError("Номер строки источника должен быть целым числом.")
+    try:
+        line_number = int(source_row_number)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Номер строки источника должен быть целым числом.") from exc
+    if line_number < 0:
+        raise ValidationError("Номер строки источника не может быть отрицательным.")
+    if source_recorder is not None or source_recorder_type is not None:
+        recorder = str(source_recorder or "").strip()
+        recorder_type = str(source_recorder_type or "").strip()
+        if not recorder or not recorder_type:
+            raise ValidationError("OData identity требует Recorder и Recorder_Type.")
+        digest = hashlib.sha256(
+            f"{recorder}\0{recorder_type}\0{line_number}".encode("utf-8")
+        ).hexdigest()
+        return f"odata:{digest}"
+    if period_month is None or not hasattr(period_month, "isoformat"):
+        raise ValidationError("Для XLSX identity необходим месяц отчёта.")
+    return f"xlsx:{period_month.isoformat()}:{line_number}"
+
+
 class OneCImportBatch(models.Model):
     SOURCE_XLSX = "xlsx"
     SOURCE_ODATA = "odata"
@@ -2248,6 +2274,7 @@ class CashFlowRow(models.Model):
         Organization, on_delete=models.CASCADE, related_name="cashflow_rows"
     )
     period_month = models.DateField()
+    source_identity = models.CharField(max_length=80)
     source_row_number = models.PositiveIntegerField()
     source_reference = models.CharField(max_length=300, blank=True)
     article_raw = models.CharField(max_length=500)
@@ -2269,10 +2296,24 @@ class CashFlowRow(models.Model):
         ]
         constraints = [
             models.UniqueConstraint(
-                fields=["import_batch", "source_row_number", "period_month"],
-                name="unique_cashflow_batch_row_month",
+                fields=["import_batch", "source_identity"],
+                name="unique_cashflow_batch_source_identity",
             ),
         ]
+
+    def save(self, *args, **kwargs):
+        source_data = self.source_data if isinstance(self.source_data, dict) else {}
+        self.source_identity = cashflow_source_identity(
+            period_month=self.period_month,
+            source_row_number=self.source_row_number,
+            source_recorder=source_data.get("recorder") if source_data.get("source") == "odata" else None,
+            source_recorder_type=(
+                source_data.get("recorder_type") if source_data.get("source") == "odata" else None
+            ),
+        )
+        if kwargs.get("update_fields") is not None:
+            kwargs["update_fields"] = set(kwargs["update_fields"]) | {"source_identity"}
+        return super().save(*args, **kwargs)
 
     def clean(self):
         super().clean()

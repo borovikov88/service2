@@ -37,6 +37,7 @@ from pool_service.finance_forms import (
     ManagerCashIncomeForm,
     ManagerCashTransferForm,
     MonthlyProfitUploadForm,
+    ODataCashFlowDraftForm,
     ODataProfitDraftForm,
     OneCCostControlFilterForm,
     PayrollUploadForm,
@@ -62,6 +63,7 @@ from pool_service.models import (
     EmployeeOneCIdentity,
     OneCImportBatch,
     OneCMonthlyProfit,
+    CashFlowRow,
 )
 from pool_service.finance_imports.payroll_services import (
     confirm_payroll,
@@ -80,6 +82,7 @@ from pool_service.finance_imports.services import (
     DuplicateImportError,
     calculate_profitability,
     cancel_monthly_profit,
+    cancel_onec_import_batch,
     confirm_monthly_profit,
     create_monthly_profit_preview,
 )
@@ -90,6 +93,12 @@ from pool_service.finance_imports.odata_profit_drafts import (
     create_odata_profit_draft,
     is_odata_target_organization,
 )
+from pool_service.finance_imports.odata_cashflow_drafts import (
+    ODataCashFlowDraftError,
+    confirm_odata_cashflow,
+    create_odata_cashflow_draft,
+)
+from pool_service.finance_imports.cashflow_services import confirm_cashflow
 from pool_service.finance_imports.profit_dashboard import (
     PERIOD_CHOICES,
     _manager_key,
@@ -129,6 +138,8 @@ from pool_service.services.finance import (
     can_import_payroll,
     can_manage_employee_mapping,
     can_import_gross_profit,
+    can_import_cashflow,
+    can_view_cashflow,
     can_view_cost_control,
     can_view_gross_profit,
     ensure_default_categories,
@@ -158,6 +169,43 @@ def _organization_for_finance(request):
 
 def _onec_import_guard(request):
     return _capability_guard(request, can_import_gross_profit)
+
+
+def _onec_cashflow_import_guard(request):
+    return _capability_guard(request, can_import_cashflow)
+
+
+def _onec_cashflow_access_guard(request):
+    return _capability_guard(
+        request,
+        lambda user, organization: (
+            can_view_cashflow(user, organization)
+            or can_import_cashflow(user, organization)
+        ),
+    )
+
+
+def _onec_accessible_import_types(user, organization):
+    import_types = []
+    if can_import_gross_profit(user, organization):
+        import_types.append(OneCImportBatch.TYPE_MONTHLY_PROFIT)
+    if (
+        can_view_cashflow(user, organization)
+        or can_import_cashflow(user, organization)
+    ):
+        import_types.append(OneCImportBatch.TYPE_CASHFLOW)
+    return import_types
+
+
+def _onec_import_list_guard(request):
+    return _capability_guard(
+        request,
+        lambda user, organization: (
+            can_import_gross_profit(user, organization)
+            or can_import_cashflow(user, organization)
+            or can_view_cashflow(user, organization)
+        ),
+    )
 
 
 def _capability_guard(request, permission, *, denied_message="Недостаточно прав."):
@@ -549,6 +597,8 @@ def finance_dashboard(request):
         return redirect("finance_my")
     if can_access_finance_data(request.user, organization):
         return redirect("finance_data")
+    if can_view_cashflow(request.user, organization):
+        return redirect("finance_onec_cashflow_dashboard")
     return HttpResponseForbidden("Недостаточно прав для раздела Финансы.")
 
 
@@ -584,6 +634,7 @@ def finance_data(request):
     return render(request, "pool_service/finance/data.html", {
         "organization": organization,
         "can_import_gross_profit": can_import_gross_profit(request.user, organization),
+        "can_import_cashflow": can_import_cashflow(request.user, organization),
         "can_import_payroll": can_import_payroll(request.user, organization),
         "can_manage_employee_mapping": can_manage_employee_mapping(request.user, organization),
         "active_tab": "finance",
@@ -2414,14 +2465,26 @@ def finance_period_reopen(request):
 
 @login_required
 def finance_onec_import_list(request):
-    organization, denied = _onec_import_guard(request)
+    organization, denied = _onec_import_list_guard(request)
     if denied:
         return denied
-    batches = OneCImportBatch.objects.filter(organization=organization).select_related("uploaded_by")
+    can_profit = can_import_gross_profit(request.user, organization)
+    can_cashflow = can_import_cashflow(request.user, organization)
+    batches = OneCImportBatch.objects.filter(
+        organization=organization,
+        import_type__in=_onec_accessible_import_types(request.user, organization),
+    ).select_related("uploaded_by")
+    show_cashflow_odata = (
+        is_odata_target_organization(organization)
+        and can_cashflow
+    )
     return render(request, "pool_service/finance/onec_import_list.html", {
         "batches": batches,
-        "odata_form": ODataProfitDraftForm() if is_odata_target_organization(organization) else None,
-        "show_odata_draft": is_odata_target_organization(organization),
+        "odata_form": ODataProfitDraftForm() if is_odata_target_organization(organization) and can_profit else None,
+        "show_odata_draft": is_odata_target_organization(organization) and can_profit,
+        "show_profit_import": can_profit,
+        "cashflow_odata_form": ODataCashFlowDraftForm() if show_cashflow_odata else None,
+        "show_cashflow_odata_draft": show_cashflow_odata,
         "active_tab": "finance",
     })
 
@@ -2434,7 +2497,10 @@ def finance_onec_odata_profit_draft(request):
         return denied
     form = ODataProfitDraftForm(request.POST)
     if not form.is_valid():
-        batches = OneCImportBatch.objects.filter(organization=organization).select_related("uploaded_by")
+        batches = OneCImportBatch.objects.filter(
+            organization=organization,
+            import_type__in=_onec_accessible_import_types(request.user, organization),
+        ).select_related("uploaded_by")
         return render(request, "pool_service/finance/onec_import_list.html", {
             "batches": batches,
             "odata_form": form,
@@ -2457,6 +2523,182 @@ def finance_onec_odata_profit_draft(request):
         return redirect("finance_onec_import_list")
     messages.success(request, "Черновик OData создан. Активные данные не изменены.")
     return redirect("finance_onec_import_preview", batch_id=batch.id)
+
+
+@require_POST
+@login_required
+def finance_onec_odata_cashflow_draft(request):
+    organization, denied = _onec_cashflow_import_guard(request)
+    if denied:
+        return denied
+    form = ODataCashFlowDraftForm(request.POST)
+    if not form.is_valid():
+        messages.error(request, "; ".join(
+            message for messages_list in form.errors.values()
+            for message in messages_list
+        ))
+        return redirect("finance_onec_import_list")
+    try:
+        batch = create_odata_cashflow_draft(
+            form.cleaned_data["start_month"].strftime("%Y-%m"),
+            form.cleaned_data["end_month"].strftime("%Y-%m"),
+            organization,
+            request.user,
+        )
+    except (ODataCashFlowDraftError, ODataPreviewError) as exc:
+        messages.error(request, "; ".join(getattr(exc, "messages", [str(exc)])))
+        failed_batch = getattr(exc, "batch", None)
+        if failed_batch:
+            return redirect("finance_onec_cashflow_preview", batch_id=failed_batch.id)
+        return redirect("finance_onec_import_list")
+    messages.success(request, "Черновик ДДС создан. Активные данные не изменены.")
+    return redirect("finance_onec_cashflow_preview", batch_id=batch.id)
+
+
+def _cashflow_batch_context(batch, user, organization):
+    metadata = batch.metadata or {}
+    report = metadata.get("report", {})
+    totals = metadata.get("totals") or report.get("control_totals", {})
+    return {
+        "batch": batch,
+        "report": report,
+        "totals": totals,
+        "monthly": metadata.get("monthly", []),
+        "articles": metadata.get("articles", []),
+        "preview": metadata.get("preview", []),
+        "warnings": metadata.get("warnings", []),
+        "warnings_hidden": metadata.get("warnings_hidden", 0),
+        "critical_errors": metadata.get("critical_errors", []),
+        "overlap_months": metadata.get("overlap_months", []),
+        "overlap_count": metadata.get("overlap_count", 0),
+        "can_confirm": (
+            can_import_cashflow(user, organization)
+            and batch.status == OneCImportBatch.STATUS_PREVIEWED
+            and not metadata.get("critical_errors")
+        ),
+        "can_cancel": (
+            can_import_cashflow(user, organization)
+            and batch.status in (
+                OneCImportBatch.STATUS_PREVIEWED,
+                OneCImportBatch.STATUS_FAILED,
+            )
+        ),
+        "active_tab": "finance",
+    }
+
+
+@login_required
+def finance_onec_cashflow_preview(request, batch_id):
+    organization, denied = _onec_cashflow_access_guard(request)
+    if denied:
+        return denied
+    batch = get_object_or_404(
+        OneCImportBatch,
+        id=batch_id,
+        organization=organization,
+        import_type=OneCImportBatch.TYPE_CASHFLOW,
+    )
+    return render(
+        request,
+        "pool_service/finance/onec_cashflow_preview.html",
+        _cashflow_batch_context(batch, request.user, organization),
+    )
+
+
+@login_required
+def finance_onec_cashflow_detail(request, batch_id):
+    organization, denied = _onec_cashflow_access_guard(request)
+    if denied:
+        return denied
+    batch = get_object_or_404(
+        OneCImportBatch,
+        id=batch_id,
+        organization=organization,
+        import_type=OneCImportBatch.TYPE_CASHFLOW,
+    )
+    return render(
+        request,
+        "pool_service/finance/onec_cashflow_preview.html",
+        _cashflow_batch_context(batch, request.user, organization),
+    )
+
+
+@require_POST
+@login_required
+def finance_onec_cashflow_confirm(request, batch_id):
+    organization, denied = _onec_cashflow_import_guard(request)
+    if denied:
+        return denied
+    batch = get_object_or_404(
+        OneCImportBatch,
+        id=batch_id,
+        organization=organization,
+        import_type=OneCImportBatch.TYPE_CASHFLOW,
+    )
+    try:
+        if batch.source_type == OneCImportBatch.SOURCE_ODATA:
+            confirm_odata_cashflow(batch.id, organization, request.user)
+        else:
+            confirm_cashflow(batch.id, organization, request.user)
+    except Exception:
+        messages.error(request, "Импорт ДДС не выполнен. Частичные данные не сохранены.")
+        return redirect("finance_onec_cashflow_preview", batch_id=batch.id)
+    messages.success(request, "Черновик ДДС подтверждён.")
+    if batch.source_type == OneCImportBatch.SOURCE_ODATA:
+        return redirect("finance_onec_cashflow_dashboard")
+    return redirect("finance_onec_cashflow_detail", batch_id=batch.id)
+
+
+@require_POST
+@login_required
+def finance_onec_cashflow_cancel(request, batch_id):
+    organization, denied = _onec_cashflow_import_guard(request)
+    if denied:
+        return denied
+    batch = get_object_or_404(
+        OneCImportBatch,
+        id=batch_id,
+        organization=organization,
+        import_type=OneCImportBatch.TYPE_CASHFLOW,
+    )
+    try:
+        cancel_onec_import_batch(batch, request.user)
+    except ValidationError:
+        messages.error(request, "Подтверждённый импорт отменить нельзя.")
+    else:
+        messages.success(request, "Черновик ДДС отменён.")
+    return redirect("finance_onec_import_list")
+
+
+@login_required
+def finance_onec_cashflow_dashboard(request):
+    organization, denied = _capability_guard(request, can_view_cashflow)
+    if denied:
+        return denied
+    rows = CashFlowRow.objects.active_for(
+        organization, OneCImportBatch.TYPE_CASHFLOW
+    )
+    totals = rows.aggregate(
+        receipts=Sum("receipts"),
+        payments=Sum("payments"),
+        net_cash_flow=Sum("net_cash_flow"),
+    )
+    for key in ("receipts", "payments", "net_cash_flow"):
+        totals[key] = totals[key] or Decimal("0.00")
+    monthly = rows.values("period_month").annotate(
+        receipts=Sum("receipts"), payments=Sum("payments"),
+        net_cash_flow=Sum("net_cash_flow"),
+    ).order_by("period_month")
+    articles = rows.values("article_raw").annotate(
+        receipts=Sum("receipts"), payments=Sum("payments"),
+        net_cash_flow=Sum("net_cash_flow"),
+    ).order_by("article_raw")
+    return render(request, "pool_service/finance/onec_cashflow_dashboard.html", {
+        "totals": totals,
+        "monthly": monthly,
+        "articles": articles,
+        "active_tab": "finance",
+    })
 
 
 def _payroll_access(request, permission):
@@ -2800,7 +3042,12 @@ def finance_onec_import_preview(request, batch_id):
     organization, denied = _onec_import_guard(request)
     if denied:
         return denied
-    batch = get_object_or_404(OneCImportBatch, id=batch_id, organization=organization)
+    batch = get_object_or_404(
+        OneCImportBatch,
+        id=batch_id,
+        organization=organization,
+        import_type=OneCImportBatch.TYPE_MONTHLY_PROFIT,
+    )
     return render(request, "pool_service/finance/onec_import_preview.html", {
         "batch": batch,
         "preview": batch.metadata.get("preview", []),
@@ -2823,7 +3070,12 @@ def finance_onec_import_confirm(request, batch_id):
     organization, denied = _onec_import_guard(request)
     if denied:
         return denied
-    batch = get_object_or_404(OneCImportBatch, id=batch_id, organization=organization)
+    batch = get_object_or_404(
+        OneCImportBatch,
+        id=batch_id,
+        organization=organization,
+        import_type=OneCImportBatch.TYPE_MONTHLY_PROFIT,
+    )
     if batch.status != OneCImportBatch.STATUS_PREVIEWED:
         messages.error(request, "Этот импорт уже обработан или недоступен для подтверждения.")
         return redirect("finance_onec_import_detail", batch_id=batch.id)
@@ -2845,7 +3097,12 @@ def finance_onec_import_cancel(request, batch_id):
     organization, denied = _onec_import_guard(request)
     if denied:
         return denied
-    batch = get_object_or_404(OneCImportBatch, id=batch_id, organization=organization)
+    batch = get_object_or_404(
+        OneCImportBatch,
+        id=batch_id,
+        organization=organization,
+        import_type=OneCImportBatch.TYPE_MONTHLY_PROFIT,
+    )
     try:
         cancel_monthly_profit(batch, request.user)
     except Exception:
@@ -2860,7 +3117,12 @@ def finance_onec_import_detail(request, batch_id):
     organization, denied = _onec_import_guard(request)
     if denied:
         return denied
-    batch = get_object_or_404(OneCImportBatch, id=batch_id, organization=organization)
+    batch = get_object_or_404(
+        OneCImportBatch,
+        id=batch_id,
+        organization=organization,
+        import_type=OneCImportBatch.TYPE_MONTHLY_PROFIT,
+    )
     rows = OneCMonthlyProfit.objects.filter(import_batch=batch, organization=organization)
     money_field = DecimalField(max_digits=20, decimal_places=2)
     analytical_cost = Case(

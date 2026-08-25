@@ -140,6 +140,7 @@ def can_access_my_finances(user, organization):
 def can_access_finance_data(user, organization):
     return any((
         can_import_gross_profit(user, organization),
+        can_import_cashflow(user, organization),
         can_import_payroll(user, organization),
         can_manage_employee_mapping(user, organization),
     ))
@@ -150,6 +151,8 @@ def can_access_finance_section(user, organization):
         can_access_finance_overview(user, organization),
         can_access_my_finances(user, organization),
         can_access_finance_data(user, organization),
+        can_view_cashflow(user, organization),
+        can_import_cashflow(user, organization),
     ))
 
 
@@ -170,6 +173,8 @@ def finance_navigation(user, organization, *, current_route=""):
         analytics.append(item("Обзор", "finance_overview"))
     if can_view_gross_profit(user, organization):
         analytics.append(item("Валовая прибыль", "finance_onec_profit_dashboard"))
+    if can_view_cashflow(user, organization):
+        analytics.append(item("ДДС", "finance_onec_cashflow_dashboard"))
     if can_view_payroll_summary(user, organization):
         analytics.append(item(
             "Фонд оплаты труда",
@@ -222,6 +227,11 @@ def finance_navigation(user, organization, *, current_route=""):
                 "finance_onec_import_list", "finance_onec_monthly_profit_upload",
                 "finance_onec_import_preview", "finance_onec_import_confirm",
                 "finance_onec_import_cancel", "finance_onec_import_detail",
+                "finance_onec_odata_cashflow_draft",
+                "finance_onec_cashflow_preview",
+                "finance_onec_cashflow_confirm",
+                "finance_onec_cashflow_cancel",
+                "finance_onec_cashflow_detail",
                 "finance_payroll_import_list", "finance_payroll_import_upload",
                 "finance_payroll_import_preview", "finance_payroll_import_confirm",
             ),
