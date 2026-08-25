@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Финансы · Группа Аквалайн — макет V2</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="demo-ribbon" role="status">
+    <span class="demo-dot"></span>
+    <strong>Макет: данные демонстрационные</strong>
+    <span>Не связан с 1С и production</span>
+  </div>
+
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Навигация макета">
+      <div class="brand"><span class="brand-mark">AQ</span><span>Аквалайн</span></div>
+      <div class="nav-group-label">АНАЛИТИКА</div>
+      <a class="nav-item active" href="#top"><span class="nav-icon">◉</span><span>Обзор</span></a>
+      <a class="nav-item report-link" href="/finance/1c-profit/" data-report="Валовая прибыль"><span class="nav-icon">↗</span><span>Валовая прибыль</span></a>
+      <a class="nav-item report-link" href="/finance/payroll/" data-report="Фонд оплаты труда"><span class="nav-icon">▤</span><span>Фонд оплаты труда</span></a>
+      <a class="nav-item report-link" href="/finance/1c-cashflow/" data-report="Движение денег"><span class="nav-icon">⇄</span><span>ДДС</span></a>
+      <a class="nav-item report-link" href="/finance/1c-imports/cost-control/" data-report="Контроль себестоимости"><span class="nav-icon">!</span><span>Контроль себестоимости</span></a>
+      <div class="sidebar-scope">
+        <span class="scope-label">Периметр</span>
+        <strong>Группа Аквалайн</strong>
+        <span>Консолидировано: 4 юрлица</span>
+      </div>
+    </aside>
+
+    <main class="main" id="top">
+      <header class="mobile-header">
+        <div class="brand"><span class="brand-mark">AQ</span><span>Финансы</span></div>
+        <button class="icon-button" id="mobileMenuButton" aria-label="Открыть навигацию">☰</button>
+      </header>
+
+      <section class="page-heading">
+        <div>
+          <div class="eyebrow">Финансы · контур собственника</div>
+          <h1>Группа Аквалайн</h1>
+          <p>Консолидированная экономика и движение денег по четырём юрлицам.</p>
+        </div>
+        <div class="scope-summary">Консолидировано: 4 юрлица</div>
+      </section>
+
+      <section class="period-panel card" aria-labelledby="periodTitle">
+        <div class="section-header compact">
+          <div><span class="section-kicker">Единый фильтр</span><h2 id="periodTitle">Период</h2></div>
+          <div class="period-summary" id="periodSummary"></div>
+        </div>
+        <div class="preset-strip" id="presetStrip" role="group" aria-label="Быстрый выбор периода">
+          <button data-preset="current_month" class="preset active">Текущий месяц</button>
+          <button data-preset="previous_month" class="preset">Прошлый месяц</button>
+          <button data-preset="current_year" class="preset">Текущий год</button>
+          <button data-preset="previous_year" class="preset">Прошлый год</button>
+          <details class="more-periods" open>
+            <summary>Ещё периоды</summary>
+            <div class="more-periods-panel">
+              <button data-preset="last_12" class="preset">Последние 12 месяцев</button>
+              <button data-preset="off_season" class="preset">Несезон · ноя–мар</button>
+              <button data-preset="custom" class="preset">Свой период</button>
+            </div>
+          </details>
+        </div>
+        <form class="custom-period" id="customPeriod" hidden>
+          <label>Первый месяц<input type="month" id="customStart" value="2026-01" min="2024-01" max="2026-08"></label>
+          <label>Последний месяц<input type="month" id="customEnd" value="2026-08" min="2024-01" max="2026-08"></label>
+          <button class="primary-button" type="submit">Применить</button>
+        </form>
+        <div class="preliminary-note" id="preliminaryNote" role="note">
+          <span class="note-icon">i</span><span><strong>Август — предварительный месяц.</strong> Цифры могут измениться до закрытия. Изменения к закрытому периоду показаны без цветовой оценки.</span>
+        </div>
+      </section>
+
+      <section class="dashboard-section" aria-labelledby="economyTitle">
+        <div class="section-header">
+          <div><span class="section-kicker">Результат</span><h2 id="economyTitle">Экономика</h2></div>
+          <span class="section-help">Начисления и валовая экономика</span>
+        </div>
+        <div class="kpi-grid" id="economyCards"></div>
+      </section>
+
+      <section class="dashboard-section cash-section" aria-labelledby="cashTitle">
+        <div class="section-header">
+          <div><span class="section-kicker">ДДС</span><h2 id="cashTitle">Движение денег</h2></div>
+          <span class="section-help">Денежные потоки показаны отдельно от валовой прибыли</span>
+        </div>
+        <div class="kpi-grid cash-kpis" id="cashCards"></div>
+      </section>
+
+      <section class="chart-layout">
+        <article class="card chart-card economy-chart-card">
+          <div class="chart-heading"><div><span class="section-kicker">Динамика</span><h2>Экономика по месяцам</h2></div><a class="text-link report-link" href="/finance/1c-profit/" data-report="Валовая прибыль">В отчёт ↗</a></div>
+          <div class="small-multiples" id="economyCharts"></div>
+        </article>
+
+        <article class="card chart-card cashflow-chart-card">
+          <div class="chart-heading"><div><span class="section-kicker">Динамика</span><h2>Денежные потоки</h2></div><a class="text-link report-link" href="/finance/1c-cashflow/" data-report="Движение денег">В отчёт ↗</a></div>
+          <div class="legend"><span><i class="legend-dot receipts"></i>Поступления</span><span><i class="legend-dot payments"></i>Платежи</span><span><i class="legend-dot positive"></i>Поток +</span><span><i class="legend-dot negative"></i>Поток −</span></div>
+          <div class="cashflow-chart" id="cashflowChart"></div>
+        </article>
+
+        <article class="card chart-card seasonality-card">
+          <div class="chart-heading"><div><span class="section-kicker">Сезонность</span><h2>Текущий и предыдущий год</h2></div><span class="chart-caption">По сопоставимым месяцам</span></div>
+          <div class="metric-tabs" id="seasonTabs" role="tablist">
+            <button class="metric-tab active" data-metric="grossProfit" role="tab">Валовая прибыль</button>
+            <button class="metric-tab" data-metric="payroll" role="tab">ФОТ</button>
+            <button class="metric-tab" data-metric="netCash" role="tab">Чистый поток</button>
+          </div>
+          <div id="seasonalityChart" class="seasonality-chart"></div>
+        </article>
+      </section>
+
+      <section class="attention-section card" aria-labelledby="attentionTitle">
+        <div class="section-header">
+          <div><span class="section-kicker">Объективные сигналы</span><h2 id="attentionTitle">Требует внимания</h2></div>
+          <span class="section-help">Без порогов «существенности»</span>
+        </div>
+        <div class="signal-list" id="signalList"></div>
+      </section>
+
+      <footer>Макет V2 · только демонстрационные данные · Группа Аквалайн</footer>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
