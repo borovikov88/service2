@@ -77,7 +77,10 @@ from pool_service.finance_imports.payroll_dashboard import (
     payroll_identity_rows,
     unresolved_active_payroll_identity_count,
 )
-from pool_service.finance_imports.cashflow_dashboard import cashflow_dashboard_data
+from pool_service.finance_imports.cashflow_dashboard import (
+    cashflow_article_trend_data,
+    cashflow_dashboard_data,
+)
 from pool_service.finance_imports.services import (
     DuplicateImportError,
     calculate_profitability,
@@ -2686,8 +2689,16 @@ def finance_onec_cashflow_dashboard(request):
         except ValueError as exc:
             period_error = str(exc)
     data = cashflow_dashboard_data(organization, period_from, period_to)
+    article_trend = cashflow_article_trend_data(
+        organization,
+        period_from,
+        period_to,
+        mode=request.GET.get("article_mode", "all"),
+        selected_articles=request.GET.getlist("article"),
+    )
     return render(request, "pool_service/finance/onec_cashflow_dashboard.html", {
         **data,
+        "article_trend": article_trend,
         "period_from": period_from,
         "period_to": period_to,
         "period_error": period_error,

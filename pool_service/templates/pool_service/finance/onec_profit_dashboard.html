@@ -27,7 +27,7 @@
 {{ monthly|json_script:"monthly-profit-data" }}
 <script>
 const rows=JSON.parse(document.getElementById('monthly-profit-data').textContent);
-new Chart(document.getElementById('profitChart'),{type:'line',data:{labels:rows.map(x=>new Date(x.month).toLocaleDateString('ru-RU',{month:'short',year:'numeric'})),datasets:[{label:'Выручка',data:rows.map(x=>x.revenue),borderColor:'#0d6efd'},{label:'Себестоимость',data:rows.map(x=>x.cost),borderColor:'#dc3545'},{label:'Валовая прибыль',data:rows.map(x=>x.gross_profit),borderColor:'#198754'}]},options:{responsive:true,maintainAspectRatio:false}});
+new Chart(document.getElementById('profitChart'),{type:'line',data:{labels:rows.map(x=>new Date(x.month).toLocaleDateString('ru-RU',{month:'short',year:'numeric'})),datasets:[{label:'Выручка',data:rows.map(x=>x.revenue),borderColor:'#0d6efd'},{label:'Себестоимость',data:rows.map(x=>x.cost),borderColor:'#dc3545'},{label:'Валовая прибыль',data:rows.map(x=>x.gross_profit),borderColor:'#198754'}]},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},hover:{mode:'index',intersect:false},plugins:{tooltip:{mode:'index',intersect:false}}}});
 const periodForm=document.getElementById('profit-period-form');let periodTimer;
 const submitPeriodForm=()=>{clearTimeout(periodTimer);document.getElementById('period-loading').classList.remove('d-none');periodTimer=setTimeout(()=>periodForm.requestSubmit(),300);};
 document.getElementById('period').addEventListener('change',submitPeriodForm);
