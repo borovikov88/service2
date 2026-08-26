@@ -1,4 +1,5 @@
 name: Management finance MySQL compatibility
+# CI trigger: rerun the pull-request gate for the current branch.
 
 on:
   pull_request:
