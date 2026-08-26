@@ -1,38 +1,106 @@
 {% extends "pool_service/base.html" %}
-{% block title %}Импорт из 1С{% endblock %}
+{% block title %}Управленческие данные 1С{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
-  <div><h1 class="h3 mb-1">Импорт из 1С</h1><div class="text-muted">Валовая прибыль и движение денежных средств</div></div>
-  <div class="d-flex gap-2">{% if show_profit_import %}<a class="btn btn-outline-primary" href="{% url 'finance_onec_profit_dashboard' %}">Валовая прибыль</a><a class="btn btn-outline-secondary" href="{% url 'finance_onec_cost_control' %}">Контроль себестоимости</a><a class="btn btn-primary" href="{% url 'finance_onec_monthly_profit_upload' %}">Загрузить XLSX</a>{% endif %}{% if show_cashflow_odata_draft %}<a class="btn btn-outline-primary" href="{% url 'finance_onec_cashflow_dashboard' %}">ДДС</a>{% endif %}</div>
+<div class="d-flex flex-wrap gap-3 justify-content-between align-items-center mb-4">
+  <div><h1 class="h3 mb-1">Управленческие данные 1С</h1><div class="text-muted">Валовая прибыль и ДДС: история, проверка изменений и обновление</div></div>
+  <div class="d-flex flex-wrap gap-2">{% if show_profit_import %}<a class="btn btn-outline-primary" href="{% url 'finance_onec_profit_dashboard' %}">Валовая прибыль</a><a class="btn btn-outline-secondary" href="{% url 'finance_onec_cost_control' %}">Контроль себестоимости</a><a class="btn btn-primary" href="{% url 'finance_onec_monthly_profit_upload' %}">Загрузить XLSX</a>{% endif %}{% if show_cashflow_odata_draft %}<a class="btn btn-outline-primary" href="{% url 'finance_onec_cashflow_dashboard' %}">ДДС</a>{% endif %}</div>
 </div>
-{% if show_odata_draft %}<div class="card card-soft p-3 mb-3">
-  <form method="post" action="{% url 'finance_onec_odata_profit_draft' %}" class="row g-3 align-items-end">
-    {% csrf_token %}
-    <div class="col-md-3"><label class="form-label">{{ odata_form.start_month.label }}</label>{{ odata_form.start_month }}{{ odata_form.start_month.errors }}</div>
-    <div class="col-md-3"><label class="form-label">{{ odata_form.end_month.label }}</label>{{ odata_form.end_month }}{{ odata_form.end_month.errors }}</div>
-    <div class="col-md-3"><button class="btn btn-success" type="submit">Получить из 1С</button></div>
-    {% if odata_form.non_field_errors %}<div class="col-12 text-danger">{{ odata_form.non_field_errors }}</div>{% endif %}
-    <div class="col-12 small text-muted">Создаётся только черновик. Активные показатели не меняются до отдельного подтверждения.</div>
-  </form>
+{% if show_unified_sync %}<div class="card card-soft p-3 mb-3" data-sync-root>
+  <h2 class="h5">Обновление данных</h2>
+  {% if 'monthly_profit' in sync_report_types %}<div>Валовая прибыль: {% if latest_profit_active %}активные данные по {{ latest_profit_active|date:'m.Y' }}{% else %}активных данных пока нет; будут проверены последние 12 месяцев{% endif %}.</div>{% endif %}
+  {% if 'cashflow' in sync_report_types %}<div>ДДС: {% if latest_cashflow_active %}активные данные по {{ latest_cashflow_active|date:'m.Y' }}{% else %}активных данных пока нет; будут проверены последние 12 месяцев{% endif %}.</div>{% endif %}
+  <p class="text-muted mt-2 mb-3">Система проверит весь уже импортированный период, найдёт изменённые месяцы и создаст только черновики. Активные данные не изменятся до подтверждения. ФОТ в это обновление не входит.</p>
+  <form method="post" action="{% url 'finance_onec_odata_sync_start' %}" data-sync-start-form>{% csrf_token %}<button class="btn btn-success" type="submit" data-sync-start>Обновить данные из 1С</button></form>
+  <div class="mt-3" data-sync-result aria-live="polite"></div>
+  <noscript><div class="alert alert-info mt-3">Проверка создаётся без получения данных. После перехода нажимайте «Продолжить проверку»: каждое нажатие выполнит один шаг и вернёт вас на эту страницу.</div></noscript>
 </div>{% endif %}
-{% if show_cashflow_odata_draft %}<div class="card card-soft p-3 mb-3">
-  <h2 class="h5">Движение денежных средств</h2>
-  <form method="post" action="{% url 'finance_onec_odata_cashflow_draft' %}" class="row g-3 align-items-end">
-    {% csrf_token %}
-    <div class="col-md-3"><label class="form-label">{{ cashflow_odata_form.start_month.label }}</label>{{ cashflow_odata_form.start_month }}{{ cashflow_odata_form.start_month.errors }}</div>
-    <div class="col-md-3"><label class="form-label">{{ cashflow_odata_form.end_month.label }}</label>{{ cashflow_odata_form.end_month }}{{ cashflow_odata_form.end_month.errors }}</div>
-    <div class="col-md-3"><button class="btn btn-success" type="submit">Получить ДДС из 1С</button></div>
-    <div class="col-12 small text-muted">Создаётся только черновик. Активная версия ДДС не изменяется до подтверждения.</div>
-  </form>
-</div>{% endif %}
+{% if sync_runs %}<div class="card card-soft p-3 mb-3"><h2 class="h5">История проверок</h2><div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>Дата</th><th>Период</th><th>Статус</th><th>Прогресс</th><th></th></tr></thead><tbody>{% for run in sync_runs %}<tr><td>{{ run.created_at|date:'d.m.Y H:i' }}</td><td>{% for type, scope in run.sync_scope.items %}{% if type == 'cashflow' %}ДДС{% else %}Валовая прибыль{% endif %}: {{ scope.start|slice:':7' }} — {{ scope.end|slice:':7' }}{% if scope.initial_import %} (первичная проверка){% endif %}<br>{% endfor %}</td><td>{{ run.get_status_display }}</td><td>{{ run.progress.completed_chunks|default:0 }} / {{ run.progress.total_chunks|default:0 }}</td><td>{% if run.status == 'pending' or run.status == 'running' %}<form method="post" action="{% url 'finance_onec_odata_sync_step' run.id %}" data-sync-step-form>{% csrf_token %}<input type="hidden" name="cursor" value="{{ run.cursor.version|default:0 }}" data-sync-cursor><button type="submit" class="btn btn-sm btn-outline-primary">Продолжить проверку</button></form>{% endif %}{% for type, item in run.result_summary.items %}{% for candidate in item.reactivation_candidates %}<form method="post" action="{% url 'finance_onec_odata_sync_reactivate' run.id %}" class="mt-2">{% csrf_token %}<input type="hidden" name="report_type" value="{{ type }}"><input type="hidden" name="month" value="{{ candidate.month }}"><input type="hidden" name="batch_id" value="{{ candidate.candidate_batch_id }}"><input type="hidden" name="fingerprint" value="{{ candidate.candidate_fingerprint }}"><button type="submit" class="btn btn-sm btn-outline-warning">Сделать версию {{ candidate.month|slice:':7' }} активной</button></form>{% endfor %}{% endfor %}</td></tr>{% endfor %}</tbody></table></div></div>{% endif %}
 <div class="card card-soft p-3"><div class="table-responsive"><table class="table align-middle mb-0">
   <thead><tr><th>Дата</th><th>Тип</th><th>Файл</th><th>Статус</th><th>Пользователь</th><th>Строк</th><th>Период</th><th>Предупреждений</th></tr></thead>
   <tbody>{% for batch in batches %}<tr>
-    <td>{{ batch.uploaded_at|date:"d.m.Y H:i" }}</td><td>{{ batch.get_import_type_display }} ({{ batch.get_source_type_display }})</td>
+    <td>{{ batch.uploaded_at|date:"d.m.Y H:i" }}</td><td>{{ batch.get_import_type_display }} ({{ batch.get_source_type_display }}){% if batch.metadata.automatically_detected_change %}<br><span class="badge text-bg-info">Изменение найдено автоматически</span>{% endif %}</td>
     <td><a href="{% if batch.import_type == 'cashflow' and batch.status == 'previewed' %}{% url 'finance_onec_cashflow_preview' batch.id %}{% elif batch.import_type == 'cashflow' %}{% url 'finance_onec_cashflow_detail' batch.id %}{% elif batch.status == 'previewed' %}{% url 'finance_onec_import_preview' batch.id %}{% else %}{% url 'finance_onec_import_detail' batch.id %}{% endif %}">{{ batch.original_filename }}</a></td>
     <td>{{ batch.get_status_display }}</td><td>{{ batch.uploaded_by.get_full_name|default:batch.uploaded_by.username }}</td>
     <td>{{ batch.rows_imported|default:batch.rows_detected }}</td><td>{% for month in batch.metadata.report.months %}{{ month|slice:":7" }}{% if not forloop.last %}, {% endif %}{% empty %}—{% endfor %}</td>
     <td>{{ batch.warnings_count }}</td>
   </tr>{% empty %}<tr><td colspan="8" class="text-center text-muted py-4">Импортов пока нет.</td></tr>{% endfor %}</tbody>
 </table></div></div>
+<script>
+(() => {
+  const root = document.querySelector("[data-sync-root]");
+  const terminal = new Set(["completed", "partial_failed", "failed", "cancelled"]);
+  const result = root?.querySelector("[data-sync-result]");
+  const esc = (value) => String(value ?? "").replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
+  const render = (data) => {
+    if (!result) return;
+    const progress = data.progress || {};
+    const scopes = Object.entries(data.scope || {}).map(([type, scope]) => `${type === "cashflow" ? "ДДС" : "Валовая прибыль"}: ${esc(scope.start?.slice(0, 7))} — ${esc(scope.end?.slice(0, 7))}`).join("; ");
+    const sections = Object.entries(data.result || {}).map(([type, item]) => {
+      const label = type === "cashflow" ? "ДДС" : "Валовая прибыль";
+      const links = (item.drafts || []).map(id => `<a class="d-block" href="${esc((data.draft_links || {})[id])}">Черновик ${esc(id)}</a>`).join("");
+      const candidates = (item.reactivation_candidates || []).map(candidate => `<a class="d-block" href="${esc((data.candidate_links || {})[candidate.candidate_batch_id])}">Ранее подтверждённая версия ${esc(candidate.month.slice(0, 7))}</a>`).join("");
+      const text = item.error ? `Ошибка: ${esc(item.error)}` : (item.changed_months || []).length ? `Изменены месяцы: ${esc(item.changed_months.join(", "))}` : "Изменений нет";
+      return `<div><strong>${label}:</strong> ${text}${links}${candidates}</div>`;
+    }).join("");
+    result.innerHTML = `<div>Проверяемый период: ${scopes}</div><div>Проверено шагов: ${esc(progress.completed_chunks || 0)} / ${esc(progress.total_chunks || 0)}</div>${sections}<div class="small text-muted mt-2">Активные данные не изменены до подтверждения.</div>`;
+  };
+  const createStepForm = (url, cursor) => {
+    const form = document.createElement("form");
+    form.method = "post";
+    form.action = url;
+    form.dataset.syncStepForm = "";
+    form.innerHTML = `<input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}"><input type="hidden" name="cursor" data-sync-cursor><button type="submit" class="btn btn-sm btn-outline-primary mt-2">Продолжить проверку</button>`;
+    form.querySelector("[data-sync-cursor]").value = String(cursor);
+    bindStepForm(form);
+    return form;
+  };
+  const showResume = (form) => {
+    if (!result) return;
+    if (!result.querySelector("[data-sync-step-form]")) result.appendChild(form);
+  };
+  const step = async (form) => {
+    const button = form.querySelector("button[type=submit]");
+    const cursor = form.querySelector("[data-sync-cursor]");
+    button.disabled = true;
+    let response;
+    try { response = await fetch(form.action, {method:"POST", headers:{"X-Requested-With":"XMLHttpRequest"}, credentials:"same-origin", body:new FormData(form)}); }
+    catch (error) { button.disabled = false; showResume(form); throw error; }
+    const data = await response.json();
+    if (!response.ok) { button.disabled = false; showResume(form); throw new Error(data.error || "Ошибка проверки"); }
+    render(data);
+    cursor.value = String(data.cursor);
+    if (["retryable_error", "busy"].includes((data.progress || {}).step_state)) {
+      button.disabled = false;
+      showResume(form);
+      return data;
+    }
+    if (!terminal.has(data.status)) return step(form);
+    return data;
+  };
+  function bindStepForm(form) {
+    if (form.dataset.syncBound === "true") return;
+    form.dataset.syncBound = "true";
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      step(form).catch(error => { if (result) result.insertAdjacentText("beforeend", ` ${error.message}`); });
+    });
+  }
+  root?.querySelector("[data-sync-start-form]")?.addEventListener("submit", event => {
+    const button = event.currentTarget.querySelector("[data-sync-start]");
+    event.preventDefault();
+    button.disabled = true;
+    (async () => {
+    try {
+      const request = fetch(event.currentTarget.action, {method:"POST", headers:{"X-Requested-With":"XMLHttpRequest"}, credentials:"same-origin", body:new FormData(event.currentTarget)});
+      const response = await request;
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не удалось начать проверку");
+      await step(createStepForm(data.step_url, data.cursor));
+    } catch (error) { if (result && !result.querySelector("[data-sync-step-form]")) result.textContent = error.message; }
+    finally { button.disabled = false; }
+    })();
+  });
+  document.querySelectorAll("[data-sync-step-form]").forEach(bindStepForm);
+})();
+</script>
 {% endblock %}

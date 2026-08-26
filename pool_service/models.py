@@ -1863,6 +1863,57 @@ class OneCImportBatch(models.Model):
         return f"{self.get_import_type_display()}: {self.original_filename}"
 
 
+class OneCODataSyncRun(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_RUNNING = "running"
+    STATUS_COMPLETED = "completed"
+    STATUS_PARTIAL_FAILED = "partial_failed"
+    STATUS_FAILED = "failed"
+    STATUS_CANCELLED = "cancelled"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Ожидает запуска"),
+        (STATUS_RUNNING, "Выполняется"),
+        (STATUS_COMPLETED, "Завершена"),
+        (STATUS_PARTIAL_FAILED, "Завершена частично"),
+        (STATUS_FAILED, "Ошибка"),
+        (STATUS_CANCELLED, "Отменена"),
+    ]
+    TERMINAL_STATUSES = {
+        STATUS_COMPLETED, STATUS_PARTIAL_FAILED, STATUS_FAILED, STATUS_CANCELLED,
+    }
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name="onec_odata_sync_runs"
+    )
+    requested_by = models.ForeignKey(
+        User, on_delete=models.PROTECT, related_name="requested_onec_odata_sync_runs"
+    )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    requested_report_types = models.JSONField(default=list)
+    sync_scope = models.JSONField(default=dict)
+    cursor = models.JSONField(default=dict)
+    progress = models.JSONField(default=dict)
+    result_summary = models.JSONField(default=dict)
+    lease_token = models.UUIDField(null=True, blank=True, editable=False)
+    lease_report_type = models.CharField(max_length=30, blank=True)
+    lease_chunk = models.JSONField(default=dict, blank=True)
+    lease_started_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    error_message = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(
+                fields=["organization", "status", "created_at"],
+                name="onec_sync_org_status_idx",
+            ),
+        ]
+
+
 class OneCMonthlyProfitQuerySet(models.QuerySet):
     def active_for(self, organization, report_type=OneCImportBatch.TYPE_MONTHLY_PROFIT):
         active_state = OneCReportPeriodState.objects.filter(

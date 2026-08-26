@@ -521,10 +521,11 @@ class ODataCashFlowDraftTests(TestCase):
         self.assertRedirects(response, reverse("finance_onec_cashflow_dashboard"))
         confirm_mock.assert_called_once_with(batch.id, self.organization, self.user)
 
-    def test_target_list_shows_separate_cashflow_action(self):
+    def test_target_list_shows_unified_action_without_separate_cashflow_form(self):
         response = self.client.get(reverse("finance_onec_import_list"))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Получить ДДС из 1С")
+        self.assertContains(response, "Обновить данные из 1С")
+        self.assertNotContains(response, "Получить ДДС из 1С")
 
     def test_cashflow_only_list_hides_profit_batch_metadata(self):
         cashflow_batch, _, _ = self.active_xlsx()
