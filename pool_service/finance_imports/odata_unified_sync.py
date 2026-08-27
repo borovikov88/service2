@@ -63,6 +63,25 @@ LEASE_SECONDS = 300
 SAFE_ERROR_MESSAGE = "Не удалось проверить данные 1С. Продолжите проверку позже."
 logger = logging.getLogger(__name__)
 
+# These values are persisted in JSON and may be exposed to an authorised user.
+# Keep the diagnostic vocabulary deliberately small and free of transport details.
+STAGE_CONFIG = "config"
+STAGE_PROFIT_READ = "profit_read"
+STAGE_PROFIT_REFERENCE_LOOKUP = "profit_reference_lookup"
+STAGE_PROFIT_NORMALIZATION = "profit_normalization"
+STAGE_CASHFLOW_READ = "cashflow_read"
+STAGE_CASHFLOW_REFERENCE_LOOKUP = "cashflow_reference_lookup"
+STAGE_CASHFLOW_NORMALIZATION = "cashflow_normalization"
+STEP_ERROR_CODES = {
+    STAGE_CONFIG: "sync_config_failed",
+    STAGE_PROFIT_READ: "profit_read_failed",
+    STAGE_PROFIT_REFERENCE_LOOKUP: "profit_reference_lookup_failed",
+    STAGE_PROFIT_NORMALIZATION: "profit_normalization_failed",
+    STAGE_CASHFLOW_READ: "cashflow_read_failed",
+    STAGE_CASHFLOW_REFERENCE_LOOKUP: "cashflow_reference_lookup_failed",
+    STAGE_CASHFLOW_NORMALIZATION: "cashflow_normalization_failed",
+}
+
 
 class UnifiedSyncError(ValidationError):
     pass
@@ -70,6 +89,39 @@ class UnifiedSyncError(ValidationError):
 
 class StaleReactivationError(UnifiedSyncError):
     pass
+
+
+class UnifiedSyncStageError(Exception):
+    """Internal wrapper that carries only an allowlisted collection stage."""
+
+    def __init__(self, stage):
+        self.stage = stage
+        super().__init__(stage)
+
+
+class SanitizedSyncTraceback(Exception):
+    """Traceback marker whose text is always safe for server-side logs."""
+
+
+def _raise_stage_error(stage, exc):
+    raise UnifiedSyncStageError(stage) from exc
+
+
+def _log_step_failure(stage, correlation_id, exc):
+    """Log code location and exception class without logging sensitive values.
+
+    urllib and other exceptions can embed a URL, query string, or credentials in
+    their text.  The emitted exception text is therefore a fixed marker; the
+    traceback contains source locations but no local variable values.
+    """
+    sanitized = SanitizedSyncTraceback("diagnostic detail redacted")
+    logger.error(
+        "Unified 1C sync step failed correlation_id=%s stage=%s exception_class=%s",
+        correlation_id,
+        stage,
+        type(exc).__name__,
+        exc_info=(SanitizedSyncTraceback, sanitized, exc.__traceback__),
+    )
 
 
 def _has_report_permission(user, organization, report_type):
@@ -223,27 +275,45 @@ def _active_rows(organization, report_type, month):
 
 
 def _collect_profit_chunk(start, end, *, config, opener):
-    rows, pages = read_profit_rows(config, start[:7], end[:7], opener=opener)
-    required = {
-        "nomenclature": {row.nomenclature_guid for row in rows},
-        "customer": {row.customer_guid for row in rows if int(row.customer_guid.replace("-", ""), 16)},
-        "responsible": {row.responsible_guid for row in rows},
-    }
-    budget = {"used": 0}
-    references = {
-        kind: _read_reference_map(config, kind, guids, opener=opener, page_budget=budget)
-        for kind, guids in required.items()
-    }
-    return _enrich_rows(rows, references), pages
+    try:
+        rows, pages = read_profit_rows(config, start[:7], end[:7], opener=opener)
+    except Exception as exc:
+        _raise_stage_error(STAGE_PROFIT_READ, exc)
+    try:
+        required = {
+            "nomenclature": {row.nomenclature_guid for row in rows},
+            "customer": {row.customer_guid for row in rows if int(row.customer_guid.replace("-", ""), 16)},
+            "responsible": {row.responsible_guid for row in rows},
+        }
+        budget = {"used": 0}
+        references = {
+            kind: _read_reference_map(config, kind, guids, opener=opener, page_budget=budget)
+            for kind, guids in required.items()
+        }
+    except Exception as exc:
+        _raise_stage_error(STAGE_PROFIT_REFERENCE_LOOKUP, exc)
+    try:
+        return _enrich_rows(rows, references), pages
+    except Exception as exc:
+        _raise_stage_error(STAGE_PROFIT_NORMALIZATION, exc)
 
 
 def _collect_cashflow_chunk(start, end, *, config, opener):
-    rows, pages = read_cashflow_rows(config, start[:7], end[:7], opener=opener)
-    articles = _read_articles(
-        config, {row.article_guid for row in rows if row.article_guid},
-        opener=opener, page_budget={"used": 0},
-    )
-    normalized, warnings = normalise_cashflow_rows(rows, articles)
+    try:
+        rows, pages = read_cashflow_rows(config, start[:7], end[:7], opener=opener)
+    except Exception as exc:
+        _raise_stage_error(STAGE_CASHFLOW_READ, exc)
+    try:
+        articles = _read_articles(
+            config, {row.article_guid for row in rows if row.article_guid},
+            opener=opener, page_budget={"used": 0},
+        )
+    except Exception as exc:
+        _raise_stage_error(STAGE_CASHFLOW_REFERENCE_LOOKUP, exc)
+    try:
+        normalized, warnings = normalise_cashflow_rows(rows, articles)
+    except Exception as exc:
+        _raise_stage_error(STAGE_CASHFLOW_NORMALIZATION, exc)
     return normalized, pages, warnings
 
 
@@ -405,8 +475,12 @@ def _claim_step(run_id, user, allowed, expected_cursor):
         return run, token
 
 
-def _safe_step_failure(run_id, token, expected_cursor, exc):
-    logger.warning("Unified 1C sync step failed (%s)", type(exc).__name__)
+def _safe_step_failure(run_id, token, expected_cursor, stage, exc):
+    """Persist a retryable failure without retaining transport or payload data."""
+    if stage not in STEP_ERROR_CODES:
+        stage = STAGE_CONFIG
+    correlation_id = uuid.uuid4().hex
+    _log_step_failure(stage, correlation_id, exc)
     with transaction.atomic():
         run = OneCODataSyncRun.objects.select_for_update().get(pk=run_id)
         if str(run.lease_token or "") != str(token) or int(run.cursor.get("version", 0)) != int(expected_cursor):
@@ -414,7 +488,13 @@ def _safe_step_failure(run_id, token, expected_cursor, exc):
         summary = dict(run.result_summary)
         report_type = run.lease_report_type
         result = dict(summary[report_type])
-        result.update({"status": "retryable_error", "error_code": "odata_step_failed", "error": SAFE_ERROR_MESSAGE})
+        result.update({
+            "status": "retryable_error",
+            "error_code": STEP_ERROR_CODES[stage],
+            "error_stage": stage,
+            "correlation_id": correlation_id,
+            "error": SAFE_ERROR_MESSAGE,
+        })
         summary[report_type] = result
         run.result_summary = summary
         run.error_message = SAFE_ERROR_MESSAGE
@@ -463,13 +543,19 @@ def step_unified_sync(run_id, user, allowed_report_types, expected_cursor, *, co
     try:
         config = validate_config(config or config_from_settings())
         client = opener or build_opener(NoRedirectHandler())
+    except Exception as exc:
+        return _safe_step_failure(run_id, token, expected_cursor, STAGE_CONFIG, exc)
+    try:
         if report_type == REPORT_PROFIT:
             rows, pages = _collect_profit_chunk(item["start"], item["end"], config=config, opener=client)
             warnings = []
         else:
             rows, pages, warnings = _collect_cashflow_chunk(item["start"], item["end"], config=config, opener=client)
+    except UnifiedSyncStageError as exc:
+        return _safe_step_failure(run_id, token, expected_cursor, exc.stage, exc.__cause__ or exc)
     except Exception as exc:
-        return _safe_step_failure(run_id, token, expected_cursor, exc)
+        stage = STAGE_PROFIT_READ if report_type == REPORT_PROFIT else STAGE_CASHFLOW_READ
+        return _safe_step_failure(run_id, token, expected_cursor, stage, exc)
 
     created_files = []
     try:
