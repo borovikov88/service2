@@ -61,24 +61,36 @@
     if (!result) return;
     if (!result.querySelector("[data-sync-step-form]")) result.appendChild(form);
   };
+  const setStepLoading = (button) => {
+    button.disabled = true;
+    button.textContent = "Проверяем…";
+  };
+  const resetStepButton = (button) => {
+    button.disabled = false;
+    button.textContent = "Продолжить проверку";
+  };
   const step = async (form) => {
     const button = form.querySelector("button[type=submit]");
     const cursor = form.querySelector("[data-sync-cursor]");
-    button.disabled = true;
-    let response;
-    try { response = await fetch(form.action, {method:"POST", headers:{"X-Requested-With":"XMLHttpRequest"}, credentials:"same-origin", body:new FormData(form)}); }
-    catch (error) { button.disabled = false; showResume(form); throw error; }
-    const data = await response.json();
-    if (!response.ok) { button.disabled = false; showResume(form); throw new Error(data.error || "Ошибка проверки"); }
-    render(data);
-    cursor.value = String(data.cursor);
-    if (["retryable_error", "busy"].includes((data.progress || {}).step_state)) {
-      button.disabled = false;
-      showResume(form);
+    setStepLoading(button);
+    try {
+      const response = await fetch(form.action, {method:"POST", headers:{"X-Requested-With":"XMLHttpRequest"}, credentials:"same-origin", body:new FormData(form)});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Ошибка проверки");
+      render(data);
+      cursor.value = String(data.cursor);
+      if (["retryable_error", "busy"].includes((data.progress || {}).step_state)) {
+        resetStepButton(button);
+        showResume(form);
+        return data;
+      }
+      if (!terminal.has(data.status)) return step(form);
       return data;
+    } catch (error) {
+      resetStepButton(button);
+      showResume(form);
+      throw error;
     }
-    if (!terminal.has(data.status)) return step(form);
-    return data;
   };
   function bindStepForm(form) {
     if (form.dataset.syncBound === "true") return;

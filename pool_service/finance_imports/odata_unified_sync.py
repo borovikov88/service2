@@ -67,7 +67,10 @@ logger = logging.getLogger(__name__)
 # Keep the diagnostic vocabulary deliberately small and free of transport details.
 STAGE_CONFIG = "config"
 STAGE_PROFIT_READ = "profit_read"
-STAGE_PROFIT_REFERENCE_LOOKUP = "profit_reference_lookup"
+STAGE_PROFIT_REFERENCE_GUID_VALIDATION = "profit_reference_guid_validation"
+STAGE_PROFIT_NOMENCLATURE_LOOKUP = "profit_nomenclature_lookup"
+STAGE_PROFIT_CUSTOMER_LOOKUP = "profit_customer_lookup"
+STAGE_PROFIT_RESPONSIBLE_LOOKUP = "profit_responsible_lookup"
 STAGE_PROFIT_NORMALIZATION = "profit_normalization"
 STAGE_CASHFLOW_READ = "cashflow_read"
 STAGE_CASHFLOW_REFERENCE_LOOKUP = "cashflow_reference_lookup"
@@ -75,7 +78,10 @@ STAGE_CASHFLOW_NORMALIZATION = "cashflow_normalization"
 STEP_ERROR_CODES = {
     STAGE_CONFIG: "sync_config_failed",
     STAGE_PROFIT_READ: "profit_read_failed",
-    STAGE_PROFIT_REFERENCE_LOOKUP: "profit_reference_lookup_failed",
+    STAGE_PROFIT_REFERENCE_GUID_VALIDATION: "profit_reference_guid_validation_failed",
+    STAGE_PROFIT_NOMENCLATURE_LOOKUP: "profit_nomenclature_lookup_failed",
+    STAGE_PROFIT_CUSTOMER_LOOKUP: "profit_customer_lookup_failed",
+    STAGE_PROFIT_RESPONSIBLE_LOOKUP: "profit_responsible_lookup_failed",
     STAGE_PROFIT_NORMALIZATION: "profit_normalization_failed",
     STAGE_CASHFLOW_READ: "cashflow_read_failed",
     STAGE_CASHFLOW_REFERENCE_LOOKUP: "cashflow_reference_lookup_failed",
@@ -274,6 +280,15 @@ def _active_rows(organization, report_type, month):
     return list(CashFlowRow.objects.active_for(organization, REPORT_CASHFLOW).filter(period_month=month))
 
 
+def _profit_reference_guid(value, *, allow_zero=False):
+    normalized = str(uuid.UUID(str(value))).lower()
+    if normalized == "00000000-0000-0000-0000-000000000000":
+        if allow_zero:
+            return None
+        raise ValueError("A required OData reference is empty")
+    return normalized
+
+
 def _collect_profit_chunk(start, end, *, config, opener):
     try:
         rows, pages = read_profit_rows(config, start[:7], end[:7], opener=opener)
@@ -281,17 +296,29 @@ def _collect_profit_chunk(start, end, *, config, opener):
         _raise_stage_error(STAGE_PROFIT_READ, exc)
     try:
         required = {
-            "nomenclature": {row.nomenclature_guid for row in rows},
-            "customer": {row.customer_guid for row in rows if int(row.customer_guid.replace("-", ""), 16)},
-            "responsible": {row.responsible_guid for row in rows},
-        }
-        budget = {"used": 0}
-        references = {
-            kind: _read_reference_map(config, kind, guids, opener=opener, page_budget=budget)
-            for kind, guids in required.items()
+            "nomenclature": {_profit_reference_guid(row.nomenclature_guid) for row in rows},
+            "customer": {
+                guid for row in rows
+                if (guid := _profit_reference_guid(row.customer_guid, allow_zero=True))
+            },
+            "responsible": {_profit_reference_guid(row.responsible_guid) for row in rows},
         }
     except Exception as exc:
-        _raise_stage_error(STAGE_PROFIT_REFERENCE_LOOKUP, exc)
+        _raise_stage_error(STAGE_PROFIT_REFERENCE_GUID_VALIDATION, exc)
+
+    budget = {"used": 0}
+    references = {}
+    for kind, stage in (
+        ("nomenclature", STAGE_PROFIT_NOMENCLATURE_LOOKUP),
+        ("customer", STAGE_PROFIT_CUSTOMER_LOOKUP),
+        ("responsible", STAGE_PROFIT_RESPONSIBLE_LOOKUP),
+    ):
+        try:
+            references[kind] = _read_reference_map(
+                config, kind, required[kind], opener=opener, page_budget=budget,
+            )
+        except Exception as exc:
+            _raise_stage_error(stage, exc)
     try:
         return _enrich_rows(rows, references), pages
     except Exception as exc:
