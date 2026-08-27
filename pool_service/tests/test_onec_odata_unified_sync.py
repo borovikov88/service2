@@ -574,7 +574,7 @@ class UnifiedSyncTests(TestCase):
     def test_profit_read_reference_and_normalization_failures_have_distinct_safe_stages(self):
         cases = (
             ("profit_read", "profit_read_failed", {"read": TimeoutError("https://secret.example/?token=x")}),
-            ("profit_reference_lookup", "profit_reference_lookup_failed", {"lookup": RuntimeError("Authorization: Basic secret")}),
+            ("profit_nomenclature_lookup", "profit_nomenclature_lookup_failed", {"lookup": RuntimeError("Authorization: Basic secret")}),
             ("profit_normalization", "profit_normalization_failed", {"normalize": ValueError("guid=abc")}),
         )
         for stage, error_code, kwargs in cases:
@@ -589,7 +589,7 @@ class UnifiedSyncTests(TestCase):
                 self.assertIsNone(failed.lease_token)
                 self.assertFalse(OneCImportBatch.objects.exists())
 
-    def test_invalid_profit_customer_guid_is_a_safe_reference_lookup_failure(self):
+    def test_invalid_profit_customer_guid_is_a_safe_guid_validation_failure(self):
         active, _ = self.active_profit()
         row = self._raw_profit_row()
         row.customer_guid = ""
@@ -604,8 +604,8 @@ class UnifiedSyncTests(TestCase):
 
         item = failed.result_summary[REPORT_PROFIT]
         self.assertEqual(item["status"], "retryable_error")
-        self.assertEqual(item["error_stage"], "profit_reference_lookup")
-        self.assertEqual(item["error_code"], "profit_reference_lookup_failed")
+        self.assertEqual(item["error_stage"], "profit_reference_guid_validation")
+        self.assertEqual(item["error_code"], "profit_reference_guid_validation_failed")
         self.assertEqual(item["error"], "Не удалось проверить данные 1С. Продолжите проверку позже.")
         self.assertRegex(item["correlation_id"], r"^[0-9a-f]{32}$")
         self.assertNotRegex(str(item), r"https?://|[?&=]|password|Authorization|customer_guid")
@@ -616,6 +616,41 @@ class UnifiedSyncTests(TestCase):
         self.assertFalse(OneCImportBatch.objects.filter(status="previewed").exists())
         self.assertEqual(OneCReportPeriodState.objects.get().active_batch, active)
         self.assertEqual([path for path in Path(self.private.name).rglob("*") if path.is_file()], [])
+
+    def test_profit_customer_and_responsible_lookup_failures_have_safe_substages(self):
+        stages = (
+            ("customer", "profit_customer_lookup", "profit_customer_lookup_failed"),
+            ("responsible", "profit_responsible_lookup", "profit_responsible_lookup_failed"),
+        )
+        for failing_kind, stage, error_code in stages:
+            with self.subTest(kind=failing_kind):
+                run, _ = start_unified_sync(
+                    self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1)
+                )
+
+                def read_reference_map(_config, kind, _guids, **_kwargs):
+                    if kind == failing_kind:
+                        raise RuntimeError("https://secret.example/?Authorization=secret&guid=abc")
+                    return {}
+
+                with patch(
+                    "pool_service.finance_imports.odata_unified_sync.read_profit_rows",
+                    return_value=([self._raw_profit_row()], 1),
+                ), patch(
+                    "pool_service.finance_imports.odata_unified_sync._read_reference_map",
+                    side_effect=read_reference_map,
+                ):
+                    failed = step_unified_sync(run.id, self.user, [REPORT_PROFIT], 0, config=config())
+
+                item = failed.result_summary[REPORT_PROFIT]
+                self.assertEqual(item["error_stage"], stage)
+                self.assertEqual(item["error_code"], error_code)
+                self.assertEqual(item["error"], "Не удалось проверить данные 1С. Продолжите проверку позже.")
+                self.assertRegex(item["correlation_id"], r"^[0-9a-f]{32}$")
+                self.assertNotRegex(str(item), r"https?://|Authorization|secret|guid=abc")
+                self.assertEqual(failed.cursor["index"], 0)
+                self.assertIsNone(failed.lease_token)
+                self.assertFalse(OneCImportBatch.objects.exists())
 
     def test_cashflow_collection_failures_have_distinct_safe_stages(self):
         raw = SimpleNamespace(article_guid="77777777-7777-7777-7777-777777777777")
@@ -675,6 +710,13 @@ class UnifiedSyncTests(TestCase):
         self.assertContains(response, "Продолжить проверку")
         self.assertNotContains(response, "secret.example")
         self.assertNotContains(response, "Выполняется")
+
+    def test_step_button_shows_loading_state_and_restores_resume_label(self):
+        self.client.force_login(self.user)
+        response = self.client.get(reverse("finance_onec_import_list"))
+        self.assertContains(response, 'button.textContent = "Проверяем…"')
+        self.assertContains(response, 'button.disabled = true')
+        self.assertContains(response, 'button.textContent = "Продолжить проверку"')
 
     def test_snapshot_is_cleaned_if_commit_phase_rolls_back_then_retry_creates_one_preview(self):
         run, _ = start_unified_sync(self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1))
