@@ -565,6 +565,7 @@ class UnifiedSyncTests(TestCase):
         self.assertNotIn("abc", str(item))
         self.assertNotIn("secret", "\n".join(logs.output))
         self.assertNotIn("fresh.example", "\n".join(logs.output))
+        self.assertNotIn("Traceback", "\n".join(logs.output))
         self.assertEqual(failed.cursor["version"], 0)
         self.assertIsNone(failed.lease_token)
         self.assertFalse(OneCImportBatch.objects.filter(status="previewed").exists())
