@@ -278,11 +278,30 @@ VAPID_EMAIL = os.getenv("VAPID_EMAIL", DEFAULT_FROM_EMAIL)
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
+    "formatters": {
+        "onec_unified_sync": {
+            "format": "{asctime} {levelname} {name} {message}",
+            "style": "{",
+        },
+    },
     "handlers": {
         "console": {"class": "logging.StreamHandler"},
+        "onec_unified_sync": {
+            "class": "service_site.logging_handlers.FailOpenWatchedFileHandler",
+            "filename": str(BASE_DIR.parent / "var" / "log" / "unified-1c-sync.log"),
+            "level": "ERROR",
+            "formatter": "onec_unified_sync",
+            "encoding": "utf-8",
+            "delay": True,
+        },
     },
     "loggers": {
         "django.core.mail": {"handlers": ["console"], "level": "DEBUG"},
+        "pool_service.finance_imports.odata_unified_sync": {
+            "handlers": ["onec_unified_sync"],
+            "level": "ERROR",
+            "propagate": False,
+        },
     },
 }
 

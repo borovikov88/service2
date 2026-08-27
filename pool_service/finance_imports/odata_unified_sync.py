@@ -105,28 +105,17 @@ class UnifiedSyncStageError(Exception):
         super().__init__(stage)
 
 
-class SanitizedSyncTraceback(Exception):
-    """Traceback marker whose text is always safe for server-side logs."""
-
-
 def _raise_stage_error(stage, exc):
     raise UnifiedSyncStageError(stage) from exc
 
 
 def _log_step_failure(stage, correlation_id, exc):
-    """Log code location and exception class without logging sensitive values.
-
-    urllib and other exceptions can embed a URL, query string, or credentials in
-    their text.  The emitted exception text is therefore a fixed marker; the
-    traceback contains source locations but no local variable values.
-    """
-    sanitized = SanitizedSyncTraceback("diagnostic detail redacted")
+    """Write only allowlisted diagnostic fields to the dedicated log."""
     logger.error(
         "Unified 1C sync step failed correlation_id=%s stage=%s exception_class=%s",
         correlation_id,
         stage,
         type(exc).__name__,
-        exc_info=(SanitizedSyncTraceback, sanitized, exc.__traceback__),
     )
 
 
