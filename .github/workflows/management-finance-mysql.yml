@@ -9,8 +9,10 @@ on:
       - "pool_service/finance_imports/**"
       - "pool_service/migrations/0093_management_finance_foundation.py"
       - "pool_service/migrations/0094_mysql_identity_unique_constraints.py"
+      - "pool_service/migrations/0097_onecodatasyncrun.py"
       - "pool_service/tests/test_management_finance_foundation.py"
       - "pool_service/tests/test_management_finance_migrations.py"
+      - "pool_service/tests/test_onec_odata_unified_sync.py"
       - ".github/workflows/management-finance-mysql.yml"
   workflow_dispatch:
 
@@ -68,4 +70,5 @@ jobs:
           python manage.py test \
             pool_service.tests.test_management_finance_foundation \
             pool_service.tests.test_management_finance_migrations \
+            pool_service.tests.test_onec_odata_unified_sync \
             --verbosity 2

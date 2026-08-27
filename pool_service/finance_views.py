@@ -12,7 +12,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
-from django.core.exceptions import ValidationError
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.validators import validate_ipv46_address
 from django.db import transaction
 from django.db.models import Case, DecimalField, F, Sum, Value, When
@@ -63,6 +63,8 @@ from pool_service.models import (
     EmployeeOneCIdentity,
     OneCImportBatch,
     OneCMonthlyProfit,
+    OneCODataSyncRun,
+    OneCReportPeriodState,
 )
 from pool_service.finance_imports.payroll_services import (
     confirm_payroll,
@@ -100,6 +102,14 @@ from pool_service.finance_imports.odata_cashflow_drafts import (
     ODataCashFlowDraftError,
     confirm_odata_cashflow,
     create_odata_cashflow_draft,
+)
+from pool_service.finance_imports.odata_unified_sync import (
+    REPORT_CASHFLOW,
+    REPORT_PROFIT,
+    StaleReactivationError,
+    reactivate_confirmed_candidate,
+    start_unified_sync,
+    step_unified_sync,
 )
 from pool_service.finance_imports.cashflow_services import confirm_cashflow
 from pool_service.finance_imports.profit_dashboard import (
@@ -208,6 +218,22 @@ def _onec_import_list_guard(request):
             or can_import_cashflow(user, organization)
             or can_view_cashflow(user, organization)
         ),
+    )
+
+
+def _onec_sync_report_types(user, organization):
+    result = []
+    if can_import_gross_profit(user, organization):
+        result.append(REPORT_PROFIT)
+    if can_import_cashflow(user, organization):
+        result.append(REPORT_CASHFLOW)
+    return result
+
+
+def _onec_sync_guard(request):
+    return _capability_guard(
+        request,
+        lambda user, organization: bool(_onec_sync_report_types(user, organization)),
     )
 
 
@@ -2482,15 +2508,174 @@ def finance_onec_import_list(request):
         is_odata_target_organization(organization)
         and can_cashflow
     )
+    report_types = _onec_sync_report_types(request.user, organization)
+    latest_active = {
+        report_type: OneCReportPeriodState.objects.filter(
+            organization=organization, report_type=report_type,
+            active_batch__status=OneCImportBatch.STATUS_CONFIRMED,
+        ).order_by("-period_month").values_list("period_month", flat=True).first()
+        for report_type in report_types
+    }
+    sync_runs = OneCODataSyncRun.objects.filter(
+        organization=organization
+    ).select_related("requested_by")[:20]
     return render(request, "pool_service/finance/onec_import_list.html", {
         "batches": batches,
-        "odata_form": ODataProfitDraftForm() if is_odata_target_organization(organization) and can_profit else None,
-        "show_odata_draft": is_odata_target_organization(organization) and can_profit,
         "show_profit_import": can_profit,
-        "cashflow_odata_form": ODataCashFlowDraftForm() if show_cashflow_odata else None,
         "show_cashflow_odata_draft": show_cashflow_odata,
+        "show_unified_sync": bool(report_types) and is_odata_target_organization(organization),
+        "sync_report_types": report_types,
+        "latest_profit_active": latest_active.get(REPORT_PROFIT),
+        "latest_cashflow_active": latest_active.get(REPORT_CASHFLOW),
+        "sync_runs": sync_runs,
         "active_tab": "finance",
     })
+
+
+@require_POST
+@login_required
+def finance_onec_odata_sync_start(request):
+    organization, denied = _onec_sync_guard(request)
+    if denied:
+        return denied
+    report_types = _onec_sync_report_types(request.user, organization)
+    try:
+        run, created = start_unified_sync(organization, request.user, report_types)
+    except PermissionDenied:
+        return JsonResponse({"error_code": "permission_denied", "error": "Недостаточно прав."}, status=403)
+    except ValidationError:
+        return JsonResponse({"error_code": "invalid_sync_request", "error": "Не удалось начать проверку данных 1С."}, status=400)
+    payload = {
+        "run_id": str(run.id), "created": created, "status": run.status,
+        "cursor": run.cursor.get("version", 0),
+        "step_url": reverse("finance_onec_odata_sync_step", kwargs={"run_id": run.id}),
+        "status_url": reverse("finance_onec_odata_sync_status", kwargs={"run_id": run.id}),
+    }
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return JsonResponse(payload)
+    messages.success(request, "Проверка создана. Нажмите «Продолжить проверку», чтобы получить следующий фрагмент.")
+    return redirect("finance_onec_import_list")
+
+
+def _sync_run_payload(run, allowed_report_types):
+    allowed = set(allowed_report_types)
+    visible_result = {
+        report_type: item for report_type, item in run.result_summary.items()
+        if report_type in allowed
+    }
+    visible_scope = {
+        report_type: item for report_type, item in run.sync_scope.items()
+        if report_type in allowed
+    }
+    draft_ids = sum((item.get("drafts", []) for item in visible_result.values()), [])
+    candidate_ids = [
+        candidate["candidate_batch_id"]
+        for item in visible_result.values()
+        for candidate in item.get("reactivation_candidates", [])
+    ]
+    links = {}
+    for batch in OneCImportBatch.objects.filter(id__in=draft_ids):
+        route = "finance_onec_cashflow_preview" if batch.import_type == REPORT_CASHFLOW else "finance_onec_import_preview"
+        links[str(batch.id)] = reverse(route, kwargs={"batch_id": batch.id})
+    candidate_links = {}
+    for batch in OneCImportBatch.objects.filter(id__in=candidate_ids):
+        route = "finance_onec_cashflow_detail" if batch.import_type == REPORT_CASHFLOW else "finance_onec_import_detail"
+        candidate_links[str(batch.id)] = reverse(route, kwargs={"batch_id": batch.id})
+    return {
+        "run_id": str(run.id), "status": run.status, "scope": visible_scope,
+        "cursor": run.cursor.get("version", 0), "progress": run.progress,
+        "result": visible_result, "draft_links": links, "candidate_links": candidate_links,
+    }
+
+
+@require_POST
+@login_required
+def finance_onec_odata_sync_step(request, run_id):
+    organization, denied = _onec_sync_guard(request)
+    if denied:
+        return denied
+    run = get_object_or_404(OneCODataSyncRun, pk=run_id, organization=organization)
+    wants_json = request.headers.get("X-Requested-With") == "XMLHttpRequest"
+
+    def reject(message, status=409):
+        if wants_json:
+            return JsonResponse({"error_code": "invalid_sync_cursor", "error": message}, status=status)
+        messages.warning(request, message)
+        return redirect("finance_onec_import_list")
+
+    try:
+        expected = int(request.POST.get("cursor", ""))
+    except (TypeError, ValueError):
+        return reject("Не удалось продолжить проверку: некорректная версия шага.", 400)
+    persisted_cursor = int((run.cursor or {}).get("version", 0))
+    if expected != persisted_cursor:
+        return reject("Этот шаг проверки уже устарел. Используйте актуальную кнопку продолжения.")
+    if run.status in OneCODataSyncRun.TERMINAL_STATUSES:
+        if wants_json:
+            return JsonResponse(_sync_run_payload(
+                run, _onec_sync_report_types(request.user, organization)
+            ))
+        messages.info(request, "Проверка уже завершена.")
+        return redirect("finance_onec_import_list")
+    try:
+        run = step_unified_sync(
+            run.id, request.user,
+            _onec_sync_report_types(request.user, organization), expected,
+        )
+    except PermissionDenied:
+        if wants_json:
+            return JsonResponse({"error_code": "permission_denied", "error": "Недостаточно прав."}, status=403)
+        return HttpResponseForbidden("Недостаточно прав.")
+    if not wants_json:
+        if run.progress.get("step_state") == "busy":
+            messages.info(request, "Этот шаг уже выполняется. Повторите попытку позже.")
+        elif run.status in OneCODataSyncRun.TERMINAL_STATUSES:
+            messages.success(request, "Проверка данных завершена.")
+        else:
+            messages.success(request, "Один шаг проверки выполнен. Продолжите проверку.")
+        return redirect("finance_onec_import_list")
+    return JsonResponse(_sync_run_payload(run, _onec_sync_report_types(request.user, organization)))
+
+
+@login_required
+def finance_onec_odata_sync_status(request, run_id):
+    organization, denied = _onec_import_list_guard(request)
+    if denied:
+        return denied
+    run = get_object_or_404(OneCODataSyncRun, pk=run_id, organization=organization)
+    allowed = _onec_sync_report_types(request.user, organization)
+    if not set(run.requested_report_types) & set(allowed):
+        return HttpResponseForbidden("Недостаточно прав.")
+    return JsonResponse(_sync_run_payload(run, allowed))
+
+
+@require_POST
+@login_required
+def finance_onec_odata_sync_reactivate(request, run_id):
+    organization, denied = _onec_sync_guard(request)
+    if denied:
+        return denied
+    report_type = request.POST.get("report_type", "")
+    if report_type not in _onec_sync_report_types(request.user, organization):
+        return HttpResponseForbidden("Недостаточно прав.")
+    try:
+        reactivate_confirmed_candidate(
+            run_id, organization, request.user, report_type,
+            request.POST.get("month", ""), request.POST.get("batch_id", ""),
+            request.POST.get("fingerprint", ""),
+        )
+    except StaleReactivationError:
+        return HttpResponse(
+            "Активная версия месяца изменилась после проверки. Запустите обновление из 1С повторно",
+            status=409,
+        )
+    except PermissionDenied:
+        return HttpResponseForbidden("Недостаточно прав.")
+    except (ValidationError, ValueError, OneCImportBatch.DoesNotExist, OneCODataSyncRun.DoesNotExist):
+        messages.error(request, "Не удалось активировать выбранную подтверждённую версию.")
+    else:
+        messages.success(request, "Выбранная подтверждённая версия месяца активирована.")
+    return redirect("finance_onec_import_list")
 
 
 @require_POST

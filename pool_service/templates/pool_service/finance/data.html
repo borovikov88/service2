@@ -8,11 +8,8 @@
 </div>
 
 <div class="row g-3">
-  {% if can_import_gross_profit %}
-  <div class="col-md-6"><a class="card card-soft p-4 h-100 text-decoration-none text-body" href="{% url 'finance_onec_import_list' %}"><div class="h5 mb-2">Валовая прибыль</div><div class="text-muted">История импортов и обновление данных →</div></a></div>
-  {% endif %}
-  {% if can_import_cashflow %}
-  <div class="col-md-6"><a class="card card-soft p-4 h-100 text-decoration-none text-body" href="{% url 'finance_onec_import_list' %}"><div class="h5 mb-2">ДДС</div><div class="text-muted">История импортов и обновление данных →</div></a></div>
+  {% if can_import_gross_profit or can_import_cashflow %}
+  <div class="col-md-6"><a class="card card-soft p-4 h-100 text-decoration-none text-body" href="{% url 'finance_onec_import_list' %}"><div class="h5 mb-2">Управленческие данные 1С</div><div class="text-muted">Валовая прибыль и ДДС: история, проверка изменений и обновление →</div></a></div>
   {% endif %}
   {% if can_import_payroll %}
   <div class="col-md-6"><a class="card card-soft p-4 h-100 text-decoration-none text-body" href="{% url 'finance_payroll_import_list' %}"><div class="h5 mb-2">Фонд оплаты труда</div><div class="text-muted">История отчётов «Расчёты с персоналом» →</div></a></div>
