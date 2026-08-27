@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 from tempfile import TemporaryDirectory
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 import uuid
 import threading
@@ -508,11 +509,172 @@ class UnifiedSyncTests(TestCase):
         self.assertEqual(failed.cursor["index"], 0)
         self.assertEqual(failed.cursor["version"], 0)
         self.assertNotIn("secret", str(failed.result_summary))
-        self.assertEqual(failed.result_summary[REPORT_PROFIT]["error_code"], "odata_step_failed")
+        self.assertEqual(failed.result_summary[REPORT_PROFIT]["error_code"], "profit_read_failed")
+        self.assertEqual(failed.result_summary[REPORT_PROFIT]["error_stage"], "profit_read")
+        self.assertRegex(failed.result_summary[REPORT_PROFIT]["correlation_id"], r"^[0-9a-f]{32}$")
+        self.assertIsNone(failed.lease_token)
+        self.assertFalse(OneCImportBatch.objects.filter(status="previewed").exists())
+        self.assertFalse(OneCReportPeriodState.objects.exists())
         with patch("pool_service.finance_imports.odata_unified_sync._collect_profit_chunk", return_value=([profit_row()], 1)):
             completed = step_unified_sync(run.id, self.user, [REPORT_PROFIT], 0, config=config())
         self.assertEqual(completed.status, OneCODataSyncRun.STATUS_COMPLETED)
         self.assertEqual(OneCImportBatch.objects.filter(status="previewed").count(), 1)
+
+    def _raw_profit_row(self):
+        return SimpleNamespace(
+            nomenclature_guid="33333333-3333-3333-3333-333333333333",
+            customer_guid="44444444-4444-4444-4444-444444444444",
+            responsible_guid="66666666-6666-6666-6666-666666666666",
+        )
+
+    def _failed_profit_stage(self, *, read=None, lookup=None, normalize=None):
+        run, _ = start_unified_sync(
+            self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1)
+        )
+        with patch(
+            "pool_service.finance_imports.odata_unified_sync.read_profit_rows",
+            side_effect=read or None,
+            return_value=None if read else ([self._raw_profit_row()], 1),
+        ), patch(
+            "pool_service.finance_imports.odata_unified_sync._read_reference_map",
+            side_effect=lookup or None,
+            return_value={} if not lookup else None,
+        ), patch(
+            "pool_service.finance_imports.odata_unified_sync._enrich_rows",
+            side_effect=normalize or None,
+            return_value=[] if not normalize else None,
+        ):
+            return step_unified_sync(run.id, self.user, [REPORT_PROFIT], 0, config=config())
+
+    def test_config_failure_is_safe_and_does_not_create_a_preview(self):
+        active, _ = self.active_profit()
+        run, _ = start_unified_sync(
+            self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1)
+        )
+        with patch(
+            "pool_service.finance_imports.odata_unified_sync.config_from_settings",
+            side_effect=RuntimeError("password=secret https://fresh.example/?guid=abc"),
+        ), self.assertLogs("pool_service.finance_imports.odata_unified_sync", level="ERROR") as logs:
+            failed = step_unified_sync(run.id, self.user, [REPORT_PROFIT], 0)
+        item = failed.result_summary[REPORT_PROFIT]
+        self.assertEqual(item["error_stage"], "config")
+        self.assertEqual(item["error_code"], "sync_config_failed")
+        self.assertEqual(item["error"], "Не удалось проверить данные 1С. Продолжите проверку позже.")
+        self.assertNotIn("secret", str(item))
+        self.assertNotIn("fresh.example", str(item))
+        self.assertNotIn("abc", str(item))
+        self.assertNotIn("secret", "\n".join(logs.output))
+        self.assertNotIn("fresh.example", "\n".join(logs.output))
+        self.assertEqual(failed.cursor["version"], 0)
+        self.assertIsNone(failed.lease_token)
+        self.assertFalse(OneCImportBatch.objects.filter(status="previewed").exists())
+        self.assertEqual(OneCReportPeriodState.objects.get().active_batch, active)
+        self.assertEqual([path for path in Path(self.private.name).rglob("*") if path.is_file()], [])
+
+    def test_profit_read_reference_and_normalization_failures_have_distinct_safe_stages(self):
+        cases = (
+            ("profit_read", "profit_read_failed", {"read": TimeoutError("https://secret.example/?token=x")}),
+            ("profit_reference_lookup", "profit_reference_lookup_failed", {"lookup": RuntimeError("Authorization: Basic secret")}),
+            ("profit_normalization", "profit_normalization_failed", {"normalize": ValueError("guid=abc")}),
+        )
+        for stage, error_code, kwargs in cases:
+            with self.subTest(stage=stage):
+                failed = self._failed_profit_stage(**kwargs)
+                item = failed.result_summary[REPORT_PROFIT]
+                self.assertEqual(item["status"], "retryable_error")
+                self.assertEqual(item["error_stage"], stage)
+                self.assertEqual(item["error_code"], error_code)
+                self.assertNotRegex(str(item), r"secret|Authorization|guid=abc")
+                self.assertEqual(failed.cursor["index"], 0)
+                self.assertIsNone(failed.lease_token)
+                self.assertFalse(OneCImportBatch.objects.exists())
+
+    def test_invalid_profit_customer_guid_is_a_safe_reference_lookup_failure(self):
+        active, _ = self.active_profit()
+        row = self._raw_profit_row()
+        row.customer_guid = ""
+        run, _ = start_unified_sync(
+            self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1)
+        )
+        with patch(
+            "pool_service.finance_imports.odata_unified_sync.read_profit_rows",
+            return_value=([row], 1),
+        ), self.assertLogs("pool_service.finance_imports.odata_unified_sync", level="ERROR") as logs:
+            failed = step_unified_sync(run.id, self.user, [REPORT_PROFIT], 0, config=config())
+
+        item = failed.result_summary[REPORT_PROFIT]
+        self.assertEqual(item["status"], "retryable_error")
+        self.assertEqual(item["error_stage"], "profit_reference_lookup")
+        self.assertEqual(item["error_code"], "profit_reference_lookup_failed")
+        self.assertEqual(item["error"], "Не удалось проверить данные 1С. Продолжите проверку позже.")
+        self.assertRegex(item["correlation_id"], r"^[0-9a-f]{32}$")
+        self.assertNotRegex(str(item), r"https?://|[?&=]|password|Authorization|customer_guid")
+        self.assertNotRegex("\n".join(logs.output), r"https?://|password|Authorization")
+        self.assertEqual(failed.cursor["index"], 0)
+        self.assertEqual(failed.cursor["version"], 0)
+        self.assertIsNone(failed.lease_token)
+        self.assertFalse(OneCImportBatch.objects.filter(status="previewed").exists())
+        self.assertEqual(OneCReportPeriodState.objects.get().active_batch, active)
+        self.assertEqual([path for path in Path(self.private.name).rglob("*") if path.is_file()], [])
+
+    def test_cashflow_collection_failures_have_distinct_safe_stages(self):
+        raw = SimpleNamespace(article_guid="77777777-7777-7777-7777-777777777777")
+        cases = (
+            ("cashflow_read", "cashflow_read_failed", {
+                "read": RuntimeError("https://secret.example/?Authorization=secret"),
+            }),
+            ("cashflow_reference_lookup", "cashflow_reference_lookup_failed", {
+                "lookup": ValueError("guid=abc"),
+            }),
+            ("cashflow_normalization", "cashflow_normalization_failed", {
+                "normalize": RuntimeError("password=secret"),
+            }),
+        )
+        for stage, error_code, kwargs in cases:
+            with self.subTest(stage=stage):
+                run, _ = start_unified_sync(
+                    self.organization, self.user, [REPORT_CASHFLOW], today=date(2025, 5, 1)
+                )
+                with patch(
+                    "pool_service.finance_imports.odata_unified_sync.read_cashflow_rows",
+                    side_effect=kwargs.get("read"),
+                    return_value=None if kwargs.get("read") else ([raw], 1),
+                ), patch(
+                    "pool_service.finance_imports.odata_unified_sync._read_articles",
+                    side_effect=kwargs.get("lookup"),
+                    return_value={} if not kwargs.get("lookup") else None,
+                ), patch(
+                    "pool_service.finance_imports.odata_unified_sync.normalise_cashflow_rows",
+                    side_effect=kwargs.get("normalize"),
+                    return_value=([], []) if not kwargs.get("normalize") else None,
+                ):
+                    failed = step_unified_sync(
+                        run.id, self.user, [REPORT_CASHFLOW], 0, config=config()
+                    )
+                item = failed.result_summary[REPORT_CASHFLOW]
+                self.assertEqual(item["error_stage"], stage)
+                self.assertEqual(item["error_code"], error_code)
+                self.assertNotRegex(str(item), r"secret|Authorization|guid=abc")
+                self.assertEqual(failed.cursor["version"], 0)
+                self.assertIsNone(failed.lease_token)
+                self.assertFalse(OneCImportBatch.objects.exists())
+
+    def test_retryable_error_ui_is_paused_and_keeps_resume_action(self):
+        run, _ = start_unified_sync(
+            self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1)
+        )
+        with patch(
+            "pool_service.finance_imports.odata_unified_sync._collect_profit_chunk",
+            side_effect=TimeoutError("https://secret.example/?password=x"),
+        ):
+            step_unified_sync(run.id, self.user, [REPORT_PROFIT], 0, config=config())
+        self.client.force_login(self.user)
+        response = self.client.get(reverse("finance_onec_import_list"))
+        self.assertContains(response, "Проверка приостановлена")
+        self.assertContains(response, "не удалось получить данные валовой прибыли из 1С")
+        self.assertContains(response, "Продолжить проверку")
+        self.assertNotContains(response, "secret.example")
+        self.assertNotContains(response, "Выполняется")
 
     def test_snapshot_is_cleaned_if_commit_phase_rolls_back_then_retry_creates_one_preview(self):
         run, _ = start_unified_sync(self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1))
