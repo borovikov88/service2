@@ -16,6 +16,7 @@ from .security import (
     timestamp_now,
     unlock_url,
 )
+from .services.finance import automatic_lock_is_disabled
 
 
 class TimezoneMiddleware:
@@ -105,7 +106,11 @@ class SessionSecurityMiddleware:
         now_ts = timestamp_now()
         last_activity = int(request.session.get(SESSION_LAST_ACTIVITY_KEY) or now_ts)
         locked = bool(request.session.get(SESSION_LOCKED_KEY))
-        if not locked and now_ts - last_activity >= idle_timeout_seconds():
+        if (
+            not locked
+            and not automatic_lock_is_disabled(user)
+            and now_ts - last_activity >= idle_timeout_seconds()
+        ):
             lock_session(request, next_url=request.get_full_path())
             locked = True
 

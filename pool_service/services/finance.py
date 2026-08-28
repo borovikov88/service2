@@ -14,6 +14,7 @@ from pool_service.models import (
     ExpenseCategory,
     ExpensePeriod,
     OrganizationAccess,
+    Profile,
 )
 from pool_service.services.notifications import notify_users
 
@@ -33,6 +34,26 @@ FINANCE_CASH_ACCESS_ROLES = {"owner", "admin", "manager", "accountant"}
 FINANCE_ADVANCE_ISSUE_ROLES = {"owner", "admin", "manager", "accountant"}
 FINANCE_CLOSE_ROLES = {"owner", "admin", "accountant"}
 MANAGEMENT_FINANCE_ROLES = {"owner", "admin", "accountant"}
+
+
+def can_configure_automatic_lock(user):
+    """Whether the user may opt out of automatic session locking."""
+    if not user or not user.is_authenticated:
+        return False
+    if user.is_superuser:
+        return True
+    return OrganizationAccess.objects.filter(
+        user=user,
+        role__in=MANAGEMENT_FINANCE_ROLES,
+    ).exists()
+
+
+def automatic_lock_is_disabled(user):
+    """Return the server-authoritative automatic-lock preference for a user."""
+    return can_configure_automatic_lock(user) and Profile.objects.filter(
+        user=user,
+        automatic_lock_disabled=True,
+    ).exists()
 
 
 def organization_roles(user, organization):

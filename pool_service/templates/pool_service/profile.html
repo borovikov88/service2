@@ -233,6 +233,26 @@
                     <button type="button" class="btn btn-primary rounded-3" data-bs-toggle="modal" data-bs-target="#pinChangeModal">
                         <i class="bi bi-shield-lock me-2"></i>Сменить PIN
                     </button>
+                    {% if can_configure_automatic_lock %}
+                        <form method="post" class="border-top mt-4 pt-3">
+                            {% csrf_token %}
+                            <input type="hidden" name="automatic_lock_settings" value="1">
+                            <div class="form-check form-switch">
+                                <input
+                                    class="form-check-input"
+                                    type="checkbox"
+                                    role="switch"
+                                    id="automatic-lock-disabled"
+                                    name="automatic_lock_disabled"
+                                    value="1"
+                                    {% if automatic_lock_disabled %}checked{% endif %}
+                                >
+                                <label class="form-check-label fw-semibold" for="automatic-lock-disabled">Отключить автоматическую блокировку</label>
+                            </div>
+                            <p class="small text-muted mb-3 mt-2">Приложение не будет автоматически блокироваться после периода бездействия. Используйте эту настройку только на личном защищённом устройстве.</p>
+                            <button type="submit" class="btn btn-outline-primary btn-sm">Сохранить настройку</button>
+                        </form>
+                    {% endif %}
                 </div>
             </div>
 

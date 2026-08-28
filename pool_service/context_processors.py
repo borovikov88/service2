@@ -76,6 +76,7 @@ def plan_status_context(request):
         personal_pool,
         trial_ends_at,
     )
+    from pool_service.services.finance import automatic_lock_is_disabled
 
     personal_user = is_personal_user(user)
     org_roles = list(OrganizationAccess.objects.filter(user=user).values_list("role", flat=True))
@@ -127,6 +128,7 @@ def plan_status_context(request):
         "security_pin_enabled": security_pin_enabled,
         "security_passkey_enabled": security_passkey_enabled,
         "security_quick_unlock_enabled": security_pin_enabled or security_passkey_enabled,
+        "security_automatic_lock_enabled": not automatic_lock_is_disabled(user),
         "security_show_quick_setup_prompt": security_show_quick_setup_prompt,
         "security_idle_timeout_seconds": idle_timeout_seconds(),
     }
