@@ -1272,17 +1272,25 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
             "development-codex-chatgpt-canary.yml",
             "development-codex-chatgpt-repo-canary.yml",
         }
-        expected_workflows = manual_canary_workflows | {production_workflow}
+        allowed_automatic_workflows = {"management-finance-mysql.yml"}
+        expected_workflows = (
+            manual_canary_workflows | {production_workflow} | allowed_automatic_workflows
+        )
 
         self.assertEqual({item.name for item in workflows}, expected_workflows)
         self.assertEqual(
             [item.name for item in workflows if item.name not in manual_canary_workflows],
-            [production_workflow],
+            [production_workflow, *sorted(allowed_automatic_workflows)],
         )
         for workflow in workflows:
             with self.subTest(workflow=workflow.name):
                 text = workflow.read_text(encoding="utf-8")
-                self.assertEqual(workflow_trigger_names(text), ["workflow_dispatch"])
+                expected_triggers = (
+                    ["pull_request", "workflow_dispatch"]
+                    if workflow.name in allowed_automatic_workflows
+                    else ["workflow_dispatch"]
+                )
+                self.assertEqual(workflow_trigger_names(text), expected_triggers)
 
     def test_codex_jsonl_usage_parser_accepts_trusted_completed_usage(self):
         builder = load_usage_builder()
