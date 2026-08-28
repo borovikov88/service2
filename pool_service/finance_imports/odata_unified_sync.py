@@ -99,6 +99,21 @@ PROFIT_NOMENCLATURE_ERROR_REASONS = frozenset({
     "reference_missing",
     "unexpected",
 })
+PROFIT_CUSTOMER_ERROR_REASONS = frozenset({
+    "http_error",
+    "request_failed",
+    "page_limit",
+    "unexpected_rows",
+    "invalid_reference_row",
+    "deleted_reference",
+    "missing_description",
+    "reference_missing",
+    "unexpected",
+})
+STAGE_ERROR_REASONS = {
+    STAGE_PROFIT_NOMENCLATURE_LOOKUP: PROFIT_NOMENCLATURE_ERROR_REASONS,
+    STAGE_PROFIT_CUSTOMER_LOOKUP: PROFIT_CUSTOMER_ERROR_REASONS,
+}
 
 
 class UnifiedSyncError(ValidationError):
@@ -152,6 +167,35 @@ def _profit_nomenclature_error_reason(exc):
         return "missing_description"
     if message.startswith("1C nomenclature type is invalid"):
         return "invalid_nomenclature_type"
+    if message.startswith("1C reference is missing or unavailable"):
+        return "reference_missing"
+    return "unexpected"
+
+
+def _profit_customer_error_reason(exc):
+    """Return a persisted-safe reason only for controlled customer lookup errors."""
+    if not isinstance(exc, ODataPreviewError):
+        return None
+    message = str(exc)
+    if message.startswith("OData HTTP error "):
+        return "http_error"
+    if message.startswith("OData request failed"):
+        return "request_failed"
+    if message in {
+        "OData pagination exceeded the configured page limit",
+        "1C reference lookups exceeded the page limit",
+    }:
+        return "page_limit"
+    if message.startswith("1C reference lookup returned unexpected"):
+        return "unexpected_rows"
+    if message.startswith("1C reference row must be an object") or message.startswith("Ref_Key "):
+        return "invalid_reference_row"
+    if message.startswith("1C reference is deleted or has an invalid deletion mark"):
+        return "deleted_reference"
+    if message.startswith("1C reference has no display description") or message.startswith(
+        "1C reference description must not be a GUID"
+    ):
+        return "missing_description"
     if message.startswith("1C reference is missing or unavailable"):
         return "reference_missing"
     return "unexpected"
@@ -361,13 +405,15 @@ def _collect_profit_chunk(start, end, *, config, opener):
                 **lookup_kwargs,
             )
         except Exception as exc:
+            error_reason = None
+            if stage == STAGE_PROFIT_NOMENCLATURE_LOOKUP:
+                error_reason = _profit_nomenclature_error_reason(exc)
+            elif stage == STAGE_PROFIT_CUSTOMER_LOOKUP:
+                error_reason = _profit_customer_error_reason(exc)
             _raise_stage_error(
                 stage,
                 exc,
-                error_reason=(
-                    _profit_nomenclature_error_reason(exc)
-                    if stage == STAGE_PROFIT_NOMENCLATURE_LOOKUP else None
-                ),
+                error_reason=error_reason,
             )
     try:
         return _enrich_rows(rows, references), pages
@@ -573,7 +619,7 @@ def _safe_step_failure(run_id, token, expected_cursor, stage, exc, *, error_reas
             "correlation_id": correlation_id,
             "error": SAFE_ERROR_MESSAGE,
         })
-        if error_reason in PROFIT_NOMENCLATURE_ERROR_REASONS:
+        if error_reason in STAGE_ERROR_REASONS.get(stage, frozenset()):
             result["error_reason"] = error_reason
         summary[report_type] = result
         run.result_summary = summary
