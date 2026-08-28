@@ -693,6 +693,102 @@ class UnifiedSyncTests(TestCase):
                 self.assertIsNone(failed.lease_token)
                 self.assertFalse(OneCImportBatch.objects.exists())
 
+    def test_profit_customer_lookup_odata_errors_have_safe_allowlisted_reasons(self):
+        cases = (
+            ("http_error", "OData HTTP error 502 https://example.invalid/?guid=hidden"),
+            ("request_failed", "OData request failed https://example.invalid/?query=hidden"),
+            ("page_limit", "1C reference lookups exceeded the page limit"),
+            ("unexpected_rows", "1C reference lookup returned unexpected rows payload=hidden"),
+            ("invalid_reference_row", "1C reference row must be an object guid=hidden"),
+            ("deleted_reference", "1C reference is deleted or has an invalid deletion mark"),
+            ("missing_description", "1C reference has no display description"),
+            ("reference_missing", "1C reference is missing or unavailable"),
+            ("unexpected", "unrecognised OData reference failure token=hidden"),
+        )
+        for reason, raw_message in cases:
+            with self.subTest(reason=reason):
+                active, _ = self.active_profit()
+                run, _ = start_unified_sync(
+                    self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1)
+                )
+
+                def read_reference_map(_config, kind, _guids, **_kwargs):
+                    if kind == "customer":
+                        raise ODataPreviewError(raw_message)
+                    return {}
+
+                with patch(
+                    "pool_service.finance_imports.odata_unified_sync.read_profit_rows",
+                    return_value=([self._raw_profit_row()], 1),
+                ), patch(
+                    "pool_service.finance_imports.odata_unified_sync._read_reference_map",
+                    side_effect=read_reference_map,
+                ):
+                    failed = step_unified_sync(
+                        run.id, self.user, [REPORT_PROFIT], 0, config=config()
+                    )
+
+                item = failed.result_summary[REPORT_PROFIT]
+                self.assertEqual(item["error_stage"], "profit_customer_lookup")
+                self.assertEqual(item["error_code"], "profit_customer_lookup_failed")
+                self.assertEqual(item["error_reason"], reason)
+                self.assertNotIn(raw_message, str(item))
+                self.assertNotRegex(str(item), r"https?://|guid=hidden|query=hidden|payload=hidden|token=hidden")
+                self.assertEqual(failed.cursor["index"], 0)
+                self.assertEqual(failed.cursor["version"], 0)
+                self.assertIsNone(failed.lease_token)
+                self.assertFalse(OneCImportBatch.objects.filter(status="previewed").exists())
+                self.assertEqual(OneCReportPeriodState.objects.get().active_batch, active)
+                self.assertEqual([path for path in Path(self.private.name).rglob("*") if path.is_file()], [])
+                self.client.force_login(self.user)
+                response = self.client.get(reverse("finance_onec_import_list"))
+                self.assertNotContains(response, raw_message)
+                self.assertNotContains(response, reason)
+                self.assertNotRegex(
+                    response.content.decode(),
+                    r"example\.invalid|guid=hidden|query=hidden|payload=hidden|token=hidden",
+                )
+                OneCReportPeriodState.objects.all().delete()
+                active.delete()
+
+    def test_profit_customer_lookup_runtime_error_has_no_persisted_reason(self):
+        active, _ = self.active_profit()
+        run, _ = start_unified_sync(
+            self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1)
+        )
+        raw_message = "https://secret.example/?Authorization=secret&guid=hidden"
+
+        def read_reference_map(_config, kind, _guids, **_kwargs):
+            if kind == "customer":
+                raise RuntimeError(raw_message)
+            return {}
+
+        with patch(
+            "pool_service.finance_imports.odata_unified_sync.read_profit_rows",
+            return_value=([self._raw_profit_row()], 1),
+        ), patch(
+            "pool_service.finance_imports.odata_unified_sync._read_reference_map",
+            side_effect=read_reference_map,
+        ):
+            failed = step_unified_sync(run.id, self.user, [REPORT_PROFIT], 0, config=config())
+
+        item = failed.result_summary[REPORT_PROFIT]
+        self.assertEqual(item["error_stage"], "profit_customer_lookup")
+        self.assertEqual(item["error_code"], "profit_customer_lookup_failed")
+        self.assertNotIn("error_reason", item)
+        self.assertNotIn(raw_message, str(item))
+        self.assertNotRegex(str(item), r"https?://|Authorization|secret|guid=hidden")
+        self.assertEqual(failed.cursor["index"], 0)
+        self.assertEqual(failed.cursor["version"], 0)
+        self.assertIsNone(failed.lease_token)
+        self.assertFalse(OneCImportBatch.objects.filter(status="previewed").exists())
+        self.assertEqual(OneCReportPeriodState.objects.get().active_batch, active)
+        self.assertEqual([path for path in Path(self.private.name).rglob("*") if path.is_file()], [])
+        self.client.force_login(self.user)
+        response = self.client.get(reverse("finance_onec_import_list"))
+        self.assertNotContains(response, raw_message)
+        self.assertNotRegex(response.content.decode(), r"secret\.example|Authorization|secret|guid=hidden")
+
     def test_profit_nomenclature_lookup_odata_errors_have_safe_allowlisted_reasons(self):
         active, _ = self.active_profit()
         cases = (
@@ -890,7 +986,10 @@ class UnifiedSyncTests(TestCase):
                 item = failed.result_summary[REPORT_PROFIT]
                 self.assertEqual(item["error_stage"], stage)
                 self.assertEqual(item["error_code"], error_code)
-                self.assertNotIn("error_reason", item)
+                if deleted_kind == "customer":
+                    self.assertEqual(item["error_reason"], "deleted_reference")
+                else:
+                    self.assertNotIn("error_reason", item)
                 self.assertEqual(failed.cursor["index"], 0)
                 self.assertEqual(failed.cursor["version"], 0)
                 self.assertIsNone(failed.lease_token)
