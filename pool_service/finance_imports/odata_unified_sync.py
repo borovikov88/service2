@@ -398,6 +398,8 @@ def _collect_profit_chunk(start, end, *, config, opener):
             lookup_kwargs = {"opener": opener, "page_budget": budget}
             if kind == "nomenclature":
                 lookup_kwargs["allow_deleted_nomenclature"] = True
+            elif kind == "customer":
+                lookup_kwargs["allow_deleted_customer"] = True
             references[kind] = _read_reference_map(
                 config,
                 kind,

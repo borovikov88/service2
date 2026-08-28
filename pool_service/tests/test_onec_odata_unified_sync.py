@@ -902,6 +902,39 @@ class UnifiedSyncTests(TestCase):
         self.assertFalse(OneCReportPeriodState.objects.exists())
         self.assertTrue(draft.stored_file.storage.exists(draft.stored_file.name))
 
+    def test_unified_sync_allows_deleted_customer_with_valid_historical_data(self):
+        run, _ = start_unified_sync(
+            self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1)
+        )
+        opener = FakeOpener(
+            {"value": [self._profit_odata_row()]},
+            *self._profit_references(
+                nomenclature=self._reference_payload(
+                    "33333333-3333-3333-3333-333333333333",
+                    "Товар",
+                    article="A-1",
+                    nomenclature_type="Запас",
+                ),
+                customer=self._reference_payload(
+                    "44444444-4444-4444-4444-444444444444",
+                    "Исторический покупатель",
+                    deletion_mark=True,
+                ),
+            ),
+        )
+
+        completed = step_unified_sync(
+            run.id, self.user, [REPORT_PROFIT], 0, config=config(), opener=opener
+        )
+
+        draft = OneCImportBatch.objects.get(status=OneCImportBatch.STATUS_PREVIEWED)
+        self.assertEqual(completed.status, OneCODataSyncRun.STATUS_COMPLETED)
+        self.assertEqual(draft.rows_detected, 1)
+        self.assertEqual(draft.metadata["monthly"][0]["row_count"], 1)
+        self.assertEqual(OneCMonthlyProfit.objects.count(), 0)
+        self.assertFalse(OneCReportPeriodState.objects.exists())
+        self.assertTrue(draft.stored_file.storage.exists(draft.stored_file.name))
+
     def test_unified_sync_rejects_non_boolean_deleted_nomenclature_marks(self):
         for deletion_mark in ("true", None):
             with self.subTest(deletion_mark=deletion_mark):
@@ -938,13 +971,48 @@ class UnifiedSyncTests(TestCase):
                 OneCReportPeriodState.objects.all().delete()
                 active.delete()
 
-    def test_deleted_customer_and_responsible_stay_strict_in_unified_sync(self):
+    def test_unified_sync_rejects_non_boolean_deleted_customer_marks(self):
+        for deletion_mark in ("true", None):
+            with self.subTest(deletion_mark=deletion_mark):
+                active, _ = self.active_profit()
+                run, _ = start_unified_sync(
+                    self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1)
+                )
+                opener = FakeOpener(
+                    {"value": [self._profit_odata_row()]},
+                    *self._profit_references(
+                        nomenclature=self._reference_payload(
+                            "33333333-3333-3333-3333-333333333333",
+                            "Товар",
+                            article="A-1",
+                            nomenclature_type="Запас",
+                        ),
+                        customer=self._reference_payload(
+                            "44444444-4444-4444-4444-444444444444",
+                            "Исторический покупатель",
+                            deletion_mark=deletion_mark,
+                        ),
+                    ),
+                )
+
+                failed = step_unified_sync(
+                    run.id, self.user, [REPORT_PROFIT], 0, config=config(), opener=opener
+                )
+
+                item = failed.result_summary[REPORT_PROFIT]
+                self.assertEqual(item["error_stage"], "profit_customer_lookup")
+                self.assertEqual(item["error_reason"], "deleted_reference")
+                self.assertEqual(failed.cursor["index"], 0)
+                self.assertEqual(failed.cursor["version"], 0)
+                self.assertIsNone(failed.lease_token)
+                self.assertFalse(OneCImportBatch.objects.filter(status="previewed").exists())
+                self.assertEqual(OneCReportPeriodState.objects.get().active_batch, active)
+                self.assertEqual([path for path in Path(self.private.name).rglob("*") if path.is_file()], [])
+                OneCReportPeriodState.objects.all().delete()
+                active.delete()
+
+    def test_deleted_responsible_stays_strict_in_unified_sync(self):
         cases = (
-            (
-                "customer",
-                "profit_customer_lookup",
-                "profit_customer_lookup_failed",
-            ),
             (
                 "responsible",
                 "profit_responsible_lookup",
@@ -986,10 +1054,51 @@ class UnifiedSyncTests(TestCase):
                 item = failed.result_summary[REPORT_PROFIT]
                 self.assertEqual(item["error_stage"], stage)
                 self.assertEqual(item["error_code"], error_code)
-                if deleted_kind == "customer":
-                    self.assertEqual(item["error_reason"], "deleted_reference")
-                else:
-                    self.assertNotIn("error_reason", item)
+                self.assertNotIn("error_reason", item)
+                self.assertEqual(failed.cursor["index"], 0)
+                self.assertEqual(failed.cursor["version"], 0)
+                self.assertIsNone(failed.lease_token)
+                self.assertFalse(OneCImportBatch.objects.filter(status="previewed").exists())
+                self.assertEqual(OneCReportPeriodState.objects.get().active_batch, active)
+                self.assertEqual([path for path in Path(self.private.name).rglob("*") if path.is_file()], [])
+                OneCReportPeriodState.objects.all().delete()
+                active.delete()
+
+    def test_deleted_customer_still_requires_a_valid_historical_description(self):
+        cases = (
+            ("", "empty description"),
+            ("99999999-9999-9999-9999-999999999999", "GUID-like description"),
+        )
+        for description, label in cases:
+            with self.subTest(label=label):
+                active, _ = self.active_profit()
+                run, _ = start_unified_sync(
+                    self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1)
+                )
+                opener = FakeOpener(
+                    {"value": [self._profit_odata_row()]},
+                    *self._profit_references(
+                        nomenclature=self._reference_payload(
+                            "33333333-3333-3333-3333-333333333333",
+                            "Товар",
+                            article="A-1",
+                            nomenclature_type="Запас",
+                        ),
+                        customer=self._reference_payload(
+                            "44444444-4444-4444-4444-444444444444",
+                            description,
+                            deletion_mark=True,
+                        ),
+                    ),
+                )
+
+                failed = step_unified_sync(
+                    run.id, self.user, [REPORT_PROFIT], 0, config=config(), opener=opener
+                )
+
+                item = failed.result_summary[REPORT_PROFIT]
+                self.assertEqual(item["error_stage"], "profit_customer_lookup")
+                self.assertEqual(item["error_reason"], "missing_description")
                 self.assertEqual(failed.cursor["index"], 0)
                 self.assertEqual(failed.cursor["version"], 0)
                 self.assertIsNone(failed.lease_token)
