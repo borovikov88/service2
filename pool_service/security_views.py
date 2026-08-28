@@ -34,6 +34,7 @@ from .security import (
     verify_security_pin,
 )
 from .security_forms import SecurityPinDisableForm, SecurityPinForm, SecurityUnlockForm
+from .services.finance import automatic_lock_is_disabled
 from .webauthn_utils import (
     SESSION_WEBAUTHN_AUTHENTICATION_CHALLENGE,
     SESSION_WEBAUTHN_REGISTRATION_CHALLENGE,
@@ -145,6 +146,10 @@ def security_lock(request):
             return JsonResponse({"locked": False})
         return redirect("profile")
     next_url = request.POST.get("next") or request.META.get("HTTP_REFERER") or "/"
+    if request.POST.get("automatic") == "1" and automatic_lock_is_disabled(request.user):
+        if request.headers.get("x-requested-with") == "XMLHttpRequest":
+            return JsonResponse({"locked": False, "automatic_lock_disabled": True})
+        return redirect(next_url)
     lock_session(request, next_url=next_url)
     target_url = unlock_url(next_url)
     if request.headers.get("x-requested-with") == "XMLHttpRequest":

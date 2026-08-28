@@ -403,33 +403,30 @@
         status.classList.toggle("text-success", !isError && !!message);
       }
 
-      async function runPasskeyUnlock(isAutomatic) {
+      async function runPasskeyUnlock() {
         if (running) return;
         if (!window.RovikWebAuthn?.isSupported()) {
-          if (!isAutomatic) {
-            button.disabled = true;
-            setStatus("Браузер не поддерживает passkey/биометрию.", true);
-          }
+          button.disabled = true;
+          setStatus("Браузер не поддерживает passkey/биометрию.", true);
           return;
         }
 
         running = true;
-        if (!isAutomatic) window.setButtonLoading?.(button);
-        setStatus(isAutomatic ? "" : "Подтвердите вход на устройстве...");
+        window.setButtonLoading?.(button);
+        setStatus("Подтвердите вход на устройстве...");
         try {
           const result = await window.RovikWebAuthn.authenticate({ next: nextUrl });
           window.location.assign(result.redirect_url || nextUrl || "/");
         } catch (error) {
           const message = error.message || "Не удалось разблокировать.";
-          setStatus(isAutomatic ? "" : message, !isAutomatic);
-          if (!isAutomatic) window.resetButtonLoading?.(button);
+          setStatus(message, true);
+          window.resetButtonLoading?.(button);
         } finally {
           running = false;
         }
       }
 
-      button.addEventListener("click", () => runPasskeyUnlock(false));
-      window.setTimeout(() => runPasskeyUnlock(true), 450);
+      button.addEventListener("click", runPasskeyUnlock);
     }
 
     function initUnlock() {

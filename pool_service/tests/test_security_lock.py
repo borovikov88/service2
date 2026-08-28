@@ -4,11 +4,12 @@ from unittest.mock import patch
 
 from django.contrib.auth.hashers import check_password
 from django.contrib.auth.models import User
-from django.test import TestCase, override_settings
+from django.test import Client, TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 from webauthn.helpers import bytes_to_base64url
 
-from pool_service.models import Profile, WebAuthnCredential
+from pool_service.models import Organization, OrganizationAccess, Profile, WebAuthnCredential
 from pool_service.security import (
     SESSION_FRESH_PASSWORD_LOGIN_AT_KEY,
     SESSION_LAST_ACTIVITY_KEY,
@@ -16,6 +17,7 @@ from pool_service.security import (
     set_security_pin,
     timestamp_now,
 )
+from pool_service.services.finance import can_configure_automatic_lock
 from pool_service.webauthn_utils import SESSION_WEBAUTHN_AUTHENTICATION_CHALLENGE
 from pool_service.webauthn_utils import credential_id_hash
 
@@ -30,6 +32,18 @@ class SessionSecurityTests(TestCase):
             last_name="Петров",
         )
         self.profile, _ = Profile.objects.get_or_create(user=self.user)
+
+    def grant_automatic_lock_control(self, role="accountant"):
+        organization = Organization.objects.create(
+            name=f"Security organization {role}",
+            city="Барнаул",
+            trial_started_at=timezone.now(),
+        )
+        OrganizationAccess.objects.create(
+            user=self.user,
+            organization=organization,
+            role=role,
+        )
 
     def test_pin_can_be_set_from_profile(self):
         self.client.force_login(self.user)
@@ -61,6 +75,138 @@ class SessionSecurityTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertIn(reverse("security_unlock"), response["Location"])
         self.assertIn("next=/profile/", response["Location"])
+
+    def test_eligible_user_can_change_automatic_lock_preference(self):
+        self.grant_automatic_lock_control()
+        self.client.force_login(self.user)
+
+        response = self.client.get(reverse("profile"))
+
+        self.assertContains(response, "Отключить автоматическую блокировку")
+        response = self.client.post(
+            reverse("profile"),
+            {
+                "automatic_lock_settings": "1",
+                "automatic_lock_disabled": "1",
+            },
+        )
+        self.assertRedirects(response, reverse("profile"))
+        self.profile.refresh_from_db()
+        self.assertTrue(self.profile.automatic_lock_disabled)
+
+        response = self.client.post(reverse("profile"), {"automatic_lock_settings": "1"})
+        self.assertRedirects(response, reverse("profile"))
+        self.profile.refresh_from_db()
+        self.assertFalse(self.profile.automatic_lock_disabled)
+
+    def test_only_management_finance_roles_can_configure_automatic_lock(self):
+        for role in ("owner", "admin", "accountant"):
+            self.grant_automatic_lock_control(role=role)
+        self.assertTrue(can_configure_automatic_lock(self.user))
+
+        manager = User.objects.create_user(username="security-manager", password="pass")
+        organization = Organization.objects.create(name="Security manager organization")
+        OrganizationAccess.objects.create(user=manager, organization=organization, role="manager")
+        self.assertFalse(can_configure_automatic_lock(manager))
+
+        superuser = User.objects.create_superuser(username="security-superuser", password="pass")
+        self.assertTrue(can_configure_automatic_lock(superuser))
+
+    def test_ineligible_user_cannot_view_or_change_automatic_lock_preference(self):
+        self.grant_automatic_lock_control(role="manager")
+        self.client.force_login(self.user)
+
+        response = self.client.get(reverse("profile"))
+
+        self.assertNotContains(response, "Отключить автоматическую блокировку")
+        response = self.client.post(
+            reverse("profile"),
+            {
+                "automatic_lock_settings": "1",
+                "automatic_lock_disabled": "1",
+            },
+        )
+        self.assertEqual(response.status_code, 403)
+        self.profile.refresh_from_db()
+        self.assertFalse(self.profile.automatic_lock_disabled)
+
+    def test_automatic_lock_preference_skips_idle_middleware_and_client_timer(self):
+        self.grant_automatic_lock_control()
+        self.profile.automatic_lock_disabled = True
+        self.profile.save(update_fields=["automatic_lock_disabled"])
+        set_security_pin(self.profile, "1234")
+        self.client.force_login(self.user)
+        session = self.client.session
+        session[SESSION_LAST_ACTIVITY_KEY] = timestamp_now() - 301
+        session[SESSION_LOCKED_KEY] = False
+        session.save()
+
+        response = self.client.get(reverse("profile"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(self.client.session.get(SESSION_LOCKED_KEY))
+        self.assertNotContains(response, "const timeoutMs =")
+
+        another_session = Client()
+        another_session.force_login(self.user)
+        session = another_session.session
+        session[SESSION_LAST_ACTIVITY_KEY] = timestamp_now() - 301
+        session[SESSION_LOCKED_KEY] = False
+        session.save()
+
+        response = another_session.get(reverse("profile"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(another_session.session.get(SESSION_LOCKED_KEY))
+
+    def test_eligible_user_still_auto_locks_when_preference_is_disabled(self):
+        self.grant_automatic_lock_control(role="accountant")
+        self.profile.automatic_lock_disabled = False
+        self.profile.save(update_fields=["automatic_lock_disabled"])
+        set_security_pin(self.profile, "1234")
+        self.client.force_login(self.user)
+        session = self.client.session
+        session[SESSION_LAST_ACTIVITY_KEY] = timestamp_now() - 301
+        session[SESSION_LOCKED_KEY] = False
+        session.save()
+
+        response = self.client.get(reverse("profile"))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(reverse("security_unlock"), response["Location"])
+        self.assertTrue(self.client.session.get(SESSION_LOCKED_KEY))
+
+    def test_automatic_lock_endpoint_skips_lock_for_eligible_disabled_user(self):
+        self.grant_automatic_lock_control()
+        self.profile.automatic_lock_disabled = True
+        self.profile.save(update_fields=["automatic_lock_disabled"])
+        set_security_pin(self.profile, "1234")
+        self.client.force_login(self.user)
+
+        response = self.client.post(
+            reverse("security_lock"),
+            {"next": reverse("profile"), "automatic": "1"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["locked"])
+        self.assertTrue(response.json()["automatic_lock_disabled"])
+        self.assertFalse(self.client.session.get(SESSION_LOCKED_KEY))
+
+    def test_automatic_lock_endpoint_locks_session_by_default(self):
+        set_security_pin(self.profile, "1234")
+        self.client.force_login(self.user)
+
+        response = self.client.post(
+            reverse("security_lock"),
+            {"next": reverse("profile"), "automatic": "1"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["locked"])
+        self.assertTrue(self.client.session.get(SESSION_LOCKED_KEY))
 
     def test_correct_pin_unlocks_session(self):
         set_security_pin(self.profile, "1234")
@@ -175,6 +321,9 @@ class SessionSecurityTests(TestCase):
         self.assertFalse(self.client.session.get(SESSION_LOCKED_KEY))
 
     def test_manual_lock_endpoint_locks_session(self):
+        self.grant_automatic_lock_control()
+        self.profile.automatic_lock_disabled = True
+        self.profile.save(update_fields=["automatic_lock_disabled"])
         set_security_pin(self.profile, "1234")
         self.client.force_login(self.user)
 
@@ -187,6 +336,24 @@ class SessionSecurityTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["locked"])
         self.assertTrue(self.client.session.get(SESSION_LOCKED_KEY))
+
+    def test_unlock_page_only_starts_passkey_after_explicit_click(self):
+        WebAuthnCredential.objects.create(
+            user=self.user,
+            credential_id=bytes_to_base64url(b"unlock-credential-id"),
+            credential_id_hash=credential_id_hash(bytes_to_base64url(b"unlock-credential-id")),
+            public_key=b"public-key",
+        )
+        self.client.force_login(self.user)
+        session = self.client.session
+        session[SESSION_LOCKED_KEY] = True
+        session.save()
+
+        response = self.client.get(reverse("security_unlock"))
+
+        self.assertContains(response, 'button.addEventListener("click", runPasskeyUnlock);')
+        self.assertNotContains(response, "runPasskeyUnlock(true)")
+        self.assertNotContains(response, "window.setTimeout(() => runPasskeyUnlock")
 
     def test_locked_session_cannot_change_pin_without_unlock(self):
         set_security_pin(self.profile, "1234")

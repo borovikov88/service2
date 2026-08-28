@@ -100,6 +100,7 @@ class Profile(models.Model):
     security_pin_hash = models.CharField(max_length=128, blank=True)
     security_pin_failed_attempts = models.PositiveSmallIntegerField(default=0)
     security_pin_changed_at = models.DateTimeField(null=True, blank=True)
+    automatic_lock_disabled = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.user.username}'s profile"

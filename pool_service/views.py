@@ -64,7 +64,7 @@ from django.conf import settings
 
 from django.contrib.sitemaps.views import sitemap as sitemap_view
 
-from pool_service.services.finance import format_money
+from pool_service.services.finance import can_configure_automatic_lock, format_money
 from pool_service.security import mark_password_login_fresh
 from pool_service.pool_details_forms import PoolServiceDetailsForm
 
@@ -8983,6 +8983,7 @@ def profile_view(request):
     """Профиль текущего пользователя с основными контактами и правами доступа."""
 
     profile, _ = Profile.objects.get_or_create(user=request.user)
+    can_configure_auto_lock = can_configure_automatic_lock(request.user)
 
     org_accesses = OrganizationAccess.objects.filter(user=request.user).select_related("organization")
 
@@ -8995,6 +8996,14 @@ def profile_view(request):
     )
 
 
+
+    if request.method == "POST" and request.POST.get("automatic_lock_settings") == "1":
+        if not can_configure_auto_lock:
+            return HttpResponseForbidden()
+        profile.automatic_lock_disabled = request.POST.get("automatic_lock_disabled") == "1"
+        profile.save(update_fields=["automatic_lock_disabled"])
+        messages.success(request, "Настройка автоматической блокировки сохранена.")
+        return redirect("profile")
 
     if request.method == "POST" and request.POST.get("profile_settings") == "1":
         timezone_name = (request.POST.get("timezone") or "").strip()
@@ -9156,6 +9165,10 @@ def profile_view(request):
         "timezone_choices": PROFILE_TIMEZONE_CHOICES,
         "security_pin_enabled": profile.has_security_pin,
         "security_pin_changed_at": profile.security_pin_changed_at,
+        "can_configure_automatic_lock": can_configure_auto_lock,
+        "automatic_lock_disabled": (
+            profile.automatic_lock_disabled if can_configure_auto_lock else False
+        ),
         "webauthn_credentials": request.user.webauthn_credentials.all(),
 
     }

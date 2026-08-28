@@ -2820,7 +2820,7 @@
       return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
     }
 
-    {% if security_quick_unlock_enabled and request.resolver_match.url_name != 'security_unlock' %}
+    {% if security_quick_unlock_enabled and security_automatic_lock_enabled and request.resolver_match.url_name != 'security_unlock' %}
     (function () {
       const timeoutMs = Math.max(30, Number("{{ security_idle_timeout_seconds|default:300 }}") || 300) * 1000;
       const lockUrl = "{% url 'security_lock' %}";
@@ -2835,6 +2835,7 @@
         locking = true;
         const body = new URLSearchParams();
         body.set("next", nextPath());
+        body.set("automatic", "1");
         try {
           const response = await fetch(lockUrl, {
             method: "POST",
