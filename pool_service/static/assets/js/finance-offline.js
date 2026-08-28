@@ -2,6 +2,7 @@
   const DATABASE_NAME = "rovik-finance";
   const DATABASE_VERSION = 1;
   const STORE_NAME = "expenseQueue";
+  let queueProcessingPromise = null;
 
   function openDatabase() {
     return new Promise(function (resolve, reject) {
@@ -137,7 +138,7 @@
     return formData;
   }
 
-  async function processQueue() {
+  async function processQueueOnce() {
     if (!("indexedDB" in window) || !navigator.onLine) {
       await updateStatus();
       return;
@@ -176,15 +177,47 @@
     await updateStatus();
   }
 
-  async function prepareForm(form) {
+  function processQueue() {
+    if (queueProcessingPromise) return queueProcessingPromise;
+    queueProcessingPromise = processQueueOnce().finally(function () {
+      queueProcessingPromise = null;
+    });
+    return queueProcessingPromise;
+  }
+
+  function prepareForm(form) {
     const requestInput = form.querySelector("[name='request_id']");
     const currentUserId = document.body.dataset.currentUserId || "";
-    const queued = (await queueItems()).filter(function (item) { return item.userId === currentUserId; });
-    if (!requestInput.value || queued.some(function (item) { return item.id === requestInput.value; })) {
-      requestInput.value = newRequestId();
+    const submitButton = form.querySelector("[data-finance-submit]");
+    let offlineSaved = false;
+    let offlineSavePromise = null;
+
+    function markOfflineSaved() {
+      offlineSaved = true;
+      form.dataset.financeOfflineSaved = "1";
+      if (submitButton) submitButton.disabled = true;
     }
+
+    if (!requestInput.value) requestInput.value = newRequestId();
+    queueItems().then(function (queued) {
+      const alreadyQueued = queued.some(function (item) {
+        return item.userId === currentUserId && item.id === requestInput.value;
+      });
+      if (alreadyQueued) {
+        markOfflineSaved();
+        showStatus("Расход уже сохранён на устройстве и ожидает синхронизации.", "info");
+      }
+    }).catch(function () {
+      // IndexedDB errors are handled when the user explicitly submits offline.
+    });
+
     form.addEventListener("submit", async function (event) {
       if (event.defaultPrevented) return;
+      if (offlineSaved || offlineSavePromise) {
+        event.preventDefault();
+        showStatus("Расход уже сохранён на устройстве и ожидает синхронизации.", "info");
+        return;
+      }
       if (navigator.onLine) return;
       event.preventDefault();
       if (!form.reportValidity()) return;
@@ -199,16 +232,19 @@
         showStatus("Этот браузер не поддерживает офлайн-сохранение файлов.", "danger");
         return;
       }
-      const submitButton = form.querySelector("[data-finance-submit]");
       if (submitButton) submitButton.disabled = true;
       try {
-        await saveItem(await serializeForm(form));
-        showStatus("Расход сохранён на телефоне и отправится при появлении интернета.", "success");
-        requestInput.value = newRequestId();
+        offlineSavePromise = (async function () {
+          await saveItem(await serializeForm(form));
+        })();
+        await offlineSavePromise;
+        markOfflineSaved();
+        showStatus("Расход уже сохранён на устройстве и ожидает синхронизации.", "success");
       } catch (error) {
         showStatus("Не удалось сохранить расход офлайн. Освободите место на устройстве и попробуйте снова.", "danger");
       } finally {
-        if (submitButton) submitButton.disabled = false;
+        offlineSavePromise = null;
+        if (!offlineSaved && submitButton) submitButton.disabled = false;
       }
       await updateStatus();
     });

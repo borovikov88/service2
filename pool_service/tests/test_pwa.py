@@ -1,5 +1,7 @@
 import json
+from pathlib import Path
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -41,3 +43,21 @@ class PwaTests(TestCase):
         self.assertContains(response, 'id="pwa-install-profile-btn"')
         self.assertContains(response, "window.RovikPWA")
         self.assertNotContains(response, "getStoredInstalled")
+
+    def test_finance_offline_queue_prevents_duplicate_submit_and_parallel_sync(self):
+        source = (Path(settings.BASE_DIR) / "pool_service/static/assets/js/finance-offline.js").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("let queueProcessingPromise = null;", source)
+        self.assertIn("if (queueProcessingPromise) return queueProcessingPromise;", source)
+        self.assertIn("queueProcessingPromise = processQueueOnce().finally", source)
+        self.assertIn("if (!requestInput.value) requestInput.value = newRequestId();", source)
+        self.assertIn("item.userId === currentUserId && item.id === requestInput.value", source)
+        self.assertIn("form.dataset.financeOfflineSaved = \"1\";", source)
+        self.assertIn("if (offlineSaved || offlineSavePromise)", source)
+        self.assertIn("if (!offlineSaved && submitButton) submitButton.disabled = false;", source)
+
+        saved_item = source.index("await saveItem")
+        update_status = source.index("await updateStatus();", saved_item)
+        self.assertNotIn("newRequestId()", source[saved_item:update_status])
