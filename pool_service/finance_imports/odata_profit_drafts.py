@@ -139,7 +139,9 @@ def _reference_url(config, entity_set, fields, guids):
     )
 
 
-def _read_reference_map(config, kind, guids, *, opener, page_budget):
+def _read_reference_map(
+    config, kind, guids, *, opener, page_budget, allow_deleted_nomenclature=False,
+):
     entity_set, fields = CATALOGS[kind]
     expected = set(guids)
     found = {}
@@ -159,7 +161,11 @@ def _read_reference_map(config, kind, guids, *, opener, page_budget):
                 key = normalize_guid(raw.get("Ref_Key"), field="Ref_Key")
                 if key not in batch_guids or key in found:
                     raise ODataPreviewError("1C reference lookup returned an unexpected identity")
-                if raw.get("DeletionMark") is not False:
+                if raw.get("DeletionMark") is not False and not (
+                    kind == "nomenclature"
+                    and allow_deleted_nomenclature
+                    and raw.get("DeletionMark") is True
+                ):
                     raise ODataPreviewError("1C reference is deleted or has an invalid deletion mark")
                 description = raw.get("Description")
                 if not isinstance(description, str) or not description.strip():
