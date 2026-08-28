@@ -35,6 +35,7 @@ from pool_service.models import (
     OrganizationAccess,
     cashflow_source_identity,
 )
+from pool_service.tests.test_onec_odata_profit_preview import FakeOpener
 
 
 ORG_GUID = "11111111-1111-1111-1111-111111111111"
@@ -527,6 +528,44 @@ class UnifiedSyncTests(TestCase):
             responsible_guid="66666666-6666-6666-6666-666666666666",
         )
 
+    def _profit_odata_row(self):
+        return {
+            "Recorder": RECORDER,
+            "LineNumber": 1,
+            "Period": "2025-05-15T10:00:00+03:00",
+            "Active": True,
+            "Организация_Key": ORG_GUID,
+            "Номенклатура_Key": "33333333-3333-3333-3333-333333333333",
+            "Контрагент_Key": "44444444-4444-4444-4444-444444444444",
+            "Ответственный_Key": "66666666-6666-6666-6666-666666666666",
+            "Документ": "Реализация 1",
+            "Количество": "2",
+            "Сумма": "100.00",
+            "СуммаНДС": "10.00",
+            "Себестоимость": "40.00",
+        }
+
+    def _reference_payload(
+        self, guid, description, *, deletion_mark=False, nomenclature_type=None, article=None,
+    ):
+        row = {"Ref_Key": guid, "Description": description, "DeletionMark": deletion_mark}
+        if article is not None:
+            row["Артикул"] = article
+        if nomenclature_type is not None:
+            row["ТипНоменклатуры"] = nomenclature_type
+        return {"value": [row]}
+
+    def _profit_references(self, *, nomenclature, customer=None, responsible=None):
+        return [
+            nomenclature,
+            customer or self._reference_payload(
+                "44444444-4444-4444-4444-444444444444", "Покупатель"
+            ),
+            responsible or self._reference_payload(
+                "66666666-6666-6666-6666-666666666666", "Ответственный"
+            ),
+        ]
+
     def _failed_profit_stage(self, *, read=None, lookup=None, normalize=None):
         run, _ = start_unified_sync(
             self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1)
@@ -738,6 +777,187 @@ class UnifiedSyncTests(TestCase):
         response = self.client.get(reverse("finance_onec_import_list"))
         self.assertNotContains(response, raw_message)
         self.assertNotRegex(response.content.decode(), r"secret\.example|Authorization|secret|guid=hidden")
+
+    def test_unified_sync_allows_deleted_nomenclature_with_valid_historical_data(self):
+        run, _ = start_unified_sync(
+            self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1)
+        )
+        opener = FakeOpener(
+            {"value": [self._profit_odata_row()]},
+            *self._profit_references(
+                nomenclature=self._reference_payload(
+                    "33333333-3333-3333-3333-333333333333",
+                    "Исторический товар",
+                    deletion_mark=True,
+                    article="ARCH-1",
+                    nomenclature_type="Запас",
+                ),
+            ),
+        )
+
+        completed = step_unified_sync(
+            run.id, self.user, [REPORT_PROFIT], 0, config=config(), opener=opener
+        )
+
+        draft = OneCImportBatch.objects.get(status=OneCImportBatch.STATUS_PREVIEWED)
+        self.assertEqual(completed.status, OneCODataSyncRun.STATUS_COMPLETED)
+        self.assertEqual(draft.rows_detected, 1)
+        self.assertEqual(draft.metadata["monthly"][0]["row_count"], 1)
+        self.assertFalse(OneCReportPeriodState.objects.exists())
+        self.assertTrue(draft.stored_file.storage.exists(draft.stored_file.name))
+
+    def test_unified_sync_rejects_non_boolean_deleted_nomenclature_marks(self):
+        for deletion_mark in ("true", None):
+            with self.subTest(deletion_mark=deletion_mark):
+                active, _ = self.active_profit()
+                run, _ = start_unified_sync(
+                    self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1)
+                )
+                opener = FakeOpener(
+                    {"value": [self._profit_odata_row()]},
+                    *self._profit_references(
+                        nomenclature=self._reference_payload(
+                            "33333333-3333-3333-3333-333333333333",
+                            "Исторический товар",
+                            deletion_mark=deletion_mark,
+                            article="ARCH-1",
+                            nomenclature_type="Запас",
+                        ),
+                    ),
+                )
+
+                failed = step_unified_sync(
+                    run.id, self.user, [REPORT_PROFIT], 0, config=config(), opener=opener
+                )
+
+                item = failed.result_summary[REPORT_PROFIT]
+                self.assertEqual(item["error_stage"], "profit_nomenclature_lookup")
+                self.assertEqual(item["error_reason"], "deleted_reference")
+                self.assertEqual(failed.cursor["index"], 0)
+                self.assertEqual(failed.cursor["version"], 0)
+                self.assertIsNone(failed.lease_token)
+                self.assertFalse(OneCImportBatch.objects.filter(status="previewed").exists())
+                self.assertEqual(OneCReportPeriodState.objects.get().active_batch, active)
+                self.assertEqual([path for path in Path(self.private.name).rglob("*") if path.is_file()], [])
+                OneCReportPeriodState.objects.all().delete()
+                active.delete()
+
+    def test_deleted_customer_and_responsible_stay_strict_in_unified_sync(self):
+        cases = (
+            (
+                "customer",
+                "profit_customer_lookup",
+                "profit_customer_lookup_failed",
+            ),
+            (
+                "responsible",
+                "profit_responsible_lookup",
+                "profit_responsible_lookup_failed",
+            ),
+        )
+        for deleted_kind, stage, error_code in cases:
+            with self.subTest(deleted_kind=deleted_kind):
+                active, _ = self.active_profit()
+                run, _ = start_unified_sync(
+                    self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1)
+                )
+                kwargs = {
+                    "nomenclature": self._reference_payload(
+                        "33333333-3333-3333-3333-333333333333",
+                        "Товар",
+                        article="A-1",
+                        nomenclature_type="Запас",
+                    ),
+                }
+                kwargs[deleted_kind] = self._reference_payload(
+                    (
+                        "44444444-4444-4444-4444-444444444444"
+                        if deleted_kind == "customer"
+                        else "66666666-6666-6666-6666-666666666666"
+                    ),
+                    "Удалённая ссылка",
+                    deletion_mark=True,
+                )
+                opener = FakeOpener(
+                    {"value": [self._profit_odata_row()]},
+                    *self._profit_references(**kwargs),
+                )
+
+                failed = step_unified_sync(
+                    run.id, self.user, [REPORT_PROFIT], 0, config=config(), opener=opener
+                )
+
+                item = failed.result_summary[REPORT_PROFIT]
+                self.assertEqual(item["error_stage"], stage)
+                self.assertEqual(item["error_code"], error_code)
+                self.assertNotIn("error_reason", item)
+                self.assertEqual(failed.cursor["index"], 0)
+                self.assertEqual(failed.cursor["version"], 0)
+                self.assertIsNone(failed.lease_token)
+                self.assertFalse(OneCImportBatch.objects.filter(status="previewed").exists())
+                self.assertEqual(OneCReportPeriodState.objects.get().active_batch, active)
+                self.assertEqual([path for path in Path(self.private.name).rglob("*") if path.is_file()], [])
+                OneCReportPeriodState.objects.all().delete()
+                active.delete()
+
+    def test_deleted_nomenclature_still_requires_valid_historical_fields(self):
+        cases = (
+            (
+                "missing_description",
+                self._reference_payload(
+                    "33333333-3333-3333-3333-333333333333",
+                    "",
+                    deletion_mark=True,
+                    article="A-1",
+                    nomenclature_type="Запас",
+                ),
+            ),
+            (
+                "invalid_nomenclature_type",
+                self._reference_payload(
+                    "33333333-3333-3333-3333-333333333333",
+                    "Исторический товар",
+                    deletion_mark=True,
+                    article="A-1",
+                ),
+            ),
+            (
+                "invalid_reference_row",
+                self._reference_payload(
+                    "33333333-3333-3333-3333-333333333333",
+                    "Исторический товар",
+                    deletion_mark=True,
+                    article=42,
+                    nomenclature_type="Запас",
+                ),
+            ),
+        )
+        for reason, nomenclature in cases:
+            with self.subTest(reason=reason):
+                active, _ = self.active_profit()
+                run, _ = start_unified_sync(
+                    self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1)
+                )
+                opener = FakeOpener(
+                    {"value": [self._profit_odata_row()]},
+                    *self._profit_references(nomenclature=nomenclature),
+                )
+
+                failed = step_unified_sync(
+                    run.id, self.user, [REPORT_PROFIT], 0, config=config(), opener=opener
+                )
+
+                item = failed.result_summary[REPORT_PROFIT]
+                self.assertEqual(item["error_stage"], "profit_nomenclature_lookup")
+                self.assertEqual(item["error_reason"], reason)
+                self.assertNotIn("Исторический товар", str(item))
+                self.assertEqual(failed.cursor["index"], 0)
+                self.assertIsNone(failed.lease_token)
+                self.assertFalse(OneCImportBatch.objects.filter(status="previewed").exists())
+                self.assertEqual(OneCReportPeriodState.objects.get().active_batch, active)
+                self.assertEqual([path for path in Path(self.private.name).rglob("*") if path.is_file()], [])
+                OneCReportPeriodState.objects.all().delete()
+                active.delete()
 
     def test_cashflow_collection_failures_have_distinct_safe_stages(self):
         raw = SimpleNamespace(article_guid="77777777-7777-7777-7777-777777777777")

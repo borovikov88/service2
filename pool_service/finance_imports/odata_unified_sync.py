@@ -138,7 +138,11 @@ def _profit_nomenclature_error_reason(exc):
         return "page_limit"
     if message.startswith("1C reference lookup returned unexpected"):
         return "unexpected_rows"
-    if message.startswith("1C reference row must be an object") or message.startswith("Ref_Key "):
+    if (
+        message.startswith("1C reference row must be an object")
+        or message.startswith("Ref_Key ")
+        or message.startswith("1C nomenclature article must be a string")
+    ):
         return "invalid_reference_row"
     if message.startswith("1C reference is deleted or has an invalid deletion mark"):
         return "deleted_reference"
@@ -347,8 +351,14 @@ def _collect_profit_chunk(start, end, *, config, opener):
         ("responsible", STAGE_PROFIT_RESPONSIBLE_LOOKUP),
     ):
         try:
+            lookup_kwargs = {"opener": opener, "page_budget": budget}
+            if kind == "nomenclature":
+                lookup_kwargs["allow_deleted_nomenclature"] = True
             references[kind] = _read_reference_map(
-                config, kind, required[kind], opener=opener, page_budget=budget,
+                config,
+                kind,
+                required[kind],
+                **lookup_kwargs,
             )
         except Exception as exc:
             _raise_stage_error(
