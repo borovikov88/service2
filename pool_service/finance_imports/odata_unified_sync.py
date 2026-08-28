@@ -35,7 +35,7 @@ from .odata_cashflow_drafts import (
     _save_snapshot as save_cashflow_snapshot,
     _validate_snapshot as validate_cashflow_snapshot,
 )
-from .odata_profit import NoRedirectHandler, read_profit_rows, validate_config
+from .odata_profit import NoRedirectHandler, ODataPreviewError, read_profit_rows, validate_config
 from .odata_profit_drafts import (
     PARSER_VERSION as PROFIT_PARSER_VERSION,
     SNAPSHOT_SCHEMA as PROFIT_SCHEMA,
@@ -87,6 +87,18 @@ STEP_ERROR_CODES = {
     STAGE_CASHFLOW_REFERENCE_LOOKUP: "cashflow_reference_lookup_failed",
     STAGE_CASHFLOW_NORMALIZATION: "cashflow_normalization_failed",
 }
+PROFIT_NOMENCLATURE_ERROR_REASONS = frozenset({
+    "http_error",
+    "request_failed",
+    "page_limit",
+    "unexpected_rows",
+    "invalid_reference_row",
+    "deleted_reference",
+    "missing_description",
+    "invalid_nomenclature_type",
+    "reference_missing",
+    "unexpected",
+})
 
 
 class UnifiedSyncError(ValidationError):
@@ -100,13 +112,45 @@ class StaleReactivationError(UnifiedSyncError):
 class UnifiedSyncStageError(Exception):
     """Internal wrapper that carries only an allowlisted collection stage."""
 
-    def __init__(self, stage):
+    def __init__(self, stage, *, error_reason=None):
         self.stage = stage
+        self.error_reason = error_reason
         super().__init__(stage)
 
 
-def _raise_stage_error(stage, exc):
-    raise UnifiedSyncStageError(stage) from exc
+def _raise_stage_error(stage, exc, *, error_reason=None):
+    raise UnifiedSyncStageError(stage, error_reason=error_reason) from exc
+
+
+def _profit_nomenclature_error_reason(exc):
+    """Return a persisted-safe reason only for controlled reader errors."""
+    if not isinstance(exc, ODataPreviewError):
+        return None
+    message = str(exc)
+    if message.startswith("OData HTTP error "):
+        return "http_error"
+    if message.startswith("OData request failed"):
+        return "request_failed"
+    if message in {
+        "OData pagination exceeded the configured page limit",
+        "1C reference lookups exceeded the page limit",
+    }:
+        return "page_limit"
+    if message.startswith("1C reference lookup returned unexpected"):
+        return "unexpected_rows"
+    if message.startswith("1C reference row must be an object") or message.startswith("Ref_Key "):
+        return "invalid_reference_row"
+    if message.startswith("1C reference is deleted or has an invalid deletion mark"):
+        return "deleted_reference"
+    if message.startswith("1C reference has no display description") or message.startswith(
+        "1C reference description must not be a GUID"
+    ):
+        return "missing_description"
+    if message.startswith("1C nomenclature type is invalid"):
+        return "invalid_nomenclature_type"
+    if message.startswith("1C reference is missing or unavailable"):
+        return "reference_missing"
+    return "unexpected"
 
 
 def _log_step_failure(stage, correlation_id, exc):
@@ -307,7 +351,14 @@ def _collect_profit_chunk(start, end, *, config, opener):
                 config, kind, required[kind], opener=opener, page_budget=budget,
             )
         except Exception as exc:
-            _raise_stage_error(stage, exc)
+            _raise_stage_error(
+                stage,
+                exc,
+                error_reason=(
+                    _profit_nomenclature_error_reason(exc)
+                    if stage == STAGE_PROFIT_NOMENCLATURE_LOOKUP else None
+                ),
+            )
     try:
         return _enrich_rows(rows, references), pages
     except Exception as exc:
@@ -491,7 +542,7 @@ def _claim_step(run_id, user, allowed, expected_cursor):
         return run, token
 
 
-def _safe_step_failure(run_id, token, expected_cursor, stage, exc):
+def _safe_step_failure(run_id, token, expected_cursor, stage, exc, *, error_reason=None):
     """Persist a retryable failure without retaining transport or payload data."""
     if stage not in STEP_ERROR_CODES:
         stage = STAGE_CONFIG
@@ -504,6 +555,7 @@ def _safe_step_failure(run_id, token, expected_cursor, stage, exc):
         summary = dict(run.result_summary)
         report_type = run.lease_report_type
         result = dict(summary[report_type])
+        result.pop("error_reason", None)
         result.update({
             "status": "retryable_error",
             "error_code": STEP_ERROR_CODES[stage],
@@ -511,6 +563,8 @@ def _safe_step_failure(run_id, token, expected_cursor, stage, exc):
             "correlation_id": correlation_id,
             "error": SAFE_ERROR_MESSAGE,
         })
+        if error_reason in PROFIT_NOMENCLATURE_ERROR_REASONS:
+            result["error_reason"] = error_reason
         summary[report_type] = result
         run.result_summary = summary
         run.error_message = SAFE_ERROR_MESSAGE
@@ -568,7 +622,14 @@ def step_unified_sync(run_id, user, allowed_report_types, expected_cursor, *, co
         else:
             rows, pages, warnings = _collect_cashflow_chunk(item["start"], item["end"], config=config, opener=client)
     except UnifiedSyncStageError as exc:
-        return _safe_step_failure(run_id, token, expected_cursor, exc.stage, exc.__cause__ or exc)
+        return _safe_step_failure(
+            run_id,
+            token,
+            expected_cursor,
+            exc.stage,
+            exc.__cause__ or exc,
+            error_reason=exc.error_reason,
+        )
     except Exception as exc:
         stage = STAGE_PROFIT_READ if report_type == REPORT_PROFIT else STAGE_CASHFLOW_READ
         return _safe_step_failure(run_id, token, expected_cursor, stage, exc)
