@@ -119,3 +119,37 @@ class PoolServiceFlowTests(TestCase):
         addresses = {p.address for p in pools}
         self.assertIn("Свой адрес", addresses)
         self.assertNotIn("Чужой адрес", addresses)
+
+    def test_pool_edit_cancel_returns_to_the_edited_pool_without_referer(self):
+        pool = Pool.objects.create(client=self.client_profile, address="Адрес для редактирования", organization=self.org)
+        self.http.login(username="orgadmin", password="pass")
+
+        response = self.http.get(reverse("pool_edit", kwargs={"pool_uuid": pool.uuid}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            f'href="{reverse("pool_detail", kwargs={"pool_uuid": pool.uuid})}" class="btn btn-outline-secondary">Отмена</a>',
+            html=False,
+        )
+
+    def test_pool_create_cancel_still_returns_to_pool_list(self):
+        self.http.login(username="orgadmin", password="pass")
+
+        response = self.http.get(reverse("pool_create"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            f'href="{reverse("pool_list")}" class="btn btn-outline-secondary">Отмена</a>',
+            html=False,
+        )
+
+    def test_client_staff_direct_link_has_return_to_clients_list(self):
+        self.http.login(username="orgadmin", password="pass")
+
+        response = self.http.get(reverse("client_staff", kwargs={"client_id": self.client_profile.id}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, f'href="{reverse("clients_list")}"', html=False)
+        self.assertContains(response, "К клиентам")
