@@ -20,7 +20,7 @@
       <h1 class="h3 fw-bold mb-1">{% if expense %}Изменить расход{% else %}Новый расход{% endif %}</h1>
       <div class="text-muted">Укажите назначение и приложите чек</div>
     </div>
-    <a href="{% if expense %}{% url 'finance_expense_detail' expense.uuid %}{% else %}{% url 'finance_my' %}{% endif %}" class="btn btn-outline-secondary">Назад</a>
+    <a href="{% if expense %}{{ return_url }}{% else %}{% url 'finance_my' %}{% endif %}" class="btn btn-outline-secondary">Назад</a>
   </div>
   {% endif %}
 
@@ -31,6 +31,7 @@
     {{ form.request_id }}
     {{ form.receipt_missing_confirmed }}
     {{ form.client_id }}
+    {% for name, value in return_context_fields %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
     {% if form.source.is_hidden %}{{ form.source }}{% endif %}
     {% if form.employee.is_hidden %}{{ form.employee }}{% endif %}
 
@@ -99,7 +100,7 @@
     {% for error in form.non_field_errors %}<div class="alert alert-danger mt-3 mb-0">{{ error }}</div>{% endfor %}
     <div class="d-flex flex-wrap gap-2 mt-4">
       <button type="submit" class="btn btn-primary" data-finance-submit>Сохранить расход</button>
-      <a href="{% if expense %}{% url 'finance_expense_detail' expense.uuid %}{% else %}{% url 'finance_my' %}{% endif %}" class="btn btn-outline-secondary">Отмена</a>
+      {% if not finance_modal %}<a href="{% if expense %}{{ return_url }}{% else %}{% url 'finance_my' %}{% endif %}" class="btn btn-outline-secondary">Отмена</a>{% endif %}
     </div>
   </form>
 </div>

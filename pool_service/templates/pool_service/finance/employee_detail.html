@@ -124,7 +124,7 @@
       </thead>
       <tbody>
         {% for expense in recent_expenses %}
-          <tr data-row-href="{% url 'finance_expense_detail' expense.uuid %}">
+          <tr data-row-href="{% url 'finance_expense_detail' expense.uuid %}?return_to=employee_detail">
             <td class="date-cell"><span>{{ expense.spent_on|date:"d.m" }}</span><span class="date-cell__year">{{ expense.spent_on|date:"Y" }}</span></td>
             <td class="expense-purpose-cell">
               <div class="expense-purpose-cell__main">{% if expense.description %}{{ expense.description }}{% elif expense.vendor %}{{ expense.vendor }}{% else %}—{% endif %}</div>

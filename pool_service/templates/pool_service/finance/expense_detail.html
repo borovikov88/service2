@@ -18,14 +18,15 @@
     {% endif %}
   </div>
   <div class="d-flex flex-wrap gap-2">
-    {% if can_edit %}<a href="{% url 'finance_expense_edit' expense.uuid %}" class="btn btn-primary">Изменить</a>{% endif %}
+    {% if can_edit %}<a href="{% url 'finance_expense_edit' expense.uuid %}{% if return_query %}?{{ return_query }}{% endif %}" class="btn btn-primary">Изменить</a>{% endif %}
     {% if can_delete %}
       <form method="post" action="{% url 'finance_expense_delete' expense.uuid %}">
         {% csrf_token %}
+        {% for name, value in return_context_fields %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
         <button type="submit" class="btn btn-outline-danger js-confirm-action" data-confirm-title="Удалить расход" data-confirm-body="Запись расхода и прикреплённые чеки будут удалены без восстановления." data-confirm-confirm="Удалить" data-confirm-variant="danger">Удалить</button>
       </form>
     {% endif %}
-    <a href="{% url 'finance_my' %}" class="btn btn-outline-secondary">К моим финансам</a>
+    <a href="{{ return_url }}" class="btn btn-outline-secondary">{{ return_label }}</a>
   </div>
 </div>
 
@@ -75,6 +76,7 @@
     {% if can_review %}
       <form method="post" action="{% url 'finance_expense_review' expense.uuid %}" class="card card-soft p-3 p-lg-4 mb-4">
         {% csrf_token %}
+        {% for name, value in return_context_fields %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
         <h2 class="h5 fw-bold mb-3">Согласование</h2>
         <div class="d-flex flex-column gap-2 mb-3">
           {% for radio in review_form.decision %}<label class="form-check">{{ radio.tag }} <span class="form-check-label">{{ radio.choice_label }}</span></label>{% endfor %}
