@@ -1538,6 +1538,204 @@ class FinanceTests(TestCase):
         self.assertNotIn("unexpected", detail.context["return_url"])
         self.assertNotIn("client", parse_qs(urlparse(detail.context["return_url"]).query))
 
+    def assert_bulk_report_redirect(self, response, expected_filters=None):
+        self.assertEqual(response.status_code, 302)
+        location = urlparse(response["Location"])
+        self.assertEqual(location.path, reverse("finance_report"))
+        self.assertEqual(parse_qs(location.query), expected_filters or {})
+
+    def test_report_bulk_forms_render_only_server_provided_return_context(self):
+        report_client = Client.objects.create(
+            organization=self.organization,
+            name="Клиент bulk-отчёта",
+            client_type="private",
+        )
+        self.client.force_login(self.accountant)
+        filters = {
+            "month": date.today().strftime("%Y-%m"),
+            "employee": str(self.service.id),
+            "category": str(self.category.id),
+            "client": str(report_client.id),
+            "source": Expense.SOURCE_ACCOUNTABLE,
+            "status": Expense.STATUS_PENDING,
+            "q": "материалы",
+            "unexpected": "discard-me",
+        }
+
+        response = self.client.get(reverse("finance_report"), filters)
+
+        self.assertEqual(
+            response.context["expense_report_return_fields"],
+            [
+                ("return_to", "expense_report"),
+                ("report_month", filters["month"]),
+                ("report_employee", str(self.service.id)),
+                ("report_category", str(self.category.id)),
+                ("report_client", str(report_client.id)),
+                ("report_source", Expense.SOURCE_ACCOUNTABLE),
+                ("report_status", Expense.STATUS_PENDING),
+                ("report_q", "материалы"),
+            ],
+        )
+        self.assertContains(response, 'name="return_to" value="expense_report"', count=2)
+        self.assertContains(response, f'name="report_month" value="{filters["month"]}"', count=2)
+        self.assertContains(response, 'name="report_q" value="материалы"', count=2)
+        self.assertNotContains(response, "report_unexpected")
+
+    def test_bulk_actions_return_to_normalized_report_and_ignore_referer(self):
+        self.create_expense()
+        expense = Expense.objects.get()
+        self.client.force_login(self.accountant)
+        return_context = {
+            "return_to": "expense_report",
+            "report_month": date.today().strftime("%Y-%m"),
+            "report_employee": str(self.service.id),
+            "report_category": str(self.category.id),
+            "report_client": Expense.DESTINATION_OFFICE,
+            "report_source": Expense.SOURCE_ACCOUNTABLE,
+            "report_status": Expense.STATUS_PENDING,
+            "report_q": "Материалы",
+        }
+        expected_filters = {
+            "month": [return_context["report_month"]],
+            "employee": [str(self.service.id)],
+            "category": [str(self.category.id)],
+            "client": [Expense.DESTINATION_OFFICE],
+            "source": [Expense.SOURCE_ACCOUNTABLE],
+            "status": [Expense.STATUS_PENDING],
+            "q": ["Материалы"],
+        }
+
+        reviewed = self.client.post(
+            reverse("finance_expense_bulk_review"),
+            {
+                "expense_ids": [str(expense.uuid)],
+                "decision": Expense.STATUS_APPROVED,
+                "review_comment": "bulk ok",
+                **return_context,
+            },
+            HTTP_REFERER="https://attacker.invalid/redirect",
+        )
+        self.assert_bulk_report_redirect(reviewed, expected_filters)
+        expense.refresh_from_db()
+        self.assertEqual(expense.status, Expense.STATUS_APPROVED)
+
+        marked = self.client.post(
+            reverse("finance_expense_bulk_onec"),
+            {
+                "expense_ids": [str(expense.uuid)],
+                "posted_to_1c": "true",
+                **return_context,
+            },
+            HTTP_REFERER="https://attacker.invalid/redirect",
+        )
+        self.assert_bulk_report_redirect(marked, expected_filters)
+        expense.refresh_from_db()
+        self.assertTrue(expense.posted_to_1c)
+
+        idempotent = self.client.post(
+            reverse("finance_expense_bulk_onec"),
+            {
+                "expense_ids": [str(expense.uuid)],
+                "posted_to_1c": "true",
+                **return_context,
+            },
+            HTTP_REFERER="https://attacker.invalid/redirect",
+        )
+        self.assert_bulk_report_redirect(idempotent, expected_filters)
+        self.assertEqual(
+            ExpenseChange.objects.filter(
+                expense=expense,
+                action=ExpenseChange.ACTION_POSTED_TO_1C,
+            ).count(),
+            1,
+        )
+
+    def test_bulk_return_context_rejects_forged_filters_and_uses_safe_fallback(self):
+        self.create_expense()
+        expense = Expense.objects.get()
+        other_organization = Organization.objects.create(
+            name="Foreign bulk return organization",
+            paid_until=timezone.now() + timedelta(days=30),
+        )
+        foreign_user = User.objects.create_user(username="foreign-bulk-user", password="pass")
+        OrganizationAccess.objects.create(user=foreign_user, organization=other_organization, role="accountant")
+        foreign_category = ExpenseCategory.objects.create(organization=other_organization, name="Foreign bulk category")
+        foreign_client = Client.objects.create(organization=other_organization, name="Foreign bulk client")
+        self.client.force_login(self.accountant)
+        forged_filters = {
+            "return_to": "expense_report",
+            "report_month": date.today().strftime("%Y-%m"),
+            "report_employee": str(foreign_user.id),
+            "report_category": str(foreign_category.id),
+            "report_client": str(foreign_client.id),
+            "report_source": Expense.SOURCE_ACCOUNTABLE,
+            "report_status": Expense.STATUS_PENDING,
+            "report_q": "safe search",
+            "report_extra": "discard-me",
+        }
+        expected_filters = {
+            "month": [forged_filters["report_month"]],
+            "source": [Expense.SOURCE_ACCOUNTABLE],
+            "status": [Expense.STATUS_PENDING],
+            "q": ["safe search"],
+        }
+
+        invalid_review = self.client.post(
+            reverse("finance_expense_bulk_review"),
+            {"expense_ids": [str(expense.uuid)], "decision": "invalid", **forged_filters},
+            HTTP_REFERER="https://attacker.invalid/redirect",
+        )
+        self.assert_bulk_report_redirect(invalid_review, expected_filters)
+        missing_comment = self.client.post(
+            reverse("finance_expense_bulk_review"),
+            {
+                "expense_ids": [str(expense.uuid)],
+                "decision": Expense.STATUS_REJECTED,
+                **forged_filters,
+            },
+            HTTP_REFERER="https://attacker.invalid/redirect",
+        )
+        self.assert_bulk_report_redirect(missing_comment, expected_filters)
+        no_selection = self.client.post(
+            reverse("finance_expense_bulk_onec"),
+            {"posted_to_1c": "true", **forged_filters},
+            HTTP_REFERER="https://attacker.invalid/redirect",
+        )
+        self.assert_bulk_report_redirect(no_selection, expected_filters)
+
+        for endpoint, payload in (
+            (
+                "finance_expense_bulk_review",
+                {"expense_ids": [str(expense.uuid)], "decision": "invalid"},
+            ),
+            (
+                "finance_expense_bulk_onec",
+                {"posted_to_1c": "true"},
+            ),
+            (
+                "finance_expense_bulk_review",
+                {
+                    "expense_ids": [str(expense.uuid)],
+                    "decision": "invalid",
+                    "return_to": "https://attacker.invalid/redirect",
+                },
+            ),
+            (
+                "finance_expense_bulk_onec",
+                {
+                    "posted_to_1c": "true",
+                    "return_to": "https://attacker.invalid/redirect",
+                },
+            ),
+        ):
+            response = self.client.post(
+                reverse(endpoint),
+                payload,
+                HTTP_REFERER="https://attacker.invalid/redirect",
+            )
+            self.assert_bulk_report_redirect(response)
+
     def test_expense_report_context_survives_detail_edit_and_delete(self):
         self.create_expense(user=self.accountant)
         expense = Expense.objects.get()

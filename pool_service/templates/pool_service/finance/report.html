@@ -69,6 +69,7 @@
     </div>
     <form method="post" action="{% url 'finance_expense_bulk_review' %}" class="d-none flex-wrap align-items-center gap-2" data-expense-bulk-toolbar>
       {% csrf_token %}
+      {% for name, value in expense_report_return_fields %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
       <span class="badge bg-primary-subtle text-primary border" data-expense-bulk-count>0 выбрано</span>
       <input type="text" name="review_comment" class="form-control form-control-sm expense-bulk-comment" placeholder="Комментарий">
       <button type="submit" name="decision" value="pending" class="btn btn-outline-warning btn-sm">На проверке</button>
@@ -128,7 +129,7 @@
     </table>
   </div>
 </div>
-<form id="expense-bulk-hidden-form" method="post" action="{% url 'finance_expense_bulk_review' %}" data-review-url="{% url 'finance_expense_bulk_review' %}" data-onec-url="{% url 'finance_expense_bulk_onec' %}" class="d-none">{% csrf_token %}</form>
+<form id="expense-bulk-hidden-form" method="post" action="{% url 'finance_expense_bulk_review' %}" data-review-url="{% url 'finance_expense_bulk_review' %}" data-onec-url="{% url 'finance_expense_bulk_onec' %}" class="d-none">{% csrf_token %}{% for name, value in expense_report_return_fields %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}</form>
 <script>
   document.addEventListener("DOMContentLoaded", function () {
     const root = document.querySelector("[data-expense-bulk-root]");

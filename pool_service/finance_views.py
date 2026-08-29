@@ -399,6 +399,19 @@ def _expense_return_context(request, expense):
     }
 
 
+def _expense_bulk_report_return_url(request, organization):
+    """Return bulk actions only to a normalized expense report context."""
+    if request.POST.get("return_to") != "expense_report":
+        return reverse("finance_report")
+    report_filters = _normalized_expense_report_filters(
+        request.POST,
+        organization,
+        prefix="report_",
+    )
+    report_url = reverse("finance_report")
+    return f"{report_url}?{urlencode(report_filters)}" if report_filters else report_url
+
+
 def _expense_detail_url(expense, return_context):
     url = reverse("finance_expense_detail", kwargs={"expense_uuid": expense.uuid})
     return f"{url}?{return_context['return_query']}" if return_context["return_query"] else url
@@ -2312,15 +2325,16 @@ def finance_expense_bulk_review(request):
     organization, denied = _finance_guard(request, manage=True)
     if denied:
         return denied
+    report_return_url = _expense_bulk_report_return_url(request, organization)
     expense_ids = [value for value in request.POST.getlist("expense_ids") if value]
     decision = request.POST.get("decision", "").strip()
     if decision not in {Expense.STATUS_PENDING, Expense.STATUS_APPROVED, Expense.STATUS_REJECTED} or not expense_ids:
         messages.error(request, "Выберите расходы и решение.")
-        return redirect(request.META.get("HTTP_REFERER") or reverse("finance_report"))
+        return redirect(report_return_url)
     review_comment = (request.POST.get("review_comment") or "").strip()
     if decision == Expense.STATUS_REJECTED and not review_comment:
         messages.error(request, "Для отклонения укажите причину.")
-        return redirect(request.META.get("HTTP_REFERER") or reverse("finance_report"))
+        return redirect(report_return_url)
     expenses = list(
         Expense.objects.select_related("organization", "employee", "created_by")
         .filter(organization=organization, uuid__in=expense_ids)
@@ -2361,7 +2375,7 @@ def finance_expense_bulk_review(request):
         messages.success(request, f"Обработано расходов: {reviewed_count}.")
     else:
         messages.error(request, "Нет расходов, доступных для согласования.")
-    return redirect(request.META.get("HTTP_REFERER") or reverse("finance_report"))
+    return redirect(report_return_url)
 
 
 @require_POST
@@ -2371,6 +2385,7 @@ def finance_expense_bulk_onec(request):
     organization, denied = _finance_guard(request, manage=True)
     if denied:
         return denied
+    report_return_url = _expense_bulk_report_return_url(request, organization)
 
     posted_value = request.POST.get("posted_to_1c", "").strip()
     if posted_value not in {"true", "false"}:
@@ -2378,7 +2393,7 @@ def finance_expense_bulk_onec(request):
     expense_ids = [value for value in request.POST.getlist("expense_ids") if value]
     if not expense_ids:
         messages.error(request, "Выберите расходы.")
-        return redirect(request.META.get("HTTP_REFERER") or reverse("finance_report"))
+        return redirect(report_return_url)
     try:
         requested_ids = {uuid.UUID(value) for value in expense_ids}
     except (TypeError, ValueError, AttributeError):
@@ -2419,7 +2434,7 @@ def finance_expense_bulk_onec(request):
         messages.success(request, f"Обработано расходов: {changed_count}; отмечены как {label}.")
     else:
         messages.success(request, "Выбранные расходы уже имеют нужную отметку 1С.")
-    return redirect(request.META.get("HTTP_REFERER") or reverse("finance_report"))
+    return redirect(report_return_url)
 
 
 @login_required
@@ -2507,6 +2522,10 @@ def finance_report(request):
         category_totals[expense.category.name] += expense.amount
         client_totals[expense.destination_name] += expense.amount
     period = ExpensePeriod.objects.filter(organization=organization, month=start).first()
+    expense_report_return_fields = [
+        ("return_to", "expense_report"),
+        *[(f"report_{name}", value) for name, value in report_return_filters.items()],
+    ]
     return render(
         request,
         "pool_service/finance/report.html",
@@ -2530,10 +2549,8 @@ def finance_report(request):
             "can_close_finance": can_close_finance_period(request.user, organization),
             "active_tab": "finance",
             "show_add_button": False,
-            "expense_report_return_query": urlencode([
-                ("return_to", "expense_report"),
-                *[(f"report_{name}", value) for name, value in report_return_filters.items()],
-            ]),
+            "expense_report_return_fields": expense_report_return_fields,
+            "expense_report_return_query": urlencode(expense_report_return_fields),
         },
     )
 
