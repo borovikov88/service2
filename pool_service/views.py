@@ -3822,7 +3822,11 @@ def clients_list(request):
 
             "page_action_label": None if request.user.is_superuser else "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u043a\u043b\u0438\u0435\u043d\u0442\u0430",
 
-            "page_action_url": None if request.user.is_superuser else reverse("client_create"),
+            "page_action_url": (
+                None
+                if request.user.is_superuser
+                else f"{reverse('client_create')}?{urlencode({'return_to': CLIENT_CREATE_RETURN_CLIENTS_LIST})}"
+            ),
 
             "show_search": False,
 
@@ -5499,6 +5503,33 @@ def client_create_inline(request):
     return redirect("pool_create")
 
 
+CLIENT_CREATE_RETURN_CLIENTS_LIST = "clients_list"
+CLIENT_CREATE_RETURN_POOL_CREATE = "pool_create"
+
+
+def _client_create_return_context(request):
+    """Build client-create navigation only from a discrete server-side allowlist."""
+    values = request.POST if request.method == "POST" else request.GET
+    token = values.get("return_to")
+    if token == CLIENT_CREATE_RETURN_POOL_CREATE:
+        return {
+            "client_return_token": CLIENT_CREATE_RETURN_POOL_CREATE,
+            "return_url": reverse("pool_create"),
+            "active_tab": "pools",
+        }
+    if token == CLIENT_CREATE_RETURN_CLIENTS_LIST:
+        return {
+            "client_return_token": CLIENT_CREATE_RETURN_CLIENTS_LIST,
+            "return_url": reverse("clients_list"),
+            "active_tab": "clients",
+        }
+    return {
+        "client_return_token": None,
+        "return_url": reverse("clients_list"),
+        "active_tab": "clients",
+    }
+
+
 
 
 
@@ -5536,11 +5567,7 @@ def client_create(request):
 
 
 
-    next_url = request.GET.get("next") or request.POST.get("next")
-
-    if next_url and not next_url.startswith("/"):
-
-        next_url = None
+    return_context = _client_create_return_context(request)
 
 
 
@@ -5570,9 +5597,10 @@ def client_create(request):
 
             messages.success(request, "Клиент создан")
 
-            if next_url:
+            if return_context["client_return_token"] == CLIENT_CREATE_RETURN_POOL_CREATE:
 
-                return redirect(f"{next_url}?client_id={client.id}")
+                pool_create_url = reverse("pool_create")
+                return redirect(f"{pool_create_url}?{urlencode({'client_id': client.id})}")
 
             return redirect("pool_list")
 
@@ -5581,10 +5609,6 @@ def client_create(request):
         form = ClientCreateForm()
 
     page_title = "\u0421\u043e\u0437\u0434\u0430\u043d\u0438\u0435 \u043a\u043b\u0438\u0435\u043d\u0442\u0430"
-
-    active_tab = "clients" if not next_url else "pools"
-
-
 
     return render(
 
@@ -5598,9 +5622,7 @@ def client_create(request):
 
             "page_title": page_title,
 
-            "active_tab": active_tab,
-
-            "next_url": next_url,
+            **return_context,
 
             "is_edit": False,
 

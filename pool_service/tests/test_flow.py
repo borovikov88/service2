@@ -56,6 +56,121 @@ class PoolServiceFlowTests(TestCase):
         self.assertIsNotNone(created, "Клиент не создался")
         self.assertEqual(created.organization, self.org, "Организация не проставлена у клиента")
 
+    def client_create_payload(self, *, first_name="Алексей", last_name="Новиков"):
+        return {
+            "client_type": "private",
+            "first_name": first_name,
+            "last_name": last_name,
+            "phone": "+7 902 333 2211",
+            "email": "alex@example.com",
+        }
+
+    def test_client_list_create_uses_clients_list_return_context(self):
+        self.http.login(username="orgadmin", password="pass")
+        client_create_url = reverse("client_create")
+        clients_list_url = reverse("clients_list")
+        pool_list_url = reverse("pool_list")
+
+        listing = self.http.get(clients_list_url)
+        self.assertEqual(
+            listing.context["page_action_url"],
+            f"{client_create_url}?return_to=clients_list",
+        )
+
+        form = self.http.get(client_create_url, {"return_to": "clients_list"})
+        self.assertEqual(form.context["return_url"], clients_list_url)
+        self.assertContains(form, 'name="return_to" value="clients_list"')
+        self.assertContains(form, f'href="{clients_list_url}"')
+
+        saved = self.http.post(
+            client_create_url,
+            {**self.client_create_payload(), "return_to": "clients_list"},
+        )
+        self.assertRedirects(saved, pool_list_url, fetch_redirect_response=False)
+
+    def test_pool_create_client_link_and_return_context(self):
+        self.http.login(username="orgadmin", password="pass")
+        client_create_url = reverse("client_create")
+        pool_create_url = reverse("pool_create")
+
+        pool_form = self.http.get(pool_create_url)
+        self.assertContains(pool_form, f'href="{client_create_url}?return_to=pool_create"')
+
+        form = self.http.get(client_create_url, {"return_to": "pool_create"})
+        self.assertEqual(form.context["return_url"], pool_create_url)
+        self.assertContains(form, 'name="return_to" value="pool_create"')
+        self.assertContains(form, f'href="{pool_create_url}"')
+
+        invalid = self.http.post(
+            client_create_url,
+            {"client_type": "private", "first_name": "", "return_to": "pool_create"},
+        )
+        self.assertEqual(invalid.status_code, 200)
+        self.assertContains(invalid, 'name="return_to" value="pool_create"')
+        self.assertContains(invalid, f'href="{pool_create_url}"')
+
+        saved = self.http.post(
+            client_create_url,
+            {**self.client_create_payload(first_name="Павел", last_name="Сидоров"), "return_to": "pool_create"},
+        )
+        created = Client.objects.get(first_name="Павел", last_name="Сидоров")
+        self.assertRedirects(
+            saved,
+            f"{pool_create_url}?client_id={created.id}",
+            fetch_redirect_response=False,
+        )
+
+    def test_client_create_discards_legacy_and_forged_navigation_context(self):
+        self.http.login(username="orgadmin", password="pass")
+        client_create_url = reverse("client_create")
+        clients_list_url = reverse("clients_list")
+        pool_list_url = reverse("pool_list")
+
+        for query in (
+            {"next": "/pools/create/"},
+            {"return_to": "https://example.invalid/"},
+        ):
+            response = self.http.get(client_create_url, query)
+            self.assertEqual(response.context["return_url"], clients_list_url)
+            self.assertNotContains(response, "example.invalid")
+            self.assertNotContains(response, 'name="next"')
+            self.assertNotContains(response, 'name="return_to"')
+            self.assertContains(response, f'href="{clients_list_url}"')
+
+        invalid_forged = self.http.post(
+            client_create_url,
+            {"client_type": "private", "first_name": "", "return_to": "https://example.invalid/"},
+        )
+        self.assertEqual(invalid_forged.status_code, 200)
+        self.assertNotContains(invalid_forged, "example.invalid")
+        self.assertNotContains(invalid_forged, 'name="return_to"')
+        self.assertContains(invalid_forged, f'href="{clients_list_url}"')
+
+        legacy = self.http.post(
+            client_create_url,
+            {**self.client_create_payload(first_name="Олег", last_name="Петров"), "next": "/pools/create/"},
+        )
+        self.assertRedirects(legacy, pool_list_url, fetch_redirect_response=False)
+
+        forged = self.http.post(
+            client_create_url,
+            {**self.client_create_payload(first_name="Максим", last_name="Котов"), "return_to": "https://example.invalid/"},
+        )
+        self.assertRedirects(forged, pool_list_url, fetch_redirect_response=False)
+
+        direct = self.http.post(
+            client_create_url,
+            self.client_create_payload(first_name="Роман", last_name="Иванов"),
+        )
+        self.assertRedirects(direct, pool_list_url, fetch_redirect_response=False)
+
+    def test_client_create_keeps_existing_access_guard(self):
+        self.http.login(username="clientuser", password="pass")
+
+        response = self.http.get(reverse("client_create"), {"return_to": "clients_list"})
+
+        self.assertEqual(response.status_code, 403)
+
     def test_pool_create_by_org_assigns_org_and_access(self):
         self.http.login(username="orgadmin", password="pass")
         url = reverse("pool_create")

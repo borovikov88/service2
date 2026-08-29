@@ -35,7 +35,7 @@
                     {% if form.client.errors %}<div class="text-danger small mt-1">{{ form.client.errors.0 }}</div>{% endif %}
                 </div>
                 <div class="col-auto d-flex align-items-center">
-                    <a href="{% url 'client_create' %}?next={% url 'pool_create' %}" class="btn btn-outline-primary d-flex align-items-center justify-content-center {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} style="width: 44px; height: 44px;" aria-label="Создать клиента">+</a>
+                    <a href="{% url 'client_create' %}?return_to=pool_create" class="btn btn-outline-primary d-flex align-items-center justify-content-center {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} style="width: 44px; height: 44px;" aria-label="Создать клиента">+</a>
                 </div>
             </div>
         </div>
