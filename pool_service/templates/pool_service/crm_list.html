@@ -511,7 +511,7 @@
                 </thead>
                 <tbody>
                     {% for item in items %}
-                        <tr class="crm-table-row {% if service_done_stage and item.stage == service_done_stage %}text-muted{% endif %}" data-crm-selectable-row data-crm-row-url="{% url 'crm_view' direction=direction item_id=item.id %}">
+                        <tr class="crm-table-row {% if service_done_stage and item.stage == service_done_stage %}text-muted{% endif %}" data-crm-selectable-row data-crm-row-url="{% url 'crm_view' direction=direction item_id=item.id %}?return_to=crm_list">
                             <td class="crm-select-col">
                                 <input type="checkbox" class="form-check-input crm-select-checkbox crm-row-select" name="item_ids" value="{{ item.id }}" aria-label="Выбрать запись {{ item.title }}">
                             </td>

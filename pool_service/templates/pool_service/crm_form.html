@@ -25,6 +25,7 @@
     <form method="post" novalidate>
 
         {% csrf_token %}
+        {% for name, value in return_context_fields %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
 
         <div class="row g-3">
             {% for row in crm_form_layout %}
@@ -42,7 +43,7 @@
 
                 <button type="submit" class="btn btn-primary">&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;</button>
 
-                <a href="{% url 'crm_list' direction=direction %}" class="btn btn-outline-secondary">&#1054;&#1090;&#1084;&#1077;&#1085;&#1072;</a>
+                <a href="{% if item %}{{ return_url }}{% else %}{% url 'crm_list' direction=direction %}{% endif %}" class="btn btn-outline-secondary">&#1054;&#1090;&#1084;&#1077;&#1085;&#1072;</a>
 
             </div>
 
