@@ -10,12 +10,13 @@
       <h1 class="h3 fw-bold mb-1">{{ title }}</h1>
       <div class="text-muted">{{ subtitle }}</div>
     </div>
-    <a href="{% if back_url_name %}{% url back_url_name %}{% else %}{% url 'finance_kkm_cash_dashboard' %}{% endif %}" class="btn btn-outline-secondary">Назад</a>
+    <a href="{% if return_url %}{{ return_url }}{% elif back_url_name %}{% url back_url_name %}{% else %}{% url 'finance_kkm_cash_dashboard' %}{% endif %}" class="btn btn-outline-secondary">Назад</a>
   </div>
   {% endif %}
 
   <form method="post" class="{% if not finance_modal %}card card-soft p-3 p-lg-4{% endif %}">
     {% csrf_token %}
+    {% if return_to %}<input type="hidden" name="return_to" value="{{ return_to }}">{% endif %}
     <div class="row g-3">
       {% for field in form %}
         <div class="{% if field.name == 'note' %}col-12{% else %}col-12 col-md-6{% endif %}">
@@ -29,7 +30,9 @@
     {% if form.non_field_errors %}<div class="alert alert-danger mt-3">{{ form.non_field_errors }}</div>{% endif %}
     <div class="d-flex gap-2 mt-4">
       <button type="submit" class="btn btn-primary">{{ submit_label }}</button>
-      <a href="{% if back_url_name %}{% url back_url_name %}{% else %}{% url 'finance_kkm_cash_dashboard' %}{% endif %}" class="btn btn-outline-secondary">Отмена</a>
+      {% if not finance_modal %}
+      <a href="{% if return_url %}{{ return_url }}{% elif back_url_name %}{% url back_url_name %}{% else %}{% url 'finance_kkm_cash_dashboard' %}{% endif %}" class="btn btn-outline-secondary">Отмена</a>
+      {% endif %}
     </div>
   </form>
 </div>

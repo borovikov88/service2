@@ -294,6 +294,30 @@ def _finance_modal_context(request):
     }
 
 
+def _income_edit_return_context(request, movement):
+    """Build the only permitted parent link for an income edit form."""
+    requested = request.POST.get("return_to") if request.method == "POST" else request.GET.get("return_to")
+    return_to = requested if requested in {"employee_detail"} else "employee_detail"
+    return {
+        "return_to": return_to,
+        "return_url": reverse("finance_employee_detail", kwargs={"employee_id": movement.employee_id}),
+    }
+
+
+def _cash_operation_edit_return_context(request, operation):
+    """Build a parent link from a small allowlist, never from a user URL."""
+    requested = request.POST.get("return_to") if request.method == "POST" else request.GET.get("return_to")
+    return_to = requested if requested in {"operation_detail", "kkm_dashboard"} else "operation_detail"
+    if return_to == "kkm_dashboard":
+        return_url = reverse("finance_kkm_cash_dashboard")
+    else:
+        return_url = reverse("finance_cash_operation_detail", kwargs={"operation_id": operation.id})
+    return {
+        "return_to": return_to,
+        "return_url": return_url,
+    }
+
+
 def _post_success(request, expense, message):
     if _is_offline_request(request):
         return JsonResponse(
@@ -1363,6 +1387,7 @@ def finance_cash_operation_edit(request, operation_id):
     if not _can_edit_cash_operation(request.user, operation):
         messages.error(request, "Подтверждённую кассовую операцию редактировать нельзя.")
         return redirect("finance_cash_operation_detail", operation_id=operation.id)
+    return_context = _cash_operation_edit_return_context(request, operation)
     form = _cash_operation_form(operation, request.POST or None)
     if request.method == "POST" and form.is_valid():
         with transaction.atomic():
@@ -1451,6 +1476,7 @@ def finance_cash_operation_edit(request, operation_id):
         "active_tab": "finance",
         "show_add_button": False,
     }
+    context.update(return_context)
     context.update(_finance_modal_context(request))
     return render(request, "pool_service/finance/cash_form.html", context)
 
@@ -1719,6 +1745,7 @@ def finance_income_edit(request, transaction_id):
         messages.error(request, "Изменение прихода денег недоступно.")
         return redirect("finance_employee_detail", employee_id=movement.employee_id)
 
+    return_context = _income_edit_return_context(request, movement)
     form = ClientPaymentForm(
         request.POST or None,
         organization=movement.organization,
@@ -1758,6 +1785,7 @@ def finance_income_edit(request, transaction_id):
         "active_tab": "finance",
         "show_add_button": False,
     }
+    context.update(return_context)
     context.update(_finance_modal_context(request))
     return render(request, "pool_service/finance/income_form.html", context)
 

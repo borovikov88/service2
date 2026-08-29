@@ -104,6 +104,33 @@ class FinanceTests(TestCase):
         self.client.force_login(user or self.service)
         return self.client.post(reverse("finance_expense_create"), self.expense_payload(**overrides))
 
+    def create_client_payment_movement(self):
+        client = Client.objects.create(organization=self.organization, name="Клиент навигации", client_type="private")
+        movement = AccountableTransaction.objects.create(
+            organization=self.organization,
+            employee=self.service,
+            created_by=self.service,
+            transaction_type=AccountableTransaction.TYPE_CLIENT_PAYMENT,
+            client=client,
+            amount="1000.00",
+            occurred_on=date.today(),
+            status=AccountableTransaction.STATUS_APPROVED,
+            reviewed_by=self.service,
+            reviewed_at=timezone.now(),
+        )
+        return client, movement
+
+    def create_pending_cash_operation(self):
+        return CashOperation.objects.create(
+            organization=self.organization,
+            manager=self.manager,
+            created_by=self.manager,
+            operation_type=CashOperation.TYPE_MANAGER_INCOME,
+            amount="1000.00",
+            occurred_on=date.today(),
+            status=CashOperation.STATUS_PENDING,
+        )
+
     def test_installer_has_finance_access(self):
         self.client.force_login(self.installer)
 
@@ -340,6 +367,177 @@ class FinanceTests(TestCase):
         self.assertTrue(
             movement.changes.filter(action=AccountableTransactionChange.ACTION_DELETED).exists()
         )
+
+    def test_income_edit_uses_only_employee_detail_return_context(self):
+        client, movement = self.create_client_payment_movement()
+        edit_url = reverse("finance_income_edit", kwargs={"transaction_id": movement.id})
+        employee_detail_url = reverse("finance_employee_detail", kwargs={"employee_id": movement.employee_id})
+        self.client.force_login(self.service)
+
+        employee_detail = self.client.get(employee_detail_url)
+        self.assertContains(employee_detail, f"{edit_url}?return_to=employee_detail")
+
+        direct = self.client.get(edit_url)
+        forged = self.client.get(edit_url, {"return_to": "https://attacker.invalid/next"})
+        for response in (direct, forged):
+            self.assertEqual(response.status_code, 200)
+            self.assertContains(response, f'href="{employee_detail_url}" class="btn btn-outline-secondary">Назад</a>')
+            self.assertContains(response, f'href="{employee_detail_url}" class="btn btn-outline-secondary">Отмена</a>')
+            self.assertContains(response, 'name="return_to" value="employee_detail"')
+            self.assertNotContains(response, "attacker.invalid")
+
+        invalid = self.client.post(
+            edit_url,
+            {
+                "return_to": "employee_detail",
+                "employee": self.service.id,
+                "client_id": client.id,
+                "destination_query": client.name,
+                "amount": "not-a-number",
+                "occurred_on": date.today().isoformat(),
+                "note": "",
+            },
+        )
+        self.assertEqual(invalid.status_code, 200)
+        self.assertContains(invalid, f'href="{employee_detail_url}" class="btn btn-outline-secondary">Назад</a>')
+        self.assertContains(invalid, f'href="{employee_detail_url}" class="btn btn-outline-secondary">Отмена</a>')
+        self.assertContains(invalid, 'name="return_to" value="employee_detail"')
+
+        forged_post = self.client.post(
+            edit_url,
+            {
+                "return_to": "https://attacker.invalid/next",
+                "employee": self.service.id,
+                "client_id": client.id,
+                "destination_query": client.name,
+                "amount": "not-a-number",
+                "occurred_on": date.today().isoformat(),
+                "note": "",
+            },
+        )
+        self.assertEqual(forged_post.status_code, 200)
+        self.assertContains(forged_post, f'href="{employee_detail_url}" class="btn btn-outline-secondary">Назад</a>')
+        self.assertContains(forged_post, f'href="{employee_detail_url}" class="btn btn-outline-secondary">Отмена</a>')
+        self.assertNotContains(forged_post, "attacker.invalid")
+
+        success = self.client.post(
+            edit_url,
+            {
+                "return_to": "employee_detail",
+                "employee": self.service.id,
+                "client_id": client.id,
+                "destination_query": client.name,
+                "amount": "2000.00",
+                "occurred_on": date.today().isoformat(),
+                "note": "Исправление",
+            },
+        )
+        self.assertRedirects(success, employee_detail_url)
+
+    def test_cash_operation_edit_uses_only_detail_or_kkm_return_context(self):
+        operation = self.create_pending_cash_operation()
+        edit_url = reverse("finance_cash_operation_edit", kwargs={"operation_id": operation.id})
+        detail_url = reverse("finance_cash_operation_detail", kwargs={"operation_id": operation.id})
+        kkm_dashboard_url = reverse("finance_kkm_cash_dashboard")
+        self.client.force_login(self.manager)
+
+        detail = self.client.get(detail_url)
+        dashboard = self.client.get(kkm_dashboard_url)
+        self.assertContains(detail, f"{edit_url}?return_to=operation_detail")
+        self.assertContains(dashboard, f"{edit_url}?return_to=kkm_dashboard")
+
+        direct = self.client.get(edit_url)
+        forged = self.client.get(edit_url, {"return_to": "https://attacker.invalid/next"})
+        for response in (direct, forged):
+            self.assertEqual(response.status_code, 200)
+            self.assertContains(response, f'href="{detail_url}" class="btn btn-outline-secondary">Назад</a>')
+            self.assertContains(response, f'href="{detail_url}" class="btn btn-outline-secondary">Отмена</a>')
+            self.assertContains(response, 'name="return_to" value="operation_detail"')
+            self.assertNotContains(response, "attacker.invalid")
+
+        dashboard_return = self.client.get(edit_url, {"return_to": "kkm_dashboard"})
+        self.assertContains(dashboard_return, f'href="{kkm_dashboard_url}"')
+        self.assertContains(dashboard_return, 'name="return_to" value="kkm_dashboard"')
+
+        invalid = self.client.post(
+            edit_url,
+            {
+                "return_to": "kkm_dashboard",
+                "amount": "not-a-number",
+                "occurred_on": date.today().isoformat(),
+                "note": "",
+            },
+        )
+        self.assertEqual(invalid.status_code, 200)
+        self.assertContains(invalid, f'href="{kkm_dashboard_url}" class="btn btn-outline-secondary">Назад</a>')
+        self.assertContains(invalid, f'href="{kkm_dashboard_url}" class="btn btn-outline-secondary">Отмена</a>')
+        self.assertContains(invalid, 'name="return_to" value="kkm_dashboard"')
+
+        forged_post = self.client.post(
+            edit_url,
+            {
+                "return_to": "https://attacker.invalid/next",
+                "amount": "not-a-number",
+                "occurred_on": date.today().isoformat(),
+                "note": "",
+            },
+        )
+        self.assertEqual(forged_post.status_code, 200)
+        self.assertContains(forged_post, f'href="{detail_url}" class="btn btn-outline-secondary">Назад</a>')
+        self.assertContains(forged_post, f'href="{detail_url}" class="btn btn-outline-secondary">Отмена</a>')
+        self.assertNotContains(forged_post, "attacker.invalid")
+
+        success = self.client.post(
+            edit_url,
+            {
+                "return_to": "kkm_dashboard",
+                "amount": "2000.00",
+                "occurred_on": date.today().isoformat(),
+                "note": "Исправление",
+            },
+        )
+        self.assertRedirects(success, detail_url)
+
+    def test_finance_edit_modal_has_no_embedded_parent_navigation(self):
+        client, movement = self.create_client_payment_movement()
+        operation = self.create_pending_cash_operation()
+        self.client.force_login(self.service)
+
+        income_modal = self.client.get(
+            reverse("finance_income_edit", kwargs={"transaction_id": movement.id}),
+            {"modal": "1", "return_to": "employee_detail"},
+        )
+        self.assertTrue(income_modal.context["finance_modal"])
+        self.assertNotContains(income_modal, ">Назад</a>")
+        self.assertNotContains(income_modal, ">Отмена</a>")
+        self.assertContains(income_modal, 'name="return_to" value="employee_detail"')
+
+        self.client.force_login(self.manager)
+        cash_modal = self.client.get(
+            reverse("finance_cash_operation_edit", kwargs={"operation_id": operation.id}),
+            {"modal": "1", "return_to": "kkm_dashboard"},
+        )
+        self.assertTrue(cash_modal.context["finance_modal"])
+        self.assertNotContains(cash_modal, ">Назад</a>")
+        self.assertNotContains(cash_modal, ">Отмена</a>")
+        self.assertContains(cash_modal, 'name="return_to" value="kkm_dashboard"')
+
+    def test_finance_edit_return_context_does_not_bypass_existing_access_checks(self):
+        _, movement = self.create_client_payment_movement()
+        operation = self.create_pending_cash_operation()
+        self.client.force_login(self.installer)
+
+        income_response = self.client.get(
+            reverse("finance_income_edit", kwargs={"transaction_id": movement.id}),
+            {"return_to": "employee_detail"},
+        )
+        cash_response = self.client.get(
+            reverse("finance_cash_operation_edit", kwargs={"operation_id": operation.id}),
+            {"return_to": "kkm_dashboard"},
+        )
+
+        self.assertEqual(income_response.status_code, 403)
+        self.assertEqual(cash_response.status_code, 403)
 
     def test_accountable_rows_open_employee_detail_with_history(self):
         AccountableTransaction.objects.create(

@@ -124,7 +124,7 @@
       </thead>
       <tbody>
         {% for operation in operations %}
-          <tr data-row-href="{% if operation.can_edit %}{% url 'finance_cash_operation_edit' operation.id %}{% else %}{% url 'finance_cash_operation_detail' operation.id %}{% endif %}">
+          <tr data-row-href="{% if operation.can_edit %}{% url 'finance_cash_operation_edit' operation.id %}?return_to=kkm_dashboard{% else %}{% url 'finance_cash_operation_detail' operation.id %}{% endif %}">
             <td class="date-cell"><span>{{ operation.occurred_on|date:"d.m" }}</span><span class="date-cell__year">{{ operation.occurred_on|date:"Y" }}</span></td>
             <td>
               <div class="fw-semibold">{{ operation.get_operation_type_display }}</div>

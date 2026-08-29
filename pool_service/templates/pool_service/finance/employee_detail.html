@@ -82,7 +82,7 @@
                 </div>
               {% elif movement.can_request_change %}
                 <div class="d-flex flex-wrap justify-content-end gap-2">
-                  <a href="{% url 'finance_income_edit' movement.id %}" class="btn btn-outline-primary btn-sm">Изменить</a>
+                  <a href="{% url 'finance_income_edit' movement.id %}?return_to=employee_detail" class="btn btn-outline-primary btn-sm">Изменить</a>
                   <form method="post" action="{% url 'finance_income_delete' movement.id %}" class="d-inline">
                     {% csrf_token %}
                     <input type="hidden" name="reason" value="Запрос сотрудника">
