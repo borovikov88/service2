@@ -11,7 +11,7 @@
   </div>
   <div class="d-flex flex-wrap gap-2">
     {% if can_edit %}
-      <a href="{% url 'finance_cash_operation_edit' operation.id %}" class="btn btn-primary">Изменить</a>
+      <a href="{% url 'finance_cash_operation_edit' operation.id %}?return_to=operation_detail" class="btn btn-primary">Изменить</a>
     {% endif %}
     {% if can_delete %}
       <form method="post" action="{% url 'finance_cash_operation_delete' operation.id %}" class="d-inline">
