@@ -471,6 +471,36 @@ def _crm_get_item_for_user(request, direction, item_id, include_archived=False):
             raise PermissionDenied
     return item
 
+
+CRM_EDIT_RETURN_LIST = "crm_list"
+CRM_EDIT_RETURN_DETAIL = "crm_detail"
+
+
+def _crm_edit_return_context(request, direction, item):
+    """Build a CRM edit parent only from a discrete server-side allowlist."""
+    values = request.POST if request.method == "POST" else request.GET
+    token = values.get("return_to")
+    if token == CRM_EDIT_RETURN_DETAIL:
+        return {
+            "return_url": reverse("crm_view", kwargs={"direction": direction, "item_id": item.id}),
+            "return_context_fields": [("return_to", CRM_EDIT_RETURN_DETAIL)],
+        }
+    return {
+        "return_url": reverse("crm_list", kwargs={"direction": direction}),
+        "return_context_fields": (
+            [("return_to", CRM_EDIT_RETURN_LIST)] if token == CRM_EDIT_RETURN_LIST else []
+        ),
+    }
+
+
+def _crm_view_edit_token(request):
+    """Preserve list origin for a card; direct cards return to themselves."""
+    return (
+        CRM_EDIT_RETURN_LIST
+        if request.GET.get("return_to") == CRM_EDIT_RETURN_LIST
+        else CRM_EDIT_RETURN_DETAIL
+    )
+
 ISSUE_PHOTO_MAX_SIZE = 1600
 ISSUE_PHOTO_JPEG_QUALITY = 82
 
@@ -4619,7 +4649,11 @@ def crm_view(request, direction, item_id):
     if direction not in _crm_allowed_directions(request.user):
         return HttpResponseForbidden()
     if request.GET.get("edit") == "1":
-        return redirect("crm_edit", direction=direction, item_id=item_id)
+        token = request.GET.get("return_to")
+        if token not in {CRM_EDIT_RETURN_LIST, CRM_EDIT_RETURN_DETAIL}:
+            token = CRM_EDIT_RETURN_LIST
+        edit_url = reverse("crm_edit", kwargs={"direction": direction, "item_id": item_id})
+        return redirect(f"{edit_url}?{urlencode({'return_to': token})}")
 
     item = _crm_get_item_for_user(request, direction, item_id, include_archived=True)
     item.stage_label = CRM_STAGE_LABELS.get(item.stage, item.stage)
@@ -4661,7 +4695,10 @@ def crm_view(request, direction, item_id):
             "direction_label": CRM_DIRECTION_META[direction]["label"],
             "item": item,
             "archive_state": archive_state,
-            "crm_edit_url": reverse("crm_edit", kwargs={"direction": direction, "item_id": item.id}),
+            "crm_edit_url": (
+                f"{reverse('crm_edit', kwargs={'direction': direction, 'item_id': item.id})}"
+                f"?{urlencode({'return_to': _crm_view_edit_token(request)})}"
+            ),
             "archive_url": reverse("archive_list"),
             "item_photo_urls": item_photo_urls,
             "item_photo_urls_json": json.dumps(item_photo_urls, ensure_ascii=False),
@@ -4814,7 +4851,7 @@ def crm_edit(request, direction, item_id):
 
         org = item.organization
 
-
+    return_context = _crm_edit_return_context(request, direction, item)
 
     if request.method == "POST":
 
@@ -4831,7 +4868,7 @@ def crm_edit(request, direction, item_id):
 
             messages.success(request, "Запись CRM обновлена.")
 
-            return redirect("crm_list", direction=direction)
+            return redirect(return_context["return_url"])
 
     else:
 
@@ -4870,6 +4907,8 @@ def crm_edit(request, direction, item_id):
             "item_photo_urls": item_photo_urls,
 
             "item_photo_urls_json": json.dumps(item_photo_urls, ensure_ascii=False),
+
+            **return_context,
 
         },
 
