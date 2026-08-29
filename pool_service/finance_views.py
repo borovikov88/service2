@@ -5,6 +5,7 @@ from io import BytesIO
 from pathlib import Path
 import logging
 import uuid
+from urllib.parse import urlencode
 
 import tablib
 from PIL import Image, ImageOps
@@ -316,6 +317,91 @@ def _cash_operation_edit_return_context(request, operation):
         "return_to": return_to,
         "return_url": return_url,
     }
+
+
+def _expense_return_source(request):
+    """Return only submitted navigation context, never a caller URL."""
+    return request.POST if request.method == "POST" else request.GET
+
+
+def _normalized_expense_report_filters(values, organization, prefix=""):
+    """Keep only report filters that are valid for this organization."""
+    normalized = {}
+
+    month_value = (values.get(f"{prefix}month") or "").strip()
+    if month_value:
+        try:
+            month_start, _ = month_bounds(month_value)
+        except (TypeError, ValueError):
+            pass
+        else:
+            normalized["month"] = month_start.strftime("%Y-%m")
+
+    def organization_id(name, queryset):
+        try:
+            value = int(values.get(f"{prefix}{name}", ""))
+        except (TypeError, ValueError):
+            return
+        if value > 0 and queryset.filter(id=value).exists():
+            normalized[name] = str(value)
+
+    organization_id("employee", finance_staff(organization))
+    organization_id("category", ExpenseCategory.objects.filter(organization=organization, is_active=True))
+
+    client_value = (values.get(f"{prefix}client") or "").strip()
+    if client_value == Expense.DESTINATION_OFFICE:
+        normalized["client"] = client_value
+    else:
+        organization_id("client", Client.objects.filter(organization=organization))
+
+    source = (values.get(f"{prefix}source") or "").strip()
+    if source in dict(Expense.SOURCE_CHOICES):
+        normalized["source"] = source
+
+    status = (values.get(f"{prefix}status") or "").strip()
+    if status in dict(Expense.STATUS_CHOICES):
+        normalized["status"] = status
+
+    search = (values.get(f"{prefix}q") or "").strip()
+    if search:
+        normalized["q"] = search
+    return normalized
+
+
+def _expense_return_context(request, expense):
+    """Build an expense parent URL from a discrete allowlist only."""
+    values = _expense_return_source(request)
+    requested = values.get("return_to")
+    fields = []
+    return_url = reverse("finance_my")
+    return_label = "К моим финансам"
+
+    if requested == "expense_report" and can_manage_finance(request.user, expense.organization):
+        report_filters = _normalized_expense_report_filters(values, expense.organization, prefix="report_")
+        fields = [("return_to", "expense_report"), *[(f"report_{name}", value) for name, value in report_filters.items()]]
+        return_url = reverse("finance_report")
+        if report_filters:
+            return_url = f"{return_url}?{urlencode(report_filters)}"
+        return_label = "К отчёту"
+    elif requested == "employee_detail" and (
+        can_manage_finance(request.user, expense.organization)
+        or request.user.id == expense.employee_id
+    ):
+        fields = [("return_to", "employee_detail")]
+        return_url = reverse("finance_employee_detail", kwargs={"employee_id": expense.employee_id})
+        return_label = "К сотруднику"
+
+    return {
+        "return_url": return_url,
+        "return_label": return_label,
+        "return_context_fields": fields,
+        "return_query": urlencode(fields),
+    }
+
+
+def _expense_detail_url(expense, return_context):
+    url = reverse("finance_expense_detail", kwargs={"expense_uuid": expense.uuid})
+    return f"{url}?{return_context['return_query']}" if return_context["return_query"] else url
 
 
 def _post_success(request, expense, message):
@@ -1973,7 +2059,7 @@ def finance_employee_detail(request, employee_id):
     return render(request, "pool_service/finance/employee_detail.html", context)
 
 
-def _expense_form_response(request, organization, form, expense=None):
+def _expense_form_response(request, organization, form, expense=None, return_context=None):
     context = {
         "form": form,
         "expense": expense,
@@ -1981,6 +2067,8 @@ def _expense_form_response(request, organization, form, expense=None):
         "active_tab": "finance",
         "show_add_button": False,
     }
+    if return_context:
+        context.update(return_context)
     context.update(_finance_modal_context(request))
     return render(request, "pool_service/finance/expense_form.html", context)
 
@@ -2074,12 +2162,13 @@ def finance_expense_edit(request, expense_uuid):
     expense = _expense_for_user(request, expense_uuid)
     if not expense:
         return HttpResponseForbidden("Недостаточно прав.")
+    return_context = _expense_return_context(request, expense)
     if not can_edit_expense(request.user, expense):
         messages.error(request, "Подтверждённый расход изменять нельзя.")
-        return redirect("finance_expense_detail", expense_uuid=expense.uuid)
+        return redirect(_expense_detail_url(expense, return_context))
     if period_is_closed(expense.organization, expense.spent_on):
         messages.error(request, "Расход относится к закрытому месяцу.")
-        return redirect("finance_expense_detail", expense_uuid=expense.uuid)
+        return redirect(_expense_detail_url(expense, return_context))
     manage = can_manage_finance(request.user, expense.organization)
     form = ExpenseForm(
         request.POST or None,
@@ -2090,7 +2179,13 @@ def finance_expense_edit(request, expense_uuid):
         can_manage=manage,
     )
     if request.method != "POST" or not form.is_valid():
-        return _expense_form_response(request, expense.organization, form, expense=expense)
+        return _expense_form_response(
+            request,
+            expense.organization,
+            form,
+            expense=expense,
+            return_context=return_context,
+        )
     with transaction.atomic():
         client = form.resolved_client
         if form.new_client_name:
@@ -2126,7 +2221,7 @@ def finance_expense_edit(request, expense_uuid):
         )
     notify_expense_submitted(updated)
     messages.success(request, "Расход обновлён и повторно отправлен на проверку.")
-    return redirect("finance_expense_detail", expense_uuid=updated.uuid)
+    return redirect(_expense_detail_url(updated, return_context))
 
 
 @login_required
@@ -2135,6 +2230,7 @@ def finance_expense_detail(request, expense_uuid):
     expense = _expense_for_user(request, expense_uuid)
     if not expense:
         return HttpResponseForbidden("Недостаточно прав.")
+    return_context = _expense_return_context(request, expense)
     can_delete = request.user.id == expense.created_by_id and not period_is_closed(expense.organization, expense.spent_on)
     return render(
         request,
@@ -2147,6 +2243,7 @@ def finance_expense_detail(request, expense_uuid):
             "can_delete": can_delete,
             "active_tab": "finance",
             "show_add_button": False,
+            **return_context,
         },
     )
 
@@ -2157,6 +2254,7 @@ def finance_expense_delete(request, expense_uuid):
     expense = _expense_for_user(request, expense_uuid)
     if not expense:
         return HttpResponseForbidden("Недостаточно прав.")
+    return_context = _expense_return_context(request, expense)
     if request.user.id != expense.created_by_id:
         return HttpResponseForbidden("Удалить расход может только тот, кто его добавил.")
     if period_is_closed(expense.organization, expense.spent_on):
@@ -2169,7 +2267,7 @@ def finance_expense_delete(request, expense_uuid):
     for receipt in receipts:
         receipt.file.delete(save=False)
     messages.success(request, "Расход удалён.")
-    return redirect("finance_my")
+    return redirect(return_context["return_url"])
 
 
 @require_POST
@@ -2178,16 +2276,17 @@ def finance_expense_review(request, expense_uuid):
     expense = get_object_or_404(Expense.objects.select_related("organization", "employee", "created_by"), uuid=expense_uuid)
     if not can_review_expense(request.user, expense):
         return HttpResponseForbidden("Нельзя согласовать собственный расход.")
+    return_context = _expense_return_context(request, expense)
     if expense.status != Expense.STATUS_PENDING:
         messages.error(request, "Этот расход уже рассмотрен.")
-        return redirect("finance_expense_detail", expense_uuid=expense.uuid)
+        return redirect(_expense_detail_url(expense, return_context))
     if period_is_closed(expense.organization, expense.spent_on):
         messages.error(request, "Месяц закрыт.")
-        return redirect("finance_expense_detail", expense_uuid=expense.uuid)
+        return redirect(_expense_detail_url(expense, return_context))
     form = ExpenseReviewForm(request.POST)
     if not form.is_valid():
         messages.error(request, "Проверьте решение и комментарий.")
-        return redirect("finance_expense_detail", expense_uuid=expense.uuid)
+        return redirect(_expense_detail_url(expense, return_context))
     decision = form.cleaned_data["decision"]
     with transaction.atomic():
         expense.status = decision
@@ -2204,7 +2303,7 @@ def finance_expense_review(request, expense_uuid):
         )
     notify_expense_reviewed(expense)
     messages.success(request, "Решение сохранено.")
-    return redirect("finance_expense_detail", expense_uuid=expense.uuid)
+    return redirect(_expense_detail_url(expense, return_context))
 
 
 @require_POST
@@ -2380,6 +2479,7 @@ def finance_report(request):
         return denied
     month_value, start, end = _selected_month(request)
     filters = _report_filters(request)
+    report_return_filters = _normalized_expense_report_filters(request.GET, organization)
     expenses = list(report_expenses(organization, start, end, filters))
     approved_total = sum((item.amount for item in expenses if item.status == Expense.STATUS_APPROVED), Decimal("0.00"))
     pending_total = sum((item.amount for item in expenses if item.status == Expense.STATUS_PENDING), Decimal("0.00"))
@@ -2430,6 +2530,10 @@ def finance_report(request):
             "can_close_finance": can_close_finance_period(request.user, organization),
             "active_tab": "finance",
             "show_add_button": False,
+            "expense_report_return_query": urlencode([
+                ("return_to", "expense_report"),
+                *[(f"report_{name}", value) for name, value in report_return_filters.items()],
+            ]),
         },
     )
 

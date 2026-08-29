@@ -4,6 +4,7 @@ import uuid
 from datetime import date, timedelta
 from decimal import Decimal
 from io import BytesIO
+from urllib.parse import parse_qs, urlparse
 
 from PIL import Image
 from django.contrib.auth.models import User
@@ -1469,6 +1470,176 @@ class FinanceTests(TestCase):
         self.assertEqual(second.status_code, 200)
         self.assertJSONEqual(first.content, {"ok": True, "expense_uuid": request_id, "detail_url": f"/finance/expenses/{request_id}/"})
         self.assertEqual(Expense.objects.filter(uuid=request_id).count(), 1)
+
+    def test_expense_report_return_context_preserves_only_normalized_filters(self):
+        report_client = Client.objects.create(
+            organization=self.organization,
+            name="Клиент отчёта",
+            client_type="private",
+        )
+        self.create_expense(user=self.accountant, client_id=report_client.id, destination_query=report_client.name)
+        expense = Expense.objects.get()
+        other_organization = Organization.objects.create(
+            name="Other report organization",
+            paid_until=timezone.now() + timedelta(days=30),
+        )
+        other_client = Client.objects.create(organization=other_organization, name="Чужой клиент", client_type="private")
+        self.client.force_login(self.accountant)
+        report_filters = {
+            "month": date.today().strftime("%Y-%m"),
+            "employee": str(self.service.id),
+            "category": str(self.category.id),
+            "client": str(report_client.id),
+            "source": Expense.SOURCE_ACCOUNTABLE,
+            "status": Expense.STATUS_PENDING,
+            "q": "Материалы",
+            "unexpected": "discard-me",
+        }
+
+        report = self.client.get(reverse("finance_report"), report_filters)
+        self.assertEqual(report.status_code, 200)
+        expected_report_filters = {
+            "return_to": ["expense_report"],
+            "report_month": [report_filters["month"]],
+            "report_employee": [str(self.service.id)],
+            "report_category": [str(self.category.id)],
+            "report_client": [str(report_client.id)],
+            "report_source": [Expense.SOURCE_ACCOUNTABLE],
+            "report_status": [Expense.STATUS_PENDING],
+            "report_q": ["Материалы"],
+        }
+        report_link = reverse("finance_expense_detail", kwargs={"expense_uuid": expense.uuid})
+        self.assertIn(report_link, report.content.decode())
+        self.assertEqual(parse_qs(report.context["expense_report_return_query"]), expected_report_filters)
+        self.assertContains(
+            report,
+            f"{report_link}?return_to=expense_report&amp;report_month={report_filters['month']}",
+        )
+        detail = self.client.get(
+            report_link,
+            {
+                **{name: values[0] for name, values in expected_report_filters.items()},
+                "report_client": str(other_client.id),
+                "unexpected": "discard-me",
+            },
+        )
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(
+            parse_qs(urlparse(detail.context["return_url"]).query),
+            {
+                "month": [report_filters["month"]],
+                "employee": [str(self.service.id)],
+                "category": [str(self.category.id)],
+                "source": [Expense.SOURCE_ACCOUNTABLE],
+                "status": [Expense.STATUS_PENDING],
+                "q": ["Материалы"],
+            },
+        )
+        self.assertNotIn("unexpected", detail.context["return_url"])
+        self.assertNotIn("client", parse_qs(urlparse(detail.context["return_url"]).query))
+
+    def test_expense_report_context_survives_detail_edit_and_delete(self):
+        self.create_expense(user=self.accountant)
+        expense = Expense.objects.get()
+        self.client.force_login(self.accountant)
+        context = {
+            "return_to": "expense_report",
+            "report_month": date.today().strftime("%Y-%m"),
+            "report_employee": str(self.service.id),
+            "report_source": Expense.SOURCE_ACCOUNTABLE,
+            "report_status": Expense.STATUS_PENDING,
+            "report_q": "Материалы",
+        }
+        detail_url = reverse("finance_expense_detail", kwargs={"expense_uuid": expense.uuid})
+        detail = self.client.get(detail_url, context)
+        self.assertEqual(detail.context["return_label"], "К отчёту")
+        self.assertContains(detail, ">К отчёту</a>")
+        self.assertContains(detail, f"{reverse('finance_expense_edit', kwargs={'expense_uuid': expense.uuid})}?return_to=expense_report")
+
+        edit = self.client.get(reverse("finance_expense_edit", kwargs={"expense_uuid": expense.uuid}), context)
+        self.assertEqual(edit.context["return_url"], detail.context["return_url"])
+        self.assertContains(edit, 'name="return_to" value="expense_report"')
+        self.assertContains(edit, ">Отмена</a>")
+
+        invalid = self.client.post(
+            reverse("finance_expense_edit", kwargs={"expense_uuid": expense.uuid}),
+            {**self.expense_payload(request_id=str(expense.uuid), amount=""), **context},
+        )
+        self.assertEqual(invalid.status_code, 200)
+        self.assertEqual(invalid.context["return_url"], detail.context["return_url"])
+
+        updated = self.client.post(
+            reverse("finance_expense_edit", kwargs={"expense_uuid": expense.uuid}),
+            {**self.expense_payload(request_id=str(expense.uuid)), **context},
+        )
+        self.assertEqual(updated.status_code, 302)
+        self.assertEqual(urlparse(updated.url).path, detail_url)
+        self.assertEqual(
+            parse_qs(urlparse(updated.url).query),
+            {name: [value] for name, value in context.items()},
+        )
+
+        delete_context = {
+            "return_to": "expense_report",
+            "report_month": context["report_month"],
+            "report_q": context["report_q"],
+        }
+        deleted = self.client.post(
+            reverse("finance_expense_delete", kwargs={"expense_uuid": expense.uuid}),
+            delete_context,
+        )
+        self.assertEqual(deleted.status_code, 302)
+        self.assertEqual(urlparse(deleted.url).path, reverse("finance_report"))
+        self.assertEqual(
+            parse_qs(urlparse(deleted.url).query),
+            {"month": [context["report_month"]], "q": [context["report_q"]]},
+        )
+
+    def test_employee_expense_return_context_and_safe_fallbacks(self):
+        self.create_expense(user=self.accountant)
+        expense = Expense.objects.get()
+        self.client.force_login(self.accountant)
+        employee = self.client.get(reverse("finance_employee_detail", kwargs={"employee_id": self.service.id}))
+        self.assertContains(
+            employee,
+            f"{reverse('finance_expense_detail', kwargs={'expense_uuid': expense.uuid})}?return_to=employee_detail",
+        )
+
+        detail_url = reverse("finance_expense_detail", kwargs={"expense_uuid": expense.uuid})
+        detail = self.client.get(detail_url, {"return_to": "employee_detail"})
+        expected_employee_url = reverse("finance_employee_detail", kwargs={"employee_id": self.service.id})
+        self.assertEqual(detail.context["return_url"], expected_employee_url)
+        self.assertEqual(detail.context["return_label"], "К сотруднику")
+
+        edit = self.client.get(
+            reverse("finance_expense_edit", kwargs={"expense_uuid": expense.uuid}),
+            {"return_to": "employee_detail"},
+        )
+        self.assertEqual(edit.context["return_url"], expected_employee_url)
+
+        for return_to in (None, "https://example.invalid/", "cash_operation_detail"):
+            query = {} if return_to is None else {"return_to": return_to}
+            response = self.client.get(detail_url, query)
+            self.assertEqual(response.context["return_url"], reverse("finance_my"))
+
+        self.client.force_login(self.installer)
+        denied = self.client.get(detail_url, {"return_to": "expense_report"})
+        self.assertEqual(denied.status_code, 403)
+
+    def test_expense_edit_modal_has_no_embedded_parent_navigation(self):
+        self.create_expense(user=self.accountant)
+        expense = Expense.objects.get()
+        self.client.force_login(self.accountant)
+
+        response = self.client.get(
+            reverse("finance_expense_edit", kwargs={"expense_uuid": expense.uuid}),
+            {"modal": "1", "return_to": "expense_report", "report_month": date.today().strftime("%Y-%m")},
+        )
+
+        self.assertTrue(response.context["finance_modal"])
+        self.assertNotContains(response, ">Назад</a>")
+        self.assertNotContains(response, ">Отмена</a>")
+        self.assertContains(response, 'name="return_to" value="expense_report"')
 
     def test_report_counts_only_actual_approved_expenses(self):
         AccountableTransaction.objects.create(

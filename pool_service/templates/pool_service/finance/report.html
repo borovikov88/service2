@@ -84,11 +84,11 @@
       <thead class="small text-muted"><tr><th class="expense-select-cell"></th><th>Дата</th><th>Сотрудник</th><th>Назначение</th><th>Чек</th><th>Статус</th><th>1С</th><th class="text-end">Сумма</th></tr></thead>
       <tbody>
         {% for expense in expenses %}
-          <tr data-row-href="{% url 'finance_expense_detail' expense.uuid %}" data-expense-bulk-row>
+          <tr data-row-href="{% url 'finance_expense_detail' expense.uuid %}?{{ expense_report_return_query }}" data-expense-bulk-row>
             <td class="expense-select-cell">
               <input type="checkbox" name="expense_ids" value="{{ expense.uuid }}" class="form-check-input expense-bulk-checkbox" form="expense-bulk-hidden-form" data-expense-checkbox>
             </td>
-            <td class="date-cell"><a href="{% url 'finance_expense_detail' expense.uuid %}" class="text-decoration-none"><span>{{ expense.spent_on|date:"d.m" }}</span><span class="date-cell__year">{{ expense.spent_on|date:"Y" }}</span></a></td>
+            <td class="date-cell"><a href="{% url 'finance_expense_detail' expense.uuid %}?{{ expense_report_return_query }}" class="text-decoration-none"><span>{{ expense.spent_on|date:"d.m" }}</span><span class="date-cell__year">{{ expense.spent_on|date:"Y" }}</span></a></td>
             <td class="expense-employee-cell">
               {% if expense.employee.last_name %}
                 <div class="expense-employee-cell__last">{{ expense.employee.last_name }}</div>
