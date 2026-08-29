@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -61,3 +62,15 @@ class PwaTests(TestCase):
         saved_item = source.index("await saveItem")
         update_status = source.index("await updateStatus();", saved_item)
         self.assertNotIn("newRequestId()", source[saved_item:update_status])
+
+    def test_finance_offline_script_uses_content_cache_version(self):
+        script_path = Path(settings.BASE_DIR) / "pool_service/static/assets/js/finance-offline.js"
+        cache_version = hashlib.sha256(script_path.read_bytes()).hexdigest()[:12]
+        base_template = (Path(settings.BASE_DIR) / "pool_service/templates/pool_service/base.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "{% static 'assets/js/finance-offline.js' %}?v=" + cache_version,
+            base_template,
+        )
