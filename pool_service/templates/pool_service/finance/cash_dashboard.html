@@ -123,77 +123,84 @@
         </tr>
       </thead>
       <tbody>
-        {% for operation in operations %}
-          <tr data-row-href="{% if operation.can_edit %}{% url 'finance_cash_operation_edit' operation.id %}?return_to=kkm_dashboard{% else %}{% url 'finance_cash_operation_detail' operation.id %}{% endif %}">
-            <td class="date-cell"><span>{{ operation.occurred_on|date:"d.m" }}</span><span class="date-cell__year">{{ operation.occurred_on|date:"Y" }}</span></td>
+        {% for entry in kkm_history %}
+          <tr{% if entry.operation %} data-row-href="{% if entry.operation.can_edit %}{% url 'finance_cash_operation_edit' entry.operation.id %}?return_to=kkm_dashboard{% else %}{% url 'finance_cash_operation_detail' entry.operation.id %}{% endif %}"{% endif %}>
+            <td class="date-cell"><span>{{ entry.business_date|date:"d.m" }}</span><span class="date-cell__year">{{ entry.business_date|date:"Y" }}</span></td>
             <td>
-              <div class="fw-semibold">{{ operation.get_operation_type_display }}</div>
-              {% if operation.note %}<div class="small text-muted">{{ operation.note }}</div>{% endif %}
-              {% if operation.accountable_transaction %}
-                <div class="small text-muted">Кому: {{ operation.accountable_transaction.employee|finance_employee_name }}</div>
-              {% endif %}
-            </td>
-            <td>{{ operation.manager|finance_employee_name }}</td>
-            <td>{% if operation.receiver %}{{ operation.receiver|finance_employee_name }}{% elif operation.accountable_transaction %}{{ operation.accountable_transaction.employee|finance_employee_name }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
-            <td class="text-end fw-semibold">{{ operation.amount|money }}</td>
-            <td class="text-end">
-              {% if operation.operation_type == "manager_income" %}
-                {% finance_status_icon operation "Не подтверждено" %}
+              {% if entry.operation %}
+                <div class="fw-semibold">{{ entry.operation.get_operation_type_display }}</div>
+                {% if entry.operation.note %}<div class="small text-muted">{{ entry.operation.note }}</div>{% endif %}
+                {% if entry.operation.accountable_transaction %}
+                  <div class="small text-muted">Кому: {{ entry.operation.accountable_transaction.employee|finance_employee_name }}</div>
+                {% endif %}
               {% else %}
-                {% finance_status_icon operation %}
+                <div class="fw-semibold">Расход из кассы ККМ</div>
+                {% if entry.expense.description %}<div class="small text-muted">{{ entry.expense.description }}</div>{% endif %}
               {% endif %}
             </td>
+            <td>{% if entry.operation %}{{ entry.operation.manager|finance_employee_name }}{% else %}{{ entry.actor|finance_employee_name }}{% endif %}</td>
+            <td>{% if entry.operation.receiver %}{{ entry.operation.receiver|finance_employee_name }}{% elif entry.operation.accountable_transaction %}{{ entry.operation.accountable_transaction.employee|finance_employee_name }}{% elif entry.related_label %}{{ entry.related_label }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
+            <td class="text-end fw-semibold">
+              <span class="cash-history-amount cash-history-amount--{{ entry.direction }} {% if entry.direction == 'in' %}text-success{% else %}text-danger{% endif %}">
+                {{ entry.sign }} {% if entry.operation %}{{ entry.operation.amount|money }}{% else %}{{ entry.expense.amount|money }}{% endif %}
+              </span>
+            </td>
+            <td class="text-end"><span class="badge {{ entry.status_class }}">{{ entry.status_label }}</span></td>
             <td class="text-end">
-                {% if operation.status == "pending" and operation.operation_type != "accountable_issue" and operation.operation_type != "accountable_return" and can_manage_cash %}
+              {% if entry.operation %}
+                {% if entry.operation.can_review %}
                   <div class="d-flex flex-wrap justify-content-end gap-2">
-                    <form method="post" action="{% url 'finance_cash_operation_review' operation.id %}" class="d-inline">
+                    <form method="post" action="{% url 'finance_cash_operation_review' entry.operation.id %}" class="d-inline">
                       {% csrf_token %}
                       <input type="hidden" name="decision" value="approved">
                       <button class="btn btn-success btn-sm js-confirm-action" type="submit" data-confirm-title="Подтвердить операцию" data-confirm-body="После подтверждения операция попадёт в кассовые остатки." data-confirm-confirm="Подтвердить" data-confirm-variant="success">Подтвердить</button>
                     </form>
-                    <form method="post" action="{% url 'finance_cash_operation_review' operation.id %}" class="d-inline">
+                    <form method="post" action="{% url 'finance_cash_operation_review' entry.operation.id %}" class="d-inline">
                       {% csrf_token %}
                       <input type="hidden" name="decision" value="rejected">
                       <button class="btn btn-outline-danger btn-sm js-confirm-action" type="submit" data-confirm-title="Отклонить операцию" data-confirm-body="Отклонённая операция останется в истории, но не попадёт в остатки." data-confirm-confirm="Отклонить" data-confirm-variant="danger">Отклонить</button>
                     </form>
-                    {% if operation.can_delete %}
-                      <form method="post" action="{% url 'finance_cash_operation_delete' operation.id %}" class="d-inline">
+                    {% if entry.operation.can_delete %}
+                      <form method="post" action="{% url 'finance_cash_operation_delete' entry.operation.id %}" class="d-inline">
                         {% csrf_token %}
                         <button class="btn btn-outline-danger btn-sm js-confirm-action" type="submit" data-confirm-title="Удалить операцию" data-confirm-body="Временно: операция ККМ и связанные события будут удалены без восстановления." data-confirm-confirm="Удалить" data-confirm-variant="danger">Удалить</button>
                       </form>
                     {% endif %}
                   </div>
-                {% elif operation.status == "pending" and operation.operation_type == "accountable_return" and operation.manager_id == request.user.id and operation.created_by_id != request.user.id %}
+                {% elif entry.operation.status == "pending" and entry.operation.operation_type == "accountable_return" and entry.operation.manager_id == request.user.id and entry.operation.created_by_id != request.user.id %}
                   <div class="d-flex flex-wrap justify-content-end gap-2">
-                    <form method="post" action="{% url 'finance_cash_operation_review' operation.id %}" class="d-inline">
+                    <form method="post" action="{% url 'finance_cash_operation_review' entry.operation.id %}" class="d-inline">
                       {% csrf_token %}
                       <input type="hidden" name="decision" value="approved">
                       <button class="btn btn-success btn-sm js-confirm-action" type="submit" data-confirm-title="Подтвердить возврат" data-confirm-body="После подтверждения сумма попадёт в ККМ, а подотчёт сотрудника уменьшится." data-confirm-confirm="Подтвердить" data-confirm-variant="success">Подтвердить</button>
                     </form>
-                    <form method="post" action="{% url 'finance_cash_operation_review' operation.id %}" class="d-inline">
+                    <form method="post" action="{% url 'finance_cash_operation_review' entry.operation.id %}" class="d-inline">
                       {% csrf_token %}
                       <input type="hidden" name="decision" value="rejected">
                       <button class="btn btn-outline-danger btn-sm js-confirm-action" type="submit" data-confirm-title="Отклонить возврат" data-confirm-body="Возврат останется в истории, но не попадёт в остатки." data-confirm-confirm="Отклонить" data-confirm-variant="danger">Отклонить</button>
                     </form>
-                    {% if operation.can_delete %}
-                      <form method="post" action="{% url 'finance_cash_operation_delete' operation.id %}" class="d-inline">
+                    {% if entry.operation.can_delete %}
+                      <form method="post" action="{% url 'finance_cash_operation_delete' entry.operation.id %}" class="d-inline">
                         {% csrf_token %}
                         <button class="btn btn-outline-danger btn-sm js-confirm-action" type="submit" data-confirm-title="Удалить операцию" data-confirm-body="Временно: операция ККМ и связанные события будут удалены без восстановления." data-confirm-confirm="Удалить" data-confirm-variant="danger">Удалить</button>
                       </form>
                     {% endif %}
                   </div>
-                {% elif operation.can_delete %}
-                  <form method="post" action="{% url 'finance_cash_operation_delete' operation.id %}" class="d-inline">
+                {% elif entry.operation.can_delete %}
+                  <form method="post" action="{% url 'finance_cash_operation_delete' entry.operation.id %}" class="d-inline">
                     {% csrf_token %}
                     <button class="btn btn-outline-danger btn-sm js-confirm-action" type="submit" data-confirm-title="Удалить операцию" data-confirm-body="Временно: операция ККМ и связанные события будут удалены без восстановления." data-confirm-confirm="Удалить" data-confirm-variant="danger">Удалить</button>
                   </form>
                 {% else %}
                   <span class="text-muted">—</span>
                 {% endif %}
+              {% else %}
+                <span class="text-muted">—</span>
+              {% endif %}
             </td>
           </tr>
         {% empty %}
-          <tr><td colspan="7" class="text-center text-muted py-4">Кассовых операций пока нет</td></tr>
+          <tr><td colspan="7" class="text-center text-muted py-4">Движений по кассе ККМ пока нет</td></tr>
         {% endfor %}
       </tbody>
     </table>

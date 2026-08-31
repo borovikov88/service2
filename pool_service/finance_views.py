@@ -589,6 +589,8 @@ def _decorate_accountable_movements(user, movements):
 def _cash_reviewers_can_review(user, operation):
     if not can_manage_cash(user, operation.organization):
         return False
+    if user.is_superuser or "admin" in organization_roles(user, operation.organization):
+        return True
     return user.id not in {operation.manager_id, operation.created_by_id}
 
 
@@ -616,6 +618,82 @@ def _can_delete_cash_operation(user, operation):
     if not operation:
         return False
     return user.is_superuser or "admin" in organization_roles(user, operation.organization)
+
+
+def _kkm_history_entries(organization, user):
+    operations = list(
+        CashOperation.objects.filter(organization=organization)
+        .select_related(
+            "manager",
+            "receiver",
+            "created_by",
+            "reviewed_by",
+            "accountable_transaction__employee",
+        )
+        .order_by("-occurred_on", "-created_at", "-id")[:100]
+    )
+    expenses = list(
+        Expense.objects.filter(organization=organization, source=Expense.SOURCE_KKM_CASH)
+        .select_related("employee", "category", "created_by", "reviewed_by")
+        .order_by("-spent_on", "-created_at", "-id")[:100]
+    )
+    incoming_types = {
+        CashOperation.TYPE_MANAGER_INCOME,
+        CashOperation.TYPE_ACCOUNTABLE_RETURN,
+        CashOperation.TYPE_CASH_COUNT_INCOME,
+    }
+    entries = []
+    for operation in operations:
+        operation.can_edit = _can_edit_cash_operation(user, operation)
+        operation.can_delete = _can_delete_cash_operation(user, operation)
+        operation.can_review = (
+            operation.status == CashOperation.STATUS_PENDING
+            and operation.operation_type not in {
+                CashOperation.TYPE_ACCOUNTABLE_ISSUE,
+                CashOperation.TYPE_ACCOUNTABLE_RETURN,
+            }
+            and _cash_reviewers_can_review(user, operation)
+        )
+        entries.append(
+            {
+                "kind": "operation",
+                "operation": operation,
+                "business_date": operation.occurred_on,
+                "created_at": operation.created_at,
+                "entry_id": operation.id,
+                "direction": "in" if operation.operation_type in incoming_types else "out",
+                "sign": "+" if operation.operation_type in incoming_types else "−",
+                "status_label": operation.get_status_display(),
+                "status_class": {
+                    CashOperation.STATUS_APPROVED: "text-bg-success",
+                    CashOperation.STATUS_REJECTED: "text-bg-danger",
+                }.get(operation.status, "text-bg-warning"),
+            }
+        )
+    for expense in expenses:
+        entries.append(
+            {
+                "kind": "expense",
+                "expense": expense,
+                "business_date": expense.spent_on,
+                "created_at": expense.created_at,
+                "entry_id": expense.id,
+                "direction": "out",
+                "sign": "−",
+                "actor": expense.employee,
+                "related_label": expense.category.name,
+                "status_label": expense.get_status_display(),
+                "status_class": {
+                    Expense.STATUS_APPROVED: "text-bg-success",
+                    Expense.STATUS_REJECTED: "text-bg-danger",
+                }.get(expense.status, "text-bg-warning"),
+            }
+        )
+    return sorted(
+        entries,
+        key=lambda entry: (entry["business_date"], entry["created_at"], entry["entry_id"]),
+        reverse=True,
+    )[:100]
 
 
 def _cash_operation_for_user(request, operation_id):
@@ -677,7 +755,7 @@ def _render_cash_dashboard(request, section):
     if section not in {"company", "kkm"}:
         return redirect("finance_kkm_cash_dashboard" if can_access_cash(request.user, organization) else "finance_my")
 
-    operations = []
+    kkm_history = []
     manager_rows = []
     company_balance = None
     kkm_balance = None
@@ -691,21 +769,8 @@ def _render_cash_dashboard(request, section):
             .order_by("-occurred_on", "-id")[:20]
         )
     else:
-        can_delete_cash_operations = request.user.is_superuser or "admin" in roles
         kkm_balance = kkm_cash_balance(organization)
-        operations = list(
-            CashOperation.objects.filter(organization=organization)
-            .select_related(
-                "manager",
-                "receiver",
-                "created_by",
-                "reviewed_by",
-                "accountable_transaction__employee",
-            )[:100]
-        )
-        for operation in operations:
-            operation.can_edit = _can_edit_cash_operation(request.user, operation)
-            operation.can_delete = can_delete_cash_operations
+        kkm_history = _kkm_history_entries(organization, request.user)
         kkm_counts = (
             CashCount.objects.filter(organization=organization, cashbox_type=CashCount.CASHBOX_KKM)
             .select_related("counted_by")
@@ -726,7 +791,7 @@ def _render_cash_dashboard(request, section):
             "company_balance": company_balance,
             "kkm_balance": kkm_balance,
             "manager_rows": manager_rows,
-            "operations": operations,
+            "kkm_history": kkm_history,
             "company_counts": company_counts,
             "kkm_counts": kkm_counts,
             "active_tab": "finance",
@@ -1411,11 +1476,12 @@ def finance_cash_count_create(request, cashbox_type):
         cashbox_type=cashbox_type,
     )
     denomination_fields = [(name, label, value, form[name]) for name, label, value in CASH_DENOMINATIONS]
-    expected_balance = (
-        company_cash_balance(organization)["balance"]
-        if cashbox_type == CashCount.CASHBOX_COMPANY
-        else kkm_cash_balance(organization)["balance"]
-    )
+    kkm_balance = None
+    if cashbox_type == CashCount.CASHBOX_COMPANY:
+        expected_balance = company_cash_balance(organization)["balance"]
+    else:
+        kkm_balance = kkm_cash_balance(organization)
+        expected_balance = kkm_balance["available_balance"]
     if request.method == "POST" and form.is_valid():
         actual_total = form.total_amount()
         difference = actual_total - expected_balance
@@ -1445,6 +1511,8 @@ def finance_cash_count_create(request, cashbox_type):
         "title": title,
         "cashbox_type": cashbox_type,
         "expected_balance": expected_balance,
+        "cash_balance_before_reserves": kkm_balance["balance"] if kkm_balance else None,
+        "cash_reserved_total": kkm_balance["reserved_total"] if kkm_balance else None,
         "back_url_name": (
             "finance_company_cash_dashboard"
             if cashbox_type == CashCount.CASHBOX_COMPANY
