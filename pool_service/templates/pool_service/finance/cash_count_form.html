@@ -196,8 +196,22 @@
       return url.toString();
     }
 
-    function openAction(path) {
-      window.location.assign(buildActionUrl(path, currentDiff));
+    function openAction(action) {
+      const paths = {
+        issue: form.dataset.issueUrl,
+        transfer: form.dataset.transferUrl,
+        income: form.dataset.incomeUrl,
+      };
+      const amount = Math.abs(currentDiff);
+      if (!paths[action] || !Number.isFinite(amount) || amount < 0.005) return;
+      if (form.dataset.financeModal === "1" && window.parent !== window) {
+        window.parent.postMessage(
+          { type: "finance-modal-navigate", action: action, amount: amount.toFixed(2) },
+          window.location.origin
+        );
+        return;
+      }
+      window.location.assign(buildActionUrl(paths[action], amount));
     }
 
     function updateTotal() {
@@ -238,9 +252,9 @@
       return true;
     }
 
-    issueButton?.addEventListener("click", function () { openAction(form.dataset.issueUrl); });
-    transferButton?.addEventListener("click", function () { openAction(form.dataset.transferUrl); });
-    incomeButton?.addEventListener("click", function () { openAction(form.dataset.incomeUrl); });
+    issueButton?.addEventListener("click", function () { openAction("issue"); });
+    transferButton?.addEventListener("click", function () { openAction("transfer"); });
+    incomeButton?.addEventListener("click", function () { openAction("income"); });
 
     form.addEventListener("submit", function (event) {
       if (!isKkm || Math.abs(currentDiff) < 0.005) return;

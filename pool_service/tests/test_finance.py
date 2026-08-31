@@ -1220,8 +1220,13 @@ class FinanceTests(TestCase):
         self.assertNotContains(dashboard, "Не расход ККМ")
         self.assertContains(dashboard, "cash-history-amount--in text-success")
         self.assertContains(dashboard, "cash-history-amount--out text-danger")
-        self.assertContains(dashboard, "На проверке")
-        self.assertContains(dashboard, "Отклонено")
+        self.assertContains(dashboard, "finance-status-icon text-success")
+        self.assertContains(dashboard, "finance-status-icon text-warning")
+        self.assertContains(dashboard, "finance-status-icon text-danger")
+        self.assertContains(dashboard, 'data-bs-toggle="tooltip"')
+        self.assertContains(dashboard, 'aria-label="На проверке"')
+        self.assertContains(dashboard, 'aria-label="Отклонено"')
+        self.assertNotContains(dashboard, '<span class="badge text-bg')
 
     def test_admin_can_temporarily_delete_kkm_cash_operation_with_related_records(self):
         movement = AccountableTransaction.objects.create(
@@ -1551,6 +1556,19 @@ class FinanceTests(TestCase):
         self.assertContains(count_response, "issueButton.hidden = currentDiff >= 0;")
         self.assertContains(count_response, "transferButton.hidden = currentDiff >= 0;")
         self.assertContains(count_response, "incomeButton.hidden = currentDiff <= 0;")
+        self.assertContains(count_response, 'type: "finance-modal-navigate"')
+        self.assertContains(count_response, "amount: amount.toFixed(2)")
+        self.assertContains(count_response, 'openAction("issue")')
+        self.assertContains(count_response, 'openAction("transfer")')
+        self.assertEqual(CashOperation.objects.count(), 0)
+        self.assertEqual(CashCount.objects.count(), 0)
+
+        dashboard = self.client.get(reverse("finance_kkm_cash_dashboard"))
+        self.assertContains(dashboard, "const mismatchActions = {")
+        self.assertContains(dashboard, "event.source !== frame.contentWindow")
+        self.assertContains(dashboard, 'url: "{}"'.format(reverse("finance_cash_accountable_issue_create")))
+        self.assertContains(dashboard, 'url: "{}"'.format(reverse("finance_cash_transfer_create")))
+        self.assertContains(dashboard, 'url.searchParams.set("amount", amount.toFixed(2));')
 
         for url_name in (
             "finance_cash_income_create",

@@ -145,7 +145,17 @@
                 {{ entry.sign }} {% if entry.operation %}{{ entry.operation.amount|money }}{% else %}{{ entry.expense.amount|money }}{% endif %}
               </span>
             </td>
-            <td class="text-end"><span class="badge {{ entry.status_class }}">{{ entry.status_label }}</span></td>
+            <td class="text-end">
+              {% if entry.operation %}
+                {% if entry.operation.operation_type == "manager_income" %}
+                  {% finance_status_icon entry.operation "Не подтверждено" %}
+                {% else %}
+                  {% finance_status_icon entry.operation %}
+                {% endif %}
+              {% else %}
+                {% finance_status_icon entry.expense %}
+              {% endif %}
+            </td>
             <td class="text-end">
               {% if entry.operation %}
                 {% if entry.operation.can_review %}
@@ -249,22 +259,54 @@
     if (!modalElement || !frame || !title || !dialog || typeof bootstrap === "undefined") return;
 
     const modal = bootstrap.Modal.getOrCreateInstance(modalElement);
+    const mismatchActions = {
+      issue: {
+        url: "{% url 'finance_cash_accountable_issue_create' %}",
+        title: "Выдать подотчёт из ККМ",
+        size: "lg",
+      },
+      transfer: {
+        url: "{% url 'finance_cash_transfer_create' %}",
+        title: "Сдать выручку",
+        size: "lg",
+      },
+      income: {
+        url: "{% url 'finance_cash_income_create' %}",
+        title: "Поступление в кассу ККМ",
+        size: "lg",
+      },
+    };
     let formPath = "";
+
+    function openModalForm(rawUrl, modalTitle, modalSize) {
+      const url = new URL(rawUrl, window.location.href);
+      url.searchParams.set("modal", "1");
+      formPath = url.pathname;
+      title.textContent = modalTitle || "Касса";
+      frame.title = title.textContent;
+      dialog.classList.toggle("modal-xl", modalSize === "xl");
+      dialog.classList.toggle("modal-lg", modalSize !== "xl");
+      frame.src = url.toString();
+      modal.show();
+    }
 
     document.querySelectorAll("[data-finance-modal]").forEach(function (link) {
       link.addEventListener("click", function (event) {
         if (!window.matchMedia("(min-width: 992px)").matches) return;
         event.preventDefault();
-        const url = new URL(link.href, window.location.href);
-        url.searchParams.set("modal", "1");
-        formPath = url.pathname;
-        title.textContent = link.dataset.modalTitle || "Касса";
-        frame.title = title.textContent;
-        dialog.classList.toggle("modal-xl", link.dataset.modalSize === "xl");
-        dialog.classList.toggle("modal-lg", link.dataset.modalSize !== "xl");
-        frame.src = url.toString();
-        modal.show();
+        openModalForm(link.href, link.dataset.modalTitle, link.dataset.modalSize);
       });
+    });
+
+    window.addEventListener("message", function (event) {
+      if (event.origin !== window.location.origin || event.source !== frame.contentWindow) return;
+      if (event.data?.type !== "finance-modal-navigate") return;
+      const action = mismatchActions[event.data?.action];
+      const amount = Number(event.data?.amount);
+      if (!action || !Number.isFinite(amount) || amount <= 0) return;
+      const url = new URL(action.url, window.location.href);
+      url.searchParams.set("amount", amount.toFixed(2));
+      openModalForm(url.toString(), action.title, action.size);
     });
 
     frame.addEventListener("load", function () {
