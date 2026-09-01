@@ -1842,6 +1842,14 @@ class OneCImportBatch(models.Model):
     period_first = models.DateField("Первый месяц", null=True, blank=True)
     period_last = models.DateField("Последний месяц", null=True, blank=True)
     metadata = models.JSONField("Метаданные", default=dict, blank=True)
+    sync_run = models.ForeignKey(
+        "OneCODataSyncRun",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="candidate_batches",
+        verbose_name="Автоматическое обновление 1С",
+    )
 
     class Meta:
         verbose_name = "Загрузка отчёта 1С"
@@ -1865,6 +1873,12 @@ class OneCImportBatch(models.Model):
 
 
 class OneCODataSyncRun(models.Model):
+    MODE_PREVIEW = "preview"
+    MODE_AUTO_APPLY = "auto_apply"
+    MODE_CHOICES = [
+        (MODE_PREVIEW, "Проверка без применения"),
+        (MODE_AUTO_APPLY, "Обновление и применение"),
+    ]
     STATUS_PENDING = "pending"
     STATUS_RUNNING = "running"
     STATUS_COMPLETED = "completed"
@@ -1890,6 +1904,10 @@ class OneCODataSyncRun(models.Model):
     requested_by = models.ForeignKey(
         User, on_delete=models.PROTECT, related_name="requested_onec_odata_sync_runs"
     )
+    mode = models.CharField(max_length=16, choices=MODE_CHOICES, default=MODE_PREVIEW)
+    idempotency_key = models.CharField(max_length=64, null=True, blank=True, unique=True)
+    apply_started_at = models.DateTimeField(null=True, blank=True)
+    applied_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
     requested_report_types = models.JSONField(default=list)
     sync_scope = models.JSONField(default=dict)

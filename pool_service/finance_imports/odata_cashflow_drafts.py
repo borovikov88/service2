@@ -563,6 +563,7 @@ def confirm_odata_cashflow(batch_id, organization, user, *, config=None):
                 organization=locked_organization,
                 import_type=OneCImportBatch.TYPE_CASHFLOW,
                 source_type=OneCImportBatch.SOURCE_ODATA,
+                sync_run__isnull=True,
             )
             if batch.status != OneCImportBatch.STATUS_PREVIEWED:
                 raise ValidationError("Only a previewed OData cash-flow draft can be confirmed.")
@@ -616,6 +617,7 @@ def confirm_odata_cashflow(batch_id, organization, user, *, config=None):
             import_type=OneCImportBatch.TYPE_CASHFLOW,
             source_type=OneCImportBatch.SOURCE_ODATA,
             status=OneCImportBatch.STATUS_PREVIEWED,
+            sync_run__isnull=True,
         ).update(status=OneCImportBatch.STATUS_FAILED, error_message=safe)
         if updated:
             failed_batch = OneCImportBatch.objects.get(

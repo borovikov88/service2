@@ -45,6 +45,8 @@ from .odata_profit_drafts import (
     _read_reference_map,
     _read_snapshot as read_profit_snapshot,
     _save_batch_snapshot,
+    _bulk_create_monthly_rows,
+    _save_confirmed_batch,
     _validate_snapshot as validate_profit_snapshot,
     config_from_settings,
     is_odata_target_organization,
@@ -121,6 +123,10 @@ class UnifiedSyncError(ValidationError):
 
 
 class StaleReactivationError(UnifiedSyncError):
+    pass
+
+
+class SyncConflictError(UnifiedSyncError):
     pass
 
 
@@ -266,31 +272,69 @@ def _chunk_scope(start, end):
     ]
 
 
-def start_unified_sync(organization, user, report_types, *, today=None):
+def _scope_fingerprint(organization_id, report_types, scopes):
+    payload = {
+        "organization_id": organization_id,
+        "source": OneCImportBatch.SOURCE_ODATA,
+        "report_types": list(report_types),
+        "scopes": scopes,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def start_unified_sync(
+    organization, user, report_types, *, today=None,
+    mode=OneCODataSyncRun.MODE_PREVIEW, period_start=None, period_end=None,
+):
     requested = [item for item in SUPPORTED_REPORT_TYPES if item in set(report_types)]
     if not requested:
         raise PermissionDenied("No permitted 1C report types were selected.")
     if not is_odata_target_organization(organization):
         raise UnifiedSyncError("OData import is not configured for this organization")
+    if mode not in {OneCODataSyncRun.MODE_PREVIEW, OneCODataSyncRun.MODE_AUTO_APPLY}:
+        raise UnifiedSyncError("Unknown synchronization mode")
     today = (today or timezone.localdate()).replace(day=1)
+    if mode == OneCODataSyncRun.MODE_AUTO_APPLY:
+        if not period_start or not period_end:
+            period_end = today
+            period_start = _add_months(period_end, -(INITIAL_MONTHS - 1))
+        if period_start.day != 1 or period_end.day != 1 or period_start > period_end:
+            raise UnifiedSyncError("Период должен состоять из полных календарных месяцев.")
+        if len(_months(period_start, period_end)) > 24:
+            raise UnifiedSyncError("Период не может превышать 24 месяца.")
     with transaction.atomic():
         locked = Organization.objects.select_for_update().get(pk=organization.pk)
-        existing = OneCODataSyncRun.objects.filter(
-            organization=locked,
-            status__in=[OneCODataSyncRun.STATUS_PENDING, OneCODataSyncRun.STATUS_RUNNING],
-        ).first()
-        if existing:
-            return existing, False
         scopes = {}
         queue = []
         for report_type in requested:
-            start, end, initial = _scope_for(locked, report_type, today)
+            if mode == OneCODataSyncRun.MODE_AUTO_APPLY:
+                start, end, initial = period_start, period_end, False
+            else:
+                start, end, initial = _scope_for(locked, report_type, today)
             chunks = _chunk_scope(start, end)
             scopes[report_type] = {
                 "start": start.isoformat(), "end": end.isoformat(),
                 "initial_import": initial, "chunks": chunks,
             }
             queue.extend({"report_type": report_type, **chunk} for chunk in chunks)
+        fingerprint = _scope_fingerprint(locked.pk, requested, scopes)
+        existing = OneCODataSyncRun.objects.filter(
+            organization=locked,
+            status__in=[OneCODataSyncRun.STATUS_PENDING, OneCODataSyncRun.STATUS_RUNNING],
+        ).first()
+        if existing:
+            existing_fingerprint = (existing.sync_scope or {}).get("_scope_fingerprint")
+            if existing.mode == mode and (
+                mode == OneCODataSyncRun.MODE_PREVIEW or existing_fingerprint == fingerprint
+            ):
+                return existing, False
+            raise SyncConflictError("Another synchronization is already running")
+        if mode == OneCODataSyncRun.MODE_AUTO_APPLY:
+            scopes["_scope_fingerprint"] = fingerprint
+            scopes["_baseline"] = []
+            scopes["_apply_plan"] = []
         summary = {
             report_type: {"status": "pending", "changed_months": [], "unchanged_months": [], "drafts": [], "reactivation_candidates": [], "error_code": "", "error": ""}
             for report_type in requested
@@ -298,6 +342,8 @@ def start_unified_sync(organization, user, report_types, *, today=None):
         run = OneCODataSyncRun.objects.create(
             organization=locked,
             requested_by=user,
+            mode=mode,
+            idempotency_key=(uuid.uuid4().hex if mode == OneCODataSyncRun.MODE_AUTO_APPLY else None),
             requested_report_types=requested,
             sync_scope=scopes,
             cursor={"index": 0, "version": 0, "queue": queue},
@@ -448,6 +494,7 @@ def _existing_preview(organization, report_type, month, fingerprint):
         source_type=OneCImportBatch.SOURCE_ODATA,
         status=OneCImportBatch.STATUS_PREVIEWED,
         period_first=month, period_last=month,
+        sync_run__isnull=True,
     )
     for batch in candidates:
         stored = (batch.metadata or {}).get("month_fingerprint")
@@ -475,6 +522,7 @@ def _confirmed_candidate(organization, report_type, month, fingerprint):
         import_type=report_type,
         source_type=OneCImportBatch.SOURCE_ODATA,
         status=OneCImportBatch.STATUS_CONFIRMED,
+        sync_run__isnull=True,
         period_first__lte=month,
         period_last__gte=month,
     ).exclude(
@@ -496,7 +544,9 @@ def _confirmed_candidate(organization, report_type, month, fingerprint):
 
 def _create_month_draft(run, report_type, month, rows, pages, config, warnings):
     fingerprint = month_fingerprint(report_type, month, rows)
-    existing = _existing_preview(run.organization, report_type, month, fingerprint)
+    existing = None if run.mode == OneCODataSyncRun.MODE_AUTO_APPLY else _existing_preview(
+        run.organization, report_type, month, fingerprint
+    )
     if existing:
         return existing, fingerprint, False
     month_text = month.strftime("%Y-%m")
@@ -524,6 +574,7 @@ def _create_month_draft(run, report_type, month, rows, pages, config, warnings):
         status=OneCImportBatch.STATUS_PREVIEWED, uploaded_by=run.requested_by,
         parser_version=parser, rows_detected=len(rows), period_first=month,
         period_last=month, metadata=metadata,
+        sync_run=(run if run.mode == OneCODataSyncRun.MODE_AUTO_APPLY else None),
         warnings_count=len(warnings) if report_type == REPORT_CASHFLOW else 0,
     )
     try:
@@ -548,6 +599,222 @@ def _terminal_status(summary):
     return OneCODataSyncRun.STATUS_FAILED
 
 
+def _auto_apply_fault(_stage):
+    """Test seam for proving rollback at every mutation boundary."""
+
+
+def _prepared_auto_candidates(run, config):
+    prepared = []
+    for item in (run.sync_scope or {}).get("_apply_plan", []):
+        batch = OneCImportBatch.objects.get(
+            pk=item["batch_id"], sync_run=run,
+            status=OneCImportBatch.STATUS_PREVIEWED,
+        )
+        if batch.import_type == REPORT_PROFIT:
+            payload = read_profit_snapshot(batch)
+            records, periods = validate_profit_snapshot(payload, config)
+        elif batch.import_type == REPORT_CASHFLOW:
+            payload = read_cashflow_snapshot(batch)
+            records, periods = validate_cashflow_snapshot(payload, config)
+        else:
+            raise UnifiedSyncError("Unsupported auto-apply candidate")
+        if periods != [date.fromisoformat(item["month"])] or batch.rows_detected != len(records):
+            raise UnifiedSyncError("Auto-apply candidate scope changed")
+        if month_fingerprint(batch.import_type, periods[0], records) != item.get("fingerprint"):
+            raise UnifiedSyncError("Auto-apply candidate fingerprint changed")
+        prepared.append((batch.pk, batch.import_type, periods, records))
+    return prepared
+
+
+def _expected_auto_scope_keys(run):
+    expected = set()
+    for report_type in run.requested_report_types:
+        scope = (run.sync_scope or {}).get(report_type)
+        if report_type not in SUPPORTED_REPORT_TYPES or not isinstance(scope, dict):
+            raise UnifiedSyncError("Auto-apply scope is incomplete")
+        start = date.fromisoformat(scope["start"])
+        end = date.fromisoformat(scope["end"])
+        expected.update((report_type, month) for month in _months(start, end))
+    if not expected:
+        raise UnifiedSyncError("Auto-apply scope is empty")
+    return expected
+
+
+def _validate_auto_collection(run):
+    cursor = run.cursor or {}
+    queue = cursor.get("queue", [])
+    if (
+        run.status != OneCODataSyncRun.STATUS_COMPLETED
+        or int(cursor.get("index", -1)) != len(queue)
+        or not queue
+        or any(
+            (run.result_summary or {}).get(report_type, {}).get("status") != "completed"
+            for report_type in run.requested_report_types
+        )
+    ):
+        raise UnifiedSyncError("Auto-apply collection is not complete")
+    expected_keys = _expected_auto_scope_keys(run)
+    baseline = list((run.sync_scope or {}).get("_baseline", []))
+    baseline_keys = [
+        (item.get("report_type"), date.fromisoformat(item["month"]))
+        for item in baseline
+    ]
+    if len(baseline_keys) != len(set(baseline_keys)) or set(baseline_keys) != expected_keys:
+        raise UnifiedSyncError("Auto-apply baseline does not cover the full scope")
+    allowed_source_statuses = {"unchanged", "changed", "authoritative_empty"}
+    if any(item.get("source_status") not in allowed_source_statuses for item in baseline):
+        raise UnifiedSyncError("Auto-apply baseline has an invalid source status")
+    expected_apply_plan_keys = {
+        (item["report_type"], date.fromisoformat(item["month"]))
+        for item in baseline
+        if item["source_status"] in {"changed", "authoritative_empty"}
+    }
+    plan = list((run.sync_scope or {}).get("_apply_plan", []))
+    plan_keys = [
+        (item.get("report_type"), date.fromisoformat(item["month"]))
+        for item in plan
+    ]
+    if (
+        len(plan_keys) != len(set(plan_keys))
+        or not set(plan_keys).issubset(expected_keys)
+        or set(plan_keys) != expected_apply_plan_keys
+    ):
+        raise UnifiedSyncError("Auto-apply plan does not match the collected changes")
+    return baseline, plan
+
+
+def _fail_auto_run(run_id, code, message):
+    with transaction.atomic():
+        run = OneCODataSyncRun.objects.select_for_update().get(pk=run_id)
+        if run.mode != OneCODataSyncRun.MODE_AUTO_APPLY:
+            raise OneCODataSyncRun.DoesNotExist
+        run.status = OneCODataSyncRun.STATUS_FAILED
+        run.finished_at = timezone.now()
+        run.error_message = message
+        progress = dict(run.progress)
+        progress.update({"step_state": code, "outcome": "failed"})
+        run.progress = progress
+        _clear_lease(run)
+        run.save()
+        return run
+
+
+def _auto_run_already_succeeded(run):
+    return bool(
+        run.applied_at
+        or (run.progress or {}).get("outcome") in {"applied", "no_change"}
+    )
+
+
+def apply_auto_sync(run_id, user, allowed_report_types, *, config=None):
+    run = OneCODataSyncRun.objects.get(pk=run_id, mode=OneCODataSyncRun.MODE_AUTO_APPLY)
+    if _auto_run_already_succeeded(run):
+        return run
+    config = validate_config(config or config_from_settings())
+    try:
+        _validate_auto_collection(run)
+        prepared = _prepared_auto_candidates(run, config)
+    except Exception:
+        return _fail_auto_run(run_id, "candidate_invalid", "Не удалось проверить собранные данные 1С.")
+    try:
+        with transaction.atomic():
+            locked = OneCODataSyncRun.objects.select_for_update().select_related("organization").get(
+                pk=run_id, mode=OneCODataSyncRun.MODE_AUTO_APPLY
+            )
+            if _auto_run_already_succeeded(locked):
+                return locked
+            baseline, apply_plan = _validate_auto_collection(locked)
+            organization = Organization.objects.select_for_update().get(pk=locked.organization_id)
+            requested = set(locked.requested_report_types)
+            allowed = set(allowed_report_types)
+            if not requested or not requested.issubset(allowed) or any(
+                not _has_report_permission(user, organization, item) for item in requested
+            ):
+                raise PermissionDenied
+            keys = {(item["report_type"], date.fromisoformat(item["month"])) for item in baseline}
+            states = list(
+                OneCReportPeriodState.objects.select_for_update()
+                .filter(
+                    organization=organization,
+                    report_type__in=requested,
+                    period_month__in={month for _, month in keys},
+                )
+                .select_related("active_batch")
+            )
+            state_map = {(state.report_type, state.period_month): state for state in states}
+            for expected in baseline:
+                key = (expected["report_type"], date.fromisoformat(expected["month"]))
+                current = state_map.get(key)
+                current_id = str(current.active_batch_id) if current else None
+                current_fp = month_fingerprint(
+                    expected["report_type"], key[1],
+                    _active_rows(organization, expected["report_type"], key[1]) if current else [],
+                )
+                if current_id != expected["expected_active_batch_id"] or current_fp != expected["expected_active_fingerprint"]:
+                    raise StaleReactivationError("Active scope changed")
+            locked.apply_started_at = timezone.now()
+            locked.save(update_fields=["apply_started_at"])
+            _auto_apply_fault("before_rows")
+            prepared_by_id = {str(batch_id): (report_type, periods, records) for batch_id, report_type, periods, records in prepared}
+            for item in apply_plan:
+                batch_id = item["batch_id"]
+                batch = OneCImportBatch.objects.select_for_update().get(
+                    pk=batch_id, sync_run=locked, status=OneCImportBatch.STATUS_PREVIEWED,
+                )
+                if str(batch.pk) not in prepared_by_id or batch.import_type != item["report_type"]:
+                    raise UnifiedSyncError("Auto-apply candidate set changed")
+                if batch.import_type == REPORT_PROFIT:
+                    payload = read_profit_snapshot(batch)
+                    records, periods = validate_profit_snapshot(payload, config)
+                else:
+                    payload = read_cashflow_snapshot(batch)
+                    records, periods = validate_cashflow_snapshot(payload, config)
+                expected_month = date.fromisoformat(item["month"])
+                if (
+                    periods != [expected_month]
+                    or batch.rows_detected != len(records)
+                    or month_fingerprint(batch.import_type, expected_month, records) != item.get("fingerprint")
+                ):
+                    raise UnifiedSyncError("Auto-apply candidate changed after collection")
+                report_type = batch.import_type
+                if report_type == REPORT_PROFIT:
+                    rows = [OneCMonthlyProfit(import_batch=batch, organization=organization, **record) for record in records]
+                    _bulk_create_monthly_rows(rows)
+                    _auto_apply_fault("profit_rows")
+                    profit_audit(batch, user, {"status": "previewed"}, {"status": "confirmed"})
+                else:
+                    rows = [CashFlowRow(import_batch=batch, organization=organization, **record) for record in records]
+                    CashFlowRow.objects.bulk_create(rows, batch_size=500)
+                    _auto_apply_fault("cashflow_rows")
+                    cashflow_audit(batch, user, {"status": "previewed"}, {"status": "confirmed"})
+                batch.status = OneCImportBatch.STATUS_CONFIRMED
+                _save_confirmed_batch(batch, user, len(rows))
+                _auto_apply_fault("confirmed_batch")
+                relevant = [state_map[(report_type, month)] for month in periods if (report_type, month) in state_map]
+                _activate_period_states(batch, organization, user, periods, relevant)
+                _auto_apply_fault("state_activation")
+            _auto_apply_fault("before_success")
+            locked.status = OneCODataSyncRun.STATUS_COMPLETED
+            locked.applied_at = timezone.now()
+            locked.finished_at = locked.applied_at
+            locked.error_message = ""
+            progress = dict(locked.progress)
+            progress.update({
+                "step_state": "completed",
+                "outcome": "applied" if prepared else "no_change",
+                "applied_batches": len(prepared),
+            })
+            locked.progress = progress
+            locked.save()
+            return locked
+    except StaleReactivationError:
+        return _fail_auto_run(run_id, "stale", "Активные данные изменились. Запустите обновление повторно.")
+    except PermissionDenied:
+        return _fail_auto_run(run_id, "permission_revoked", "Право на обновление данных было отозвано.")
+    except Exception:
+        return _fail_auto_run(run_id, "apply_failed", "Не удалось применить данные 1С.")
+
+
 def _clear_lease(run):
     run.lease_token = None
     run.lease_report_type = ""
@@ -555,10 +822,15 @@ def _clear_lease(run):
     run.lease_started_at = None
 
 
-def _claim_step(run_id, user, allowed, expected_cursor):
+def _claim_step(
+    run_id, user, allowed, expected_cursor,
+    expected_mode=OneCODataSyncRun.MODE_PREVIEW,
+):
     now = timezone.now()
     with transaction.atomic():
-        run = OneCODataSyncRun.objects.select_for_update().select_related("organization").get(pk=run_id)
+        run = OneCODataSyncRun.objects.select_for_update().select_related("organization").get(
+            pk=run_id, mode=expected_mode
+        )
         if run.status in OneCODataSyncRun.TERMINAL_STATUSES:
             return run, None
         cursor = dict(run.cursor)
@@ -661,9 +933,12 @@ def _fail_revoked_permission(run, report_type):
     return run
 
 
-def step_unified_sync(run_id, user, allowed_report_types, expected_cursor, *, config=None, opener=None):
+def step_unified_sync(
+    run_id, user, allowed_report_types, expected_cursor, *, config=None, opener=None,
+    mode=OneCODataSyncRun.MODE_PREVIEW,
+):
     allowed = set(allowed_report_types)
-    run, token = _claim_step(run_id, user, allowed, expected_cursor)
+    run, token = _claim_step(run_id, user, allowed, expected_cursor, mode)
     if token is None:
         return run
     item = dict(run.lease_chunk)
@@ -695,7 +970,9 @@ def step_unified_sync(run_id, user, allowed_report_types, expected_cursor, *, co
     created_files = []
     try:
         with transaction.atomic():
-            locked = OneCODataSyncRun.objects.select_for_update().select_related("organization").get(pk=run.pk)
+            locked = OneCODataSyncRun.objects.select_for_update().select_related("organization").get(
+                pk=run.pk, mode=mode
+            )
             cursor = dict(locked.cursor)
             if str(locked.lease_token or "") != str(token) or int(cursor.get("version", 0)) != int(expected_cursor):
                 return locked
@@ -711,6 +988,9 @@ def step_unified_sync(run_id, user, allowed_report_types, expected_cursor, *, co
             report_result = dict(summary[report_type])
             report_result.update({"status": "running", "error": "", "error_code": ""})
             report_result.setdefault("reactivation_candidates", [])
+            sync_scope = dict(locked.sync_scope)
+            baseline = list(sync_scope.get("_baseline", []))
+            apply_plan = list(sync_scope.get("_apply_plan", []))
             for month in _months(date.fromisoformat(item["start"]), date.fromisoformat(item["end"])):
                 month_rows = [row for row in rows if date.fromisoformat(row["period_month"]) == month]
                 new_fingerprint = month_fingerprint(report_type, month, month_rows)
@@ -720,11 +1000,40 @@ def step_unified_sync(run_id, user, allowed_report_types, expected_cursor, *, co
                     organization=locked.organization, report_type=report_type, period_month=month,
                     active_batch__status=OneCImportBatch.STATUS_CONFIRMED,
                 ).exists()
-                if (not has_active and not month_rows) or (has_active and new_fingerprint == active_fingerprint):
+                active_state = OneCReportPeriodState.objects.filter(
+                    organization=locked.organization,
+                    report_type=report_type,
+                    period_month=month,
+                ).select_related("active_batch").first()
+                baseline_item = {
+                    "report_type": report_type,
+                    "month": month.isoformat(),
+                    "expected_active_batch_id": str(active_state.active_batch_id) if active_state else None,
+                    "expected_active_fingerprint": active_fingerprint,
+                    "source_status": "authoritative_empty" if not month_rows else "complete",
+                }
+                if locked.mode == OneCODataSyncRun.MODE_AUTO_APPLY:
+                    baseline = [entry for entry in baseline if not (
+                        entry.get("report_type") == report_type and entry.get("month") == month.isoformat()
+                    )]
+                    baseline.append(baseline_item)
+                if (
+                    (
+                        locked.mode == OneCODataSyncRun.MODE_PREVIEW
+                        and not has_active
+                        and not month_rows
+                    )
+                    or (has_active and new_fingerprint == active_fingerprint)
+                ):
+                    baseline_item["source_status"] = "unchanged"
                     if month.isoformat() not in report_result["unchanged_months"]:
                         report_result["unchanged_months"].append(month.isoformat())
                     continue
-                candidate = _confirmed_candidate(locked.organization, report_type, month, new_fingerprint)
+                if month_rows:
+                    baseline_item["source_status"] = "changed"
+                candidate = None if locked.mode == OneCODataSyncRun.MODE_AUTO_APPLY else _confirmed_candidate(
+                    locked.organization, report_type, month, new_fingerprint
+                )
                 if candidate:
                     active_state = OneCReportPeriodState.objects.filter(
                         organization=locked.organization,
@@ -749,6 +1058,17 @@ def step_unified_sync(run_id, user, allowed_report_types, expected_cursor, *, co
                         created_files.append((batch.pk, batch))
                     if str(batch.id) not in report_result["drafts"]:
                         report_result["drafts"].append(str(batch.id))
+                    if locked.mode == OneCODataSyncRun.MODE_AUTO_APPLY:
+                        value = {
+                            "report_type": report_type,
+                            "month": month.isoformat(),
+                            "batch_id": str(batch.id),
+                            "fingerprint": new_fingerprint,
+                        }
+                        apply_plan = [entry for entry in apply_plan if not (
+                            entry.get("report_type") == report_type and entry.get("month") == month.isoformat()
+                        )]
+                        apply_plan.append(value)
                 if month.isoformat() not in report_result["changed_months"]:
                     report_result["changed_months"].append(month.isoformat())
             queue = cursor.get("queue", [])
@@ -764,18 +1084,30 @@ def step_unified_sync(run_id, user, allowed_report_types, expected_cursor, *, co
             locked.cursor = cursor
             locked.progress = progress
             locked.result_summary = summary
+            if locked.mode == OneCODataSyncRun.MODE_AUTO_APPLY:
+                sync_scope["_baseline"] = baseline
+                sync_scope["_apply_plan"] = apply_plan
+                locked.sync_scope = sync_scope
             locked.error_message = ""
             _clear_lease(locked)
             if next_index >= len(queue):
                 locked.status = _terminal_status(summary)
                 locked.finished_at = timezone.now()
             locked.save()
-            return locked
+            completed = next_index >= len(queue)
+            result = locked
     except Exception:
         for batch_id, batch in created_files:
             if not OneCImportBatch.objects.filter(pk=batch_id).exists():
                 delete_private_batch_file(batch)
+        if mode == OneCODataSyncRun.MODE_AUTO_APPLY:
+            return _fail_auto_run(
+                run_id, "candidate_invalid", "Не удалось проверить собранные данные 1С."
+            )
         raise
+    if completed and mode == OneCODataSyncRun.MODE_AUTO_APPLY:
+        return apply_auto_sync(run_id, user, allowed, config=config)
+    return result
 
 
 def reactivate_confirmed_candidate(run_id, organization, user, report_type, month, batch_id, fingerprint):
@@ -784,7 +1116,9 @@ def reactivate_confirmed_candidate(run_id, organization, user, report_type, mont
         locked_organization = Organization.objects.select_for_update().get(pk=organization.pk)
         if not _has_report_permission(user, locked_organization, report_type):
             raise PermissionDenied("Permission for this 1C report type is required.")
-        run = OneCODataSyncRun.objects.select_for_update().get(pk=run_id, organization=locked_organization)
+        run = OneCODataSyncRun.objects.select_for_update().get(
+            pk=run_id, organization=locked_organization, mode=OneCODataSyncRun.MODE_PREVIEW
+        )
         candidates = run.result_summary.get(report_type, {}).get("reactivation_candidates", [])
         candidate = next((item for item in candidates if (
             item.get("month") == month.isoformat()
@@ -798,6 +1132,7 @@ def reactivate_confirmed_candidate(run_id, organization, user, report_type, mont
             pk=batch_id, organization=locked_organization, import_type=report_type,
             source_type=OneCImportBatch.SOURCE_ODATA,
             status=OneCImportBatch.STATUS_CONFIRMED,
+            sync_run__isnull=True,
         )
         validate_period_assignment(batch, locked_organization, report_type, month)
         model = OneCMonthlyProfit if report_type == REPORT_PROFIT else CashFlowRow
