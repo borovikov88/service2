@@ -694,6 +694,7 @@ def confirm_odata_profit(batch_id, organization, user, *, config=None):
                 id=batch_id,
                 organization=locked_organization,
                 source_type=OneCImportBatch.SOURCE_ODATA,
+                sync_run__isnull=True,
             )
             if batch.status != OneCImportBatch.STATUS_PREVIEWED:
                 raise ValidationError("Only a previewed OData draft can be confirmed.")
@@ -746,6 +747,7 @@ def confirm_odata_profit(batch_id, organization, user, *, config=None):
             organization=organization,
             source_type=OneCImportBatch.SOURCE_ODATA,
             status=OneCImportBatch.STATUS_PREVIEWED,
+            sync_run__isnull=True,
         ).update(status=OneCImportBatch.STATUS_FAILED, error_message=safe_message)
         if updated:
             failed_batch = OneCImportBatch.objects.get(

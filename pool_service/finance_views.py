@@ -108,6 +108,7 @@ from pool_service.finance_imports.odata_unified_sync import (
     REPORT_CASHFLOW,
     REPORT_PROFIT,
     StaleReactivationError,
+    SyncConflictError,
     reactivate_confirmed_candidate,
     start_unified_sync,
     step_unified_sync,
@@ -2720,6 +2721,7 @@ def finance_onec_import_list(request):
     batches = OneCImportBatch.objects.filter(
         organization=organization,
         import_type__in=_onec_accessible_import_types(request.user, organization),
+        sync_run__isnull=True,
     ).select_related("uploaded_by")
     show_cashflow_odata = (
         is_odata_target_organization(organization)
@@ -2734,7 +2736,10 @@ def finance_onec_import_list(request):
         for report_type in report_types
     }
     sync_runs = OneCODataSyncRun.objects.filter(
-        organization=organization
+        organization=organization, mode=OneCODataSyncRun.MODE_PREVIEW,
+    ).select_related("requested_by")[:20]
+    auto_runs = OneCODataSyncRun.objects.filter(
+        organization=organization, mode=OneCODataSyncRun.MODE_AUTO_APPLY,
     ).select_related("requested_by")[:20]
     return render(request, "pool_service/finance/onec_import_list.html", {
         "batches": batches,
@@ -2745,6 +2750,7 @@ def finance_onec_import_list(request):
         "latest_profit_active": latest_active.get(REPORT_PROFIT),
         "latest_cashflow_active": latest_active.get(REPORT_CASHFLOW),
         "sync_runs": sync_runs,
+        "auto_runs": auto_runs,
         "active_tab": "finance",
     })
 
@@ -2811,7 +2817,10 @@ def finance_onec_odata_sync_step(request, run_id):
     organization, denied = _onec_sync_guard(request)
     if denied:
         return denied
-    run = get_object_or_404(OneCODataSyncRun, pk=run_id, organization=organization)
+    run = get_object_or_404(
+        OneCODataSyncRun, pk=run_id, organization=organization,
+        mode=OneCODataSyncRun.MODE_PREVIEW,
+    )
     wants_json = request.headers.get("X-Requested-With") == "XMLHttpRequest"
 
     def reject(message, status=409):
@@ -2859,7 +2868,10 @@ def finance_onec_odata_sync_status(request, run_id):
     organization, denied = _onec_import_list_guard(request)
     if denied:
         return denied
-    run = get_object_or_404(OneCODataSyncRun, pk=run_id, organization=organization)
+    run = get_object_or_404(
+        OneCODataSyncRun, pk=run_id, organization=organization,
+        mode=OneCODataSyncRun.MODE_PREVIEW,
+    )
     allowed = _onec_sync_report_types(request.user, organization)
     if not set(run.requested_report_types) & set(allowed):
         return HttpResponseForbidden("Недостаточно прав.")
@@ -2872,6 +2884,10 @@ def finance_onec_odata_sync_reactivate(request, run_id):
     organization, denied = _onec_sync_guard(request)
     if denied:
         return denied
+    get_object_or_404(
+        OneCODataSyncRun, pk=run_id, organization=organization,
+        mode=OneCODataSyncRun.MODE_PREVIEW,
+    )
     report_type = request.POST.get("report_type", "")
     if report_type not in _onec_sync_report_types(request.user, organization):
         return HttpResponseForbidden("Недостаточно прав.")
@@ -2895,6 +2911,126 @@ def finance_onec_odata_sync_reactivate(request, run_id):
     return redirect("finance_onec_import_list")
 
 
+def _parse_auto_month(value, fallback):
+    if not value:
+        return fallback
+    try:
+        parsed = date.fromisoformat(f"{value}-01")
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Некорректный месяц периода.") from exc
+    return parsed
+
+
+def _auto_run_payload(run):
+    scopes = {
+        report_type: {
+            "start": scope.get("start"),
+            "end": scope.get("end"),
+        }
+        for report_type, scope in (run.sync_scope or {}).items()
+        if report_type in {REPORT_PROFIT, REPORT_CASHFLOW}
+    }
+    changed = {
+        report_type: len(item.get("changed_months", []))
+        for report_type, item in (run.result_summary or {}).items()
+        if report_type in {REPORT_PROFIT, REPORT_CASHFLOW}
+    }
+    return {
+        "run_id": str(run.id),
+        "status": run.status,
+        "scope": scopes,
+        "cursor": (run.cursor or {}).get("version", 0),
+        "progress": {
+            key: value for key, value in (run.progress or {}).items()
+            if key in {"completed_chunks", "total_chunks", "step_state", "outcome", "applied_batches"}
+        },
+        "changed_month_counts": changed,
+        "message": run.error_message if run.status == OneCODataSyncRun.STATUS_FAILED else "",
+    }
+
+
+@require_POST
+@login_required
+def finance_onec_refresh_apply_start(request):
+    organization, denied = _onec_sync_guard(request)
+    if denied:
+        return denied
+    report_types = _onec_sync_report_types(request.user, organization)
+    current = timezone.localdate().replace(day=1)
+    try:
+        end = _parse_auto_month(request.POST.get("period_end"), current)
+        start = _parse_auto_month(
+            request.POST.get("period_start"),
+            date(end.year - (1 if end.month < 12 else 0), (end.month % 12) + 1, 1),
+        )
+        run, created = start_unified_sync(
+            organization, request.user, report_types,
+            mode=OneCODataSyncRun.MODE_AUTO_APPLY,
+            period_start=start, period_end=end,
+        )
+    except SyncConflictError:
+        return JsonResponse({"error_code": "sync_conflict", "error": "Уже выполняется другое обновление данных 1С."}, status=409)
+    except PermissionDenied:
+        return JsonResponse({"error_code": "permission_denied", "error": "Недостаточно прав."}, status=403)
+    except ValidationError:
+        return JsonResponse({"error_code": "invalid_period", "error": "Проверьте период: допускается не более 24 полных месяцев."}, status=400)
+    payload = _auto_run_payload(run)
+    payload.update({
+        "created": created,
+        "step_url": reverse("finance_onec_refresh_apply_step", kwargs={"run_id": run.id}),
+        "status_url": reverse("finance_onec_refresh_apply_status", kwargs={"run_id": run.id}),
+        "detail_url": reverse("finance_onec_refresh_apply_detail", kwargs={"run_id": run.id}),
+    })
+    return JsonResponse(payload)
+
+
+@require_POST
+@login_required
+def finance_onec_refresh_apply_step(request, run_id):
+    organization, denied = _onec_sync_guard(request)
+    if denied:
+        return denied
+    run = get_object_or_404(
+        OneCODataSyncRun, pk=run_id, organization=organization,
+        mode=OneCODataSyncRun.MODE_AUTO_APPLY,
+    )
+    try:
+        expected = int(request.POST.get("cursor", ""))
+    except (TypeError, ValueError):
+        return JsonResponse({"error_code": "invalid_cursor", "error": "Некорректная версия шага."}, status=400)
+    if expected != int((run.cursor or {}).get("version", 0)):
+        return JsonResponse({"error_code": "stale_cursor", "error": "Шаг обновления устарел."}, status=409)
+    if run.status not in OneCODataSyncRun.TERMINAL_STATUSES:
+        try:
+            run = step_unified_sync(
+                run.id, request.user, _onec_sync_report_types(request.user, organization), expected,
+                mode=OneCODataSyncRun.MODE_AUTO_APPLY,
+            )
+        except PermissionDenied:
+            return JsonResponse({"error_code": "permission_denied", "error": "Недостаточно прав."}, status=403)
+    return JsonResponse(_auto_run_payload(run))
+
+
+@login_required
+def finance_onec_refresh_apply_status(request, run_id):
+    organization, denied = _onec_import_list_guard(request)
+    if denied:
+        return denied
+    run = get_object_or_404(
+        OneCODataSyncRun, pk=run_id, organization=organization,
+        mode=OneCODataSyncRun.MODE_AUTO_APPLY,
+    )
+    allowed = set(_onec_sync_report_types(request.user, organization))
+    if not set(run.requested_report_types).issubset(allowed):
+        return HttpResponseForbidden("Недостаточно прав.")
+    return JsonResponse(_auto_run_payload(run))
+
+
+@login_required
+def finance_onec_refresh_apply_detail(request, run_id):
+    return finance_onec_refresh_apply_status(request, run_id)
+
+
 @require_POST
 @login_required
 def finance_onec_odata_profit_draft(request):
@@ -2906,6 +3042,7 @@ def finance_onec_odata_profit_draft(request):
         batches = OneCImportBatch.objects.filter(
             organization=organization,
             import_type__in=_onec_accessible_import_types(request.user, organization),
+            sync_run__isnull=True,
         ).select_related("uploaded_by")
         return render(request, "pool_service/finance/onec_import_list.html", {
             "batches": batches,
@@ -3003,6 +3140,7 @@ def finance_onec_cashflow_preview(request, batch_id):
         id=batch_id,
         organization=organization,
         import_type=OneCImportBatch.TYPE_CASHFLOW,
+        sync_run__isnull=True,
     )
     return render(
         request,
@@ -3021,6 +3159,7 @@ def finance_onec_cashflow_detail(request, batch_id):
         id=batch_id,
         organization=organization,
         import_type=OneCImportBatch.TYPE_CASHFLOW,
+        sync_run__isnull=True,
     )
     return render(
         request,
@@ -3040,6 +3179,7 @@ def finance_onec_cashflow_confirm(request, batch_id):
         id=batch_id,
         organization=organization,
         import_type=OneCImportBatch.TYPE_CASHFLOW,
+        sync_run__isnull=True,
     )
     try:
         if batch.source_type == OneCImportBatch.SOURCE_ODATA:
@@ -3066,6 +3206,7 @@ def finance_onec_cashflow_cancel(request, batch_id):
         id=batch_id,
         organization=organization,
         import_type=OneCImportBatch.TYPE_CASHFLOW,
+        sync_run__isnull=True,
     )
     try:
         cancel_onec_import_batch(batch, request.user)
@@ -3454,6 +3595,7 @@ def finance_onec_import_preview(request, batch_id):
         id=batch_id,
         organization=organization,
         import_type=OneCImportBatch.TYPE_MONTHLY_PROFIT,
+        sync_run__isnull=True,
     )
     return render(request, "pool_service/finance/onec_import_preview.html", {
         "batch": batch,
@@ -3482,6 +3624,7 @@ def finance_onec_import_confirm(request, batch_id):
         id=batch_id,
         organization=organization,
         import_type=OneCImportBatch.TYPE_MONTHLY_PROFIT,
+        sync_run__isnull=True,
     )
     if batch.status != OneCImportBatch.STATUS_PREVIEWED:
         messages.error(request, "Этот импорт уже обработан или недоступен для подтверждения.")
@@ -3509,6 +3652,7 @@ def finance_onec_import_cancel(request, batch_id):
         id=batch_id,
         organization=organization,
         import_type=OneCImportBatch.TYPE_MONTHLY_PROFIT,
+        sync_run__isnull=True,
     )
     try:
         cancel_monthly_profit(batch, request.user)
@@ -3529,6 +3673,7 @@ def finance_onec_import_detail(request, batch_id):
         id=batch_id,
         organization=organization,
         import_type=OneCImportBatch.TYPE_MONTHLY_PROFIT,
+        sync_run__isnull=True,
     )
     rows = OneCMonthlyProfit.objects.filter(import_batch=batch, organization=organization)
     money_field = DecimalField(max_digits=20, decimal_places=2)

@@ -423,7 +423,7 @@ def confirm_monthly_profit(batch_id, organization, user):
                 pk=organization.pk
             )
             batch = OneCImportBatch.objects.select_for_update().get(
-                id=batch_id, organization=locked_organization
+                id=batch_id, organization=locked_organization, sync_run__isnull=True
             )
             if batch.status != OneCImportBatch.STATUS_PREVIEWED:
                 raise ValidationError("Подтвердить можно только импорт в статусе previewed.")
@@ -492,7 +492,7 @@ def confirm_monthly_profit(batch_id, organization, user):
 def cancel_onec_import_batch(batch, user):
     with transaction.atomic():
         locked = OneCImportBatch.objects.select_for_update().get(
-            id=batch.id, organization_id=batch.organization_id
+            id=batch.id, organization_id=batch.organization_id, sync_run__isnull=True
         )
         if locked.status == OneCImportBatch.STATUS_CONFIRMED:
             raise ValidationError("Подтверждённый импорт отменить нельзя.")
