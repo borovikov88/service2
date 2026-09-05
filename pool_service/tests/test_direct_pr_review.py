@@ -268,6 +268,27 @@ class DirectReviewTests(unittest.TestCase):
         self.assertIn("ref: ${{ env.TRUSTED_SHA }}", publisher)
         self.assertIn("environment: review", publisher)
 
+    def test_review_artifact_paths_are_scoped_to_runner_steps(self):
+        workflow = (ROOT / ".github/workflows/direct-pr-review.yml").read_text()
+        workflow_settings, jobs = workflow.split("\njobs:\n", 1)
+        reviewer = jobs.split("  review:\n", 1)[1].split("  publish:\n", 1)[0]
+        publisher = jobs.split("  publish:\n", 1)[1]
+        # runner is unavailable while GitHub evaluates workflow/job env. The
+        # original placement prevented every job, including connection, starting.
+        self.assertNotIn("runner.", workflow_settings)
+        for job in (reviewer, publisher):
+            self.assertNotIn("runner.", job.split("    steps:\n", 1)[0])
+
+        artifact_dir = "${{ runner.temp }}/independent-review"
+        artifact_path = artifact_dir + "/result.json"
+        review_step = reviewer.split("      - name: Review inert PR source through APIs\n", 1)[1].split("      - name:", 1)[0]
+        publish_step = publisher.split("      - name: Publish exact-head review using independent identity\n", 1)[1]
+        for step in (review_step, publish_step):
+            self.assertIn("        env:\n          REVIEW_ARTIFACT: " + artifact_path + "\n", step)
+        # Producer, uploaded file, downloaded directory and publisher must agree.
+        self.assertIn("          path: " + artifact_path + "\n", reviewer)
+        self.assertIn("          path: " + artifact_dir + "\n", publisher)
+
 
 if __name__ == "__main__":
     unittest.main()

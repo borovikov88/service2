@@ -1,5 +1,21 @@
 # Проверенное состояние service2
 
+## Дополнение: проверка после объединения PR №90
+
+Владелец объединил PR №90, remote main —
+`38050cb5cfb4dfd1ddd2bca403d4bbedab782a95`. Новый workflow run `33971063298`
+завершился failure до создания jobs. Проверка токена не выполнялась.
+В workflow выявлено недопустимое использование `runner.temp` в job-level env;
+контекст runner разрешён в step env, но не в job env. Источник:
+[GitHub context availability](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability).
+
+Исправление переносит путь artifact в env двух исполняемых шагов и в upload
+with. Добавлен regression test и отдельный CI-шаг actionlint `1.7.12` для
+`direct-pr-review.yml` и `ci-deploy.yml`, с проверкой SHA256 официального архива.
+23 теста прошли локально; отдельный проверяющий принял исправление и CI-шаг.
+Фактическая проверка actionlint в GitHub и подключения бота ещё требуется.
+Токены, production, финансовые данные и 1С в этой задаче не изменялись.
+
 ## Дополнение: reviewer identity и независимое ревью прямого пути
 
 Исходный remote `main` этой задачи — `fa1f7de419457703c6f5fd8c590de8485e4e27ed`
