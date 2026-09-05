@@ -13,15 +13,18 @@
   secrets подтверждены Actions run `33967180783` после исправления ключа.
   Полный deploy preflight остаётся отдельной проверкой.
 
-- **OPS-001: Выполнить первый сквозной прогон автоматизации.** Настроить
-  отдельную reviewer identity, branch rules/auto-merge и production SSH secrets;
-  подтвердить PR event/check, GitHub APPROVED актуального head, auto-merge,
-  hosting preflight, deployment и health. До этого цепочка подготовлена только
-  кодом.
+- **OPS-001: Выполнить первый сквозной прогон автоматизации.** Reviewer identity
+  и её токен проверены run `33971788548`; production SSH secrets — run
+  `33967180783`. Осталось настроить branch rules/auto-merge и подтвердить
+  GitHub APPROVED актуального head, auto-merge, hosting preflight, deployment
+  и health после deployment. Сквозная цепочка пока не подтверждена.
 - **OPS-002: Проверить прямой GitHub-side reviewer.** `development-codex.yml`
   по-прежнему запускается из карточки `DevelopmentTask`; сообщение чата не
-  создаёт её автоматически. Для прямых PR добавляется `direct-pr-review.yml`
-  с отдельными AI reviewer и bot publisher. Требуются внешний успешный вызов
+  создаёт её автоматически. Для прямых PR объединены PR №90 и №91:
+  `direct-pr-review.yml` с отдельными AI reviewer и bot publisher, исправлением
+  контекста runner и CI actionlint. CI прошёл 857 тестов с 2 пропусками.
+  Проверка бота успешна; наличие `OPENAI_API_KEY` не доказывает валидность ключа.
+  Требуются внешний успешный вызов
   модели, актуальный GitHub review и повторная проверка после нового commit.
   Автоматический возврат замечаний разработчику вне активной сессии и auto-merge
   прямых PR ещё не подключены; настройка токена этого не заменяет.
