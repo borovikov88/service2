@@ -25,15 +25,13 @@ SHA с `origin/main`, запрещает параллельный
 запуск и отказывается затирать настоящие местные изменения. Проверяемое
 исключение для результатов сборки статики описано ниже.
 
-Отдельный AI Review выполняется приложением по фактическому diff PR и конкретному
-head SHA. После решения `accepted` poller публикует GitHub `APPROVED` от
-отдельной service-account identity и включает GitHub auto-merge. Это не текст
-ACCEPT разработчика: доставка разрешена только для сохранённой итерации
-`ai_review`, связанной с тем же PR head. При новом commit приложение повторно
-читает diff и проводит новую проверку. `development-codex.yml` остаётся точкой
-реализации и публикации PR; задача попадает туда из карточки DevelopmentTask
-через серверный dispatch, а `poll_development_codex` ведёт
-review/correction/delivery без пересылки между чатами.
+Разработка и ревью переведены на выбранный владельцем тарифный путь Codex.
+Отдельный API review/publisher и API-backed development workflow выводятся
+из эксплуатации; серверный API-клиент development analysis/review блокируется.
+Старый poller не считается работающим через кредиты ChatGPT. Не запускать его
+для получения обходного approval. Подробности — в `codex-direct-flow.md`.
+Штатная интеграция Codex может оставлять комментарии или реакции; они не
+заменяют обязательный GitHub APPROVED. Автоматического преобразования нет.
 
 Независимость дополнительно обеспечивает правило защищённой ветки, а не deploy-скрипт.
 Для `main` нужно включить protection/ruleset со следующими условиями:
@@ -47,36 +45,15 @@ review/correction/delivery без пересылки между чатами.
 
 ## Однократная настройка GitHub
 
-PR публикуется штатным `github-actions[bot]`. Поскольку созданное встроенным
-`GITHUB_TOKEN` событие PR само не запускает следующий workflow,
-`development-codex.yml` явно делает `workflow_dispatch` проверки
-`ci-deploy.yml` на опубликованной ветке. Этот запуск выполняет только тесты и
-создаёт check для head SHA; merge/deployment при `workflow_dispatch` исключены.
+Для разработки используется активная Codex-сессия и штатный GitHub connector.
+Для независимого GitHub-ревью используется Codex Code review в рамках плана
+владельца. Нужные настройки и фактическая проверка описаны в `codex-direct-flow.md`.
 
-Для серверного цикла создать отдельную GitHub service account (не identity,
-которой создаётся PR). Для публичного `borovikov88/service2` приглашённый
-collaborator `aqualine-review-bot` использует classic PAT со scope `public_repo`:
-fine-grained PAT пока не покрывает запись в чужой репозиторий в роли repository
-collaborator. Classic scope не ограничен единственным репозиторием. Источник:
-https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
-Для существующего серверного delivery задать на сервере:
-
-- `GITHUB_DEVELOPMENT_REVIEW_TOKEN` — token отдельной reviewer identity;
-- `GITHUB_DEVELOPMENT_REVIEW_LOGIN` — точный GitHub login этой identity;
-- `GITHUB_DEVELOPMENT_AUTO_MERGE_ENABLED=true` — только после настройки ruleset;
-- включить GitHub auto-merge в настройках репозитория.
-
-Reviewer identity проверяется через GitHub API и обязана отличаться от автора
-PR. Auto-merge только ставится в очередь: объединение выполняет GitHub после
-всех required checks и действующего approval актуального head.
-
-Для прямых PR из Codex используется отдельный GitHub-side reviewer, описанный
-в `docs/ai/codex-direct-flow.md`. Его Environment называется `review`, а секрет
-в GitHub — `SERVICE2_REVIEW_TOKEN`. Имена Actions secrets не могут начинаться
-с `GITHUB_`; серверное имя переменной выше не является именем GitHub secret.
-Сохранение секрета в Environment не добавляет его в production `.env` и не
-включает серверный poller. Проверяющий использует repository secret
-`OPENAI_API_KEY`; токен бота получает только отдельный publisher job.
+Ранее настроенные `SERVICE2_REVIEW_TOKEN` в Environment `review`,
+`OPENAI_API_KEY` и серверные `GITHUB_DEVELOPMENT_REVIEW_*` не являются
+авторизацией тарифного Codex. Retired workflow больше не получают эти секреты.
+Данный переход не удаляет секреты и не изменяет production `.env`: могут
+существовать другие потребители. Не создавать новые API-ключи для этого цикла.
 
 Создать Environment `production` и repository/environment secrets:
 
@@ -181,3 +158,4 @@ Deployment не является атомарным и автоматическ�
 миграция или установленная зависимость может остаться. Для рискованных миграций
 до merge обязателен проверенный backup рабочей БД и отдельный план roll-forward;
 возврат к старому коду допустим только после проверки совместимости схемы.
+

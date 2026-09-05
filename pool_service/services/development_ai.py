@@ -5,6 +5,7 @@ from uuid import uuid4
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
+# Retained for existing mocked integration fixtures; _client never constructs it.
 from openai import OpenAI
 
 from pool_service.models import (
@@ -47,12 +48,11 @@ class AnalysisOperationResult:
 
 
 def _client(*, max_retries):
-    if not settings.OPENAI_API_KEY:
-        raise AnalysisConfigurationError("OpenAI integration is not configured")
-    return OpenAI(
-        api_key=settings.OPENAI_API_KEY,
-        timeout=settings.OPENAI_DEVELOPMENT_TIMEOUT_SECONDS,
-        max_retries=max_retries,
+    # Shared by primary analysis and independent development review. Existing
+    # product API credentials must never silently fund this retired path.
+    raise AnalysisConfigurationError(
+        "Separate development API billing is disabled. Use Codex signed in "
+        "with ChatGPT and native Codex GitHub code review."
     )
 
 
@@ -521,3 +521,4 @@ def check_analysis(iteration_id):
                 locked.save(update_fields=["automation_metadata", "updated_at"])
         return AnalysisOperationResult("check_failed", changed=True)
     return _apply_response(iteration.pk, response)
+

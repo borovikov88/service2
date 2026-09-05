@@ -536,48 +536,37 @@ class DevelopmentAIAnalysisTests(TestCase):
 
     @AI_SETTINGS
     @patch("pool_service.services.development_ai.OpenAI")
-    def test_official_sdk_receives_background_request_without_key_in_payload(self, openai_class):
+    def test_background_request_is_retired_even_with_configured_api_key(self, openai_class):
         task = self.create_task()
         iteration = self.create_analysis_iteration(task)
-        sdk_client = openai_class.return_value
-        sdk_client.responses.create.return_value = provider_response()
 
-        response = development_ai._create_background_response(iteration, "launch-token")
+        with self.assertRaisesRegex(
+            development_ai.AnalysisConfigurationError,
+            "Separate development API billing is disabled",
+        ):
+            development_ai._create_background_response(iteration, "launch-token")
 
-        self.assertEqual(response.id, "resp_test_1")
-        openai_class.assert_called_once_with(
-            api_key="test-api-key-never-sent",
-            timeout=3,
-            max_retries=0,
-        )
-        kwargs = sdk_client.responses.create.call_args.kwargs
-        self.assertTrue(kwargs["background"])
-        self.assertEqual(kwargs["model"], "test-analysis-model")
-        self.assertEqual(kwargs["input"], iteration.prompt)
-        self.assertNotIn("test-api-key-never-sent", str(kwargs))
-        self.assertIn("не раскрывай chain-of-thought", kwargs["instructions"].lower())
+        openai_class.assert_not_called()
+        openai_class.return_value.responses.create.assert_not_called()
+        iteration.refresh_from_db()
+        self.assertNotIn("response_id", iteration.automation_metadata)
+        self.assertNotIn("test-api-key-never-sent", str(iteration.automation_metadata))
 
     @AI_SETTINGS
     @patch("pool_service.services.development_ai.OpenAI")
-    def test_retrieve_uses_short_timeout_and_read_only_retry_policy(self, openai_class):
-        sdk_client = openai_class.return_value
-        sdk_client.responses.retrieve.return_value = provider_response("resp_read")
+    def test_retired_api_response_is_not_retrieved_with_existing_credentials(self, openai_class):
+        with self.assertRaisesRegex(
+            development_ai.AnalysisConfigurationError,
+            "Separate development API billing is disabled",
+        ):
+            development_ai._retrieve_response("resp_read")
 
-        result = development_ai._retrieve_response("resp_read")
-
-        self.assertEqual(result.id, "resp_read")
-        openai_class.assert_called_once_with(
-            api_key="test-api-key-never-sent",
-            timeout=3,
-            max_retries=2,
-        )
-        sdk_client.responses.retrieve.assert_called_once_with("resp_read")
+        openai_class.assert_not_called()
+        openai_class.return_value.responses.retrieve.assert_not_called()
 
     @AI_SETTINGS
     @patch("pool_service.services.development_ai.OpenAI")
-    def test_sdk_create_timeout_has_no_retry_and_becomes_launch_unknown(self, openai_class):
-        sdk_client = openai_class.return_value
-        sdk_client.responses.create.side_effect = TimeoutError("uncertain create")
+    def test_retired_api_launch_blocks_task_without_sdk_or_false_ready_state(self, openai_class):
         task = self.create_task()
         self.client.force_login(self.owner)
 
@@ -586,14 +575,15 @@ class DevelopmentAIAnalysisTests(TestCase):
 
         iteration = task.iterations.get()
         task.refresh_from_db()
-        openai_class.assert_called_once_with(
-            api_key="test-api-key-never-sent",
-            timeout=3,
-            max_retries=0,
-        )
-        self.assertEqual(sdk_client.responses.create.call_count, 1)
+        openai_class.assert_not_called()
+        openai_class.return_value.responses.create.assert_not_called()
+        # Preserve the existing failed-launch orchestration rather than mark a
+        # task ready when the retired provider has produced no response.
         self.assertEqual(iteration.automation_metadata["state"], "launch_unknown")
+        self.assertEqual(iteration.status, DevelopmentIteration.STATUS_FAILED)
         self.assertEqual(task.status, DevelopmentTask.STATUS_BLOCKED)
+        self.assertFalse(iteration.response)
+        self.assertNotIn("response_id", iteration.automation_metadata)
         self.assertNotIn("test-api-key-never-sent", str(iteration.automation_metadata))
         self.assertNotIn("test-api-key-never-sent", "\n".join(logs.output))
 
@@ -722,3 +712,4 @@ class DevelopmentAITransactionBoundaryTests(TransactionTestCase):
 
         self.assertEqual(response.status_code, 302)
         create_response.assert_called_once()
+

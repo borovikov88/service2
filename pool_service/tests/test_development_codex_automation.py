@@ -1214,57 +1214,20 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         self.assertNotContains(response, "Открыть запуск GitHub Actions")
         self.assertNotContains(response, "Run #")
 
-    def test_workflow_has_pinned_actions_and_separates_secret_from_write_token(self):
-        workflow = (Path(settings.BASE_DIR) / ".github/workflows/development-codex.yml").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56", workflow)
-        self.assertIn('permission-profile: ":workspace"', workflow)
-        self.assertIn('safety-strategy: "drop-sudo"', workflow)
-        self.assertIn("persist-credentials: false", workflow)
-        self.assertIn("contents: write", workflow)
-        before_publish, publish_job = workflow.split("  publish:", 1)
-        codex_job, validate_job = before_publish.split("  validate:", 1)
-        self.assertIn("secrets.OPENAI_API_KEY", codex_job)
-        self.assertNotIn("contents: write", codex_job)
-        self.assertNotIn("${{ secrets.", validate_job)
-        self.assertNotIn("contents: write", validate_job)
-        self.assertNotIn("secrets.OPENAI_API_KEY", publish_job)
-        self.assertIn("git apply --index --binary", publish_job)
-        self.assertNotIn("git merge", workflow)
-        self.assertNotIn("deploy.sh", publish_job.lower())
-        self.assertNotIn("manage.py migrate", publish_job.lower())
-        self.assertIn('allow-users: "borovikov88"', codex_job)
-        self.assertIn('allow-bots: "false"', codex_job)
-        self.assertNotIn('allow-users: "*"', codex_job)
-        self.assertNotIn("${{ secrets.", publish_job)
-        self.assertIn("actions: write", publish_job)
-        self.assertIn('gh workflow run ci-deploy.yml --ref "$BRANCH_NAME"', publish_job)
-        self.assertIn("Snapshot trusted Git metadata before Codex", codex_job)
-        self.assertIn("TRUSTED_GIT_CONFIG", codex_job)
-        self.assertIn('"--no-textconv"', codex_job)
+    def test_retired_workflow_has_no_model_credentials_or_write_jobs(self):
+        workflow = (Path(settings.BASE_DIR) / ".github/workflows/development-codex.yml").read_text()
+        self.assertIn("permissions: {}", workflow)
+        for forbidden in ("secrets.", "openai/codex-action", "codex exec", "contents: write",
+                          "pull-requests: write", "  publish:", "actions/checkout"):
+            self.assertNotIn(forbidden, workflow)
 
-    def test_workflow_actor_guard_is_authoritative_and_precedes_codex(self):
-        workflow = (Path(settings.BASE_DIR) / ".github/workflows/development-codex.yml").read_text(
-            encoding="utf-8"
-        )
-        authorize, after_authorize = workflow.split("  codex:", 1)
-        codex = after_authorize.split("  validate:", 1)[0]
-        inputs = workflow.split("permissions:", 1)[0]
-        self.assertIn("  authorize:", authorize)
-        self.assertIn("permissions: {}", authorize)
-        self.assertIn("TRUSTED_ACTOR: borovikov88", authorize)
-        self.assertIn('REQUEST_ACTOR: ${{ github.actor }}', authorize)
-        self.assertIn('REQUEST_EVENT: ${{ github.event_name }}', authorize)
-        self.assertIn('[[ "$REQUEST_ACTOR" != "$TRUSTED_ACTOR" ]]', authorize)
-        self.assertIn('[[ "$REQUEST_EVENT" != "workflow_dispatch" ]]', authorize)
-        self.assertNotIn("trusted_actor:", inputs.lower())
-        self.assertNotIn("request_actor:", inputs.lower())
-        self.assertIn("needs: authorize", codex)
-        self.assertNotIn("secrets.OPENAI_API_KEY", authorize)
-        self.assertIn("secrets.OPENAI_API_KEY", codex)
-        self.assertIn('allow-bots: "false"', codex)
-        self.assertNotIn("github-actions[bot]", authorize)
+    def test_retired_dispatch_cannot_execute_for_any_actor(self):
+        workflow = (Path(settings.BASE_DIR) / ".github/workflows/development-codex.yml").read_text()
+        self.assertEqual(workflow_trigger_names(workflow), ["workflow_dispatch"])
+        self.assertNotIn("if:", workflow)
+        self.assertNotIn("github.actor", workflow)
+        self.assertNotIn("continue-on-error", workflow)
+        self.assertIn("exit 1", workflow)
 
     def test_repository_has_no_conflicting_automatic_workflows(self):
         workflow_dir = Path(settings.BASE_DIR) / ".github/workflows"
@@ -1295,7 +1258,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
                 if workflow.name == "ci-deploy.yml":
                     expected_triggers = ["pull_request", "push", "workflow_dispatch"]
                 elif workflow.name == "direct-pr-review.yml":
-                    expected_triggers = ["pull_request_target", "push", "workflow_dispatch"]
+                    expected_triggers = ["workflow_dispatch"]
                 elif workflow.name == "hosting-connection-check.yml":
                     expected_triggers = ["workflow_dispatch", "push"]
                 elif workflow.name in allowed_automatic_workflows:
@@ -1386,21 +1349,12 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
                 workflow_run_id=501, model="gpt-5.6-sol",
             )
 
-    def test_workflow_bootstraps_action_then_executes_codex_once_with_jsonl(self):
-        workflow = (Path(settings.BASE_DIR) / ".github/workflows/development-codex.yml").read_text(
-            encoding="utf-8"
-        )
-        codex_job = workflow.split("  codex:", 1)[1].split("\n  validate:", 1)[0]
-        action = codex_job.split("uses: openai/codex-action@", 1)[1].split(
-            "Run Codex once", 1
-        )[0]
-        self.assertNotIn("prompt-file:", action)
-        self.assertEqual(codex_job.count("codex exec \\"), 1)
-        self.assertIn("--json", codex_job)
-        self.assertIn('> "$JSONL_FILE"', codex_job)
-        self.assertIn("codex-usage.json", codex_job)
-        self.assertIn("usage_sha256", codex_job)
-        self.assertNotIn("calculated_cost_usd", codex_job)
+    def test_retired_workflow_explains_subscription_path_without_api_fallback(self):
+        workflow = (Path(settings.BASE_DIR) / ".github/workflows/development-codex.yml").read_text()
+        self.assertIn("Codex signed in with ChatGPT", workflow)
+        self.assertIn("native Codex GitHub code review", workflow)
+        self.assertNotIn("openai-api-key", workflow)
+        self.assertNotIn("OPENAI_API_KEY", workflow)
 
     def test_validator_accepts_correlated_no_changes_artifact(self):
         validator = load_patch_validator()
@@ -1580,53 +1534,20 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
                     validator.patch_paths(Path("unused.patch"))
             self.assertEqual(blocked_exit.exception.code, validator.SECURITY_BLOCKED_EXIT)
 
-    def test_publish_revalidates_before_apply_and_never_runs_repository_code_after_patch(self):
-        workflow = (Path(settings.BASE_DIR) / ".github/workflows/development-codex.yml").read_text(
-            encoding="utf-8"
-        )
-        publish = workflow.split("  publish:", 1)[1].split("  outcome:", 1)[0]
-        validator_position = publish.index("validate_codex_patch.py")
-        apply_position = publish.index("git apply --index --binary")
-        self.assertLess(validator_position, apply_position)
-        after_apply = publish[apply_position:]
-        for command in ("manage.py", "pip install", "npm ", "./deploy", "./update"):
-            self.assertNotIn(command, after_apply)
-        self.assertIn("core.hooksPath", after_apply)
-        self.assertIn("git commit --no-verify", after_apply)
+    def test_retired_workflow_never_applies_or_publishes_legacy_artifacts(self):
+        workflow = (Path(settings.BASE_DIR) / ".github/workflows/development-codex.yml").read_text()
+        for forbidden in ("git apply", "git commit", "git push", "gh pr", "gh workflow",
+                          "download-artifact", "upload-artifact", "manage.py", "pip install"):
+            self.assertNotIn(forbidden, workflow)
 
-    def test_artifact_correlation_and_validation_state_are_trusted_workflow_inputs(self):
-        workflow = (Path(settings.BASE_DIR) / ".github/workflows/development-codex.yml").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn('"patch_sha256": hashlib.sha256(patch).hexdigest()', workflow)
-        self.assertIn('"result": result', workflow)
-        self.assertIn('result = "changes" if changed else "no_changes"', workflow)
-        self.assertGreaterEqual(workflow.count("validate_codex_patch.py"), 2)
-        self.assertIn("security_blocked", workflow)
-        publish = workflow.split("  publish:", 1)[1].split("  outcome:", 1)[0]
-        publish_condition = publish.split("runs-on:", 1)[0]
-        self.assertIn(
-            "if: ${{ needs.validate.outputs.validation_state == 'passed' }}",
-            publish_condition,
-        )
-        for blocked_state in ("failed", "no_changes", "security_blocked", "infrastructure_failed"):
-            with self.subTest(blocked_state=blocked_state):
-                self.assertNotIn(blocked_state, publish_condition)
-        self.assertIn("outcome-${{ needs.validate.outputs.validation_state", workflow)
-        self.assertIn("codex-change-${{ inputs.launch_token }}", workflow)
-        self.assertIn("steps.gate.outputs.state == 'changes'", workflow)
-        self.assertIn('VALIDATION_STATE" == "no_changes"', workflow)
-        self.assertNotIn("no_changes", publish.split("steps:", 1)[0])
-        outcome = workflow.split("  outcome:", 1)[1]
-        self.assertIn(
-            'VALIDATION_STATE" == "passed" && "$PUBLISH_RESULT" == "success"',
-            outcome,
-        )
-        self.assertIn(
-            'VALIDATION_STATE" == "no_changes" && "$PUBLISH_RESULT" == "skipped"',
-            outcome,
-        )
-        self.assertIn("exit 1", outcome)
+    def test_retired_dispatch_reports_failure_instead_of_false_success(self):
+        workflow = (Path(settings.BASE_DIR) / ".github/workflows/development-codex.yml").read_text()
+        script = workflow.split("        run: |\n", 1)[1]
+        script = "\n".join(line[10:] for line in script.splitlines())
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Separate API development is disabled", result.stdout)
+        self.assertNotIn("success", result.stdout.lower())
 
 
 @CODEX_SETTINGS
@@ -1656,3 +1577,4 @@ class DevelopmentCodexTransactionTests(CodexTestMixin, TransactionTestCase):
 
         self.assertEqual(atomic_states, [False])
         self.assertEqual(close_connections.call_count, 2)
+
