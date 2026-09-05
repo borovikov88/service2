@@ -24,6 +24,13 @@ MAX_BUNDLE = 600_000
 MAX_RESPONSE = 2_000_000
 MAX_FILES = 40
 SHA = re.compile(r"[0-9a-f]{40}")
+API_LABELS = {"api.github.com": "GitHub", "api.openai.com": "OpenAI"}
+SAFE_OPENAI_CODES = frozenset({
+    "invalid_api_key", "model_not_found", "insufficient_quota", "rate_limit_exceeded",
+    "permission_denied", "unsupported_country_region_territory", "invalid_request_error",
+    "context_length_exceeded", "unsupported_parameter", "unsupported_value",
+})
+MAX_ERROR_BODY = 4096
 
 
 class Blocked(Exception):
@@ -42,8 +49,9 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 class Client:
     def __init__(self, token, host="api.github.com"):
-        require(isinstance(token, str) and bool(token.strip()), "Missing API credential")
         require(host in {"api.github.com", "api.openai.com"}, "Invalid API host")
+        require(isinstance(token, str) and bool(token.strip()),
+                "Missing OpenAI API credential" if host == "api.openai.com" else "Missing GitHub API credential")
         self.token, self.host = token, host
 
     def request(self, path, data=None):
@@ -59,8 +67,25 @@ class Client:
                 raw = response.read(MAX_RESPONSE + 1)
             require(len(raw) <= MAX_RESPONSE, "API response exceeds limit")
             return json.loads(raw)
+        except urllib.error.HTTPError as error:
+            # Only trusted host labels, numeric status and finite known codes
+            # may reach logs. Never print the URL, headers or response message.
+            status = str(error.code) if type(error.code) is int and 100 <= error.code <= 599 else "unknown"
+            message = API_LABELS[self.host] + " API HTTP " + status
+            try:
+                raw = error.read(MAX_ERROR_BODY + 1)
+                body = json.loads(raw) if len(raw) <= MAX_ERROR_BODY else None
+                detail = body.get("error") if isinstance(body, dict) else None
+                code = detail.get("code") if isinstance(detail, dict) else None
+                if self.host == "api.openai.com" and isinstance(code, str) and code in SAFE_OPENAI_CODES:
+                    message += " (" + code + ")"
+            except (ValueError, TypeError, OSError):
+                pass
+            finally:
+                error.close()
+            raise Blocked(message) from None
         except (urllib.error.URLError, ValueError, TimeoutError, OSError):
-            raise Blocked("API request failed; inspect credential access or retry") from None
+            raise Blocked(API_LABELS[self.host] + " API request failed; inspect access or retry") from None
 
 
 def repo_path(suffix):
@@ -296,6 +321,7 @@ def publish(client, artifact, env, number):
     require(isinstance(artifact, dict) and artifact.get("run") == run_binding(env) and
             artifact.get("model") == MODEL, "Artifact provenance mismatch")
     result = validate_review(artifact.get("review"))
+    print("REVIEW_STAGE=validate_current_pr", flush=True)
     current = binding(client.request(repo_path(f"/pulls/{number}")))
     require(current == artifact.get("binding") and current["base"] == env["TRUSTED_SHA"], "PR changed since review")
     identity = client.request("/user")
@@ -315,6 +341,7 @@ def publish(client, artifact, env, number):
         f"Run: https://github.com/{REPOSITORY}/actions/runs/{env['GITHUB_RUN_ID']}/attempts/{env['GITHUB_RUN_ATTEMPT']}",
         f"<!-- {marker} -->"])
     require(binding(client.request(repo_path(f"/pulls/{number}"))) == current, "PR moved before publication")
+    print("REVIEW_STAGE=publish_review", flush=True)
     response = client.request(repo_path(f"/pulls/{number}/reviews"),
                               {"event": event, "commit_id": current["head"], "body": body})
     require(isinstance(response, dict) and response.get("state") == desired and
@@ -349,10 +376,15 @@ def main():
     if sys.argv[1:] == ["review"]:
         github = Client(env.get("READ_GITHUB_TOKEN"))
         model = Client(env.get("OPENAI_API_KEY"), "api.openai.com")
+        print("REVIEW_STAGE=load_pr", flush=True)
         pr = github.request(repo_path(f"/pulls/{number}"))
         bound = binding(pr)
         require(bound["base"] == run["TRUSTED_SHA"], "Base changed; start a fresh review")
-        result = model_review(model, build_bundle(github, pr))
+        print("REVIEW_STAGE=collect_source", flush=True)
+        bundle = build_bundle(github, pr)
+        print("REVIEW_STAGE=call_model", flush=True)
+        result = model_review(model, bundle)
+        print("REVIEW_STAGE=validate_current_pr", flush=True)
         require(binding(github.request(repo_path(f"/pulls/{number}"))) == bound, "PR changed during review")
         artifact = {"run": run, "model": MODEL, "binding": bound, "review": result}
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -367,11 +399,21 @@ def main():
         raise Blocked("Expected review or publish mode")
 
 
-if __name__ == "__main__":
+def cli():
     try:
         main()
-    except (Blocked, KeyError, ValueError, TypeError, OSError):
+    except Blocked as error:
+        # Blocked is reserved for our literal messages and allowlisted API
+        # diagnostics; untrusted exception strings go through the fallback.
+        print("Independent review blocked: " + str(error), file=sys.stderr)
+        return 1
+    except Exception:
         # Do not emit API bodies, model/source content, exception repr or tokens.
         print("Independent review blocked. Check inputs, API access and context limits; no automatic approval assumed.",
               file=sys.stderr)
-        sys.exit(1)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(cli())
