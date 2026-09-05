@@ -960,9 +960,13 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         workflow = (Path(settings.BASE_DIR) / ".github/workflows/development-codex.yml").read_text(
             encoding="utf-8"
         )
-        validator_call = workflow.split("Validate artifact and protected paths before apply", 1)[1]
-        self.assertNotIn("prompt_b64", validator_call.split("Apply gated patch", 1)[0])
-        self.assertNotIn("pr_title_b64", validator_call.split("Apply gated patch", 1)[0])
+        retired_job = workflow.split("jobs:", 1)[1]
+        # The server still owns the branch name; the retired workflow must not
+        # decode or apply any task-controlled content under that name.
+        for forbidden in ("inputs.", "prompt_b64", "pr_title_b64", "git apply",
+                          "git push", "download-artifact", "codex exec"):
+            self.assertNotIn(forbidden, retired_job)
+        self.assertIn("exit 1", retired_job)
 
     def test_get_is_rejected_and_manager_is_denied(self):
         task = self.make_ready_task()
