@@ -24,11 +24,19 @@
   сверён Git blob исходника в коммите PR №85: `ee0a36a1a499a677de561e3774bb94fd66ced419`.
   Настройки определяют `public_static` как `STATIC_ROOT`; эти отличия относятся
   к результатам сборки, а не к отдельным утраченным правкам оформления.
-- `backups/` остаётся untracked. Его содержимое не читалось и не передавалось
-  в Git; это отдельный незакрытый blocker preflight.
-- Production SSH key для Actions, reviewer identity, ruleset и сквозной
-  deployment этой сверкой не подтверждены. MCP probe не включался, рабочие БД
-  и 1С не затрагивались.
+- Владелец перенёс untracked `backups/` (1,8 МБ) целиком в приватный каталог
+  `service2-backups.*` в домашней папке аккаунта вне checkout; последующий
+  `git status` больше не показывает `backups/`. Содержимое копий в Git/чат не
+  передавалось; отсутствие обращений подтверждено только поиском в tracked
+  Python/Shell/YAML, а не аудитом внешних cron-задач.
+- Владелец создал отдельный SSH key, добавил публичную часть с `restrict` и
+  сообщил о сохранении всех семи `DEPLOY_*` secrets в GitHub Environment
+  `production`. Проверка из его SSH-сессии с этим identity, без agent/password
+  и с pinned host key завершилась `SSH_KEY_OK` и ожидаемым пользователем.
+  Неавторизованный запрос страницы входа вернул HTTP 200. Эти результаты не
+  доказывают передачу secrets или доступ из GitHub runner.
+- Reviewer identity, ruleset и сквозной deployment этой сверкой не подтверждены.
+  MCP probe не включался, рабочие БД и 1С не затрагивались.
 
 ## Репозиторий
 

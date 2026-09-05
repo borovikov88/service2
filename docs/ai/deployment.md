@@ -94,6 +94,31 @@ Passenger-layout, virtualenv, writable `tmp` и допустимость сос�
 неизвестные локальные изменения не выводятся и не удаляются: deployment
 останавливается.
 
+## Проверка доступа из GitHub Actions без deployment
+
+Workflow `Check hosting connection (no deploy)` проверяет введённые secrets
+отдельно от изменяющего pipeline. Он запускается при попадании его workflow или
+runner в `main` и вручную через Actions → этот workflow → Run workflow (`main`).
+На PR и на других refs job с Environment `production` не запускается. Checkout
+берётся по точному SHA события, GitHub token имеет только `contents: read`.
+
+Runner `.github/scripts/check_hosting_connection.py` требует все семь значений
+`DEPLOY_*` (для этой диагностики порт указывается явно, обычно `22`). Он проверяет
+формат ключа и наличие pinned host key, входит по указанному identity без SSH
+agent/password и без отключения проверки сервера, читает пользователя и HEAD,
+проверяет структуру каталогов и версию Python/Django без загрузки настроек
+приложения, затем требует фактический HTTPS 2xx по health URL без redirects.
+Закрытый ключ хранится только во временном файле runner с правами `600` и
+удаляется после проверки, включая ошибки.
+
+Успех обозначается `HOSTING_CONNECTION_CHECK_OK (no deployment performed)`.
+Он подтверждает доступ из runner и передачу secrets, но не совпадение production
+HEAD с `main`, не полный deploy preflight, не финансовые отчёты и не deployment.
+Этот workflow не вызывает `update.sh`, fetch/checkout на хостинге, миграции,
+импорт, collectstatic или Passenger restart. GitHub может отображать использование
+Environment как deployment activity; это не означает обновления приложения.
+Существующий review gate изменяющего workflow сохраняется без изменений.
+
 ## Собранная статика в существующем checkout
 
 `STATIC_ROOT` — `public_static`, а исходники приложения находятся в
@@ -131,8 +156,9 @@ commit. Коллизии untracked output с отслеживаемым target p
 Deployment не меняет production `.env`; тестовый MCP нельзя включать в рамках
 этой настройки.
 
-`workflow_dispatch` выполняет только тесты: review gate и deployment для него
-пропускаются.
+`workflow_dispatch` для `ci-deploy.yml` выполняет только тесты: review gate и
+deployment для него пропускаются. Отдельный `hosting-connection-check.yml`
+выполняет описанную выше проверку подключения.
 
 Deployment не является атомарным и автоматический rollback после применённой
 миграции не обещается. Ошибка останавливает последующие шаги, но уже применённая
