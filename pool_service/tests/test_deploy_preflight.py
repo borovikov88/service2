@@ -1,4 +1,5 @@
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -31,8 +32,7 @@ class DeployPreflightIntegrationTests(SimpleTestCase):
         self._run("git", "clone", str(self.remote), str(self.app))
         (self.host / "venv/bin").mkdir(parents=True)
         python = self.host / "venv/bin/python"
-        python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        python.chmod(0o755)
+        python.symlink_to(sys.executable)
         (self.host / "tmp").mkdir()
         self.sha = self._output("git", "-C", str(self.app), "rev-parse", "HEAD").strip()
 
@@ -83,3 +83,4 @@ class DeployPreflightIntegrationTests(SimpleTestCase):
         self.assertEqual(result.returncode, 65)
         self.assertEqual(self._git_snapshot(), before)
         self.assertFalse((self.host / "tmp/restart.txt").exists())
+
