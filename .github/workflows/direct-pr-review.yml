@@ -56,8 +56,6 @@ jobs:
       (github.event.pull_request.user.login == 'borovikov88' || github.event.pull_request.user.login == 'github-actions[bot]')))
     runs-on: ubuntu-latest
     timeout-minutes: 12
-    env:
-      REVIEW_ARTIFACT: ${{ runner.temp }}/independent-review/result.json
     steps:
       - name: Check out trusted main revision only
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -66,6 +64,7 @@ jobs:
           persist-credentials: false
       - name: Review inert PR source through APIs
         env:
+          REVIEW_ARTIFACT: ${{ runner.temp }}/independent-review/result.json
           READ_GITHUB_TOKEN: ${{ github.token }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python3 .github/scripts/review_direct_pr.py review
@@ -73,14 +72,12 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: independent-review-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ env.REVIEW_ARTIFACT }}
+          path: ${{ runner.temp }}/independent-review/result.json
           if-no-files-found: error
           retention-days: 1
 
   publish:
     needs: review
-    env:
-      REVIEW_ARTIFACT: ${{ runner.temp }}/independent-review/result.json
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: review
@@ -97,5 +94,6 @@ jobs:
           path: ${{ runner.temp }}/independent-review
       - name: Publish exact-head review using independent identity
         env:
+          REVIEW_ARTIFACT: ${{ runner.temp }}/independent-review/result.json
           SERVICE2_REVIEW_TOKEN: ${{ secrets.SERVICE2_REVIEW_TOKEN }}
         run: python3 .github/scripts/review_direct_pr.py publish
