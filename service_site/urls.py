@@ -10,8 +10,10 @@ from django.urls import reverse_lazy
 from django.conf import settings
 from django.templatetags.static import static
 from django.conf.urls.static import static as static_serve
+from pool_service.mcp_views import mcp_test
 
 urlpatterns = [
+    path('mcp/test/', mcp_test, name='mcp_test'),
     path('admin/', admin.site.urls),
     path('', include('pool_service.urls')),
     path('robots.txt', robots_txt, name='robots_txt'),

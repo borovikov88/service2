@@ -140,6 +140,13 @@ WATER_READING_LIMITS = {
 
 LOGIN_URL = '/accounts/login/'
 
+ADVISOR_MCP_TEST_ENABLED = os.getenv('ADVISOR_MCP_TEST_ENABLED', '').lower() == 'true'
+ADVISOR_MCP_TEST_ALLOWED_ORIGINS = {
+    origin.strip()
+    for origin in os.getenv('ADVISOR_MCP_TEST_ALLOWED_ORIGINS', '').split(',')
+    if origin.strip()
+}
+
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
