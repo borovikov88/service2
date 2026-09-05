@@ -1276,6 +1276,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         }
         allowed_automatic_workflows = {
             "ci-deploy.yml",
+            "direct-pr-review.yml",
             "hosting-connection-check.yml",
             "management-finance-mysql.yml",
         }
@@ -1293,6 +1294,8 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
                 text = workflow.read_text(encoding="utf-8")
                 if workflow.name == "ci-deploy.yml":
                     expected_triggers = ["pull_request", "push", "workflow_dispatch"]
+                elif workflow.name == "direct-pr-review.yml":
+                    expected_triggers = ["pull_request_target", "push", "workflow_dispatch"]
                 elif workflow.name == "hosting-connection-check.yml":
                     expected_triggers = ["workflow_dispatch", "push"]
                 elif workflow.name in allowed_automatic_workflows:

@@ -1,0 +1,101 @@
+name: Independent direct PR review
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/direct-pr-review.yml
+      - .github/scripts/review_direct_pr.py
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Existing same-repository PR number to review
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: independent-review-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: true
+
+env:
+  TRUSTED_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+
+jobs:
+  connection:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'borovikov88/service2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: review
+    steps:
+      - name: Check out trusted main revision only
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify bot access without publishing reviews
+        env:
+          SERVICE2_REVIEW_TOKEN: ${{ secrets.SERVICE2_REVIEW_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python3 .github/scripts/review_direct_pr.py check-connection
+
+  review:
+    if: >-
+      github.repository == 'borovikov88/service2' &&
+      (github.actor == 'borovikov88' || github.actor == 'github-actions[bot]') &&
+      (github.triggering_actor == 'borovikov88' || github.triggering_actor == 'github-actions[bot]') &&
+      ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'borovikov88') ||
+      (github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft == false &&
+      (github.event.pull_request.user.login == 'borovikov88' || github.event.pull_request.user.login == 'github-actions[bot]')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      REVIEW_ARTIFACT: ${{ runner.temp }}/independent-review/result.json
+    steps:
+      - name: Check out trusted main revision only
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ env.TRUSTED_SHA }}
+          persist-credentials: false
+      - name: Review inert PR source through APIs
+        env:
+          READ_GITHUB_TOKEN: ${{ github.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python3 .github/scripts/review_direct_pr.py review
+      - name: Save result for the publisher in this run only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: independent-review-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.REVIEW_ARTIFACT }}
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: review
+    env:
+      REVIEW_ARTIFACT: ${{ runner.temp }}/independent-review/result.json
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: review
+    steps:
+      - name: Check out trusted main revision only
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ env.TRUSTED_SHA }}
+          persist-credentials: false
+      - name: Load only this run's review result
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: independent-review-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/independent-review
+      - name: Publish exact-head review using independent identity
+        env:
+          SERVICE2_REVIEW_TOKEN: ${{ secrets.SERVICE2_REVIEW_TOKEN }}
+        run: python3 .github/scripts/review_direct_pr.py publish

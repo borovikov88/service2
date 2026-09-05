@@ -53,9 +53,13 @@ PR публикуется штатным `github-actions[bot]`. Поскольк
 `ci-deploy.yml` на опубликованной ветке. Этот запуск выполняет только тесты и
 создаёт check для head SHA; merge/deployment при `workflow_dispatch` исключены.
 
-Создать отдельную GitHub service account (не identity, которой создаётся PR),
-выдать ей fine-grained token с `Pull requests: write` и доступом к этому
-репозиторию, затем задать на сервере:
+Для серверного цикла создать отдельную GitHub service account (не identity,
+которой создаётся PR). Для публичного `borovikov88/service2` приглашённый
+collaborator `aqualine-review-bot` использует classic PAT со scope `public_repo`:
+fine-grained PAT пока не покрывает запись в чужой репозиторий в роли repository
+collaborator. Classic scope не ограничен единственным репозиторием. Источник:
+https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
+Для существующего серверного delivery задать на сервере:
 
 - `GITHUB_DEVELOPMENT_REVIEW_TOKEN` — token отдельной reviewer identity;
 - `GITHUB_DEVELOPMENT_REVIEW_LOGIN` — точный GitHub login этой identity;
@@ -65,6 +69,14 @@ PR публикуется штатным `github-actions[bot]`. Поскольк
 Reviewer identity проверяется через GitHub API и обязана отличаться от автора
 PR. Auto-merge только ставится в очередь: объединение выполняет GitHub после
 всех required checks и действующего approval актуального head.
+
+Для прямых PR из Codex используется отдельный GitHub-side reviewer, описанный
+в `docs/ai/codex-direct-flow.md`. Его Environment называется `review`, а секрет
+в GitHub — `SERVICE2_REVIEW_TOKEN`. Имена Actions secrets не могут начинаться
+с `GITHUB_`; серверное имя переменной выше не является именем GitHub secret.
+Сохранение секрета в Environment не добавляет его в production `.env` и не
+включает серверный poller. Проверяющий использует repository secret
+`OPENAI_API_KEY`; токен бота получает только отдельный publisher job.
 
 Создать Environment `production` и repository/environment secrets:
 
@@ -112,6 +124,10 @@ agent/password и без отключения проверки сервера, �
 удаляется после проверки, включая ошибки.
 
 Успех обозначается `HOSTING_CONNECTION_CHECK_OK (no deployment performed)`.
+Этот результат фактически получен 5 сентября 2026 года в повторном запуске
+Actions run `33967180783`: SSH, layout, Python `3.13.2`, Django `5.1.6` и
+`HEALTH_HTTP=200` подтверждены. Production по этому запуску оставался на
+`1cc6e08`; приложение не обновлялось.
 Он подтверждает доступ из runner и передачу secrets, но не совпадение production
 HEAD с `main`, не полный deploy preflight, не финансовые отчёты и не deployment.
 Этот workflow не вызывает `update.sh`, fetch/checkout на хостинге, миграции,
