@@ -69,7 +69,8 @@ class AuthRedirectMiddleware:
         ]
         if not request.user.is_authenticated:
             path = request.path
-            if path not in {"/", "/index/"} and not any(path.startswith(p) for p in allowed_prefixes):
+            exact_allowed_paths = {"/", "/index/", "/mcp/test/"}
+            if path not in exact_allowed_paths and not any(path.startswith(p) for p in allowed_prefixes):
                 return redirect("/accounts/login/")
         return self.get_response(request)
 

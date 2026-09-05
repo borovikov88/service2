@@ -223,7 +223,7 @@ class PollDevelopmentCodexCommandTests(AutoCycleFixtureMixin, TestCase):
         output = self.run_command()
 
         review.assert_not_called()
-        self.assertEqual(output, "checked=0 reviewed=0 corrective=0 errors=0")
+        self.assertEqual(output, "checked=0 reviewed=0 corrective=0 delivered=0 errors=0")
 
     @SETTINGS
     @patch("pool_service.management.commands.poll_development_codex.run_review")
@@ -236,7 +236,7 @@ class PollDevelopmentCodexCommandTests(AutoCycleFixtureMixin, TestCase):
         output = self.run_command()
 
         review.assert_not_called()
-        self.assertEqual(output, "checked=0 reviewed=0 corrective=0 errors=0")
+        self.assertEqual(output, "checked=0 reviewed=0 corrective=0 delivered=0 errors=0")
 
     @SETTINGS
     @patch("pool_service.management.commands.poll_development_codex.run_review")

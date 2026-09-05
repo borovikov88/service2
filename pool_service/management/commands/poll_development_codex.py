@@ -11,6 +11,7 @@ from pool_service.services.development_codex import (
     dispatch_corrective_codex,
 )
 from pool_service.services.development_db import database_error_code
+from pool_service.services.development_delivery import publish_approval_and_enable_auto_merge
 from pool_service.services.development_review import (
     review_updated_accepted_pull_request,
     run_review,
@@ -65,7 +66,7 @@ class Command(BaseCommand):
                 ids.append(candidate.pk)
                 if len(ids) >= batch_size:
                     break
-        counts = {"checked": 0, "reviewed": 0, "corrective": 0, "errors": 0}
+        counts = {"checked": 0, "reviewed": 0, "corrective": 0, "delivered": 0, "errors": 0}
         for task_id in ids:
             task = None
             iteration_id = None
@@ -90,6 +91,9 @@ class Command(BaseCommand):
                         iteration_id = result.review_id
                     task.refresh_from_db()
                     if task.status != DevelopmentTask.STATUS_REVISION:
+                        stage = "publish_approval_and_enable_auto_merge"
+                        if publish_approval_and_enable_auto_merge(task_id).changed:
+                            counts["delivered"] += 1
                         continue
                 if task.status in {DevelopmentTask.STATUS_CODEX_WORKING, DevelopmentTask.STATUS_BLOCKED}:
                     stage = "check_codex"
@@ -110,6 +114,10 @@ class Command(BaseCommand):
                         iteration_id = result.review_id
                     stage = "refresh_after_review"
                     task.refresh_from_db()
+                if task.status == DevelopmentTask.STATUS_READY_FOR_DEPLOY:
+                    stage = "publish_approval_and_enable_auto_merge"
+                    if publish_approval_and_enable_auto_merge(task_id).changed:
+                        counts["delivered"] += 1
                 if task.status == DevelopmentTask.STATUS_REVISION:
                     stage = "select_corrective_review"
                     review = task.iterations.filter(
@@ -141,4 +149,4 @@ class Command(BaseCommand):
             finally:
                 # Never let a broken connection from one task poison the next.
                 close_old_connections()
-        self.stdout.write("checked={checked} reviewed={reviewed} corrective={corrective} errors={errors}".format(**counts))
+        self.stdout.write("checked={checked} reviewed={reviewed} corrective={corrective} delivered={delivered} errors={errors}".format(**counts))
