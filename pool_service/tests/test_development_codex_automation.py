@@ -1272,7 +1272,10 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
             "development-codex-chatgpt-canary.yml",
             "development-codex-chatgpt-repo-canary.yml",
         }
-        allowed_automatic_workflows = {"management-finance-mysql.yml"}
+        allowed_automatic_workflows = {
+            "ci-deploy.yml",
+            "management-finance-mysql.yml",
+        }
         expected_workflows = (
             manual_canary_workflows | {production_workflow} | allowed_automatic_workflows
         )
@@ -1280,17 +1283,42 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         self.assertEqual({item.name for item in workflows}, expected_workflows)
         self.assertEqual(
             [item.name for item in workflows if item.name not in manual_canary_workflows],
-            [production_workflow, *sorted(allowed_automatic_workflows)],
+            sorted({production_workflow} | allowed_automatic_workflows),
         )
         for workflow in workflows:
             with self.subTest(workflow=workflow.name):
                 text = workflow.read_text(encoding="utf-8")
-                expected_triggers = (
-                    ["pull_request", "workflow_dispatch"]
-                    if workflow.name in allowed_automatic_workflows
-                    else ["workflow_dispatch"]
-                )
+                if workflow.name == "ci-deploy.yml":
+                    expected_triggers = ["pull_request", "push", "workflow_dispatch"]
+                elif workflow.name in allowed_automatic_workflows:
+                    expected_triggers = ["pull_request", "workflow_dispatch"]
+                else:
+                    expected_triggers = ["workflow_dispatch"]
                 self.assertEqual(workflow_trigger_names(text), expected_triggers)
+
+    def test_ci_deploy_workflow_enforces_review_and_fail_closed_deployment_policy(self):
+        workflow = (Path(settings.BASE_DIR) / ".github/workflows/ci-deploy.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("pull-requests: read", workflow)
+        self.assertIn("ADVISOR_MCP_TEST_ENABLED: \"false\"", workflow)
+        self.assertIn("review-gate:", workflow)
+        self.assertIn("github.event_name == 'push'", workflow)
+        self.assertIn(".merge_commit_sha == $sha", workflow)
+        self.assertIn("gh api --paginate --slurp", workflow)
+        self.assertIn("verify_deploy_review.py", workflow)
+        self.assertIn("needs: [test, review-gate]", workflow)
+        self.assertIn("environment: production", workflow)
+        self.assertIn("ref: ${{ github.sha }}", workflow)
+        self.assertIn("persist-credentials: false", workflow)
+        self.assertIn("StrictHostKeyChecking=yes", workflow)
+        self.assertIn('HOST_LOOKUP="[$DEPLOY_HOST]:$PORT"', workflow)
+        self.assertIn('"$REMOTE_COMMAND" < update.sh', workflow)
+        self.assertIn("DEPLOY_HEALTH_URL", workflow)
+        self.assertIn("--connect-timeout 10 --max-time 30", workflow)
+        self.assertIn('[[ "$status" =~ ^2[0-9][0-9]$ ]]', workflow)
+        self.assertIn('value.scheme != "https"', workflow)
+        self.assertIn("concurrency:", workflow)
 
     def test_codex_jsonl_usage_parser_accepts_trusted_completed_usage(self):
         builder = load_usage_builder()
