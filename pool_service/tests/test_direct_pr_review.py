@@ -3,6 +3,7 @@ import base64
 import copy
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -253,6 +254,69 @@ class DirectReviewTests(unittest.TestCase):
     def test_api_redirect_cannot_forward_credentials(self):
         with self.assertRaises(review.Blocked):
             review.NoRedirect().redirect_request(None, None, 302, "", {}, "https://attacker.invalid")
+
+    def test_http_diagnostics_never_emit_response_text_or_credentials(self):
+        sentinel = "PRIVATE_TOKEN_AND_PR_TEXT"
+        cases = [
+            ("api.openai.com", 401, {"code": "invalid_api_key"}, "OpenAI API HTTP 401 (invalid_api_key)"),
+            ("api.openai.com", 404, {"code": "model_not_found"}, "OpenAI API HTTP 404 (model_not_found)"),
+            ("api.github.com", 403, {"code": "invalid_api_key"}, "GitHub API HTTP 403"),
+            ("api.openai.com", 400, {"code": sentinel}, "OpenAI API HTTP 400"),
+            ("api.openai.com", 400, {"code": [sentinel]}, "OpenAI API HTTP 400"),
+            ("api.openai.com", 400, {"code": "invalid_api_key", "padding": "x" * 5000}, "OpenAI API HTTP 400"),
+        ]
+        for host, status, detail, expected in cases:
+            with self.subTest(host=host, status=status, expected=expected):
+                detail.update(message=sentinel, param=sentinel)
+                body = io.BytesIO(json.dumps({"error": detail}).encode())
+                error = review.urllib.error.HTTPError("https://" + host + "/" + sentinel,
+                                                     status, sentinel, {"Authorization": sentinel}, body)
+                client = review.Client(sentinel, host)
+                output = io.StringIO()
+                with patch.object(review.urllib.request, "build_opener") as opener, \
+                        patch.object(review, "main", side_effect=lambda: client.request("/" + sentinel)), \
+                        patch.object(review.sys, "stderr", output):
+                    opener.return_value.open.side_effect = error
+                    self.assertEqual(review.cli(), 1)
+                self.assertEqual(output.getvalue(), "Independent review blocked: " + expected + "\n")
+                self.assertNotIn(sentinel, output.getvalue())
+                self.assertTrue(body.closed)
+
+    def test_missing_model_credential_and_unexpected_errors_have_safe_diagnostics(self):
+        output = io.StringIO()
+        with patch.object(review, "main", side_effect=lambda: review.Client(None, "api.openai.com")), \
+                patch.object(review.sys, "stderr", output):
+            self.assertEqual(review.cli(), 1)
+        self.assertEqual(output.getvalue(), "Independent review blocked: Missing OpenAI API credential\n")
+        output = io.StringIO()
+        with patch.object(review, "main", side_effect=RuntimeError("PRIVATE_TOKEN_AND_PR_TEXT")), \
+                patch.object(review.sys, "stderr", output):
+            self.assertEqual(review.cli(), 1)
+        self.assertNotIn("PRIVATE_TOKEN_AND_PR_TEXT", output.getvalue())
+
+    def test_network_error_diagnostic_only_identifies_known_api(self):
+        client = review.Client("PRIVATE_TOKEN", "api.openai.com")
+        with patch.object(review.urllib.request, "build_opener") as opener:
+            opener.return_value.open.side_effect = review.urllib.error.URLError("PRIVATE_TOKEN_AND_PR_TEXT")
+            with self.assertRaisesRegex(review.Blocked, "^OpenAI API request failed; inspect access or retry$"):
+                client.request("/v1/responses")
+
+    def test_review_stages_pinpoint_model_failure_without_emitting_bundle(self):
+        client = FakeClient([pr()])
+        output = io.StringIO()
+        env = dict(ENV, REVIEW_ARTIFACT="unused-result.json", READ_GITHUB_TOKEN="PRIVATE_TOKEN",
+                   OPENAI_API_KEY="PRIVATE_MODEL_TOKEN")
+        with patch.object(review.os, "environ", env), patch.object(review.sys, "argv", ["review_direct_pr.py", "review"]), \
+                patch.object(review, "event_number", return_value=90), patch.object(review, "Client", return_value=client), \
+                patch.object(review, "build_bundle", return_value={"task": "PRIVATE_PR_TEXT"}), \
+                patch.object(review, "model_review", side_effect=review.Blocked("OpenAI API HTTP 404 (model_not_found)")), \
+                patch.object(review.sys, "stdout", output), patch.object(review.sys, "stderr", output):
+            self.assertEqual(review.cli(), 1)
+        self.assertEqual(output.getvalue().splitlines(), [
+            "REVIEW_STAGE=load_pr", "REVIEW_STAGE=collect_source", "REVIEW_STAGE=call_model",
+            "Independent review blocked: OpenAI API HTTP 404 (model_not_found)",
+        ])
+        self.assertEqual(client.writes, [])
 
     def test_workflow_separates_tokens_and_never_checks_out_pr_head(self):
         workflow = (ROOT / ".github/workflows/direct-pr-review.yml").read_text()
