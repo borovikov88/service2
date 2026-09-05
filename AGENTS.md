@@ -20,6 +20,8 @@
   `docs/ai/decisions.md` и `docs/ai/backlog.md`. Проверенная схема доступа
   финансового советника описана в `docs/ai/advisor-access.md`.
   Порядок CI и production deployment описан в `docs/ai/deployment.md`.
+  Ограничения прямого цикла из Codex-чата и обновления существующего PR описаны
+  в `docs/ai/codex-direct-flow.md`.
 
 ## Постоянный процесс разработки
 
