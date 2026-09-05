@@ -1,17 +1,18 @@
 # Проверенное состояние service2
 
-## Дополнение: reviewer identity и черновик прямого ревью
+## Дополнение: reviewer identity и независимое ревью прямого пути
 
 Исходный remote `main` этой задачи — `fa1f7de419457703c6f5fd8c590de8485e4e27ed`
 после PR №89. Бот `aqualine-review-bot` имеет collaborator permission `write`.
 Владелец сообщил о сохранении `SERVICE2_REVIEW_TOKEN` в Environment `review`;
 значение токена агент не читал. Действительность токена ещё не проверена.
 
-`direct-pr-review.yml` подготовлен как черновик: отдельный статический AI review,
-затем независимый publisher точного head. 22 локальных теста и существующая
-проверка списка workflow прошли. Финальное независимое ревью прервано ошибкой
-кредитов workspace; принятия проверяющим нет. Merge и deployment не выполнялись.
-Подробности и оставшиеся ограничения — в `docs/ai/codex-direct-flow.md`.
+`direct-pr-review.yml` реализует отдельный статический AI review, затем publisher
+точного head. После сбоя первого проверяющего отдельное повторное ревью commit
+`4961866319e81bd1eda21bdddab21b340012f242` завершилось ACCEPT. Проверяющий сам
+выполнил 22 unittest; GitHub CI run `33970370217` прошёл (856 тестов, 2 пропуска).
+Внешняя работа нового reviewer/publisher ещё не подтверждена. Merge и deployment
+в этой задаче не выполнялись. Ограничения — в `docs/ai/codex-direct-flow.md`.
 
 Фактически успешен hosting connection run `33967180783` после исправления
 секрета SSH: identity/layout, Python `3.13.2`, Django `5.1.6`, HTTPS `200`.
