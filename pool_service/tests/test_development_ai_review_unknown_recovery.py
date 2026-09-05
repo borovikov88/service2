@@ -272,7 +272,7 @@ class DevelopmentAIReviewUnknownRecoveryTests(TestCase):
 
         self.assertEqual(
             output.getvalue().strip(),
-            "checked=0 reviewed=0 corrective=0 errors=0",
+            "checked=0 reviewed=0 corrective=0 delivered=0 errors=0",
         )
         check.assert_not_called()
         review.assert_not_called()

@@ -113,7 +113,7 @@ jobs:
           HOST_LOOKUP="$DEPLOY_HOST"
           if [[ "$PORT" != "22" ]]; then HOST_LOOKUP="[$DEPLOY_HOST]:$PORT"; fi
           ssh-keygen -F "$HOST_LOOKUP" -f ~/.ssh/known_hosts >/dev/null
-      - name: Deploy exact tested commit
+      - name: Verify hosting compatibility without modifying checkout
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
@@ -126,13 +126,27 @@ jobs:
           test -n "$DEPLOY_APP_PATH"
           PORT="${DEPLOY_PORT:-22}"
           [[ "$PORT" =~ ^[0-9]+$ ]]
-          printf -v REMOTE_COMMAND 'bash -s -- %q %q' "$GITHUB_SHA" "$DEPLOY_APP_PATH"
+          printf -v REMOTE_COMMAND 'bash -s -- %q %q preflight' "$GITHUB_SHA" "$DEPLOY_APP_PATH"
           ssh -i ~/.ssh/service2_deploy \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             -p "$PORT" \
             "$DEPLOY_USER@$DEPLOY_HOST" \
+            "$REMOTE_COMMAND" < update.sh
+      - name: Deploy exact tested commit
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          printf -v REMOTE_COMMAND 'bash -s -- %q %q deploy' "$GITHUB_SHA" "$DEPLOY_APP_PATH"
+          ssh -i ~/.ssh/service2_deploy \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
             "$REMOTE_COMMAND" < update.sh
       - name: Verify deployed site health
         env:

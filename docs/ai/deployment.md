@@ -21,9 +21,19 @@ Environment `production`. Deployment по SSH вызывает `update.sh` с SH
 прямой push закрывается fail-closed. Проверенный `update.sh` передаётся на stdin
 SSH, поэтому запуск не зависит от старой копии скрипта на сервере. Скрипт сверяет
 SHA с `origin/main`, запрещает параллельный
-запуск и отказывается затирать изменённые tracked-файлы.
+запуск и отказывается затирать изменённые tracked- и untracked-файлы.
 
-Независимое ревью обеспечивает правило защищённой ветки, а не deploy-скрипт.
+Отдельный AI Review выполняется приложением по фактическому diff PR и конкретному
+head SHA. После решения `accepted` poller публикует GitHub `APPROVED` от
+отдельной service-account identity и включает GitHub auto-merge. Это не текст
+ACCEPT разработчика: доставка разрешена только для сохранённой итерации
+`ai_review`, связанной с тем же PR head. При новом commit приложение повторно
+читает diff и проводит новую проверку. `development-codex.yml` остаётся точкой
+реализации и публикации PR; задача попадает туда из карточки DevelopmentTask
+через серверный dispatch, а `poll_development_codex` ведёт
+review/correction/delivery без пересылки между чатами.
+
+Независимость дополнительно обеспечивает правило защищённой ветки, а не deploy-скрипт.
 Для `main` нужно включить protection/ruleset со следующими условиями:
 
 - изменения только через pull request;
@@ -34,6 +44,25 @@ SHA с `origin/main`, запрещает параллельный
 - запрет обхода правил, включая администратора, для обычной публикации.
 
 ## Однократная настройка GitHub
+
+PR публикуется штатным `github-actions[bot]`. Поскольку созданное встроенным
+`GITHUB_TOKEN` событие PR само не запускает следующий workflow,
+`development-codex.yml` явно делает `workflow_dispatch` проверки
+`ci-deploy.yml` на опубликованной ветке. Этот запуск выполняет только тесты и
+создаёт check для head SHA; merge/deployment при `workflow_dispatch` исключены.
+
+Создать отдельную GitHub service account (не identity, которой создаётся PR),
+выдать ей fine-grained token с `Pull requests: write` и доступом к этому
+репозиторию, затем задать на сервере:
+
+- `GITHUB_DEVELOPMENT_REVIEW_TOKEN` — token отдельной reviewer identity;
+- `GITHUB_DEVELOPMENT_REVIEW_LOGIN` — точный GitHub login этой identity;
+- `GITHUB_DEVELOPMENT_AUTO_MERGE_ENABLED=true` — только после настройки ruleset;
+- включить GitHub auto-merge в настройках репозитория.
+
+Reviewer identity проверяется через GitHub API и обязана отличаться от автора
+PR. Auto-merge только ставится в очередь: объединение выполняет GitHub после
+всех required checks и действующего approval актуального head.
 
 Создать Environment `production` и repository/environment secrets:
 
@@ -55,6 +84,12 @@ SHA с `origin/main`, запрещает параллельный
 проверить его, merge выполнить через защищённый `main`, затем проверить GitHub
 deployment log и фактический health приложения. До этой проверки схема считается
 подготовленной, но не доказанной на хостинге.
+
+Перед изменяющим SSH-шагом workflow запускает `update.sh` в режиме `preflight`.
+Он использует read-only `git ls-remote`, проверяет точный `origin/main`,
+Passenger-layout, virtualenv, writable `tmp` и отсутствие локальных изменений.
+Он не выполняет fetch/checkout/pip/migrate/collectstatic/restart. Найденные
+локальные изменения не выводятся и не удаляются: deployment останавливается.
 
 `ADVISOR_MCP_TEST_ENABLED` workflow устанавливает в `false` только в CI.
 Deployment не меняет production `.env`; тестовый MCP нельзя включать в рамках

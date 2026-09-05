@@ -1238,6 +1238,8 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         self.assertIn('allow-bots: "false"', codex_job)
         self.assertNotIn('allow-users: "*"', codex_job)
         self.assertNotIn("${{ secrets.", publish_job)
+        self.assertIn("actions: write", publish_job)
+        self.assertIn('gh workflow run ci-deploy.yml --ref "$BRANCH_NAME"', publish_job)
         self.assertIn("Snapshot trusted Git metadata before Codex", codex_job)
         self.assertIn("TRUSTED_GIT_CONFIG", codex_job)
         self.assertIn('"--no-textconv"', codex_job)

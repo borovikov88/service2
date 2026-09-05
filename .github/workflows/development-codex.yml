@@ -402,6 +402,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      actions: write
       contents: write
       pull-requests: write
     env:
@@ -507,6 +508,13 @@ jobs:
           else
             printf 'Pull Request #%s already exists\n' "$existing"
           fi
+
+      - name: Start required CI for the published head
+        shell: bash
+        run: |
+          # pull_request events created by GITHUB_TOKEN are suppressed by
+          # GitHub. workflow_dispatch is an explicit supported exception.
+          gh workflow run ci-deploy.yml --ref "$BRANCH_NAME"
 
   outcome:
     name: outcome-${{ needs.validate.outputs.validation_state || 'infrastructure_failed' }}
