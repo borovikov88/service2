@@ -1,0 +1,49 @@
+name: Check Codex plan connection
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: service2-codex-plan-connection
+  cancel-in-progress: false
+
+jobs:
+  connection:
+    name: Check plan credential without repository review
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'borovikov88/service2' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'borovikov88' &&
+      github.triggering_actor == 'borovikov88'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: review
+    steps:
+      - name: Checkout trusted main script
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install verified Codex CLI before exposing credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          cli_dir="$(mktemp -d "$RUNNER_TEMP/service2-plan-cli.XXXXXX")"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+            --connect-timeout 10 --max-time 60 \
+            https://github.com/openai/codex/releases/download/rust-v0.153.4/codex-x86_64-unknown-linux-musl.tar.gz \
+            --output "$cli_dir/codex.tar.gz"
+          printf '%s  %s\n' 'f479424eca092484dc40d87ae28c44f4cc40234a60045d6131e493800d814a30' \
+            "$cli_dir/codex.tar.gz" | sha256sum --check --status
+          tar -xzf "$cli_dir/codex.tar.gz" -C "$cli_dir" codex-x86_64-unknown-linux-musl
+          chmod 700 "$cli_dir/codex-x86_64-unknown-linux-musl"
+          printf 'SERVICE2_CODEX_BINARY=%s/codex-x86_64-unknown-linux-musl\n' "$cli_dir" >> "$GITHUB_ENV"
+      - name: Run fixed plan connection check
+        shell: bash
+        env:
+          CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_PLAN_ACCESS_TOKEN }}
+        run: python3 .github/scripts/check_codex_plan_connection.py

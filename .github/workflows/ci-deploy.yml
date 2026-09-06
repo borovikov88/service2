@@ -47,7 +47,7 @@ jobs:
           tar -xzf "$lint_dir/actionlint.tar.gz" -C "$lint_dir" actionlint
           "$lint_dir/actionlint" -shellcheck= -pyflakes= \
             .github/workflows/direct-pr-review.yml .github/workflows/ci-deploy.yml \
-            .github/workflows/development-codex.yml
+            .github/workflows/development-codex.yml .github/workflows/codex-plan-connection.yml
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
       - name: Validate Django configuration and migration state
@@ -186,4 +186,3 @@ jobs:
             echo "Health check returned HTTP $status, expected 2xx" >&2
             exit 1
           }
-
