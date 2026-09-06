@@ -30,6 +30,26 @@ class SubscriptionDevelopmentTests(unittest.TestCase):
                     namespace["_client"](max_retries=retries)
         constructor.assert_not_called()
 
+    def test_legacy_delivery_refuses_before_config_state_cache_or_network(self):
+        path = ROOT / "pool_service/services/development_delivery.py"
+        tree = ast.parse(path.read_text())
+        function = next(node for node in tree.body
+                        if isinstance(node, ast.FunctionDef)
+                        and node.name == "publish_approval_and_enable_auto_merge")
+        request, settings, task = Mock(), Mock(), Mock()
+        namespace = {
+            "DeliveryResult": lambda state, changed=False: SimpleNamespace(state=state, changed=changed),
+            "_request": request, "settings": settings, "DevelopmentTask": task,
+        }
+        exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), "exec"), namespace)
+        for task_id in (1, 999999, None):
+            result = namespace["publish_approval_and_enable_auto_merge"](task_id)
+            self.assertEqual(result.state, "retired")
+            self.assertFalse(result.changed)
+        request.assert_not_called()
+        self.assertEqual(task.mock_calls, [])
+        self.assertEqual(settings.mock_calls, [])
+
     def test_independent_backend_review_uses_the_same_blocked_client(self):
         tree = ast.parse((ROOT / "pool_service/services/development_review.py").read_text())
         imports = [node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
