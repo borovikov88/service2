@@ -301,58 +301,41 @@ class DirectReviewTests(unittest.TestCase):
             with self.assertRaisesRegex(review.Blocked, "^OpenAI API request failed; inspect access or retry$"):
                 client.request("/v1/responses")
 
-    def test_review_stages_pinpoint_model_failure_without_emitting_bundle(self):
-        client = FakeClient([pr()])
-        output = io.StringIO()
-        env = dict(ENV, REVIEW_ARTIFACT="unused-result.json", READ_GITHUB_TOKEN="PRIVATE_TOKEN",
-                   OPENAI_API_KEY="PRIVATE_MODEL_TOKEN")
-        with patch.object(review.os, "environ", env), patch.object(review.sys, "argv", ["review_direct_pr.py", "review"]), \
-                patch.object(review, "event_number", return_value=90), patch.object(review, "Client", return_value=client), \
-                patch.object(review, "build_bundle", return_value={"task": "PRIVATE_PR_TEXT"}), \
-                patch.object(review, "model_review", side_effect=review.Blocked("OpenAI API HTTP 404 (model_not_found)")), \
-                patch.object(review.sys, "stdout", output), patch.object(review.sys, "stderr", output):
-            self.assertEqual(review.cli(), 1)
-        self.assertEqual(output.getvalue().splitlines(), [
-            "REVIEW_STAGE=load_pr", "REVIEW_STAGE=collect_source", "REVIEW_STAGE=call_model",
-            "Independent review blocked: OpenAI API HTTP 404 (model_not_found)",
-        ])
-        self.assertEqual(client.writes, [])
+    def test_retired_cli_never_reads_credentials_source_or_saved_artifacts(self):
+        for command in ("review", "publish", "check-connection", "unknown"):
+            with self.subTest(command=command):
+                output = io.StringIO()
+                with patch.object(review.sys, "argv", ["review_direct_pr.py", command]), \
+                        patch.object(review, "Client") as client, \
+                        patch.object(review.Path, "read_text") as read, \
+                        patch.object(review.Path, "write_text") as write, \
+                        patch.object(review.sys, "stderr", output):
+                    self.assertEqual(review.cli(), 1)
+                self.assertIn("Separate API review is retired", output.getvalue())
+                client.assert_not_called()
+                read.assert_not_called()
+                write.assert_not_called()
 
-    def test_workflow_separates_tokens_and_never_checks_out_pr_head(self):
+    def test_retired_workflow_is_manual_only_and_has_no_credentials_or_publisher(self):
         workflow = (ROOT / ".github/workflows/direct-pr-review.yml").read_text()
-        reviewer = workflow.split("  review:\n", 1)[1].split("  publish:\n", 1)[0]
-        publisher = workflow.split("  publish:\n", 1)[1]
-        self.assertNotIn("SERVICE2_REVIEW_TOKEN", reviewer)
-        self.assertNotIn("OPENAI_API_KEY", publisher)
-        self.assertNotIn("head.sha", workflow)
-        self.assertNotIn("pip install", workflow)
-        self.assertNotIn("run-id:", workflow)
-        self.assertNotIn("pull-requests: write", workflow)
-        self.assertIn("ref: ${{ env.TRUSTED_SHA }}", reviewer)
-        self.assertIn("ref: ${{ env.TRUSTED_SHA }}", publisher)
-        self.assertIn("environment: review", publisher)
+        self.assertIn("  workflow_dispatch:", workflow)
+        self.assertIn("permissions: {}", workflow)
+        for forbidden in ("pull_request_target:", "push:", "secrets.", "  publish:",
+                          "checkout", "upload-artifact", "download-artifact", "OPENAI_API_KEY"):
+            self.assertNotIn(forbidden, workflow)
 
-    def test_review_artifact_paths_are_scoped_to_runner_steps(self):
+    def test_retired_workflow_fails_without_publishing_approval(self):
+        import subprocess
         workflow = (ROOT / ".github/workflows/direct-pr-review.yml").read_text()
-        workflow_settings, jobs = workflow.split("\njobs:\n", 1)
-        reviewer = jobs.split("  review:\n", 1)[1].split("  publish:\n", 1)[0]
-        publisher = jobs.split("  publish:\n", 1)[1]
-        # runner is unavailable while GitHub evaluates workflow/job env. The
-        # original placement prevented every job, including connection, starting.
-        self.assertNotIn("runner.", workflow_settings)
-        for job in (reviewer, publisher):
-            self.assertNotIn("runner.", job.split("    steps:\n", 1)[0])
-
-        artifact_dir = "${{ runner.temp }}/independent-review"
-        artifact_path = artifact_dir + "/result.json"
-        review_step = reviewer.split("      - name: Review inert PR source through APIs\n", 1)[1].split("      - name:", 1)[0]
-        publish_step = publisher.split("      - name: Publish exact-head review using independent identity\n", 1)[1]
-        for step in (review_step, publish_step):
-            self.assertIn("        env:\n          REVIEW_ARTIFACT: " + artifact_path + "\n", step)
-        # Producer, uploaded file, downloaded directory and publisher must agree.
-        self.assertIn("          path: " + artifact_path + "\n", reviewer)
-        self.assertIn("          path: " + artifact_dir + "\n", publisher)
+        script = workflow.split("        run: |\n", 1)[1]
+        script = "\n".join(line[10:] for line in script.splitlines())
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("::error::", result.stdout)
+        self.assertNotIn("continue-on-error", workflow)
+        self.assertNotIn("gh pr", workflow)
 
 
 if __name__ == "__main__":
     unittest.main()
+

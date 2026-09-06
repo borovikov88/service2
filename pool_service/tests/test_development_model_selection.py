@@ -95,13 +95,16 @@ class DevelopmentModelDispatchTests(TestCase):
         self.assertEqual(result.state, "invalid_model")
         dispatch.assert_not_called()
 
-    def test_workflow_accepts_only_server_selected_codex_models(self):
+    def test_retired_workflow_never_executes_any_selected_model(self):
+        import os
+        import subprocess
+
         workflow = (
             Path(__file__).resolve().parents[2] / ".github/workflows/development-codex.yml"
         ).read_text(encoding="utf-8")
+        # Preserve the old dispatch schema for callers, but no input is used by
+        # the retired job and neither a valid nor injected model can execute.
         dispatch_inputs = workflow.split("    inputs:", 1)[1].split("\npermissions:", 1)[0]
-        codex_job = workflow.split("  codex:", 1)[1].split("\n  validate:", 1)[0]
-
         self.assertRegex(
             dispatch_inputs,
             r"(?ms)^      codex_model:\n"
@@ -109,19 +112,19 @@ class DevelopmentModelDispatchTests(TestCase):
             r"        required: true\n"
             r"        type: string$",
         )
-        self.assertIn('CODEX_MODEL: ${{ inputs.codex_model }}', codex_job)
-        self.assertIn('"gpt-5.6-luna"', codex_job)
-        self.assertIn('"gpt-5.6-terra"', codex_job)
-        self.assertIn('"gpt-5.6-sol"', codex_job)
-        allowlist = codex_job.split("allowed_models = {", 1)[1].split("}", 1)[0]
-        self.assertEqual(
-            set(re.findall(r'"([^"]+)"', allowlist)),
-            {"gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"},
-        )
-        self.assertIn('if os.environ.get("CODEX_MODEL") not in allowed_models:', codex_job)
-        self.assertIn('raise SystemExit("Invalid CODEX_MODEL")', codex_job)
-        self.assertIn('--model "$CODEX_MODEL"', codex_job)
-        self.assertNotIn("user-controlled-model", codex_job)
+        retired_job = workflow.split("jobs:", 1)[1]
+        self.assertNotIn("inputs.codex_model", retired_job)
+        self.assertNotIn("codex exec", retired_job)
+        self.assertNotIn("openai/codex-action", retired_job)
+        script = retired_job.split("        run: |\n", 1)[1]
+        script = "\n".join(line[10:] for line in script.splitlines())
+        for model in ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "user-controlled-model"):
+            with self.subTest(model=model):
+                env = dict(os.environ, CODEX_MODEL=model)
+                result = subprocess.run(["bash", "-c", script], env=env,
+                                        capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("Separate API development is disabled", result.stdout)
 
     def test_ui_displays_effective_model(self):
         self.client.force_login(self.user)
@@ -199,3 +202,4 @@ class DevelopmentModelDispatchTests(TestCase):
         self.assertContains(response, "Input tokens: 300000")
         self.assertContains(response, "Токены получены, но точную стоимость нельзя определить")
         self.assertContains(response, "Прогноз Codex был:")
+

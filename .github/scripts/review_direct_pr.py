@@ -1,7 +1,7 @@
-"""Read-only model review followed by a separately credentialed GitHub publisher.
+"""Retired API reviewer. CLI invocations always fail without side effects.
 
-Only trusted main code executes. PR source is bounded, inert API data. This is
-static AI review, not execution of tests, automatic repair, merge or deployment.
+Historical parsing and provenance helpers remain covered for old artifacts;
+none is wired to a workflow or the CLI. Use native Codex GitHub code review.
 """
 import base64
 import difflib
@@ -366,37 +366,12 @@ def check_connection(env):
 
 
 def main():
-    env = os.environ
-    if sys.argv[1:] == ["check-connection"]:
-        check_connection(env)
-        return
-    number = event_number(env)
-    run = run_binding(env)
-    target = Path(env["REVIEW_ARTIFACT"])
-    if sys.argv[1:] == ["review"]:
-        github = Client(env.get("READ_GITHUB_TOKEN"))
-        model = Client(env.get("OPENAI_API_KEY"), "api.openai.com")
-        print("REVIEW_STAGE=load_pr", flush=True)
-        pr = github.request(repo_path(f"/pulls/{number}"))
-        bound = binding(pr)
-        require(bound["base"] == run["TRUSTED_SHA"], "Base changed; start a fresh review")
-        print("REVIEW_STAGE=collect_source", flush=True)
-        bundle = build_bundle(github, pr)
-        print("REVIEW_STAGE=call_model", flush=True)
-        result = model_review(model, bundle)
-        print("REVIEW_STAGE=validate_current_pr", flush=True)
-        require(binding(github.request(repo_path(f"/pulls/{number}"))) == bound, "PR changed during review")
-        artifact = {"run": run, "model": MODEL, "binding": bound, "review": result}
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(artifact), encoding="utf-8")
-        print("Static review artifact created: " + result["decision"])
-    elif sys.argv[1:] == ["publish"]:
-        client = Client(env.get("SERVICE2_REVIEW_TOKEN"))
-        require(target.is_file() and not target.is_symlink() and target.stat().st_size <= 60_000,
-                "Missing or oversized review artifact")
-        print(publish(client, json.loads(target.read_text()), env, number))
-    else:
-        raise Blocked("Expected review or publish mode")
+    # The old entrypoint must also fail when dispatched by an external caller.
+    # Never consume an API credential or publish a saved legacy artifact.
+    raise Blocked(
+        "Separate API review is retired. Use native Codex GitHub code review "
+        "with ChatGPT plan access; no review or approval was published."
+    )
 
 
 def cli():
@@ -417,3 +392,4 @@ def cli():
 
 if __name__ == "__main__":
     sys.exit(cli())
+
