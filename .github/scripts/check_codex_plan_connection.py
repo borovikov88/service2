@@ -1,7 +1,10 @@
 """Manual plan-credential canary, never an approval or billing attestation.
 
-The CLI receives a fixed prompt in an empty directory, no repository content,
-disabled external tools and no inherited API, GitHub or deployment credentials.
+The CLI receives a fixed prompt in an empty directory, no repository content
+and no inherited API, GitHub or deployment credentials. Command execution and
+external integrations are disabled. Read-only sandboxing and denied approvals
+block writes; remaining built-in tools are not claimed to be disabled, and any
+tool event fails this check. The empty directory is not a filesystem jail.
 All model output is private and discarded; only fixed status and usage escape.
 """
 import json

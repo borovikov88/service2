@@ -1238,6 +1238,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         workflows = sorted(workflow_dir.glob("*.y*ml"))
         production_workflow = "development-codex.yml"
         manual_canary_workflows = {
+            "codex-plan-connection.yml",
             "development-codex-chatgpt-canary.yml",
             "development-codex-chatgpt-repo-canary.yml",
         }
@@ -1581,4 +1582,3 @@ class DevelopmentCodexTransactionTests(CodexTestMixin, TransactionTestCase):
 
         self.assertEqual(atomic_states, [False])
         self.assertEqual(close_connections.call_count, 2)
-
