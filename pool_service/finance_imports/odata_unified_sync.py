@@ -45,6 +45,7 @@ from .odata_profit_drafts import (
     _audit as profit_audit,
     _enrich_rows,
     _preview_metadata as profit_preview_metadata,
+    _read_profit_documents,
     _read_reference_map,
     _read_snapshot as read_profit_snapshot,
     _save_batch_snapshot,
@@ -437,7 +438,7 @@ def _profit_reference_guid(value, *, allow_zero=False):
     return normalized
 
 
-def _collect_profit_chunk(start, end, *, config, opener):
+def _collect_profit_chunk(start, end, *, config, opener, organization_id):
     try:
         rows, pages = read_profit_rows(config, start[:7], end[:7], opener=opener)
     except Exception as exc:
@@ -485,7 +486,10 @@ def _collect_profit_chunk(start, end, *, config, opener):
                 error_reason=error_reason,
             )
     try:
-        return _enrich_rows(rows, references), pages
+        documents = _read_profit_documents(
+            config, rows, opener=opener, page_budget=budget
+        )
+        return _enrich_rows(rows, references, documents, organization_id), pages
     except Exception as exc:
         _raise_stage_error(STAGE_PROFIT_NORMALIZATION, exc)
 
@@ -583,7 +587,9 @@ def _create_month_draft(run, report_type, month, rows, pages, config, warnings):
         # month_fingerprint and file_sha256 remains the actual content hash.
         payload["sync_run_id"] = str(run.pk)
     if report_type == REPORT_PROFIT:
-        validate_profit_snapshot(payload, config)
+        validate_profit_snapshot(
+            payload, config, organization_id=run.organization_id
+        )
         metadata = profit_preview_metadata(rows, run.organization, [month])
         filename = f"onec-odata-{month_text}-{month_text}.json"
         parser = PROFIT_PARSER_VERSION
@@ -637,7 +643,9 @@ def _prepared_auto_candidates(run, config):
         )
         if batch.import_type == REPORT_PROFIT:
             payload = read_profit_snapshot(batch)
-            records, periods = validate_profit_snapshot(payload, config)
+            records, periods = validate_profit_snapshot(
+                payload, config, organization_id=run.organization_id
+            )
         elif batch.import_type == REPORT_CASHFLOW:
             payload = read_cashflow_snapshot(batch)
             records, periods = validate_cashflow_snapshot(payload, config)
@@ -816,7 +824,9 @@ def apply_auto_sync(run_id, user, allowed_report_types, *, config=None):
                     continue
                 if batch.import_type == REPORT_PROFIT:
                     payload = read_profit_snapshot(batch)
-                    records, periods = validate_profit_snapshot(payload, config)
+                    records, periods = validate_profit_snapshot(
+                        payload, config, organization_id=organization.pk
+                    )
                 else:
                     payload = read_cashflow_snapshot(batch)
                     records, periods = validate_cashflow_snapshot(payload, config)
@@ -1104,7 +1114,10 @@ def step_unified_sync(
         return _safe_step_failure(run_id, token, expected_cursor, STAGE_CONFIG, exc)
     try:
         if report_type == REPORT_PROFIT:
-            rows, pages = _collect_profit_chunk(item["start"], item["end"], config=config, opener=client)
+            rows, pages = _collect_profit_chunk(
+                item["start"], item["end"], config=config, opener=client,
+                organization_id=run.organization_id,
+            )
             warnings = []
         else:
             rows, pages, warnings = _collect_cashflow_chunk(item["start"], item["end"], config=config, opener=client)

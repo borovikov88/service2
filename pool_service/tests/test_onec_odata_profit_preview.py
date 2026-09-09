@@ -27,6 +27,7 @@ RECORDER = "55555555-5555-5555-5555-555555555555"
 RESPONSIBLE = "66666666-6666-6666-6666-666666666666"
 ZERO_GUID = "00000000-0000-0000-0000-000000000000"
 BASE_URL = "https://fresh.example/odata/standard.odata/"
+RECORDER_TYPE = "StandardODATA.Document_РасходнаяНакладная"
 
 
 class FakeResponse:
@@ -62,6 +63,7 @@ def row(
 ):
     return {
         "Recorder": RECORDER,
+        "Recorder_Type": RECORDER_TYPE,
         "LineNumber": line,
         "Period": period,
         "Active": active,
@@ -69,7 +71,8 @@ def row(
         "Номенклатура_Key": ITEM,
         "Контрагент_Key": customer,
         "Ответственный_Key": RESPONSIBLE,
-        "Документ": "Документ 1",
+        "Документ": RECORDER,
+        "Документ_Type": RECORDER_TYPE,
         "Количество": quantity,
         "Сумма": revenue,
         "СуммаНДС": vat,
@@ -101,14 +104,17 @@ class ODataProfitReaderTests(SimpleTestCase):
     def test_decimal_json_number_inactive_zero_customer_and_zero_cost(self):
         raw = (
             '{"value":['
-            '{"Recorder":"%s","LineNumber":1,"Period":"2026-05-15T00:00:00Z",'
+            '{"Recorder":"%s","Recorder_Type":"%s","LineNumber":1,"Period":"2026-05-15T00:00:00Z",'
             '"Active":true,"Организация_Key":"%s","Номенклатура_Key":"%s",'
             '"Контрагент_Key":"%s","Количество":1.125,"Сумма":10.25,'
-            '"Ответственный_Key":"%s","Документ":"Документ 1",'
+            '"Ответственный_Key":"%s","Документ":"%s","Документ_Type":"%s",'
             '"СуммаНДС":1.25,"Себестоимость":0},'
-            '{"Recorder":"%s","LineNumber":2,"Period":"2026-05-15T00:00:00Z",'
+            '{"Recorder":"%s","Recorder_Type":"%s","LineNumber":2,"Period":"2026-05-15T00:00:00Z",'
             '"Active":false}]}'
-        ) % (RECORDER, ORG_A, ITEM, ZERO_GUID, RESPONSIBLE, RECORDER)
+        ) % (
+            RECORDER, RECORDER_TYPE, ORG_A, ITEM, ZERO_GUID, RESPONSIBLE,
+            RECORDER, RECORDER_TYPE, RECORDER, RECORDER_TYPE,
+        )
         result, _ = self.preview([raw.encode()])
         self.assertEqual(result["total"]["row_count"], 1)
         self.assertEqual(result["total"]["quantity"], Decimal("1.125"))
@@ -136,6 +142,8 @@ class ODataProfitReaderTests(SimpleTestCase):
         query = parse_qs(raw_query)
         self.assertIn("Ответственный_Key", query["$select"][0])
         self.assertIn("Документ", query["$select"][0])
+        self.assertIn("Recorder_Type", query["$select"][0])
+        self.assertIn("Документ_Type", query["$select"][0])
         filter_value = query["$filter"][0]
         self.assertIn("Active eq true", filter_value)
         self.assertIn("Period ge datetime'2026-05-01T00:00:00'", filter_value)
@@ -268,6 +276,24 @@ class ODataProfitReaderTests(SimpleTestCase):
     def test_requested_guid_must_be_allowlisted(self):
         with self.assertRaisesRegex(ODataPreviewError, "configured allowlist"):
             self.preview([{"value": []}], organizations=[ORG_B])
+
+    def test_unknown_document_type_is_parsed_but_non_document_type_is_rejected(self):
+        unknown = row()
+        unknown["Recorder_Type"] = "StandardODATA.Document_КорректировкаПродаж"
+        unknown["Документ_Type"] = "StandardODATA.Document_КорректировкаПродаж"
+        result, _ = self.preview([{"value": [unknown]}])
+        self.assertEqual(result["total"]["row_count"], 1)
+
+        malicious = row()
+        malicious["Recorder_Type"] = "StandardODATA.Catalog_Контрагенты"
+        with self.assertRaisesRegex(ODataPreviewError, "supported 1C document type"):
+            self.preview([{"value": [malicious]}])
+
+    def test_zero_document_guid_does_not_become_a_typed_link(self):
+        empty_document = row()
+        empty_document["Документ"] = ZERO_GUID
+        result, _ = self.preview([{"value": [empty_document]}])
+        self.assertEqual(result["total"]["row_count"], 1)
 
 
 @override_settings(

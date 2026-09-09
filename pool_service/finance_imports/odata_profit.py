@@ -19,12 +19,21 @@ from uuid import UUID
 ODATA_BASE_PATH = "/odata/standard.odata/"
 ENTITY_SET = "AccumulationRegister_Продажи_RecordType"
 FIELDS = (
-    "Recorder", "LineNumber", "Period", "Active", "Организация_Key",
-    "Номенклатура_Key", "Контрагент_Key", "Ответственный_Key", "Документ", "Количество", "Сумма",
+    "Recorder", "Recorder_Type", "LineNumber", "Period", "Active", "Организация_Key",
+    "Номенклатура_Key", "Контрагент_Key", "Ответственный_Key", "Документ", "Документ_Type", "Количество", "Сумма",
     "СуммаНДС", "Себестоимость",
 )
 ZERO_GUID = "00000000-0000-0000-0000-000000000000"
 MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
+ODATA_TYPE_RE = re.compile(
+    r"^StandardODATA\.(Document_[A-Za-zА-Яа-яЁё0-9_]+)$"
+)
+PROFIT_RECORDER_TYPES = frozenset({
+    "Document_РасходнаяНакладная",
+    "Document_ОтчетОРозничныхПродажах",
+    "Document_ЧекККМ",
+})
+PROFIT_DOCUMENT_TYPES = PROFIT_RECORDER_TYPES | {"Document_ЗаказПокупателя"}
 
 
 class ODataPreviewError(Exception):
@@ -52,14 +61,17 @@ class ODataConfig:
 @dataclass(frozen=True)
 class ProfitRow:
     recorder: str
+    recorder_type: str
     line_number: int
     period: datetime
+    source_period: str
     source_date: date
     organization_guid: str
     nomenclature_guid: str
     customer_guid: str
     responsible_guid: str
-    document: str
+    document_guid: str | None
+    document_type: str | None
     quantity: Decimal
     revenue: Decimal
     vat: Decimal
@@ -91,6 +103,15 @@ def normalize_guid(value, *, field: str, allow_zero: bool = False) -> str:
     if not allow_zero and normalized == ZERO_GUID:
         raise ODataPreviewError(f"{field} must not be the zero GUID")
     return normalized
+
+
+def normalize_document_type(value, *, field: str, allowed_types=None) -> str:
+    if not isinstance(value, str) or len(value) > 300:
+        raise ODataPreviewError(f"{field} must be a supported 1C document type")
+    match = ODATA_TYPE_RE.fullmatch(value.strip())
+    if not match or (allowed_types is not None and match.group(1) not in allowed_types):
+        raise ODataPreviewError(f"{field} must be a supported 1C document type")
+    return match.group(1)
 
 
 def _effective_port(parts):
@@ -311,13 +332,39 @@ def _parse_row(raw, start: date, end_exclusive: date, allowed_organizations) -> 
         raise ODataPreviewError("LineNumber must be an integer") from exc
     if isinstance(raw.get("LineNumber"), (float, bool)) or line_number < 0:
         raise ODataPreviewError("LineNumber must be a non-negative integer")
-    document = raw.get("Документ")
-    if document is not None and not isinstance(document, str):
-        raise ODataPreviewError("Документ must be a string")
+    recorder_type = normalize_document_type(
+        raw.get("Recorder_Type"),
+        field="Recorder_Type",
+    )
+    raw_document = raw.get("Документ")
+    raw_document_type = raw.get("Документ_Type")
+    document_guid = None
+    document_type = None
+    if raw_document not in (None, "", ZERO_GUID):
+        document_guid = normalize_guid(
+            raw_document, field="Документ", allow_zero=True
+        )
+        if document_guid != ZERO_GUID:
+            document_type = normalize_document_type(
+                raw_document_type,
+                field="Документ_Type",
+            )
+        else:
+            document_guid = None
+    elif raw_document_type not in (None, ""):
+        if raw_document == ZERO_GUID:
+            normalize_document_type(
+                raw_document_type,
+                field="Документ_Type",
+            )
+        else:
+            raise ODataPreviewError("Документ_Type requires a non-empty Документ")
     return ProfitRow(
         recorder=normalize_guid(raw.get("Recorder"), field="Recorder"),
+        recorder_type=recorder_type,
         line_number=line_number,
         period=period,
+        source_period=raw["Period"],
         source_date=calendar_date,
         organization_guid=organization,
         nomenclature_guid=normalize_guid(raw.get("Номенклатура_Key"), field="Номенклатура_Key"),
@@ -327,7 +374,8 @@ def _parse_row(raw, start: date, end_exclusive: date, allowed_organizations) -> 
         responsible_guid=normalize_guid(
             raw.get("Ответственный_Key"), field="Ответственный_Key"
         ),
-        document=(document or "").strip()[:500],
+        document_guid=document_guid,
+        document_type=document_type,
         quantity=_decimal(raw.get("Количество"), field="Количество"),
         revenue=_decimal(raw.get("Сумма"), field="Сумма"),
         vat=_decimal(raw.get("СуммаНДС"), field="СуммаНДС"),

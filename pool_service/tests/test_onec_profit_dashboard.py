@@ -38,7 +38,8 @@ class ProfitDashboardTests(TestCase):
     def add_row(self, month, *, name="Товар", kind="Товар", revenue="100",
                 cost="60", calculated=None, stored_ratio="0.5",
                 source=OneCMonthlyProfit.COST_SOURCE_ACTUAL,
-                customer="", manager="", document=""):
+                customer="", manager="", document="", source_data=None,
+                quantity="2", article=None, batch=None, source_recorder=None):
         revenue_value = Decimal(revenue) if revenue is not None else None
         cost_value = Decimal(cost) if cost is not None else None
         calculated_value = Decimal(calculated) if calculated is not None else None
@@ -48,11 +49,14 @@ class ProfitDashboardTests(TestCase):
             else None
         )
         row = OneCMonthlyProfit.objects.create(
-            import_batch=self.batch, organization=self.organization,
+            import_batch=batch or self.batch, organization=self.organization,
             period_month=month, source_row_number=OneCMonthlyProfit.objects.count() + 1,
+            source_recorder=source_recorder,
             customer_name=customer, manager_name=manager, document_name=document,
-            article=f"A-{OneCMonthlyProfit.objects.count() + 1}", nomenclature=name,
-            nomenclature_type=kind, quantity=Decimal("2"), revenue=revenue_value,
+            article=article or f"A-{OneCMonthlyProfit.objects.count() + 1}", nomenclature=name,
+            nomenclature_type=kind,
+            quantity=Decimal(quantity) if quantity is not None else None,
+            revenue=revenue_value,
             cost=cost_value,
             gross_profit=gross_profit,
             calculated_cost=calculated_value,
@@ -63,6 +67,7 @@ class ProfitDashboardTests(TestCase):
                 if calculated_value is not None
                 else gross_profit
             ),
+            source_data=source_data or {},
         )
         OneCReportPeriodState.objects.get_or_create(
             organization=self.organization, period_month=month,
@@ -345,6 +350,336 @@ class ProfitDashboardTests(TestCase):
         self.assertEqual(sum(item["cost"] for item in data["customers"]), data["totals"]["cost"])
         self.assertEqual(sum(item["gross_profit"] for item in data["customers"]), data["totals"]["gross_profit"])
 
+    def test_explicit_document_key_merges_movements_without_changing_totals(self):
+        recorder = "11111111-1111-4111-8111-111111111111"
+        group_key = (
+            f"odata-document:{self.organization.pk}:"
+            f"Document_РасходнаяНакладная:{recorder}"
+        )
+        display = "Расходная накладная №РН-42 от 01.09.2026"
+        self.batch.source_type = OneCImportBatch.SOURCE_ODATA
+        self.batch.parser_version = "odata-2"
+        self.batch.save(update_fields=["source_type", "parser_version"])
+
+        def source_data(line_number):
+            return {
+                "source": "odata",
+                "recorder": recorder,
+                "recorder_type": "Document_РасходнаяНакладная",
+                "line_number": line_number,
+                "period": "2026-09-01T10:00:00+03:00",
+                "source_date": "2026-09-01",
+                "organization_guid": "22222222-2222-4222-8222-222222222222",
+                "document_guid": recorder,
+                "document_type": "Document_РасходнаяНакладная",
+                "document_number": "РН-42",
+                "document_date": "2026-09-01",
+                "document_group_recorder": recorder,
+                "document_group_recorder_type": "Document_РасходнаяНакладная",
+                "document_group_key": group_key,
+                "document_group_number": "РН-42",
+                "document_group_date": "2026-09-01",
+                "document_display": display,
+            }
+        self.add_row(
+            date(2026, 9, 1), revenue="100", cost="0", customer="Клиент",
+            document=display,
+            source_data=source_data(1), source_recorder=recorder,
+            article="A-PAIR",
+        )
+        self.add_row(
+            date(2026, 9, 1), revenue="0", cost="40", customer="Клиент",
+            document=display,
+            source_data=source_data(2), source_recorder=recorder,
+            article="A-PAIR",
+        )
+        data = dashboard_data(self.organization, resolve_period({
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        }, today=date(2026, 9, 9)))
+        documents = data["customers"][0]["documents"]
+        self.assertEqual(len(documents), 1)
+        self.assertEqual(documents[0]["name"], display)
+        self.assertEqual(len(data["rows"]), 2)
+        self.assertEqual(documents[0]["source_row_count"], 2)
+        self.assertEqual(len(documents[0]["rows"]), 1)
+        self.assertEqual(documents[0]["rows"][0].quantity, Decimal("2"))
+        self.assertEqual(documents[0]["revenue"], Decimal("100"))
+        self.assertEqual(documents[0]["cost"], Decimal("40"))
+        self.assertEqual(documents[0]["gross_profit"], Decimal("60"))
+        self.assertEqual(documents[0]["revenue"], data["totals"]["revenue"])
+        self.assertEqual(documents[0]["cost"], data["totals"]["cost"])
+        self.assertEqual(documents[0]["gross_profit"], data["totals"]["gross_profit"])
+
+    def test_presentation_keeps_movements_separate_when_quantities_conflict(self):
+        recorder = "11111111-1111-4111-8111-111111111111"
+        display = "Расходная накладная №1 от 01.09.2026"
+        self.batch.source_type = OneCImportBatch.SOURCE_ODATA
+        self.batch.parser_version = "odata-2"
+        self.batch.save(update_fields=["source_type", "parser_version"])
+        source_data = {
+            "source": "odata",
+            "recorder": recorder,
+            "recorder_type": "Document_РасходнаяНакладная",
+            "period": "2026-09-01T10:00:00+03:00",
+            "source_date": "2026-09-01",
+            "organization_guid": "22222222-2222-4222-8222-222222222222",
+            "document_guid": recorder,
+            "document_type": "Document_РасходнаяНакладная",
+            "document_number": "1",
+            "document_date": "2026-09-01",
+            "document_group_recorder": recorder,
+            "document_group_recorder_type": "Document_РасходнаяНакладная",
+            "document_group_key": (
+                f"odata-document:{self.organization.pk}:"
+                f"Document_РасходнаяНакладная:{recorder}"
+            ),
+            "document_group_number": "1",
+            "document_group_date": "2026-09-01",
+            "document_display": display,
+        }
+        self.add_row(
+            date(2026, 9, 1), revenue="100", cost="0", customer="Клиент",
+            document=display, source_data={**source_data, "line_number": 1},
+            source_recorder=recorder, quantity="2",
+            article="A-CONFLICT",
+        )
+        self.add_row(
+            date(2026, 9, 1), revenue="0", cost="40", customer="Клиент",
+            document=display, source_data={**source_data, "line_number": 2},
+            source_recorder=recorder, quantity="3",
+            article="A-CONFLICT",
+        )
+        data = dashboard_data(self.organization, resolve_period({
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        }, today=date(2026, 9, 9)))
+        self.assertEqual(len(data["customers"][0]["documents"][0]["rows"]), 2)
+
+    def test_presentation_collapse_accepts_optional_supplemental_document_pair(self):
+        self.batch.source_type = OneCImportBatch.SOURCE_ODATA
+        self.batch.parser_version = "odata-2"
+        self.batch.save(update_fields=["source_type", "parser_version"])
+        cases = (
+            (
+                "11111111-1111-4111-8111-111111111111",
+                "РН-41",
+                None,
+                None,
+            ),
+            (
+                "33333333-3333-4333-8333-333333333333",
+                "РН-42",
+                "44444444-4444-4444-8444-444444444444",
+                "Document_ЗаказПокупателя",
+            ),
+        )
+        for case_index, (recorder, number, document_guid, document_type) in enumerate(
+            cases
+        ):
+            display = f"Расходная накладная №{number} от 01.09.2026"
+            group_key = (
+                f"odata-document:{self.organization.pk}:"
+                f"Document_РасходнаяНакладная:{recorder}"
+            )
+            for movement_index, (revenue, cost) in enumerate(
+                (("100", "0"), ("0", "40")), start=1
+            ):
+                line_number = case_index * 2 + movement_index
+                self.add_row(
+                    date(2026, 9, 1), revenue=revenue, cost=cost,
+                    customer="Клиент", document=display,
+                    source_recorder=recorder, article=f"A-OPTIONAL-{case_index}",
+                    source_data={
+                        "source": "odata",
+                        "recorder": recorder,
+                        "recorder_type": "Document_РасходнаяНакладная",
+                        "line_number": line_number,
+                        "period": "2026-09-01T10:00:00+03:00",
+                        "source_date": "2026-09-01",
+                        "organization_guid": "22222222-2222-4222-8222-222222222222",
+                        "document_guid": document_guid,
+                        "document_type": document_type,
+                        "document_number": number,
+                        "document_date": "2026-09-01",
+                        "document_group_recorder": recorder,
+                        "document_group_recorder_type": "Document_РасходнаяНакладная",
+                        "document_group_key": group_key,
+                        "document_group_number": number,
+                        "document_group_date": "2026-09-01",
+                        "document_display": display,
+                    },
+                )
+
+        data = dashboard_data(self.organization, resolve_period({
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        }, today=date(2026, 9, 9)))
+
+        documents = data["customers"][0]["documents"]
+        self.assertEqual(len(documents), 2)
+        for document in documents:
+            self.assertEqual(document["source_row_count"], 2)
+            self.assertEqual(len(document["rows"]), 1)
+
+    def test_document_group_key_prevents_identical_fallback_labels_from_collapsing(self):
+        display = "Документ 1С от 01.09.2026"
+        for suffix in ("a", "b"):
+            self.add_row(
+                date(2026, 9, 1), customer="Клиент", document=display,
+                source_data={
+                    "document_group_key": f"odata-document:org:Document_New:{suffix}",
+                    "document_display": display,
+                },
+            )
+        data = dashboard_data(self.organization, resolve_period({
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        }, today=date(2026, 9, 9)))
+        self.assertEqual(len(data["customers"][0]["documents"]), 2)
+
+    def test_xlsx_and_older_rows_fall_back_to_document_name(self):
+        for revenue in ("10", "20"):
+            self.add_row(
+                date(2026, 9, 1), revenue=revenue, cost="1",
+                customer="Клиент", document="Заказ покупателя 7",
+            )
+        data = dashboard_data(self.organization, resolve_period({
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        }, today=date(2026, 9, 9)))
+        documents = data["customers"][0]["documents"]
+        self.assertEqual(len(documents), 1)
+        self.assertEqual(documents[0]["name"], "Заказ покупателя 7")
+        self.assertEqual(documents[0]["revenue"], Decimal("30"))
+
+    def test_legacy_and_xlsx_revenue_cost_pairs_are_never_presentation_collapsed(self):
+        legacy_sources = (
+            {},
+            {
+                "source": "odata",
+                "recorder": "11111111-1111-4111-8111-111111111111",
+                "recorder_type": "Document_РасходнаяНакладная",
+            },
+        )
+        for index, source_data in enumerate(legacy_sources):
+            customer = f"Клиент {index}"
+            for revenue, cost in (("100", "0"), ("0", "40")):
+                self.add_row(
+                    date(2026, 9, 1), revenue=revenue, cost=cost,
+                    customer=customer, document="Старый документ",
+                    source_data=source_data, article="A-LEGACY", quantity="2",
+                )
+        data = dashboard_data(self.organization, resolve_period({
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        }, today=date(2026, 9, 9)))
+        self.assertEqual(len(data["customers"]), 2)
+        for customer in data["customers"]:
+            document = customer["documents"][0]
+            self.assertEqual(document["source_row_count"], 2)
+            self.assertEqual(len(document["rows"]), 2)
+
+    def test_presentation_collapse_requires_exact_odata_v2_provenance(self):
+        recorder = "11111111-1111-4111-8111-111111111111"
+        other_recorder = "33333333-3333-4333-8333-333333333333"
+        display = "Расходная накладная №РН-42 от 01.09.2026"
+        canonical_key = (
+            f"odata-document:{self.organization.pk}:"
+            f"Document_РасходнаяНакладная:{recorder}"
+        )
+
+        def source_data(line_number, **overrides):
+            result = {
+                "source": "odata",
+                "recorder": recorder,
+                "recorder_type": "Document_РасходнаяНакладная",
+                "line_number": line_number,
+                "period": "2026-09-01T10:00:00+03:00",
+                "source_date": "2026-09-01",
+                "organization_guid": "22222222-2222-4222-8222-222222222222",
+                "document_guid": recorder,
+                "document_type": "Document_РасходнаяНакладная",
+                "document_number": "РН-42",
+                "document_date": "2026-09-01",
+                "document_group_recorder": recorder,
+                "document_group_recorder_type": "Document_РасходнаяНакладная",
+                "document_group_key": canonical_key,
+                "document_group_number": "РН-42",
+                "document_group_date": "2026-09-01",
+                "document_display": display,
+            }
+            result.update(overrides)
+            return result
+
+        cases = (
+            ("xlsx_batch", OneCImportBatch.SOURCE_XLSX, "", {}, None),
+            ("wrong_parser", OneCImportBatch.SOURCE_ODATA, "odata-1", {}, None),
+            (
+                "malformed_group_key",
+                OneCImportBatch.SOURCE_ODATA,
+                "odata-2",
+                {"document_group_key": "odata-document:forged"},
+                None,
+            ),
+            (
+                "recorder_mismatch",
+                OneCImportBatch.SOURCE_ODATA,
+                "odata-2",
+                {"recorder": other_recorder},
+                None,
+            ),
+            (
+                "line_mismatch",
+                OneCImportBatch.SOURCE_ODATA,
+                "odata-2",
+                {"line_number": 99},
+                None,
+            ),
+            (
+                "source_identity_mismatch",
+                OneCImportBatch.SOURCE_ODATA,
+                "odata-2",
+                {},
+                "odata:44444444-4444-4444-8444-444444444444:1",
+            ),
+            (
+                "display_mismatch",
+                OneCImportBatch.SOURCE_ODATA,
+                "odata-2",
+                {"document_display": "Подменённый документ"},
+                None,
+            ),
+        )
+        for name, source_type, parser_version, overrides, forged_identity in cases:
+            with self.subTest(name=name):
+                OneCMonthlyProfit.objects.all().delete()
+                self.batch.source_type = source_type
+                self.batch.parser_version = parser_version
+                self.batch.save(update_fields=["source_type", "parser_version"])
+                rows = []
+                for line_number, revenue, cost in (
+                    (1, "100", "0"),
+                    (2, "0", "40"),
+                ):
+                    row_overrides = dict(overrides)
+                    if name == "line_mismatch":
+                        row_overrides["line_number"] = line_number + 98
+                    row_source_data = source_data(line_number)
+                    row_source_data.update(row_overrides)
+                    rows.append(self.add_row(
+                        date(2026, 9, 1), revenue=revenue, cost=cost,
+                        customer="Клиент", document=display,
+                        source_data=row_source_data,
+                        source_recorder=recorder, article="A-PROVENANCE",
+                    ))
+                if forged_identity is not None:
+                    OneCMonthlyProfit.objects.filter(pk=rows[0].pk).update(
+                        source_identity=forged_identity
+                    )
+
+                data = dashboard_data(self.organization, resolve_period({
+                    "period": "custom", "start": "2026-09", "end": "2026-09",
+                }, today=date(2026, 9, 9)))
+
+                document = data["customers"][0]["documents"][0]
+                self.assertEqual(document["source_row_count"], 2)
+                self.assertEqual(len(document["rows"]), 2)
+
     def test_customer_sorting_and_automatic_month_filter_markup(self):
         self.add_row(date(2026, 1, 1), revenue="10", cost="9", customer="Бета")
         self.add_row(date(2026, 1, 1), revenue="100", cost="20", customer="Альфа")
@@ -356,6 +691,11 @@ class ProfitDashboardTests(TestCase):
         self.assertContains(response, "periodForm.requestSubmit()")
         self.assertContains(response, "period-loading")
         self.assertContains(response, "document.getElementById('period').value='custom'")
+        self.assertContains(response, 'class="table align-middle table-hover mb-0 profit-customer-table"')
+        self.assertContains(response, 'class="table-responsive profit-document-lines"')
+        self.assertContains(response, 'data-label="Себестоимость"')
+        self.assertContains(response, 'class="profit-document-line"')
+        self.assertContains(response, 'data-label="Номенклатура"')
 
     def test_manager_filter_applies_to_all_dashboard_sections(self):
         self.add_row(
