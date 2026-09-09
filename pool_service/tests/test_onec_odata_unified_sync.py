@@ -332,8 +332,8 @@ class UnifiedSyncTests(TestCase):
         )
         response = self.client.get(reverse("finance_onec_import_list"))
         self.assertContains(response, "Обновить данные из 1С")
-        self.assertContains(response, "ФОТ в это обновление не входит")
-        self.assertNotContains(response, 'type="month"')
+        self.assertContains(response, "Обновить всё из 1С")
+        self.assertContains(response, 'type="month"')
         self.assertContains(
             response,
             f'action="{reverse("finance_onec_odata_sync_step", args=[run.id])}"',

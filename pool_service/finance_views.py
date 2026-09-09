@@ -104,9 +104,12 @@ from pool_service.finance_imports.odata_cashflow_drafts import (
     confirm_odata_cashflow,
     create_odata_cashflow_draft,
 )
+from django.conf import settings
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pool_service.finance_imports.odata_unified_sync import (
     REPORT_CASHFLOW,
     REPORT_PROFIT,
+    REPORT_PAYROLL,
     StaleReactivationError,
     SyncConflictError,
     reactivate_confirmed_candidate,
@@ -223,12 +226,14 @@ def _onec_import_list_guard(request):
     )
 
 
-def _onec_sync_report_types(user, organization):
+def _onec_sync_report_types(user, organization, *, payroll=False):
     result = []
     if can_import_gross_profit(user, organization):
         result.append(REPORT_PROFIT)
     if can_import_cashflow(user, organization):
         result.append(REPORT_CASHFLOW)
+    if payroll and can_import_payroll(user, organization):
+        result.append(REPORT_PAYROLL)
     return result
 
 
@@ -837,6 +842,11 @@ def finance_overview(request):
         "can_view_cashflow": can_view_cashflow(request.user, organization),
         "can_view_cost_control": can_view_cost_control(request.user, organization),
         "can_access_finance_data": can_access_finance_data(request.user, organization),
+        "can_refresh_all_onec": (
+            is_odata_target_organization(organization)
+            and set(_onec_sync_report_types(request.user, organization, payroll=True))
+            == {REPORT_PROFIT, REPORT_CASHFLOW, REPORT_PAYROLL}
+        ),
         "active_tab": "finance",
         "show_add_button": False,
     })
@@ -2741,11 +2751,14 @@ def finance_onec_import_list(request):
     auto_runs = OneCODataSyncRun.objects.filter(
         organization=organization, mode=OneCODataSyncRun.MODE_AUTO_APPLY,
     ).select_related("requested_by")[:20]
+    auto_allowed = set(_onec_sync_report_types(request.user, organization, payroll=True))
+    auto_runs = [run for run in auto_runs if set(run.requested_report_types).issubset(auto_allowed)]
     return render(request, "pool_service/finance/onec_import_list.html", {
         "batches": batches,
         "show_profit_import": can_profit,
         "show_cashflow_odata_draft": show_cashflow_odata,
         "show_unified_sync": bool(report_types) and is_odata_target_organization(organization),
+        "show_all_sync": auto_allowed == {REPORT_PROFIT, REPORT_CASHFLOW, REPORT_PAYROLL},
         "sync_report_types": report_types,
         "latest_profit_active": latest_active.get(REPORT_PROFIT),
         "latest_cashflow_active": latest_active.get(REPORT_CASHFLOW),
@@ -2928,12 +2941,12 @@ def _auto_run_payload(run):
             "end": scope.get("end"),
         }
         for report_type, scope in (run.sync_scope or {}).items()
-        if report_type in {REPORT_PROFIT, REPORT_CASHFLOW}
+        if report_type in {REPORT_PROFIT, REPORT_CASHFLOW, REPORT_PAYROLL}
     }
     changed = {
         report_type: len(item.get("changed_months", []))
         for report_type, item in (run.result_summary or {}).items()
-        if report_type in {REPORT_PROFIT, REPORT_CASHFLOW}
+        if report_type in {REPORT_PROFIT, REPORT_CASHFLOW, REPORT_PAYROLL}
     }
     return {
         "run_id": str(run.id),
@@ -2945,6 +2958,7 @@ def _auto_run_payload(run):
             if key in {"completed_chunks", "total_chunks", "step_state", "outcome", "applied_batches"}
         },
         "changed_month_counts": changed,
+        "missing_payroll_months": (run.result_summary or {}).get(REPORT_PAYROLL, {}).get("missing_preserved_months", []),
         "message": run.error_message if run.status == OneCODataSyncRun.STATUS_FAILED else "",
     }
 
@@ -2955,13 +2969,19 @@ def finance_onec_refresh_apply_start(request):
     organization, denied = _onec_sync_guard(request)
     if denied:
         return denied
-    report_types = _onec_sync_report_types(request.user, organization)
-    current = timezone.localdate().replace(day=1)
+    report_types = _onec_sync_report_types(request.user, organization, payroll=True)
+    if set(report_types) != {REPORT_PROFIT, REPORT_CASHFLOW, REPORT_PAYROLL}:
+        return JsonResponse({"error": "Для обновления всех данных нужны права на ФОТ, валовую прибыль и ДДС."}, status=403)
     try:
+        current = timezone.now().astimezone(ZoneInfo(getattr(settings, "ONEC_FINANCE_TIME_ZONE", "Asia/Barnaul"))).date().replace(day=1)
         end = _parse_auto_month(request.POST.get("period_end"), current)
+        months = int(getattr(settings, "ONEC_FINANCE_LOOKBACK_MONTHS", 3))
+        if not 1 <= months <= 24:
+            raise ValidationError("Invalid lookback")
+        index = end.year * 12 + end.month - months
         start = _parse_auto_month(
             request.POST.get("period_start"),
-            date(end.year - (1 if end.month < 12 else 0), (end.month % 12) + 1, 1),
+            date(index // 12, index % 12 + 1, 1),
         )
         run, created = start_unified_sync(
             organization, request.user, report_types,
@@ -2972,8 +2992,8 @@ def finance_onec_refresh_apply_start(request):
         return JsonResponse({"error_code": "sync_conflict", "error": "Уже выполняется другое обновление данных 1С."}, status=409)
     except PermissionDenied:
         return JsonResponse({"error_code": "permission_denied", "error": "Недостаточно прав."}, status=403)
-    except ValidationError:
-        return JsonResponse({"error_code": "invalid_period", "error": "Проверьте период: допускается не более 24 полных месяцев."}, status=400)
+    except (ValidationError, ValueError, TypeError, ZoneInfoNotFoundError):
+        return JsonResponse({"error_code": "invalid_configuration_or_period", "error": "Проверьте период (до 24 месяцев), валюту и подтверждение охвата организаций ФОТ."}, status=400)
     payload = _auto_run_payload(run)
     payload.update({
         "created": created,
@@ -2994,6 +3014,9 @@ def finance_onec_refresh_apply_step(request, run_id):
         OneCODataSyncRun, pk=run_id, organization=organization,
         mode=OneCODataSyncRun.MODE_AUTO_APPLY,
     )
+    allowed = set(_onec_sync_report_types(request.user, organization, payroll=True))
+    if not set(run.requested_report_types).issubset(allowed):
+        return HttpResponseForbidden("Недостаточно прав.")
     try:
         expected = int(request.POST.get("cursor", ""))
     except (TypeError, ValueError):
@@ -3003,7 +3026,7 @@ def finance_onec_refresh_apply_step(request, run_id):
     if run.status not in OneCODataSyncRun.TERMINAL_STATUSES:
         try:
             run = step_unified_sync(
-                run.id, request.user, _onec_sync_report_types(request.user, organization), expected,
+                run.id, request.user, _onec_sync_report_types(request.user, organization, payroll=True), expected,
                 mode=OneCODataSyncRun.MODE_AUTO_APPLY,
             )
         except PermissionDenied:
@@ -3020,7 +3043,7 @@ def finance_onec_refresh_apply_status(request, run_id):
         OneCODataSyncRun, pk=run_id, organization=organization,
         mode=OneCODataSyncRun.MODE_AUTO_APPLY,
     )
-    allowed = set(_onec_sync_report_types(request.user, organization))
+    allowed = set(_onec_sync_report_types(request.user, organization, payroll=True))
     if not set(run.requested_report_types).issubset(allowed):
         return HttpResponseForbidden("Недостаточно прав.")
     return JsonResponse(_auto_run_payload(run))

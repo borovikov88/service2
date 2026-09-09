@@ -179,7 +179,52 @@ def read_for_draft(config, month):
         raise PayrollError("INVALID_RESPONSE", "parse") from None
 
 
-def create_odata_payroll_draft(month, organization, user):
+def auto_coverage_config():
+    """Explicit acknowledgement of the exact configured source organization set."""
+    config = config_from_settings()
+    orgs, _, fingerprint = _scope(config)
+    value = getattr(settings, "ONEC_ODATA_PAYROLL_AUTO_COVERAGE_GUIDS", "")
+    try:
+        acknowledged = sorted({guid(item.strip()) for item in value.split(",") if item.strip()})
+    except (AttributeError, PayrollError, ValueError):
+        acknowledged = []
+    if acknowledged != orgs:
+        raise ValidationError("Подтвердите охват организаций для автоматического обновления ФОТ.")
+    return fingerprint
+
+
+def empty_preview(preview, month, orgs, currency):
+    """Only a successful explicitly empty reader response may preserve a month."""
+    empty = bool(isinstance(preview, dict)
+        and preview.get("kind") == "unclassified_monthly_payroll_preview"
+        and preview.get("month") == month
+        and preview.get("period_basis") == "ПериодРегистрации"
+        and preview.get("selected_organizations") == orgs
+        and preview.get("organizations_without_rows") == orgs
+        and preview.get("status") == "missing"
+        and type(preview.get("rows")) is int and preview["rows"] == 0
+        and preview.get("groups") == []
+        and isinstance(preview.get("settlements"), dict))
+    if not empty:
+        return False
+    controls = preview["settlements"]
+    if controls.get("status") == "missing":
+        return type(controls.get("rows")) is int and controls["rows"] == 0 and controls.get("groups") == []
+    if controls.get("status") != "data_present" or not isinstance(controls.get("groups"), list) or not controls["groups"]:
+        return False
+    # Advances/payments can exist before this month's accrual. They are not FOT.
+    count = 0
+    for group in controls["groups"]:
+        if (not isinstance(group, dict) or group.get("record_type") != "Expense"
+                or group.get("organization_guid") not in orgs or group.get("currency_guid") != currency):
+            return False
+        if _money(group.get("amount")) != _money(group.get("amount_currency")) or _integer(group.get("non_cent_rows")):
+            return False
+        count += _integer(group.get("rows"), positive=True)
+    return count == _integer(controls.get("rows"), positive=True)
+
+
+def create_odata_payroll_draft(month, organization, user, *, preview=None):
     _require_access(organization, user)
     try:
         period, _ = month_bounds(month)
@@ -189,7 +234,8 @@ def create_odata_payroll_draft(month, organization, user):
     orgs, currency, fingerprint = _scope(config)
     baseline = _state_token(organization, period)
     try:
-        preview = read_for_draft(config, month)
+        if preview is None:
+            preview = read_for_draft(config, month)
     except Exception as exc:
         safe = diagnostic(exc)
         raise ValidationError("Не удалось прочитать ФОТ из 1С: %s / %s." % (safe["error"], safe["reason"])) from None
