@@ -3,13 +3,16 @@
 
 import argparse
 import base64
+import http.client
 import json
 import os
 from pathlib import Path
 import re
 import signal
+import socket
+import ssl
 import sys
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 import xml.etree.ElementTree as ET
@@ -31,10 +34,99 @@ CANDIDATE = re.compile(
     r"сотрудник|физическ.*лиц|оплат.*труд|удержан", re.IGNORECASE
 )
 IDENTIFIER = re.compile(r"[^\W\d]\w*(?:\.[^\W\d]\w*)*\Z", re.UNICODE)
+ERROR_CODES = {
+    "INVALID_HTTPS_ODATA_CONFIG", "INVALID_ODATA_CREDENTIAL_CONFIG",
+    "METADATA_HTTP_NOT_200", "METADATA_SIZE_LIMIT", "METADATA_REQUIRES_UTF8",
+    "METADATA_DTD_FORBIDDEN", "METADATA_INVALID_XML", "METADATA_EDM_SCHEMA_MISSING",
+    "METADATA_DUPLICATE_TYPE", "METADATA_TYPE_REFERENCE_MISSING",
+    "INVALID_SCHEMA_IDENTIFIER", "REQUESTED_ENTITY_NOT_A_CANDIDATE",
+    "SCHEMA_OUTPUT_LIMIT", "METADATA_TOTAL_TIMEOUT", "METADATA_CHECK_FAILED",
+}
+STAGES = {
+    "runtime_setup", "dependencies", "config_read", "metadata_config",
+    "metadata_request", "metadata_open", "metadata_read", "metadata_get",
+    "schema_parse", "output",
+}
+REASONS = {
+    "DNS", "TLS_CERTIFICATE", "TLS", "TIMEOUT", "CONNECTION_REFUSED",
+    "CONNECTION", "NETWORK", "NETWORK_IO", "CONFIG_IO", "IO",
+    "MISSING_DOTENV", "DEPENDENCY_UNAVAILABLE", "ENCODING", "INVALID_REQUEST",
+    "MALFORMED_XML", "UNEXPECTED_ERROR", "VALIDATION",
+}
 
 
 class SchemaError(Exception):
     """Only fixed, non-sensitive diagnostic codes are exposed to the user."""
+
+    def __init__(self, code, *, stage=None, reason="VALIDATION"):
+        super().__init__(code)
+        self.code, self.stage, self.reason = code, stage, reason
+
+
+def safe_reason(exc, stage):
+    network_wrapper = isinstance(exc, URLError)
+    for _ in range(3):
+        if not isinstance(exc, URLError) or not isinstance(exc.reason, BaseException):
+            break
+        exc = exc.reason
+    if isinstance(exc, socket.gaierror):
+        return "DNS"
+    if isinstance(exc, ssl.SSLCertVerificationError):
+        return "TLS_CERTIFICATE"
+    if isinstance(exc, ssl.SSLError):
+        return "TLS"
+    if isinstance(exc, TimeoutError):
+        return "TIMEOUT"
+    if isinstance(exc, ConnectionRefusedError):
+        return "CONNECTION_REFUSED"
+    if isinstance(exc, ConnectionError):
+        return "CONNECTION"
+    if isinstance(exc, ModuleNotFoundError):
+        return "MISSING_DOTENV" if exc.name == "dotenv" else "DEPENDENCY_UNAVAILABLE"
+    if isinstance(exc, ImportError):
+        return "DEPENDENCY_UNAVAILABLE"
+    if isinstance(exc, UnicodeError):
+        return "ENCODING"
+    if isinstance(exc, ET.ParseError):
+        return "MALFORMED_XML"
+    if isinstance(exc, (http.client.InvalidURL, ValueError)) and stage in {
+        "metadata_config", "metadata_request", "metadata_open", "metadata_get",
+    }:
+        return "INVALID_REQUEST"
+    if network_wrapper:
+        return "NETWORK"
+    if isinstance(exc, OSError):
+        if stage == "config_read":
+            return "CONFIG_IO"
+        return "NETWORK_IO" if stage.startswith("metadata_") else "IO"
+    return "UNEXPECTED_ERROR"
+
+
+def safe_diagnostic(exc, stage):
+    code, reason = "METADATA_CHECK_FAILED", safe_reason(exc, stage)
+    if isinstance(exc, SchemaError):
+        candidate = exc.code
+        if isinstance(candidate, str) and (
+            candidate in ERROR_CODES or re.fullmatch(r"METADATA_HTTP_[1-5][0-9]{2}", candidate)
+        ):
+            code = candidate
+        stage = exc.stage if isinstance(exc.stage, str) and exc.stage in STAGES else stage
+        reason = exc.reason if isinstance(exc.reason, str) and exc.reason in REASONS else "UNEXPECTED_ERROR"
+    return {"error": code, "stage": stage if isinstance(stage, str) and stage in STAGES else "runtime_setup", "reason": reason}
+
+
+def at_stage(stage, operation):
+    try:
+        return operation()
+    except SchemaError as exc:
+        if exc.stage is None:
+            exc.stage = stage
+        raise
+    except HTTPError as exc:
+        code = f"METADATA_HTTP_{exc.code}" if type(exc.code) is int and 100 <= exc.code <= 599 else "METADATA_HTTP_NOT_200"
+        raise SchemaError(code, stage=stage) from None
+    except Exception as exc:
+        raise SchemaError("METADATA_CHECK_FAILED", stage=stage, reason=safe_reason(exc, stage)) from None
 
 
 class NoRedirectHandler(HTTPRedirectHandler):
@@ -60,25 +152,22 @@ def metadata_url(base_url):
 
 
 def fetch_metadata(config, *, opener=None):
-    url = metadata_url(config.get("ONEC_ODATA_BASE_URL") or "")
+    url = at_stage("metadata_config", lambda: metadata_url(config.get("ONEC_ODATA_BASE_URL") or ""))
     username = config.get("ONEC_ODATA_USERNAME") or ""
     password = config.get("ONEC_ODATA_PASSWORD") or ""
     if bool(username) != bool(password) or ":" in username:
-        raise SchemaError("INVALID_ODATA_CREDENTIAL_CONFIG")
-    request = Request(url, headers={"Accept": "application/xml"}, method="GET")
+        raise SchemaError("INVALID_ODATA_CREDENTIAL_CONFIG", stage="metadata_config")
+    request = at_stage("metadata_request", lambda: Request(url, headers={"Accept": "application/xml"}, method="GET"))
     if username:
-        token = base64.b64encode(f"{username}:{password}".encode()).decode("ascii")
+        token = at_stage("metadata_request", lambda: base64.b64encode(f"{username}:{password}".encode()).decode("ascii"))
         request.add_header("Authorization", f"Basic {token}")
-    client = opener or build_opener(NoRedirectHandler())
-    try:
-        with client.open(request, timeout=TIMEOUT_SECONDS) as response:
-            if response.status != 200:
-                raise SchemaError("METADATA_HTTP_NOT_200")
-            raw = response.read(MAX_BYTES + 1)
-    except HTTPError as exc:
-        raise SchemaError(f"METADATA_HTTP_{exc.code}") from None
+    client = opener or at_stage("metadata_request", lambda: build_opener(NoRedirectHandler()))
+    with at_stage("metadata_open", lambda: client.open(request, timeout=TIMEOUT_SECONDS)) as response:
+        if response.status != 200:
+            raise SchemaError("METADATA_HTTP_NOT_200", stage="metadata_open")
+        raw = at_stage("metadata_read", lambda: response.read(MAX_BYTES + 1))
     if len(raw) > MAX_BYTES:
-        raise SchemaError("METADATA_SIZE_LIMIT")
+        raise SchemaError("METADATA_SIZE_LIMIT", stage="metadata_read")
     return raw
 
 
@@ -213,18 +302,27 @@ def main(argv=None):
     parser.add_argument("--entity", action="append", default=[])
     args = parser.parse_args(argv)
     def timed_out(signum, frame):
-        raise SchemaError("METADATA_TOTAL_TIMEOUT")
+        raise SchemaError("METADATA_TOTAL_TIMEOUT", reason="TIMEOUT")
+    stage = "runtime_setup"
     try:
         signal.signal(signal.SIGALRM, timed_out)
         signal.alarm(TOTAL_TIMEOUT_SECONDS)
+        stage = "dependencies"
         from dotenv import dotenv_values
+        stage = "config_read"
         config = {**dotenv_values(Path(args.app_dir) / ".env"), **os.environ}
-        result = describe_metadata(fetch_metadata(config), entity_names=args.entity)
+        stage = "metadata_get"
+        raw = fetch_metadata(config)
+        stage = "schema_parse"
+        result = describe_metadata(raw, entity_names=args.entity)
+        stage = "output"
         sys.stdout.write(serialize_result(result))
         return 0
     except Exception as exc:
-        code = str(exc) if isinstance(exc, SchemaError) else "METADATA_CHECK_FAILED"
-        print(json.dumps({"error": code}))
+        try:
+            print(json.dumps(safe_diagnostic(exc, stage)))
+        except OSError:
+            pass
         return 1
     finally:
         signal.alarm(0)

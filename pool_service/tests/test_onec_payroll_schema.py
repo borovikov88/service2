@@ -4,6 +4,8 @@ import contextlib
 import importlib.util
 import io
 import json
+import socket
+import ssl
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -133,12 +135,78 @@ class PayrollSchemaDiagnosticTests(unittest.TestCase):
         output = io.StringIO()
         with patch.dict("sys.modules", {"dotenv": fake_dotenv}), patch.dict(schema.os.environ, {"ONEC_ODATA_USERNAME": "env-user"}, clear=True), patch.object(schema, "fetch_metadata", side_effect=URLError("private endpoint and file-secret")) as fetch, contextlib.redirect_stdout(output):
             self.assertEqual(schema.main(["--app-dir", "/unused"]), 1)
-        self.assertEqual(json.loads(output.getvalue()), {"error": "METADATA_CHECK_FAILED"})
+        self.assertEqual(json.loads(output.getvalue()), {"error": "METADATA_CHECK_FAILED", "stage": "metadata_get", "reason": "NETWORK"})
         self.assertEqual(fetch.call_args.args[0]["ONEC_ODATA_USERNAME"], "env-user")
         self.assertEqual(fetch.call_args.args[0]["ONEC_ODATA_PASSWORD"], "file-secret")
         source = SCRIPT.read_text()
         self.assertNotIn("django.setup", source)
         self.assertNotIn("service_site.settings", source)
+
+    def test_network_open_and_read_errors_report_categories_without_private_details(self):
+        marker = "PRIVATE_SECRET_USER_PASSWORD_ENDPOINT"
+        cases = [
+            (URLError(socket.gaierror(-2, marker)), "DNS"),
+            (URLError(ssl.SSLCertVerificationError(1, marker)), "TLS_CERTIFICATE"),
+            (URLError(ssl.SSLError(1, marker)), "TLS"),
+            (URLError(TimeoutError(marker)), "TIMEOUT"),
+            (URLError(ConnectionRefusedError(marker)), "CONNECTION_REFUSED"),
+            (URLError(marker), "NETWORK"),
+            (OSError(marker), "NETWORK_IO"),
+        ]
+        for failure, expected in cases:
+            for stage in ("metadata_open", "metadata_read"):
+                with self.subTest(expected=expected, stage=stage):
+                    opener, response = Mock(), Mock(status=200)
+                    response.__enter__ = Mock(return_value=response)
+                    response.__exit__ = Mock(return_value=False)
+                    opener.open.return_value = response
+                    if stage == "metadata_open":
+                        opener.open.side_effect = failure
+                    else:
+                        response.read.side_effect = failure
+                    with self.assertRaises(schema.SchemaError) as raised:
+                        schema.fetch_metadata({"ONEC_ODATA_BASE_URL": BASE}, opener=opener)
+                    diagnostic = schema.safe_diagnostic(raised.exception, "metadata_get")
+                    self.assertEqual(diagnostic, {"error": "METADATA_CHECK_FAILED", "stage": stage, "reason": expected})
+                    self.assertNotIn(marker, json.dumps(diagnostic))
+
+    def test_main_missing_dependency_unreadable_config_and_parse_errors_are_safe(self):
+        marker = "PRIVATE_SECRET_PATH_PASSWORD"
+        cases = [
+            (None, None, "dependencies", "MISSING_DOTENV"),
+            (SimpleNamespace(dotenv_values=Mock(side_effect=PermissionError(marker))), None, "config_read", "CONFIG_IO"),
+            (SimpleNamespace(dotenv_values=lambda path: {}), RuntimeError(marker), "schema_parse", "UNEXPECTED_ERROR"),
+        ]
+        for dependency, parse_error, expected_stage, reason in cases:
+            output, errors = io.StringIO(), io.StringIO()
+            with self.subTest(stage=expected_stage), patch.dict("sys.modules", {"dotenv": dependency}), patch.object(schema, "fetch_metadata", return_value=metadata('')), patch.object(schema, "describe_metadata", side_effect=parse_error, return_value={}), contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                self.assertEqual(schema.main(["--app-dir", "/" + marker]), 1)
+            self.assertEqual(json.loads(output.getvalue()), {"error": "METADATA_CHECK_FAILED", "stage": expected_stage, "reason": reason})
+            self.assertNotIn(marker, output.getvalue() + errors.getvalue())
+
+    def test_untrusted_exception_fields_http_codes_and_chains_are_not_echoed(self):
+        marker = "PRIVATE_SECRET_USERNAME_PASSWORD"
+        for failure in [schema.SchemaError(marker, stage=marker, reason=marker), schema.SchemaError({"secret": marker}, stage={}, reason={}), RuntimeError(marker)]:
+            failure.__cause__ = URLError(marker)
+            diagnostic = schema.safe_diagnostic(failure, "schema_parse")
+            self.assertEqual(diagnostic, {"error": "METADATA_CHECK_FAILED", "stage": "schema_parse", "reason": "UNEXPECTED_ERROR"})
+            self.assertNotIn(marker, json.dumps(diagnostic))
+        for code in (marker, True, 999, 302):
+            opener = Mock()
+            opener.open.side_effect = HTTPError(BASE, code, marker, {}, None)
+            with self.assertRaises(schema.SchemaError) as raised:
+                schema.fetch_metadata({"ONEC_ODATA_BASE_URL": BASE}, opener=opener)
+            diagnostic = schema.safe_diagnostic(raised.exception, "metadata_get")
+            self.assertEqual(diagnostic["error"], "METADATA_HTTP_302" if code == 302 else "METADATA_HTTP_NOT_200")
+            self.assertNotIn(marker, json.dumps(diagnostic))
+
+    def test_invalid_request_and_encoding_categories_do_not_parse_exception_text(self):
+        for failure, expected in [
+            (ValueError("PRIVATE_SECRET_URL"), "INVALID_REQUEST"),
+            (UnicodeEncodeError("ascii", "PRIVATE_SECRET_URL", 0, 1, "private"), "ENCODING"),
+        ]:
+            with self.subTest(expected=expected):
+                self.assertEqual(schema.safe_diagnostic(failure, "metadata_request")["reason"], expected)
 
 
 if __name__ == "__main__":
