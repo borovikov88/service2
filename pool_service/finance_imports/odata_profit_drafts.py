@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import hashlib
 import json
@@ -27,8 +27,11 @@ from .odata_profit import (
     NoRedirectHandler,
     ODataConfig,
     ODataPreviewError,
+    PROFIT_DOCUMENT_TYPES,
+    PROFIT_RECORDER_TYPES,
     ProfitRow,
     ZERO_GUID,
+    normalize_document_type,
     normalize_guid,
     parse_month,
     read_odata_pages,
@@ -46,8 +49,8 @@ from .services import (
 from .validators import delete_private_batch_file
 
 
-SNAPSHOT_SCHEMA = "onec_odata_profit_draft_v1"
-PARSER_VERSION = "odata-1"
+SNAPSHOT_SCHEMA = "onec_odata_profit_draft_v2"
+PARSER_VERSION = "odata-2"
 REFERENCE_BATCH_SIZE = 40
 MAX_DRAFT_MONTHS = 12
 MONEY_QUANTUM = Decimal("0.01")
@@ -66,6 +69,27 @@ CATALOGS = {
         ("Ref_Key", "Description", "DeletionMark"),
     ),
 }
+DOCUMENTS = {
+    "Document_РасходнаяНакладная": {
+        "label": "Расходная накладная",
+        "fields": ("Ref_Key", "Number", "Date", "Заказ", "Заказ_Type"),
+    },
+    "Document_ОтчетОРозничныхПродажах": {
+        "label": "Отчёт о розничных продажах",
+        "fields": ("Ref_Key", "Number", "Date"),
+    },
+    "Document_ЧекККМ": {
+        "label": "Чек ККМ",
+        "fields": ("Ref_Key", "Number", "Date"),
+    },
+    "Document_ЗаказПокупателя": {
+        "label": "Заказ покупателя",
+        "fields": ("Ref_Key", "Number", "Date"),
+    },
+}
+RETAIL_REPORT_TYPE = "Document_ОтчетОРозничныхПродажах"
+RETAIL_CHECK_TYPE = "Document_ЧекККМ"
+ORDER_TYPE = "Document_ЗаказПокупателя"
 
 
 class ODataDraftError(ValidationError):
@@ -207,17 +231,193 @@ def _read_reference_map(
     return found
 
 
+def _document_date(value):
+    if not isinstance(value, str) or len(value) > 80:
+        raise ODataPreviewError("1C document date is invalid")
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+    except ValueError as exc:
+        raise ODataPreviewError("1C document date is invalid") from exc
+
+
+def _read_document_entities(
+    config,
+    refs,
+    *,
+    opener,
+    page_budget,
+    require_all,
+):
+    by_type = defaultdict(set)
+    for entity_type, guid in refs:
+        if entity_type not in DOCUMENTS or entity_type not in PROFIT_DOCUMENT_TYPES:
+            raise ODataPreviewError("1C document type is not allowed")
+        by_type[entity_type].add(guid)
+    documents = {}
+    for entity_type, guids in sorted(by_type.items()):
+        fields = DOCUMENTS[entity_type]["fields"]
+        for batch_guids in _chunks(sorted(guids)):
+            url = _reference_url(config, entity_type, fields, batch_guids)
+            returned = 0
+            for raw_rows, _ in read_odata_pages(config, url, opener=opener):
+                page_budget["used"] += 1
+                if page_budget["used"] > config.max_pages:
+                    raise ODataPreviewError(
+                        "1C document lookups exceeded the page limit"
+                    )
+                returned += len(raw_rows)
+                if returned > len(batch_guids):
+                    raise ODataPreviewError(
+                        "1C document lookup returned unexpected rows"
+                    )
+                for raw in raw_rows:
+                    if not isinstance(raw, dict):
+                        raise ODataPreviewError("1C document row must be an object")
+                    key = normalize_guid(raw.get("Ref_Key"), field="Document Ref_Key")
+                    identity = entity_type, key
+                    if key not in batch_guids or identity in documents:
+                        raise ODataPreviewError(
+                            "1C document lookup returned an unexpected identity"
+                        )
+                    number = raw.get("Number")
+                    if (
+                        not isinstance(number, str)
+                        or not number.strip()
+                        or len(number.strip()) > 100
+                    ):
+                        raise ODataPreviewError("1C document number is invalid")
+                    item = {
+                        "number": number.strip(),
+                        "date": _document_date(raw.get("Date")),
+                    }
+                    if entity_type == "Document_РасходнаяНакладная":
+                        raw_order = raw.get("Заказ")
+                        raw_order_type = raw.get("Заказ_Type")
+                        if raw_order not in (None, "", ZERO_GUID):
+                            order_guid = normalize_guid(
+                                raw_order, field="Document Заказ", allow_zero=True
+                            )
+                            if order_guid != ZERO_GUID:
+                                order_type = normalize_document_type(
+                                    raw_order_type,
+                                    field="Document Заказ_Type",
+                                    allowed_types={ORDER_TYPE},
+                                )
+                                item["order_ref"] = (order_type, order_guid)
+                        elif raw_order_type not in (None, ""):
+                            if raw_order == ZERO_GUID:
+                                normalize_document_type(
+                                    raw_order_type,
+                                    field="Document Заказ_Type",
+                                    allowed_types={ORDER_TYPE},
+                                )
+                            else:
+                                raise ODataPreviewError(
+                                    "Document Заказ_Type requires a non-empty Заказ"
+                                )
+                    documents[identity] = item
+    missing = set(refs) - set(documents)
+    if require_all and missing:
+        raise ODataPreviewError("1C document is missing or unavailable")
+    return documents
+
+
+def _read_profit_documents(config, rows, *, opener, page_budget):
+    """Resolve only the fixed document schema used by the profit import."""
+    primary_refs = {
+        (row.recorder_type, row.recorder)
+        for row in rows
+        if row.recorder_type in PROFIT_RECORDER_TYPES
+    }
+    documents = _read_document_entities(
+        config,
+        primary_refs,
+        opener=opener,
+        page_budget=page_budget,
+        require_all=True,
+    )
+    order_refs = {
+        item["order_ref"]
+        for item in documents.values()
+        if item.get("order_ref")
+    }
+    if order_refs:
+        documents.update(_read_document_entities(
+            config,
+            order_refs,
+            opener=opener,
+            page_budget=page_budget,
+            require_all=False,
+        ))
+    return documents
+
+
+def _document_display(entity_type, document):
+    return (
+        f'{DOCUMENTS[entity_type]["label"]} №{document["number"]} '
+        f'от {document["date"]:%d.%m.%Y}'
+    )
+
+
+def _group_key(organization_id, entity_type, recorder):
+    return f"odata-document:{organization_id}:{entity_type}:{recorder}"
+
+
+def _document_groups(rows, documents, organization_id):
+    reports_by_day = defaultdict(set)
+    for row in rows:
+        if row.recorder_type != RETAIL_REPORT_TYPE:
+            continue
+        identity = row.recorder_type, row.recorder
+        document = documents.get(identity)
+        if document is None:
+            continue
+        reports_by_day[(row.organization_guid, document["date"])].add(identity)
+
+    groups = {}
+    for row in rows:
+        primary_identity = row.recorder_type, row.recorder
+        group_identity = primary_identity
+        primary_document = documents.get(primary_identity)
+        if row.recorder_type == RETAIL_CHECK_TYPE and primary_document is not None:
+            candidates = reports_by_day.get(
+                (row.organization_guid, primary_document["date"]), set()
+            )
+            if len(candidates) == 1:
+                group_identity = next(iter(candidates))
+        group_type, group_recorder = group_identity
+        group_document = documents.get(group_identity)
+        display = (
+            _document_display(group_type, group_document)
+            if group_document is not None
+            else f"Документ 1С от {row.source_date:%d.%m.%Y}"
+        )
+        groups[row.identity] = {
+            "group_recorder": group_recorder,
+            "group_recorder_type": group_type,
+            "group_key": _group_key(
+                organization_id, group_type, group_recorder
+            ),
+            "display": display,
+            "group_document": group_document,
+            "primary_document": primary_document,
+        }
+    return groups
+
+
 def _source_row(row: ProfitRow):
     return {
         "recorder": row.recorder,
+        "recorder_type": row.recorder_type,
         "line_number": row.line_number,
-        "period": row.period.isoformat(),
+        "period": row.source_period,
         "source_date": row.source_date.isoformat(),
         "organization_guid": row.organization_guid,
         "nomenclature_guid": row.nomenclature_guid,
         "customer_guid": row.customer_guid,
         "responsible_guid": row.responsible_guid,
-        "document": row.document,
+        "document_guid": row.document_guid,
+        "document_type": row.document_type,
         "quantity": format(row.quantity, "f"),
         "revenue": format(row.revenue, "f"),
         "vat": format(row.vat, "f"),
@@ -280,9 +480,12 @@ def _failed_mapping_batch(
     return batch
 
 
-def _enrich_rows(rows, references):
+def _enrich_rows(rows, references, documents, organization_id):
     normalized = []
+    groups = _document_groups(rows, documents, organization_id)
     for row in rows:
+        group = groups[row.identity]
+        primary_document = group["primary_document"]
         nomenclature = references["nomenclature"][row.nomenclature_guid]
         customer_name = (
             "Без контрагента"
@@ -304,7 +507,7 @@ def _enrich_rows(rows, references):
             ),
             "manager_name": references["responsible"][row.responsible_guid]["description"],
             "customer_name": customer_name,
-            "document_name": row.document,
+            "document_name": group["display"],
             "nomenclature": nomenclature["description"],
             "article": nomenclature.get("article", ""),
             "nomenclature_type": nomenclature["nomenclature_type"],
@@ -323,8 +526,9 @@ def _enrich_rows(rows, references):
             "source_data": {
                 "source": "odata",
                 "recorder": row.recorder,
+                "recorder_type": row.recorder_type,
                 "line_number": row.line_number,
-                "period": row.period.isoformat(),
+                "period": row.source_period,
                 "source_date": row.source_date.isoformat(),
                 "organization_guid": row.organization_guid,
                 "nomenclature_guid": row.nomenclature_guid,
@@ -332,8 +536,37 @@ def _enrich_rows(rows, references):
                 "customer_guid": row.customer_guid,
                 "responsible_guid": row.responsible_guid,
                 "vat": format(row.vat, "f"),
+                "document_guid": row.document_guid,
+                "document_type": row.document_type,
+                "document_group_recorder": group["group_recorder"],
+                "document_group_recorder_type": group["group_recorder_type"],
+                "document_group_key": group["group_key"],
+                "document_display": group["display"],
             },
         })
+        if primary_document is not None:
+            normalized[-1]["source_data"].update({
+                "document_number": primary_document["number"],
+                "document_date": primary_document["date"].isoformat(),
+            })
+        group_document = group["group_document"]
+        if group_document is not None:
+            normalized[-1]["source_data"].update({
+                "document_group_number": group_document["number"],
+                "document_group_date": group_document["date"].isoformat(),
+            })
+        order_ref = primary_document.get("order_ref") if primary_document else None
+        if order_ref and order_ref in documents:
+            order_document = documents[order_ref]
+            normalized[-1]["source_data"].update({
+                "resolved_order_guid": order_ref[1],
+                "resolved_order_type": order_ref[0],
+                "resolved_order_number": order_document["number"],
+                "resolved_order_date": order_document["date"].isoformat(),
+                "resolved_order_display": _document_display(
+                    order_ref[0], order_document
+                ),
+            })
     return normalized
 
 
@@ -367,7 +600,23 @@ def _validate_decimal_shape(value, field, *, decimal_places, integer_places):
         raise ValidationError(f"Snapshot {field} is outside the supported range.")
 
 
-def _validate_snapshot(payload, config):
+def _snapshot_document_type(value, *, field, allowed_types=None):
+    if not isinstance(value, str):
+        raise ValidationError(f"{field} is invalid.")
+    try:
+        normalized = normalize_document_type(
+            f"StandardODATA.{value}",
+            field=field,
+            allowed_types=allowed_types,
+        )
+    except ODataPreviewError as exc:
+        raise ValidationError(f"{field} is invalid.") from exc
+    if normalized != value:
+        raise ValidationError(f"{field} is invalid.")
+    return normalized
+
+
+def _validate_snapshot(payload, config, *, organization_id):
     if not isinstance(payload, dict) or payload.get("schema") != SNAPSHOT_SCHEMA:
         raise ValidationError("OData snapshot schema is invalid.")
     try:
@@ -390,6 +639,8 @@ def _validate_snapshot(payload, config):
         raise ValidationError("OData snapshot row limit is invalid.")
     seen = set()
     rows = []
+    retail_reports = defaultdict(dict)
+    retail_links = []
     for raw in raw_rows:
         if not isinstance(raw, dict):
             raise ValidationError("OData snapshot row is invalid.")
@@ -453,10 +704,151 @@ def _validate_snapshot(payload, config):
             audit_recorder = str(UUID(str(source_data.get("recorder")))).lower()
             audit_line = int(source_data.get("line_number"))
             source_date = date.fromisoformat(source_data.get("source_date"))
+            source_period_value = source_data.get("period")
+            if not isinstance(source_period_value, str) or len(source_period_value) > 80:
+                raise ValueError
+            source_period_date = datetime.fromisoformat(
+                source_period_value.replace("Z", "+00:00")
+            ).date()
         except (ValueError, TypeError, AttributeError) as exc:
             raise ValidationError("OData snapshot audit identity is invalid.") from exc
-        if audit_recorder != recorder or audit_line != line or source_date.replace(day=1) != period:
+        if (
+            audit_recorder != recorder
+            or audit_line != line
+            or source_date.replace(day=1) != period
+            or source_period_date != source_date
+        ):
             raise ValidationError("OData snapshot audit identity does not match its row.")
+        recorder_type = _snapshot_document_type(
+            source_data.get("recorder_type"), field="Snapshot Recorder_Type"
+        )
+        document_guid = source_data.get("document_guid")
+        document_type = source_data.get("document_type")
+        if document_guid is None:
+            if document_type is not None:
+                raise ValidationError("OData snapshot document identity is invalid.")
+        else:
+            normalize_guid(
+                document_guid, field="Snapshot document GUID"
+            )
+            _snapshot_document_type(
+                document_type, field="Snapshot Документ_Type"
+            )
+        group_recorder = normalize_guid(
+            source_data.get("document_group_recorder"),
+            field="Snapshot document group recorder",
+        )
+        group_type = _snapshot_document_type(
+            source_data.get("document_group_recorder_type"),
+            field="Snapshot document group recorder type",
+        )
+        if source_data.get("document_group_key") != _group_key(
+            organization_id, group_type, group_recorder
+        ):
+            raise ValidationError("OData snapshot document group key is invalid.")
+        if (group_type, group_recorder) != (recorder_type, recorder):
+            if not (
+                recorder_type == RETAIL_CHECK_TYPE
+                and group_type == RETAIL_REPORT_TYPE
+            ):
+                raise ValidationError("OData snapshot document group is invalid.")
+        document_display = source_data.get("document_display")
+        if (
+            not isinstance(document_display, str)
+            or not document_display.strip()
+            or len(document_display) > 500
+            or document != document_display
+        ):
+            raise ValidationError("OData snapshot document display is invalid.")
+        known_recorder = recorder_type in PROFIT_RECORDER_TYPES
+        document_number = source_data.get("document_number")
+        document_date_value = source_data.get("document_date")
+        group_number = source_data.get("document_group_number")
+        group_date_value = source_data.get("document_group_date")
+        if known_recorder:
+            if not isinstance(document_number, str) or not document_number.strip():
+                raise ValidationError("OData snapshot document number is invalid.")
+            if len(document_number) > 100:
+                raise ValidationError("OData snapshot document number is invalid.")
+            try:
+                document_date = date.fromisoformat(document_date_value)
+                group_date = date.fromisoformat(group_date_value)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError("OData snapshot document date is invalid.") from exc
+            if not isinstance(group_number, str) or not group_number.strip() or len(group_number) > 100:
+                raise ValidationError("OData snapshot group document number is invalid.")
+            expected_display = _document_display(group_type, {
+                "number": group_number,
+                "date": group_date,
+            })
+            if document_display != expected_display:
+                raise ValidationError("OData snapshot document display is inconsistent.")
+            if (group_type, group_recorder) == (recorder_type, recorder):
+                if group_number != document_number or group_date != document_date:
+                    raise ValidationError(
+                        "OData snapshot self-group document is inconsistent."
+                    )
+            if recorder_type == RETAIL_REPORT_TYPE:
+                if source_date != document_date:
+                    raise ValidationError("OData snapshot retail report date is inconsistent.")
+                report_identity = (recorder_type, recorder)
+                report_descriptor = (
+                    document_number,
+                    document_date,
+                    document_display,
+                )
+                existing_descriptor = retail_reports[
+                    (source_org, document_date)
+                ].get(report_identity)
+                if (
+                    existing_descriptor is not None
+                    and existing_descriptor != report_descriptor
+                ):
+                    raise ValidationError(
+                        "OData snapshot retail report display is inconsistent."
+                    )
+                retail_reports[(source_org, document_date)][
+                    report_identity
+                ] = report_descriptor
+            if recorder_type == RETAIL_CHECK_TYPE and group_type == RETAIL_REPORT_TYPE:
+                if source_date != document_date or document_date != group_date:
+                    raise ValidationError("OData snapshot retail document date is inconsistent.")
+                retail_links.append((
+                    source_org,
+                    document_date,
+                    (group_type, group_recorder),
+                    (group_number, group_date, document_display),
+                ))
+        elif any(value is not None for value in (
+            document_number, document_date_value, group_number, group_date_value
+        )):
+            raise ValidationError("OData snapshot unsupported document was enriched.")
+        order_values = tuple(source_data.get(name) for name in (
+            "resolved_order_guid", "resolved_order_type", "resolved_order_number",
+            "resolved_order_date", "resolved_order_display",
+        ))
+        if any(value is not None for value in order_values):
+            if any(value is None for value in order_values):
+                raise ValidationError("OData snapshot resolved order is incomplete.")
+            order_guid, order_type, order_number, order_date_value, order_display = order_values
+            normalize_guid(order_guid, field="Snapshot resolved order GUID")
+            if _snapshot_document_type(
+                order_type,
+                field="Snapshot resolved order type",
+                allowed_types={ORDER_TYPE},
+            ) != ORDER_TYPE:
+                raise ValidationError("OData snapshot resolved order type is invalid.")
+            if not isinstance(order_number, str) or not order_number.strip() or len(order_number) > 100:
+                raise ValidationError("OData snapshot resolved order number is invalid.")
+            try:
+                order_date = date.fromisoformat(order_date_value)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError("OData snapshot resolved order date is invalid.") from exc
+            if order_display != _document_display(ORDER_TYPE, {
+                "number": order_number,
+                "date": order_date,
+            }):
+                raise ValidationError("OData snapshot resolved order display is invalid.")
         normalize_guid(source_data.get("nomenclature_guid"), field="Snapshot nomenclature")
         normalize_guid(
             source_data.get("customer_guid"), field="Snapshot customer", allow_zero=True
@@ -513,6 +905,14 @@ def _validate_snapshot(payload, config):
             "profitability_percent": profitability,
             "source_data": source_data,
         })
+    for source_org, document_date, target, descriptor in retail_links:
+        candidates = retail_reports[(source_org, document_date)]
+        if set(candidates) != {target}:
+            raise ValidationError("OData snapshot retail document group is ambiguous.")
+        if candidates[target] != descriptor:
+            raise ValidationError(
+                "OData snapshot retail target display is inconsistent."
+            )
     return rows, scope_months
 
 
@@ -627,7 +1027,13 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
             )
             for kind, guids in required.items()
         }
-        normalized = _enrich_rows(rows, references)
+        documents = _read_profit_documents(
+            config,
+            rows,
+            opener=client,
+            page_budget=reference_page_budget,
+        )
+        normalized = _enrich_rows(rows, references, documents, organization.pk)
     except ODataPreviewError as exc:
         safe_message = str(exc)[:ERROR_MESSAGE_MAX_LENGTH]
         batch = _failed_mapping_batch(
@@ -645,7 +1051,7 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
         "rows": normalized,
     }
     try:
-        _validate_snapshot(payload, config)
+        _validate_snapshot(payload, config, organization_id=organization.pk)
     except (ValidationError, ODataPreviewError) as exc:
         raise ODataDraftError("OData response cannot be saved as a valid draft") from exc
     metadata = _preview_metadata(normalized, organization, scope_months)
@@ -706,7 +1112,9 @@ def confirm_odata_profit(batch_id, organization, user, *, config=None):
                 or batch.period_last != parse_month(payload.get("end_month"))
             ):
                 raise ValidationError("OData draft period does not match its snapshot.")
-            records, periods = _validate_snapshot(payload, config)
+            records, periods = _validate_snapshot(
+                payload, config, organization_id=locked_organization.pk
+            )
             locked_states = list(
                 OneCReportPeriodState.objects.select_for_update()
                 .filter(

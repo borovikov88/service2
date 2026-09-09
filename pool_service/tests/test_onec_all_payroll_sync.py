@@ -27,9 +27,7 @@ class AllPayrollSyncTests(TestCase):
         return override_settings(ONEC_ODATA_PAYROLL_AUTO_COVERAGE_GUIDS=f'{ORG},{OTHER_ORG}')
 
     def profit_rows(self):
-        row = profit_row(MONTH)
-        row['source_data']['organization_guid'] = ORG
-        return [row]
+        return [profit_row(MONTH, organization_guid=ORG)]
 
     def cashflow_rows(self):
         row = cashflow_row(MONTH)

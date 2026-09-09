@@ -49,12 +49,16 @@ def config():
     )
 
 
-def profit_row(month="2025-05", revenue="100.00"):
+def profit_row(
+    month="2025-05", revenue="100.00", organization_guid=ORG_GUID,
+    organization_id=1,
+):
+    display = f"Расходная накладная №РН-000001 от 15.{month[5:7]}.{month[:4]}"
     return {
         "period_month": f"{month}-01", "source_recorder": RECORDER,
         "source_row_number": 1, "source_identity": f"odata:{RECORDER}:1",
         "manager_name": "Ответственный", "customer_name": "Покупатель",
-        "document_name": "Реализация 1", "nomenclature": "Товар",
+        "document_name": display, "nomenclature": "Товар",
         "article": "A-1", "nomenclature_type": "Запас", "quantity": "2.000000",
         "revenue": revenue, "cost": "40.00", "gross_profit": str(float(revenue) - 40),
         "calculated_cost": None, "cost_source": "actual", "cost_calculation_method": "",
@@ -62,12 +66,24 @@ def profit_row(month="2025-05", revenue="100.00"):
         "profitability_percent": "60.0000" if revenue == "100.00" else "66.6667",
         "source_data": {
             "source": "odata", "recorder": RECORDER, "line_number": 1,
+            "recorder_type": "Document_РасходнаяНакладная",
             "period": f"{month}-15T07:00:00+00:00", "source_date": f"{month}-15",
-            "organization_guid": ORG_GUID,
+            "organization_guid": organization_guid,
             "nomenclature_guid": "33333333-3333-3333-3333-333333333333",
             "nomenclature_type": "Запас",
             "customer_guid": "44444444-4444-4444-4444-444444444444",
             "responsible_guid": "66666666-6666-6666-6666-666666666666", "vat": "10.00",
+            "document_guid": RECORDER,
+            "document_type": "Document_РасходнаяНакладная",
+            "document_number": "РН-000001", "document_date": f"{month}-15",
+            "document_group_recorder": RECORDER,
+            "document_group_recorder_type": "Document_РасходнаяНакладная",
+            "document_group_key": (
+                f"odata-document:{organization_id}:Document_РасходнаяНакладная:{RECORDER}"
+            ),
+            "document_group_number": "РН-000001",
+            "document_group_date": f"{month}-15",
+            "document_display": display,
         },
     }
 
@@ -531,6 +547,7 @@ class UnifiedSyncTests(TestCase):
     def _profit_odata_row(self):
         return {
             "Recorder": RECORDER,
+            "Recorder_Type": "StandardODATA.Document_РасходнаяНакладная",
             "LineNumber": 1,
             "Period": "2025-05-15T10:00:00+03:00",
             "Active": True,
@@ -538,7 +555,8 @@ class UnifiedSyncTests(TestCase):
             "Номенклатура_Key": "33333333-3333-3333-3333-333333333333",
             "Контрагент_Key": "44444444-4444-4444-4444-444444444444",
             "Ответственный_Key": "66666666-6666-6666-6666-666666666666",
-            "Документ": "Реализация 1",
+            "Документ": RECORDER,
+            "Документ_Type": "StandardODATA.Document_РасходнаяНакладная",
             "Количество": "2",
             "Сумма": "100.00",
             "СуммаНДС": "10.00",
@@ -564,6 +582,11 @@ class UnifiedSyncTests(TestCase):
             responsible or self._reference_payload(
                 "66666666-6666-6666-6666-666666666666", "Ответственный"
             ),
+            {"value": [{
+                "Ref_Key": RECORDER,
+                "Number": "РН-000001",
+                "Date": "2025-05-15T10:00:00+03:00",
+            }]},
         ]
 
     def _failed_profit_stage(self, *, read=None, lookup=None, normalize=None):
@@ -582,6 +605,9 @@ class UnifiedSyncTests(TestCase):
             "pool_service.finance_imports.odata_unified_sync._enrich_rows",
             side_effect=normalize or None,
             return_value=[] if not normalize else None,
+        ), patch(
+            "pool_service.finance_imports.odata_unified_sync._read_profit_documents",
+            return_value={},
         ):
             return step_unified_sync(run.id, self.user, [REPORT_PROFIT], 0, config=config())
 

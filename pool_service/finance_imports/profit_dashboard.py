@@ -1,13 +1,23 @@
 from calendar import monthrange
-from datetime import date
+from copy import copy
+from datetime import date, datetime
 from decimal import Decimal
 import re
+from uuid import UUID
 
 from django.utils import timezone
 
 from pool_service.finance_imports.monthly_profit_parser import classify_nomenclature_type
+from pool_service.finance_imports.odata_profit import (
+    ODataPreviewError,
+    normalize_document_type,
+)
 from pool_service.finance_imports.services import calculate_profitability
-from pool_service.models import OneCMonthlyProfit
+from pool_service.models import (
+    OneCImportBatch,
+    OneCMonthlyProfit,
+    onec_monthly_profit_source_identity,
+)
 
 
 PERIOD_CHOICES = (
@@ -193,6 +203,236 @@ def _customer_key(value):
     return normalized
 
 
+def _document_group(row):
+    source_data = row.source_data if isinstance(row.source_data, dict) else {}
+    group_key = source_data.get("document_group_key")
+    display = source_data.get("document_display")
+    if (
+        isinstance(group_key, str)
+        and group_key.strip()
+        and isinstance(display, str)
+        and display.strip()
+    ):
+        validated_odata_group = _is_validated_odata_group(
+            row, source_data, group_key, display
+        )
+        return ("explicit", group_key), display.strip(), validated_odata_group
+    document_name = row.document_name.strip() or "Документ не указан"
+    return ("legacy", document_name), document_name, False
+
+
+_DOCUMENT_LABELS = {
+    "Document_РасходнаяНакладная": "Расходная накладная",
+    "Document_ОтчетОРозничныхПродажах": "Отчёт о розничных продажах",
+    "Document_ЧекККМ": "Чек ККМ",
+}
+_RETAIL_CHECK_TYPE = "Document_ЧекККМ"
+_RETAIL_REPORT_TYPE = "Document_ОтчетОРозничныхПродажах"
+
+
+def _guid(value):
+    try:
+        normalized = str(UUID(str(value))).lower()
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return normalized if normalized != "00000000-0000-0000-0000-000000000000" else None
+
+
+def _safe_document_type(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        normalized = normalize_document_type(
+            f"StandardODATA.{value}", field="Dashboard document type"
+        )
+    except ODataPreviewError:
+        return None
+    return normalized if normalized == value else None
+
+
+def _is_validated_odata_group(row, source_data, group_key, display):
+    batch = row.import_batch
+    if (
+        batch.source_type != OneCImportBatch.SOURCE_ODATA
+        or batch.import_type != OneCImportBatch.TYPE_MONTHLY_PROFIT
+        or batch.parser_version != "odata-2"
+        or batch.status != OneCImportBatch.STATUS_CONFIRMED
+        or batch.organization_id != row.organization_id
+        or source_data.get("source") != "odata"
+        or display != row.document_name
+    ):
+        return False
+    recorder = _guid(source_data.get("recorder"))
+    group_recorder = _guid(source_data.get("document_group_recorder"))
+    source_recorder = _guid(row.source_recorder)
+    recorder_type = source_data.get("recorder_type")
+    group_type = source_data.get("document_group_recorder_type")
+    if (
+        recorder is None
+        or group_recorder is None
+        or recorder != source_recorder
+        or recorder_type not in _DOCUMENT_LABELS
+        or group_type not in _DOCUMENT_LABELS
+    ):
+        return False
+    if isinstance(source_data.get("line_number"), bool):
+        return False
+    try:
+        line_number = int(source_data.get("line_number"))
+    except (TypeError, ValueError):
+        return False
+    if line_number != row.source_row_number:
+        return False
+    expected_identity = onec_monthly_profit_source_identity(
+        period_month=row.period_month,
+        source_row_number=line_number,
+        source_recorder=recorder,
+    )
+    if row.source_identity != expected_identity:
+        return False
+    if (group_type, group_recorder) != (recorder_type, recorder) and not (
+        recorder_type == _RETAIL_CHECK_TYPE
+        and group_type == _RETAIL_REPORT_TYPE
+    ):
+        return False
+    expected_group_key = (
+        f"odata-document:{row.organization_id}:{group_type}:{group_recorder}"
+    )
+    if group_key != expected_group_key:
+        return False
+    source_org = _guid(source_data.get("organization_guid"))
+    document_guid_value = source_data.get("document_guid")
+    document_type_value = source_data.get("document_type")
+    if document_guid_value is None and document_type_value is None:
+        pass
+    elif (
+        document_guid_value is None
+        or document_type_value is None
+        or _guid(document_guid_value) is None
+        or _safe_document_type(document_type_value) is None
+    ):
+        return False
+    document_number = source_data.get("document_number")
+    group_number = source_data.get("document_group_number")
+    if (
+        source_org is None
+        or not isinstance(document_number, str)
+        or not document_number.strip()
+        or len(document_number) > 100
+        or not isinstance(group_number, str)
+        or not group_number.strip()
+        or len(group_number) > 100
+    ):
+        return False
+    try:
+        source_date = date.fromisoformat(source_data.get("source_date"))
+        document_date = date.fromisoformat(source_data.get("document_date"))
+        group_date = date.fromisoformat(source_data.get("document_group_date"))
+        source_period = source_data.get("period")
+        if not isinstance(source_period, str) or len(source_period) > 80:
+            return False
+        period_date = datetime.fromisoformat(
+            source_period.replace("Z", "+00:00")
+        ).date()
+    except (TypeError, ValueError):
+        return False
+    if period_date != source_date or source_date.replace(day=1) != row.period_month:
+        return False
+    expected_display = (
+        f"{_DOCUMENT_LABELS[group_type]} №{group_number} "
+        f"от {group_date:%d.%m.%Y}"
+    )
+    if display != expected_display:
+        return False
+    if (group_type, group_recorder) == (recorder_type, recorder):
+        return group_number == document_number and group_date == document_date
+    return source_date == document_date == group_date
+
+
+def _compatible_display_quantity(revenue_row, cost_row):
+    revenue_quantity = revenue_row.quantity
+    cost_quantity = cost_row.quantity
+    if revenue_quantity in (None, 0):
+        return cost_quantity
+    if cost_quantity in (None, 0):
+        return revenue_quantity
+    if revenue_quantity == cost_quantity or revenue_quantity == -cost_quantity:
+        return revenue_quantity
+    return None
+
+
+def _presentation_rows(document_rows):
+    """Join only an unambiguous revenue/cost movement pair for display."""
+    buckets = {}
+    order = []
+    for row in document_rows:
+        source_data = row.source_data if isinstance(row.source_data, dict) else {}
+        key = (
+            row.period_month,
+            source_data.get("source_date"),
+            row.nomenclature,
+            row.article,
+            row.nomenclature_type,
+            row.manager_name,
+            row.cost_source,
+            row.cost_calculation_method,
+            row.cost_calculation_ratio,
+        )
+        if key not in buckets:
+            buckets[key] = []
+            order.append(key)
+        buckets[key].append(row)
+
+    result = []
+    for key in order:
+        rows = buckets[key]
+        if len(rows) != 2:
+            result.extend(rows)
+            continue
+        revenue_rows = [
+            row for row in rows
+            if row.dashboard_revenue != 0
+            and row.dashboard_analytical_cost == 0
+        ]
+        cost_rows = [
+            row for row in rows
+            if row.dashboard_revenue == 0
+            and row.dashboard_analytical_cost not in (None, 0)
+        ]
+        if len(revenue_rows) != 1 or len(cost_rows) != 1:
+            result.extend(rows)
+            continue
+        revenue_row = revenue_rows[0]
+        cost_row = cost_rows[0]
+        quantity = _compatible_display_quantity(revenue_row, cost_row)
+        if quantity is None and revenue_row.quantity is not None and cost_row.quantity is not None:
+            result.extend(rows)
+            continue
+        if revenue_row.cost is None or cost_row.cost is None:
+            result.extend(rows)
+            continue
+        merged = copy(revenue_row)
+        merged.quantity = quantity
+        merged.cost = revenue_row.cost + cost_row.cost
+        merged.dashboard_revenue = (
+            revenue_row.dashboard_revenue + cost_row.dashboard_revenue
+        )
+        merged.dashboard_analytical_cost = (
+            revenue_row.dashboard_analytical_cost
+            + cost_row.dashboard_analytical_cost
+        )
+        merged.dashboard_gross_profit = (
+            (revenue_row.dashboard_gross_profit or Decimal("0"))
+            + (cost_row.dashboard_gross_profit or Decimal("0"))
+        )
+        merged.dashboard_cost_is_calculated = (
+            revenue_row.dashboard_cost_is_calculated
+            or cost_row.dashboard_cost_is_calculated
+        )
+        result.append(merged)
+    return result
+
+
 def customer_breakdown(rows):
     grouped = {}
     for row in rows:
@@ -202,17 +442,29 @@ def customer_breakdown(rows):
             "rows": [], "documents": {},
         })
         customer["rows"].append(row)
-        document_name = row.document_name.strip() or "Документ не указан"
-        customer["documents"].setdefault(document_name, []).append(row)
+        document_key, document_name, can_collapse = _document_group(row)
+        document = customer["documents"].setdefault(document_key, {
+            "name": document_name,
+            "rows": [],
+            "can_collapse": can_collapse,
+        })
+        document["can_collapse"] = document["can_collapse"] and can_collapse
+        document["rows"].append(row)
     result = []
     for customer in grouped.values():
         totals = summarize(customer["rows"])
         documents = []
-        for name, document_rows in customer["documents"].items():
+        for document in customer["documents"].values():
+            document_rows = document["rows"]
             documents.append({
-                "name": name,
+                "name": document["name"],
                 "managers": sorted({row.manager_name for row in document_rows if row.manager_name}),
-                "rows": document_rows,
+                "rows": (
+                    _presentation_rows(document_rows)
+                    if document["can_collapse"]
+                    else document_rows
+                ),
+                "source_row_count": len(document_rows),
                 **summarize(document_rows),
             })
         documents.sort(key=lambda item: (-item["revenue"], item["name"].casefold()))
@@ -226,7 +478,9 @@ def _manager_key(value):
 
 
 def dashboard_data(organization, period, manager=""):
-    all_rows = OneCMonthlyProfit.objects.active_for(organization).filter(
+    all_rows = OneCMonthlyProfit.objects.active_for(organization).select_related(
+        "import_batch"
+    ).filter(
         period_month__range=(period["previous_first"], period["last_month"])
     )
     current_rows = list(all_rows.filter(

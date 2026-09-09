@@ -40,6 +40,7 @@ CUSTOMER = "44444444-4444-4444-4444-444444444444"
 RECORDER = "55555555-5555-5555-5555-555555555555"
 RESPONSIBLE = "66666666-6666-6666-6666-666666666666"
 BASE_URL = "https://fresh.example/odata/standard.odata/"
+RECORDER_TYPE = "StandardODATA.Document_РасходнаяНакладная"
 
 
 def config(**overrides):
@@ -57,10 +58,12 @@ def config(**overrides):
 def profit_row(
     line=1, *, period="2026-05-15T10:00:00+03:00", organization=ORG,
     recorder=RECORDER, item=ITEM, customer=CUSTOMER, responsible=RESPONSIBLE,
-    revenue="100.00", cost="40.00",
+    revenue="100.00", cost="40.00", recorder_type=RECORDER_TYPE,
+    document=None, document_type=None,
 ):
     return {
         "Recorder": recorder,
+        "Recorder_Type": recorder_type,
         "LineNumber": line,
         "Period": period,
         "Active": True,
@@ -68,7 +71,8 @@ def profit_row(
         "Номенклатура_Key": item,
         "Контрагент_Key": customer,
         "Ответственный_Key": responsible,
-        "Документ": "Реализация 1",
+        "Документ": document or recorder,
+        "Документ_Type": document_type or recorder_type,
         "Количество": "2",
         "Сумма": revenue,
         "СуммаНДС": "10.00",
@@ -91,12 +95,26 @@ def reference_payload(
     return {"value": [row]}
 
 
+def document_payload(
+    guid=RECORDER, *, number="РН-000001", value_date="2026-05-15T10:00:00+03:00",
+    order=None,
+):
+    row = {"Ref_Key": guid, "Number": number, "Date": value_date}
+    if order is not None:
+        row.update({
+            "Заказ": order,
+            "Заказ_Type": "StandardODATA.Document_ЗаказПокупателя",
+        })
+    return {"value": [row]}
+
+
 def successful_opener(rows):
     return FakeOpener(
         {"value": rows},
         reference_payload(ITEM, "Товар из 1С", article="A-1"),
         reference_payload(CUSTOMER, "Покупатель из 1С"),
         reference_payload(RESPONSIBLE, "Ответственный из 1С"),
+        document_payload(),
     )
 
 
@@ -157,6 +175,43 @@ class ODataProfitDraftTests(TestCase):
         )
         return batch
 
+    def rewrite_snapshot(self, batch, mutate):
+        with batch.stored_file.open("rb") as source:
+            snapshot = json.loads(source.read().decode("utf-8"))
+        mutate(snapshot)
+        content = json.dumps(
+            snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        with batch.stored_file.storage.open(batch.stored_file.name, "wb") as target:
+            target.write(content)
+        batch.file_sha256 = hashlib.sha256(content).hexdigest()
+        batch.save(update_fields=["file_sha256"])
+
+    def create_retail_draft(self, *, report_organization=ORG, check_organization=ORG):
+        report = "77777777-7777-4777-8777-777777777777"
+        check = "88888888-8888-4888-8888-888888888888"
+        report_type = "StandardODATA.Document_ОтчетОРозничныхПродажах"
+        check_type = "StandardODATA.Document_ЧекККМ"
+        rows = [
+            profit_row(line=1, recorder=report, recorder_type=report_type,
+                       organization=report_organization, revenue="0.00", cost="40.00"),
+            profit_row(line=1, recorder=check, recorder_type=check_type,
+                       organization=check_organization, revenue="100.00", cost="0.00"),
+        ]
+        opener = FakeOpener(
+            {"value": rows},
+            reference_payload(ITEM, "Товар", article="A"),
+            reference_payload(CUSTOMER, "Покупатель"),
+            reference_payload(RESPONSIBLE, "Ответственный"),
+            document_payload(report, number="ОР-0001"),
+            document_payload(check, number="ЧК-0001"),
+        )
+        allowed = tuple(dict.fromkeys((report_organization, check_organization)))
+        return create_odata_profit_draft(
+            "2026-05", "2026-05", self.organization, self.user,
+            config=config(organization_guids=allowed), opener=opener,
+        )
+
     def test_draft_saves_private_snapshot_and_no_profit_rows_or_activation(self):
         batch = self.create_draft()
         self.assertEqual(batch.source_type, OneCImportBatch.SOURCE_ODATA)
@@ -177,13 +232,137 @@ class ODataProfitDraftTests(TestCase):
         self.assertEqual(classify_nomenclature_type(saved["nomenclature_type"]), "goods")
         self.assertNotEqual(saved["nomenclature"], ITEM)
         self.assertEqual(saved["source_data"]["recorder"], RECORDER)
+        self.assertEqual(saved["source_data"]["recorder_type"], "Document_РасходнаяНакладная")
+        self.assertEqual(
+            saved["document_name"],
+            "Расходная накладная №РН-000001 от 15.05.2026",
+        )
+        self.assertEqual(saved["source_data"]["document_group_key"], (
+            f"odata-document:{self.organization.pk}:Document_РасходнаяНакладная:{RECORDER}"
+        ))
+
+    def test_same_recorder_movements_share_readable_document_group_and_keep_totals(self):
+        rows = [
+            profit_row(line=1, revenue="100.00", cost="0.00"),
+            profit_row(line=2, revenue="0.00", cost="40.00"),
+        ]
+        batch = self.create_draft(rows=rows, opener=successful_opener(rows))
+        with batch.stored_file.open("rb") as source:
+            snapshot = json.loads(source.read().decode("utf-8"))
+        saved_rows = snapshot["rows"]
+        self.assertEqual(len({row["source_data"]["document_group_key"] for row in saved_rows}), 1)
+        self.assertEqual(len({row["document_name"] for row in saved_rows}), 1)
+        self.assertEqual(
+            saved_rows[0]["document_name"],
+            "Расходная накладная №РН-000001 от 15.05.2026",
+        )
+        self.assertEqual(batch.metadata["totals"]["row_count"], 2)
+        self.assertEqual(batch.metadata["totals"]["revenue"], "100.00")
+        self.assertEqual(batch.metadata["totals"]["cost"], "40.00")
+        self.assertEqual(batch.metadata["totals"]["gross_profit"], "60.00")
+
+    def test_unique_day_retail_check_uses_report_group(self):
+        batch = self.create_retail_draft()
+        with batch.stored_file.open("rb") as source:
+            saved_rows = json.loads(source.read().decode("utf-8"))["rows"]
+        self.assertEqual(len({row["source_data"]["document_group_key"] for row in saved_rows}), 1)
+        self.assertEqual(
+            {row["document_name"] for row in saved_rows},
+            {"Отчёт о розничных продажах №ОР-0001 от 15.05.2026"},
+        )
+
+    def test_retail_day_match_is_isolated_by_source_organization(self):
+        other_org = "22222222-2222-4222-8222-222222222222"
+        batch = self.create_retail_draft(check_organization=other_org)
+        with batch.stored_file.open("rb") as source:
+            saved_rows = json.loads(source.read().decode("utf-8"))["rows"]
+        self.assertEqual(len({row["source_data"]["document_group_key"] for row in saved_rows}), 2)
+
+    def test_ambiguous_retail_reports_do_not_absorb_check(self):
+        report_a = "77777777-7777-4777-8777-777777777777"
+        report_b = "88888888-8888-4888-8888-888888888888"
+        check = "99999999-9999-4999-8999-999999999999"
+        report_type = "StandardODATA.Document_ОтчетОРозничныхПродажах"
+        check_type = "StandardODATA.Document_ЧекККМ"
+        rows = [
+            profit_row(line=1, recorder=report_a, recorder_type=report_type),
+            profit_row(line=1, recorder=report_b, recorder_type=report_type),
+            profit_row(line=1, recorder=check, recorder_type=check_type),
+        ]
+        opener = FakeOpener(
+            {"value": rows},
+            reference_payload(ITEM, "Товар", article="A"),
+            reference_payload(CUSTOMER, "Покупатель"),
+            reference_payload(RESPONSIBLE, "Ответственный"),
+            {"value": [
+                document_payload(report_a, number="ОР-1")["value"][0],
+                document_payload(report_b, number="ОР-2")["value"][0],
+            ]},
+            document_payload(check, number="ЧК-1"),
+        )
+        batch = self.create_draft(rows=rows, opener=opener)
+        with batch.stored_file.open("rb") as source:
+            saved_rows = json.loads(source.read().decode("utf-8"))["rows"]
+        self.assertEqual(len({row["source_data"]["document_group_key"] for row in saved_rows}), 3)
+
+    def test_unresolved_shared_order_never_becomes_group_key(self):
+        second = "77777777-7777-4777-8777-777777777777"
+        missing_order = "99999999-9999-4999-8999-999999999999"
+        rows = [profit_row(line=1), profit_row(line=1, recorder=second)]
+        opener = FakeOpener(
+            {"value": rows},
+            reference_payload(ITEM, "Товар", article="A"),
+            reference_payload(CUSTOMER, "Покупатель"),
+            reference_payload(RESPONSIBLE, "Ответственный"),
+            {"value": [
+                document_payload(RECORDER, number="РН-1", order=missing_order)["value"][0],
+                document_payload(second, number="РН-2", order=missing_order)["value"][0],
+            ]},
+            {"value": []},
+        )
+        batch = self.create_draft(rows=rows, opener=opener)
+        with batch.stored_file.open("rb") as source:
+            saved_rows = json.loads(source.read().decode("utf-8"))["rows"]
+        self.assertEqual(len({row["source_data"]["document_group_key"] for row in saved_rows}), 2)
+        self.assertTrue(all("resolved_order_guid" not in row["source_data"] for row in saved_rows))
+
+    def test_zero_order_with_companion_type_is_ignored(self):
+        rows = [profit_row()]
+        opener = FakeOpener(
+            {"value": rows},
+            reference_payload(ITEM, "Товар", article="A"),
+            reference_payload(CUSTOMER, "Покупатель"),
+            reference_payload(RESPONSIBLE, "Ответственный"),
+            document_payload(order="00000000-0000-0000-0000-000000000000"),
+        )
+        batch = self.create_draft(rows=rows, opener=opener)
+        with batch.stored_file.open("rb") as source:
+            saved = json.loads(source.read().decode("utf-8"))["rows"][0]
+        self.assertNotIn("resolved_order_guid", saved["source_data"])
+        self.assertEqual(len(opener.requests), 5)
+
+    def test_unknown_safe_document_type_uses_recorder_fallback_without_lookup(self):
+        unknown_type = "StandardODATA.Document_КорректировкаПродаж"
+        rows = [profit_row(recorder_type=unknown_type)]
+        opener = FakeOpener(
+            {"value": rows},
+            reference_payload(ITEM, "Товар", article="A"),
+            reference_payload(CUSTOMER, "Покупатель"),
+            reference_payload(RESPONSIBLE, "Ответственный"),
+        )
+        batch = self.create_draft(rows=rows, opener=opener)
+        with batch.stored_file.open("rb") as source:
+            saved = json.loads(source.read().decode("utf-8"))["rows"][0]
+        self.assertEqual(saved["document_name"], "Документ 1С от 15.05.2026")
+        self.assertIn("Document_КорректировкаПродаж", saved["source_data"]["document_group_key"])
+        self.assertEqual(len(opener.requests), 4)
 
     def test_reference_requests_are_get_only_and_use_confirmed_fields(self):
         opener = successful_opener([profit_row()])
         self.create_draft(opener=opener)
-        self.assertEqual(len(opener.requests), 4)
+        self.assertEqual(len(opener.requests), 5)
         self.assertTrue(all(request.get_method() == "GET" for request, _ in opener.requests))
-        reference_urls = [request.full_url for request, _ in opener.requests[1:]]
+        reference_urls = [request.full_url for request, _ in opener.requests[1:4]]
         self.assertTrue(all("$select=Ref_Key%2CDescription%2CDeletionMark" in url for url in reference_urls))
         self.assertIn("%D0%90%D1%80%D1%82%D0%B8%D0%BA%D1%83%D0%BB", reference_urls[0])
         self.assertIn(
@@ -191,6 +370,9 @@ class ODataProfitDraftTests(TestCase):
             reference_urls[0],
         )
         self.assertTrue(all("$filter=Ref_Key%20eq%20guid%27" in url for url in reference_urls))
+        document_url = opener.requests[4][0].full_url
+        self.assertIn("Document_%D0%A0%D0%B0%D1%81%D1%85%D0%BE%D0%B4%D0%BD%D0%B0%D1%8F", document_url)
+        self.assertIn("Number%2CDate", document_url)
 
     def test_reference_guids_are_split_into_bounded_batches(self):
         items = [f"{index:08x}-3333-4333-8333-333333333333" for index in range(41)]
@@ -218,6 +400,7 @@ class ODataProfitDraftTests(TestCase):
             second_catalog_page,
             reference_payload(CUSTOMER, "Покупатель"),
             reference_payload(RESPONSIBLE, "Ответственный"),
+            document_payload(),
         )
         batch = self.create_draft(rows=rows, opener=opener)
         self.assertEqual(batch.rows_detected, 41)
@@ -235,12 +418,13 @@ class ODataProfitDraftTests(TestCase):
             {"value": rows},
             reference_payload(ITEM, "Товар", article="A"),
             reference_payload(RESPONSIBLE, "Ответственный"),
+            document_payload(),
         )
         batch = self.create_draft(rows=rows, opener=opener)
         with batch.stored_file.open("rb") as source:
             snapshot = json.loads(source.read().decode("utf-8"))
         self.assertEqual(snapshot["rows"][0]["customer_name"], "Без контрагента")
-        self.assertEqual(len(opener.requests), 3)
+        self.assertEqual(len(opener.requests), 4)
 
     def test_nomenclature_types_are_preserved_and_classified(self):
         for source_type, expected in (("Запас", "goods"), ("Услуга", "service")):
@@ -253,6 +437,7 @@ class ODataProfitDraftTests(TestCase):
                     ),
                     reference_payload(CUSTOMER, "Покупатель"),
                     reference_payload(RESPONSIBLE, "Ответственный"),
+                    document_payload(),
                 )
                 batch = self.create_draft(opener=opener)
                 with batch.stored_file.open("rb") as source:
@@ -491,6 +676,128 @@ class ODataProfitDraftTests(TestCase):
         state = OneCReportPeriodState.objects.get(period_month=date(2026, 5, 1))
         self.assertEqual(state.active_batch_id, old.id)
         self.assertFalse(OneCReportPeriodActivation.objects.filter(batch=batch).exists())
+
+    def test_confirmation_rejects_tampered_document_group_key_and_display(self):
+        for field, value in (
+            ("document_group_key", "odata-document:other:Document_РасходнаяНакладная:bad"),
+            ("document_display", "Подменённый документ"),
+            ("document_group_recorder_type", "Document_ЧекККМ"),
+        ):
+            with self.subTest(field=field):
+                batch = self.create_draft(
+                    rows=[profit_row(revenue=str(100 + OneCImportBatch.objects.count()))]
+                )
+                self.rewrite_snapshot(
+                    batch,
+                    lambda snapshot, field=field, value=value:
+                        snapshot["rows"][0]["source_data"].__setitem__(field, value),
+                )
+                with self.assertRaises((ValidationError, ODataPreviewError)):
+                    confirm_odata_profit(
+                        batch.id, self.organization, self.user, config=config()
+                    )
+                self.assertFalse(
+                    OneCMonthlyProfit.objects.filter(import_batch=batch).exists()
+                )
+
+    def test_confirmation_rejects_forged_self_group_number_and_date(self):
+        def forge_number(snapshot):
+            row = snapshot["rows"][0]
+            source_data = row["source_data"]
+            source_data["document_group_number"] = "ПОДМЕНА"
+            source_data["document_display"] = (
+                "Расходная накладная №ПОДМЕНА от 15.05.2026"
+            )
+            row["document_name"] = source_data["document_display"]
+
+        def forge_date(snapshot):
+            row = snapshot["rows"][0]
+            source_data = row["source_data"]
+            source_data["document_group_date"] = "2026-05-16"
+            source_data["document_display"] = (
+                "Расходная накладная №РН-000001 от 16.05.2026"
+            )
+            row["document_name"] = source_data["document_display"]
+
+        for index, mutate in enumerate((forge_number, forge_date), start=1):
+            with self.subTest(mutation=mutate.__name__):
+                batch = self.create_draft(rows=[profit_row(revenue=str(110 + index))])
+                self.rewrite_snapshot(batch, mutate)
+                with self.assertRaisesRegex(ValidationError, "self-group"):
+                    confirm_odata_profit(
+                        batch.id, self.organization, self.user, config=config()
+                    )
+                self.assertFalse(
+                    OneCMonthlyProfit.objects.filter(import_batch=batch).exists()
+                )
+
+    def test_confirmation_rejects_period_calendar_date_tampering(self):
+        batch = self.create_draft()
+        self.rewrite_snapshot(
+            batch,
+            lambda snapshot: snapshot["rows"][0]["source_data"].__setitem__(
+                "period", "2026-05-16T07:00:00+00:00"
+            ),
+        )
+        with self.assertRaisesRegex(ValidationError, "audit identity"):
+            confirm_odata_profit(batch.id, self.organization, self.user, config=config())
+        self.assertFalse(OneCMonthlyProfit.objects.filter(import_batch=batch).exists())
+
+    def test_confirmation_rejects_retail_group_date_not_matching_source_date(self):
+        batch = self.create_retail_draft()
+
+        def move_group_dates(snapshot):
+            for row in snapshot["rows"]:
+                source_data = row["source_data"]
+                if source_data["recorder_type"] == "Document_ЧекККМ":
+                    source_data["document_date"] = "2026-05-16"
+                    source_data["document_group_date"] = "2026-05-16"
+                    source_data["document_display"] = (
+                        "Отчёт о розничных продажах №ОР-0001 от 16.05.2026"
+                    )
+                    row["document_name"] = source_data["document_display"]
+
+        self.rewrite_snapshot(batch, move_group_dates)
+        with self.assertRaises(ValidationError):
+            confirm_odata_profit(batch.id, self.organization, self.user, config=config())
+        self.assertFalse(OneCMonthlyProfit.objects.filter(import_batch=batch).exists())
+
+    def test_confirmation_rejects_retail_target_absent_from_snapshot(self):
+        batch = self.create_retail_draft()
+        replacement = "99999999-9999-4999-8999-999999999999"
+
+        def replace_report(snapshot):
+            for row in snapshot["rows"]:
+                source_data = row["source_data"]
+                if source_data["recorder_type"] == "Document_ЧекККМ":
+                    source_data["document_group_recorder"] = replacement
+                    source_data["document_group_key"] = (
+                        f"odata-document:{self.organization.pk}:"
+                        f"Document_ОтчетОРозничныхПродажах:{replacement}"
+                    )
+
+        self.rewrite_snapshot(batch, replace_report)
+        with self.assertRaisesRegex(ValidationError, "ambiguous"):
+            confirm_odata_profit(batch.id, self.organization, self.user, config=config())
+        self.assertFalse(OneCMonthlyProfit.objects.filter(import_batch=batch).exists())
+
+    def test_confirmation_rejects_retail_display_not_matching_target_report(self):
+        batch = self.create_retail_draft()
+
+        def replace_report_display(snapshot):
+            for row in snapshot["rows"]:
+                source_data = row["source_data"]
+                if source_data["recorder_type"] == "Document_ЧекККМ":
+                    source_data["document_group_number"] = "ОР-ПОДМЕНА"
+                    source_data["document_display"] = (
+                        "Отчёт о розничных продажах №ОР-ПОДМЕНА от 15.05.2026"
+                    )
+                    row["document_name"] = source_data["document_display"]
+
+        self.rewrite_snapshot(batch, replace_report_display)
+        with self.assertRaisesRegex(ValidationError, "target display"):
+            confirm_odata_profit(batch.id, self.organization, self.user, config=config())
+        self.assertFalse(OneCMonthlyProfit.objects.filter(import_batch=batch).exists())
 
     def test_snapshot_validation_rejects_duplicate_identity_even_with_new_checksum(self):
         batch = create_odata_profit_draft(

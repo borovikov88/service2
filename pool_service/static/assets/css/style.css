@@ -12157,3 +12157,130 @@ textarea.form-control-lg {
         min-width: 680px;
     }
 }
+
+@media (max-width: 767.98px) {
+    .customer-profit-card {
+        overflow: hidden;
+        padding: 0.75rem !important;
+    }
+
+    .customer-profit-card > .table-responsive {
+        overflow: visible;
+    }
+
+    .profit-customer-table,
+    .profit-customer-table > tbody,
+    .profit-customer-row {
+        display: block;
+        width: 100%;
+    }
+
+    .profit-customer-table > thead {
+        display: none;
+    }
+
+    .profit-customer-row {
+        margin-bottom: 0.75rem;
+        overflow: hidden;
+        border: 1px solid rgba(55, 94, 148, 0.12);
+        border-radius: 0.75rem;
+    }
+
+    .profit-customer-table > tbody > .profit-customer-row > td {
+        width: 100%;
+        max-width: 100%;
+        border: 0;
+    }
+
+    .profit-customer-details,
+    .profit-customer-details details {
+        display: block;
+        min-width: 0;
+    }
+
+    .profit-customer-details summary,
+    .profit-document-card strong {
+        overflow-wrap: anywhere;
+    }
+
+    .profit-customer-metric {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.35rem 0.75rem !important;
+        text-align: right !important;
+    }
+
+    .profit-customer-metric::before {
+        content: attr(data-label);
+        color: var(--bs-secondary-color);
+        font-weight: 400;
+        text-align: left;
+    }
+
+    .profit-customer-row > .profit-customer-metric:last-child {
+        padding-bottom: 0.75rem !important;
+    }
+
+    .profit-document-card {
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+        margin-left: 0 !important;
+        padding: 0.75rem !important;
+    }
+
+    .profit-document-totals {
+        text-align: left !important;
+    }
+
+    .profit-document-totals > span {
+        display: block;
+        margin-right: 0 !important;
+    }
+
+    .profit-document-lines {
+        width: 100%;
+        max-width: 100%;
+        overflow: visible;
+    }
+
+    .profit-document-table,
+    .profit-document-table > tbody,
+    .profit-document-line {
+        display: block;
+        width: 100%;
+    }
+
+    .profit-document-table > thead {
+        display: none;
+    }
+
+    .profit-document-line {
+        margin-top: 0.75rem;
+        overflow: hidden;
+        border: 1px solid rgba(55, 94, 148, 0.12);
+        border-radius: 0.65rem;
+        background: var(--bs-body-bg);
+    }
+
+    .profit-document-table > tbody > .profit-document-line > td {
+        display: flex;
+        width: 100%;
+        max-width: 100%;
+        justify-content: space-between;
+        gap: 0.75rem;
+        padding: 0.4rem 0.6rem;
+        border: 0;
+        text-align: right !important;
+        overflow-wrap: anywhere;
+    }
+
+    .profit-document-line > td::before {
+        content: attr(data-label);
+        flex: 0 0 42%;
+        color: var(--bs-secondary-color);
+        font-weight: 400;
+        text-align: left;
+    }
+}
