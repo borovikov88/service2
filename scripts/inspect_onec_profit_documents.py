@@ -53,7 +53,10 @@ MAX_DOCUMENTS = 200
 TIMEOUT_SECONDS = 20
 TOTAL_TIMEOUT_SECONDS = 55
 MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
-LINK_RE = re.compile(r"заказ|реализац|документ|основан|сделк", re.IGNORECASE)
+LINK_RE = re.compile(
+    r"заказ|реализац|документ|основан|сделк|отчет|отчёт|рознич|чек|наклад",
+    re.IGNORECASE,
+)
 
 
 class ProbeError(Exception):
