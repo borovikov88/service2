@@ -1781,10 +1781,12 @@ class OneCImportBatch(models.Model):
     ]
     TYPE_MONTHLY_PROFIT = "monthly_profit"
     TYPE_PAYROLL = "payroll"
+    TYPE_PAYROLL_ACCRUAL = "payroll_accrual"
     TYPE_CASHFLOW = "cashflow"
     TYPE_CHOICES = [
         (TYPE_MONTHLY_PROFIT, "Валовая прибыль по месяцам"),
         (TYPE_PAYROLL, "Расчёты с персоналом"),
+        (TYPE_PAYROLL_ACCRUAL, "Начисления ФОТ из 1С"),
         (TYPE_CASHFLOW, "Движения по статьям и месяцам"),
     ]
 
@@ -2334,6 +2336,36 @@ class PayrollRow(models.Model):
             raise ValidationError({"import_batch": "Загрузка относится к другой организации."})
         if self.employee_identity_id and self.employee_identity.organization_id != self.organization_id:
             raise ValidationError({"employee_identity": "Identity относится к другой организации."})
+
+
+class PayrollAccrualMonth(models.Model):
+    """Confirmed aggregate accruals; no implied payments, balances or people."""
+    import_batch = models.ForeignKey(
+        OneCImportBatch, on_delete=models.PROTECT, related_name="payroll_accrual_months"
+    )
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name="payroll_accrual_months"
+    )
+    period_month = models.DateField()
+    accrued = models.DecimalField(max_digits=20, decimal_places=2)
+    currency_guid = models.UUIDField()
+    source_organization_guids = models.JSONField(default=list)
+    source_rows = models.PositiveIntegerField()
+    objects = FoundationImportRowQuerySet.as_manager()
+
+    class Meta:
+        ordering = ["period_month", "id"]
+        constraints = [models.UniqueConstraint(
+            fields=["import_batch", "period_month"], name="unique_payroll_accrual_month"
+        )]
+
+    def clean(self):
+        super().clean()
+        if self.import_batch_id and (
+            self.import_batch.organization_id != self.organization_id
+            or self.import_batch.import_type != OneCImportBatch.TYPE_PAYROLL_ACCRUAL
+        ):
+            raise ValidationError({"import_batch": "Загрузка не соответствует организации или типу ФОТ."})
 
 
 class CashFlowRow(models.Model):

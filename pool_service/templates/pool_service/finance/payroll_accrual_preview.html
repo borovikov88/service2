@@ -1,0 +1,16 @@
+{% extends "pool_service/base.html" %}{% load finance_tags %}
+{% block title %}Проверка начислений ФОТ{% endblock %}
+{% block content %}
+<h1 class="h3">Начисления за {{ batch.period_first|date:'F Y' }}</h1>
+<p>Статус: {{ batch.get_status_display }}. Здесь подтверждается только общая сумма начислений.</p>
+{% if state.can_confirm %}
+<div class="card card-soft p-3 mb-3"><div>Начислено</div><strong class="h3">{{ summary.accrued|money }}</strong><div class="text-muted">Сумма совпала в двух регистрах 1С. Строк начислений: {{ summary.source_rows }}.</div></div>
+<p>Организаций с начислениями: {{ summary.organizations_with_rows|length }}. Организаций без строк: {{ summary.organizations_without_rows|length }}.</p>
+{% if summary.organizations_without_rows %}<div class="alert alert-warning">По части настроенных организаций строки отсутствуют. Это не подтверждает нулевой ФОТ. Перед подтверждением проверьте, что охват соответствует вашему отчёту.</div>{% endif %}
+<details class="mb-3"><summary>Состав источника для сверки</summary><p>Организации с данными:</p><ul>{% for guid in summary.organizations_with_rows %}<li class="text-break">{{ guid }}</li>{% endfor %}</ul>{% if summary.organizations_without_rows %}<p>Организации без строк:</p><ul>{% for guid in summary.organizations_without_rows %}<li class="text-break">{{ guid }}</li>{% endfor %}</ul>{% endif %}<p class="text-break">Валюта 1С: {{ state.currency_guid }}</p></details>
+{% if summary.period_month_differs_rows %}<p>Строк с другим месяцем движения: {{ summary.period_month_differs_rows }}. Они включены по периоду регистрации начисления.</p>{% endif %}
+{% if state.replaces_active %}<div class="alert alert-info">Подтверждение заменит предыдущую версию начислений этого месяца. Повторного сложения не будет.</div>{% endif %}
+<form method="post" class="card card-soft p-3">{% csrf_token %}{{ form.non_field_errors }}<label>{{ form.confirm_coverage }} {{ form.confirm_coverage.label }}</label>{{ form.confirm_coverage.errors }}<button class="btn btn-primary mt-3">Подтвердить начисления</button></form>
+{% else %}<div class="alert alert-info">{{ state.message }}</div>{% endif %}
+<a class="btn btn-outline-secondary mt-3" href="{% url 'finance_payroll_accrual_fetch' %}">Получить новый предпросмотр</a>
+{% endblock %}

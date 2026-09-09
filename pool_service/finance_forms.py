@@ -808,3 +808,24 @@ class EmployeeIdentityMappingForm(forms.Form):
         self.fields["employee"].queryset = Employee.objects.filter(
             organization=organization, is_active=True
         ).order_by("display_name", "id")
+
+
+class PayrollAccrualFetchForm(forms.Form):
+    month = forms.CharField(label="Месяц начисления", max_length=7,
+        widget=forms.TextInput(attrs={"type": "month", "class": "form-control"}))
+
+    def clean_month(self):
+        from pool_service.finance_imports.odata_payroll import PayrollError, month_bounds
+        value = self.cleaned_data["month"]
+        try:
+            month_bounds(value)
+        except PayrollError:
+            raise ValidationError("Укажите месяц в формате ГГГГ-ММ.") from None
+        return value
+
+
+class PayrollAccrualConfirmForm(forms.Form):
+    confirm_coverage = forms.BooleanField(
+        label="Проверил сумму и охват организаций. Подтверждаю начисления за этот месяц.",
+        required=True,
+    )

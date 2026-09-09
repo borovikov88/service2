@@ -1,0 +1,11 @@
+{% extends "pool_service/base.html" %}
+{% block title %}Получить начисления ФОТ{% endblock %}
+{% block content %}
+<h1 class="h3">Получить начисления из 1С</h1>
+<p>Выберите месяц. Суммы будут сверены в двух регистрах 1С. Действующий ФОТ изменится после подтверждения предпросмотра.</p>
+<p class="text-muted">Загружается общая сумма начислений. Выплаты, задолженность и расшифровка по сотрудникам остаются в отчёте «Расчёты с персоналом» из Excel.</p>
+<form method="post" class="card card-soft p-3">{% csrf_token %}{{ form.non_field_errors }}
+<div class="mb-3">{{ form.month.label_tag }}{{ form.month }}{{ form.month.errors }}</div>
+<div><button class="btn btn-primary">Получить и проверить</button> <a class="btn btn-outline-secondary" href="{% url 'finance_payroll_import_list' %}">К истории</a></div>
+</form>
+{% endblock %}

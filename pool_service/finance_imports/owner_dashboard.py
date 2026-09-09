@@ -14,7 +14,7 @@ from pool_service.finance_imports.cost_control import (
     get_onec_cost_anomalies,
     summarize_cost_anomalies,
 )
-from pool_service.finance_imports.payroll_dashboard import payroll_dashboard_data
+from pool_service.finance_imports.payroll_accrual_dashboard import accrual_dashboard_data
 from pool_service.finance_imports.profit_dashboard import (
     MONTH_SHORT_NAMES,
     add_months,
@@ -203,10 +203,17 @@ def _range_data(organization, first, last, *, include_freshness=True):
         key: _source_state(
             organization, key, months, include_freshness=include_freshness
         )
-        for key in SOURCE_DEFINITIONS
+        for key in SOURCE_DEFINITIONS if key != "payroll"
     }
     profit = monthly_profit_summary(organization, first, last)
-    payroll = payroll_dashboard_data(organization, first, last)
+    payroll = accrual_dashboard_data(organization, first, last, include_freshness=include_freshness)
+    missing_payroll = [month for month in months if month not in payroll["states"]]
+    sources["payroll"] = {
+        **SOURCE_DEFINITIONS["payroll"],
+        "states": payroll["states"], "missing_months": missing_payroll,
+        "has_any": payroll["has_data"], "complete": not missing_payroll,
+        "data_through": payroll["data_through"], "last_updated": payroll["last_updated"],
+    }
     cashflow = cashflow_dashboard_data(organization, first, last)
 
     profit_values = profit["totals"] if sources["profit"]["has_any"] else None
