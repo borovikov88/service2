@@ -354,9 +354,7 @@ def _read_documents(config, refs, sets, properties, *, opener):
                 if key not in batch or (entity_set, key) in documents:
                     raise ProbeError("INVALID_DOCUMENT_IDENTITY")
                 documents[(entity_set, key)] = raw
-    if set(refs) - set(documents):
-        raise ProbeError("DOCUMENT_NOT_FOUND")
-    return documents
+    return documents, set(refs) - set(documents)
 
 
 def _links(entity_set, raw, sets):
@@ -419,23 +417,36 @@ def inspect(config, *, month, requested_organizations=(), opener=None, metadata_
             "cost": _numeric_nonzero(raw.get("Себестоимость")),
         })
 
-    documents = _read_documents(config, primary_refs, sets, properties, opener=client)
+    documents, missing_refs = _read_documents(
+        config, primary_refs, sets, properties, opener=client
+    )
     linked_refs = {
         ref for entity_set, raw in documents.items()
         for _, ref in _links(entity_set[0], raw, sets)
     }
-    missing_links = linked_refs - set(documents)
+    missing_links = linked_refs - set(documents) - missing_refs
     if missing_links:
-        documents.update(_read_documents(config, missing_links, sets, properties, opener=client))
+        linked_documents, unavailable_links = _read_documents(
+            config, missing_links, sets, properties, opener=client
+        )
+        documents.update(linked_documents)
+        missing_refs.update(unavailable_links)
 
-    ordered_refs = sorted(documents)
+    all_refs = set(documents) | missing_refs
+    ordered_refs = sorted(all_refs)
     labels = {ref: f"D{index:03d}" for index, ref in enumerate(ordered_refs, 1)}
 
     def display(ref):
-        raw = documents[ref]
-        return {
+        result = {
             "label": labels[ref],
             "type": ref[0],
+            "resolved": ref in documents,
+        }
+        if ref not in documents:
+            return result
+        raw = documents[ref]
+        return {
+            **result,
             "number": _display_scalar(raw.get("Number")),
             "date": _display_scalar(raw.get("Date"), max_length=40)[:10],
         }
@@ -456,6 +467,8 @@ def inspect(config, *, month, requested_organizations=(), opener=None, metadata_
         if document:
             row_keys.append((document, "register.Документ"))
         for source in filter(None, (recorder, document)):
+            if source not in documents:
+                continue
             for field, target in _links(source[0], documents[source], sets):
                 row_keys.append((target, f"{source[0]}.{field}"))
         row_targets = defaultdict(set)
@@ -490,7 +503,14 @@ def inspect(config, *, month, requested_organizations=(), opener=None, metadata_
             name: register_props.get(name) for name in selected_fields
             if name in {"Recorder", "Recorder_Type", "Документ", "Документ_Type"}
         },
-        "documents": [display(ref) for ref in ordered_refs],
+        "documents": [display(ref) for ref in sorted(documents)],
+        "missing_documents": [
+            {"type": entity_set, "count": count}
+            for entity_set, count in sorted({
+                entity_set: sum(1 for item in missing_refs if item[0] == entity_set)
+                for entity_set, _ in missing_refs
+            }.items())
+        ],
         "row_patterns": [
             {
                 "recorder": recorder,
