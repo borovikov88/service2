@@ -36,7 +36,11 @@ from pool_service.tests.test_onec_odata_unified_sync import cashflow_row, config
 class RefreshAndApplyTests(TestCase):
     def setUp(self):
         self.private = TemporaryDirectory()
-        self.override = override_settings(PRIVATE_MEDIA_ROOT=self.private.name)
+        self.override = override_settings(PRIVATE_MEDIA_ROOT=self.private.name,
+            ONEC_ODATA_ORGANIZATION_GUIDS=("00000000-0000-0000-0000-000000000001",),
+            ONEC_ODATA_PAYROLL_CURRENCY_GUID="00000000-0000-0000-0000-000000000002",
+            ONEC_ODATA_PAYROLL_CURRENCY_CODE="RUB",
+            ONEC_ODATA_PAYROLL_AUTO_COVERAGE_GUIDS="00000000-0000-0000-0000-000000000001")
         self.override.enable()
         self.addCleanup(self.override.disable)
         self.addCleanup(self.private.cleanup)
@@ -364,9 +368,9 @@ class RefreshAndApplyTests(TestCase):
 
     def test_ui_has_primary_secondary_and_payroll_exclusion(self):
         response = self.client.get(reverse("finance_onec_import_list"))
-        self.assertContains(response, "Обновить и применить данные из 1С")
+        self.assertContains(response, "Обновить всё из 1С")
         self.assertContains(response, "Проверить изменения без применения")
-        self.assertContains(response, "ФОТ в это обновление не входит")
+        self.assertContains(response, "начисленный ФОТ применятся вместе")
 
     def test_real_collectors_are_never_needed_by_start_or_status(self):
         with patch("pool_service.finance_imports.odata_unified_sync.read_profit_rows", side_effect=AssertionError("network")), patch(

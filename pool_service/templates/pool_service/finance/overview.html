@@ -87,6 +87,8 @@
     <div class="owner-scope">Консолидировано: 4 юрлица</div>
   </header>
 
+  {% if can_refresh_all_onec %}<div class="mb-3"><a class="btn btn-outline-primary" href="{% url 'finance_onec_import_list' %}#update-all">Обновление всех данных из 1С →</a></div>{% endif %}
+
   <form method="get" class="card card-soft p-3 mb-3" id="owner-period-form">
     <div class="d-flex justify-content-between align-items-start gap-3 mb-3"><div><div class="owner-eyebrow">Единый фильтр</div><h2 class="h5 mb-0">Период</h2></div><div class="text-end"><strong>{{ effective_period_label }}</strong><div class="text-muted small">полные календарные месяцы</div></div></div>
     <div class="owner-period-presets">

@@ -13,6 +13,11 @@ on:
       - "pool_service/tests/test_management_finance_foundation.py"
       - "pool_service/tests/test_management_finance_migrations.py"
       - "pool_service/tests/test_onec_odata_unified_sync.py"
+      - "pool_service/tests/test_onec_daily_sync.py"
+      - "pool_service/tests/test_onec_all_payroll_sync.py"
+      - "pool_service/tests/test_onec_refresh_and_apply.py"
+      - "pool_service/tests/test_odata_payroll_drafts.py"
+      - "pool_service/management/commands/sync_onec_finance.py"
       - ".github/workflows/management-finance-mysql.yml"
   workflow_dispatch:
 
@@ -71,4 +76,8 @@ jobs:
             pool_service.tests.test_management_finance_foundation \
             pool_service.tests.test_management_finance_migrations \
             pool_service.tests.test_onec_odata_unified_sync \
+            pool_service.tests.test_onec_daily_sync \
+            pool_service.tests.test_onec_all_payroll_sync \
+            pool_service.tests.test_onec_refresh_and_apply \
+            pool_service.tests.test_odata_payroll_drafts \
             --verbosity 2

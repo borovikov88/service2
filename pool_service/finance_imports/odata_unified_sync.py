@@ -11,6 +11,7 @@ import uuid
 from urllib.request import build_opener
 
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.utils import timezone
 
@@ -22,7 +23,9 @@ from pool_service.models import (
     OneCReportPeriodState,
     Organization,
 )
-from pool_service.services.finance import can_import_cashflow, can_import_gross_profit
+from pool_service.services.finance import can_import_cashflow, can_import_gross_profit, can_import_payroll
+from . import odata_payroll_drafts as payroll
+from .services import DuplicateImportError
 from pool_service.services.permissions import company_has_access
 from .odata_cashflow import read_cashflow_rows
 from .odata_cashflow_drafts import (
@@ -58,7 +61,8 @@ from .validators import delete_private_batch_file
 
 REPORT_PROFIT = OneCImportBatch.TYPE_MONTHLY_PROFIT
 REPORT_CASHFLOW = OneCImportBatch.TYPE_CASHFLOW
-SUPPORTED_REPORT_TYPES = (REPORT_PROFIT, REPORT_CASHFLOW)
+REPORT_PAYROLL = OneCImportBatch.TYPE_PAYROLL_ACCRUAL
+SUPPORTED_REPORT_TYPES = (REPORT_PROFIT, REPORT_CASHFLOW, REPORT_PAYROLL)
 CHUNK_MONTHS = 12
 INITIAL_MONTHS = 12
 LEASE_SECONDS = 300
@@ -218,6 +222,9 @@ def _log_step_failure(stage, correlation_id, exc):
 
 
 def _has_report_permission(user, organization, report_type):
+    user = get_user_model().objects.filter(pk=getattr(user, "pk", None), is_active=True).first()
+    if user is None:
+        return False
     if not company_has_access(organization):
         return False
     permission = (
@@ -225,6 +232,8 @@ def _has_report_permission(user, organization, report_type):
         if report_type == REPORT_PROFIT
         else can_import_cashflow
         if report_type == REPORT_CASHFLOW
+        else can_import_payroll
+        if report_type == REPORT_PAYROLL
         else None
     )
     return bool(permission and permission(user, organization))
@@ -287,10 +296,16 @@ def _scope_fingerprint(organization_id, report_types, scopes):
 def start_unified_sync(
     organization, user, report_types, *, today=None,
     mode=OneCODataSyncRun.MODE_PREVIEW, period_start=None, period_end=None,
+    schedule_day=None,
 ):
     requested = [item for item in SUPPORTED_REPORT_TYPES if item in set(report_types)]
     if not requested:
         raise PermissionDenied("No permitted 1C report types were selected.")
+    if any(not _has_report_permission(user, organization, item) for item in requested):
+        raise PermissionDenied
+    if REPORT_PAYROLL in requested and mode != OneCODataSyncRun.MODE_AUTO_APPLY:
+        raise UnifiedSyncError("ФОТ поддерживается в общем автоматическом обновлении.")
+    payroll_binding = payroll.auto_coverage_config() if REPORT_PAYROLL in requested else None
     if not is_odata_target_organization(organization):
         raise UnifiedSyncError("OData import is not configured for this organization")
     if mode not in {OneCODataSyncRun.MODE_PREVIEW, OneCODataSyncRun.MODE_AUTO_APPLY}:
@@ -314,6 +329,8 @@ def start_unified_sync(
             else:
                 start, end, initial = _scope_for(locked, report_type, today)
             chunks = _chunk_scope(start, end)
+            if report_type == REPORT_PAYROLL:
+                chunks = [{"start": month.isoformat(), "end": month.isoformat()} for month in _months(start, end)]
             scopes[report_type] = {
                 "start": start.isoformat(), "end": end.isoformat(),
                 "initial_import": initial, "chunks": chunks,
@@ -335,6 +352,10 @@ def start_unified_sync(
             scopes["_scope_fingerprint"] = fingerprint
             scopes["_baseline"] = []
             scopes["_apply_plan"] = []
+            if payroll_binding:
+                scopes["_payroll_binding"] = payroll_binding
+            if schedule_day:
+                scopes["_schedule_day"] = str(schedule_day)
         summary = {
             report_type: {"status": "pending", "changed_months": [], "unchanged_months": [], "drafts": [], "reactivation_candidates": [], "error_code": "", "error": ""}
             for report_type in requested
@@ -616,6 +637,12 @@ def _prepared_auto_candidates(run, config):
         elif batch.import_type == REPORT_CASHFLOW:
             payload = read_cashflow_snapshot(batch)
             records, periods = validate_cashflow_snapshot(payload, config)
+        elif batch.import_type == REPORT_PAYROLL:
+            payroll._read_snapshot(batch, run.organization)
+            if batch.file_sha256 != item.get("fingerprint") or batch.period_first != date.fromisoformat(item["month"]):
+                raise UnifiedSyncError("Payroll snapshot changed")
+            prepared.append((batch.pk, batch.import_type, [batch.period_first], []))
+            continue
         else:
             raise UnifiedSyncError("Unsupported auto-apply candidate")
         if periods != [date.fromisoformat(item["month"])] or batch.rows_detected != len(records):
@@ -644,7 +671,7 @@ def _validate_auto_collection(run):
     cursor = run.cursor or {}
     queue = cursor.get("queue", [])
     if (
-        run.status != OneCODataSyncRun.STATUS_COMPLETED
+        run.status not in {OneCODataSyncRun.STATUS_COMPLETED, OneCODataSyncRun.STATUS_RUNNING}
         or int(cursor.get("index", -1)) != len(queue)
         or not queue
         or any(
@@ -661,7 +688,7 @@ def _validate_auto_collection(run):
     ]
     if len(baseline_keys) != len(set(baseline_keys)) or set(baseline_keys) != expected_keys:
         raise UnifiedSyncError("Auto-apply baseline does not cover the full scope")
-    allowed_source_statuses = {"unchanged", "changed", "authoritative_empty"}
+    allowed_source_statuses = {"unchanged", "changed", "authoritative_empty", "missing_preserved"}
     if any(item.get("source_status") not in allowed_source_statuses for item in baseline):
         raise UnifiedSyncError("Auto-apply baseline has an invalid source status")
     expected_apply_plan_keys = {
@@ -688,6 +715,8 @@ def _fail_auto_run(run_id, code, message):
         run = OneCODataSyncRun.objects.select_for_update().get(pk=run_id)
         if run.mode != OneCODataSyncRun.MODE_AUTO_APPLY:
             raise OneCODataSyncRun.DoesNotExist
+        if _auto_run_already_succeeded(run):
+            return run
         run.status = OneCODataSyncRun.STATUS_FAILED
         run.finished_at = timezone.now()
         run.error_message = message
@@ -743,6 +772,10 @@ def apply_auto_sync(run_id, user, allowed_report_types, *, config=None):
             )
             state_map = {(state.report_type, state.period_month): state for state in states}
             for expected in baseline:
+                if expected["report_type"] == REPORT_PAYROLL:
+                    if payroll._state_token(organization, date.fromisoformat(expected["month"])) != expected["payroll_state"]:
+                        raise StaleReactivationError("Payroll active scope changed")
+                    continue
                 key = (expected["report_type"], date.fromisoformat(expected["month"]))
                 current = state_map.get(key)
                 current_id = str(current.active_batch_id) if current else None
@@ -763,6 +796,14 @@ def apply_auto_sync(run_id, user, allowed_report_types, *, config=None):
                 )
                 if str(batch.pk) not in prepared_by_id or batch.import_type != item["report_type"]:
                     raise UnifiedSyncError("Auto-apply candidate set changed")
+                if batch.import_type == REPORT_PAYROLL:
+                    if payroll.auto_coverage_config() != locked.sync_scope.get("_payroll_binding"):
+                        raise UnifiedSyncError("Payroll source coverage changed")
+                    if batch.file_sha256 != item["fingerprint"]:
+                        raise UnifiedSyncError("Payroll snapshot changed")
+                    payroll.confirm_odata_payroll(batch.pk, organization, user, confirm_coverage=True)
+                    _auto_apply_fault("payroll_rows")
+                    continue
                 if batch.import_type == REPORT_PROFIT:
                     payload = read_profit_snapshot(batch)
                     records, periods = validate_profit_snapshot(payload, config)
@@ -794,6 +835,8 @@ def apply_auto_sync(run_id, user, allowed_report_types, *, config=None):
                 _activate_period_states(batch, organization, user, periods, relevant)
                 _auto_apply_fault("state_activation")
             _auto_apply_fault("before_success")
+            if REPORT_PAYROLL in requested and payroll.auto_coverage_config() != locked.sync_scope.get("_payroll_binding"):
+                raise UnifiedSyncError("Payroll source coverage changed")
             locked.status = OneCODataSyncRun.STATUS_COMPLETED
             locked.applied_at = timezone.now()
             locked.finished_at = locked.applied_at
@@ -844,8 +887,12 @@ def _claim_step(
         queue = cursor.get("queue", [])
         index = int(cursor.get("index", 0))
         if index >= len(queue):
-            run.status = _terminal_status(run.result_summary)
-            run.finished_at = now
+            if expected_mode == OneCODataSyncRun.MODE_AUTO_APPLY:
+                run.status = OneCODataSyncRun.STATUS_RUNNING
+                run.progress = {**run.progress, "step_state": "apply_pending"}
+            else:
+                run.status = _terminal_status(run.result_summary)
+                run.finished_at = now
             _clear_lease(run)
             run.save()
             return run, None
@@ -933,6 +980,95 @@ def _fail_revoked_permission(run, report_type):
     return run
 
 
+def _step_payroll(run, user, allowed, expected_cursor, token):
+    month = date.fromisoformat(run.lease_chunk["start"])
+    month_text = month.strftime("%Y-%m")
+    baseline = payroll._state_token(run.organization, month)
+    batch = None
+    try:
+        if payroll.auto_coverage_config() != run.sync_scope.get("_payroll_binding"):
+            raise UnifiedSyncError("Payroll coverage changed")
+        config = payroll.config_from_settings()
+        orgs, currency, _ = payroll._scope(config)
+        preview = payroll.read_for_draft(config, month_text)
+        missing = payroll.empty_preview(preview, month_text, orgs, currency)
+        if not missing:
+            payroll.classify_preview(preview, month_text, orgs, currency)
+            try:
+                batch = payroll.create_odata_payroll_draft(month_text, run.organization, user, preview=preview)
+            except DuplicateImportError as exc:
+                batch = exc.batch
+            payroll._read_snapshot(batch, run.organization)
+        with transaction.atomic():
+            locked = OneCODataSyncRun.objects.select_for_update().get(pk=run.pk)
+            if str(locked.lease_token or "") != str(token) or locked.cursor.get("version", 0) != expected_cursor:
+                return locked
+            organization = Organization.objects.select_for_update().get(pk=locked.organization_id)
+            if not _has_report_permission(user, organization, REPORT_PAYROLL):
+                return _fail_revoked_permission(locked, REPORT_PAYROLL)
+            if payroll._state_token(organization, month) != baseline:
+                raise StaleReactivationError("Payroll changed during collection")
+            scope = dict(locked.sync_scope)
+            summary = dict(locked.result_summary)
+            report = dict(summary[REPORT_PAYROLL])
+            report.setdefault("missing_preserved_months", [])
+            report.setdefault("coverage_without_rows", {})
+            source_status = "missing_preserved" if missing else "unchanged"
+            if missing:
+                report["missing_preserved_months"].append(month_text)
+            elif batch.status == OneCImportBatch.STATUS_PREVIEWED:
+                # A reused preview must still have the exact baseline captured for this run.
+                payload, details, _ = payroll._read_snapshot(batch, organization)
+                if payload.get("baseline") != baseline:
+                    raise StaleReactivationError("Payroll preview is stale")
+                if batch.sync_run_id and batch.sync_run_id != locked.pk:
+                    old = OneCODataSyncRun.objects.get(pk=batch.sync_run_id)
+                    if old.status not in OneCODataSyncRun.TERMINAL_STATUSES:
+                        raise SyncConflictError("Payroll preview is in use")
+                batch.sync_run = locked
+                batch.save(update_fields=["sync_run"])
+                source_status = "changed"
+                scope["_apply_plan"] = list(scope.get("_apply_plan", [])) + [{
+                    "report_type": REPORT_PAYROLL, "month": month.isoformat(),
+                    "batch_id": str(batch.pk), "fingerprint": batch.file_sha256,
+                }]
+                report["drafts"].append(str(batch.pk))
+                report["changed_months"].append(month.isoformat())
+                report["coverage_without_rows"][month_text] = len(details["organizations_without_rows"])
+            elif batch.status == OneCImportBatch.STATUS_CONFIRMED and baseline[REPORT_PAYROLL] and baseline[REPORT_PAYROLL]["batch"] == str(batch.pk):
+                report["unchanged_months"].append(month.isoformat())
+            else:
+                raise UnifiedSyncError("Payroll duplicate is not active")
+            scope["_baseline"] = list(scope.get("_baseline", [])) + [{
+                "report_type": REPORT_PAYROLL, "month": month.isoformat(),
+                "payroll_state": baseline, "source_status": source_status,
+            }]
+            cursor = dict(locked.cursor)
+            next_index = cursor["index"] + 1
+            completed = next_index == len(cursor["queue"])
+            report["status"] = "completed" if completed or cursor["queue"][next_index]["report_type"] != REPORT_PAYROLL else "running"
+            summary[REPORT_PAYROLL] = report
+            cursor.update(index=next_index, version=expected_cursor + 1)
+            locked.cursor = cursor
+            locked.sync_scope = scope
+            locked.result_summary = summary
+            locked.progress = {**locked.progress, "completed_chunks": next_index, "step_state": "idle"}
+            _clear_lease(locked)
+            if completed:
+                locked.status = OneCODataSyncRun.STATUS_RUNNING
+                locked.progress["step_state"] = "apply_pending"
+            locked.save()
+        if completed:
+            return apply_auto_sync(run.pk, user, allowed)
+        return locked
+    except Exception:
+        with transaction.atomic():
+            locked = OneCODataSyncRun.objects.select_for_update().get(pk=run.pk)
+            if str(locked.lease_token or "") != str(token) or locked.cursor.get("version", 0) != expected_cursor:
+                return locked
+            return _fail_auto_run(run.pk, "payroll_check_failed", "Не удалось проверить ФОТ. Активные данные всех источников сохранены.")
+
+
 def step_unified_sync(
     run_id, user, allowed_report_types, expected_cursor, *, config=None, opener=None,
     mode=OneCODataSyncRun.MODE_PREVIEW,
@@ -940,9 +1076,16 @@ def step_unified_sync(
     allowed = set(allowed_report_types)
     run, token = _claim_step(run_id, user, allowed, expected_cursor, mode)
     if token is None:
+        if (mode == OneCODataSyncRun.MODE_AUTO_APPLY
+                and run.status in {OneCODataSyncRun.STATUS_RUNNING, OneCODataSyncRun.STATUS_COMPLETED}
+                and run.cursor.get("index") == len(run.cursor.get("queue", []))
+                and not _auto_run_already_succeeded(run)):
+            return apply_auto_sync(run_id, user, allowed, config=config)
         return run
     item = dict(run.lease_chunk)
     report_type = run.lease_report_type
+    if report_type == REPORT_PAYROLL:
+        return _step_payroll(run, user, allowed, expected_cursor, token)
     try:
         config = validate_config(config or config_from_settings())
         client = opener or build_opener(NoRedirectHandler())
@@ -1091,8 +1234,12 @@ def step_unified_sync(
             locked.error_message = ""
             _clear_lease(locked)
             if next_index >= len(queue):
-                locked.status = _terminal_status(summary)
-                locked.finished_at = timezone.now()
+                if mode == OneCODataSyncRun.MODE_AUTO_APPLY:
+                    locked.status = OneCODataSyncRun.STATUS_RUNNING
+                    locked.progress["step_state"] = "apply_pending"
+                else:
+                    locked.status = _terminal_status(summary)
+                    locked.finished_at = timezone.now()
             locked.save()
             completed = next_index >= len(queue)
             result = locked
