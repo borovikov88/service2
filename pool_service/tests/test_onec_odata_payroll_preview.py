@@ -80,8 +80,20 @@ class PayrollPreviewTests(unittest.TestCase):
         self.assertIsNone(result['fot_amount'])
         self.assertEqual(result['semantic_status'], 'unverified')
         serialized = json.dumps(result)
-        for secret in (EMP, DOC, TYPE, CONFIG['ONEC_ODATA_PASSWORD']):
+        self.assertEqual(result['kind_groups'][0]['kind_guid'], TYPE)
+        for secret in (EMP, DOC, CONFIG['ONEC_ODATA_PASSWORD']):
             self.assertNotIn(secret, serialized)
+
+    def test_reader_preserves_kind_and_signed_settlement_components(self):
+        kind = '66666666-6666-6666-6666-666666666666'
+        deduction = row(LineNumber=2, ВидНачисленияУдержания_Key=kind, Сумма='12.00', СуммаВал='12.00')
+        result = run_preview([row(), deduction], [catalog(), catalog(Ref_Key=kind, Тип='Налог')],
+            [row(RecordType='Receipt'), row(LineNumber=2, RecordType='Receipt', Сумма='-12.00', СуммаВал='-12.00')])
+        self.assertEqual({g['kind_guid'] for g in result['kind_groups']}, {TYPE, kind})
+        control = result['settlements']['groups'][0]
+        self.assertEqual(control['positive_amount'], '100.10')
+        self.assertEqual(control['negative_amount'], '-12.00')
+        self.assertEqual(control['amount'], '88.10')
 
     def test_settlements_separate_without_fabricated_balances(self):
         payment = row(RecordType='Expense', Recorder_Type='StandardODATA.Document_РасходСоСчета', Сумма='-5')

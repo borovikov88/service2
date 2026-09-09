@@ -578,6 +578,10 @@ def _create_month_draft(run, report_type, month, rows, pages, config, warnings):
         "organization_guids": list(config.organization_guids),
         "page_count": max(1, pages), "rows": rows,
     }
+    if run.mode == OneCODataSyncRun.MODE_AUTO_APPLY:
+        # Attempts own separate immutable files; business equality still uses
+        # month_fingerprint and file_sha256 remains the actual content hash.
+        payload["sync_run_id"] = str(run.pk)
     if report_type == REPORT_PROFIT:
         validate_profit_snapshot(payload, config)
         metadata = profit_preview_metadata(rows, run.organization, [month])
@@ -645,12 +649,18 @@ def _prepared_auto_candidates(run, config):
             continue
         else:
             raise UnifiedSyncError("Unsupported auto-apply candidate")
+        _validate_snapshot_run(payload, run)
         if periods != [date.fromisoformat(item["month"])] or batch.rows_detected != len(records):
             raise UnifiedSyncError("Auto-apply candidate scope changed")
         if month_fingerprint(batch.import_type, periods[0], records) != item.get("fingerprint"):
             raise UnifiedSyncError("Auto-apply candidate fingerprint changed")
         prepared.append((batch.pk, batch.import_type, periods, records))
     return prepared
+
+
+def _validate_snapshot_run(payload, run):
+    if payload.get("sync_run_id") != str(run.pk):
+        raise UnifiedSyncError("Auto-apply snapshot belongs to another run")
 
 
 def _expected_auto_scope_keys(run):
@@ -810,6 +820,7 @@ def apply_auto_sync(run_id, user, allowed_report_types, *, config=None):
                 else:
                     payload = read_cashflow_snapshot(batch)
                     records, periods = validate_cashflow_snapshot(payload, config)
+                _validate_snapshot_run(payload, locked)
                 expected_month = date.fromisoformat(item["month"])
                 if (
                     periods != [expected_month]

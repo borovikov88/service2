@@ -330,9 +330,18 @@ def read_monthly_preview(config, month, *, organization_guids=(), opener=None):
         if not requested.issubset(catalog):
             raise PayrollError('CATALOG_INCOMPLETE', 'catalog')
     groups = defaultdict(lambda: {'rows': 0, 'amount': Decimal(0), 'amount_currency': Decimal(0), 'negative_amount_rows': 0, 'negative_currency_amount_rows': 0, 'non_cent_rows': 0, 'period_month_differs_rows': 0})
+    kind_groups = defaultdict(lambda: {'rows': 0, 'amount': Decimal(0), 'amount_currency': Decimal(0), 'negative_amount_rows': 0, 'negative_currency_amount_rows': 0, 'non_cent_rows': 0, 'period_month_differs_rows': 0})
     with localcontext() as context:
         context.prec = 64
         for org, currency, type_id, value, value_currency, differs in records:
+            detail = kind_groups[(org, currency, catalog[type_id], type_id)]
+            detail['rows'] += 1
+            detail['amount'] += value
+            detail['amount_currency'] += value_currency
+            detail['negative_amount_rows'] += value < 0
+            detail['negative_currency_amount_rows'] += value_currency < 0
+            detail['non_cent_rows'] += value != value.quantize(Decimal('.01')) or value_currency != value_currency.quantize(Decimal('.01'))
+            detail['period_month_differs_rows'] += differs
             group = groups[(org, currency, catalog[type_id])]
             group['rows'] += 1
             group['amount'] += value
@@ -351,10 +360,11 @@ def read_monthly_preview(config, month, *, organization_guids=(), opener=None):
               'notice': 'Register amounts grouped by actual catalog type. Not verified FOT; counts do not prove completeness.',
               'selected_organizations': sorted(selected), 'organizations_without_rows': sorted(selected - {r[0] for r in records}),
               'rows': len(records), 'inactive_rows_ignored': inactive, 'groups': output}
+    result['kind_groups'] = [dict(organization_guid=org, currency_guid=currency, type_value=category, kind_guid=kind, **{k: format(v, 'f') if isinstance(v, Decimal) else v for k, v in values.items()}) for (org, currency, category, kind), values in sorted(kind_groups.items())]
     # The existing Excel source is a settlements report, with opening/closing
     # balances and payments. Read these movements separately; their RecordType
     # is not yet mapped to accruals/payments and no opening balance is fabricated.
-    settlement_groups = defaultdict(lambda: {'rows': 0, 'amount': Decimal(0), 'amount_currency': Decimal(0), 'negative_amount_rows': 0, 'negative_currency_amount_rows': 0, 'non_cent_rows': 0, 'period_month_differs_rows': 0})
+    settlement_groups = defaultdict(lambda: {'positive_amount': Decimal(0), 'negative_amount': Decimal(0), 'positive_amount_currency': Decimal(0), 'negative_amount_currency': Decimal(0), 'rows': 0, 'amount': Decimal(0), 'amount_currency': Decimal(0), 'negative_amount_rows': 0, 'negative_currency_amount_rows': 0, 'non_cent_rows': 0, 'period_month_differs_rows': 0})
     settlement_seen, settlement_orgs = set(), set()
     settlement_inactive = 0
     fields = tuple(field for field in FIELDS if field != 'ВидНачисленияУдержания_Key') + ('RecordType',)
@@ -386,6 +396,10 @@ def read_monthly_preview(config, month, *, organization_guids=(), opener=None):
             group = settlement_groups[(org, currency, record_type, recorder_type)]
             with localcontext() as context:
                 context.prec = 64
+                group['positive_amount'] += max(value, Decimal(0))
+                group['negative_amount'] += min(value, Decimal(0))
+                group['positive_amount_currency'] += max(value_currency, Decimal(0))
+                group['negative_amount_currency'] += min(value_currency, Decimal(0))
                 group['rows'] += 1
                 group['amount'] += value
                 group['amount_currency'] += value_currency

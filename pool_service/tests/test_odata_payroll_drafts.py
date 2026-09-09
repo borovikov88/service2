@@ -127,6 +127,18 @@ class PayrollAccrualDraftTests(TestCase):
             self.confirm(c)
         self.assertFalse(payroll_accrual_confirmation_state(c, self.organization)["can_confirm"])
 
+    @override_settings(ONEC_ODATA_PAYROLL_WITHHOLDING_GUIDS="00000000-0000-0000-0000-000000000091")
+    def test_withholding_scope_change_blocks_confirmation(self):
+        batch = self.draft(preview=withholding_fixture())
+        with override_settings(ONEC_ODATA_PAYROLL_WITHHOLDING_GUIDS=""), self.assertRaises(ValidationError):
+            self.confirm(batch)
+        self.assertFalse(PayrollAccrualMonth.objects.exists())
+
+    @override_settings(ONEC_ODATA_PAYROLL_WITHHOLDING_GUIDS="00000000-0000-0000-0000-000000000091")
+    def test_withholding_confirmation_persists_gross(self):
+        self.confirm(self.draft(preview=withholding_fixture()))
+        self.assertEqual(PayrollAccrualMonth.objects.get().accrued, Decimal("180.00"))
+
     def test_snapshot_tamper_config_change_and_metadata_not_authoritative(self):
         batch = self.draft()
         batch.metadata["summary"]["accrued"] = "999999"
@@ -251,3 +263,76 @@ class PayrollAccrualDraftTests(TestCase):
         self.assertEqual(run.call_args.kwargs["env"]["ONEC_ODATA_PASSWORD"], "test-secret")
         self.assertEqual(run.call_args.kwargs["timeout"], 65)
         self.assertEqual(run.call_args.kwargs["stderr"], subprocess.DEVNULL)
+
+
+WITHHOLDING_KIND = "00000000-0000-0000-0000-000000000091"
+ACCRUAL_KIND = "00000000-0000-0000-0000-000000000092"
+
+
+def withholding_fixture():
+    data = fixture("180.00")
+    accrual = data["groups"][0]
+    accrual.update(negative_amount_rows=0, negative_currency_amount_rows=0)
+    deduction = dict(accrual, type_value="Налог", rows=1, amount="30.00", amount_currency="30.00", period_month_differs_rows=0)
+    data["groups"].append(deduction)
+    data["rows"] = 3
+    data["kind_groups"] = [dict(accrual, kind_guid=ACCRUAL_KIND), dict(deduction, kind_guid=WITHHOLDING_KIND)]
+    data["settlements"]["groups"][0].update(amount="150.00", amount_currency="150.00", rows=3,
+        positive_amount="180.00", positive_amount_currency="180.00", negative_amount="-30.00", negative_amount_currency="-30.00", negative_amount_rows=1, negative_currency_amount_rows=1)
+    return data
+
+
+class ConfirmedWithholdingTests(TestCase):
+    def classify(self, data):
+        return classify_preview(data, MONTH, [ORG, OTHER_ORG], CURRENCY)
+
+    @override_settings(ONEC_ODATA_PAYROLL_WITHHOLDING_GUIDS=WITHHOLDING_KIND)
+    def test_gross_not_net_and_snapshot_unchanged(self):
+        data = withholding_fixture()
+        original = deepcopy(data)
+        self.assertEqual(self.classify(data)["accrued"], "180.00")
+        self.assertEqual(data, original)
+
+    @override_settings(ONEC_ODATA_PAYROLL_WITHHOLDING_GUIDS="")
+    def test_unconfirmed_kind_blocks(self):
+        with self.assertRaises(ValidationError):
+            self.classify(withholding_fixture())
+
+    @override_settings(ONEC_ODATA_PAYROLL_WITHHOLDING_GUIDS=WITHHOLDING_KIND)
+    def test_mutated_evidence_blocks(self):
+        mutations = [
+            lambda d: d.pop("kind_groups"),
+            lambda d: d["kind_groups"][1].update(kind_guid=ACCRUAL_KIND),
+            lambda d: d["kind_groups"][1].update(amount="31"),
+            lambda d: d["kind_groups"][1].update(negative_amount_rows=1),
+            lambda d: d["kind_groups"][1].update(currency_guid=OTHER_ORG),
+            lambda d: d["kind_groups"][1].update(organization_guid=OTHER_ORG),
+            lambda d: d["kind_groups"][1].update(type_value="Неизвестно"),
+            lambda d: d["settlements"]["groups"][0].update(positive_amount="190", negative_amount="-40"),
+            lambda d: d["settlements"]["groups"][0].update(amount="180"),
+        ]
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                data = withholding_fixture()
+                mutate(data)
+                with self.assertRaises(ValidationError):
+                    self.classify(data)
+
+    @override_settings(ONEC_ODATA_PAYROLL_WITHHOLDING_GUIDS=WITHHOLDING_KIND)
+    def test_confirmed_kind_cannot_become_accrual(self):
+        data = withholding_fixture()
+        data["groups"] = [dict(data["groups"][0], rows=3, amount="210.00", amount_currency="210.00")]
+        data["kind_groups"][1]["type_value"] = "Начисление"
+        data["settlements"]["groups"][0].update(amount="210", amount_currency="210", positive_amount="210", positive_amount_currency="210", negative_amount="0", negative_amount_currency="0")
+        with self.assertRaises(ValidationError):
+            self.classify(data)
+
+    def test_scope_changes_on_kind_allowlist_change(self):
+        from pool_service.finance_imports.odata_payroll_drafts import _scope
+        config = {"ONEC_ODATA_ORGANIZATION_GUIDS": ORG, "ONEC_ODATA_PAYROLL_CURRENCY_CODE": "RUB", "ONEC_ODATA_PAYROLL_CURRENCY_GUID": CURRENCY}
+        before = _scope(config)[2]
+        config["ONEC_ODATA_PAYROLL_WITHHOLDING_GUIDS"] = WITHHOLDING_KIND
+        self.assertNotEqual(before, _scope(config)[2])
+        config["ONEC_ODATA_PAYROLL_WITHHOLDING_GUIDS"] = "invalid"
+        with self.assertRaises(ValidationError):
+            _scope(config)

@@ -36,6 +36,23 @@ class AllPayrollSyncTests(TestCase):
         row['source_data']['organization_guid'] = ORG
         return [row]
 
+    @override_settings(ONEC_ODATA_PAYROLL_WITHHOLDING_GUIDS=fixtures.WITHHOLDING_KIND)
+    def test_confirmed_withholding_auto_applies_gross(self):
+        with self.coverage(), patch(PATCH_READER, return_value=fixtures.withholding_fixture()):
+            result = self.step(self.start())
+        self.assertEqual(result.progress['outcome'], 'applied')
+        self.assertEqual(str(PayrollAccrualMonth.objects.get().accrued), '180.00')
+
+    @override_settings(ONEC_ODATA_PAYROLL_WITHHOLDING_GUIDS=fixtures.WITHHOLDING_KIND)
+    def test_withholding_config_change_blocks_auto_run(self):
+        with self.coverage():
+            run = self.start()
+            with override_settings(ONEC_ODATA_PAYROLL_WITHHOLDING_GUIDS=''), patch(PATCH_READER) as reader:
+                result = self.step(run)
+                reader.assert_not_called()
+        self.assertEqual(result.status, OneCODataSyncRun.STATUS_FAILED)
+        self.assertFalse(PayrollAccrualMonth.objects.exists())
+
     def test_requires_explicit_coverage(self):
         with self.assertRaises(ValidationError):
             self.start()
@@ -90,6 +107,38 @@ class AllPayrollSyncTests(TestCase):
         response = self.client.get(reverse('finance_onec_import_list'))
         self.assertContains(response, 'актуальность не подтверждена за')
         self.assertContains(response, MONTH)
+
+    def test_retry_after_late_failure_keeps_separate_snapshots(self):
+        with self.coverage(), \
+             patch.object(sync, '_collect_profit_chunk', return_value=(self.profit_rows(), 1)), \
+             patch.object(sync, '_collect_cashflow_chunk', return_value=(self.cashflow_rows(), 1, [])):
+            first = self.start(sync.SUPPORTED_REPORT_TYPES)
+            self.step(first)
+            self.step(first)
+            with patch(PATCH_READER, side_effect=ValueError):
+                self.assertEqual(self.step(first).status, OneCODataSyncRun.STATUS_FAILED)
+            old_batches = list(sync.OneCImportBatch.objects.filter(sync_run=first))
+            self.assertEqual(len(old_batches), 2)
+            sync.delete_private_batch_file(old_batches[0])
+            second = self.start(sync.SUPPORTED_REPORT_TYPES)
+            self.step(second)
+            self.step(second)
+            with patch(PATCH_READER, return_value=fixture()):
+                self.assertEqual(self.step(second).progress['outcome'], 'applied')
+            for old in old_batches:
+                current = sync.OneCImportBatch.objects.get(sync_run=second, import_type=old.import_type)
+                self.assertNotEqual(old.file_sha256, current.file_sha256)
+                self.assertEqual(old.metadata['month_fingerprint'], current.metadata['month_fingerprint'])
+                old.refresh_from_db()
+                self.assertEqual(old.sync_run_id, first.pk)
+                self.assertEqual(old.status, sync.OneCImportBatch.STATUS_PREVIEWED)
+            third = self.start(sync.SUPPORTED_REPORT_TYPES)
+            self.step(third)
+            self.step(third)
+            with patch(PATCH_READER, return_value=fixture()):
+                self.assertEqual(self.step(third).progress['outcome'], 'no_change')
+        self.assertEqual(sync.OneCMonthlyProfit.objects.count(), 1)
+        self.assertEqual(sync.CashFlowRow.objects.count(), 1)
 
     def test_apply_failure_rolls_back_payroll_and_other_sources(self):
         def fail(stage):

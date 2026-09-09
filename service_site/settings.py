@@ -336,3 +336,6 @@ CKEDITOR_5_CONFIGS = {
         'toolbar': ['heading', '|', 'bold', 'italic', 'link', 'bulletedList', 'numberedList', 'blockQuote'],
     },
 }
+
+# Confirmed individual catalog kinds withheld from gross payroll.
+ONEC_ODATA_PAYROLL_WITHHOLDING_GUIDS = os.getenv("ONEC_ODATA_PAYROLL_WITHHOLDING_GUIDS", "")
