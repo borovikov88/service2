@@ -6,6 +6,7 @@ import io
 import json
 import socket
 import ssl
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -102,6 +103,78 @@ class PayrollSchemaDiagnosticTests(unittest.TestCase):
                 schema.fetch_metadata({"ONEC_ODATA_BASE_URL": BASE})
         self.assertIsInstance(build.call_args.args[0], schema.NoRedirectHandler)
         self.assertEqual(opener.open.call_count, 1)
+
+    def test_default_tls_context_requires_trusted_certificate_and_hostname(self):
+        opener = Mock()
+        opener.open.side_effect = URLError("test stop")
+        with patch.object(schema, "build_opener", return_value=opener) as build:
+            with self.assertRaises(schema.SchemaError):
+                schema.fetch_metadata({"ONEC_ODATA_BASE_URL": BASE})
+        self.assertIsInstance(build.call_args.args[0], schema.NoRedirectHandler)
+        handler = build.call_args.args[1]
+        self.assertIsInstance(handler, schema.HTTPSHandler)
+        self.assertEqual(handler._context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(handler._context.check_hostname)
+
+    def test_ca_paths_from_dotenv_and_process_override_reach_tls_context(self):
+        file_values = {"ONEC_ODATA_BASE_URL": BASE, "SSL_CERT_FILE": "/private/file-ca.pem", "SSL_CERT_DIR": "/private/file-ca-dir"}
+        fake_dotenv = SimpleNamespace(dotenv_values=lambda path: file_values)
+        for environment in ({}, {"SSL_CERT_FILE": "/private/env-ca.pem", "SSL_CERT_DIR": "/private/env-ca-dir"}):
+            with self.subTest(environment=bool(environment)):
+                context = ssl.create_default_context()
+                opener, output = Mock(), io.StringIO()
+                opener.open.side_effect = URLError("test stop")
+                with patch.dict("sys.modules", {"dotenv": fake_dotenv}), patch.dict(schema.os.environ, environment, clear=True), patch.object(schema.ssl, "create_default_context", return_value=context) as create_context, patch.object(schema, "build_opener", return_value=opener) as build, contextlib.redirect_stdout(output):
+                    self.assertEqual(schema.main(["--app-dir", "/unused"]), 1)
+                    self.assertEqual(dict(schema.os.environ), environment)
+                expected = {**file_values, **environment}
+                create_context.assert_called_once_with(cafile=expected["SSL_CERT_FILE"], capath=expected["SSL_CERT_DIR"])
+                self.assertIs(build.call_args.args[1]._context, context)
+                self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+                self.assertTrue(context.check_hostname)
+                self.assertNotIn("/private/", output.getvalue())
+
+    def test_invalid_configured_ca_fails_before_network_without_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ca_file = Path(directory) / "private-ca.pem"
+            ca_file.write_text("not a certificate")
+            with patch.object(schema, "build_opener") as build:
+                with self.assertRaises(schema.SchemaError) as raised:
+                    schema.fetch_metadata({"ONEC_ODATA_BASE_URL": BASE, "SSL_CERT_FILE": str(ca_file)})
+            build.assert_not_called()
+            diagnostic = schema.safe_diagnostic(raised.exception, "metadata_get")
+            self.assertEqual(diagnostic, {"error": "METADATA_CHECK_FAILED", "stage": "tls_config", "reason": "TLS"})
+            self.assertNotIn(directory, json.dumps(diagnostic))
+
+    def test_certificate_failure_does_not_retry_with_insecure_context(self):
+        failure = ssl.SSLCertVerificationError(1, "PRIVATE_HOSTNAME")
+        failure.verify_code = 62
+        failure.verify_message = "PRIVATE_HOSTNAME mismatch"
+        opener = Mock()
+        opener.open.side_effect = URLError(failure)
+        with patch.object(schema, "build_opener", return_value=opener) as build:
+            with self.assertRaises(schema.SchemaError) as raised:
+                schema.fetch_metadata({"ONEC_ODATA_BASE_URL": BASE})
+        build.assert_called_once()
+        opener.open.assert_called_once()
+        self.assertTrue(build.call_args.args[1]._context.check_hostname)
+        self.assertEqual(build.call_args.args[1]._context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertEqual(schema.safe_diagnostic(raised.exception, "metadata_get"), {"error": "METADATA_CHECK_FAILED", "stage": "metadata_open", "reason": "TLS_CERTIFICATE", "verify_code": 62})
+
+    def test_only_numeric_certificate_verify_codes_are_exposed(self):
+        for value in (20, 62, "PRIVATE_PATH", True, None, -1, 2147483648, {"secret": "PRIVATE_PATH"}):
+            with self.subTest(value=value):
+                failure = ssl.SSLCertVerificationError(1, "PRIVATE_PATH")
+                failure.verify_code = value
+                failure.verify_message = "PRIVATE_PATH"
+                opener = Mock()
+                opener.open.side_effect = URLError(URLError(failure))
+                with self.assertRaises(schema.SchemaError) as raised:
+                    schema.fetch_metadata({"ONEC_ODATA_BASE_URL": BASE}, opener=opener)
+                expected = {"error": "METADATA_CHECK_FAILED", "stage": "metadata_open", "reason": "TLS_CERTIFICATE"}
+                if type(value) is int and 0 <= value <= 2147483647:
+                    expected["verify_code"] = value
+                self.assertEqual(schema.safe_diagnostic(raised.exception, "metadata_get"), expected)
 
     def test_https_and_credential_url_restrictions(self):
         urls = [BASE.replace("https:", "http:"), BASE + "?token=secret", BASE + "#fragment", BASE.replace("example.invalid", "user:secret@example.invalid"), "https://example.invalid/private/", BASE + "\n"]

@@ -14,7 +14,7 @@ import ssl
 import sys
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 import xml.etree.ElementTree as ET
 
 
@@ -45,7 +45,7 @@ ERROR_CODES = {
 STAGES = {
     "runtime_setup", "dependencies", "config_read", "metadata_config",
     "metadata_request", "metadata_open", "metadata_read", "metadata_get",
-    "schema_parse", "output",
+    "schema_parse", "output", "tls_config",
 }
 REASONS = {
     "DNS", "TLS_CERTIFICATE", "TLS", "TIMEOUT", "CONNECTION_REFUSED",
@@ -58,9 +58,22 @@ REASONS = {
 class SchemaError(Exception):
     """Only fixed, non-sensitive diagnostic codes are exposed to the user."""
 
-    def __init__(self, code, *, stage=None, reason="VALIDATION"):
+    def __init__(self, code, *, stage=None, reason="VALIDATION", verify_code=None):
         super().__init__(code)
         self.code, self.stage, self.reason = code, stage, reason
+        self.verify_code = verify_code
+
+
+def certificate_verify_code(exc):
+    for _ in range(3):
+        if not isinstance(exc, URLError) or not isinstance(exc.reason, BaseException):
+            break
+        exc = exc.reason
+    if isinstance(exc, (ssl.SSLCertVerificationError, SchemaError)):
+        code = getattr(exc, "verify_code", None)
+        if type(code) is int and 0 <= code <= 2147483647:
+            return code
+    return None
 
 
 def safe_reason(exc, stage):
@@ -112,7 +125,11 @@ def safe_diagnostic(exc, stage):
             code = candidate
         stage = exc.stage if isinstance(exc.stage, str) and exc.stage in STAGES else stage
         reason = exc.reason if isinstance(exc.reason, str) and exc.reason in REASONS else "UNEXPECTED_ERROR"
-    return {"error": code, "stage": stage if isinstance(stage, str) and stage in STAGES else "runtime_setup", "reason": reason}
+    result = {"error": code, "stage": stage if isinstance(stage, str) and stage in STAGES else "runtime_setup", "reason": reason}
+    verify_code = certificate_verify_code(exc)
+    if reason == "TLS_CERTIFICATE" and verify_code is not None:
+        result["verify_code"] = verify_code
+    return result
 
 
 def at_stage(stage, operation):
@@ -126,7 +143,7 @@ def at_stage(stage, operation):
         code = f"METADATA_HTTP_{exc.code}" if type(exc.code) is int and 100 <= exc.code <= 599 else "METADATA_HTTP_NOT_200"
         raise SchemaError(code, stage=stage) from None
     except Exception as exc:
-        raise SchemaError("METADATA_CHECK_FAILED", stage=stage, reason=safe_reason(exc, stage)) from None
+        raise SchemaError("METADATA_CHECK_FAILED", stage=stage, reason=safe_reason(exc, stage), verify_code=certificate_verify_code(exc)) from None
 
 
 class NoRedirectHandler(HTTPRedirectHandler):
@@ -161,7 +178,19 @@ def fetch_metadata(config, *, opener=None):
     if username:
         token = at_stage("metadata_request", lambda: base64.b64encode(f"{username}:{password}".encode()).decode("ascii"))
         request.add_header("Authorization", f"Basic {token}")
-    client = opener or at_stage("metadata_request", lambda: build_opener(NoRedirectHandler()))
+    if opener is None:
+        # Django settings load .env into os.environ. This standalone probe merges
+        # it without mutating process state, so pass its configured CA paths
+        # explicitly. No custom CA keeps Python's default trust store.
+        context = at_stage("tls_config", lambda: ssl.create_default_context(
+            cafile=config.get("SSL_CERT_FILE") or None,
+            capath=config.get("SSL_CERT_DIR") or None,
+        ))
+        client = at_stage("metadata_request", lambda: build_opener(
+            NoRedirectHandler(), HTTPSHandler(context=context),
+        ))
+    else:
+        client = opener
     with at_stage("metadata_open", lambda: client.open(request, timeout=TIMEOUT_SECONDS)) as response:
         if response.status != 200:
             raise SchemaError("METADATA_HTTP_NOT_200", stage="metadata_open")
