@@ -270,6 +270,44 @@ class ProfitDashboardTests(TestCase):
         self.assertFalse(any(row.dashboard_cost_is_calculated for row in rows))
         self.assertEqual(totals["gross_profit"], Decimal("130410"))
 
+    def test_display_unit_price_is_transient_and_requires_quantity(self):
+        priced = self.add_row(
+            date(2026, 1, 1), revenue="100", cost="40", quantity="2"
+        )
+        no_quantity = self.add_row(
+            date(2026, 1, 1), revenue="100", cost="40", quantity=None
+        )
+        zero_quantity = self.add_row(
+            date(2026, 1, 1), revenue="100", cost="40", quantity="0"
+        )
+        zero_revenue = self.add_row(
+            date(2026, 1, 1), name="Нулевая выручка", article="ZERO-PRICE",
+            revenue="0", cost="40", quantity="2",
+        )
+
+        apply_period_analytics([priced, no_quantity, zero_quantity, zero_revenue])
+
+        self.assertEqual(priced.dashboard_unit_price, Decimal("50"))
+        self.assertIsNone(no_quantity.dashboard_unit_price)
+        self.assertIsNone(zero_quantity.dashboard_unit_price)
+        self.assertIsNone(zero_revenue.dashboard_unit_price)
+        priced.refresh_from_db()
+        zero_revenue.refresh_from_db()
+        self.assertEqual(priced.revenue, Decimal("100"))
+        self.assertEqual(priced.cost, Decimal("40"))
+        self.assertEqual(priced.gross_profit, Decimal("60"))
+        self.assertEqual(zero_revenue.revenue, Decimal("0"))
+        self.assertEqual(zero_revenue.cost, Decimal("40"))
+        self.assertEqual(zero_revenue.gross_profit, Decimal("-40"))
+
+        response = self.client.get(reverse("finance_onec_profit_dashboard"), {
+            "period": "custom", "start": "2026-01", "end": "2026-01",
+        })
+        self.assertRegex(
+            response.content.decode(),
+            r'(?s)Арт\. ZERO-PRICE.*?data-profit-mobile-field="price"><dt>Цена</dt><dd>—</dd>',
+        )
+
     def test_monthly_aggregate_is_invariant_when_selected_range_changes(self):
         january = date(2026, 1, 1)
         february = date(2026, 2, 1)
@@ -409,6 +447,26 @@ class ProfitDashboardTests(TestCase):
         self.assertEqual(documents[0]["revenue"], data["totals"]["revenue"])
         self.assertEqual(documents[0]["cost"], data["totals"]["cost"])
         self.assertEqual(documents[0]["gross_profit"], data["totals"]["gross_profit"])
+        self.assertEqual(documents[0]["label"], "Расходная накладная")
+        self.assertEqual(documents[0]["number"], "РН-42")
+        self.assertEqual(documents[0]["date"], date(2026, 9, 1))
+        self.assertEqual(documents[0]["rows"][0].dashboard_unit_price, Decimal("50"))
+
+        response = self.client.get(reverse("finance_onec_profit_dashboard"), {
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        })
+        self.assertContains(response, "Расходная накладная")
+        self.assertContains(response, "№РН-42")
+        self.assertContains(response, "01.09.2026")
+        self.assertContains(response, "Арт. A-PAIR")
+        self.assertContains(response, "50,00")
+        self.assertContains(response, "<dt>Стоимость</dt>", html=True)
+        for field in ("quantity", "price", "revenue", "cost", "gross-profit"):
+            self.assertContains(response, f'data-profit-mobile-field="{field}"')
+        for absent_field in ("period", "type", "source-cost", "cost-analytics", "flag"):
+            self.assertNotContains(
+                response, f'data-profit-mobile-field="{absent_field}"'
+            )
 
     def test_presentation_keeps_movements_separate_when_quantities_conflict(self):
         recorder = "11111111-1111-4111-8111-111111111111"
@@ -696,6 +754,9 @@ class ProfitDashboardTests(TestCase):
         self.assertContains(response, 'data-label="Себестоимость"')
         self.assertContains(response, 'class="profit-document-line"')
         self.assertContains(response, 'data-label="Номенклатура"')
+        self.assertContains(response, 'class="profit-document-desktop-lines"')
+        self.assertContains(response, 'class="profit-document-mobile-lines"')
+        self.assertContains(response, 'class="profit-mobile-line__metrics"')
 
     def test_manager_filter_applies_to_all_dashboard_sections(self):
         self.add_row(
