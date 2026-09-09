@@ -3282,7 +3282,10 @@ def finance_payroll_dashboard(request):
     mapping_access = can_manage_employee_mapping(request.user, organization)
     if mapping_access:
         unresolved_count = unresolved_active_payroll_identity_count(organization)
+    from pool_service.finance_imports.payroll_accrual_dashboard import accrual_dashboard_data
+    accrual_summary = accrual_dashboard_data(organization, period_from, period_to)
     return render(request, "pool_service/finance/payroll_dashboard.html", {
+        "accrual_summary": accrual_summary,
         "data": data,
         "period_from": period_from,
         "period_to": period_to,
@@ -3301,7 +3304,7 @@ def finance_payroll_import_list(request):
     if denied:
         return denied
     batches = OneCImportBatch.objects.filter(
-        organization=organization, import_type=OneCImportBatch.TYPE_PAYROLL
+        organization=organization, import_type__in=[OneCImportBatch.TYPE_PAYROLL, OneCImportBatch.TYPE_PAYROLL_ACCRUAL]
     ).select_related("uploaded_by").prefetch_related("active_period_states")
     return render(request, "pool_service/finance/payroll_import_list.html", {
         "batches": batches,
@@ -3709,5 +3712,57 @@ def finance_onec_import_detail(request, batch_id):
         "batch": batch, "totals": totals, "monthly": monthly, "page_obj": page,
         "active_month_count": len(batch_months & active_months),
         "replaced_month_count": len(batch_months - active_months),
+        "active_tab": "finance",
+    })
+
+
+@login_required
+def finance_payroll_accrual_fetch(request):
+    from pool_service.finance_forms import PayrollAccrualFetchForm
+    from pool_service.finance_imports.odata_payroll_drafts import create_odata_payroll_draft
+    organization, denied = _payroll_access(request, can_import_payroll)
+    if denied:
+        return denied
+    form = PayrollAccrualFetchForm(request.POST if request.method == "POST" else None,
+                                  initial={"month": timezone.localdate().strftime("%Y-%m")})
+    if request.method == "POST" and form.is_valid():
+        try:
+            batch = create_odata_payroll_draft(form.cleaned_data["month"], organization, request.user)
+        except DuplicateImportError as exc:
+            return redirect("finance_payroll_accrual_preview", batch_id=exc.batch.pk)
+        except ValidationError as exc:
+            form.add_error(None, exc)
+        else:
+            return redirect("finance_payroll_accrual_preview", batch_id=batch.pk)
+    return render(request, "pool_service/finance/payroll_accrual_fetch.html", {
+        "form": form, "active_tab": "finance",
+    })
+
+
+@login_required
+def finance_payroll_accrual_preview(request, batch_id):
+    from pool_service.finance_forms import PayrollAccrualConfirmForm
+    from pool_service.finance_imports.odata_payroll_drafts import (
+        confirm_odata_payroll, payroll_accrual_confirmation_state,
+    )
+    organization, denied = _payroll_access(request, can_import_payroll)
+    if denied:
+        return denied
+    batch = get_object_or_404(OneCImportBatch, pk=batch_id, organization=organization,
+                             import_type=OneCImportBatch.TYPE_PAYROLL_ACCRUAL)
+    form = PayrollAccrualConfirmForm(request.POST if request.method == "POST" else None)
+    if request.method == "POST" and form.is_valid():
+        try:
+            confirm_odata_payroll(batch.pk, organization, request.user,
+                                 confirm_coverage=form.cleaned_data["confirm_coverage"])
+        except ValidationError as exc:
+            form.add_error(None, exc)
+        else:
+            messages.success(request, "Начисления ФОТ за месяц обновлены.")
+            return redirect("finance_payroll_dashboard")
+    state = payroll_accrual_confirmation_state(batch, organization)
+    return render(request, "pool_service/finance/payroll_accrual_preview.html", {
+        "batch": batch, "form": form, "state": state,
+        "summary": state.get("summary", {}),
         "active_tab": "finance",
     })

@@ -19,6 +19,7 @@ from pool_service.models import (
     OneCReportPeriodState,
     Organization,
     PayrollRow,
+    PayrollAccrualMonth,
     onec_monthly_profit_source_identity,
 )
 from .monthly_profit_parser import PARSER_VERSION, MonthlyProfitParseError, parse_monthly_profit
@@ -187,6 +188,7 @@ def validate_period_assignment(batch, organization, report_type, period_month):
     row_model = {
         OneCImportBatch.TYPE_MONTHLY_PROFIT: OneCMonthlyProfit,
         OneCImportBatch.TYPE_PAYROLL: PayrollRow,
+        OneCImportBatch.TYPE_PAYROLL_ACCRUAL: PayrollAccrualMonth,
         OneCImportBatch.TYPE_CASHFLOW: CashFlowRow,
     }.get(report_type)
     if row_model is None:
