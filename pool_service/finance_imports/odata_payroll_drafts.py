@@ -1,5 +1,6 @@
 """Single-month accrual drafts. Financial activation only after confirmation."""
 from decimal import Decimal, localcontext
+import copy
 import hashlib
 import json
 import os
@@ -39,6 +40,7 @@ def config_from_settings():
     config = {key: getattr(settings, key, "") for key in (
         "ONEC_ODATA_BASE_URL", "ONEC_ODATA_USERNAME", "ONEC_ODATA_PASSWORD",
         "ONEC_ODATA_PAYROLL_CURRENCY_GUID", "ONEC_ODATA_PAYROLL_CURRENCY_CODE",
+        "ONEC_ODATA_PAYROLL_WITHHOLDING_GUIDS",
     )}
     config["ONEC_ODATA_ORGANIZATION_GUIDS"] = ",".join(settings.ONEC_ODATA_ORGANIZATION_GUIDS)
     config.update({key: os.environ.get(key, "") for key in ("SSL_CERT_FILE", "SSL_CERT_DIR")})
@@ -57,6 +59,9 @@ def _scope(config):
         raise ValidationError("Настройте организации 1С и подтвердите GUID валюты ФОТ как RUB.") from None
     # Credentials may rotate without invalidating a verified dataset.
     binding = {"base_url": config.get("ONEC_ODATA_BASE_URL"), "organizations": orgs, "currency": currency, "currency_code": "RUB"}
+    withholding = _withholding_guids(config.get("ONEC_ODATA_PAYROLL_WITHHOLDING_GUIDS", ""))
+    if withholding:
+        binding["withholding_guids"] = sorted(withholding)
     fingerprint = hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()
     return orgs, currency, fingerprint
 
@@ -77,7 +82,103 @@ def _money(value):
         raise ValidationError("Сумма ФОТ не соответствует допустимой точности или размеру.") from None
 
 
+def _withholding_guids(value):
+    try:
+        result = {guid(item.strip()) for item in value.split(",") if item.strip()}
+        if len(result) > 100:
+            raise ValueError
+        return result
+    except (AttributeError, PayrollError, ValueError):
+        raise ValidationError("Некорректные GUID подтверждённых удержаний ФОТ.") from None
+
+
+def _withholding_preview(preview, orgs, currency):
+    """Reconcile individually acknowledged positive deductions with signed receipts.
+
+    The original snapshot stays untouched. Legacy accrual-only snapshots retain
+    their existing checks; deductions require richer reader evidence.
+    """
+    if not isinstance(preview, dict) or not isinstance(preview.get("groups"), list):
+        return preview
+    allowed = _withholding_guids(getattr(settings, "ONEC_ODATA_PAYROLL_WITHHOLDING_GUIDS", ""))
+    if not allowed and not any(isinstance(g, dict) and g.get("type_value") != "Начисление" for g in preview["groups"]):
+        return preview
+    details = preview.get("kind_groups")
+    if not allowed or not isinstance(details, list) or not details:
+        raise ValidationError("Обнаружен неподтверждённый вид начисления или удержания. Требуется сверка с отчётом 1С.")
+    fields = ("rows", "negative_amount_rows", "negative_currency_amount_rows", "non_cent_rows", "period_month_differs_rows")
+    aggregates, seen, deductions, gross = {}, set(), {}, {}
+    for item in details:
+        if not isinstance(item, dict):
+            raise ValidationError("Некорректная расшифровка видов ФОТ.")
+        org, category, kind = item.get("organization_guid"), item.get("type_value"), item.get("kind_guid")
+        key = (org, item.get("currency_guid"), category)
+        identity = key + (kind,)
+        if org not in orgs or key[1] != currency or identity in seen:
+            raise ValidationError("Изменились организация, валюта или виды ФОТ.")
+        try:
+            guid(kind)
+        except PayrollError:
+            raise ValidationError("Некорректный GUID вида ФОТ.") from None
+        seen.add(identity)
+        if category != "Начисление" and (category not in ("Налог", "Удержание") or kind not in allowed):
+            raise ValidationError("Вид удержания ФОТ не подтверждён.")
+        if category == "Начисление" and kind in allowed:
+            raise ValidationError("Подтверждённое удержание изменило тип в 1С.")
+        value = _money(item.get("amount"))
+        if value < 0 or _money(item.get("amount_currency")) != value:
+            raise ValidationError("Корректировки или валютные суммы ФОТ требуют сверки.")
+        counters = {field: _integer(item.get(field), positive=field == "rows") for field in fields}
+        if counters["negative_amount_rows"] or counters["negative_currency_amount_rows"] or counters["non_cent_rows"] or counters["period_month_differs_rows"] > counters["rows"]:
+            raise ValidationError("Корректировки ФОТ требуют отдельной сверки.")
+        aggregate = aggregates.setdefault(key, {**{f: 0 for f in fields}, "amount": Decimal(0), "amount_currency": Decimal(0)})
+        for field in fields:
+            aggregate[field] += counters[field]
+        aggregate["amount"] += value
+        aggregate["amount_currency"] += value
+        target = gross if category == "Начисление" else deductions
+        target[org] = target.get(org, Decimal(0)) + value
+    supplied = set()
+    for group in preview["groups"]:
+        if not isinstance(group, dict):
+            raise ValidationError("Некорректная группа ФОТ.")
+        key = (group.get("organization_guid"), group.get("currency_guid"), group.get("type_value"))
+        if key in supplied or key not in aggregates:
+            raise ValidationError("Расшифровка видов не совпала с итогами ФОТ.")
+        supplied.add(key)
+        if any(_integer(group.get(f)) != aggregates[key][f] for f in fields) or any(_money(group.get(f)) != aggregates[key][f] for f in ("amount", "amount_currency")):
+            raise ValidationError("Расшифровка видов не совпала с итогами ФОТ.")
+    if supplied != set(aggregates) or not set(deductions).issubset(gross):
+        raise ValidationError("Нет полного покрытия начислений и удержаний.")
+    result = copy.deepcopy(preview)
+    result["groups"] = [g for g in result["groups"] if g["type_value"] == "Начисление"]
+    if _integer(preview.get("rows"), positive=True) != sum(a["rows"] for a in aggregates.values()):
+        raise ValidationError("Количество строк ФОТ не совпало.")
+    result["rows"] = sum(g["rows"] for g in result["groups"])
+    settlements = result.get("settlements")
+    if not isinstance(settlements, dict) or not isinstance(settlements.get("groups"), list):
+        raise ValidationError("Нет контрольного регистра ФОТ.")
+    for control in settlements["groups"]:
+        if not isinstance(control, dict):
+            raise ValidationError("Некорректный контрольный регистр ФОТ.")
+        if control.get("record_type") != "Receipt":
+            continue
+        org = control.get("organization_guid")
+        for suffix, total_field in (("", "amount"), ("_currency", "amount_currency")):
+            positive = _money(control.get("positive_amount" + suffix))
+            negative = _money(control.get("negative_amount" + suffix))
+            if positive != gross.get(org) or negative != -deductions.get(org, Decimal(0)) or _money(control.get(total_field)) != positive + negative:
+                raise ValidationError("Начисления и удержания не совпали в двух регистрах 1С.")
+            control[total_field] = str(positive)
+    return result
+
+
 def classify_preview(preview, month, orgs, currency):
+    preview = _withholding_preview(preview, orgs, currency)
+    return _classify_gross_preview(preview, month, orgs, currency)
+
+
+def _classify_gross_preview(preview, month, orgs, currency):
     """Accept only reconciled accrual semantics; do not infer net/payments/debt."""
     if not isinstance(preview, dict) or preview.get("kind") != "unclassified_monthly_payroll_preview" or preview.get("month") != month or preview.get("period_basis") != "ПериодРегистрации":
         raise ValidationError("Структура или период исходных данных ФОТ изменились.")

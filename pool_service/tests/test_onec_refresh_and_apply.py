@@ -438,6 +438,54 @@ class RefreshAndApplyTests(TestCase):
         self.assertEqual(candidate.status, OneCImportBatch.STATUS_PREVIEWED)
         self.assertEqual(self.auto_effects(collected), before)
 
+    def test_snapshot_run_binding_checked_before_and_during_apply(self):
+        for report in (REPORT_PROFIT, REPORT_CASHFLOW):
+            for binding in (None, '00000000-0000-0000-0000-000000000099'):
+                for during_apply in (False, True):
+                    with self.subTest(report=report, binding=binding, during_apply=during_apply):
+                        from pool_service.finance_imports import odata_unified_sync as sync
+                        run = self.start((report,))
+                        collector = '_collect_profit_chunk' if report == REPORT_PROFIT else '_collect_cashflow_chunk'
+                        reader = 'read_profit_snapshot' if report == REPORT_PROFIT else 'read_cashflow_snapshot'
+                        output = ([profit_row()], 1) if report == REPORT_PROFIT else ([cashflow_row()], 1, [])
+                        with patch.object(sync, collector, return_value=output), patch.object(sync, 'apply_auto_sync', return_value=run):
+                            step_unified_sync(run.id, self.user, [report], 0, config=config(), mode=OneCODataSyncRun.MODE_AUTO_APPLY)
+                        candidate = OneCImportBatch.objects.get(sync_run=run)
+                        valid = getattr(sync, reader)(candidate)
+                        changed = {**valid}
+                        if binding is None:
+                            changed.pop('sync_run_id')
+                        else:
+                            changed['sync_run_id'] = binding
+                        before = self.auto_effects(run)
+                        values = [valid, changed] if during_apply else [changed]
+                        with patch.object(sync, reader, side_effect=values):
+                            result = apply_auto_sync(run.pk, self.user, [report], config=config())
+                        self.assertEqual(result.status, OneCODataSyncRun.STATUS_FAILED)
+                        self.assertEqual(result.progress['step_state'], 'apply_failed' if during_apply else 'candidate_invalid')
+                        self.assertEqual(self.auto_effects(run), before)
+
+    def test_auto_snapshot_does_not_collide_with_existing_preview(self):
+        from pool_service.finance_imports import odata_unified_sync as sync
+        for report in (REPORT_PROFIT, REPORT_CASHFLOW):
+            with self.subTest(report=report):
+                run = self.start((report,))
+                rows = [profit_row()] if report == REPORT_PROFIT else [cashflow_row()]
+                run.mode = OneCODataSyncRun.MODE_PREVIEW
+                preview, fingerprint, _ = sync._create_month_draft(run, report, date(2025, 5, 1), rows, 1, config(), [])
+                run.mode = OneCODataSyncRun.MODE_AUTO_APPLY
+                collector = '_collect_profit_chunk' if report == REPORT_PROFIT else '_collect_cashflow_chunk'
+                output = (rows, 1) if report == REPORT_PROFIT else (rows, 1, [])
+                with patch.object(sync, collector, return_value=output):
+                    result = step_unified_sync(run.id, self.user, [report], 0, config=config(), mode=OneCODataSyncRun.MODE_AUTO_APPLY)
+                self.assertEqual(result.progress['outcome'], 'applied')
+                candidate = OneCImportBatch.objects.get(sync_run=run)
+                self.assertNotEqual(preview.file_sha256, candidate.file_sha256)
+                self.assertEqual(fingerprint, candidate.metadata['month_fingerprint'])
+                preview.refresh_from_db()
+                self.assertIsNone(preview.sync_run_id)
+                self.assertEqual(preview.status, OneCImportBatch.STATUS_PREVIEWED)
+
     def test_repeated_finalize_of_applied_run_is_idempotent(self):
         applied = self.finish_profit()
         before = self.auto_effects(applied)
