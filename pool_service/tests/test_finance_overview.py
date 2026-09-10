@@ -18,7 +18,7 @@ from pool_service.finance_imports.owner_dashboard import resolve_owner_period
 from pool_service.finance_imports.profit_dashboard import dashboard_data, resolve_period
 from pool_service.finance_imports.payroll_dashboard import payroll_dashboard_data
 from pool_service.models import (
-    CashFlowRow, EmployeeOneCIdentity, OneCImportBatch, OneCMonthlyProfit,
+    CashFlowArticleMapping, CashFlowRow, EmployeeOneCIdentity, OneCImportBatch, OneCMonthlyProfit,
     OneCReportPeriodState, Organization, OrganizationAccess, PayrollRow,
 )
 
@@ -36,6 +36,14 @@ class FinanceOverviewTests(TestCase):
         self.profit_batch = self._batch(OneCImportBatch.TYPE_MONTHLY_PROFIT, "profit")
         self.payroll_batch = self._batch(OneCImportBatch.TYPE_PAYROLL, "payroll")
         self.cashflow_batch = self._batch(OneCImportBatch.TYPE_CASHFLOW, "cashflow")
+        CashFlowArticleMapping.objects.create(
+            organization=self.organization,
+            article_name="Продажи",
+            normalized_article_name="продажи",
+            management_category="Основная деятельность",
+            flow_type=CashFlowArticleMapping.FLOW_OPERATING,
+            classification_status=CashFlowArticleMapping.CLASS_CONFIRMED,
+        )
         self.identity = EmployeeOneCIdentity.objects.create(
             organization=self.organization, raw_name="Тест", normalized_name="тест",
             normalized_department_name="", source_identity_key="a" * 64,
@@ -344,7 +352,19 @@ class FinanceOverviewTests(TestCase):
         self.client.force_login(self.manager)
         response = self.client.get(reverse("finance_onec_cashflow_dashboard"))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "22\u00a0786\u00a0921,74\u00a0₽")
+        self.assertEqual(
+            response.context["unclassified"]["receipts"],
+            Decimal("22786721.74"),
+        )
+        self.assertContains(response, "Неклассифицированный поток")
+        content = response.content.decode()
+        warning_start = content.index("Неклассифицированный поток")
+        self.assertIn(
+            "22\u00a0786\u00a0721,74\u00a0₽",
+            content[warning_start:warning_start + 500],
+        )
+        self.assertContains(response, "Крупное поступление")
+        self.assertContains(response, "Нет mapping для статьи")
         self.assertContains(response, "120,00\u00a0₽")
 
     def test_cashflow_article_trend_all_is_one_aggregate_series(self):

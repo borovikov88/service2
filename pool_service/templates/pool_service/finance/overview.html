@@ -145,6 +145,19 @@
         </article>
       {% endfor %}
     </div>
+    {% if cashflow_unclassified_warning %}<div class="alert alert-warning py-2 mt-3 mb-0"><strong>Есть неклассифицированные статьи ДДС.</strong> Они не включены в операционные показатели. <a href="{% url 'finance_onec_cashflow_dashboard' %}{% if cashflow_cards.0.query %}?{{ cashflow_cards.0.query }}{% endif %}">Открыть расшифровку и реестр решений</a>.</div>{% endif %}
+    <div class="owner-section-header mt-4"><div><div class="owner-eyebrow">Структура</div><h3 class="h6 mb-0">Внешний, ликвидностный, финансовый и внутренний потоки</h3></div><div class="owner-section-help">Отдельно от операционного ДДС</div></div>
+    <div class="owner-kpi-grid">
+      {% for card in cashflow_structure_cards %}
+        <article class="card card-soft owner-kpi">
+          <div class="owner-kpi-label">{{ card.label }}</div>
+          <div class="owner-kpi-value">{% if card.has_data %}{{ card.value|money }}{% else %}—{% endif %}</div>
+          {% if card.partial %}<span class="owner-badge partial mt-1">Неполные данные</span>{% endif %}
+          <div class="owner-comparisons">{% for comparison in card.comparisons %}{% if comparison.available %}<div class="owner-comparison"><span>{{ comparison.label }}</span><span class="owner-delta {{ comparison.tone }}">{% if comparison.absolute > 0 %}+{% endif %}{{ comparison.absolute|money }}</span></div>{% else %}<div class="owner-no-comparison">Нет полного сопоставимого периода</div>{% endif %}{% endfor %}</div>
+          {% url card.route_name as card_url %}<a class="owner-report-link" href="{{ card_url }}{% if card.query %}?{{ card.query }}{% endif %}">Открыть расшифровку ↗</a>
+        </article>
+      {% endfor %}
+    </div>
   </section>
 
   <section class="owner-chart-grid" aria-label="Графики финансового обзора">

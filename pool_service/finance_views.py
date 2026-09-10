@@ -3261,6 +3261,7 @@ def finance_onec_cashflow_dashboard(request):
         period_to,
         mode=request.GET.get("article_mode", "all"),
         selected_articles=request.GET.getlist("article"),
+        cashflow_data=data,
     )
     return render(request, "pool_service/finance/onec_cashflow_dashboard.html", {
         **data,
