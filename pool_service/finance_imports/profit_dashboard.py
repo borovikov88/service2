@@ -142,7 +142,15 @@ def apply_period_analytics(rows):
         row.dashboard_period_cost_ratio = (
             row.cost_calculation_ratio if use_stored_calculation else None
         )
+        row.dashboard_unit_price = _display_unit_price(row.revenue, row.quantity)
     return next(iter(calculated_ratios)) if len(calculated_ratios) == 1 else None
+
+
+def _display_unit_price(revenue, quantity):
+    """Return a display-only unit price without changing imported values."""
+    if revenue in (None, 0) or quantity in (None, 0):
+        return None
+    return revenue / quantity
 
 
 def summarize(rows):
@@ -349,6 +357,24 @@ def _is_validated_odata_group(row, source_data, group_key, display):
     return source_date == document_date == group_date
 
 
+def _document_display_metadata(row, document_name, is_validated):
+    """Return safe, readable document details for the presentation layer."""
+    fallback = {"label": document_name, "number": "", "date": None}
+    if not is_validated:
+        return fallback
+    source_data = row.source_data if isinstance(row.source_data, dict) else {}
+    document_type = source_data.get("document_group_recorder_type")
+    number = source_data.get("document_group_number")
+    try:
+        document_date = date.fromisoformat(source_data.get("document_group_date"))
+    except (TypeError, ValueError):
+        return fallback
+    label = _DOCUMENT_LABELS.get(document_type)
+    if not label or not isinstance(number, str) or not number.strip():
+        return fallback
+    return {"label": label, "number": number.strip(), "date": document_date}
+
+
 def _compatible_display_quantity(revenue_row, cost_row):
     revenue_quantity = revenue_row.quantity
     cost_quantity = cost_row.quantity
@@ -429,6 +455,9 @@ def _presentation_rows(document_rows):
             revenue_row.dashboard_cost_is_calculated
             or cost_row.dashboard_cost_is_calculated
         )
+        merged.dashboard_unit_price = _display_unit_price(
+            merged.dashboard_revenue, merged.quantity
+        )
         result.append(merged)
     return result
 
@@ -456,8 +485,12 @@ def customer_breakdown(rows):
         documents = []
         for document in customer["documents"].values():
             document_rows = document["rows"]
+            document_metadata = _document_display_metadata(
+                document_rows[0], document["name"], document["can_collapse"]
+            )
             documents.append({
                 "name": document["name"],
+                **document_metadata,
                 "managers": sorted({row.manager_name for row in document_rows if row.manager_name}),
                 "rows": (
                     _presentation_rows(document_rows)
