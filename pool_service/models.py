@@ -2427,6 +2427,10 @@ class CashFlowArticleMapping(models.Model):
     FLOW_OPERATING = "operating"
     FLOW_INVESTING = "investing"
     FLOW_FINANCING = "financing"
+    # Supported by the read-only management aggregation in the no-migration
+    # phase.  It is intentionally not added to FLOW_CHOICES yet: that would
+    # alter Django migration state while no mapping edit workflow is approved.
+    FLOW_LIQUIDITY = "liquidity"
     FLOW_INTERNAL = "internal"
     FLOW_UNCLASSIFIED = "unclassified"
     FLOW_CHOICES = [

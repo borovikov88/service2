@@ -168,6 +168,7 @@ def _source_state(organization, source_key, months, *, include_freshness):
             organization=organization,
             report_type=definition["report_type"],
             period_month__in=months,
+            active_batch__organization=organization,
             active_batch__status=OneCImportBatch.STATUS_CONFIRMED,
             active_batch__import_type=definition["report_type"],
         ).select_related("active_batch")
@@ -218,7 +219,10 @@ def _range_data(organization, first, last, *, include_freshness=True):
 
     profit_values = profit["totals"] if sources["profit"]["has_any"] else None
     payroll_value = payroll["accrued"] if sources["payroll"]["has_any"] else None
-    cash_values = cashflow["totals"] if sources["cashflow"]["has_any"] else None
+    # The owner-facing main cash-flow KPI is the external operating flow.  Raw
+    # all-cash-flow totals remain in the canonical service for reconciliation,
+    # but must not make internal or liquidity movements look operational.
+    cash_values = cashflow["operating"] if sources["cashflow"]["has_any"] else None
     values = {
         "revenue": profit_values["revenue"] if profit_values else None,
         "gross_profit": profit_values["gross_profit"] if profit_values else None,
@@ -227,6 +231,26 @@ def _range_data(organization, first, last, *, include_freshness=True):
         "receipts": cash_values["receipts"] if cash_values else None,
         "payments": cash_values["payments"] if cash_values else None,
         "net_cash_flow": cash_values["net_cash_flow"] if cash_values else None,
+        "external_net_cash_flow": (
+            cashflow["external"]["net_cash_flow"]
+            if sources["cashflow"]["has_any"] else None
+        ),
+        "liquidity_net_cash_flow": (
+            cashflow["liquidity"]["net_cash_flow"]
+            if sources["cashflow"]["has_any"] else None
+        ),
+        "financing_net_cash_flow": (
+            cashflow["financing"]["net_cash_flow"]
+            if sources["cashflow"]["has_any"] else None
+        ),
+        "internal_net_cash_flow": (
+            cashflow["internal"]["net_cash_flow"]
+            if sources["cashflow"]["has_any"] else None
+        ),
+        "non_external_net_cash_flow": (
+            cashflow["non_external"]["net_cash_flow"]
+            if sources["cashflow"]["has_any"] else None
+        ),
     }
     if sources["profit"]["complete"] and sources["payroll"]["complete"]:
         values["payroll_to_gross_profit"] = _ratio(payroll_value, values["gross_profit"])
@@ -259,15 +283,35 @@ def _range_data(organization, first, last, *, include_freshness=True):
                 if month in sources["payroll"]["states"] else None
             ),
             "receipts": (
-                cash_item.get("receipts", ZERO)
+                cash_item.get("operating", {}).get("receipts", ZERO)
                 if month in sources["cashflow"]["states"] else None
             ),
             "payments": (
-                cash_item.get("payments", ZERO)
+                cash_item.get("operating", {}).get("payments", ZERO)
                 if month in sources["cashflow"]["states"] else None
             ),
             "net_cash_flow": (
-                cash_item.get("net_cash_flow", ZERO)
+                cash_item.get("operating", {}).get("net_cash_flow", ZERO)
+                if month in sources["cashflow"]["states"] else None
+            ),
+            "external_net_cash_flow": (
+                cash_item.get("external", {}).get("net_cash_flow", ZERO)
+                if month in sources["cashflow"]["states"] else None
+            ),
+            "liquidity_net_cash_flow": (
+                cash_item.get("liquidity", {}).get("net_cash_flow", ZERO)
+                if month in sources["cashflow"]["states"] else None
+            ),
+            "financing_net_cash_flow": (
+                cash_item.get("financing", {}).get("net_cash_flow", ZERO)
+                if month in sources["cashflow"]["states"] else None
+            ),
+            "internal_net_cash_flow": (
+                cash_item.get("internal", {}).get("net_cash_flow", ZERO)
+                if month in sources["cashflow"]["states"] else None
+            ),
+            "non_external_net_cash_flow": (
+                cash_item.get("non_external", {}).get("net_cash_flow", ZERO)
                 if month in sources["cashflow"]["states"] else None
             ),
         })
@@ -369,9 +413,16 @@ ECONOMY_CARDS = (
     {"key": "payroll_to_revenue", "label": "ФОТ / выручка", "value_type": "percent", "absolute_type": "points", "source_keys": ("profit", "payroll"), "route_name": "finance_payroll_dashboard", "polarity": "lower"},
 )
 CASHFLOW_CARDS = (
-    {"key": "receipts", "label": "Поступления", "value_type": "money", "absolute_type": "money", "source_keys": ("cashflow",), "route_name": "finance_onec_cashflow_dashboard", "polarity": "higher"},
-    {"key": "payments", "label": "Платежи", "value_type": "money", "absolute_type": "money", "source_keys": ("cashflow",), "route_name": "finance_onec_cashflow_dashboard", "polarity": "payments"},
-    {"key": "net_cash_flow", "label": "Чистый денежный поток", "value_type": "money", "absolute_type": "money", "source_keys": ("cashflow",), "route_name": "finance_onec_cashflow_dashboard", "polarity": "higher"},
+    {"key": "receipts", "label": "Операционные поступления", "value_type": "money", "absolute_type": "money", "source_keys": ("cashflow",), "route_name": "finance_onec_cashflow_dashboard", "polarity": "higher"},
+    {"key": "payments", "label": "Операционные платежи", "value_type": "money", "absolute_type": "money", "source_keys": ("cashflow",), "route_name": "finance_onec_cashflow_dashboard", "polarity": "payments"},
+    {"key": "net_cash_flow", "label": "Операционный чистый поток", "value_type": "money", "absolute_type": "money", "source_keys": ("cashflow",), "route_name": "finance_onec_cashflow_dashboard", "polarity": "higher"},
+)
+CASHFLOW_STRUCTURE_CARDS = (
+    {"key": "external_net_cash_flow", "label": "Внешний чистый поток", "value_type": "money", "absolute_type": "money", "source_keys": ("cashflow",), "route_name": "finance_onec_cashflow_dashboard", "polarity": "higher"},
+    {"key": "liquidity_net_cash_flow", "label": "Ликвидностный поток", "value_type": "money", "absolute_type": "money", "source_keys": ("cashflow",), "route_name": "finance_onec_cashflow_dashboard", "polarity": "higher"},
+    {"key": "financing_net_cash_flow", "label": "Финансовый поток", "value_type": "money", "absolute_type": "money", "source_keys": ("cashflow",), "route_name": "finance_onec_cashflow_dashboard", "polarity": "higher"},
+    {"key": "internal_net_cash_flow", "label": "Внутренний поток", "value_type": "money", "absolute_type": "money", "source_keys": ("cashflow",), "route_name": "finance_onec_cashflow_dashboard", "polarity": "higher"},
+    {"key": "non_external_net_cash_flow", "label": "Не включено во внешний поток", "value_type": "money", "absolute_type": "money", "source_keys": ("cashflow",), "route_name": "finance_onec_cashflow_dashboard", "polarity": "higher"},
 )
 
 
@@ -429,6 +480,28 @@ def _signals(current, period, anomaly_summary):
             "title": "Отрицательный чистый денежный поток",
             "detail": current["values"]["net_cash_flow"],
             "detail_type": "money",
+            "route_name": "finance_onec_cashflow_dashboard",
+            "query": _detail_query("finance_onec_cashflow_dashboard", period),
+        })
+    cashflow = current["raw"]["cashflow"]
+    if cashflow["unclassified_article_count"]:
+        signals.append({
+            "kind": "missing",
+            "title": "Неклассифицированные статьи ДДС",
+            "detail": (
+                f"Статей: {cashflow['unclassified_article_count']}. "
+                "Они не включены в операционный поток."
+            ),
+            "detail_type": "text",
+            "route_name": "finance_onec_cashflow_dashboard",
+            "query": _detail_query("finance_onec_cashflow_dashboard", period),
+        })
+    if cashflow["non_external"]["net_cash_flow"] != ZERO:
+        signals.append({
+            "kind": "missing",
+            "title": "Статьи ДДС вне внешнего потока",
+            "detail": "Есть сумма, исключённая из внешнего потока без признака внутреннего оборота.",
+            "detail_type": "text",
             "route_name": "finance_onec_cashflow_dashboard",
             "query": _detail_query("finance_onec_cashflow_dashboard", period),
         })
@@ -496,6 +569,10 @@ def finance_overview_data(organization, params, *, today=None):
         _card(definition, current, comparison_data, period)
         for definition in CASHFLOW_CARDS
     ]
+    cashflow_structure_cards = [
+        _card(definition, current, comparison_data, period)
+        for definition in CASHFLOW_STRUCTURE_CARDS
+    ]
     return {
         "period": period,
         "period_choices": PERIOD_CHOICES,
@@ -504,6 +581,10 @@ def finance_overview_data(organization, params, *, today=None):
         ),
         "economy_cards": economy_cards,
         "cashflow_cards": cashflow_cards,
+        "cashflow_structure_cards": cashflow_structure_cards,
+        "cashflow_unclassified_warning": bool(
+            current["raw"]["cashflow"]["unclassified_article_count"]
+        ),
         "monthly": current["monthly"],
         "seasonality": _seasonality(organization, today),
         "signals": _signals(current, period, anomaly_summary),
