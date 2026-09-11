@@ -182,6 +182,9 @@ from pool_service.services.cashflow_classification import (
     canonical_article_key,
     save_explicit_cashflow_mapping,
 )
+from pool_service.finance_imports.management_finance import (
+    cashflow_article_source_previews,
+)
 from pool_service.finance_imports.overview import finance_overview_data
 from pool_service.services.permissions import is_org_access_blocked, organization_for_user
 
@@ -3336,6 +3339,12 @@ def finance_onec_cashflow_mapping(request):
         return denied
     period_from, period_to, period_error = _cashflow_period(request.GET)
     data = cashflow_dashboard_data(organization, period_from, period_to)
+    source_previews = cashflow_article_source_previews(
+        organization,
+        [item["normalized_article_name"] for item in data["articles"]],
+        data["period_first"],
+        data["period_last"],
+    )
 
     # The aggregate comes only from the common management service.  This small
     # lookup supplies editable metadata (not separate money totals) for a
@@ -3358,6 +3367,7 @@ def finance_onec_cashflow_mapping(request):
                 mapping.get_classification_status_display()
                 if mapping else "Нет mapping"
             ),
+            "source_preview": source_previews[article["normalized_article_name"]],
             "form": CashFlowArticleMappingForm(initial={
                 "management_category": (
                     mapping.management_category if mapping else ""
@@ -3373,6 +3383,10 @@ def finance_onec_cashflow_mapping(request):
                     mapping.classification_status
                     if mapping else CashFlowArticleMapping.CLASS_UNCLASSIFIED
                 ),
+                # Prefill from the canonical read-model, not directly from a
+                # legacy DB flag, so an invalid manual combination cannot be
+                # displayed as a dividend before it is corrected.
+                "is_dividend": article["is_dividend"],
                 "comment": mapping.comment if mapping else "",
             }),
         })

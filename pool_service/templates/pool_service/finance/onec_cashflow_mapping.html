@@ -37,6 +37,22 @@
       <strong>{{ entry.article.net_cash_flow|money }}</strong>
     </summary>
     <div class="cashflow-mapping-metrics border-top pt-3 mt-3"><div><span class="text-muted small d-block">Поступления</span>{{ entry.article.receipts|money }}</div><div><span class="text-muted small d-block">Платежи</span>{{ entry.article.payments|money }}</div><div><span class="text-muted small d-block">Строк</span>{{ entry.article.row_count }}</div></div>
+    <div class="border-top pt-3 mt-3">
+      <div class="fw-semibold">Проверка сохранённых строк источника</div>
+      <div class="small text-muted mb-2">Показаны отображаемые поля активной подтверждённой выгрузки: период, документ/аналитика, ссылка и направление суммы. Это не разрешение первичного документа 1С с номером и датой.</div>
+      <div class="d-grid gap-1">
+        {% for source in entry.source_preview.items %}
+        <div class="border rounded p-2 small">
+          <div><strong>{{ source.period_month|date:'m.Y' }}</strong>{% if source.document_display %} · {{ source.document_display }}{% else %} · Документ не указан{% endif %}</div>
+          {% if source.source_reference_display %}<div class="text-muted">Ссылка: {{ source.source_reference_display }}</div>{% endif %}
+          <div>Поступления: {{ source.receipts|money }} · Платежи: {{ source.payments|money }} · Чистый поток: {{ source.net_cash_flow|money }}</div>
+        </div>
+        {% empty %}
+        <div class="small text-muted">Сохранённые строки источника недоступны.</div>
+        {% endfor %}
+      </div>
+      {% if entry.source_preview.truncated %}<div class="small text-muted mt-2">Показаны первые 20 из {{ entry.source_preview.row_count }} строк.</div>{% endif %}
+    </div>
     <form method="post" action="{% url 'finance_onec_cashflow_mapping_save' %}" class="row g-2 mt-2">
       {% csrf_token %}
       <input type="hidden" name="article" value="{{ entry.article.normalized_article_name }}">
@@ -46,6 +62,7 @@
       <div class="col-md-4">{{ entry.form.classification_status.label_tag }}{{ entry.form.classification_status }}</div>
       <div class="col-md-4">{{ entry.form.management_category.label_tag }}{{ entry.form.management_category }}</div>
       <div class="col-12">{{ entry.form.comment.label_tag }}{{ entry.form.comment }}</div>
+      <div class="col-12 form-check ms-1">{{ entry.form.is_dividend }}{{ entry.form.is_dividend.label_tag }}{% if entry.form.is_dividend.help_text %}<div class="form-text">{{ entry.form.is_dividend.help_text }}</div>{% endif %}</div>
       <div class="col-12 form-check ms-1">{{ entry.form.confirmation }}{{ entry.form.confirmation.label_tag }}</div>
       <div class="col-12"><button class="btn btn-primary">Сохранить решение</button></div>
     </form>

@@ -29,6 +29,7 @@ def mapping_snapshot(mapping):
         "classification_status": mapping.classification_status,
         "is_internal_turnover": mapping.is_internal_turnover,
         "include_in_external_cashflow": mapping.include_in_external_cashflow,
+        "is_dividend": mapping.is_dividend,
         "comment": mapping.comment,
         "updated_by_id": mapping.updated_by_id,
     }
@@ -72,6 +73,16 @@ def save_explicit_cashflow_mapping(
         CashFlowArticleMapping.CLASS_UNCLASSIFIED,
     }:
         raise ValidationError("Укажите поддерживаемый статус классификации.")
+    is_dividend = values.get("is_dividend", False)
+    if not isinstance(is_dividend, bool):
+        raise ValidationError("Признак дивидендов должен иметь булево значение.")
+    if is_dividend and (
+        flow_type != CashFlowArticleMapping.FLOW_FINANCING
+        or classification_status != CashFlowArticleMapping.CLASS_CONFIRMED
+    ):
+        raise ValidationError(
+            "Признак дивидендов допустим только для подтверждённого финансового потока."
+        )
 
     # The form does not accept arbitrary allocation flags.  Internal turnover
     # is always internal and never external; every other explicit type remains
@@ -99,6 +110,7 @@ def save_explicit_cashflow_mapping(
         mapping.classification_status = classification_status
         mapping.is_internal_turnover = is_internal
         mapping.include_in_external_cashflow = include_external
+        mapping.is_dividend = is_dividend
         mapping.comment = values["comment"]
         mapping.updated_by = user
         # Do not call full_clean(): `liquidity` is intentionally supported by
