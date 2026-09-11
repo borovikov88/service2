@@ -1278,8 +1278,22 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         )
         self.assertIn("pull-requests: read", workflow)
         self.assertIn("ADVISOR_MCP_TEST_ENABLED: \"false\"", workflow)
+        self.assertIn("confirm_main_sha:", workflow)
+        self.assertIn("required: true", workflow)
         self.assertIn("review-gate:", workflow)
         self.assertIn("github.event_name == 'push'", workflow)
+        self.assertIn("github.event_name == 'workflow_dispatch'", workflow)
+        main_pipeline_condition = (
+            "(github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&\n"
+            "      github.ref == 'refs/heads/main'"
+        )
+        self.assertEqual(workflow.count(main_pipeline_condition), 2)
+        self.assertIn("Require exact current main confirmation for manual recovery", workflow)
+        self.assertIn("CONFIRM_MAIN_SHA: ${{ inputs.confirm_main_sha }}", workflow)
+        self.assertIn('[[ "$WORKFLOW_REF" == "refs/heads/main" ]]', workflow)
+        self.assertIn('[[ "$CONFIRM_MAIN_SHA" == "$COMMIT_SHA" ]]', workflow)
+        self.assertIn("Recheck current main before manual deployment", workflow)
+        self.assertEqual(workflow.count('"$api/git/ref/heads/main"'), 2)
         self.assertIn(".merge_commit_sha == $sha", workflow)
         self.assertIn("gh api --paginate --slurp", workflow)
         self.assertIn("verify_deploy_review.py", workflow)

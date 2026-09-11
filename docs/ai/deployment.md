@@ -149,8 +149,18 @@ commit. Коллизии untracked output с отслеживаемым target p
 Deployment не меняет production `.env`; тестовый MCP нельзя включать в рамках
 этой настройки.
 
-`workflow_dispatch` для `ci-deploy.yml` выполняет только тесты: review gate и
-deployment для него пропускаются. Отдельный `hosting-connection-check.yml`
+Если GitHub не создал push-run после уже проверенного merge в `main`,
+`workflow_dispatch` для `ci-deploy.yml` используется только как recovery-путь:
+в Actions выбирается именно `main`, а в обязательное поле вводится полный
+40-символьный SHA текущего `main`. После тестов workflow продолжает review gate
+и deployment только если ref — `refs/heads/main`, введённый SHA равен
+`github.sha`, GitHub API подтверждает, что текущий `main` всё ещё указывает на
+этот SHA, и проходит прежняя проверка merged PR с независимым актуальным
+`APPROVED`. Перед exact checkout и SSH эта проверка `main` через GitHub API
+повторяется. Любое несовпадение останавливает pipeline до exact checkout, SSH
+и фактического развёртывания; запуск с другой ветки не получает deployment.
+Этот recovery-путь не заменяет ревью, не допускает прямой push и не позволяет
+развернуть устаревший commit. Отдельный `hosting-connection-check.yml`
 выполняет описанную выше проверку подключения.
 
 Deployment не является атомарным и автоматический rollback после применённой
@@ -158,4 +168,3 @@ Deployment не является атомарным и автоматическ�
 миграция или установленная зависимость может остаться. Для рискованных миграций
 до merge обязателен проверенный backup рабочей БД и отдельный план roll-forward;
 возврат к старому коду допустим только после проверки совместимости схемы.
-
