@@ -19,6 +19,7 @@ from pool_service.models import (
     AccountableTransaction,
     CashCount,
     CashOperation,
+    CashFlowArticleMapping,
     CardTransferPayment,
     Client,
     Expense,
@@ -808,6 +809,80 @@ class EmployeeIdentityMappingForm(forms.Form):
         self.fields["employee"].queryset = Employee.objects.filter(
             organization=organization, is_active=True
         ).order_by("display_name", "id")
+
+
+class CashFlowArticleMappingForm(forms.Form):
+    """Explicit, human-confirmed classification for one active 1C article.
+
+    The form deliberately has no article-name field.  The server derives both
+    the visible source name and its canonical key from an active confirmed
+    CashFlowRow, so a POST cannot create a mapping for an arbitrary string.
+    ``liquidity`` is a read-model value that is not in the legacy model choices
+    yet; keeping it here avoids a schema/state migration solely for a choice.
+    """
+
+    FLOW_CHOICES = [
+        (CashFlowArticleMapping.FLOW_OPERATING, "Операционный"),
+        (CashFlowArticleMapping.FLOW_INVESTING, "Инвестиционный"),
+        (CashFlowArticleMapping.FLOW_FINANCING, "Финансовый"),
+        (CashFlowArticleMapping.FLOW_LIQUIDITY, "Управление ликвидностью"),
+        (CashFlowArticleMapping.FLOW_INTERNAL, "Внутренний оборот"),
+        (CashFlowArticleMapping.FLOW_UNCLASSIFIED, "Оставить неклассифицированной"),
+    ]
+
+    management_category = forms.CharField(
+        max_length=300,
+        required=False,
+        label="Управленческая категория",
+        widget=forms.TextInput(attrs={"class": "form-control"}),
+    )
+    flow_type = forms.ChoiceField(
+        choices=FLOW_CHOICES,
+        label="Тип потока",
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
+    classification_status = forms.ChoiceField(
+        choices=CashFlowArticleMapping.CLASS_CHOICES,
+        label="Статус решения",
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
+    comment = forms.CharField(
+        max_length=2000,
+        required=False,
+        label="Комментарий",
+        widget=forms.Textarea(attrs={"class": "form-control", "rows": 2}),
+    )
+    confirmation = forms.BooleanField(
+        required=False,
+        label="Подтверждаю, что это управленческое решение по статье ДДС.",
+        widget=forms.CheckboxInput(attrs={"class": "form-check-input"}),
+    )
+
+    def clean(self):
+        cleaned = super().clean()
+        flow_type = cleaned.get("flow_type")
+        status = cleaned.get("classification_status")
+        category = (cleaned.get("management_category") or "").strip()
+        cleaned["management_category"] = category
+
+        if (
+            status == CashFlowArticleMapping.CLASS_CONFIRMED
+            and not cleaned.get("confirmation")
+        ):
+            self.add_error(
+                "confirmation",
+                "Подтвердите управленческое решение перед сохранением.",
+            )
+        if (
+            status == CashFlowArticleMapping.CLASS_CONFIRMED
+            and flow_type != CashFlowArticleMapping.FLOW_UNCLASSIFIED
+            and not category
+        ):
+            self.add_error(
+                "management_category",
+                "Для подтверждённого типа укажите управленческую категорию.",
+            )
+        return cleaned
 
 
 class PayrollAccrualFetchForm(forms.Form):

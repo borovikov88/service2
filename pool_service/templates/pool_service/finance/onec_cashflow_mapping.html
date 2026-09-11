@@ -1,0 +1,57 @@
+{% extends "pool_service/base.html" %}
+{% load finance_tags %}
+{% block title %}Классификация статей ДДС{% endblock %}
+{% block content %}
+<style>
+  .cashflow-mapping-item summary { cursor:pointer; list-style:none; }
+  .cashflow-mapping-item summary::-webkit-details-marker { display:none; }
+  .cashflow-mapping-metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.5rem; }
+  @media (max-width: 575.98px) { .cashflow-mapping-metrics { grid-template-columns:1fr; } }
+</style>
+<div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+  <div><h1 class="h3 mb-1">Классификация статей ДДС</h1><div class="text-muted">Только активные подтверждённые строки 1С. Сохранение не меняет импорт, исходные движения или активную версию.</div></div>
+  <a class="btn btn-outline-secondary" href="{{ dashboard_url }}">К ДДС</a>
+</div>
+
+<div class="alert alert-info">Решение применяется только после явного сохранения. Пока статус не «Подтверждена», статья остаётся неклассифицированной во всех управленческих итогах. Внутренний оборот автоматически исключается из внешнего потока; остальные типы остаются внешними.</div>
+
+<form method="get" class="card card-soft p-3 mb-3">
+  <div class="row g-2 align-items-end">
+    <div class="col-sm-4"><label class="form-label" for="mapping-period-from">С месяца</label><input class="form-control" id="mapping-period-from" type="month" name="period_from" value="{{ period_from|date:'Y-m' }}"></div>
+    <div class="col-sm-4"><label class="form-label" for="mapping-period-to">По месяц</label><input class="form-control" id="mapping-period-to" type="month" name="period_to" value="{{ period_to|date:'Y-m' }}"></div>
+    <div class="col-sm-4"><button class="btn btn-primary w-100">Показать</button></div>
+  </div>
+  {% if period_error %}<div class="text-danger mt-2">{{ period_error }}</div>{% endif %}
+</form>
+
+<div class="card card-soft p-3 mb-3">
+  <div class="small text-muted">Текущий внешний поток</div>
+  <div class="cashflow-mapping-metrics mt-2"><div><span class="text-muted small d-block">Поступления</span><strong>{{ data.external.receipts|money }}</strong></div><div><span class="text-muted small d-block">Платежи</span><strong>{{ data.external.payments|money }}</strong></div><div><span class="text-muted small d-block">Чистый поток</span><strong>{{ data.external.net_cash_flow|money }}</strong></div></div>
+</div>
+
+<div class="d-grid gap-2">
+  {% for entry in article_forms %}
+  <details class="card card-soft p-3 cashflow-mapping-item"{% if entry.article.classification_status != 'confirmed' %} open{% endif %}>
+    <summary class="d-flex flex-wrap justify-content-between gap-2 align-items-start">
+      <div><strong>{{ entry.article.article_raw }}</strong><div class="small text-muted mt-1">Сейчас: {{ entry.article.flow_label }} · {{ entry.article.category }} · {{ entry.status_label }}</div></div>
+      <strong>{{ entry.article.net_cash_flow|money }}</strong>
+    </summary>
+    <div class="cashflow-mapping-metrics border-top pt-3 mt-3"><div><span class="text-muted small d-block">Поступления</span>{{ entry.article.receipts|money }}</div><div><span class="text-muted small d-block">Платежи</span>{{ entry.article.payments|money }}</div><div><span class="text-muted small d-block">Строк</span>{{ entry.article.row_count }}</div></div>
+    <form method="post" action="{% url 'finance_onec_cashflow_mapping_save' %}" class="row g-2 mt-2">
+      {% csrf_token %}
+      <input type="hidden" name="article" value="{{ entry.article.normalized_article_name }}">
+      {% if period_from %}<input type="hidden" name="period_from" value="{{ period_from|date:'Y-m' }}">{% endif %}
+      {% if period_to %}<input type="hidden" name="period_to" value="{{ period_to|date:'Y-m' }}">{% endif %}
+      <div class="col-md-4">{{ entry.form.flow_type.label_tag }}{{ entry.form.flow_type }}</div>
+      <div class="col-md-4">{{ entry.form.classification_status.label_tag }}{{ entry.form.classification_status }}</div>
+      <div class="col-md-4">{{ entry.form.management_category.label_tag }}{{ entry.form.management_category }}</div>
+      <div class="col-12">{{ entry.form.comment.label_tag }}{{ entry.form.comment }}</div>
+      <div class="col-12 form-check ms-1">{{ entry.form.confirmation }}{{ entry.form.confirmation.label_tag }}</div>
+      <div class="col-12"><button class="btn btn-primary">Сохранить решение</button></div>
+    </form>
+  </details>
+  {% empty %}
+  <div class="card card-soft p-3 text-muted">В выбранном периоде нет активных подтверждённых статей ДДС.</div>
+  {% endfor %}
+</div>
+{% endblock %}
