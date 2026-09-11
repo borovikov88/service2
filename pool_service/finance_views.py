@@ -18,7 +18,7 @@ from django.core.validators import validate_ipv46_address
 from django.db import transaction
 from django.db.models import Case, DecimalField, F, Sum, Value, When
 from django.core.paginator import Paginator
-from django.http import FileResponse, HttpResponse, HttpResponseForbidden, JsonResponse
+from django.http import FileResponse, Http404, HttpResponse, HttpResponseForbidden, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -44,6 +44,7 @@ from pool_service.finance_forms import (
     PayrollUploadForm,
     PayrollConfirmForm,
     EmployeeIdentityMappingForm,
+    CashFlowArticleMappingForm,
 )
 from pool_service.models import (
     AccountableTransaction,
@@ -54,6 +55,7 @@ from pool_service.models import (
     CashCount,
     CashOperation,
     CashOperationChange,
+    CashFlowArticleMapping,
     Client,
     Expense,
     ExpenseCategory,
@@ -157,6 +159,7 @@ from pool_service.services.finance import (
     can_manage_employee_mapping,
     can_import_gross_profit,
     can_import_cashflow,
+    can_manage_cashflow_classification,
     can_view_cashflow,
     can_view_cost_control,
     can_view_gross_profit,
@@ -174,6 +177,10 @@ from pool_service.services.finance import (
     report_employee_rows,
     report_expenses,
     user_display_name,
+)
+from pool_service.services.cashflow_classification import (
+    canonical_article_key,
+    save_explicit_cashflow_mapping,
 )
 from pool_service.finance_imports.overview import finance_overview_data
 from pool_service.services.permissions import is_org_access_blocked, organization_for_user
@@ -3245,15 +3252,7 @@ def finance_onec_cashflow_dashboard(request):
     organization, denied = _capability_guard(request, can_view_cashflow)
     if denied:
         return denied
-    period_from = period_to = None
-    period_error = ""
-    if request.GET.get("period_from") or request.GET.get("period_to"):
-        try:
-            period_from, period_to = parse_payroll_period(
-                request.GET.get("period_from"), request.GET.get("period_to")
-            )
-        except ValueError as exc:
-            period_error = str(exc)
+    period_from, period_to, period_error = _cashflow_period(request.GET)
     data = cashflow_dashboard_data(organization, period_from, period_to)
     article_trend = cashflow_article_trend_data(
         organization,
@@ -3269,8 +3268,177 @@ def finance_onec_cashflow_dashboard(request):
         "period_from": period_from,
         "period_to": period_to,
         "period_error": period_error,
+        "can_manage_cashflow_classification": can_manage_cashflow_classification(
+            request.user, organization
+        ),
         "active_tab": "finance",
     })
+
+
+def _cashflow_period(values):
+    """Parse an optional range without inventing a date for the mapping UI."""
+    if not values.get("period_from") and not values.get("period_to"):
+        return None, None, ""
+    try:
+        period_from, period_to = parse_payroll_period(
+            values.get("period_from"), values.get("period_to")
+        )
+    except ValueError as exc:
+        return None, None, str(exc)
+    return period_from, period_to, ""
+
+
+def _cashflow_period_url(route_name, period_from=None, period_to=None):
+    query = {
+        key: value.strftime("%Y-%m")
+        for key, value in (
+            ("period_from", period_from),
+            ("period_to", period_to),
+        )
+        if value is not None
+    }
+    url = reverse(route_name)
+    return f"{url}?{urlencode(query)}" if query else url
+
+
+def _cashflow_mapping_url(period_from=None, period_to=None):
+    return _cashflow_period_url(
+        "finance_onec_cashflow_mapping", period_from, period_to
+    )
+
+
+def _active_cashflow_mapping_article(data, requested_key):
+    """Resolve a POST target exclusively from the canonical active read model."""
+    requested_key = canonical_article_key(requested_key)
+    matches = [
+        item for item in data["articles"]
+        if canonical_article_key(item["normalized_article_name"]) == requested_key
+    ]
+    if not matches:
+        return None
+    # A mapping key intentionally spans superficial source-name variants.  Use
+    # a stable source label and require the canonical key to agree before save.
+    return sorted(
+        matches,
+        key=lambda item: (item["article_raw"], item["normalized_article_name"]),
+    )[0]
+
+
+@login_required
+def finance_onec_cashflow_mapping(request):
+    """Show active confirmed articles and their current classification state."""
+    organization, denied = _capability_guard(
+        request,
+        can_manage_cashflow_classification,
+        denied_message="Недостаточно прав для классификации статей ДДС.",
+    )
+    if denied:
+        return denied
+    period_from, period_to, period_error = _cashflow_period(request.GET)
+    data = cashflow_dashboard_data(organization, period_from, period_to)
+
+    # The aggregate comes only from the common management service.  This small
+    # lookup supplies editable metadata (not separate money totals) for a
+    # mapping already connected to a current active article.
+    mapping_by_key = {
+        mapping.normalized_article_name: mapping
+        for mapping in CashFlowArticleMapping.objects.filter(
+            organization=organization,
+            normalized_article_name__in=[
+                item["normalized_article_name"] for item in data["articles"]
+            ],
+        )
+    }
+    article_forms = []
+    for article in data["articles"]:
+        mapping = mapping_by_key.get(article["normalized_article_name"])
+        article_forms.append({
+            "article": article,
+            "status_label": (
+                mapping.get_classification_status_display()
+                if mapping else "Нет mapping"
+            ),
+            "form": CashFlowArticleMappingForm(initial={
+                "management_category": (
+                    mapping.management_category if mapping else ""
+                ),
+                "flow_type": (
+                    mapping.flow_type
+                    if mapping and mapping.flow_type in dict(
+                        CashFlowArticleMappingForm.FLOW_CHOICES
+                    )
+                    else CashFlowArticleMapping.FLOW_UNCLASSIFIED
+                ),
+                "classification_status": (
+                    mapping.classification_status
+                    if mapping else CashFlowArticleMapping.CLASS_UNCLASSIFIED
+                ),
+                "comment": mapping.comment if mapping else "",
+            }),
+        })
+    return render(request, "pool_service/finance/onec_cashflow_mapping.html", {
+        "data": data,
+        "article_forms": article_forms,
+        "period_from": period_from,
+        "period_to": period_to,
+        "period_error": period_error,
+        "dashboard_url": _cashflow_period_url(
+            "finance_onec_cashflow_dashboard", period_from, period_to
+        ),
+        "active_tab": "finance",
+    })
+
+
+@require_POST
+@login_required
+def finance_onec_cashflow_mapping_save(request):
+    """Persist only an explicit, validated classification of an active article."""
+    organization, denied = _capability_guard(
+        request,
+        can_manage_cashflow_classification,
+        denied_message="Недостаточно прав для классификации статей ДДС.",
+    )
+    if denied:
+        return denied
+    period_from, period_to, period_error = _cashflow_period(request.POST)
+    redirect_url = _cashflow_mapping_url(period_from, period_to)
+    if period_error:
+        messages.error(request, period_error)
+        return redirect(redirect_url)
+
+    data = cashflow_dashboard_data(organization, period_from, period_to)
+    article = _active_cashflow_mapping_article(data, request.POST.get("article"))
+    if article is None:
+        # Never create a mapping for an arbitrary POST value or for a row which
+        # is no longer in the active confirmed version for this organization.
+        raise Http404("Статья не найдена в активных подтверждённых данных ДДС.")
+
+    form = CashFlowArticleMappingForm(request.POST)
+    if not form.is_valid():
+        messages.error(request, "; ".join(
+            error for errors in form.errors.values() for error in errors
+        ))
+        return redirect(redirect_url)
+    try:
+        mapping, created = save_explicit_cashflow_mapping(
+            organization=organization,
+            article_name=article["article_raw"],
+            expected_normalized_article_name=article["normalized_article_name"],
+            values=form.cleaned_data,
+            user=request.user,
+        )
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect(redirect_url)
+
+    messages.success(
+        request,
+        (
+            "Классификация статьи сохранена."
+            if created else "Классификация статьи обновлена."
+        ),
+    )
+    return redirect(redirect_url)
 
 
 def _payroll_access(request, permission):
