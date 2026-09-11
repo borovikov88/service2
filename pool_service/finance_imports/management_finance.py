@@ -10,6 +10,7 @@ organization here.
 from collections import defaultdict
 from datetime import date, datetime
 from decimal import Decimal
+import re
 
 from django.db.models import F
 from django.utils import timezone
@@ -34,6 +35,53 @@ from pool_service.models import (
 ZERO = Decimal("0.00")
 MONEY_KEYS = ("receipts", "payments", "net_cash_flow")
 CONTRACT_VERSION = "management_finance.v1"
+# The mapping screen may show a small, server-side source display preview for
+# review.  It is deliberately bounded and never includes the raw source_data
+# JSON (which may contain recorder and other technical identifiers).
+CASHFLOW_SOURCE_PREVIEW_LIMIT = 20
+
+# A cash-flow source row may retain technical OData labels in its display
+# columns.  The mapping UI is useful for a human review only when it does not
+# turn those values into a secondary technical-data endpoint.  This is
+# deliberately fail-closed: a value with *any* technical signal is withheld in
+# full, rather than trying to remove one fragment and accidentally leaving a
+# useful part of an identifier or recorder payload behind.
+_SOURCE_UUID_RE = re.compile(
+    r"(?i)(?:urn:uuid:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
+_SOURCE_HEX_ID_RE = re.compile(r"(?i)\b[0-9a-f]{32}\b")
+_SOURCE_ODATA_TYPE_RE = re.compile(
+    r"(?i)\b(?:standardodata\.)?(?:"
+    r"document|catalog|accumulationregister|informationregister|"
+    r"accountingregister|calculationregister|chartofaccounts|"
+    r"chartofcharacteristictypes|businessprocess|task|exchangeplan|"
+    r"constant|enum)[._]"
+)
+_SOURCE_TECHNICAL_MARKER_RE = re.compile(
+    r"(?i)\b(?:standardodata|recorder(?:_type)?|ref(?:_key)?|"
+    r"source_identity|source_reference|line_number|guid|uuid)\b|"
+    r"\b(?:id|key)\b\s*[:=]"
+)
+_SOURCE_URL_RE = re.compile(r"(?i)\bhttps?://[^\s]+")
+_SOURCE_JSONISH_RE = re.compile(
+    r"[{}\[\]]|(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*')\s*:"
+)
+_SOURCE_HTML_RE = re.compile(
+    r"(?is)</?[a-z][^>]*>|<!--|&(?:#\d+|#x[0-9a-f]+|[a-z][a-z0-9]+);"
+)
+_SOURCE_REFERENCE_TOKEN_RE = re.compile(
+    r"(?i)\b(?:ref|rec|recorder|document|doc)[-_][a-z0-9]+\b|\bd\d{2,}\b"
+)
+_SOURCE_UNSAFE_DISPLAY_PATTERNS = (
+    _SOURCE_UUID_RE,
+    _SOURCE_HEX_ID_RE,
+    _SOURCE_ODATA_TYPE_RE,
+    _SOURCE_TECHNICAL_MARKER_RE,
+    _SOURCE_URL_RE,
+    _SOURCE_JSONISH_RE,
+    _SOURCE_HTML_RE,
+    _SOURCE_REFERENCE_TOKEN_RE,
+)
 
 # ``liquidity`` is a supported read-model value.  It intentionally is not added
 # to the model field choices in this first no-migration stage: changing those
@@ -79,6 +127,9 @@ REVIEW_REASON_LABELS = {
     "internal_flag_overrides_configured_flow": "Внутренний признак заменяет настроенный тип",
     "excluded_from_external_requires_decision": "Исключено из внешнего потока без внутреннего признака",
     "liquidity_mapping_requires_review": "Ликвидностный тип требует явной проверки решения",
+    "dividend_flag_requires_confirmed_financing": (
+        "Признак дивидендов допустим только для подтверждённого финансового потока"
+    ),
 }
 
 
@@ -157,7 +208,8 @@ def _confirmed_cashflow_states(organization, first_month=None, last_month=None):
     return list(states.order_by("period_month"))
 
 
-def _confirmed_cashflow_rows(organization, first_month=None, last_month=None):
+def _confirmed_cashflow_queryset(organization, first_month=None, last_month=None):
+    """Return only current confirmed cash-flow facts for one organization."""
     rows = CashFlowRow.objects.active_for(
         organization, OneCImportBatch.TYPE_CASHFLOW
     ).filter(
@@ -169,6 +221,11 @@ def _confirmed_cashflow_rows(organization, first_month=None, last_month=None):
         rows = rows.filter(period_month__gte=first_month)
     if last_month is not None:
         rows = rows.filter(period_month__lte=last_month)
+    return rows
+
+
+def _confirmed_cashflow_rows(organization, first_month=None, last_month=None):
+    rows = _confirmed_cashflow_queryset(organization, first_month, last_month)
     return list(rows.values(
         "period_month",
         "article_raw",
@@ -176,6 +233,86 @@ def _confirmed_cashflow_rows(organization, first_month=None, last_month=None):
         "receipts",
         "payments",
     ))
+
+
+def _safe_cashflow_source_display(value):
+    """Return only a clean human display string from a stored source field.
+
+    Stored values are never parsed or partially redacted.  A JSON-ish payload,
+    recorder/reference marker, OData type, identifier, URL or HTML fragment
+    makes the whole display unsafe, so it is omitted.  That prevents a new
+    technical format from leaking its useful remainder into the mapping UI.
+    """
+    if not isinstance(value, str):
+        return ""
+    if not value.strip():
+        return ""
+    if any(pattern.search(value) for pattern in _SOURCE_UNSAFE_DISPLAY_PATTERNS):
+        return ""
+    return value
+
+
+def cashflow_article_source_previews(
+    organization,
+    normalized_article_names,
+    first_month=None,
+    last_month=None,
+    *,
+    limit=CASHFLOW_SOURCE_PREVIEW_LIMIT,
+):
+    """Return a bounded display-only preview of active source movements.
+
+    This is intentionally not a primary-document resolver.  OData cash-flow
+    imports currently persist the 1C ``Аналитика`` display string in
+    ``document_raw`` and generally leave ``source_reference`` empty.  The
+    function exposes only server-redacted display fragments, period and money
+    direction; it never returns ``source_data`` or technical identifiers.
+    """
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
+        raise ValueError("Лимит предпросмотра должен быть целым числом от 1 до 50.")
+    keys = tuple(dict.fromkeys(
+        value for value in normalized_article_names
+        if isinstance(value, str) and value
+    ))
+    previews = {
+        key: {"items": [], "row_count": 0, "truncated": False}
+        for key in keys
+    }
+    if not keys:
+        return previews
+
+    rows = _confirmed_cashflow_queryset(
+        organization, first_month, last_month
+    ).filter(
+        normalized_article_name__in=keys
+    ).order_by(
+        "normalized_article_name", "period_month", "document_raw",
+        "source_reference", "source_row_number", "id",
+    ).values(
+        "normalized_article_name", "period_month", "document_raw",
+        "source_reference", "receipts", "payments",
+    )
+    for row in rows:
+        preview = previews[row["normalized_article_name"]]
+        preview["row_count"] += 1
+        if len(preview["items"]) >= limit:
+            preview["truncated"] = True
+            continue
+        receipts = row["receipts"] if row["receipts"] is not None else ZERO
+        payments = row["payments"] if row["payments"] is not None else ZERO
+        preview["items"].append({
+            "period_month": row["period_month"],
+            "document_display": _safe_cashflow_source_display(
+                row["document_raw"]
+            ),
+            "source_reference_display": _safe_cashflow_source_display(
+                row["source_reference"]
+            ),
+            "receipts": receipts,
+            "payments": payments,
+            "net_cash_flow": receipts - payments,
+        })
+    return previews
 
 
 def _mapping_index(organization):
@@ -188,6 +325,7 @@ def _mapping_index(organization):
         "classification_status",
         "is_internal_turnover",
         "include_in_external_cashflow",
+        "is_dividend",
     )
     return {
         item["normalized_article_name"]: item
@@ -210,6 +348,7 @@ def _classification(mapping):
             "allocation": ALLOCATION_EXTERNAL,
             "reasons": ("mapping_missing",),
             "mapping_id": None,
+            "is_dividend": False,
         }
 
     configured_flow_type = mapping["flow_type"]
@@ -265,6 +404,16 @@ def _classification(mapping):
         # This is a registry item, not an automatic reclassification.  It makes
         # liquidity mappings observable while the mapping remains as saved.
         reasons.append("liquidity_mapping_requires_review")
+    is_dividend = bool(mapping["is_dividend"])
+    if is_dividend and not (
+        is_confirmed
+        and configured_flow_type == CashFlowArticleMapping.FLOW_FINANCING
+        and allocation == ALLOCATION_EXTERNAL
+    ):
+        # Manual or legacy database edits must never make an unconfirmed or
+        # non-financing row look like a dividend in the common read model.
+        reasons.append("dividend_flag_requires_confirmed_financing")
+        is_dividend = False
     return {
         "flow_type": flow_type,
         "configured_flow_type": configured_flow_type,
@@ -273,6 +422,7 @@ def _classification(mapping):
         "allocation": allocation,
         "reasons": tuple(dict.fromkeys(reasons)),
         "mapping_id": mapping["id"],
+        "is_dividend": is_dividend,
     }
 
 
@@ -401,6 +551,7 @@ def _article_breakdown(article_buckets):
             "classification_status": item["classification_status"],
             "configured_flow_type": item["configured_flow_type"],
             "mapping_id": item["mapping_id"],
+            "is_dividend": item["is_dividend"],
             "row_count": item["row_count"],
             **_copy_money(item["totals"]),
         }
@@ -547,6 +698,7 @@ def _add_article_bucket(buckets, row, classification, receipts, payments):
         "classification_status": classification["classification_status"],
         "configured_flow_type": classification["configured_flow_type"],
         "mapping_id": classification["mapping_id"],
+        "is_dividend": classification["is_dividend"],
         "row_count": 0,
         "totals": _empty_money(),
     })

@@ -852,6 +852,15 @@ class CashFlowArticleMappingForm(forms.Form):
         label="Комментарий",
         widget=forms.Textarea(attrs={"class": "form-control", "rows": 2}),
     )
+    is_dividend = forms.BooleanField(
+        required=False,
+        label="Дивиденды / выплата собственнику",
+        help_text=(
+            "Допустимо только для подтверждённого финансового потока. "
+            "Направление суммы берётся из поступления и платежа исходной строки."
+        ),
+        widget=forms.CheckboxInput(attrs={"class": "form-check-input"}),
+    )
     confirmation = forms.BooleanField(
         required=False,
         label="Подтверждаю, что это управленческое решение по статье ДДС.",
@@ -881,6 +890,14 @@ class CashFlowArticleMappingForm(forms.Form):
             self.add_error(
                 "management_category",
                 "Для подтверждённого типа укажите управленческую категорию.",
+            )
+        if cleaned.get("is_dividend") and (
+            status != CashFlowArticleMapping.CLASS_CONFIRMED
+            or flow_type != CashFlowArticleMapping.FLOW_FINANCING
+        ):
+            self.add_error(
+                "is_dividend",
+                "Признак дивидендов допустим только для подтверждённого финансового потока.",
             )
         return cleaned
 
