@@ -6,6 +6,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      confirm_main_sha:
+        description: "Exact 40-character SHA of the current main commit to test and deploy"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -59,7 +64,9 @@ jobs:
 
   review-gate:
     name: Verify independent review of exact main commit
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/main'
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -69,6 +76,42 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Require exact current main confirmation for manual recovery
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.ref }}
+          CONFIRM_MAIN_SHA: ${{ inputs.confirm_main_sha }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$WORKFLOW_REF" == "refs/heads/main" ]] || {
+            echo "Manual deployment recovery must be dispatched from main" >&2
+            exit 1
+          }
+          [[ "$CONFIRM_MAIN_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "Manual deployment recovery requires an exact 40-character lowercase SHA" >&2
+            exit 1
+          }
+          [[ "$CONFIRM_MAIN_SHA" == "$COMMIT_SHA" ]] || {
+            echo "Confirmed SHA does not match the dispatched commit" >&2
+            exit 1
+          }
+          api="https://api.github.com/repos/$REPOSITORY"
+          current_main_sha="$(curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$api/git/ref/heads/main" | jq -er '.object.sha')"
+          [[ "$current_main_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "GitHub API did not return a valid main SHA" >&2
+            exit 1
+          }
+          [[ "$current_main_sha" == "$COMMIT_SHA" ]] || {
+            echo "main changed after this workflow was dispatched" >&2
+            exit 1
+          }
       - name: Require merged PR and current-head independent approval
         env:
           GH_TOKEN: ${{ github.token }}
@@ -99,12 +142,36 @@ jobs:
 
   deploy:
     name: Deploy tested main to Passenger
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/main'
     needs: [test, review-gate]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: production
     steps:
+      - name: Recheck current main before manual deployment
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+          api="https://api.github.com/repos/$REPOSITORY"
+          current_main_sha="$(curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$api/git/ref/heads/main" | jq -er '.object.sha')"
+          [[ "$current_main_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "GitHub API did not return a valid main SHA" >&2
+            exit 1
+          }
+          [[ "$current_main_sha" == "$COMMIT_SHA" ]] || {
+            echo "main changed after manual review gate completed" >&2
+            exit 1
+          }
       - name: Checkout exact reviewed commit
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
         with:
