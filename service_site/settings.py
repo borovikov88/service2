@@ -160,6 +160,32 @@ ADVISOR_MCP_TEST_ALLOWED_ORIGINS = {
     for origin in os.getenv('ADVISOR_MCP_TEST_ALLOWED_ORIGINS', '').split(',')
     if origin.strip()
 }
+# Production finance MCP is intentionally independent from the harmless
+# connection probe above and is disabled until an owner has registered the
+# exact ChatGPT callback URI and server-side scope.  Its OAuth helpers reject
+# a missing canonical HTTPS resource/issuer even when this flag is switched on.
+ADVISOR_FINANCE_MCP_ENABLED = os.getenv('ADVISOR_FINANCE_MCP_ENABLED', '').lower() == 'true'
+# Validate a present Origin on every finance-MCP connection.  An absent Origin
+# is allowed for ChatGPT's server-side transport; an empty explicit allowlist
+# therefore denies browser origins rather than widening CORS implicitly.
+ADVISOR_FINANCE_MCP_ALLOWED_ORIGINS = {
+    origin.strip()
+    for origin in os.getenv(
+        'ADVISOR_FINANCE_MCP_ALLOWED_ORIGINS', 'https://chatgpt.com'
+    ).split(',')
+    if origin.strip()
+}
+ADVISOR_FINANCE_MCP_RESOURCE_URL = os.getenv('ADVISOR_FINANCE_MCP_RESOURCE_URL', '')
+ADVISOR_FINANCE_MCP_AUTH_ISSUER = os.getenv('ADVISOR_FINANCE_MCP_AUTH_ISSUER', '')
+ADVISOR_FINANCE_MCP_ACCESS_TOKEN_TTL_SECONDS = os.getenv(
+    'ADVISOR_FINANCE_MCP_ACCESS_TOKEN_TTL_SECONDS', '600'
+)
+ADVISOR_FINANCE_MCP_REFRESH_TOKEN_TTL_SECONDS = os.getenv(
+    'ADVISOR_FINANCE_MCP_REFRESH_TOKEN_TTL_SECONDS', '2592000'
+)
+ADVISOR_FINANCE_MCP_AUTHORIZATION_CODE_TTL_SECONDS = os.getenv(
+    'ADVISOR_FINANCE_MCP_AUTHORIZATION_CODE_TTL_SECONDS', '300'
+)
 
 INSTALLED_APPS = [
     'django.contrib.admin',
