@@ -25,6 +25,30 @@ from pool_service.models import (
 )
 
 
+# Production hosts in restricted networks can be unable to fetch chatgpt.com
+# even though ChatGPT can reach the public Service2 MCP in the opposite
+# direction. Keep a reviewed snapshot of the exact public-client identity as a
+# fail-closed provisioning fallback. Any OpenAI metadata change requires a code
+# review before Service2 accepts a new callback or client identity.
+_CHATGPT_PINNED_REDIRECT_URIS = (
+    "https://chatgpt.com/connector_platform_oauth_redirect",
+)
+_CHATGPT_PINNED_METADATA_SHA256 = (
+    "c718a99e5f5f94ec6a37b457fe691706037efb0ab62de2dcb0bd0eb116488491"
+)
+_CHATGPT_METADATA_NETWORK_ERROR = (
+    "Не удалось получить доверенный ChatGPT client metadata document."
+)
+
+
+def _pinned_chatgpt_client_metadata():
+    return {
+        "client_id": CHATGPT_CLIENT_ID_METADATA_URL,
+        "redirect_uris": _CHATGPT_PINNED_REDIRECT_URIS,
+        "sha256": _CHATGPT_PINNED_METADATA_SHA256,
+    }
+
+
 def _exact_https_redirect_uri(value):
     parsed = urlsplit(value or "")
     return bool(
@@ -107,13 +131,21 @@ class Command(BaseCommand):
         if len(organizations) != len(organization_ids):
             raise CommandError("Одна или несколько --organization-id не существуют.")
         actor = self._finance_actor_for(options["actor_id"], organizations)
-        # Fetch only the literal trusted document once during provisioning.
-        # Runtime OAuth validates the pinned evidence below and never makes a
-        # network request based on a client_id supplied by a caller.
+
+        # Prefer live verification of the one literal trusted CIMD URL. Some
+        # production networks are blocked by chatgpt.com's edge; only that
+        # network-fetch failure may fall back to the reviewed pinned snapshot.
+        # A reachable but malformed/incompatible document still fails closed.
         try:
             metadata = fetch_trusted_chatgpt_client_metadata()
         except FinanceMcpConfigurationError as exc:
-            raise CommandError(str(exc)) from exc
+            if str(exc) != _CHATGPT_METADATA_NETWORK_ERROR:
+                raise CommandError(str(exc)) from exc
+            metadata = _pinned_chatgpt_client_metadata()
+            self.stderr.write(self.style.WARNING(
+                "ChatGPT CIMD недоступен из production-сети; "
+                "использован проверенный pinned snapshot из кода."
+            ))
         if metadata["client_id"] != client_id or not set(redirect_uris).issubset(metadata["redirect_uris"]):
             raise CommandError(
                 "Каждый --redirect-uri должен в точности присутствовать в доверенном ChatGPT CIMD."
