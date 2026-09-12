@@ -144,9 +144,6 @@ from .finance_views import (
     finance_onec_odata_sync_status,
     finance_onec_odata_sync_step,
     finance_onec_refresh_apply_start,
-    finance_onec_refresh_apply_step,
-    finance_onec_refresh_apply_status,
-    finance_onec_refresh_apply_detail,
     finance_onec_cashflow_preview,
     finance_onec_cashflow_confirm,
     finance_onec_cashflow_cancel,
@@ -170,6 +167,11 @@ from .finance_views import (
     finance_payroll_import_confirm,
     finance_payroll_employee_mapping,
     finance_payroll_employee_map,
+)
+from .finance_position_browser import (
+    finance_onec_refresh_apply_step,
+    finance_onec_refresh_apply_status,
+    finance_onec_refresh_apply_detail,
 )
 from .development_views import (
     development_iteration_create,
