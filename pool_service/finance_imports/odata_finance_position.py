@@ -108,9 +108,10 @@ def _read_docs(config, guids, opener, budget):
   chunk=sorted(expected)[start:start+40]
   for rows,_ in read_odata_pages(config,_reference_url(config,DOCUMENT_CASH_WITHDRAWAL,("Ref_Key","Number","Date","DeletionMark"),chunk),opener=opener):
    budget[0]+=1
+   if budget[0]>config.max_pages: raise FinancePositionReadError("1C document lookups exceeded page limit")
    for raw in rows:
     key=normalize_guid(raw.get("Ref_Key"),field="Ref_Key")
-    if key not in chunk or raw.get("DeletionMark") is not False: raise FinancePositionReadError("Invalid transfer document")
+    if key not in chunk or key in found or raw.get("DeletionMark") is not False: raise FinancePositionReadError("Invalid transfer document")
     number=_string(raw.get("Number"),"Number",100); date=_string(raw.get("Date"),"Date",80)[:10]
     found[key]=f"Выемка №{number} от {date}"
  if set(found)!=expected: raise FinancePositionReadError("1C transfer document is missing")
@@ -137,7 +138,7 @@ def read_finance_position(config=None, *, now=None, opener=None):
  for r in raw['kkm']:
   org=_org(r,config.organization_guids); account=normalize_guid(r.get('КассаККМ_Key'),field='КассаККМ_Key'); refs[CATALOG_KKM].add(account); cash.append(dict(source_kind='kkm',organization_guid=org,account_guid=account,reference_type=CATALOG_KKM,currency_guid=None,agreement_guid=None,amount=_decimal(r.get('СуммаBalance'),'СуммаBalance'),amount_currency=_decimal(r.get('СуммаВалBalance'),'СуммаВалBalance',True),transfer_document_guid=None,transfer_document_type=''))
  for r in raw['in_transit']:
-  org=_org(r,config.organization_guids); typ=_type(r.get('Касса_Type'),frozenset({CATALOG_CASHES}),'Касса_Type'); account=normalize_guid(r.get('Касса'),field='Касса'); refs[typ].add(account); doc=_optional_guid(r.get('ДокументПередачи'),'ДокументПередачи'); dtype=''
+  org=_org(r,config.organization_guids); typ=_type(r.get('Касса_Type'),MONEY_REFERENCE_TYPES,'Касса_Type'); account=normalize_guid(r.get('Касса'),field='Касса'); refs[typ].add(account); doc=_optional_guid(r.get('ДокументПередачи'),'ДокументПередачи'); dtype=''
   if doc: dtype=_type(r.get('ДокументПередачи_Type'),DOCUMENT_REFERENCE_TYPES,'ДокументПередачи_Type'); docs.add(doc)
   cash.append(dict(source_kind='in_transit',organization_guid=org,account_guid=account,reference_type=typ,currency_guid=None,agreement_guid=None,amount=_decimal(r.get('СуммаBalance'),'СуммаBalance'),amount_currency=_decimal(r.get('СуммаВалBalance'),'СуммаВалBalance',True),transfer_document_guid=doc,transfer_document_type=dtype))
  for side in ('customer','supplier'):
