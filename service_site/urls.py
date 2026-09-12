@@ -20,7 +20,10 @@ from pool_service.finance_mcp_views import (
 )
 
 urlpatterns = [
-    path('mcp/finance/', finance_mcp, name='finance_mcp'),
+    # Keep the transport URL byte-for-byte identical to the OAuth resource
+    # identifier published in Protected Resource Metadata. RFC 9728 requires
+    # exact identity when metadata is discovered from WWW-Authenticate.
+    path('mcp/finance', finance_mcp, name='finance_mcp'),
     path(
         '.well-known/oauth-protected-resource/mcp/finance',
         finance_protected_resource_metadata,
@@ -85,9 +88,7 @@ urlpatterns = [
     path('consent/', TemplateView.as_view(template_name='registration/consent.html'), name='consent'),
     path('sw.js', TemplateView.as_view(template_name='sw.js', content_type='application/javascript'), name='service_worker'),
     path(
-        'manifest.webmanifest',
-        TemplateView.as_view(template_name='manifest.webmanifest', content_type='application/manifest+json'),
-        name='manifest',
+        'manifest.webmanifest', TemplateView.as_view(template_name='manifest.webmanifest', content_type='application/manifest+json'), name='manifest',
     ),
     path('ckeditor5/', include('django_ckeditor_5.urls')),
 ]
