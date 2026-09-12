@@ -48,8 +48,9 @@ class PersistenceTests(TestCase):
   first=_persist_snapshot(self.org,self.user,source([cash("regular","1","a")])); second=_persist_snapshot(self.org,self.user,source([cash("regular","2","b")],minute=1)); first.refresh_from_db(); self.assertFalse(first.is_active); self.assertTrue(second.is_active); self.assertEqual(OneCFinancePositionSnapshot.objects.filter(organization=self.org,is_active=True).count(),1)
  def test_failed_collection_preserves_old_active(self):
   old=_persist_snapshot(self.org,self.user,source([cash("regular","7","old")]))
+  config=ODataConfig("https://example.test/odata/standard.odata/","u","p",(ORG,),5,10,100)
   with patch("pool_service.finance_imports.finance_position.read_finance_position",side_effect=FinancePositionReadError("synthetic")):
-   with self.assertRaises(FinancePositionReadError): sync_finance_position(self.org,self.user)
+   with self.assertRaises(FinancePositionReadError): sync_finance_position(self.org,self.user,config=config)
   old.refresh_from_db(); self.assertTrue(old.is_active); self.assertEqual(OneCFinancePositionSnapshot.objects.count(),1)
  def test_same_counterparty_can_keep_debt_and_advance(self):
   snap=_persist_snapshot(self.org,self.user,source(settlement_rows=[settle("customer","Долг","10","d"),settle("customer","Аванс","-4","a")]))
