@@ -39,12 +39,20 @@ def _content_hash(source):
 
 def _build_batch(organization, user, source, content_hash, sync_run=None):
     count = len(source.cash_rows) + len(source.settlement_rows)
+    # OneCImportBatch historically de-duplicates file imports by file_sha256.
+    # A point-in-time Balance read is a new successful version even when its
+    # business content is unchanged, so keep the true content hash on the
+    # snapshot and use a capture/version hash for the audit batch identity.
+    capture_nonce = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    batch_hash = hashlib.sha256(
+        f"{content_hash}:{source.snapshot_at.isoformat()}:{source.fetched_at.isoformat()}:{capture_nonce}".encode()
+    ).hexdigest()
     return OneCImportBatch.objects.create(
         organization=organization, import_type=IMPORT_TYPE, source_type=OneCImportBatch.SOURCE_ODATA,
-        original_filename="finance_position.odata", stored_file="", file_sha256=content_hash, file_size=0,
+        original_filename="finance_position.odata", stored_file="", file_sha256=batch_hash, file_size=0,
         status=OneCImportBatch.STATUS_CONFIRMED, uploaded_by=user, confirmed_by=user, confirmed_at=datetime.now(timezone.utc),
         rows_detected=count, rows_imported=count, warnings_count=source.diagnostics.get("sign_anomaly_count", 0), parser_version=PARSER_VERSION,
-        metadata={"schema": CONTRACT_VERSION, "snapshot_at": source.snapshot_at.isoformat(), "source_timezone": source.source_timezone, "fetched_at": source.fetched_at.isoformat()}, sync_run=sync_run,
+        metadata={"schema": CONTRACT_VERSION, "content_hash": content_hash, "snapshot_at": source.snapshot_at.isoformat(), "source_timezone": source.source_timezone, "fetched_at": source.fetched_at.isoformat()}, sync_run=sync_run,
     )
 
 def _persist_snapshot(organization, user, source, *, sync_run=None):
