@@ -74,7 +74,7 @@ class AuthRedirectMiddleware:
                 "/",
                 "/index/",
                 "/mcp/test/",
-                "/mcp/finance/",
+                "/mcp/finance",
                 "/.well-known/oauth-protected-resource/mcp/finance",
                 "/.well-known/oauth-authorization-server",
             }
