@@ -51,7 +51,11 @@ def _select_run(config,now):
         local=now.astimezone(config.zone)
         if not config.enabled or local.time()<config.at: return None,"not_due"
         day=local.date().isoformat()
-        if OneCODataSyncRun.objects.filter(organization=organization,mode=OneCODataSyncRun.MODE_AUTO_APPLY,sync_scope___schedule_day=day).exists(): return None,"already_attempted"
+        previous=OneCODataSyncRun.objects.filter(organization=organization,mode=OneCODataSyncRun.MODE_AUTO_APPLY,sync_scope___schedule_day=day).order_by("-created_at").first()
+        if previous:
+            if previous.status==OneCODataSyncRun.STATUS_COMPLETED and (previous.progress or {}).get("finance_position_state")=="retryable_error":
+                return previous,"finance_position_retry"
+            return None,"already_attempted"
         user=_actor(config.user_id,organization,SUPPORTED_REPORT_TYPES); auto_coverage_config(); end=local.date().replace(day=1)
         run,_=start_unified_sync(organization,user,SUPPORTED_REPORT_TYPES,mode=OneCODataSyncRun.MODE_AUTO_APPLY,period_start=_add_months(end,-(config.months-1)),period_end=end,schedule_day=day)
         return run,"scheduled"
@@ -60,6 +64,25 @@ def _worker_note(run_id,**values):
     with transaction.atomic():
         run=OneCODataSyncRun.objects.select_for_update().get(pk=run_id); progress=dict(run.progress or {}); progress.update(values); run.progress=progress; run.save(update_fields=["progress"])
 
+def _position_note(run_id, *, state, error="", **values):
+    with transaction.atomic():
+        run=OneCODataSyncRun.objects.select_for_update().get(pk=run_id)
+        progress=dict(run.progress or {})
+        progress.update(values)
+        progress["finance_position_state"]=state
+        progress["finance_position_error"]=error
+        if state=="retryable_error":
+            progress["step_state"]="retryable_error"
+        elif state=="completed" and progress.get("step_state")=="retryable_error":
+            progress["step_state"]="completed"
+        run.progress=progress
+        if error:
+            run.error_message=error
+        elif run.error_message=="Баланс и расчёты не обновлены; предыдущий снимок сохранён.":
+            run.error_message=""
+        run.save(update_fields=["progress","error_message"])
+        return run
+
 def _permission_failure(run_id):
     with transaction.atomic():
         run=OneCODataSyncRun.objects.select_for_update().get(pk=run_id)
@@ -67,15 +90,30 @@ def _permission_failure(run_id):
             run.status=OneCODataSyncRun.STATUS_FAILED; run.finished_at=timezone.now(); run.error_message="Право инициатора на обновление данных было отозвано. Данные не применены."; run.progress={**run.progress,"step_state":"permission_revoked","outcome":"failed"}; run.save(update_fields=["status","finished_at","error_message","progress"])
         return run
 
-def _finance_position_step(run,now):
+def finalize_finance_position_step(run,now=None):
+    """Finalize the point-in-time layer for an already completed auto-apply run.
+
+    This is the single finalizer used by both the scheduled worker and browser
+    auto-apply flow. A transient 1C failure is visible/retryable and never
+    deactivates the previous finance-position snapshot.
+    """
+    run.refresh_from_db()
     progress=run.progress or {}
     if run.status!=OneCODataSyncRun.STATUS_COMPLETED: return progress.get("finance_position_state")
     if progress.get("finance_position_state") in {"completed","failed"}: return progress.get("finance_position_state")
+    now=now or timezone.now()
     try:
-        user=_actor(run.requested_by_id,run.organization,run.requested_report_types); snapshot=sync_finance_position(run.organization,user,now=now,sync_run=run)
-    except (PermissionDenied,ValidationError,ODataPreviewError):
-        _worker_note(run.pk,finance_position_state="failed",finance_position_error="Баланс и расчёты не обновлены; предыдущий снимок сохранён."); return "failed"
-    _worker_note(run.pk,finance_position_state="completed",finance_position_snapshot_id=snapshot.pk,finance_position_snapshot_at=snapshot.snapshot_at.isoformat(),finance_position_fetched_at=snapshot.fetched_at.isoformat(),finance_position_error=""); return "completed"
+        user=_actor(run.requested_by_id,run.organization,run.requested_report_types)
+    except PermissionDenied:
+        _position_note(run.pk,state="failed",error="Баланс и расчёты не обновлены; предыдущий снимок сохранён.")
+        return "failed"
+    try:
+        snapshot=sync_finance_position(run.organization,user,now=now,sync_run=run)
+    except (ValidationError,ODataPreviewError):
+        _position_note(run.pk,state="retryable_error",error="Баланс и расчёты не обновлены; предыдущий снимок сохранён.")
+        return "retryable_error"
+    _position_note(run.pk,state="completed",finance_position_snapshot_id=snapshot.pk,finance_position_snapshot_at=snapshot.snapshot_at.isoformat(),finance_position_fetched_at=snapshot.fetched_at.isoformat())
+    return "completed"
 
 def worker_tick(*,max_steps=4,max_seconds=240,now=None):
     if not 1<=max_steps<=100 or not 1<=max_seconds<=240: raise DailyConfigError("Недопустимый лимит worker.")
@@ -101,4 +139,6 @@ def worker_tick(*,max_steps=4,max_seconds=240,now=None):
         if (run.progress or {}).get("step_state")=="retryable_error":
             _worker_note(run.pk,worker_retry_cursor=run.cursor.get("version",0),worker_retry_after=(timezone.now()+timedelta(minutes=15)).isoformat()); break
         if run.cursor.get("version",0)==version: break
-    run.refresh_from_db(); _finance_position_step(run,now); run.refresh_from_db(); return {"state":run.status,"run":str(run.pk),"steps":steps}
+    run.refresh_from_db(); position_state=finalize_finance_position_step(run,now); run.refresh_from_db()
+    visible_state=position_state if run.status==OneCODataSyncRun.STATUS_COMPLETED and position_state in {"retryable_error","failed"} else run.status
+    return {"state":visible_state,"run":str(run.pk),"steps":steps,"finance_position_state":position_state}
