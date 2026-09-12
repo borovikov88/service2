@@ -2,7 +2,7 @@
 
 ## Назначение и источник цифр
 
-`POST /mcp/finance/` — удалённый stateless Streamable HTTP MCP для финансового
+`POST /mcp/finance` — удалённый stateless Streamable HTTP MCP для финансового
 советника. Он **не** обращается к 1С и не имеет собственных финансовых формул.
 Для каждой организации он вызывает только публичный read-only контракт
 `pool_service.finance_imports.management_finance`, который уже используют
@@ -40,12 +40,14 @@ Decimal (`"103540.19"`).
 
 | Роль | URI |
 |---|---|
-| MCP HTTPS endpoint | `https://<host>/mcp/finance/` |
+| MCP HTTPS endpoint | `https://<host>/mcp/finance` |
 | Canonical OAuth resource | `https://<host>/mcp/finance` |
 | Protected-resource metadata | `https://<host>/.well-known/oauth-protected-resource/mcp/finance` |
 | Authorization-server metadata | `https://<host>/.well-known/oauth-authorization-server` |
 | Authorization endpoint | `https://<host>/oauth/finance/authorize` |
 | Token endpoint | `https://<host>/oauth/finance/token` |
+
+MCP endpoint и canonical OAuth resource намеренно совпадают полностью.
 
 Реализован только безопасный заранее зарегистрированный **public client**:
 
@@ -135,7 +137,7 @@ owner/admin/accountant имеет право управлять финансам
 
 После этого установить `ADVISOR_FINANCE_MCP_ENABLED=true`, выполнить обычный
 deployment и добавить в ChatGPT custom MCP app endpoint
-`https://<public-host>/mcp/finance/`. Выбрать OAuth и пройти owner login
+`https://<public-host>/mcp/finance`. Выбрать OAuth и пройти owner login
 Service2; ChatGPT использует зарегистрированный CIMD `client_id`, поэтому не
 нужно создавать или вводить отдельный секрет. Для `offline_access` ChatGPT
 запрашивает scope через metadata; если он не нужен, access будет просто
