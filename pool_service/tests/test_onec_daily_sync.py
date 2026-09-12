@@ -54,7 +54,11 @@ class DailyFinanceTests(TestCase):
         return run
 
     def test_daily_once_per_local_day_and_year_boundary_scope(self):
-        with patch(MODULE + ".step_unified_sync", side_effect=self.finish):
+        # This test covers scheduler/day-boundary semantics only. The point-in-time
+        # finance finalizer has dedicated tests and must not perform synthetic OData here.
+        with patch(MODULE + ".step_unified_sync", side_effect=self.finish), patch(
+            MODULE + ".finalize_finance_position_step", return_value="completed"
+        ):
             first = worker_tick(now=NOW)
             again = worker_tick(now=NOW + timedelta(hours=1))
         self.assertEqual(first["state"], "completed")
