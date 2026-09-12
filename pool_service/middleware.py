@@ -54,6 +54,7 @@ class AuthRedirectMiddleware:
             "/accounts/reset/",
             "/accounts/confirm-email/",
             "/accounts/confirm-phone/",
+            "/oauth/finance/",
             "/invite/",
             "/client-invite/",
             "/register/",
@@ -69,7 +70,14 @@ class AuthRedirectMiddleware:
         ]
         if not request.user.is_authenticated:
             path = request.path
-            exact_allowed_paths = {"/", "/index/", "/mcp/test/"}
+            exact_allowed_paths = {
+                "/",
+                "/index/",
+                "/mcp/test/",
+                "/mcp/finance",
+                "/.well-known/oauth-protected-resource/mcp/finance",
+                "/.well-known/oauth-authorization-server",
+            }
             if path not in exact_allowed_paths and not any(path.startswith(p) for p in allowed_prefixes):
                 return redirect("/accounts/login/")
         return self.get_response(request)
@@ -129,6 +137,9 @@ class FinanceOnlyRoleMiddleware:
     operational_roles = {"owner", "admin", "manager", "service", "installer"}
     allowed_prefixes = (
         "/accounts/",
+        "/oauth/finance/",
+        "/mcp/",
+        "/.well-known/",
         "/api/push/",
         "/billing/",
         "/consent/",

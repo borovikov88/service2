@@ -460,6 +460,7 @@ def _present_month(item):
             "internal": dict(missing_money),
             "non_external": dict(missing_money),
             "unclassified": dict(missing_money),
+            "external_unclassified": dict(missing_money),
             "flow_totals": {
                 flow: dict(missing_money) for flow in MANAGEMENT_FLOW_TYPES
             },
@@ -488,6 +489,9 @@ def _present_month(item):
         ),
         "unclassified": _copy_money(
             item["flow_totals"][CashFlowArticleMapping.FLOW_UNCLASSIFIED]
+        ),
+        "external_unclassified": _copy_money(
+            item["external_flow_totals"][CashFlowArticleMapping.FLOW_UNCLASSIFIED]
         ),
         "flow_totals": {
             flow: _copy_money(value)
@@ -1093,10 +1097,14 @@ def _confirmed_profit_rows(organization, first_month, last_month):
 
 def _profit_value(rows):
     revenue = sum((row.dashboard_revenue for row in rows), ZERO)
+    incomplete_source_cost = any(row.cost is None for row in rows)
     incomplete_cost = any(row.dashboard_analytical_cost is None for row in rows)
     incomplete_profit = any(row.dashboard_gross_profit is None for row in rows)
     gross_profit = None if incomplete_profit else sum(
         (row.dashboard_gross_profit for row in rows), ZERO
+    )
+    source_cost = None if incomplete_source_cost else sum(
+        (row.cost for row in rows), ZERO
     )
     cost = None if incomplete_cost else sum(
         (row.dashboard_analytical_cost for row in rows), ZERO
@@ -1107,6 +1115,12 @@ def _profit_value(rows):
     )
     return {
         "revenue": revenue,
+        # ``cost`` has historically meant the analytical management cost in
+        # this read contract.  Keep it as a compatibility alias while making
+        # the raw 1C cost and the analytical value explicit for consumers that
+        # must not infer one from the other.
+        "source_cost": source_cost,
+        "analytical_cost": cost,
         "cost": cost,
         "gross_profit": gross_profit,
         "gross_margin": gross_margin,
@@ -1164,12 +1178,14 @@ def _profit_data(organization, first_month, last_month, *, filters=None):
         available = month not in status["missing_months"]
         month_rows = [row for row in rows if row.period_month == month]
         values = _profit_value(month_rows) if available else {
-            "revenue": None, "cost": None, "gross_profit": None,
+            "revenue": None, "source_cost": None, "analytical_cost": None,
+            "cost": None, "gross_profit": None,
             "gross_margin": None, "complete": False,
         }
         monthly.append({"period_month": month, "available": available, **values})
     values = _profit_value(rows) if status["available"] else {
-        "revenue": None, "cost": None, "gross_profit": None,
+        "revenue": None, "source_cost": None, "analytical_cost": None,
+        "cost": None, "gross_profit": None,
         "gross_margin": None, "complete": False,
     }
     return {
@@ -1494,12 +1510,16 @@ def get_monthly_finance(
     def profit_values(values, available):
         if not available:
             return {
-                "revenue": None, "cost": None, "gross_profit": None,
+                "revenue": None, "source_cost": None, "analytical_cost": None,
+                "cost": None, "gross_profit": None,
                 "gross_margin": None,
             }
         return {
             key: values[key]
-            for key in ("revenue", "cost", "gross_profit", "gross_margin")
+            for key in (
+                "revenue", "source_cost", "analytical_cost", "cost",
+                "gross_profit", "gross_margin",
+            )
         }
 
     def cashflow_values(values, available):
@@ -1508,7 +1528,7 @@ def get_monthly_finance(
                 key: None for key in (
                     "all_cashflow", "operating", "investing", "external",
                     "liquidity", "financing", "internal", "non_external",
-                    "unclassified",
+                    "unclassified", "external_unclassified",
                 )
             }
         return {
@@ -1525,6 +1545,7 @@ def get_monthly_finance(
             "internal": values["internal"],
             "non_external": values["non_external"],
             "unclassified": values["unclassified"],
+            "external_unclassified": values["external_unclassified"],
         }
 
     cashflow_totals_source = {
@@ -1537,6 +1558,7 @@ def get_monthly_finance(
         "internal": cashflow["internal"],
         "non_external": cashflow["non_external"],
         "unclassified": cashflow["unclassified"],
+        "external_unclassified": cashflow["external_unclassified"],
     }
     payroll_months = {item["period_month"]: item for item in payroll["months"]}
     profit_months = {item["period_month"]: item for item in profit["monthly"]}

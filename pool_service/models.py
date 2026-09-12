@@ -2493,8 +2493,276 @@ class CashFlowArticleMapping(models.Model):
             ),
         ]
 
+
+# The following models deliberately contain access-control metadata only.  They
+# never mirror OneC, profit, payroll or cash-flow facts.  An opaque token is
+# generated outside the ORM and *only its SHA-256 hash* is persisted here.
+# Keeping the grant/scope state server-side makes a ChatGPT connector revocable
+# without giving it a normal Service2 user account or finance write capability.
+class FinanceMcpPrincipal(models.Model):
+    """A named machine identity allowed to read a bounded organization set."""
+
+    subject = models.CharField(max_length=128, unique=True)
+    display_name = models.CharField(max_length=200)
+    is_active = models.BooleanField(default=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["display_name", "id"]
+
     def __str__(self):
-        return self.article_name
+        return self.display_name
+
+
+class FinanceMcpPrincipalOrganization(models.Model):
+    """Explicit organization scope for one finance MCP principal."""
+
+    principal = models.ForeignKey(
+        FinanceMcpPrincipal,
+        on_delete=models.CASCADE,
+        related_name="organization_scopes",
+    )
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="finance_mcp_principal_scopes",
+    )
+    granted_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="granted_finance_mcp_organization_scopes",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["principal_id", "organization_id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["principal", "organization"],
+                name="unique_finance_mcp_principal_org",
+            ),
+        ]
+
+
+class FinanceMcpClient(models.Model):
+    """Pre-registered OAuth client for the remote finance MCP.
+
+    Version one accepts the strict, pinned ChatGPT CIMD public client only.
+    ChatGPT proves possession of an S256 PKCE verifier, while the exact HTTPS
+    redirect URI is checked against this server-side allowlist.  The SHA-256
+    fingerprint and verification time record the one-time provisioning check
+    of the trusted metadata document; OAuth requests never dereference a
+    client-provided URI.  There is intentionally no client secret field to
+    accidentally display or log for a public client.
+    """
+
+    CLIENT_PUBLIC = "public"
+    CLIENT_TYPES = [(CLIENT_PUBLIC, "Публичный клиент с PKCE")]
+
+    client_id = models.CharField(max_length=255, unique=True)
+    display_name = models.CharField(max_length=200)
+    client_type = models.CharField(
+        max_length=20,
+        choices=CLIENT_TYPES,
+        default=CLIENT_PUBLIC,
+    )
+    principal = models.ForeignKey(
+        FinanceMcpPrincipal,
+        on_delete=models.PROTECT,
+        related_name="oauth_clients",
+    )
+    # Exact URI strings.  No wildcard, prefix or runtime redirect matching is
+    # permitted by the authorization endpoint.
+    redirect_uris = models.JSONField(default=list)
+    # Evidence from explicit provisioning of the allowlisted ChatGPT Client ID
+    # Metadata Document.  It is a fingerprint, not client metadata or a
+    # credential, and prevents a hand-created generic public client from being
+    # accepted at runtime.
+    client_metadata_sha256 = models.CharField(max_length=64)
+    client_metadata_verified_at = models.DateTimeField()
+    is_active = models.BooleanField(default=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["display_name", "id"]
+
+    def __str__(self):
+        return self.display_name
+
+
+class FinanceMcpGrant(models.Model):
+    """Recorded owner authorization of a client to act as a principal."""
+
+    client = models.ForeignKey(
+        FinanceMcpClient,
+        on_delete=models.PROTECT,
+        related_name="grants",
+    )
+    principal = models.ForeignKey(
+        FinanceMcpPrincipal,
+        on_delete=models.PROTECT,
+        related_name="grants",
+    )
+    authorized_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="authorized_finance_mcp_grants",
+    )
+    # Scopes are server-validated strings, currently finance.read and optional
+    # offline_access.  JSON avoids a second token-like encoding and leaves a
+    # small, inspectable authorization record for the owner.
+    scopes = models.JSONField(default=list)
+    resource = models.CharField(max_length=500)
+    authorized_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revocation_reason = models.CharField(max_length=300, blank=True)
+
+    class Meta:
+        ordering = ["-authorized_at", "-id"]
+        indexes = [
+            models.Index(fields=["client", "revoked_at"], name="fin_mcp_grant_client_idx"),
+            models.Index(fields=["principal", "revoked_at"], name="fin_mcp_grant_principal_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.client_id} / {self.principal_id}"
+
+
+class FinanceMcpAuthorizationCode(models.Model):
+    """One-time OAuth authorization code; only its non-reversible hash exists."""
+
+    grant = models.ForeignKey(
+        FinanceMcpGrant,
+        on_delete=models.CASCADE,
+        related_name="authorization_codes",
+    )
+    code_hash = models.CharField(max_length=64, unique=True)
+    redirect_uri = models.CharField(max_length=1000)
+    resource = models.CharField(max_length=500)
+    scopes = models.JSONField(default=list)
+    code_challenge = models.CharField(max_length=128)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["expires_at", "used_at"], name="fin_mcp_code_exp_idx"),
+        ]
+
+
+class FinanceMcpAccessToken(models.Model):
+    """Opaque, short-lived bearer access token represented only by a hash."""
+
+    grant = models.ForeignKey(
+        FinanceMcpGrant,
+        on_delete=models.CASCADE,
+        related_name="access_tokens",
+    )
+    token_hash = models.CharField(max_length=64, unique=True)
+    audience = models.CharField(max_length=500)
+    scopes = models.JSONField(default=list)
+    issued_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-issued_at", "-id"]
+        indexes = [
+            models.Index(fields=["expires_at", "revoked_at"], name="fin_mcp_access_exp_idx"),
+        ]
+
+
+class FinanceMcpRefreshToken(models.Model):
+    """Rotating OAuth refresh token; a reused predecessor revokes its family."""
+
+    grant = models.ForeignKey(
+        FinanceMcpGrant,
+        on_delete=models.CASCADE,
+        related_name="refresh_tokens",
+    )
+    token_hash = models.CharField(max_length=64, unique=True)
+    family_id = models.UUIDField(default=uuid.uuid4, db_index=True)
+    scopes = models.JSONField(default=list)
+    issued_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    replaced_by = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="replaces",
+    )
+
+    class Meta:
+        ordering = ["-issued_at", "-id"]
+        indexes = [
+            models.Index(fields=["family_id", "revoked_at"], name="fin_mcp_refresh_family_idx"),
+            models.Index(fields=["expires_at", "used_at"], name="fin_mcp_refresh_exp_idx"),
+        ]
+
+
+class FinanceMcpAuditEvent(models.Model):
+    """Minimal financial-call audit log; it never stores a token or response."""
+
+    RESULT_SUCCESS = "success"
+    RESULT_DENIED = "denied"
+    RESULT_ERROR = "error"
+    RESULT_CHOICES = [
+        (RESULT_SUCCESS, "Успех"),
+        (RESULT_DENIED, "Отклонено"),
+        (RESULT_ERROR, "Ошибка"),
+    ]
+
+    principal = models.ForeignKey(
+        FinanceMcpPrincipal,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="audit_events",
+    )
+    grant = models.ForeignKey(
+        FinanceMcpGrant,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="audit_events",
+    )
+    tool_name = models.CharField(max_length=100)
+    organization_ids = models.JSONField(default=list)
+    period_start = models.DateField(null=True, blank=True)
+    period_end = models.DateField(null=True, blank=True)
+    group_by = models.CharField(max_length=64, blank=True)
+    result = models.CharField(max_length=16, choices=RESULT_CHOICES)
+    duration_ms = models.PositiveIntegerField(default=0)
+    response_bytes = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["principal", "created_at"], name="fin_mcp_audit_principal_idx"),
+            models.Index(fields=["tool_name", "created_at"], name="fin_mcp_audit_tool_idx"),
+        ]
+
+    def __str__(self):
+        # Keep admin/log labels useful without touching a financial payload or
+        # a removed/nonexistent source field.
+        at = self.created_at.isoformat(timespec="seconds") if self.created_at else "pending"
+        return f"Finance MCP principal={self.principal_id or 'unknown'} tool={self.tool_name} at={at}"
 
 
 class DevelopmentTask(models.Model):

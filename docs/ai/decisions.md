@@ -24,15 +24,14 @@
 
 ## Доступ финансового советника
 
-### D-004 — целевая среда советника: отдельный Codex
+### D-004 — целевая среда советника: ChatGPT Developer Mode
 
-Подготовлен тестовый MCP endpoint без финансовых данных. Техническая команда и
-отдельный финансовый советник должны работать в Codex; подключение советника к
-ChatGPT вместо Codex не выбрано. Локальная работа endpoint или локальная
-настройка MCP не доказывает доступ из целевой среды Codex — требуется отдельный
-фактический внешний вызов. Браузерная сессия владельца, роль `finance_viewer`,
-экспорт и GitHub сами по себе каналом данных для советника не являются. Полный
-статус описан в `advisor-access.md`.
+Финансовый советник подключается к защищённому remote Streamable HTTP MCP в
+ChatGPT Developer Mode. Endpoint использует OAuth 2.1 authorization-code +
+PKCE `S256` и строгий ChatGPT CIMD public client, а не browser session,
+`finance_viewer`, export, GitHub, service token или отдельный GET API.
+Локальные tests не заменяют production read-only smoke-check после deployment.
+Полный актуальный порядок описан в `finance-mcp.md`.
 
 ### D-005 — выбор нескольких организаций явный
 
@@ -41,14 +40,15 @@ Advisor token ограничен набором организаций, но з�
 свод. `organization_for_user().first()` не используется; активные версии
 выбираются отдельно по организации, типу отчёта и месяцу.
 
-### Предварительный объём реализации после сетевой проверки
+### Реализованный объём read-only канала
 
-1. отдельный service principal и read-only token model со scope организаций,
-   expiry/revoke, hashed secret и уникальной связью principal–organization;
-2. три GET-only advisor services/endpoints и JSON schema;
-3. MCP/app connector, который публикует только три read tools;
-4. проверки active versions, multi-org aggregation, freshness и пропусков;
-5. security/permission/no-write contract tests и аудит чтения.
+1. отдельный OAuth principal и серверный scope организаций, expiry/revoke,
+   opaque hashed tokens и уникальная связь principal–organization;
+2. один Streamable HTTP MCP с пятью bounded read tools и общим финансовым
+   сервисом без собственных формул;
+3. active versions, multi-org aggregation, freshness, пропуски и Decimal/null
+   contract;
+4. security/permission/no-write tests и аудит чтения.
 
 Обычный `OrganizationAccess`, новая браузерная роль и пользовательские exports не входят в минимальный путь и
 могут быть добавлены позже. Срок оценивается после единственной сетевой проверки,

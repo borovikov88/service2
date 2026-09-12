@@ -11,8 +11,31 @@ from django.conf import settings
 from django.templatetags.static import static
 from django.conf.urls.static import static as static_serve
 from pool_service.mcp_views import mcp_test
+from pool_service.finance_mcp_views import (
+    finance_authorization_server_metadata,
+    finance_mcp,
+    finance_oauth_authorize,
+    finance_oauth_token,
+    finance_protected_resource_metadata,
+)
 
 urlpatterns = [
+    # Keep the transport URL byte-for-byte identical to the OAuth resource
+    # identifier published in Protected Resource Metadata. RFC 9728 requires
+    # exact identity when metadata is discovered from WWW-Authenticate.
+    path('mcp/finance', finance_mcp, name='finance_mcp'),
+    path(
+        '.well-known/oauth-protected-resource/mcp/finance',
+        finance_protected_resource_metadata,
+        name='finance_mcp_protected_resource_metadata',
+    ),
+    path(
+        '.well-known/oauth-authorization-server',
+        finance_authorization_server_metadata,
+        name='finance_mcp_authorization_server_metadata',
+    ),
+    path('oauth/finance/authorize', finance_oauth_authorize, name='finance_mcp_authorize'),
+    path('oauth/finance/token', finance_oauth_token, name='finance_mcp_token'),
     path('mcp/test/', mcp_test, name='mcp_test'),
     path('admin/', admin.site.urls),
     path('', include('pool_service.urls')),
@@ -65,9 +88,7 @@ urlpatterns = [
     path('consent/', TemplateView.as_view(template_name='registration/consent.html'), name='consent'),
     path('sw.js', TemplateView.as_view(template_name='sw.js', content_type='application/javascript'), name='service_worker'),
     path(
-        'manifest.webmanifest',
-        TemplateView.as_view(template_name='manifest.webmanifest', content_type='application/manifest+json'),
-        name='manifest',
+        'manifest.webmanifest', TemplateView.as_view(template_name='manifest.webmanifest', content_type='application/manifest+json'), name='manifest',
     ),
     path('ckeditor5/', include('django_ckeditor_5.urls')),
 ]

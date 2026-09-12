@@ -1,0 +1,37 @@
+{% extends "pool_service/base.html" %}
+
+{% block content %}
+<main class="container py-4" style="max-width: 720px;">
+  <section class="card shadow-sm">
+    <div class="card-body p-4">
+      <h1 class="h3 mb-3">Подключение финансового советника</h1>
+      <p>
+        Приложение <strong>{{ client.display_name }}</strong> запрашивает только
+        чтение управленческих показателей Service2.
+      </p>
+      <p class="text-muted">
+        Разрешение: <code>{{ scope }}</code>. Импорт 1С, подтверждение выгрузок,
+        изменение классификации, записей и прав через это подключение недоступны.
+      </p>
+      <h2 class="h5 mt-4">Доступные организации</h2>
+      <ul>
+        {% for item in organizations %}
+          <li>{{ item.organization.name }}</li>
+        {% endfor %}
+      </ul>
+      <p class="small text-muted mb-4">
+        Доступ можно отозвать в Service2 командой управления финансовым MCP. Токены
+        не показываются на этой странице и не передаются в URL.
+      </p>
+      <form method="post" class="d-flex gap-2 flex-wrap">
+        {% csrf_token %}
+        {% for key, value in oauth_params.items %}
+          <input type="hidden" name="{{ key }}" value="{{ value }}">
+        {% endfor %}
+        <button class="btn btn-primary" type="submit" name="decision" value="approve">Разрешить чтение</button>
+        <button class="btn btn-outline-secondary" type="submit" name="decision" value="deny">Отказать</button>
+      </form>
+    </div>
+  </section>
+</main>
+{% endblock %}
