@@ -7,6 +7,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
+from pool_service.finance_imports.odata_unified_sync import REPORT_PROFIT
 from pool_service.models import OneCODataSyncRun, Organization, OrganizationAccess
 
 
@@ -31,7 +32,7 @@ class FinancePositionBrowserTests(TestCase):
             organization=self.organization,
             requested_by=self.user,
             mode=OneCODataSyncRun.MODE_AUTO_APPLY,
-            requested_report_types=["profit"],
+            requested_report_types=[REPORT_PROFIT],
             status=status,
             cursor={"version": 3, "index": 0, "queue": []},
             progress=progress or {},
