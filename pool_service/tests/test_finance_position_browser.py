@@ -26,7 +26,7 @@ class FinancePositionBrowserTests(TestCase):
         )
         self.client.force_login(self.user)
 
-    def run(self, *, status=OneCODataSyncRun.STATUS_COMPLETED, progress=None):
+    def make_run(self, *, status=OneCODataSyncRun.STATUS_COMPLETED, progress=None):
         return OneCODataSyncRun.objects.create(
             organization=self.organization,
             requested_by=self.user,
@@ -42,7 +42,7 @@ class FinancePositionBrowserTests(TestCase):
         )
 
     def test_terminal_retry_calls_only_position_finalizer(self):
-        run = self.run(progress={
+        run = self.make_run(progress={
             "step_state": "retryable_error",
             "finance_position_state": "retryable_error",
             "finance_position_error": "private upstream detail",
@@ -79,7 +79,7 @@ class FinancePositionBrowserTests(TestCase):
         self.assertNotIn("private upstream detail", response.content.decode())
 
     def test_new_completion_runs_shared_finalizer_and_refreshes_payload(self):
-        run = self.run(status=OneCODataSyncRun.STATUS_RUNNING, progress={"step_state": "running"})
+        run = self.make_run(status=OneCODataSyncRun.STATUS_RUNNING, progress={"step_state": "running"})
 
         def complete_base(request, run_id):
             stored = OneCODataSyncRun.objects.get(pk=run_id)
@@ -113,7 +113,7 @@ class FinancePositionBrowserTests(TestCase):
         self.assertEqual(response.json()["progress"]["finance_position_state"], "completed")
 
     def test_status_masks_private_finance_position_error(self):
-        run = self.run(progress={
+        run = self.make_run(progress={
             "step_state": "retryable_error",
             "finance_position_state": "retryable_error",
             "finance_position_error": "https://private.example/odata secret payload",
@@ -137,7 +137,7 @@ class FinancePositionBrowserTests(TestCase):
         )
 
     def test_adapter_preserves_base_denial_without_finance_lookup(self):
-        run = self.run(progress={"finance_position_state": "retryable_error"})
+        run = self.make_run(progress={"finance_position_state": "retryable_error"})
         self.client.logout()
         with patch(
             "pool_service.finance_position_browser.finalize_finance_position_step"
