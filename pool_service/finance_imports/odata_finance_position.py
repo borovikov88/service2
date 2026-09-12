@@ -1,5 +1,5 @@
 """GET-only 1C OData Balance reader for the point-in-time finance position."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import hashlib, json, os
@@ -87,13 +87,24 @@ def _display(value):
  try: UUID(text)
  except ValueError: return text[:300]
  raise FinancePositionReadError("1C reference description must not be a GUID")
+
+def _budgeted_pages(config, url, opener, budget, error_message):
+ remaining=config.max_pages-budget[0]
+ if remaining<=0: raise FinancePositionReadError(error_message)
+ bounded=replace(config,max_pages=remaining)
+ try:
+  for rows,page in read_odata_pages(bounded,url,opener=opener):
+   budget[0]+=1
+   yield rows,page
+ except ODataPreviewError as exc:
+  if str(exc)=="OData pagination exceeded the configured page limit": raise FinancePositionReadError(error_message) from exc
+  raise
+
 def _read_catalog(config, entity, guids, opener, budget, allow_deleted=False):
  expected=set(guids); found={}
  for start in range(0,len(expected),40):
   chunk=sorted(expected)[start:start+40]
-  for rows,_ in read_odata_pages(config,_reference_url(config,entity,("Ref_Key","Description","DeletionMark"),chunk),opener=opener):
-   budget[0]+=1
-   if budget[0]>config.max_pages: raise FinancePositionReadError("1C reference lookups exceeded page limit")
+  for rows,_ in _budgeted_pages(config,_reference_url(config,entity,("Ref_Key","Description","DeletionMark"),chunk),opener,budget,"1C reference lookups exceeded page limit"):
    for raw in rows:
     key=normalize_guid(raw.get("Ref_Key"),field="Ref_Key")
     if key not in chunk or key in found: raise FinancePositionReadError("Unexpected 1C reference identity")
@@ -106,9 +117,7 @@ def _read_docs(config, guids, opener, budget):
  expected=set(guids); found={}
  for start in range(0,len(expected),40):
   chunk=sorted(expected)[start:start+40]
-  for rows,_ in read_odata_pages(config,_reference_url(config,DOCUMENT_CASH_WITHDRAWAL,("Ref_Key","Number","Date","DeletionMark"),chunk),opener=opener):
-   budget[0]+=1
-   if budget[0]>config.max_pages: raise FinancePositionReadError("1C document lookups exceeded page limit")
+  for rows,_ in _budgeted_pages(config,_reference_url(config,DOCUMENT_CASH_WITHDRAWAL,("Ref_Key","Number","Date","DeletionMark"),chunk),opener,budget,"1C document lookups exceeded page limit"):
    for raw in rows:
     key=normalize_guid(raw.get("Ref_Key"),field="Ref_Key")
     if key not in chunk or key in found or raw.get("DeletionMark") is not False: raise FinancePositionReadError("Invalid transfer document")
@@ -127,9 +136,9 @@ def read_finance_position(config=None, *, now=None, opener=None):
  config=validate_finance_position_configuration(config); at=snapshot_calendar_time(now); client=opener or build_opener(NoRedirectHandler()); budget=[0]; total=0; raw={}
  for kind in ("regular","kkm","in_transit","customer","supplier"):
   spec=REGISTER_SPECS[kind]; collected=[]
-  for rows,_ in read_odata_pages(config,_balance_url(config,spec['entity'],spec['fields'],at),opener=client):
-   budget[0]+=1; total+=len(rows)
-   if budget[0]>config.max_pages or total>config.max_rows: raise FinancePositionReadError("1C finance position exceeded configured limits")
+  for rows,_ in _budgeted_pages(config,_balance_url(config,spec['entity'],spec['fields'],at),client,budget,"1C finance position exceeded configured limits"):
+   total+=len(rows)
+   if total>config.max_rows: raise FinancePositionReadError("1C finance position exceeded configured limits")
    collected.extend(rows)
   raw[kind]=collected
  refs={CATALOG_BANK_ACCOUNTS:set(),CATALOG_CASHES:set(),CATALOG_KKM:set(),CATALOG_COUNTERPARTIES:set()}; docs=set(); cash=[]; settlements=[]
