@@ -6,7 +6,7 @@ from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
 from django.utils import timezone as dj_timezone
 from pool_service.finance_imports.finance_position import _persist_snapshot, get_finance_position, sync_finance_position
-from pool_service.finance_imports.odata_finance_position import CashPositionSourceRow, FinancePositionReadError, FinancePositionSourceSnapshot, ODataConfig, REGISTER_SPECS, SettlementPositionSourceRow, _balance_url, calendar_timezone, classify_settlement, snapshot_calendar_time
+from pool_service.finance_imports.odata_finance_position import CATALOG_BANK_ACCOUNTS, CATALOG_CASHES, CATALOG_KKM, CashPositionSourceRow, FinancePositionReadError, FinancePositionSourceSnapshot, MONEY_REFERENCE_TYPES, ODataConfig, REGISTER_SPECS, SettlementPositionSourceRow, _balance_url, _type, calendar_timezone, classify_settlement, snapshot_calendar_time
 from pool_service.finance_position_models import OneCFinancePositionSnapshot
 from pool_service.models import Organization
 
@@ -23,6 +23,10 @@ class ClassificationTests(TestCase):
   cases=[("customer","Долг","1","receivable"),("customer","Аванс","-1","customer_advance"),("supplier","Долг","1","payable"),("supplier","Аванс","-1","supplier_advance"),("customer","Долг","-1","sign_anomaly"),("customer","Аванс","1","sign_anomaly"),("supplier","Долг","-1","sign_anomaly"),("supplier","Аванс","1","sign_anomaly")]
   for side,raw,amount,expected in cases: self.assertEqual(classify_settlement(side,raw,Decimal(amount)),expected)
  def test_zero_is_not_anomaly(self): self.assertEqual(classify_settlement("customer","Долг",Decimal("0")),"zero")
+ def test_money_reference_allowlist_is_explicit(self):
+  self.assertEqual(MONEY_REFERENCE_TYPES,{CATALOG_BANK_ACCOUNTS,CATALOG_CASHES,CATALOG_KKM})
+  for value in MONEY_REFERENCE_TYPES: self.assertEqual(_type(f"StandardODATA.{value}",MONEY_REFERENCE_TYPES,"Касса_Type"),value)
+  with self.assertRaises(FinancePositionReadError): _type("StandardODATA.Catalog_Прочее",MONEY_REFERENCE_TYPES,"Касса_Type")
 
 class CalendarTests(TestCase):
  @override_settings(ONEC_ODATA_CALENDAR_TIMEZONE="Asia/Barnaul")
@@ -46,6 +50,8 @@ class PersistenceTests(TestCase):
   result=get_finance_position(self.org,now=snap.fetched_at); self.assertEqual(result["cash_total"],Decimal("125.00")); self.assertEqual(result["receivables"],Decimal("50.00")); self.assertEqual(result["customer_advances"],Decimal("7.00")); self.assertEqual(result["payables"],Decimal("11.00")); self.assertEqual(result["supplier_advances"],Decimal("13.00")); self.assertEqual(result["sign_anomaly_count"],1); self.assertEqual(result["sign_anomaly_amount"],Decimal("3.00")); self.assertEqual(result["calculated_position"],Decimal("170.00")); self.assertLess(result["calculated_position"],Decimal("1000"))
  def test_atomic_activation_keeps_single_active_snapshot(self):
   first=_persist_snapshot(self.org,self.user,source([cash("regular","1","a")])); second=_persist_snapshot(self.org,self.user,source([cash("regular","2","b")],minute=1)); first.refresh_from_db(); self.assertFalse(first.is_active); self.assertTrue(second.is_active); self.assertEqual(OneCFinancePositionSnapshot.objects.filter(organization=self.org,is_active=True).count(),1)
+ def test_identical_content_can_be_captured_again(self):
+  same_source=source([cash("regular","9","same")]); first=_persist_snapshot(self.org,self.user,same_source); second=_persist_snapshot(self.org,self.user,same_source); first.refresh_from_db(); self.assertEqual(OneCFinancePositionSnapshot.objects.count(),2); self.assertEqual(first.content_hash,second.content_hash); self.assertNotEqual(first.batch.file_sha256,second.batch.file_sha256); self.assertFalse(first.is_active); self.assertTrue(second.is_active)
  def test_failed_collection_preserves_old_active(self):
   old=_persist_snapshot(self.org,self.user,source([cash("regular","7","old")]))
   config=ODataConfig("https://example.test/odata/standard.odata/","u","p",(ORG,),5,10,100)
