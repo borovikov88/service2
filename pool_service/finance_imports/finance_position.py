@@ -89,7 +89,7 @@ def _freshness(snapshot, now=None):
 def get_finance_position(organization, *, now=None):
     snapshot = _active_snapshot(organization)
     if snapshot is None:
-        return {"contract_version": CONTRACT_VERSION, "cash_regular": ZERO, "cash_kkm": ZERO, "cash_in_transit": ZERO, "cash_total": ZERO, "receivables": ZERO, "customer_advances": ZERO, "payables": ZERO, "supplier_advances": ZERO, "sign_anomaly_count": 0, "sign_anomaly_amount": ZERO, "calculated_position": ZERO, "snapshot_at": None, "source_timezone": None, "last_success_at": None, "freshness": _freshness(None, now)}
+        return {"contract_version": CONTRACT_VERSION, "available": False, "cash_regular": None, "cash_kkm": None, "cash_in_transit": None, "cash_total": None, "receivables": None, "customer_advances": None, "payables": None, "supplier_advances": None, "sign_anomaly_count": None, "sign_anomaly_amount": None, "calculated_position": None, "snapshot_at": None, "source_timezone": None, "last_success_at": None, "freshness": _freshness(None, now)}
     cash = {"regular": ZERO, "kkm": ZERO, "in_transit": ZERO}
     for row in snapshot.cash_rows.values("source_kind", "amount"): cash[row["source_kind"]] += row["amount"] or ZERO
     totals = {c: ZERO for c in (SettlementPositionRow.CLASS_RECEIVABLE, SettlementPositionRow.CLASS_CUSTOMER_ADVANCE, SettlementPositionRow.CLASS_PAYABLE, SettlementPositionRow.CLASS_SUPPLIER_ADVANCE)}
@@ -99,7 +99,7 @@ def get_finance_position(organization, *, now=None):
         if row["is_sign_anomaly"] or classification == SettlementPositionRow.CLASS_SIGN_ANOMALY: anomaly_count += 1; anomaly_amount += abs(amount); continue
         if classification in totals: totals[classification] += abs(amount)
     cash_total = sum(cash.values(), ZERO); receivables = totals[SettlementPositionRow.CLASS_RECEIVABLE]; customer_advances = totals[SettlementPositionRow.CLASS_CUSTOMER_ADVANCE]; payables = totals[SettlementPositionRow.CLASS_PAYABLE]; supplier_advances = totals[SettlementPositionRow.CLASS_SUPPLIER_ADVANCE]
-    return {"contract_version": CONTRACT_VERSION, "cash_regular": cash["regular"], "cash_kkm": cash["kkm"], "cash_in_transit": cash["in_transit"], "cash_total": cash_total, "receivables": receivables, "customer_advances": customer_advances, "payables": payables, "supplier_advances": supplier_advances, "sign_anomaly_count": anomaly_count, "sign_anomaly_amount": anomaly_amount, "calculated_position": cash_total + receivables + supplier_advances - payables - customer_advances, "snapshot_at": snapshot.snapshot_at, "source_timezone": snapshot.source_timezone, "last_success_at": snapshot.fetched_at, "freshness": _freshness(snapshot, now)}
+    return {"contract_version": CONTRACT_VERSION, "available": True, "cash_regular": cash["regular"], "cash_kkm": cash["kkm"], "cash_in_transit": cash["in_transit"], "cash_total": cash_total, "receivables": receivables, "customer_advances": customer_advances, "payables": payables, "supplier_advances": supplier_advances, "sign_anomaly_count": anomaly_count, "sign_anomaly_amount": anomaly_amount, "calculated_position": cash_total + receivables + supplier_advances - payables - customer_advances, "snapshot_at": snapshot.snapshot_at, "source_timezone": snapshot.source_timezone, "last_success_at": snapshot.fetched_at, "freshness": _freshness(snapshot, now)}
 
 def get_cash_position_breakdown(organization):
     snapshot = _active_snapshot(organization)
