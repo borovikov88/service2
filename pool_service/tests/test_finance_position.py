@@ -6,7 +6,7 @@ from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
 from django.utils import timezone as dj_timezone
 from pool_service.finance_imports.finance_position import _persist_snapshot, get_finance_position, sync_finance_position
-from pool_service.finance_imports.odata_finance_position import CATALOG_BANK_ACCOUNTS, CATALOG_CASHES, CATALOG_KKM, CashPositionSourceRow, FinancePositionReadError, FinancePositionSourceSnapshot, MONEY_REFERENCE_TYPES, ODataConfig, REGISTER_SPECS, SettlementPositionSourceRow, _balance_url, _type, calendar_timezone, classify_settlement, snapshot_calendar_time
+from pool_service.finance_imports.odata_finance_position import CATALOG_BANK_ACCOUNTS, CATALOG_CASHES, CATALOG_KKM, CashPositionSourceRow, FinancePositionReadError, FinancePositionSourceSnapshot, MONEY_REFERENCE_TYPES, ODataConfig, REGISTER_SPECS, SettlementPositionSourceRow, _balance_url, _budgeted_pages, _type, calendar_timezone, classify_settlement, snapshot_calendar_time
 from pool_service.finance_position_models import OneCFinancePositionSnapshot
 from pool_service.models import Organization
 
@@ -27,6 +27,18 @@ class ClassificationTests(TestCase):
   self.assertEqual(MONEY_REFERENCE_TYPES,{CATALOG_BANK_ACCOUNTS,CATALOG_CASHES,CATALOG_KKM})
   for value in MONEY_REFERENCE_TYPES: self.assertEqual(_type(f"StandardODATA.{value}",MONEY_REFERENCE_TYPES,"Касса_Type"),value)
   with self.assertRaises(FinancePositionReadError): _type("StandardODATA.Catalog_Прочее",MONEY_REFERENCE_TYPES,"Касса_Type")
+
+class ReaderBudgetTests(TestCase):
+ def test_exhausted_global_page_budget_blocks_before_get(self):
+  config=ODataConfig("https://example.test/odata/standard.odata/","u","p",(ORG,),5,1,100)
+  with patch("pool_service.finance_imports.odata_finance_position.read_odata_pages") as read:
+   with self.assertRaises(FinancePositionReadError): list(_budgeted_pages(config,"https://example.test/odata/standard.odata/x",object(),[1],"limit"))
+  read.assert_not_called()
+ def test_remaining_global_page_budget_bounds_next_traversal(self):
+  config=ODataConfig("https://example.test/odata/standard.odata/","u","p",(ORG,),5,3,100)
+  with patch("pool_service.finance_imports.odata_finance_position.read_odata_pages",return_value=iter([([],1)])) as read:
+   self.assertEqual(list(_budgeted_pages(config,"https://example.test/odata/standard.odata/x",object(),[1],"limit")),[([],1)])
+  bounded=read.call_args.args[0]; self.assertEqual(bounded.max_pages,2)
 
 class CalendarTests(TestCase):
  @override_settings(ONEC_ODATA_CALENDAR_TIMEZONE="Asia/Barnaul")
