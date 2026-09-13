@@ -147,8 +147,11 @@ def read_finance_position(config=None, *, now=None, opener=None):
  for r in raw['kkm']:
   org=_org(r,config.organization_guids); account=normalize_guid(r.get('КассаККМ_Key'),field='КассаККМ_Key'); refs[CATALOG_KKM].add(account); cash.append(dict(source_kind='kkm',organization_guid=org,account_guid=account,reference_type=CATALOG_KKM,currency_guid=None,agreement_guid=None,amount=_decimal(r.get('СуммаBalance'),'СуммаBalance'),amount_currency=_decimal(r.get('СуммаВалBalance'),'СуммаВалBalance',True),transfer_document_guid=None,transfer_document_type=''))
  for r in raw['in_transit']:
-  org=_org(r,config.organization_guids); typ=_type(r.get('Касса_Type'),MONEY_REFERENCE_TYPES,'Касса_Type'); account=normalize_guid(r.get('Касса'),field='Касса'); refs[typ].add(account); doc=_optional_guid(r.get('ДокументПередачи'),'ДокументПередачи'); dtype=''
+  org=_org(r,config.organization_guids); typ=_type(r.get('Касса_Type'),MONEY_REFERENCE_TYPES,'Касса_Type'); account=normalize_guid(r.get('Касса'),field='Касса',allow_zero=True); doc=_optional_guid(r.get('ДокументПередачи'),'ДокументПередачи'); dtype=''
   if doc: dtype=_type(r.get('ДокументПередачи_Type'),DOCUMENT_REFERENCE_TYPES,'ДокументПередачи_Type'); docs.add(doc)
+  if account==ZERO_GUID:
+   if not doc: raise FinancePositionReadError("In-transit zero cash reference requires transfer document")
+  else: refs[typ].add(account)
   cash.append(dict(source_kind='in_transit',organization_guid=org,account_guid=account,reference_type=typ,currency_guid=None,agreement_guid=None,amount=_decimal(r.get('СуммаBalance'),'СуммаBalance'),amount_currency=_decimal(r.get('СуммаВалBalance'),'СуммаВалBalance',True),transfer_document_guid=doc,transfer_document_type=dtype))
  for side in ('customer','supplier'):
   for r in raw[side]:
@@ -158,7 +161,9 @@ def read_finance_position(config=None, *, now=None, opener=None):
  cash_rows=[]
  for r in cash:
   ident=_identity('cash',(r['source_kind'],r['organization_guid'],r['reference_type'],r['account_guid'],r['currency_guid'] or '',r['agreement_guid'] or '',r['transfer_document_guid'] or '',r['transfer_document_type']))
-  cash_rows.append(CashPositionSourceRow(**r,display_name=names[r['reference_type']][r['account_guid']],transfer_document_display=doc_names.get(r['transfer_document_guid'],'') if r['transfer_document_guid'] else '',source_identity=ident))
+  transfer_display=doc_names.get(r['transfer_document_guid'],'') if r['transfer_document_guid'] else ''
+  display_name=transfer_display if r['source_kind']=='in_transit' and r['account_guid']==ZERO_GUID else names[r['reference_type']][r['account_guid']]
+  cash_rows.append(CashPositionSourceRow(**r,display_name=display_name,transfer_document_display=transfer_display,source_identity=ident))
  settlement_rows=[]
  for r in settlements:
   ident=_identity('settlement',(r['side'],r['organization_guid'],r['settlement_type_raw'],r['counterparty_guid'],r['agreement_guid'] or '',r['document_guid'] or '',r['document_type'],r['order_guid'] or '',r['order_type']))
