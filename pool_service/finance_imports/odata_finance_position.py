@@ -100,37 +100,81 @@ def _budgeted_pages(config, url, opener, budget, error_message):
   if str(exc)=="OData pagination exceeded the configured page limit": raise FinancePositionReadError(error_message) from exc
   raise
 
-def _read_catalog(config, entity, guids, opener, budget, allow_deleted=False):
- expected=set(guids); found={}
+def _read_catalog(config, entity, guids, opener, budget):
+ expected=set(guids); found={}; deleted=set()
  for start in range(0,len(expected),40):
   chunk=sorted(expected)[start:start+40]
   for rows,_ in _budgeted_pages(config,_reference_url(config,entity,("Ref_Key","Description","DeletionMark"),chunk),opener,budget,"1C reference lookups exceeded page limit"):
    for raw in rows:
     key=normalize_guid(raw.get("Ref_Key"),field="Ref_Key")
-    if key not in chunk or key in found: raise FinancePositionReadError("Unexpected 1C reference identity")
+    if key not in chunk or key in found or key in deleted: raise FinancePositionReadError("Unexpected 1C reference identity")
     mark=raw.get("DeletionMark")
-    if mark not in (True,False) or (mark and not allow_deleted): raise FinancePositionReadError("1C reference deletion mark is invalid")
+    if mark not in (True,False): raise FinancePositionReadError("1C reference deletion mark is invalid")
+    if mark:
+     deleted.add(key)
+     continue
     found[key]=_display(raw.get("Description"))
- if set(found)!=expected: raise FinancePositionReadError("1C reference is missing")
- return found
+ if set(found)|deleted != expected: raise FinancePositionReadError("1C reference is missing")
+ return found,deleted
 def _read_docs(config, guids, opener, budget):
- expected=set(guids); found={}
+ expected=set(guids); found={}; deleted=set()
  for start in range(0,len(expected),40):
   chunk=sorted(expected)[start:start+40]
   for rows,_ in _budgeted_pages(config,_reference_url(config,DOCUMENT_CASH_WITHDRAWAL,("Ref_Key","Number","Date","DeletionMark"),chunk),opener,budget,"1C document lookups exceeded page limit"):
    for raw in rows:
     key=normalize_guid(raw.get("Ref_Key"),field="Ref_Key")
-    if key not in chunk or key in found or raw.get("DeletionMark") is not False: raise FinancePositionReadError("Invalid transfer document")
+    if key not in chunk or key in found or key in deleted: raise FinancePositionReadError("Invalid transfer document")
+    mark=raw.get("DeletionMark")
+    if mark not in (True,False): raise FinancePositionReadError("Invalid transfer document")
+    if mark:
+     deleted.add(key)
+     continue
     number=_string(raw.get("Number"),"Number",100); date=_string(raw.get("Date"),"Date",80)[:10]
     found[key]=f"Выемка №{number} от {date}"
- if set(found)!=expected: raise FinancePositionReadError("1C transfer document is missing")
- return found
+ if set(found)|deleted != expected: raise FinancePositionReadError("1C transfer document is missing")
+ return found,deleted
 
 def _org(raw, allowed):
  if not isinstance(raw,dict): raise FinancePositionReadError("1C balance row must be an object")
  value=normalize_guid(raw.get("Организация_Key"),field="Организация_Key")
  if value not in allowed: raise FinancePositionReadError("1C returned organization outside allowlist")
  return value
+
+def _deleted_diagnostics(excluded):
+ zero=Decimal("0.00")
+ cash_net=zero; cash_abs=zero
+ settlement_net=zero; settlement_abs=zero
+ by_type={}; objects=set()
+ for row_kind,amount,reference_type,reference_guid in excluded:
+  objects.add((reference_type,reference_guid))
+  item=by_type.setdefault(reference_type,{"objects":set(),"row_count":0,"net_amount":zero,"absolute_amount":zero})
+  item["objects"].add(reference_guid)
+  item["row_count"]+=1
+  item["net_amount"]+=amount
+  item["absolute_amount"]+=abs(amount)
+  if row_kind=="cash":
+   cash_net+=amount; cash_abs+=abs(amount)
+  else:
+   settlement_net+=amount; settlement_abs+=abs(amount)
+ return {
+  "object_count":len(objects),
+  "row_count":len(excluded),
+  "cash_row_count":sum(1 for item in excluded if item[0]=="cash"),
+  "settlement_row_count":sum(1 for item in excluded if item[0]=="settlement"),
+  "cash_net_amount":format(cash_net,"f"),
+  "cash_absolute_amount":format(cash_abs,"f"),
+  "settlement_net_amount":format(settlement_net,"f"),
+  "settlement_absolute_amount":format(settlement_abs,"f"),
+  "by_reference_type":{
+   key:{
+    "object_count":len(value["objects"]),
+    "row_count":value["row_count"],
+    "net_amount":format(value["net_amount"],"f"),
+    "absolute_amount":format(value["absolute_amount"],"f"),
+   }
+   for key,value in sorted(by_type.items())
+  },
+ }
 
 def read_finance_position(config=None, *, now=None, opener=None):
  config=validate_finance_position_configuration(config); at=snapshot_calendar_time(now); client=opener or build_opener(NoRedirectHandler()); budget=[0]; total=0; raw={}
@@ -157,17 +201,32 @@ def read_finance_position(config=None, *, now=None, opener=None):
   for r in raw[side]:
    org=_org(r,config.organization_guids); party=normalize_guid(r.get('Контрагент_Key'),field='Контрагент_Key'); refs[CATALOG_COUNTERPARTIES].add(party); st=_string(r.get('ТипРасчетов'),'ТипРасчетов',120); amount=_decimal(r.get('СуммаBalance'),'СуммаBalance'); classification=classify_settlement(side,st,amount); order_field='Заказ' if side=='customer' else 'Заказ_Key'
    settlements.append(dict(side=side,settlement_type_raw=st,management_classification=classification,organization_guid=org,counterparty_guid=party,agreement_guid=_optional_guid(r.get('Договор_Key'),'Договор_Key'),document_guid=_optional_guid(r.get('Документ'),'Документ'),document_type=(r.get('Документ_Type') or '')[:120],order_guid=_optional_guid(r.get(order_field),order_field),order_type=((r.get('Заказ_Type') or '')[:120] if side=='customer' else ''),amount=amount,amount_currency=_decimal(r.get('СуммаВалBalance'),'СуммаВалBalance',True),amount_reg=_decimal(r.get('СуммаРегBalance'),'СуммаРегBalance',True),is_sign_anomaly=classification=='sign_anomaly'))
- names={e:_read_catalog(config,e,g,client,budget,allow_deleted=(e==CATALOG_COUNTERPARTIES)) for e,g in refs.items()}; doc_names=_read_docs(config,docs,client,budget)
+ catalog_state={entity:_read_catalog(config,entity,guids,client,budget) for entity,guids in refs.items()}
+ names={entity:state[0] for entity,state in catalog_state.items()}
+ deleted_refs={entity:state[1] for entity,state in catalog_state.items()}
+ doc_names,deleted_docs=_read_docs(config,docs,client,budget)
+ excluded=[]
  cash_rows=[]
  for r in cash:
+  deleted_type=None; deleted_guid=None
+  if r['account_guid']!=ZERO_GUID and r['account_guid'] in deleted_refs[r['reference_type']]:
+   deleted_type=r['reference_type']; deleted_guid=r['account_guid']
+  elif r['transfer_document_guid'] and r['transfer_document_guid'] in deleted_docs:
+   deleted_type=DOCUMENT_CASH_WITHDRAWAL; deleted_guid=r['transfer_document_guid']
+  if deleted_type:
+   excluded.append(("cash",r['amount'],deleted_type,deleted_guid))
+   continue
   ident=_identity('cash',(r['source_kind'],r['organization_guid'],r['reference_type'],r['account_guid'],r['currency_guid'] or '',r['agreement_guid'] or '',r['transfer_document_guid'] or '',r['transfer_document_type']))
   transfer_display=doc_names.get(r['transfer_document_guid'],'') if r['transfer_document_guid'] else ''
   display_name=transfer_display if r['source_kind']=='in_transit' and r['account_guid']==ZERO_GUID else names[r['reference_type']][r['account_guid']]
   cash_rows.append(CashPositionSourceRow(**r,display_name=display_name,transfer_document_display=transfer_display,source_identity=ident))
  settlement_rows=[]
  for r in settlements:
+  if r['counterparty_guid'] in deleted_refs[CATALOG_COUNTERPARTIES]:
+   excluded.append(("settlement",r['amount'],CATALOG_COUNTERPARTIES,r['counterparty_guid']))
+   continue
   ident=_identity('settlement',(r['side'],r['organization_guid'],r['settlement_type_raw'],r['counterparty_guid'],r['agreement_guid'] or '',r['document_guid'] or '',r['document_type'],r['order_guid'] or '',r['order_type']))
   settlement_rows.append(SettlementPositionSourceRow(**r,counterparty_name=names[CATALOG_COUNTERPARTIES][r['counterparty_guid']],source_identity=ident))
  if len({r.source_identity for r in cash_rows})!=len(cash_rows) or len({r.source_identity for r in settlement_rows})!=len(settlement_rows): raise FinancePositionReadError("1C Balance contains duplicate dimensions")
- fetched=datetime.now(timezone.utc).replace(microsecond=0); diagnostics={'register_rows':{k:len(raw[k]) for k in REGISTER_SPECS},'total_rows':total,'page_count':budget[0],'sign_anomaly_count':sum(r.is_sign_anomaly for r in settlement_rows)}
+ fetched=datetime.now(timezone.utc).replace(microsecond=0); diagnostics={'register_rows':{k:len(raw[k]) for k in REGISTER_SPECS},'total_rows':total,'page_count':budget[0],'sign_anomaly_count':sum(r.is_sign_anomaly for r in settlement_rows),'deleted_reference_exclusions':_deleted_diagnostics(excluded)}
  return FinancePositionSourceSnapshot(at,at.tzinfo.key,fetched,tuple(cash_rows),tuple(settlement_rows),diagnostics)
