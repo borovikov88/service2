@@ -73,3 +73,92 @@ class PersistenceTests(TestCase):
  def test_same_counterparty_can_keep_debt_and_advance(self):
   snap=_persist_snapshot(self.org,self.user,source(settlement_rows=[settle("customer","Долг","10","d"),settle("customer","Аванс","-4","a")]))
   self.assertEqual(snap.settlement_rows.count(),2); result=get_finance_position(self.org,now=snap.fetched_at); self.assertEqual(result["receivables"],Decimal("10.00")); self.assertEqual(result["customer_advances"],Decimal("4.00"))
+
+
+class FinancePositionPr2Tests(TestCase):
+    def setUp(self):
+        from pool_service.models import (
+            FinanceMcpPrincipal,
+            FinanceMcpPrincipalOrganization,
+        )
+
+        self.org = Organization.objects.create(
+            id=91,
+            name="PR2 Synthetic",
+            paid_until=dj_timezone.now(),
+        )
+        self.user = User.objects.create_user("fp-pr2-owner")
+        self.principal = FinanceMcpPrincipal.objects.create(
+            subject="chatgpt:finance-position-pr2",
+            display_name="Finance Position PR2",
+        )
+        FinanceMcpPrincipalOrganization.objects.create(
+            principal=self.principal,
+            organization=self.org,
+            granted_by=self.user,
+        )
+
+        src = source(
+            [
+                cash("regular", "100", "pr2-r"),
+                cash("kkm", "20", "pr2-k"),
+                cash("in_transit", "5", "pr2-t"),
+            ],
+            [
+                settle("customer", "Долг", "50", "pr2-c"),
+                settle("supplier", "Долг", "11", "pr2-s"),
+            ],
+        )
+        src.diagnostics["deleted_reference_exclusions"] = {
+            "object_count": 1,
+            "row_count": 1,
+            "cash_row_count": 1,
+            "settlement_row_count": 0,
+            "cash_net_amount": "20.00",
+            "cash_absolute_amount": "20.00",
+            "settlement_net_amount": "0.00",
+            "settlement_absolute_amount": "0.00",
+            "by_reference_type": {"Catalog_КассыККМ": {"secret": "must-not-leak"}},
+        }
+        _persist_snapshot(self.org, self.user, src)
+
+    def test_new_mcp_position_tools_are_serializable_and_hide_internal_ids(self):
+        import json
+        from pool_service.finance_mcp_views import _tool_dispatch
+
+        summary = _tool_dispatch(
+            self.principal, "get_finance_position", {}
+        )
+        self.assertEqual(
+            summary["source"]["contract_version"],
+            "finance_position.v1",
+        )
+        self.assertEqual(
+            summary["organization_results"][0]["cash_total"],
+            "125.00",
+        )
+        deleted = summary["organization_results"][0][
+            "deleted_reference_exclusions"
+        ]
+        self.assertEqual(deleted["cash_absolute_amount"], "20.00")
+        self.assertNotIn("by_reference_type", deleted)
+
+        cash_data = _tool_dispatch(
+            self.principal, "get_cash_position_breakdown", {}
+        )
+        cash_item = cash_data["organization_results"][0]["items"][0]
+        self.assertNotIn("id", cash_item)
+        self.assertIsInstance(cash_item["amount"], str)
+
+        settlement_data = _tool_dispatch(
+            self.principal,
+            "get_settlement_position_breakdown",
+            {"classification": "receivable"},
+        )
+        settlement_item = settlement_data["organization_results"][0]["items"][0]
+        self.assertNotIn("id", settlement_item)
+        self.assertIsInstance(settlement_item["amount"], str)
+
+        json.dumps(summary)
+        json.dumps(cash_data)
+        json.dumps(settlement_data)
