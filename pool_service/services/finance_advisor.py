@@ -24,6 +24,12 @@ from pool_service.finance_imports.management_finance import (
     get_monthly_finance as canonical_monthly_finance,
     get_profit_breakdown as canonical_profit_breakdown,
 )
+from pool_service.finance_imports.finance_position import (
+    CONTRACT_VERSION as FINANCE_POSITION_CONTRACT_VERSION,
+    get_cash_position_breakdown as canonical_cash_position_breakdown,
+    get_finance_position as canonical_get_finance_position,
+    get_settlement_position_breakdown as canonical_settlement_position_breakdown,
+)
 from pool_service.models import Organization
 
 
@@ -32,6 +38,12 @@ MAX_ORGANIZATIONS = 50
 MAX_DETAIL_PAGE_SIZE = 100
 MAX_DETAIL_PAGE = 10_000
 MONEY_KEYS = ("receipts", "payments", "net_cash_flow")
+POSITION_SOURCE = {
+    "contract_version": FINANCE_POSITION_CONTRACT_VERSION,
+    "source_scope": "active_confirmed_snapshot",
+    "calculation": "pool_service.finance_imports.finance_position",
+}
+
 SOURCE = {
     "contract_version": CONTRACT_VERSION,
     "source_scope": "active_confirmed_versions",
@@ -731,9 +743,160 @@ __all__ = [
     "MAX_DETAIL_PAGE_SIZE",
     "MAX_MONTHS",
     "get_cashflow_breakdown",
+    "get_cash_position_breakdown",
     "get_finance_data_status",
+    "get_finance_position",
     "get_monthly_finance",
     "get_profit_breakdown",
+    "get_settlement_position_breakdown",
     "organizations_for_principal",
     "validate_month_range",
 ]
+
+def _position_value(value):
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
+
+
+def _safe_deleted_exclusions(value):
+    if not isinstance(value, dict):
+        return {}
+    keys = (
+        "row_count",
+        "object_count",
+        "cash_row_count",
+        "cash_net_amount",
+        "cash_absolute_amount",
+        "settlement_row_count",
+        "settlement_net_amount",
+        "settlement_absolute_amount",
+    )
+    return {key: _position_value(value.get(key)) for key in keys if key in value}
+
+
+def get_finance_position(principal, organization_ids=None):
+    organizations = organizations_for_principal(principal, organization_ids)
+    results = []
+
+    for organization in organizations:
+        raw = canonical_get_finance_position(organization)
+        item = {
+            key: _position_value(value)
+            for key, value in raw.items()
+            if key != "deleted_reference_exclusions"
+        }
+        item["deleted_reference_exclusions"] = _safe_deleted_exclusions(
+            raw.get("deleted_reference_exclusions")
+        )
+        results.append({
+            "organization": _organization_descriptor(organization),
+            **item,
+        })
+
+    return {
+        "as_of": timezone.now().isoformat(),
+        "organizations": [_organization_descriptor(o) for o in organizations],
+        "available": any(item["available"] for item in results),
+        "complete": bool(results) and all(item["available"] for item in results),
+        "organization_results": results,
+        "source": dict(POSITION_SOURCE),
+    }
+
+
+def get_cash_position_breakdown(
+    principal, organization_ids=None, *, source_kind=None, page=1, page_size=50
+):
+    if source_kind not in {None, "regular", "kkm", "in_transit"}:
+        raise FinanceAdvisorValidationError("Недопустимый вид денежных средств.")
+    page, page_size = _validate_page(page, page_size)
+    organizations = organizations_for_principal(principal, organization_ids)
+    results = []
+
+    for organization in organizations:
+        rows = canonical_cash_position_breakdown(organization)
+        if source_kind:
+            rows = [row for row in rows if row["source_kind"] == source_kind]
+        items = [
+            {
+                key: _position_value(value)
+                for key, value in row.items()
+                if key != "id"
+            }
+            for row in rows
+        ]
+        results.append({
+            "organization": _organization_descriptor(organization),
+            **_paginate(items, page, page_size),
+        })
+
+    return {
+        "as_of": timezone.now().isoformat(),
+        "organizations": [_organization_descriptor(o) for o in organizations],
+        "source_kind": source_kind,
+        "organization_results": results,
+        "source": dict(POSITION_SOURCE),
+    }
+
+
+def get_settlement_position_breakdown(
+    principal,
+    organization_ids=None,
+    *,
+    side=None,
+    classification=None,
+    page=1,
+    page_size=50,
+):
+    if side not in {None, "customer", "supplier"}:
+        raise FinanceAdvisorValidationError("Недопустимая сторона расчётов.")
+    if classification not in {
+        None,
+        "receivable",
+        "customer_advance",
+        "payable",
+        "supplier_advance",
+        "sign_anomaly",
+        "zero",
+    }:
+        raise FinanceAdvisorValidationError("Недопустимая классификация расчётов.")
+    page, page_size = _validate_page(page, page_size)
+    organizations = organizations_for_principal(principal, organization_ids)
+    offset = (page - 1) * page_size
+    results = []
+
+    for organization in organizations:
+        raw = canonical_settlement_position_breakdown(
+            organization,
+            side=side,
+            classification=classification,
+            offset=offset,
+            limit=page_size,
+        )
+        items = [
+            {
+                key: _position_value(value)
+                for key, value in row.items()
+                if key != "id"
+            }
+            for row in raw["items"]
+        ]
+        results.append({
+            "organization": _organization_descriptor(organization),
+            "items": items,
+            "page": page,
+            "page_size": page_size,
+            "total_items": raw["count"],
+            "next_page": page + 1 if offset + page_size < raw["count"] else None,
+        })
+
+    return {
+        "as_of": timezone.now().isoformat(),
+        "organizations": [_organization_descriptor(o) for o in organizations],
+        "side": side,
+        "classification": classification,
+        "organization_results": results,
+        "source": dict(POSITION_SOURCE),
+    }

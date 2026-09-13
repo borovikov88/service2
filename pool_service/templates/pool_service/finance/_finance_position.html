@@ -1,0 +1,66 @@
+{% load finance_tags %}
+<section aria-labelledby="owner-position-title">
+  <div class="owner-section-header">
+    <div>
+      <div class="owner-eyebrow">На текущий момент</div>
+      <h2 class="h5 mb-0" id="owner-position-title">Баланс и расчёты</h2>
+    </div>
+    <div class="owner-section-help">
+      {% if finance_position.summary.available %}
+        Снимок {{ finance_position.summary.snapshot_at|date:"d.m.Y H:i" }}
+      {% else %}
+        Нет активного снимка
+      {% endif %}
+    </div>
+  </div>
+
+  {% if finance_position.summary.available %}
+    <div class="owner-kpi-grid">
+      {% for card in finance_position.cards %}
+        <article class="card card-soft p-3">
+          <div class="owner-kpi-label">{{ card.label }}</div>
+          <div class="owner-kpi-value">{{ card.value|money }}</div>
+        </article>
+      {% endfor %}
+    </div>
+
+    {% if finance_position.deleted_exclusions.row_count %}
+      <div class="alert alert-warning py-2 mt-3">
+        Исключено помеченных на удаление строк:
+        {{ finance_position.deleted_exclusions.row_count }}.
+      </div>
+    {% endif %}
+
+    <details class="card card-soft p-3 mt-3">
+      <summary><strong>Где находятся деньги</strong></summary>
+      <div class="table-responsive mt-3">
+        <table class="table table-sm mb-0">
+          {% for row in finance_position.cash_rows %}
+            <tr>
+              <td>{{ row.display_name }}<div class="text-muted small">{{ row.source_label }}</div></td>
+              <td class="text-end">{{ row.amount|money }}</td>
+            </tr>
+          {% endfor %}
+        </table>
+      </div>
+    </details>
+
+    {% for section in finance_position.settlement_sections %}
+      <details class="card card-soft p-3 mt-2">
+        <summary><strong>{{ section.label }}</strong> · {{ section.count }}</summary>
+        <div class="table-responsive mt-3">
+          <table class="table table-sm mb-0">
+            {% for row in section.items %}
+              <tr>
+                <td>{{ row.counterparty_name }}</td>
+                <td class="text-end">{{ row.display_amount|money }}</td>
+              </tr>
+            {% endfor %}
+          </table>
+        </div>
+      </details>
+    {% endfor %}
+  {% else %}
+    <div class="card card-soft p-3 text-muted">Активный снимок ещё не создан.</div>
+  {% endif %}
+</section>

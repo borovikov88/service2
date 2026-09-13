@@ -41,9 +41,12 @@ from pool_service.services.finance_advisor import (
     FinanceAdvisorScopeDenied,
     FinanceAdvisorValidationError,
     get_cashflow_breakdown,
+    get_cash_position_breakdown,
     get_finance_data_status,
+    get_finance_position,
     get_monthly_finance,
     get_profit_breakdown,
+    get_settlement_position_breakdown,
     organizations_for_principal,
 )
 
@@ -57,6 +60,9 @@ TOOL_NAMES = (
     "get_monthly_finance",
     "get_cashflow_breakdown",
     "get_profit_breakdown",
+    "get_finance_position",
+    "get_cash_position_breakdown",
+    "get_settlement_position_breakdown",
 )
 
 
@@ -284,6 +290,48 @@ def _tool_definitions():
             },
             required=("start_month", "end_month", "group_by"),
         ),
+        _tool_definition(
+            "get_finance_position",
+            "Returns the current point-in-time cash and settlement position from the active confirmed snapshot.",
+            {"organization_ids": organization_ids},
+        ),
+        _tool_definition(
+            "get_cash_position_breakdown",
+            "Returns where current cash is held, without exposing raw 1C identifiers.",
+            {
+                "organization_ids": organization_ids,
+                "source_kind": {
+                    "type": "string",
+                    "enum": ["regular", "kkm", "in_transit"],
+                },
+                "page": page,
+                "page_size": page_size,
+            },
+        ),
+        _tool_definition(
+            "get_settlement_position_breakdown",
+            "Returns current customer and supplier settlements from the active confirmed snapshot.",
+            {
+                "organization_ids": organization_ids,
+                "side": {
+                    "type": "string",
+                    "enum": ["customer", "supplier"],
+                },
+                "classification": {
+                    "type": "string",
+                    "enum": [
+                        "receivable",
+                        "customer_advance",
+                        "payable",
+                        "supplier_advance",
+                        "sign_anomaly",
+                        "zero",
+                    ],
+                },
+                "page": page,
+                "page_size": page_size,
+            },
+        ),
     ]
 
 
@@ -370,6 +418,46 @@ def _tool_dispatch(principal, name, arguments):
             page=arguments.get("page", 1),
             page_size=arguments.get("page_size", 50),
         )
+    if name == "get_finance_position":
+        _reject_unknown_arguments(arguments, {"organization_ids"})
+        return get_finance_position(
+            principal,
+            _as_optional_organization_ids(arguments),
+        )
+
+    if name == "get_cash_position_breakdown":
+        _reject_unknown_arguments(
+            arguments,
+            {"organization_ids", "source_kind", "page", "page_size"},
+        )
+        return get_cash_position_breakdown(
+            principal,
+            _as_optional_organization_ids(arguments),
+            source_kind=arguments.get("source_kind"),
+            page=arguments.get("page", 1),
+            page_size=arguments.get("page_size", 50),
+        )
+
+    if name == "get_settlement_position_breakdown":
+        _reject_unknown_arguments(
+            arguments,
+            {
+                "organization_ids",
+                "side",
+                "classification",
+                "page",
+                "page_size",
+            },
+        )
+        return get_settlement_position_breakdown(
+            principal,
+            _as_optional_organization_ids(arguments),
+            side=arguments.get("side"),
+            classification=arguments.get("classification"),
+            page=arguments.get("page", 1),
+            page_size=arguments.get("page_size", 50),
+        )
+
     raise FinanceAdvisorValidationError("Неизвестный read-only финансовый инструмент.")
 
 

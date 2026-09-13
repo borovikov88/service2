@@ -186,6 +186,7 @@ from pool_service.finance_imports.management_finance import (
     cashflow_article_source_previews,
 )
 from pool_service.finance_imports.overview import finance_overview_data
+from pool_service.finance_imports.finance_position_dashboard import finance_position_dashboard_data
 from pool_service.services.permissions import is_org_access_blocked, organization_for_user
 
 logger = logging.getLogger(__name__)
@@ -844,8 +845,10 @@ def finance_overview(request):
     if denied:
         return denied
     overview = finance_overview_data(organization, request.GET)
+    finance_position = finance_position_dashboard_data(organization)
     return render(request, "pool_service/finance/overview.html", {
         **overview,
+        "finance_position": finance_position,
         "organization": organization,
         "can_view_gross_profit": can_view_gross_profit(request.user, organization),
         "can_view_payroll": can_view_payroll_summary(request.user, organization),

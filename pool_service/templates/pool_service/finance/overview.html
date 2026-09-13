@@ -160,6 +160,8 @@
     </div>
   </section>
 
+  {% include "pool_service/finance/_finance_position.html" %}
+
   <section class="owner-chart-grid" aria-label="Графики финансового обзора">
     <article class="card card-soft owner-chart-card"><div class="owner-eyebrow">Динамика</div><h2>Экономика по месяцам</h2><div class="owner-small-multiples"><div class="owner-mini-chart"><div class="owner-mini-chart-head">Выручка</div><canvas id="owner-revenue-chart"></canvas></div><div class="owner-mini-chart"><div class="owner-mini-chart-head">Валовая прибыль</div><canvas id="owner-profit-chart"></canvas></div><div class="owner-mini-chart"><div class="owner-mini-chart-head">Начисленный ФОТ</div><canvas id="owner-payroll-chart"></canvas></div></div></article>
     <article class="card card-soft owner-chart-card"><div class="owner-eyebrow">Динамика</div><h2>Денежные потоки</h2><div class="owner-cash-chart"><canvas id="owner-cashflow-chart"></canvas></div></article>
