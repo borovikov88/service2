@@ -248,6 +248,7 @@ def describe_metadata(
     metadata_raw: bytes | None = None,
 ):
     """List published business entity sets without returning any 1C rows."""
+    config = _validated_config(config)
     if not isinstance(query, str) or len(query) > 100:
         raise OneCDiagnosticError("INVALID_METADATA_QUERY")
     if prefix and prefix not in READABLE_ENTITY_PREFIXES:
@@ -290,6 +291,7 @@ def get_entity_schema(
     metadata_raw: bytes | None = None,
 ):
     """Describe one published entity set, without reading its data rows."""
+    config = _validated_config(config)
     if not isinstance(entity_set, str) or not IDENTIFIER_RE.fullmatch(entity_set):
         raise OneCDiagnosticError("INVALID_ENTITY_SET")
     if not _is_readable_entity(entity_set):
