@@ -1,8 +1,8 @@
 """Bounded, read-only 1C OData diagnostics for future MCP tools.
 
-This module deliberately does not expose an HTTP/MCP endpoint.  It provides a
+This module deliberately does not expose an HTTP/MCP endpoint. It provides a
 small server-side contract that can inspect published OData metadata and read a
-strictly bounded set of rows.  The external diagnostic MCP can be layered on
+strictly bounded set of rows. The external diagnostic MCP can be layered on
 this contract after its own authorization model is reviewed.
 """
 
@@ -12,6 +12,7 @@ import base64
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
+import json
 import re
 from typing import Iterable, Mapping
 from urllib.error import HTTPError, URLError
@@ -26,7 +27,7 @@ from pool_service.finance_imports.odata_profit import (
     NoRedirectHandler,
     ODataConfig,
     ODataPreviewError,
-    read_odata_pages,
+    _safe_next_url,
     validate_config,
 )
 
@@ -38,6 +39,8 @@ MAX_LIST_ENTITIES = 200
 MAX_READ_FIELDS = 40
 MAX_READ_FILTERS = 8
 MAX_READ_ROWS = 50
+MAX_READ_PAGES = 5
+MAX_ROW_PAGE_BYTES = 2 * 1024 * 1024
 
 EDM_NAMESPACES = {
     "http://schemas.microsoft.com/ado/2006/04/edm",
@@ -55,9 +58,24 @@ READABLE_ENTITY_PREFIXES = (
     "AccountingRegister_",
 )
 FILTER_OPERATORS = frozenset({"eq", "ne", "gt", "ge", "lt", "le"})
-SENSITIVE_FIELD_RE = re.compile(
+CREDENTIAL_FIELD_RE = re.compile(
     r"password|парол|secret|секрет|token|токен|credential|"
     r"api[_ ]?key|access[_ ]?key|private[_ ]?key",
+    re.IGNORECASE,
+)
+PERSONAL_OR_COMPENSATION_ENTITY_RE = re.compile(
+    r"salary|payroll|employee|personnel|person|wage|withhold|tax.*employee|"
+    r"зарплат|начисл|удерж|ндфл|сотрудник|физическ.*лиц|физлиц|персонал|"
+    r"кадр|табел|больнич|отпуск|исполнительн.*лист|страхов.*взнос|"
+    r"расч[её]т.*зарплат",
+    re.IGNORECASE,
+)
+PERSONAL_OR_COMPENSATION_FIELD_RE = re.compile(
+    r"salary|payroll|employee|personnel|wage|withhold|social.*security|passport|"
+    r"birth|phone|email|address|first.*name|last.*name|middle.*name|"
+    r"зарплат|сотрудник|физическ.*лиц|физлиц|снилс|паспорт|дат.*рожд|"
+    r"телефон|email|e-mail|электронн.*почт|адрес|фамил|отчеств|\bфио\b|"
+    r"оклад|тарифн.*ставк|начисл|удерж|ндфл|страхов.*взнос|табел",
     re.IGNORECASE,
 )
 
@@ -89,7 +107,7 @@ def config_from_settings() -> ODataConfig:
         password=settings.ONEC_ODATA_PASSWORD,
         organization_guids=tuple(settings.ONEC_ODATA_ORGANIZATION_GUIDS),
         timeout_seconds=settings.ONEC_ODATA_TIMEOUT_SECONDS,
-        max_pages=min(int(settings.ONEC_ODATA_MAX_PAGES), 20),
+        max_pages=min(int(settings.ONEC_ODATA_MAX_PAGES), MAX_READ_PAGES),
         max_rows=min(int(settings.ONEC_ODATA_MAX_ROWS), MAX_READ_ROWS),
     )
 
@@ -125,6 +143,15 @@ def _type_name(value) -> str:
     return _identifier(value)
 
 
+def _authorization(config: ODataConfig) -> str:
+    if not config.username:
+        return ""
+    token = base64.b64encode(
+        f"{config.username}:{config.password}".encode("utf-8")
+    ).decode("ascii")
+    return f"Basic {token}"
+
+
 def fetch_metadata(config: ODataConfig, *, opener=None) -> bytes:
     """Fetch `$metadata` over a bounded GET-only HTTPS request."""
     config = _validated_config(config)
@@ -133,11 +160,9 @@ def fetch_metadata(config: ODataConfig, *, opener=None) -> bytes:
         headers={"Accept": "application/xml"},
         method="GET",
     )
-    if config.username:
-        token = base64.b64encode(
-            f"{config.username}:{config.password}".encode("utf-8")
-        ).decode("ascii")
-        request.add_header("Authorization", f"Basic {token}")
+    authorization = _authorization(config)
+    if authorization:
+        request.add_header("Authorization", authorization)
     client = opener or build_opener(NoRedirectHandler())
     try:
         with client.open(request, timeout=config.timeout_seconds) as response:
@@ -238,6 +263,17 @@ def _is_readable_entity(name: str) -> bool:
     return any(name.startswith(prefix) for prefix in READABLE_ENTITY_PREFIXES)
 
 
+def _is_restricted_entity(name: str) -> bool:
+    return bool(PERSONAL_OR_COMPENSATION_ENTITY_RE.search(name))
+
+
+def _field_is_sensitive(name: str) -> bool:
+    return bool(
+        CREDENTIAL_FIELD_RE.search(name)
+        or PERSONAL_OR_COMPENSATION_FIELD_RE.search(name)
+    )
+
+
 def describe_metadata(
     config: ODataConfig,
     *,
@@ -262,8 +298,11 @@ def describe_metadata(
         schema for schema in index.values()
         if _is_readable_entity(schema.name)
         and (not prefix or schema.name.startswith(prefix))
-        and (not needle or needle in schema.name.casefold()
-            or any(needle in field.casefold() for field, _ in schema.properties))
+        and (
+            not needle
+            or needle in schema.name.casefold()
+            or any(needle in field.casefold() for field, _ in schema.properties)
+        )
     ]
     matched.sort(key=lambda item: item.name)
     selected = matched[:limit]
@@ -275,6 +314,7 @@ def describe_metadata(
                 "name": item.name,
                 "field_count": len(item.properties),
                 "fields": [name for name, _declared in item.properties],
+                "row_access_allowed": not _is_restricted_entity(item.name),
             }
             for item in selected
         ],
@@ -303,8 +343,13 @@ def get_entity_schema(
     return {
         "name": schema.name,
         "entity_type": schema.entity_type,
+        "row_access_allowed": not _is_restricted_entity(schema.name),
         "fields": [
-            {"name": name, "type": declared, "sensitive": bool(SENSITIVE_FIELD_RE.search(name))}
+            {
+                "name": name,
+                "type": declared,
+                "sensitive": _field_is_sensitive(name),
+            }
             for name, declared in schema.properties
         ],
     }
@@ -315,7 +360,7 @@ def _require_safe_field(name: str, field_types: Mapping[str, str]) -> str:
         raise OneCDiagnosticError("INVALID_FIELD")
     if name not in field_types:
         raise OneCDiagnosticError("FIELD_NOT_PUBLISHED")
-    if SENSITIVE_FIELD_RE.search(name):
+    if _field_is_sensitive(name):
         raise OneCDiagnosticError("SENSITIVE_FIELD_DENIED")
     return name
 
@@ -362,7 +407,9 @@ def _odata_literal(declared_type: str, value) -> str:
         return _datetime_literal(value)
     if declared_type == "Edm.DateTimeOffset":
         return _datetime_literal(value, offset=True)
-    if declared_type in {"Edm.Int16", "Edm.Int32", "Edm.Int64", "Edm.Byte", "Edm.SByte"}:
+    if declared_type in {
+        "Edm.Int16", "Edm.Int32", "Edm.Int64", "Edm.Byte", "Edm.SByte",
+    }:
         if isinstance(value, bool):
             raise OneCDiagnosticError("INVALID_FILTER_VALUE")
         try:
@@ -404,7 +451,80 @@ def _build_filter_expression(
     organization_clause = " or ".join(
         f"Организация_Key eq guid'{guid}'" for guid in organization_guids
     )
-    return " and ".join(f"({clause})" for clause in clauses) + f" and ({organization_clause})"
+    return (
+        " and ".join(f"({clause})" for clause in clauses)
+        + f" and ({organization_clause})"
+    )
+
+
+def _payload_page(raw: bytes):
+    try:
+        payload = json.loads(raw.decode("utf-8-sig"), parse_float=Decimal)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise OneCDiagnosticError("ODATA_INVALID_JSON") from exc
+    if not isinstance(payload, dict):
+        raise OneCDiagnosticError("ODATA_INVALID_PAYLOAD")
+    if "d" in payload:
+        legacy = payload.get("d")
+        if not isinstance(legacy, dict) or not isinstance(legacy.get("results"), list):
+            raise OneCDiagnosticError("ODATA_INVALID_PAYLOAD")
+        next_link = legacy.get("__next")
+        if next_link is not None and not isinstance(next_link, str):
+            raise OneCDiagnosticError("ODATA_INVALID_PAYLOAD")
+        return legacy["results"], next_link
+    rows = payload.get("value")
+    if not isinstance(rows, list):
+        raise OneCDiagnosticError("ODATA_INVALID_PAYLOAD")
+    next_link = payload.get("@odata.nextLink") or payload.get("odata.nextLink")
+    if next_link is not None and not isinstance(next_link, str):
+        raise OneCDiagnosticError("ODATA_INVALID_PAYLOAD")
+    return rows, next_link
+
+
+def _bounded_odata_pages(config: ODataConfig, initial_url: str, *, opener=None):
+    """Read GET-only OData pages with same-origin and per-page byte limits."""
+    config = _validated_config(config)
+    try:
+        current_url = _safe_next_url(config.base_url, config.base_url, initial_url)
+    except ODataPreviewError as exc:
+        raise OneCDiagnosticError("ODATA_UNSAFE_URL") from exc
+
+    client = opener or build_opener(NoRedirectHandler())
+    authorization = _authorization(config)
+    seen_urls: set[str] = set()
+    page_limit = min(config.max_pages, MAX_READ_PAGES)
+
+    for page_count in range(1, page_limit + 1):
+        if current_url in seen_urls:
+            raise OneCDiagnosticError("ODATA_PAGINATION_LOOP")
+        seen_urls.add(current_url)
+        request = Request(current_url, headers={"Accept": "application/json"}, method="GET")
+        if authorization:
+            request.add_header("Authorization", authorization)
+        try:
+            with client.open(request, timeout=config.timeout_seconds) as response:
+                if getattr(response, "status", 200) != 200:
+                    raise OneCDiagnosticError("ODATA_HTTP_NOT_200")
+                raw = response.read(MAX_ROW_PAGE_BYTES + 1)
+        except OneCDiagnosticError:
+            raise
+        except HTTPError as exc:
+            raise OneCDiagnosticError("ODATA_HTTP_ERROR") from exc
+        except URLError as exc:
+            raise OneCDiagnosticError("ODATA_REQUEST_FAILED") from exc
+
+        if len(raw) > MAX_ROW_PAGE_BYTES:
+            raise OneCDiagnosticError("ODATA_PAGE_SIZE_LIMIT")
+        rows, next_link = _payload_page(raw)
+        yield rows, page_count
+        if not next_link:
+            return
+        try:
+            current_url = _safe_next_url(config.base_url, current_url, next_link)
+        except ODataPreviewError as exc:
+            raise OneCDiagnosticError("ODATA_UNSAFE_NEXT_LINK") from exc
+
+    raise OneCDiagnosticError("ODATA_PAGINATION_LIMIT")
 
 
 def _json_safe(value):
@@ -430,15 +550,22 @@ def read_entity_rows(
     """Read a small organization-scoped slice of one published OData entity.
 
     The caller supplies structured fields and predicates, never a URL or raw
-    OData expression.  Entities without ``Организация_Key`` are intentionally
+    OData expression. Entities without ``Организация_Key`` are intentionally
     denied in this first foundation because their organization scope cannot be
-    proven server-side yet.
+    proven server-side yet. Personnel/payroll entities and personal or
+    individual-compensation fields are denied even when they are published.
     """
     config = _validated_config(config)
-    if not isinstance(entity_set, str) or not IDENTIFIER_RE.fullmatch(entity_set) or "." in entity_set:
+    if (
+        not isinstance(entity_set, str)
+        or not IDENTIFIER_RE.fullmatch(entity_set)
+        or "." in entity_set
+    ):
         raise OneCDiagnosticError("INVALID_ENTITY_SET")
     if not _is_readable_entity(entity_set):
         raise OneCDiagnosticError("ENTITY_SET_NOT_ALLOWED")
+    if _is_restricted_entity(entity_set):
+        raise OneCDiagnosticError("RESTRICTED_DATA_ENTITY")
     if isinstance(top, bool) or not isinstance(top, int) or not 1 <= top <= MAX_READ_ROWS:
         raise OneCDiagnosticError("ROW_LIMIT_OUT_OF_RANGE")
 
@@ -453,8 +580,12 @@ def read_entity_rows(
     requested_fields = list(dict.fromkeys(fields))
     if not requested_fields or len(requested_fields) > MAX_READ_FIELDS:
         raise OneCDiagnosticError("FIELD_COUNT_OUT_OF_RANGE")
-    requested_fields = [_require_safe_field(name, field_types) for name in requested_fields]
-    expression = _build_filter_expression(filters, field_types, config.organization_guids)
+    requested_fields = [
+        _require_safe_field(name, field_types) for name in requested_fields
+    ]
+    expression = _build_filter_expression(
+        filters, field_types, config.organization_guids
+    )
 
     transport_fields = list(requested_fields)
     if "Организация_Key" not in transport_fields:
@@ -467,27 +598,26 @@ def read_entity_rows(
     initial_url = f"{config.base_url}{quote(entity_set, safe='')}?{query}"
 
     rows = []
-    try:
-        for raw_rows, _page_count in read_odata_pages(config, initial_url, opener=opener):
-            for raw_row in raw_rows:
-                if not isinstance(raw_row, dict):
-                    raise OneCDiagnosticError("INVALID_ODATA_ROW")
-                try:
-                    organization = str(UUID(str(raw_row.get("Организация_Key")))).lower()
-                except (TypeError, ValueError, AttributeError) as exc:
-                    raise OneCDiagnosticError("INVALID_ORGANIZATION_SCOPE") from exc
-                if organization not in config.organization_guids:
-                    raise OneCDiagnosticError("ORGANIZATION_SCOPE_VIOLATION")
-                if len(rows) >= top:
-                    raise OneCDiagnosticError("ODATA_ROW_LIMIT_VIOLATION")
-                rows.append({
-                    field: _json_safe(raw_row.get(field))
-                    for field in requested_fields
-                })
-    except OneCDiagnosticError:
-        raise
-    except ODataPreviewError as exc:
-        raise OneCDiagnosticError("ODATA_QUERY_FAILED") from exc
+    for raw_rows, _page_count in _bounded_odata_pages(
+        config, initial_url, opener=opener
+    ):
+        for raw_row in raw_rows:
+            if not isinstance(raw_row, dict):
+                raise OneCDiagnosticError("INVALID_ODATA_ROW")
+            try:
+                organization = str(
+                    UUID(str(raw_row.get("Организация_Key")))
+                ).lower()
+            except (TypeError, ValueError, AttributeError) as exc:
+                raise OneCDiagnosticError("INVALID_ORGANIZATION_SCOPE") from exc
+            if organization not in config.organization_guids:
+                raise OneCDiagnosticError("ORGANIZATION_SCOPE_VIOLATION")
+            if len(rows) >= top:
+                raise OneCDiagnosticError("ODATA_ROW_LIMIT_VIOLATION")
+            rows.append({
+                field: _json_safe(raw_row.get(field))
+                for field in requested_fields
+            })
 
     return {
         "kind": "onec_diagnostic_rows",
@@ -496,12 +626,15 @@ def read_entity_rows(
         "rows": rows,
         "limit": top,
         "organization_scope_enforced": True,
+        "personal_compensation_data_denied": True,
+        "page_byte_limit": MAX_ROW_PAGE_BYTES,
         "source": "live_1c_odata",
     }
 
 
 __all__ = [
     "EntitySchema",
+    "MAX_ROW_PAGE_BYTES",
     "OneCDiagnosticError",
     "config_from_settings",
     "describe_metadata",
