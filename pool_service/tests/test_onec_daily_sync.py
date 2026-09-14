@@ -17,6 +17,7 @@ from pool_service.models import OneCODataSyncRun, Organization, OrganizationAcce
 
 MODULE = "pool_service.finance_imports.odata_daily_sync"
 NOW = datetime(2025, 1, 1, 0, 0, tzinfo=dt_timezone.utc)  # 07:00 Barnaul
+BEFORE_FULL = datetime(2024, 12, 31, 22, 0, tzinfo=dt_timezone.utc)  # 05:00 Barnaul
 
 
 class DailyFinanceTests(TestCase):
@@ -53,27 +54,41 @@ class DailyFinanceTests(TestCase):
         run.save()
         return run
 
-    def test_daily_once_per_local_day_and_year_boundary_scope(self):
-        # This test covers scheduler/day-boundary semantics only. The point-in-time
-        # finance finalizer has dedicated tests and must not perform synthetic OData here.
+    def test_hourly_slot_runs_once_and_pre_full_scope_is_current_month_only(self):
         with patch(MODULE + ".step_unified_sync", side_effect=self.finish), patch(
             MODULE + ".finalize_finance_position_step", return_value="completed"
         ):
-            first = worker_tick(now=NOW)
-            again = worker_tick(now=NOW + timedelta(hours=1))
+            first = worker_tick(now=BEFORE_FULL)
+            again = worker_tick(now=BEFORE_FULL + timedelta(minutes=30))
         self.assertEqual(first["state"], "completed")
         self.assertEqual(again["state"], "already_attempted")
         self.assertEqual(OneCODataSyncRun.objects.count(), 1)
         run = OneCODataSyncRun.objects.get()
-        self.assertEqual(run.sync_scope["_schedule_day"], "2025-01-01")
+        self.assertEqual(run.sync_scope["_schedule_slot"], "2025-01-01T05")
+        self.assertNotIn("_schedule_day", run.sync_scope)
         for report in SUPPORTED_REPORT_TYPES:
-            self.assertEqual(run.sync_scope[report]["start"], "2024-11-01")
+            self.assertEqual(run.sync_scope[report]["start"], "2025-01-01")
             self.assertEqual(run.sync_scope[report]["end"], "2025-01-01")
 
-    def test_before_local_due_time_does_not_create(self):
-        result = worker_tick(now=NOW - timedelta(hours=2))
-        self.assertEqual(result["state"], "not_due")
-        self.assertFalse(OneCODataSyncRun.objects.exists())
+    def test_first_slot_after_daily_time_runs_full_lookback_once(self):
+        with patch(MODULE + ".step_unified_sync", side_effect=self.finish), patch(
+            MODULE + ".finalize_finance_position_step", return_value="completed"
+        ):
+            first = worker_tick(now=NOW)
+            next_hour = worker_tick(now=NOW + timedelta(hours=1))
+        self.assertEqual(first["state"], "completed")
+        self.assertEqual(next_hour["state"], "completed")
+        self.assertEqual(OneCODataSyncRun.objects.count(), 2)
+        full, hourly = OneCODataSyncRun.objects.order_by("created_at")
+        self.assertEqual(full.sync_scope["_schedule_day"], "2025-01-01")
+        self.assertEqual(full.sync_scope["_schedule_slot"], "2025-01-01T07")
+        for report in SUPPORTED_REPORT_TYPES:
+            self.assertEqual(full.sync_scope[report]["start"], "2024-11-01")
+            self.assertEqual(full.sync_scope[report]["end"], "2025-01-01")
+            self.assertEqual(hourly.sync_scope[report]["start"], "2025-01-01")
+            self.assertEqual(hourly.sync_scope[report]["end"], "2025-01-01")
+        self.assertNotIn("_schedule_day", hourly.sync_scope)
+        self.assertEqual(hourly.sync_scope["_schedule_slot"], "2025-01-01T08")
 
     def test_disabled_schedule_creates_nothing(self):
         with override_settings(ONEC_FINANCE_DAILY_ENABLED=False):
@@ -108,8 +123,8 @@ class DailyFinanceTests(TestCase):
         foreign.refresh_from_db()
         self.assertEqual(foreign.status, "pending")
 
-    def test_failed_daily_attempt_is_not_recreated_every_tick(self):
-        self.run_record(status=OneCODataSyncRun.STATUS_FAILED, sync_scope={"_schedule_day": "2025-01-01"})
+    def test_failed_hourly_attempt_is_not_recreated_in_same_slot(self):
+        self.run_record(status=OneCODataSyncRun.STATUS_FAILED, sync_scope={"_schedule_slot": "2025-01-01T07"})
         self.assertEqual(worker_tick(now=NOW)["state"], "already_attempted")
         self.assertEqual(OneCODataSyncRun.objects.count(), 1)
 
