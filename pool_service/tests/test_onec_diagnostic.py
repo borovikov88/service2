@@ -19,15 +19,24 @@ METADATA = """<?xml version="1.0" encoding="utf-8"?>
     <Property Name="Date" Type="Edm.DateTime" />
     <Property Name="Организация_Key" Type="Edm.Guid" />
     <Property Name="СчетФактураВыставлен" Type="Edm.Boolean" />
+    <Property Name="Комментарий" Type="Edm.String" />
     <Property Name="SecretToken" Type="Edm.String" />
+    <Property Name="Оклад" Type="Edm.String" />
    </EntityType>
    <EntityType Name="CatalogRow">
     <Property Name="Ref_Key" Type="Edm.Guid" />
     <Property Name="Description" Type="Edm.String" />
    </EntityType>
+   <EntityType Name="EmployeePayroll">
+    <Property Name="Ref_Key" Type="Edm.Guid" />
+    <Property Name="Организация_Key" Type="Edm.Guid" />
+    <Property Name="Сотрудник_Key" Type="Edm.Guid" />
+    <Property Name="Начислено" Type="Edm.String" />
+   </EntityType>
    <EntityContainer Name="Container">
     <EntitySet Name="Document_РасходнаяНакладная" EntityType="StandardODATA.Sale" />
     <EntitySet Name="Catalog_Номенклатура" EntityType="StandardODATA.CatalogRow" />
+    <EntitySet Name="InformationRegister_НачисленияСотрудников" EntityType="StandardODATA.EmployeePayroll" />
    </EntityContainer>
   </Schema>
  </edmx:DataServices>
@@ -99,6 +108,7 @@ class OneCDiagnosticTests(TestCase):
         entity = result["entities"][0]
         self.assertEqual(entity["name"], "Document_РасходнаяНакладная")
         self.assertIn("СчетФактураВыставлен", entity["fields"])
+        self.assertTrue(entity["row_access_allowed"])
 
     def test_entity_schema_marks_sensitive_fields(self):
         result = diagnostic.get_entity_schema(
@@ -106,6 +116,7 @@ class OneCDiagnosticTests(TestCase):
         )
         sensitivity = {item["name"]: item["sensitive"] for item in result["fields"]}
         self.assertTrue(sensitivity["SecretToken"])
+        self.assertTrue(sensitivity["Оклад"])
         self.assertFalse(sensitivity["Number"])
 
     def test_read_entity_rows_enforces_organization_scope_and_structured_filter(self):
@@ -125,6 +136,8 @@ class OneCDiagnosticTests(TestCase):
             "СчетФактураВыставлен": True,
         }])
         self.assertTrue(result["organization_scope_enforced"])
+        self.assertTrue(result["personal_compensation_data_denied"])
+        self.assertEqual(result["page_byte_limit"], diagnostic.MAX_ROW_PAGE_BYTES)
         self.assertTrue(all(request.method == "GET" for request in opener.requests))
 
     def test_read_rejects_entity_without_organization_scope(self):
@@ -137,13 +150,31 @@ class OneCDiagnosticTests(TestCase):
                 metadata_raw=METADATA,
             )
 
-    def test_read_rejects_sensitive_field(self):
-        with self.assertRaisesRegex(diagnostic.OneCDiagnosticError, "SENSITIVE_FIELD_DENIED"):
+    def test_read_rejects_credential_and_compensation_fields(self):
+        for field in ("SecretToken", "Оклад"):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(diagnostic.OneCDiagnosticError, "SENSITIVE_FIELD_DENIED"):
+                    diagnostic.read_entity_rows(
+                        self.config(),
+                        "Document_РасходнаяНакладная",
+                        fields=[field],
+                        filters=[{"field": "Number", "op": "eq", "value": "РТ-000001"}],
+                        metadata_raw=METADATA,
+                    )
+
+    def test_read_rejects_personnel_or_payroll_entity(self):
+        schema = diagnostic.get_entity_schema(
+            self.config(),
+            "InformationRegister_НачисленияСотрудников",
+            metadata_raw=METADATA,
+        )
+        self.assertFalse(schema["row_access_allowed"])
+        with self.assertRaisesRegex(diagnostic.OneCDiagnosticError, "RESTRICTED_DATA_ENTITY"):
             diagnostic.read_entity_rows(
                 self.config(),
-                "Document_РасходнаяНакладная",
-                fields=["SecretToken"],
-                filters=[{"field": "Number", "op": "eq", "value": "РТ-000001"}],
+                "InformationRegister_НачисленияСотрудников",
+                fields=["Ref_Key"],
+                filters=[{"field": "Ref_Key", "op": "eq", "value": DOC}],
                 metadata_raw=METADATA,
             )
 
@@ -154,6 +185,23 @@ class OneCDiagnosticTests(TestCase):
                 "Document_РасходнаяНакладная",
                 fields=["Number"],
                 filters=[{"field": "СчетФактураВыставлен", "op": "eq", "value": True}],
+                metadata_raw=METADATA,
+            )
+
+    def test_row_response_has_per_page_byte_limit(self):
+        class OversizeOpener(FakeOpener):
+            def open(self, request, timeout=None):
+                self.requests.append(request)
+                payload = b"x" * (diagnostic.MAX_ROW_PAGE_BYTES + 1)
+                return FakeResponse(payload)
+
+        with self.assertRaisesRegex(diagnostic.OneCDiagnosticError, "ODATA_PAGE_SIZE_LIMIT"):
+            diagnostic.read_entity_rows(
+                self.config(),
+                "Document_РасходнаяНакладная",
+                fields=["Number"],
+                filters=[{"field": "Number", "op": "eq", "value": "РТ-000001"}],
+                opener=OversizeOpener(),
                 metadata_raw=METADATA,
             )
 
