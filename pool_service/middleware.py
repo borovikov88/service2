@@ -55,6 +55,7 @@ class AuthRedirectMiddleware:
             "/accounts/confirm-email/",
             "/accounts/confirm-phone/",
             "/oauth/finance/",
+            "/oauth/1c/",
             "/invite/",
             "/client-invite/",
             "/register/",
@@ -75,8 +76,11 @@ class AuthRedirectMiddleware:
                 "/index/",
                 "/mcp/test/",
                 "/mcp/finance",
+                "/mcp/1c",
                 "/.well-known/oauth-protected-resource/mcp/finance",
+                "/.well-known/oauth-protected-resource/mcp/1c",
                 "/.well-known/oauth-authorization-server",
+                "/.well-known/oauth-authorization-server/onec-diagnostic",
             }
             if path not in exact_allowed_paths and not any(path.startswith(p) for p in allowed_prefixes):
                 return redirect("/accounts/login/")
@@ -138,6 +142,7 @@ class FinanceOnlyRoleMiddleware:
     allowed_prefixes = (
         "/accounts/",
         "/oauth/finance/",
+        "/oauth/1c/",
         "/mcp/",
         "/.well-known/",
         "/api/push/",
