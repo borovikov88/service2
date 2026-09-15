@@ -5,7 +5,7 @@ from pathlib import Path
 
 from django.test import SimpleTestCase
 
-from scripts.enable_onec_diagnostic_mcp import KEY, enable_flag
+from scripts.enable_onec_diagnostic_mcp import KEY, activate_once, enable_flag
 
 
 class OneCDiagnosticActivationTests(SimpleTestCase):
@@ -13,6 +13,7 @@ class OneCDiagnosticActivationTests(SimpleTestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.env = self.root / ".env"
+        self.marker = self.root / "tmp" / "onec-diagnostic-mcp-activated"
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -46,3 +47,21 @@ class OneCDiagnosticActivationTests(SimpleTestCase):
         self.env.symlink_to(target)
         with self.assertRaisesRegex(RuntimeError, "non-symlink"):
             enable_flag(self.env)
+
+    def test_activation_marker_makes_later_deploys_noop(self):
+        self.env.write_text(f"{KEY}=false\n", encoding="utf-8")
+        self.assertEqual(activate_once(self.env, self.marker), "enabled")
+        self.assertTrue(self.marker.is_file())
+        self.assertEqual(stat.S_IMODE(self.marker.stat().st_mode), 0o600)
+        self.env.write_text(f"{KEY}=false\n", encoding="utf-8")
+        self.assertEqual(activate_once(self.env, self.marker), "already_marked")
+        self.assertEqual(self.env.read_text(encoding="utf-8"), f"{KEY}=false\n")
+
+    def test_refuses_marker_symlink(self):
+        self.env.write_text(f"{KEY}=false\n", encoding="utf-8")
+        self.marker.parent.mkdir(parents=True)
+        target = self.root / "marker-target"
+        target.write_text("x\n", encoding="utf-8")
+        self.marker.symlink_to(target)
+        with self.assertRaisesRegex(RuntimeError, "must not be a symlink"):
+            activate_once(self.env, self.marker)
