@@ -9,22 +9,69 @@ policies, grants, token validation and audit paths.
 
 from __future__ import annotations
 
+import os
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from django.conf import settings
 from django.http import HttpResponse, HttpResponseNotFound, HttpResponseServerError, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
-from pool_service import finance_mcp_views
-from pool_service import onec_diagnostic_mcp_chatgpt as diagnostic_chatgpt
-from pool_service import onec_diagnostic_mcp_views as diagnostic_views
-from pool_service.finance_mcp_auth import (
+
+def _restore_missing_diagnostic_settings():
+    """Read Diagnostic env values that an older settings.py failed to expose.
+
+    Production provisioning already writes these non-secret settings to .env,
+    but the current settings module accidentally lost the corresponding Django
+    attributes. Keep the recovery narrow and only fill attributes that are
+    genuinely absent so test/override_settings and future canonical wiring win.
+    """
+    values = {
+        "ADVISOR_ONEC_DIAGNOSTIC_MCP_ENABLED": (
+            os.getenv("ADVISOR_ONEC_DIAGNOSTIC_MCP_ENABLED", "").strip().lower()
+            == "true"
+        ),
+        "ADVISOR_ONEC_DIAGNOSTIC_MCP_ALLOWED_ORIGINS": {
+            item.strip()
+            for item in os.getenv(
+                "ADVISOR_ONEC_DIAGNOSTIC_MCP_ALLOWED_ORIGINS",
+                "https://chatgpt.com",
+            ).split(",")
+            if item.strip()
+        },
+        "ADVISOR_ONEC_DIAGNOSTIC_MCP_RESOURCE_URL": os.getenv(
+            "ADVISOR_ONEC_DIAGNOSTIC_MCP_RESOURCE_URL", ""
+        ),
+        "ADVISOR_ONEC_DIAGNOSTIC_MCP_AUTH_ISSUER": os.getenv(
+            "ADVISOR_ONEC_DIAGNOSTIC_MCP_AUTH_ISSUER", ""
+        ),
+        "ADVISOR_ONEC_DIAGNOSTIC_MCP_ACCESS_TOKEN_TTL_SECONDS": os.getenv(
+            "ADVISOR_ONEC_DIAGNOSTIC_MCP_ACCESS_TOKEN_TTL_SECONDS", "600"
+        ),
+        "ADVISOR_ONEC_DIAGNOSTIC_MCP_REFRESH_TOKEN_TTL_SECONDS": os.getenv(
+            "ADVISOR_ONEC_DIAGNOSTIC_MCP_REFRESH_TOKEN_TTL_SECONDS", "2592000"
+        ),
+        "ADVISOR_ONEC_DIAGNOSTIC_MCP_AUTHORIZATION_CODE_TTL_SECONDS": os.getenv(
+            "ADVISOR_ONEC_DIAGNOSTIC_MCP_AUTHORIZATION_CODE_TTL_SECONDS", "300"
+        ),
+    }
+    for name, value in values.items():
+        if not hasattr(settings, name):
+            setattr(settings, name, value)
+
+
+_restore_missing_diagnostic_settings()
+
+from pool_service import finance_mcp_views  # noqa: E402
+from pool_service import onec_diagnostic_mcp_chatgpt as diagnostic_chatgpt  # noqa: E402
+from pool_service import onec_diagnostic_mcp_views as diagnostic_views  # noqa: E402
+from pool_service.finance_mcp_auth import (  # noqa: E402
     FinanceMcpConfigurationError,
     authorization_server_metadata as finance_authorization_server_metadata_data,
     is_enabled as finance_is_enabled,
     issuer_url as finance_issuer_url,
 )
-from pool_service.onec_diagnostic_mcp_auth import (
+from pool_service.onec_diagnostic_mcp_auth import (  # noqa: E402
     DIAGNOSTIC_READ_SCOPE,
     OneCDiagnosticMcpConfigurationError,
     is_enabled as diagnostic_is_enabled,
