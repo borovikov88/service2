@@ -200,10 +200,12 @@ def main() -> int:
         Path(args.env_file),
         Path(args.marker_file) if args.marker_file else None,
     )
+    # Keep the established stdout protocol consumed by ci-deploy.yml. The
+    # wording is legacy, but only non-secret state is emitted.
     messages = {
-        "configured": "Diagnostic MCP production configuration applied.",
-        "already_configured": "Diagnostic MCP production configuration already correct.",
-        "marker_upgraded": "Diagnostic MCP production configuration verified; activation marker upgraded.",
+        "configured": "Diagnostic MCP activation flag enabled.",
+        "already_configured": "Diagnostic MCP activation flag already enabled.",
+        "marker_upgraded": "Diagnostic MCP activation flag already enabled.",
         "already_marked": "Diagnostic MCP activation already completed earlier; no changes made.",
     }
     print(messages[result])
