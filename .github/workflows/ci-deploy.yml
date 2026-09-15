@@ -231,6 +231,21 @@ jobs:
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
             "$REMOTE_COMMAND" < update.sh
+      - name: Activate 1C Diagnostic MCP once
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          printf -v REMOTE_COMMAND \
+            'set -Eeuo pipefail; cd %q; test "$(git rev-parse HEAD)" = %q; test -f .env; test ! -L .env; ../venv/bin/python scripts/enable_onec_diagnostic_mcp.py --env-file .env --marker-file ../tmp/onec-diagnostic-mcp-activated; touch ../tmp/restart.txt' \
+            "$DEPLOY_APP_PATH" "$GITHUB_SHA"
+          ssh -i ~/.ssh/service2_deploy \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
       - name: Verify deployed site health
         env:
           DEPLOY_HEALTH_URL: ${{ secrets.DEPLOY_HEALTH_URL }}
@@ -253,3 +268,34 @@ jobs:
             echo "Health check returned HTTP $status, expected 2xx" >&2
             exit 1
           }
+      - name: Verify Diagnostic MCP metadata is live
+        env:
+          DEPLOY_HEALTH_URL: ${{ secrets.DEPLOY_HEALTH_URL }}
+        run: |
+          set -Eeuo pipefail
+          base="$(python - "$DEPLOY_HEALTH_URL" <<'PY'
+          import sys
+          from urllib.parse import urlsplit
+          value = urlsplit(sys.argv[1])
+          if value.scheme != "https" or not value.hostname or value.username or value.password:
+              raise SystemExit("DEPLOY_HEALTH_URL must be an HTTPS URL")
+          port = f":{value.port}" if value.port else ""
+          print(f"https://{value.hostname}{port}")
+          PY
+          )"
+          response="$(curl --fail-with-body --silent --show-error \
+            --connect-timeout 10 --max-time 30 \
+            --retry 3 --retry-delay 5 --retry-connrefused \
+            "$base/.well-known/oauth-protected-resource/mcp/1c")"
+          python - "$response" <<'PY'
+          import json
+          import sys
+          data = json.loads(sys.argv[1])
+          scopes = data.get("scopes_supported") or []
+          if "onec.diagnostic.read" not in scopes:
+              raise SystemExit("Diagnostic scope is missing from protected-resource metadata")
+          resource = data.get("resource")
+          if not isinstance(resource, str) or not resource.startswith("https://"):
+              raise SystemExit("Diagnostic resource URL is invalid")
+          print("Diagnostic MCP metadata is live.")
+          PY
