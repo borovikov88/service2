@@ -43,6 +43,21 @@ class OneCDiagnosticActivationTests(SimpleTestCase):
         self.assertEqual(self.env.stat().st_ino, before_inode)
         self.assertEqual(self.env.read_text(encoding="utf-8"), f"{KEY}=true\nOTHER=value\n")
 
+    def test_preserves_every_untouched_byte_and_crlf(self):
+        original = (
+            'SECRET_KEY="left\u2028right"\r\n'.encode("utf-8")
+            + f"  export {KEY} = false\r\n".encode("ascii")
+            + b"BINARYISH=\xff\xfe\r\n"
+        )
+        self.env.write_bytes(original)
+        self.assertTrue(enable_flag(self.env))
+        expected = (
+            'SECRET_KEY="left\u2028right"\r\n'.encode("utf-8")
+            + f"{KEY}=true\r\n".encode("ascii")
+            + b"BINARYISH=\xff\xfe\r\n"
+        )
+        self.assertEqual(self.env.read_bytes(), expected)
+
     def test_refuses_duplicate_definitions(self):
         self.env.write_text(f"{KEY}=false\nexport {KEY}=true\n", encoding="utf-8")
         original = self.env.read_bytes()
