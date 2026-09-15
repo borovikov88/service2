@@ -270,32 +270,27 @@ jobs:
           }
       - name: Verify Diagnostic MCP metadata is live
         env:
-          DEPLOY_HEALTH_URL: ${{ secrets.DEPLOY_HEALTH_URL }}
+          EXPECTED_RESOURCE_URL: https://service2.aqualine22.ru/mcp/1c
+          EXPECTED_ISSUER_URL: https://service2.aqualine22.ru/onec-diagnostic
+          METADATA_URL: https://service2.aqualine22.ru/.well-known/oauth-protected-resource/mcp/1c
         run: |
           set -Eeuo pipefail
-          base="$(python - "$DEPLOY_HEALTH_URL" <<'PY'
-          import sys
-          from urllib.parse import urlsplit
-          value = urlsplit(sys.argv[1])
-          if value.scheme != "https" or not value.hostname or value.username or value.password:
-              raise SystemExit("DEPLOY_HEALTH_URL must be an HTTPS URL")
-          port = f":{value.port}" if value.port else ""
-          print(f"https://{value.hostname}{port}")
-          PY
-          )"
           response="$(curl --fail-with-body --silent --show-error \
             --connect-timeout 10 --max-time 30 \
             --retry 3 --retry-delay 5 --retry-connrefused \
-            "$base/.well-known/oauth-protected-resource/mcp/1c")"
-          python - "$response" <<'PY'
+            "$METADATA_URL")"
+          python - "$response" "$EXPECTED_RESOURCE_URL" "$EXPECTED_ISSUER_URL" <<'PY'
           import json
           import sys
           data = json.loads(sys.argv[1])
+          expected_resource = sys.argv[2]
+          expected_issuer = sys.argv[3]
+          if data.get("resource") != expected_resource:
+              raise SystemExit("Diagnostic resource URL does not match production MCP endpoint")
+          if data.get("authorization_servers") != [expected_issuer]:
+              raise SystemExit("Diagnostic authorization server does not match production issuer")
           scopes = data.get("scopes_supported") or []
           if "onec.diagnostic.read" not in scopes:
               raise SystemExit("Diagnostic scope is missing from protected-resource metadata")
-          resource = data.get("resource")
-          if not isinstance(resource, str) or not resource.startswith("https://"):
-              raise SystemExit("Diagnostic resource URL is invalid")
-          print("Diagnostic MCP metadata is live.")
+          print("Diagnostic MCP metadata is live and bound to the expected resource/issuer.")
           PY
