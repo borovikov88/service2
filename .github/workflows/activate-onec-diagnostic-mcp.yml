@@ -1,9 +1,12 @@
 name: Activate 1C Diagnostic MCP
 
 on:
-  workflow_run:
-    workflows: ["Test and deploy main"]
-    types: [completed]
+  push:
+    branches: [main]
+    paths:
+      - scripts/enable_onec_diagnostic_mcp.py
+      - pool_service/tests/test_onec_diagnostic_activation.py
+      - .github/workflows/activate-onec-diagnostic-mcp.yml
 
 permissions:
   contents: read
@@ -15,18 +18,14 @@ concurrency:
 jobs:
   activate:
     name: Enable reviewed Diagnostic MCP in production
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     environment: production
     steps:
-      - name: Checkout exact deployed commit
+      - name: Checkout exact reviewed main commit
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Configure SSH
@@ -49,13 +48,36 @@ jobs:
           if [[ "$PORT" != "22" ]]; then HOST_LOOKUP="[$DEPLOY_HOST]:$PORT"; fi
           ssh-keygen -F "$HOST_LOOKUP" -f ~/.ssh/known_hosts >/dev/null
 
+      - name: Wait for normal reviewed deploy to reach this exact SHA
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          for attempt in $(seq 1 60); do
+            printf -v REMOTE_COMMAND 'cd %q && git rev-parse HEAD' "$DEPLOY_APP_PATH"
+            remote_sha="$(ssh -i ~/.ssh/service2_deploy \
+              -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+              -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND")"
+            if [[ "$remote_sha" == "$EXPECTED_SHA" ]]; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Reviewed deploy did not reach expected SHA in time" >&2
+          exit 1
+
       - name: Enable flag on exact deployed checkout and restart Passenger
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
-          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
+          EXPECTED_SHA: ${{ github.sha }}
         run: |
           set -Eeuo pipefail
           PORT="${DEPLOY_PORT:-22}"
@@ -89,10 +111,11 @@ jobs:
           import json
           import sys
           data = json.loads(sys.argv[1])
-          if data.get("resource") != data.get("resource", "").rstrip("/"):
-              raise SystemExit("Diagnostic resource URL is not canonical")
           scopes = data.get("scopes_supported") or []
           if "onec.diagnostic.read" not in scopes:
               raise SystemExit("Diagnostic scope is missing from protected-resource metadata")
+          resource = data.get("resource")
+          if not isinstance(resource, str) or not resource.startswith("https://"):
+              raise SystemExit("Diagnostic resource URL is invalid")
           print("Diagnostic MCP metadata is live.")
           PY
