@@ -18,7 +18,7 @@ from pool_service.finance_mcp_views import (
     finance_oauth_token,
     finance_protected_resource_metadata,
 )
-from pool_service.onec_diagnostic_mcp_views import (
+from pool_service.onec_diagnostic_mcp_chatgpt import (
     onec_diagnostic_authorization_server_metadata,
     onec_diagnostic_mcp,
     onec_diagnostic_oauth_authorize,
