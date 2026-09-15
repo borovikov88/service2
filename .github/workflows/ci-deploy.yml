@@ -308,3 +308,19 @@ jobs:
               raise SystemExit("Diagnostic scope is missing from protected-resource metadata")
           print("Diagnostic MCP metadata is live and bound to the expected resource/issuer.")
           PY
+      - name: Finalize Diagnostic MCP activation marker
+        if: success() && steps.activate_diag.outputs.smoke_required == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          printf -v REMOTE_COMMAND \
+            'set -Eeuo pipefail; cd %q; test "$(git rev-parse HEAD)" = %q; ../venv/bin/python scripts/enable_onec_diagnostic_mcp.py --marker-file ../tmp/onec-diagnostic-mcp-activated --finalize-marker' \
+            "$DEPLOY_APP_PATH" "$GITHUB_SHA"
+          ssh -i ~/.ssh/service2_deploy \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
