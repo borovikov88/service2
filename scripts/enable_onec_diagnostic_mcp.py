@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Enable the reviewed 1C Diagnostic MCP flag in an existing production .env.
+"""Configure the reviewed 1C Diagnostic MCP in an existing production .env.
 
-This helper intentionally changes exactly one non-secret key and never prints the
-file contents. It refuses missing/symlinked files and duplicate definitions.
-The .env inode is edited in place so owner/group/mode/ACL metadata are preserved,
-and every byte outside the target flag line is retained exactly.
-An optional marker makes the activation one-time across later deployments.
+The helper changes only the three non-secret Diagnostic MCP settings required for
+production, never prints .env contents, preserves the original .env inode and all
+bytes outside the target setting lines, and supports a versioned one-time marker.
 """
 
 from __future__ import annotations
@@ -18,15 +16,23 @@ import re
 import tempfile
 
 
-KEY = "ADVISOR_ONEC_DIAGNOSTIC_MCP_ENABLED"
-ENABLED_LINE = f"{KEY}=true"
-ENABLED_BYTES = ENABLED_LINE.encode("ascii")
-KEY_LINE_RE = re.compile(
-    rb"(?m)^[ \t]*(?:export[ \t]+)?"
-    + re.escape(KEY.encode("ascii"))
-    + rb"[ \t]*=[^\r\n]*(?P<ending>\r\n|\n|\Z)"
+ENABLED_KEY = "ADVISOR_ONEC_DIAGNOSTIC_MCP_ENABLED"
+RESOURCE_KEY = "ADVISOR_ONEC_DIAGNOSTIC_MCP_RESOURCE_URL"
+ISSUER_KEY = "ADVISOR_ONEC_DIAGNOSTIC_MCP_AUTH_ISSUER"
+KEY = ENABLED_KEY  # Backward-compatible import for older tests/tools.
+
+PRODUCTION_RESOURCE_URL = "https://service2.aqualine22.ru/mcp/1c"
+PRODUCTION_ISSUER_URL = "https://service2.aqualine22.ru/onec-diagnostic"
+PRODUCTION_CONFIGURATION = (
+    (ENABLED_KEY, "true"),
+    (RESOURCE_KEY, PRODUCTION_RESOURCE_URL),
+    (ISSUER_KEY, PRODUCTION_ISSUER_URL),
 )
+
+LEGACY_MARKER = b"activated\n"
+CURRENT_MARKER = b"activated-v2\n"
 MAX_ENV_BYTES = 1024 * 1024
+MAX_MARKER_BYTES = 64
 
 
 def _write_all(fd: int, payload: bytes) -> None:
@@ -38,15 +44,24 @@ def _write_all(fd: int, payload: bytes) -> None:
         view = view[written:]
 
 
-def _render_enabled(original: bytes) -> tuple[bytes, bool]:
-    matches = list(KEY_LINE_RE.finditer(original))
-    if len(matches) > 1:
-        raise RuntimeError(f"{KEY} is defined more than once; refusing ambiguous update.")
+def _line_re(key: str):
+    return re.compile(
+        rb"(?m)^[ \t]*(?:export[ \t]+)?"
+        + re.escape(key.encode("ascii"))
+        + rb"[ \t]*=[^\r\n]*(?P<ending>\r\n|\n|\Z)"
+    )
 
+
+def _render_setting(original: bytes, key: str, value: str) -> tuple[bytes, bool]:
+    pattern = _line_re(key)
+    matches = list(pattern.finditer(original))
+    if len(matches) > 1:
+        raise RuntimeError(f"{key} is defined more than once; refusing ambiguous update.")
+
+    desired = f"{key}={value}".encode("ascii")
     if matches:
         match = matches[0]
-        ending = match.group("ending")
-        replacement = ENABLED_BYTES + ending
+        replacement = desired + match.group("ending")
         if match.group(0) == replacement:
             return original, False
         return original[: match.start()] + replacement + original[match.end() :], True
@@ -54,12 +69,12 @@ def _render_enabled(original: bytes) -> tuple[bytes, bool]:
     separators = re.findall(rb"\r\n|\n", original)
     newline = separators[-1] if separators else b"\n"
     if not original:
-        return ENABLED_BYTES + newline, True
-    separator = b"" if original.endswith((b"\n", b"\r")) else newline
-    return original + separator + ENABLED_BYTES + newline, True
+        return desired + newline, True
+    separator = b"" if original.endswith(b"\n") else newline
+    return original + separator + desired + newline, True
 
 
-def enable_flag(path: Path) -> bool:
+def configure_production(path: Path) -> bool:
     flags = os.O_RDWR
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -86,15 +101,20 @@ def enable_flag(path: Path) -> bool:
             if len(original) > MAX_ENV_BYTES:
                 raise RuntimeError("Production .env is unexpectedly large; refusing update.")
         original_bytes = bytes(original)
-        rendered, changed = _render_enabled(original_bytes)
+
+        rendered = original_bytes
+        changed = False
+        for key, value in PRODUCTION_CONFIGURATION:
+            rendered, setting_changed = _render_setting(rendered, key, value)
+            changed = changed or setting_changed
         if not changed:
             return False
         if len(rendered) > MAX_ENV_BYTES:
             raise RuntimeError("Updated production .env would exceed the safety limit.")
 
         # Keep the original inode instead of os.replace(): ownership, group and
-        # POSIX ACLs therefore remain attached to the same file. If a normal
-        # write error occurs, best-effort restoration happens before failing.
+        # POSIX ACLs remain attached to the same file. On a write error, restore
+        # the exact original bytes before failing.
         try:
             os.lseek(fd, 0, os.SEEK_SET)
             _write_all(fd, rendered)
@@ -125,33 +145,50 @@ def enable_flag(path: Path) -> bool:
             os.close(fd)
 
 
+def _read_marker(marker_file: Path) -> bytes | None:
+    if marker_file.is_symlink():
+        raise RuntimeError("Activation marker must not be a symlink.")
+    if not marker_file.exists():
+        return None
+    if not marker_file.is_file():
+        raise RuntimeError("Activation marker must be a regular file.")
+    content = marker_file.read_bytes()
+    if len(content) > MAX_MARKER_BYTES:
+        raise RuntimeError("Activation marker is unexpectedly large.")
+    if content not in {LEGACY_MARKER, CURRENT_MARKER}:
+        raise RuntimeError("Activation marker has an unknown version; refusing update.")
+    return content
+
+
+def _write_current_marker(marker_file: Path) -> None:
+    marker_file.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{marker_file.name}.", dir=str(marker_file.parent))
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(CURRENT_MARKER)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary_path, 0o600)
+        os.replace(temporary_path, marker_file)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
 def activate_once(env_file: Path, marker_file: Path | None = None) -> str:
-    if marker_file is not None:
-        if marker_file.is_symlink():
-            raise RuntimeError("Activation marker must not be a symlink.")
-        if marker_file.exists():
-            if not marker_file.is_file():
-                raise RuntimeError("Activation marker must be a regular file.")
-            return "already_marked"
+    marker = _read_marker(marker_file) if marker_file is not None else None
+    if marker == CURRENT_MARKER:
+        return "already_marked"
 
-    changed = enable_flag(env_file)
+    changed = configure_production(env_file)
 
     if marker_file is not None:
-        marker_file.parent.mkdir(parents=True, exist_ok=True)
-        fd, temporary_name = tempfile.mkstemp(prefix=f".{marker_file.name}.", dir=str(marker_file.parent))
-        temporary_path = Path(temporary_name)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-                handle.write("activated\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.chmod(temporary_path, 0o600)
-            os.replace(temporary_path, marker_file)
-        finally:
-            if temporary_path.exists():
-                temporary_path.unlink()
+        _write_current_marker(marker_file)
 
-    return "enabled" if changed else "already_enabled"
+    if marker == LEGACY_MARKER:
+        return "configured" if changed else "marker_upgraded"
+    return "configured" if changed else "already_configured"
 
 
 def main() -> int:
@@ -164,8 +201,9 @@ def main() -> int:
         Path(args.marker_file) if args.marker_file else None,
     )
     messages = {
-        "enabled": "Diagnostic MCP activation flag enabled.",
-        "already_enabled": "Diagnostic MCP activation flag already enabled.",
+        "configured": "Diagnostic MCP production configuration applied.",
+        "already_configured": "Diagnostic MCP production configuration already correct.",
+        "marker_upgraded": "Diagnostic MCP production configuration verified; activation marker upgraded.",
         "already_marked": "Diagnostic MCP activation already completed earlier; no changes made.",
     }
     print(messages[result])
