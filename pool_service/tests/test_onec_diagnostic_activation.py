@@ -21,25 +21,34 @@ class OneCDiagnosticActivationTests(SimpleTestCase):
     def test_adds_flag_without_printing_or_touching_existing_values(self):
         self.env.write_text("SECRET_KEY=do-not-print\nSITE_URL=https://example.test\n", encoding="utf-8")
         os.chmod(self.env, 0o600)
+        before = self.env.stat()
         changed = enable_flag(self.env)
+        after = self.env.stat()
         self.assertTrue(changed)
         self.assertEqual(
             self.env.read_text(encoding="utf-8"),
             "SECRET_KEY=do-not-print\nSITE_URL=https://example.test\n"
             f"{KEY}=true\n",
         )
-        self.assertEqual(stat.S_IMODE(self.env.stat().st_mode), 0o600)
+        self.assertEqual(after.st_ino, before.st_ino)
+        self.assertEqual(after.st_uid, before.st_uid)
+        self.assertEqual(after.st_gid, before.st_gid)
+        self.assertEqual(stat.S_IMODE(after.st_mode), 0o600)
 
     def test_replaces_single_existing_flag_idempotently(self):
         self.env.write_text(f"{KEY}=false\nOTHER=value\n", encoding="utf-8")
+        before_inode = self.env.stat().st_ino
         self.assertTrue(enable_flag(self.env))
         self.assertFalse(enable_flag(self.env))
+        self.assertEqual(self.env.stat().st_ino, before_inode)
         self.assertEqual(self.env.read_text(encoding="utf-8"), f"{KEY}=true\nOTHER=value\n")
 
     def test_refuses_duplicate_definitions(self):
         self.env.write_text(f"{KEY}=false\nexport {KEY}=true\n", encoding="utf-8")
+        original = self.env.read_bytes()
         with self.assertRaisesRegex(RuntimeError, "defined more than once"):
             enable_flag(self.env)
+        self.assertEqual(self.env.read_bytes(), original)
 
     def test_refuses_symlink(self):
         target = self.root / "real.env"
