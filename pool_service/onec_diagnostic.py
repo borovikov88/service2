@@ -30,6 +30,7 @@ from pool_service.finance_imports.odata_profit import (
     _safe_next_url,
     validate_config,
 )
+from pool_service.models import OrganizationAccess
 
 
 MAX_METADATA_BYTES = 16 * 1024 * 1024
@@ -41,6 +42,8 @@ MAX_READ_FILTERS = 8
 MAX_READ_ROWS = 50
 MAX_READ_PAGES = 5
 MAX_ROW_PAGE_BYTES = 2 * 1024 * 1024
+
+DIAGNOSTIC_ACCESS_ROLES = frozenset({"owner", "accountant"})
 
 EDM_NAMESPACES = {
     "http://schemas.microsoft.com/ado/2006/04/edm",
@@ -58,24 +61,34 @@ READABLE_ENTITY_PREFIXES = (
     "AccountingRegister_",
 )
 FILTER_OPERATORS = frozenset({"eq", "ne", "gt", "ge", "lt", "le"})
+
 CREDENTIAL_FIELD_RE = re.compile(
     r"password|парол|secret|секрет|token|токен|credential|"
-    r"api[_ ]?key|access[_ ]?key|private[_ ]?key",
+    r"api[_ ]?key|access[_ ]?key|private[_ ]?key|session[_ ]?key|"
+    r"auth(?:entication|orization)?[_ ]?(?:key|secret|token)",
     re.IGNORECASE,
 )
-PERSONAL_OR_COMPENSATION_ENTITY_RE = re.compile(
-    r"salary|payroll|employee|personnel|person|wage|withhold|tax.*employee|"
-    r"зарплат|начисл|удерж|ндфл|сотрудник|физическ.*лиц|физлиц|персонал|"
-    r"кадр|табел|больнич|отпуск|исполнительн.*лист|страхов.*взнос|"
-    r"расч[её]т.*зарплат",
+DIRECT_PERSONAL_IDENTIFIER_FIELD_RE = re.compile(
+    r"passport|паспорт|snils|снилс|\bssn\b|social[_ ]?security[_ ]?number|"
+    r"страхов(?:ой|ого)?[_ ]?(?:номер|номер.*лицев)|номер.*страхов.*свид",
     re.IGNORECASE,
 )
-PERSONAL_OR_COMPENSATION_FIELD_RE = re.compile(
-    r"salary|payroll|employee|personnel|wage|withhold|social.*security|passport|"
-    r"birth|phone|email|address|first.*name|last.*name|middle.*name|"
-    r"зарплат|сотрудник|физическ.*лиц|физлиц|снилс|паспорт|дат.*рожд|"
-    r"телефон|email|e-mail|электронн.*почт|адрес|фамил|отчеств|\bфио\b|"
-    r"оклад|тарифн.*ставк|начисл|удерж|ндфл|страхов.*взнос|табел",
+CRYPTOGRAPHIC_SECRET_FIELD_RE = re.compile(
+    r"private[_ ]?key|закрыт.*ключ|certificate.*(?:private|key|sign)|"
+    r"сертификат.*(?:эп|подпис|ключ)|электронн.*подпис|ключ.*(?:эп|подпис)",
+    re.IGNORECASE,
+)
+PERSONNEL_ENTITY_RE = re.compile(
+    r"employee|personnel|payroll|salary|wage|person|"
+    r"сотрудник|физическ.*лиц|физлиц|кадр|персонал|зарплат|начисл|удерж|"
+    r"ндфл|табел|больнич|отпуск|страхов.*взнос|расч[её]т.*зарплат",
+    re.IGNORECASE,
+)
+PERSONAL_CONTACT_OR_BANK_FIELD_RE = re.compile(
+    r"birth|date.*birth|phone|mobile|email|e-mail|address|home.*address|"
+    r"iban|bank.*account|account.*number|card.*number|payment.*card|"
+    r"дат.*рожд|телефон|мобильн|электронн.*почт|адрес.*прож|домашн.*адрес|"
+    r"банков.*сч[её]т|номер.*сч[её]т|номер.*карт|лицев.*сч[её]т",
     re.IGNORECASE,
 )
 
@@ -97,6 +110,22 @@ class EntitySchema:
     @property
     def field_types(self) -> dict[str, str]:
         return dict(self.properties)
+
+
+def can_access_diagnostic_mcp(user, organization) -> bool:
+    """Only explicit owner/accountant organization roles may use Diagnostic MCP.
+
+    This helper is intentionally separate from the future HTTP/MCP transport so
+    the endpoint can enforce the same server-side policy when it is introduced.
+    No other finance/admin role is implicitly trusted here.
+    """
+    if not user or not getattr(user, "is_authenticated", False) or not organization:
+        return False
+    return OrganizationAccess.objects.filter(
+        user=user,
+        organization=organization,
+        role__in=DIAGNOSTIC_ACCESS_ROLES,
+    ).exists()
 
 
 def config_from_settings() -> ODataConfig:
@@ -263,15 +292,17 @@ def _is_readable_entity(name: str) -> bool:
     return any(name.startswith(prefix) for prefix in READABLE_ENTITY_PREFIXES)
 
 
-def _is_restricted_entity(name: str) -> bool:
-    return bool(PERSONAL_OR_COMPENSATION_ENTITY_RE.search(name))
-
-
-def _field_is_sensitive(name: str) -> bool:
-    return bool(
-        CREDENTIAL_FIELD_RE.search(name)
-        or PERSONAL_OR_COMPENSATION_FIELD_RE.search(name)
-    )
+def _field_is_sensitive(name: str, *, entity_set: str = "") -> bool:
+    """Deny secrets and narrow personal identifiers, not business/payroll facts."""
+    if CREDENTIAL_FIELD_RE.search(name):
+        return True
+    if DIRECT_PERSONAL_IDENTIFIER_FIELD_RE.search(name):
+        return True
+    if CRYPTOGRAPHIC_SECRET_FIELD_RE.search(name):
+        return True
+    if entity_set and PERSONNEL_ENTITY_RE.search(entity_set):
+        return bool(PERSONAL_CONTACT_OR_BANK_FIELD_RE.search(name))
+    return False
 
 
 def describe_metadata(
@@ -314,7 +345,7 @@ def describe_metadata(
                 "name": item.name,
                 "field_count": len(item.properties),
                 "fields": [name for name, _declared in item.properties],
-                "row_access_allowed": not _is_restricted_entity(item.name),
+                "row_access_allowed": True,
             }
             for item in selected
         ],
@@ -343,24 +374,29 @@ def get_entity_schema(
     return {
         "name": schema.name,
         "entity_type": schema.entity_type,
-        "row_access_allowed": not _is_restricted_entity(schema.name),
+        "row_access_allowed": True,
         "fields": [
             {
                 "name": name,
                 "type": declared,
-                "sensitive": _field_is_sensitive(name),
+                "sensitive": _field_is_sensitive(name, entity_set=schema.name),
             }
             for name, declared in schema.properties
         ],
     }
 
 
-def _require_safe_field(name: str, field_types: Mapping[str, str]) -> str:
+def _require_safe_field(
+    name: str,
+    field_types: Mapping[str, str],
+    *,
+    entity_set: str,
+) -> str:
     if not isinstance(name, str) or not IDENTIFIER_RE.fullmatch(name) or "." in name:
         raise OneCDiagnosticError("INVALID_FIELD")
     if name not in field_types:
         raise OneCDiagnosticError("FIELD_NOT_PUBLISHED")
-    if _field_is_sensitive(name):
+    if _field_is_sensitive(name, entity_set=entity_set):
         raise OneCDiagnosticError("SENSITIVE_FIELD_DENIED")
     return name
 
@@ -430,6 +466,8 @@ def _build_filter_expression(
     filters: Iterable[Mapping[str, object]],
     field_types: Mapping[str, str],
     organization_guids: tuple[str, ...],
+    *,
+    entity_set: str,
 ) -> str:
     filters = list(filters)
     if not filters or len(filters) > MAX_READ_FILTERS:
@@ -439,7 +477,7 @@ def _build_filter_expression(
     for item in filters:
         if not isinstance(item, Mapping) or set(item) != {"field", "op", "value"}:
             raise OneCDiagnosticError("INVALID_FILTER")
-        field = _require_safe_field(item["field"], field_types)
+        field = _require_safe_field(item["field"], field_types, entity_set=entity_set)
         op = item["op"]
         if not isinstance(op, str) or op not in FILTER_OPERATORS:
             raise OneCDiagnosticError("INVALID_FILTER_OPERATOR")
@@ -552,8 +590,8 @@ def read_entity_rows(
     The caller supplies structured fields and predicates, never a URL or raw
     OData expression. Entities without ``Организация_Key`` are intentionally
     denied in this first foundation because their organization scope cannot be
-    proven server-side yet. Personnel/payroll entities and personal or
-    individual-compensation fields are denied even when they are published.
+    proven server-side yet. Payroll/personnel data is allowed for the future
+    owner/accountant endpoint; narrow personal/security fields remain denied.
     """
     config = _validated_config(config)
     if (
@@ -564,8 +602,6 @@ def read_entity_rows(
         raise OneCDiagnosticError("INVALID_ENTITY_SET")
     if not _is_readable_entity(entity_set):
         raise OneCDiagnosticError("ENTITY_SET_NOT_ALLOWED")
-    if _is_restricted_entity(entity_set):
-        raise OneCDiagnosticError("RESTRICTED_DATA_ENTITY")
     if isinstance(top, bool) or not isinstance(top, int) or not 1 <= top <= MAX_READ_ROWS:
         raise OneCDiagnosticError("ROW_LIMIT_OUT_OF_RANGE")
 
@@ -581,10 +617,14 @@ def read_entity_rows(
     if not requested_fields or len(requested_fields) > MAX_READ_FIELDS:
         raise OneCDiagnosticError("FIELD_COUNT_OUT_OF_RANGE")
     requested_fields = [
-        _require_safe_field(name, field_types) for name in requested_fields
+        _require_safe_field(name, field_types, entity_set=entity_set)
+        for name in requested_fields
     ]
     expression = _build_filter_expression(
-        filters, field_types, config.organization_guids
+        filters,
+        field_types,
+        config.organization_guids,
+        entity_set=entity_set,
     )
 
     transport_fields = list(requested_fields)
@@ -626,16 +666,18 @@ def read_entity_rows(
         "rows": rows,
         "limit": top,
         "organization_scope_enforced": True,
-        "personal_compensation_data_denied": True,
+        "sensitive_personal_security_fields_denied": True,
         "page_byte_limit": MAX_ROW_PAGE_BYTES,
         "source": "live_1c_odata",
     }
 
 
 __all__ = [
+    "DIAGNOSTIC_ACCESS_ROLES",
     "EntitySchema",
     "MAX_ROW_PAGE_BYTES",
     "OneCDiagnosticError",
+    "can_access_diagnostic_mcp",
     "config_from_settings",
     "describe_metadata",
     "fetch_metadata",
