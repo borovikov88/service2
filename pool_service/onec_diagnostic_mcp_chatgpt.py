@@ -58,14 +58,14 @@ def _tool_definitions():
     return tools
 
 
-def _tool_auth_challenge():
-    return (
-        "Bearer "
-        f'resource_metadata="{_protected_resource_metadata_url()}", '
-        f'scope="{DIAGNOSTIC_READ_SCOPE}", '
-        'error="insufficient_scope", '
-        'error_description="Link Service2 to continue"'
-    )
+def _tool_auth_challenge(*, error="insufficient_scope", description="Link Service2 to continue"):
+    values = [
+        f'resource_metadata="{_protected_resource_metadata_url()}"',
+        f'scope="{DIAGNOSTIC_READ_SCOPE}"',
+        f'error="{error}"' if error else None,
+        f'error_description="{description}"' if description else None,
+    ]
+    return "Bearer " + ", ".join(value for value in values if value)
 
 
 def _tool_auth_required(request_id, *, protocol_version):
@@ -85,6 +85,24 @@ def _tool_auth_required(request_id, *, protocol_version):
         ),
         protocol_version=protocol_version,
     )
+
+
+def _http_auth_required(*, protocol_version):
+    """Preserve the original fail-closed response for non-discovery traffic."""
+    response = legacy._mcp_response(
+        legacy._jsonrpc_error(
+            None,
+            -32001,
+            "Diagnostic MCP требует действующий read-only Bearer token.",
+        ),
+        status=401,
+        protocol_version=protocol_version,
+    )
+    response["WWW-Authenticate"] = _tool_auth_challenge(
+        error=None,
+        description=None,
+    )
+    return response
 
 
 # The reviewed transport's Bearer challenge resolves this name from its module
@@ -134,11 +152,17 @@ def onec_diagnostic_mcp(request):
         request, protocol_version=protocol_version
     )
     if error_response is not None:
+        # Anonymous access exists only to enumerate the fixed tool schemas.  Do
+        # not turn malformed unauthenticated traffic into a JSON/parser oracle.
+        if not authorization:
+            return _http_auth_required(protocol_version=protocol_version)
         return error_response
 
     request_id = payload.get("id")
     params = payload.get("params", {})
     if not isinstance(params, dict):
+        if not authorization:
+            return _http_auth_required(protocol_version=protocol_version)
         return legacy._mcp_response(
             legacy._jsonrpc_error(request_id, -32602, "Invalid params"),
             protocol_version=protocol_version,
@@ -147,6 +171,8 @@ def onec_diagnostic_mcp(request):
     method = payload["method"]
     if method == "notifications/initialized":
         if "id" in payload:
+            if not authorization:
+                return _http_auth_required(protocol_version=protocol_version)
             return legacy._mcp_response(
                 legacy._jsonrpc_error(
                     request_id,
@@ -159,6 +185,8 @@ def onec_diagnostic_mcp(request):
         return legacy._mcp_empty(status=202, protocol_version=protocol_version)
 
     if "id" not in payload:
+        if not authorization:
+            return _http_auth_required(protocol_version=protocol_version)
         return legacy._mcp_empty(status=202, protocol_version=protocol_version)
 
     if method == "initialize":
@@ -173,6 +201,8 @@ def onec_diagnostic_mcp(request):
             or not isinstance(client_info.get("version"), str)
             or not client_info.get("version")
         ):
+            if not authorization:
+                return _http_auth_required(protocol_version=protocol_version)
             return legacy._mcp_response(
                 legacy._jsonrpc_error(request_id, -32602, "Invalid initialize params"),
                 protocol_version=protocol_version,
@@ -202,6 +232,8 @@ def onec_diagnostic_mcp(request):
         )
 
     if request.headers.get("MCP-Protocol-Version") not in legacy.SUPPORTED_PROTOCOL_VERSIONS:
+        if not authorization:
+            return _http_auth_required(protocol_version=protocol_version)
         return legacy._mcp_response(
             legacy._jsonrpc_error(request_id, -32600, "Unsupported MCP-Protocol-Version"),
             status=400,
@@ -222,10 +254,7 @@ def onec_diagnostic_mcp(request):
         # arguments, enforces the 1C policy gateway and writes the audit record.
         return legacy.onec_diagnostic_mcp(request)
 
-    return legacy._mcp_response(
-        legacy._jsonrpc_error(request_id, -32601, "Method not found"),
-        protocol_version=protocol_version,
-    )
+    return _http_auth_required(protocol_version=protocol_version)
 
 
 def onec_diagnostic_protected_resource_metadata(request):
