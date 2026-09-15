@@ -15,7 +15,10 @@ from pool_service.finance_mcp_views import (
     finance_mcp,
     finance_protected_resource_metadata,
 )
-from pool_service.onec_diagnostic_mcp_chatgpt import onec_diagnostic_mcp
+from pool_service.onec_diagnostic_mcp_chatgpt import (
+    onec_diagnostic_authorization_server_metadata,
+    onec_diagnostic_mcp,
+)
 from pool_service.mcp_oauth_shared import (
     diagnostic_protected_resource_metadata,
     shared_authorization_server_metadata,
@@ -51,7 +54,7 @@ urlpatterns = [
     # can finish an in-flight OAuth exchange through these old URLs.
     path(
         '.well-known/oauth-authorization-server/onec-diagnostic',
-        shared_authorization_server_metadata,
+        onec_diagnostic_authorization_server_metadata,
         name='onec_diagnostic_mcp_authorization_server_metadata',
     ),
     path('oauth/1c/authorize', shared_oauth_authorize, name='onec_diagnostic_mcp_authorize'),
