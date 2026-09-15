@@ -3,6 +3,7 @@
 
 This helper intentionally changes exactly one non-secret key and never prints the
 file contents. It refuses missing/symlinked files and duplicate definitions.
+An optional marker makes the activation one-time across later deployments.
 """
 
 from __future__ import annotations
@@ -60,12 +61,50 @@ def enable_flag(path: Path) -> bool:
     return True
 
 
+def activate_once(env_file: Path, marker_file: Path | None = None) -> str:
+    if marker_file is not None:
+        if marker_file.is_symlink():
+            raise RuntimeError("Activation marker must not be a symlink.")
+        if marker_file.exists():
+            if not marker_file.is_file():
+                raise RuntimeError("Activation marker must be a regular file.")
+            return "already_marked"
+
+    changed = enable_flag(env_file)
+
+    if marker_file is not None:
+        marker_file.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary_name = tempfile.mkstemp(prefix=f".{marker_file.name}.", dir=str(marker_file.parent))
+        temporary_path = Path(temporary_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write("activated\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temporary_path, 0o600)
+            os.replace(temporary_path, marker_file)
+        finally:
+            if temporary_path.exists():
+                temporary_path.unlink()
+
+    return "enabled" if changed else "already_enabled"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--env-file", required=True)
+    parser.add_argument("--marker-file")
     args = parser.parse_args()
-    changed = enable_flag(Path(args.env_file))
-    print("Diagnostic MCP activation flag enabled." if changed else "Diagnostic MCP activation flag already enabled.")
+    result = activate_once(
+        Path(args.env_file),
+        Path(args.marker_file) if args.marker_file else None,
+    )
+    messages = {
+        "enabled": "Diagnostic MCP activation flag enabled.",
+        "already_enabled": "Diagnostic MCP activation flag already enabled.",
+        "already_marked": "Diagnostic MCP activation already completed earlier; no changes made.",
+    }
+    print(messages[result])
     return 0
 
 
