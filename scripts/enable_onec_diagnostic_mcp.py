@@ -3,7 +3,8 @@
 
 This helper intentionally changes exactly one non-secret key and never prints the
 file contents. It refuses missing/symlinked files and duplicate definitions.
-The .env inode is edited in place so owner/group/mode/ACL metadata are preserved.
+The .env inode is edited in place so owner/group/mode/ACL metadata are preserved,
+and every byte outside the target flag line is retained exactly.
 An optional marker makes the activation one-time across later deployments.
 """
 
@@ -19,7 +20,12 @@ import tempfile
 
 KEY = "ADVISOR_ONEC_DIAGNOSTIC_MCP_ENABLED"
 ENABLED_LINE = f"{KEY}=true"
-KEY_RE = re.compile(rf"^\s*(?:export\s+)?{re.escape(KEY)}\s*=")
+ENABLED_BYTES = ENABLED_LINE.encode("ascii")
+KEY_LINE_RE = re.compile(
+    rb"(?m)^[ \t]*(?:export[ \t]+)?"
+    + re.escape(KEY.encode("ascii"))
+    + rb"[ \t]*=[^\r\n]*(?P<ending>\r\n|\n|\Z)"
+)
 MAX_ENV_BYTES = 1024 * 1024
 
 
@@ -30,6 +36,27 @@ def _write_all(fd: int, payload: bytes) -> None:
         if written <= 0:
             raise OSError("Short write while updating production .env")
         view = view[written:]
+
+
+def _render_enabled(original: bytes) -> tuple[bytes, bool]:
+    matches = list(KEY_LINE_RE.finditer(original))
+    if len(matches) > 1:
+        raise RuntimeError(f"{KEY} is defined more than once; refusing ambiguous update.")
+
+    if matches:
+        match = matches[0]
+        ending = match.group("ending")
+        replacement = ENABLED_BYTES + ending
+        if match.group(0) == replacement:
+            return original, False
+        return original[: match.start()] + replacement + original[match.end() :], True
+
+    separators = re.findall(rb"\r\n|\n", original)
+    newline = separators[-1] if separators else b"\n"
+    if not original:
+        return ENABLED_BYTES + newline, True
+    separator = b"" if original.endswith((b"\n", b"\r")) else newline
+    return original + separator + ENABLED_BYTES + newline, True
 
 
 def enable_flag(path: Path) -> bool:
@@ -58,29 +85,10 @@ def enable_flag(path: Path) -> bool:
             original.extend(chunk)
             if len(original) > MAX_ENV_BYTES:
                 raise RuntimeError("Production .env is unexpectedly large; refusing update.")
-        try:
-            text = bytes(original).decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise RuntimeError("Production .env must be valid UTF-8.") from exc
-
-        lines = text.splitlines()
-        matches = [index for index, line in enumerate(lines) if KEY_RE.match(line)]
-        if len(matches) > 1:
-            raise RuntimeError(f"{KEY} is defined more than once; refusing ambiguous update.")
-
-        changed = False
-        if matches:
-            index = matches[0]
-            if lines[index].strip() != ENABLED_LINE:
-                lines[index] = ENABLED_LINE
-                changed = True
-        else:
-            lines.append(ENABLED_LINE)
-            changed = True
+        original_bytes = bytes(original)
+        rendered, changed = _render_enabled(original_bytes)
         if not changed:
             return False
-
-        rendered = ("\n".join(lines) + "\n").encode("utf-8")
         if len(rendered) > MAX_ENV_BYTES:
             raise RuntimeError("Updated production .env would exceed the safety limit.")
 
@@ -95,8 +103,8 @@ def enable_flag(path: Path) -> bool:
         except Exception:
             try:
                 os.lseek(fd, 0, os.SEEK_SET)
-                _write_all(fd, bytes(original))
-                os.ftruncate(fd, len(original))
+                _write_all(fd, original_bytes)
+                os.ftruncate(fd, len(original_bytes))
                 os.fsync(fd)
             finally:
                 raise
