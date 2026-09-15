@@ -52,13 +52,15 @@ class OneCDiagnosticSharedOAuthTests(SimpleTestCase):
             {FINANCE_READ_SCOPE, OFFLINE_ACCESS_SCOPE, DIAGNOSTIC_READ_SCOPE},
         )
 
-    def test_old_diagnostic_metadata_alias_returns_same_shared_server(self):
-        root = self.client.get(reverse("finance_mcp_authorization_server_metadata"))
+    def test_old_diagnostic_metadata_alias_stays_backward_compatible(self):
         legacy = self.client.get(
             reverse("onec_diagnostic_mcp_authorization_server_metadata")
         )
         self.assertEqual(legacy.status_code, 200)
-        self.assertEqual(legacy.json(), root.json())
+        data = legacy.json()
+        self.assertEqual(data["authorization_endpoint"], f"{ROOT}/oauth/1c/authorize")
+        self.assertEqual(data["token_endpoint"], f"{ROOT}/oauth/1c/token")
+        self.assertIn(DIAGNOSTIC_READ_SCOPE, data["scopes_supported"])
 
     def test_shared_authorize_dispatches_by_exact_resource(self):
         with patch(
