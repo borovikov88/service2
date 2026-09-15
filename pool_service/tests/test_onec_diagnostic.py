@@ -16,6 +16,10 @@ METADATA = """<?xml version="1.0" encoding="utf-8"?>
 <edmx:Edmx xmlns:edmx="http://schemas.microsoft.com/ado/2007/06/edmx">
  <edmx:DataServices>
   <Schema xmlns="http://schemas.microsoft.com/ado/2008/09/edm" Namespace="StandardODATA">
+   <ComplexType Name="PrivateContact">
+    <Property Name="Паспорт" Type="Edm.String" />
+    <Property Name="РасчетныйСчет" Type="Edm.String" />
+   </ComplexType>
    <EntityType Name="Sale">
     <Property Name="Ref_Key" Type="Edm.Guid" />
     <Property Name="Number" Type="Edm.String" />
@@ -44,6 +48,19 @@ METADATA = """<?xml version="1.0" encoding="utf-8"?>
     <Property Name="CertificatePrivateKey" Type="Edm.String" />
     <Property Name="ЛичныйТелефон" Type="Edm.String" />
     <Property Name="DateOfBirth" Type="Edm.DateTime" />
+    <Property Name="Адрес" Type="Edm.String" />
+    <Property Name="Почта" Type="Edm.String" />
+    <Property Name="ЭлектроннаяПочта" Type="Edm.String" />
+    <Property Name="Телефон" Type="Edm.String" />
+    <Property Name="МобильныйТелефон" Type="Edm.String" />
+    <Property Name="БанковскиеРеквизиты" Type="Edm.String" />
+    <Property Name="РасчетныйСчет" Type="Edm.String" />
+    <Property Name="РасчётныйСчёт" Type="Edm.String" />
+    <Property Name="ЛицевойСчет" Type="Edm.String" />
+    <Property Name="НомерКарты" Type="Edm.String" />
+    <Property Name="IBAN" Type="Edm.String" />
+    <Property Name="КонтактнаяИнформация" Type="StandardODATA.PrivateContact" />
+    <Property Name="КоллекцияКонтактов" Type="Collection(Edm.String)" />
    </EntityType>
    <EntityContainer Name="Container">
     <EntitySet Name="Document_РасходнаяНакладная" EntityType="StandardODATA.Sale" />
@@ -95,6 +112,7 @@ class FakeOpener:
             return FakeResponse({"value": [{
                 "Number": "РТ-000001",
                 "СчетФактураВыставлен": True,
+                "Комментарий": "ok",
                 "Организация_Key": ORG,
             }]})
         if entity == "InformationRegister_НачисленияСотрудников":
@@ -146,7 +164,7 @@ class OneCDiagnosticTests(TestCase):
             with self.subTest(field=field):
                 self.assertFalse(sensitivity[field])
 
-    def test_schema_marks_narrow_sensitive_fields(self):
+    def test_schema_marks_private_personnel_fields(self):
         sale = diagnostic.get_entity_schema(
             self.config(), "Document_РасходнаяНакладная", metadata_raw=METADATA
         )
@@ -167,9 +185,31 @@ class OneCDiagnosticTests(TestCase):
             "CertificatePrivateKey",
             "ЛичныйТелефон",
             "DateOfBirth",
+            "Адрес",
+            "Почта",
+            "ЭлектроннаяПочта",
+            "Телефон",
+            "МобильныйТелефон",
+            "БанковскиеРеквизиты",
+            "РасчетныйСчет",
+            "РасчётныйСчёт",
+            "ЛицевойСчет",
+            "НомерКарты",
+            "IBAN",
         ):
             with self.subTest(field=field):
                 self.assertTrue(sensitivity[field])
+
+    def test_schema_marks_complex_and_collection_fields_non_scalar(self):
+        payroll = diagnostic.get_entity_schema(
+            self.config(),
+            "InformationRegister_НачисленияСотрудников",
+            metadata_raw=METADATA,
+        )
+        readable = {item["name"]: item["readable_scalar"] for item in payroll["fields"]}
+        self.assertFalse(readable["КонтактнаяИнформация"])
+        self.assertFalse(readable["КоллекцияКонтактов"])
+        self.assertTrue(readable["ФИО"])
 
     def test_read_entity_rows_enforces_organization_scope_and_structured_filter(self):
         opener = FakeOpener()
@@ -189,6 +229,7 @@ class OneCDiagnosticTests(TestCase):
         }])
         self.assertTrue(result["organization_scope_enforced"])
         self.assertTrue(result["sensitive_personal_security_fields_denied"])
+        self.assertTrue(result["non_primitive_fields_denied"])
         self.assertEqual(result["page_byte_limit"], diagnostic.MAX_ROW_PAGE_BYTES)
         self.assertTrue(all(request.method == "GET" for request in opener.requests))
 
@@ -218,7 +259,7 @@ class OneCDiagnosticTests(TestCase):
                 metadata_raw=METADATA,
             )
 
-    def test_read_rejects_secret_and_narrow_personal_fields(self):
+    def test_read_rejects_secret_and_private_personnel_fields_in_select(self):
         cases = [
             ("Document_РасходнаяНакладная", "SecretToken", "Number", "РТ-000001"),
             ("InformationRegister_НачисленияСотрудников", "ПаспортСерияНомер", "Ref_Key", DOC),
@@ -227,6 +268,10 @@ class OneCDiagnosticTests(TestCase):
             ("InformationRegister_НачисленияСотрудников", "CertificatePrivateKey", "Ref_Key", DOC),
             ("InformationRegister_НачисленияСотрудников", "ЛичныйТелефон", "Ref_Key", DOC),
             ("InformationRegister_НачисленияСотрудников", "DateOfBirth", "Ref_Key", DOC),
+            ("InformationRegister_НачисленияСотрудников", "Адрес", "Ref_Key", DOC),
+            ("InformationRegister_НачисленияСотрудников", "Почта", "Ref_Key", DOC),
+            ("InformationRegister_НачисленияСотрудников", "БанковскиеРеквизиты", "Ref_Key", DOC),
+            ("InformationRegister_НачисленияСотрудников", "РасчетныйСчет", "Ref_Key", DOC),
         ]
         for entity, field, filter_field, value in cases:
             with self.subTest(entity=entity, field=field):
@@ -238,6 +283,64 @@ class OneCDiagnosticTests(TestCase):
                         filters=[{"field": filter_field, "op": "eq", "value": value}],
                         metadata_raw=METADATA,
                     )
+
+    def test_read_rejects_private_personnel_fields_in_filters(self):
+        for field in ("Адрес", "Почта", "БанковскиеРеквизиты", "РасчетныйСчет", "IBAN"):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(diagnostic.OneCDiagnosticError, "SENSITIVE_FIELD_DENIED"):
+                    diagnostic.read_entity_rows(
+                        self.config(),
+                        "InformationRegister_НачисленияСотрудников",
+                        fields=["ФИО"],
+                        filters=[{"field": field, "op": "eq", "value": "private"}],
+                        metadata_raw=METADATA,
+                    )
+
+    def test_read_rejects_complex_and_collection_fields_before_request(self):
+        class NoNetworkOpener:
+            def open(self, request, timeout=None):
+                raise AssertionError("network request must not be constructed")
+
+        for field in ("КонтактнаяИнформация", "КоллекцияКонтактов"):
+            with self.subTest(select=field):
+                with self.assertRaisesRegex(diagnostic.OneCDiagnosticError, "NON_PRIMITIVE_FIELD_DENIED"):
+                    diagnostic.read_entity_rows(
+                        self.config(),
+                        "InformationRegister_НачисленияСотрудников",
+                        fields=[field],
+                        filters=[{"field": "Ref_Key", "op": "eq", "value": DOC}],
+                        opener=NoNetworkOpener(),
+                        metadata_raw=METADATA,
+                    )
+            with self.subTest(filter=field):
+                with self.assertRaisesRegex(diagnostic.OneCDiagnosticError, "NON_PRIMITIVE_FIELD_DENIED"):
+                    diagnostic.read_entity_rows(
+                        self.config(),
+                        "InformationRegister_НачисленияСотрудников",
+                        fields=["ФИО"],
+                        filters=[{"field": field, "op": "eq", "value": "probe"}],
+                        opener=NoNetworkOpener(),
+                        metadata_raw=METADATA,
+                    )
+
+    def test_nested_runtime_value_cannot_escape_scalar_contract(self):
+        class NestedValueOpener(FakeOpener):
+            def open(self, request, timeout=None):
+                self.requests.append(request)
+                return FakeResponse({"value": [{
+                    "Комментарий": {"Паспорт": "secret"},
+                    "Организация_Key": ORG,
+                }]})
+
+        with self.assertRaisesRegex(diagnostic.OneCDiagnosticError, "NON_PRIMITIVE_FIELD_DENIED"):
+            diagnostic.read_entity_rows(
+                self.config(),
+                "Document_РасходнаяНакладная",
+                fields=["Комментарий"],
+                filters=[{"field": "Number", "op": "eq", "value": "РТ-000001"}],
+                opener=NestedValueOpener(),
+                metadata_raw=METADATA,
+            )
 
     def test_read_requires_selective_filter(self):
         with self.assertRaisesRegex(diagnostic.OneCDiagnosticError, "SELECTIVE_FILTER_REQUIRED"):
@@ -276,22 +379,38 @@ class OneCDiagnosticTests(TestCase):
         with self.assertRaisesRegex(diagnostic.OneCDiagnosticError, "DIAGNOSTIC_ODATA_REQUIRES_HTTPS"):
             diagnostic.describe_metadata(config, metadata_raw=METADATA)
 
-    def test_diagnostic_access_is_owner_accountant_only(self):
-        organization = Organization.objects.create(name="Diagnostic Test Org")
+    def test_diagnostic_access_is_target_owner_accountant_only(self):
+        target = Organization.objects.create(name="Diagnostic Target Org")
+        other = Organization.objects.create(name="Diagnostic Other Org")
         owner = User.objects.create_user(username="diag-owner")
         accountant = User.objects.create_user(username="diag-accountant")
         admin = User.objects.create_user(username="diag-admin")
         manager = User.objects.create_user(username="diag-manager")
+        other_owner = User.objects.create_user(username="diag-other-owner")
         outsider = User.objects.create_user(username="diag-outsider")
-        OrganizationAccess.objects.create(user=owner, organization=organization, role="owner")
-        OrganizationAccess.objects.create(user=accountant, organization=organization, role="accountant")
-        OrganizationAccess.objects.create(user=admin, organization=organization, role="admin")
-        OrganizationAccess.objects.create(user=manager, organization=organization, role="manager")
+        OrganizationAccess.objects.create(user=owner, organization=target, role="owner")
+        OrganizationAccess.objects.create(user=accountant, organization=target, role="accountant")
+        OrganizationAccess.objects.create(user=admin, organization=target, role="admin")
+        OrganizationAccess.objects.create(user=manager, organization=target, role="manager")
+        OrganizationAccess.objects.create(user=other_owner, organization=other, role="owner")
 
-        self.assertTrue(diagnostic.can_access_diagnostic_mcp(owner, organization))
-        self.assertTrue(diagnostic.can_access_diagnostic_mcp(accountant, organization))
-        self.assertFalse(diagnostic.can_access_diagnostic_mcp(admin, organization))
-        self.assertFalse(diagnostic.can_access_diagnostic_mcp(manager, organization))
-        self.assertFalse(diagnostic.can_access_diagnostic_mcp(outsider, organization))
-        self.assertFalse(diagnostic.can_access_diagnostic_mcp(AnonymousUser(), organization))
-        self.assertFalse(diagnostic.can_access_diagnostic_mcp(owner, None))
+        with self.settings(ONEC_ODATA_TARGET_ORGANIZATION_ID=target.pk):
+            self.assertTrue(diagnostic.can_access_diagnostic_mcp(owner, target))
+            self.assertTrue(diagnostic.can_access_diagnostic_mcp(accountant, target))
+            self.assertFalse(diagnostic.can_access_diagnostic_mcp(admin, target))
+            self.assertFalse(diagnostic.can_access_diagnostic_mcp(manager, target))
+            self.assertFalse(diagnostic.can_access_diagnostic_mcp(outsider, target))
+            self.assertFalse(diagnostic.can_access_diagnostic_mcp(other_owner, other))
+            self.assertFalse(diagnostic.can_access_diagnostic_mcp(owner, other))
+            self.assertFalse(diagnostic.can_access_diagnostic_mcp(AnonymousUser(), target))
+            self.assertFalse(diagnostic.can_access_diagnostic_mcp(owner, None))
+
+    def test_diagnostic_access_fails_closed_without_valid_target_setting(self):
+        organization = Organization.objects.create(name="Diagnostic Fail Closed Org")
+        owner = User.objects.create_user(username="diag-fail-owner")
+        OrganizationAccess.objects.create(user=owner, organization=organization, role="owner")
+
+        for value in (None, "", "bad", 0, -1, True):
+            with self.subTest(value=value):
+                with self.settings(ONEC_ODATA_TARGET_ORGANIZATION_ID=value):
+                    self.assertFalse(diagnostic.can_access_diagnostic_mcp(owner, organization))
