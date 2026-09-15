@@ -42,6 +42,9 @@ MAX_READ_FILTERS = 8
 MAX_READ_ROWS = 50
 MAX_READ_PAGES = 5
 MAX_ROW_PAGE_BYTES = 2 * 1024 * 1024
+MAX_NUMERIC_INPUT_CHARS = 80
+MAX_NUMERIC_EXPONENT_ABS = 100
+MAX_NUMERIC_RENDERED_CHARS = 160
 
 DIAGNOSTIC_ACCESS_ROLES = frozenset({"owner", "accountant"})
 
@@ -90,10 +93,18 @@ CREDENTIAL_FIELD_RE = re.compile(
     re.IGNORECASE,
 )
 DIRECT_PERSONAL_IDENTIFIER_FIELD_RE = re.compile(
-    r"passport|паспорт|snils|снилс|\bssn\b|social[_ ]?security[_ ]?number|"
+    r"passport|паспорт|snils|снилс|social[_ ]?security[_ ]?number|"
     r"страхов(?:ой|ого)?[_ ]?(?:номер|номер.*лицев)|номер.*страхов.*свид",
     re.IGNORECASE,
 )
+NORMALIZED_DIRECT_IDENTIFIER_PARTS = frozenset({
+    "passport",
+    "паспорт",
+    "snils",
+    "снилс",
+    "ssn",
+    "socialsecuritynumber",
+})
 CRYPTOGRAPHIC_SECRET_FIELD_RE = re.compile(
     r"private[_ ]?key|закрыт.*ключ|certificate.*(?:private|key|sign)|"
     r"сертификат.*(?:эп|подпис|ключ)|электронн.*подпис|ключ.*(?:эп|подпис)",
@@ -181,8 +192,13 @@ def _target_organization_id() -> int | None:
 
 
 def can_access_diagnostic_mcp(user, organization) -> bool:
-    """Allow only owner/accountant of the configured 1C target organization."""
-    if not user or not getattr(user, "is_authenticated", False) or not organization:
+    """Allow only active owner/accountant of the configured 1C target organization."""
+    if (
+        not user
+        or not getattr(user, "is_authenticated", False)
+        or not getattr(user, "is_active", False)
+        or not organization
+    ):
         return False
     target_id = _target_organization_id()
     if target_id is None or getattr(organization, "pk", None) != target_id:
@@ -366,6 +382,11 @@ def _normalized_field_name(name: str) -> str:
     return "".join(character for character in name.casefold() if character.isalnum())
 
 
+def _has_normalized_direct_identifier(name: str) -> bool:
+    normalized = _normalized_field_name(name)
+    return any(part in normalized for part in NORMALIZED_DIRECT_IDENTIFIER_PARTS)
+
+
 def _personnel_private_field(name: str) -> bool:
     normalized = _normalized_field_name(name)
     if normalized in PERSONNEL_PRIVATE_FIELD_EXACT:
@@ -377,7 +398,7 @@ def _field_is_sensitive(name: str, *, entity_set: str = "") -> bool:
     """Deny secrets/private identifiers while allowing payroll business facts."""
     if CREDENTIAL_FIELD_RE.search(name):
         return True
-    if DIRECT_PERSONAL_IDENTIFIER_FIELD_RE.search(name):
+    if DIRECT_PERSONAL_IDENTIFIER_FIELD_RE.search(name) or _has_normalized_direct_identifier(name):
         return True
     if CRYPTOGRAPHIC_SECRET_FIELD_RE.search(name):
         return True
@@ -514,13 +535,26 @@ def _datetime_literal(value, *, offset: bool = False) -> str:
 def _numeric_literal(value) -> str:
     if isinstance(value, bool):
         raise OneCDiagnosticError("INVALID_FILTER_VALUE")
+    text = str(value).strip()
+    if not text or len(text) > MAX_NUMERIC_INPUT_CHARS:
+        raise OneCDiagnosticError("INVALID_FILTER_VALUE")
     try:
-        parsed = Decimal(str(value).strip())
+        parsed = Decimal(text)
     except (InvalidOperation, ValueError, TypeError) as exc:
         raise OneCDiagnosticError("INVALID_FILTER_VALUE") from exc
     if not parsed.is_finite():
         raise OneCDiagnosticError("INVALID_FILTER_VALUE")
-    return format(parsed, "f")
+    decimal_tuple = parsed.as_tuple()
+    if (
+        len(decimal_tuple.digits) > MAX_NUMERIC_INPUT_CHARS
+        or abs(decimal_tuple.exponent) > MAX_NUMERIC_EXPONENT_ABS
+        or (parsed and abs(parsed.adjusted()) > MAX_NUMERIC_EXPONENT_ABS)
+    ):
+        raise OneCDiagnosticError("INVALID_FILTER_VALUE")
+    rendered = format(parsed, "f")
+    if len(rendered) > MAX_NUMERIC_RENDERED_CHARS:
+        raise OneCDiagnosticError("INVALID_FILTER_VALUE")
+    return rendered
 
 
 def _odata_literal(declared_type: str, value) -> str:
@@ -697,7 +731,8 @@ def read_entity_rows(
         raise OneCDiagnosticError("INVALID_ENTITY_SET")
     if not _is_readable_entity(entity_set):
         raise OneCDiagnosticError("ENTITY_SET_NOT_ALLOWED")
-    if isinstance(top, bool) or not isinstance(top, int) or not 1 <= top <= MAX_READ_ROWS:
+    row_limit = min(config.max_rows, MAX_READ_ROWS)
+    if isinstance(top, bool) or not isinstance(top, int) or not 1 <= top <= row_limit:
         raise OneCDiagnosticError("ROW_LIMIT_OUT_OF_RANGE")
 
     raw = metadata_raw if metadata_raw is not None else fetch_metadata(config, opener=opener)
