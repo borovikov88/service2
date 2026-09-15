@@ -232,6 +232,7 @@ jobs:
             -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
             "$REMOTE_COMMAND" < update.sh
       - name: Activate 1C Diagnostic MCP once
+        id: activate_diag
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
@@ -241,11 +242,23 @@ jobs:
           set -Eeuo pipefail
           PORT="${DEPLOY_PORT:-22}"
           printf -v REMOTE_COMMAND \
-            'set -Eeuo pipefail; cd %q; test "$(git rev-parse HEAD)" = %q; test -f .env; test ! -L .env; ../venv/bin/python scripts/enable_onec_diagnostic_mcp.py --env-file .env --marker-file ../tmp/onec-diagnostic-mcp-activated; touch ../tmp/restart.txt' \
+            'set -Eeuo pipefail; cd %q; test "$(git rev-parse HEAD)" = %q; test -f .env; test ! -L .env; result="$(../venv/bin/python scripts/enable_onec_diagnostic_mcp.py --env-file .env --marker-file ../tmp/onec-diagnostic-mcp-activated)"; printf "%%s\n" "$result"; if [[ "$result" != "Diagnostic MCP activation already completed earlier; no changes made." ]]; then touch ../tmp/restart.txt; fi' \
             "$DEPLOY_APP_PATH" "$GITHUB_SHA"
-          ssh -i ~/.ssh/service2_deploy \
+          result="$(ssh -i ~/.ssh/service2_deploy \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND" | tail -n 1)"
+          case "$result" in
+            "Diagnostic MCP activation flag enabled."|"Diagnostic MCP activation flag already enabled.")
+              echo "smoke_required=true" >> "$GITHUB_OUTPUT"
+              ;;
+            "Diagnostic MCP activation already completed earlier; no changes made.")
+              echo "smoke_required=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unexpected Diagnostic MCP activation result" >&2
+              exit 1
+              ;;
+          esac
       - name: Verify deployed site health
         env:
           DEPLOY_HEALTH_URL: ${{ secrets.DEPLOY_HEALTH_URL }}
@@ -268,7 +281,8 @@ jobs:
             echo "Health check returned HTTP $status, expected 2xx" >&2
             exit 1
           }
-      - name: Verify Diagnostic MCP metadata is live
+      - name: Verify Diagnostic MCP metadata is live after activation
+        if: steps.activate_diag.outputs.smoke_required == 'true'
         env:
           EXPECTED_RESOURCE_URL: https://service2.aqualine22.ru/mcp/1c
           EXPECTED_ISSUER_URL: https://service2.aqualine22.ru/onec-diagnostic
