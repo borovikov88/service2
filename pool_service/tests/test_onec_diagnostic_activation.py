@@ -10,11 +10,13 @@ from scripts.enable_onec_diagnostic_mcp import (
     ENABLED_KEY,
     ISSUER_KEY,
     LEGACY_MARKER,
+    PENDING_MARKER,
     PRODUCTION_ISSUER_URL,
     PRODUCTION_RESOURCE_URL,
     RESOURCE_KEY,
     activate_once,
     configure_production,
+    finalize_marker,
 )
 
 
@@ -105,7 +107,7 @@ class OneCDiagnosticActivationTests(SimpleTestCase):
         with self.assertRaisesRegex(RuntimeError, "non-symlink"):
             configure_production(self.env)
 
-    def test_legacy_marker_is_upgraded_and_repairs_metadata(self):
+    def test_legacy_marker_becomes_pending_and_repairs_metadata(self):
         self.env.write_text(
             f"{ENABLED_KEY}=true\n"
             f"{RESOURCE_KEY}=https://wrong.example/resource\n"
@@ -115,13 +117,28 @@ class OneCDiagnosticActivationTests(SimpleTestCase):
         self.marker.parent.mkdir(parents=True)
         self.marker.write_bytes(LEGACY_MARKER)
         self.assertEqual(activate_once(self.env, self.marker), "configured")
-        self.assertEqual(self.marker.read_bytes(), CURRENT_MARKER)
+        self.assertEqual(self.marker.read_bytes(), PENDING_MARKER)
         self.assertEqual(stat.S_IMODE(self.marker.stat().st_mode), 0o600)
         self.assertEqual(self.env.read_text(encoding="utf-8"), self.expected_configuration())
+
+    def test_pending_marker_forces_revalidation_until_finalized(self):
+        self.env.write_text(f"{ENABLED_KEY}=false\n", encoding="utf-8")
+        self.assertEqual(activate_once(self.env, self.marker), "configured")
+        self.assertEqual(self.marker.read_bytes(), PENDING_MARKER)
+
+        # A failed live smoke leaves PENDING_MARKER. The next deploy must not
+        # treat activation as complete, even when the file is already correct.
+        self.assertEqual(activate_once(self.env, self.marker), "already_configured")
+        self.assertEqual(self.marker.read_bytes(), PENDING_MARKER)
+
+        self.assertEqual(finalize_marker(self.marker), "finalized")
+        self.assertEqual(self.marker.read_bytes(), CURRENT_MARKER)
+        self.assertEqual(finalize_marker(self.marker), "already_finalized")
 
     def test_current_marker_makes_later_deploys_noop(self):
         self.env.write_text(f"{ENABLED_KEY}=false\n", encoding="utf-8")
         self.assertEqual(activate_once(self.env, self.marker), "configured")
+        self.assertEqual(finalize_marker(self.marker), "finalized")
         self.assertEqual(self.marker.read_bytes(), CURRENT_MARKER)
         manually_disabled = (
             f"{ENABLED_KEY}=false\n"
@@ -131,6 +148,13 @@ class OneCDiagnosticActivationTests(SimpleTestCase):
         self.env.write_text(manually_disabled, encoding="utf-8")
         self.assertEqual(activate_once(self.env, self.marker), "already_marked")
         self.assertEqual(self.env.read_text(encoding="utf-8"), manually_disabled)
+
+    def test_finalize_requires_pending_marker(self):
+        self.marker.parent.mkdir(parents=True)
+        self.marker.write_bytes(LEGACY_MARKER)
+        with self.assertRaisesRegex(RuntimeError, "not pending"):
+            finalize_marker(self.marker)
+        self.assertEqual(self.marker.read_bytes(), LEGACY_MARKER)
 
     def test_refuses_marker_symlink(self):
         self.env.write_text(f"{ENABLED_KEY}=false\n", encoding="utf-8")
