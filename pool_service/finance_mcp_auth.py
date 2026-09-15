@@ -523,6 +523,7 @@ def issue_authorization_code(*, authorization, user):
             FinanceMcpGrant.objects.filter(
                 client=client,
                 principal=client.principal,
+                resource=authorization["resource"],
                 revoked_at__isnull=True,
             ),
             now=now,

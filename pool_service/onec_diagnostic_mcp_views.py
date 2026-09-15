@@ -311,7 +311,7 @@ def _safe_field_names(arguments):
     return [item[:200] for item in fields[:onec_diagnostic.MAX_READ_FIELDS] if isinstance(item, str)]
 
 
-def _audit(authenticated, *, name, arguments, result, started, response_bytes=0):
+def _audit(authenticated, *, name, arguments, result, started, response_bytes=0, required=False):
     """Persist metadata only; never filter values, rows, credentials or tokens."""
     elapsed = max(0, min(int((monotonic() - started) * 1000), 2_147_483_647))
     organization_id = getattr(settings, "ONEC_ODATA_TARGET_ORGANIZATION_ID", None)
@@ -320,15 +320,15 @@ def _audit(authenticated, *, name, arguments, result, started, response_bytes=0)
     except (TypeError, ValueError):
         organization_id = None
     entity_set = ""
-    if isinstance(arguments, dict) and isinstance(arguments.get("entity_set"), str):
+    if result == "success" and isinstance(arguments, dict) and isinstance(arguments.get("entity_set"), str):
         entity_set = arguments["entity_set"][:300]
-    selected_fields = json.dumps(_safe_field_names(arguments), ensure_ascii=False, separators=(",", ":"))
+    selected_fields = json.dumps(_safe_field_names(arguments) if result == "success" else [], ensure_ascii=False, separators=(",", ":"))
     values = [
         authenticated.principal.pk if authenticated else None,
         authenticated.grant.pk if authenticated else None,
         authenticated.grant.authorized_by_id if authenticated else None,
         organization_id,
-        (name if isinstance(name, str) else "invalid_tool")[:100],
+        (name if isinstance(name, str) and name in TOOL_NAMES else "invalid_tool")[:100],
         entity_set,
         selected_fields,
         result[:16],
@@ -345,9 +345,8 @@ def _audit(authenticated, *, name, arguments, result, started, response_bytes=0)
                 values,
             )
     except Exception:
-        # Audit failure must not leak data or convert an authorization failure
-        # into a different response. Deployment smoke verifies the table exists.
-        pass
+        if required:
+            raise
 
 
 @csrf_exempt
@@ -456,6 +455,7 @@ def onec_diagnostic_mcp(request):
             result="success",
             started=started,
             response_bytes=response_bytes,
+            required=True,
         )
     except (DiagnosticToolValidationError, OneCDiagnosticError):
         _audit(authenticated, name=name, arguments=arguments, result="denied", started=started)
