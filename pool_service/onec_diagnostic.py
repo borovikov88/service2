@@ -11,7 +11,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import json
 import re
 from typing import Iterable, Mapping
@@ -62,6 +62,27 @@ READABLE_ENTITY_PREFIXES = (
 )
 FILTER_OPERATORS = frozenset({"eq", "ne", "gt", "ge", "lt", "le"})
 
+# Generic row reads are deliberately scalar-only. Complex/custom EDM types and
+# Collection(...) values can contain nested secrets or unbounded tabular data,
+# so the generic reader rejects them before constructing an OData request.
+READABLE_PRIMITIVE_EDM_TYPES = frozenset({
+    "Edm.String",
+    "Edm.Guid",
+    "Edm.Boolean",
+    "Edm.Byte",
+    "Edm.SByte",
+    "Edm.Int16",
+    "Edm.Int32",
+    "Edm.Int64",
+    "Edm.Decimal",
+    "Edm.Double",
+    "Edm.Single",
+    "Edm.DateTime",
+    "Edm.DateTimeOffset",
+    "Edm.Date",
+    "Edm.Time",
+})
+
 CREDENTIAL_FIELD_RE = re.compile(
     r"password|парол|secret|секрет|token|токен|credential|"
     r"api[_ ]?key|access[_ ]?key|private[_ ]?key|session[_ ]?key|"
@@ -84,13 +105,48 @@ PERSONNEL_ENTITY_RE = re.compile(
     r"ндфл|табел|больнич|отпуск|страхов.*взнос|расч[её]т.*зарплат",
     re.IGNORECASE,
 )
-PERSONAL_CONTACT_OR_BANK_FIELD_RE = re.compile(
-    r"birth|date.*birth|phone|mobile|email|e-mail|address|home.*address|"
-    r"iban|bank.*account|account.*number|card.*number|payment.*card|"
-    r"дат.*рожд|телефон|мобильн|электронн.*почт|адрес.*прож|домашн.*адрес|"
-    r"банков.*сч[её]т|номер.*сч[её]т|номер.*карт|лицев.*сч[её]т",
-    re.IGNORECASE,
-)
+
+# These names are private only in personnel/payroll entities. Business bank
+# accounts and organization tax identifiers elsewhere in 1C remain available.
+PERSONNEL_PRIVATE_FIELD_PARTS = frozenset({
+    "address",
+    "homeaddress",
+    "phone",
+    "mobile",
+    "email",
+    "birthdate",
+    "dateofbirth",
+    "iban",
+    "bankaccount",
+    "bankdetails",
+    "accountnumber",
+    "cardnumber",
+    "paymentcard",
+    "адрес",
+    "почта",
+    "электроннаяпочта",
+    "телефон",
+    "мобильныйтелефон",
+    "датарождения",
+    "банковскиереквизиты",
+    "банковскиеданные",
+    "банковскийсчет",
+    "банковскийсчёт",
+    "расчетныйсчет",
+    "расчётныйсчёт",
+    "лицевойсчет",
+    "лицевойсчёт",
+    "номерсчета",
+    "номерсчёта",
+    "номеркарты",
+    "банковскаякарта",
+})
+PERSONNEL_PRIVATE_FIELD_EXACT = frozenset({
+    "инн",
+    "taxid",
+    "taxpayerid",
+    "бик",
+})
 
 
 class OneCDiagnosticError(Exception):
@@ -112,18 +168,28 @@ class EntitySchema:
         return dict(self.properties)
 
 
-def can_access_diagnostic_mcp(user, organization) -> bool:
-    """Only explicit owner/accountant organization roles may use Diagnostic MCP.
+def _target_organization_id() -> int | None:
+    """Return configured Service2 organization id, failing closed on bad config."""
+    raw = getattr(settings, "ONEC_ODATA_TARGET_ORGANIZATION_ID", None)
+    if isinstance(raw, bool):
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
-    This helper is intentionally separate from the future HTTP/MCP transport so
-    the endpoint can enforce the same server-side policy when it is introduced.
-    No other finance/admin role is implicitly trusted here.
-    """
+
+def can_access_diagnostic_mcp(user, organization) -> bool:
+    """Allow only owner/accountant of the configured 1C target organization."""
     if not user or not getattr(user, "is_authenticated", False) or not organization:
+        return False
+    target_id = _target_organization_id()
+    if target_id is None or getattr(organization, "pk", None) != target_id:
         return False
     return OrganizationAccess.objects.filter(
         user=user,
-        organization=organization,
+        organization_id=target_id,
         role__in=DIAGNOSTIC_ACCESS_ROLES,
     ).exists()
 
@@ -292,8 +358,23 @@ def _is_readable_entity(name: str) -> bool:
     return any(name.startswith(prefix) for prefix in READABLE_ENTITY_PREFIXES)
 
 
+def _is_readable_primitive(declared_type: str) -> bool:
+    return declared_type in READABLE_PRIMITIVE_EDM_TYPES
+
+
+def _normalized_field_name(name: str) -> str:
+    return "".join(character for character in name.casefold() if character.isalnum())
+
+
+def _personnel_private_field(name: str) -> bool:
+    normalized = _normalized_field_name(name)
+    if normalized in PERSONNEL_PRIVATE_FIELD_EXACT:
+        return True
+    return any(part in normalized for part in PERSONNEL_PRIVATE_FIELD_PARTS)
+
+
 def _field_is_sensitive(name: str, *, entity_set: str = "") -> bool:
-    """Deny secrets and narrow personal identifiers, not business/payroll facts."""
+    """Deny secrets/private identifiers while allowing payroll business facts."""
     if CREDENTIAL_FIELD_RE.search(name):
         return True
     if DIRECT_PERSONAL_IDENTIFIER_FIELD_RE.search(name):
@@ -301,7 +382,7 @@ def _field_is_sensitive(name: str, *, entity_set: str = "") -> bool:
     if CRYPTOGRAPHIC_SECRET_FIELD_RE.search(name):
         return True
     if entity_set and PERSONNEL_ENTITY_RE.search(entity_set):
-        return bool(PERSONAL_CONTACT_OR_BANK_FIELD_RE.search(name))
+        return _personnel_private_field(name)
     return False
 
 
@@ -380,6 +461,7 @@ def get_entity_schema(
                 "name": name,
                 "type": declared,
                 "sensitive": _field_is_sensitive(name, entity_set=schema.name),
+                "readable_scalar": _is_readable_primitive(declared),
             }
             for name, declared in schema.properties
         ],
@@ -396,6 +478,8 @@ def _require_safe_field(
         raise OneCDiagnosticError("INVALID_FIELD")
     if name not in field_types:
         raise OneCDiagnosticError("FIELD_NOT_PUBLISHED")
+    if not _is_readable_primitive(field_types[name]):
+        raise OneCDiagnosticError("NON_PRIMITIVE_FIELD_DENIED")
     if _field_is_sensitive(name, entity_set=entity_set):
         raise OneCDiagnosticError("SENSITIVE_FIELD_DENIED")
     return name
@@ -427,6 +511,18 @@ def _datetime_literal(value, *, offset: bool = False) -> str:
     return f"datetime'{parsed.isoformat(timespec='seconds')}'"
 
 
+def _numeric_literal(value) -> str:
+    if isinstance(value, bool):
+        raise OneCDiagnosticError("INVALID_FILTER_VALUE")
+    try:
+        parsed = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise OneCDiagnosticError("INVALID_FILTER_VALUE") from exc
+    if not parsed.is_finite():
+        raise OneCDiagnosticError("INVALID_FILTER_VALUE")
+    return format(parsed, "f")
+
+
 def _odata_literal(declared_type: str, value) -> str:
     if declared_type == "Edm.String":
         return _string_literal(value)
@@ -455,6 +551,8 @@ def _odata_literal(declared_type: str, value) -> str:
         if str(parsed) != str(value).strip():
             raise OneCDiagnosticError("INVALID_FILTER_VALUE")
         return str(parsed)
+    if declared_type in {"Edm.Decimal", "Edm.Double", "Edm.Single"}:
+        return _numeric_literal(value)
     raise OneCDiagnosticError("FILTER_TYPE_NOT_SUPPORTED")
 
 
@@ -469,7 +567,12 @@ def _build_filter_expression(
     *,
     entity_set: str,
 ) -> str:
-    filters = list(filters)
+    if isinstance(filters, (str, bytes)):
+        raise OneCDiagnosticError("INVALID_FILTER")
+    try:
+        filters = list(filters)
+    except TypeError as exc:
+        raise OneCDiagnosticError("INVALID_FILTER") from exc
     if not filters or len(filters) > MAX_READ_FILTERS:
         raise OneCDiagnosticError("FILTER_COUNT_OUT_OF_RANGE")
     clauses = []
@@ -565,13 +668,12 @@ def _bounded_odata_pages(config: ODataConfig, initial_url: str, *, opener=None):
     raise OneCDiagnosticError("ODATA_PAGINATION_LIMIT")
 
 
-def _json_safe(value):
+def _json_safe_scalar(value):
+    """Return only JSON scalar values; nested payloads are fail-closed."""
+    if isinstance(value, (dict, list)):
+        raise OneCDiagnosticError("NON_PRIMITIVE_FIELD_DENIED")
     if isinstance(value, Decimal):
         return str(value)
-    if isinstance(value, dict):
-        return {key: _json_safe(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_json_safe(item) for item in value]
     return value
 
 
@@ -585,14 +687,7 @@ def read_entity_rows(
     opener=None,
     metadata_raw: bytes | None = None,
 ):
-    """Read a small organization-scoped slice of one published OData entity.
-
-    The caller supplies structured fields and predicates, never a URL or raw
-    OData expression. Entities without ``Организация_Key`` are intentionally
-    denied in this first foundation because their organization scope cannot be
-    proven server-side yet. Payroll/personnel data is allowed for the future
-    owner/accountant endpoint; narrow personal/security fields remain denied.
-    """
+    """Read a bounded organization-scoped slice of one published OData entity."""
     config = _validated_config(config)
     if (
         not isinstance(entity_set, str)
@@ -613,7 +708,12 @@ def read_entity_rows(
     if field_types.get("Организация_Key") != "Edm.Guid":
         raise OneCDiagnosticError("ORGANIZATION_SCOPE_UNAVAILABLE")
 
-    requested_fields = list(dict.fromkeys(fields))
+    if isinstance(fields, (str, bytes)):
+        raise OneCDiagnosticError("INVALID_FIELD")
+    try:
+        requested_fields = list(dict.fromkeys(fields))
+    except (TypeError, AttributeError) as exc:
+        raise OneCDiagnosticError("INVALID_FIELD") from exc
     if not requested_fields or len(requested_fields) > MAX_READ_FIELDS:
         raise OneCDiagnosticError("FIELD_COUNT_OUT_OF_RANGE")
     requested_fields = [
@@ -637,6 +737,7 @@ def read_entity_rows(
     ))
     initial_url = f"{config.base_url}{quote(entity_set, safe='')}?{query}"
 
+    allowed_organizations = {guid.lower() for guid in config.organization_guids}
     rows = []
     for raw_rows, _page_count in _bounded_odata_pages(
         config, initial_url, opener=opener
@@ -645,17 +746,15 @@ def read_entity_rows(
             if not isinstance(raw_row, dict):
                 raise OneCDiagnosticError("INVALID_ODATA_ROW")
             try:
-                organization = str(
-                    UUID(str(raw_row.get("Организация_Key")))
-                ).lower()
+                organization = str(UUID(str(raw_row.get("Организация_Key")))).lower()
             except (TypeError, ValueError, AttributeError) as exc:
                 raise OneCDiagnosticError("INVALID_ORGANIZATION_SCOPE") from exc
-            if organization not in config.organization_guids:
+            if organization not in allowed_organizations:
                 raise OneCDiagnosticError("ORGANIZATION_SCOPE_VIOLATION")
             if len(rows) >= top:
                 raise OneCDiagnosticError("ODATA_ROW_LIMIT_VIOLATION")
             rows.append({
-                field: _json_safe(raw_row.get(field))
+                field: _json_safe_scalar(raw_row.get(field))
                 for field in requested_fields
             })
 
@@ -667,6 +766,7 @@ def read_entity_rows(
         "limit": top,
         "organization_scope_enforced": True,
         "sensitive_personal_security_fields_denied": True,
+        "non_primitive_fields_denied": True,
         "page_byte_limit": MAX_ROW_PAGE_BYTES,
         "source": "live_1c_odata",
     }
@@ -677,6 +777,7 @@ __all__ = [
     "EntitySchema",
     "MAX_ROW_PAGE_BYTES",
     "OneCDiagnosticError",
+    "READABLE_PRIMITIVE_EDM_TYPES",
     "can_access_diagnostic_mcp",
     "config_from_settings",
     "describe_metadata",
