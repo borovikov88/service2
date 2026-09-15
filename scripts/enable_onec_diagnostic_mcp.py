@@ -3,7 +3,8 @@
 
 The helper changes only the three non-secret Diagnostic MCP settings required for
 production, never prints .env contents, preserves the original .env inode and all
-bytes outside the target setting lines, and supports a versioned one-time marker.
+bytes outside the target setting lines, and uses a pending marker until the live
+OAuth metadata smoke check has succeeded.
 """
 
 from __future__ import annotations
@@ -30,7 +31,9 @@ PRODUCTION_CONFIGURATION = (
 )
 
 LEGACY_MARKER = b"activated\n"
+PENDING_MARKER = b"activated-v2-pending\n"
 CURRENT_MARKER = b"activated-v2\n"
+KNOWN_MARKERS = frozenset({LEGACY_MARKER, PENDING_MARKER, CURRENT_MARKER})
 MAX_ENV_BYTES = 1024 * 1024
 MAX_MARKER_BYTES = 64
 
@@ -155,18 +158,22 @@ def _read_marker(marker_file: Path) -> bytes | None:
     content = marker_file.read_bytes()
     if len(content) > MAX_MARKER_BYTES:
         raise RuntimeError("Activation marker is unexpectedly large.")
-    if content not in {LEGACY_MARKER, CURRENT_MARKER}:
+    if content not in KNOWN_MARKERS:
         raise RuntimeError("Activation marker has an unknown version; refusing update.")
     return content
 
 
-def _write_current_marker(marker_file: Path) -> None:
+def _write_marker(marker_file: Path, content: bytes) -> None:
+    if content not in KNOWN_MARKERS:
+        raise RuntimeError("Refusing to write an unknown activation marker version.")
+    if marker_file.is_symlink():
+        raise RuntimeError("Activation marker must not be a symlink.")
     marker_file.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(prefix=f".{marker_file.name}.", dir=str(marker_file.parent))
     temporary_path = Path(temporary_name)
     try:
         with os.fdopen(fd, "wb") as handle:
-            handle.write(CURRENT_MARKER)
+            handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
         os.chmod(temporary_path, 0o600)
@@ -183,31 +190,57 @@ def activate_once(env_file: Path, marker_file: Path | None = None) -> str:
 
     changed = configure_production(env_file)
 
-    if marker_file is not None:
-        _write_current_marker(marker_file)
+    # Do not persist CURRENT_MARKER here. Until the live metadata smoke has
+    # passed, PENDING_MARKER intentionally forces every retry to reconfigure,
+    # restart and revalidate the endpoint.
+    if marker_file is not None and marker != PENDING_MARKER:
+        _write_marker(marker_file, PENDING_MARKER)
 
-    if marker == LEGACY_MARKER:
-        return "configured" if changed else "marker_upgraded"
     return "configured" if changed else "already_configured"
+
+
+def finalize_marker(marker_file: Path) -> str:
+    marker = _read_marker(marker_file)
+    if marker == CURRENT_MARKER:
+        return "already_finalized"
+    if marker != PENDING_MARKER:
+        raise RuntimeError("Diagnostic MCP activation is not pending metadata validation.")
+    _write_marker(marker_file, CURRENT_MARKER)
+    return "finalized"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--env-file", required=True)
+    parser.add_argument("--env-file")
     parser.add_argument("--marker-file")
+    parser.add_argument("--finalize-marker", action="store_true")
     args = parser.parse_args()
-    result = activate_once(
-        Path(args.env_file),
-        Path(args.marker_file) if args.marker_file else None,
-    )
-    # Keep the established stdout protocol consumed by ci-deploy.yml. The
-    # wording is legacy, but only non-secret state is emitted.
-    messages = {
-        "configured": "Diagnostic MCP activation flag enabled.",
-        "already_configured": "Diagnostic MCP activation flag already enabled.",
-        "marker_upgraded": "Diagnostic MCP activation flag already enabled.",
-        "already_marked": "Diagnostic MCP activation already completed earlier; no changes made.",
-    }
+
+    if args.finalize_marker:
+        if args.env_file:
+            parser.error("--env-file must not be used with --finalize-marker")
+        if not args.marker_file:
+            parser.error("--marker-file is required with --finalize-marker")
+        result = finalize_marker(Path(args.marker_file))
+        messages = {
+            "finalized": "Diagnostic MCP activation marker finalized.",
+            "already_finalized": "Diagnostic MCP activation marker already finalized.",
+        }
+    else:
+        if not args.env_file:
+            parser.error("--env-file is required")
+        result = activate_once(
+            Path(args.env_file),
+            Path(args.marker_file) if args.marker_file else None,
+        )
+        # Keep the established stdout protocol consumed by ci-deploy.yml. The
+        # wording is legacy, but only non-secret state is emitted.
+        messages = {
+            "configured": "Diagnostic MCP activation flag enabled.",
+            "already_configured": "Diagnostic MCP activation flag already enabled.",
+            "already_marked": "Diagnostic MCP activation already completed earlier; no changes made.",
+        }
+
     print(messages[result])
     return 0
 
