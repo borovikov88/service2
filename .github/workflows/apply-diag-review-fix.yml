@@ -25,14 +25,68 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-      - run: git apply --check docs/ai/diag-review-fix.patch && git apply docs/ai/diag-review-fix.patch
+      - name: Apply fixes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('pool_service/finance_mcp_auth.py')
+          s = p.read_text(encoding='utf-8')
+          start = s.index('def issue_authorization_code(')
+          end = s.index('\ndef _grant_is_valid', start)
+          block = s[start:end]
+          block, n = re.subn(
+              r'(principal=client\.principal,\n)(\s*)(revoked_at__isnull=True,)',
+              r'\1\2resource=authorization["resource"],\n\2\3',
+              block,
+              count=1,
+          )
+          assert n == 1, 'finance resource-scope transform failed'
+          p.write_text(s[:start] + block + s[end:], encoding='utf-8')
+
+          p = Path('pool_service/onec_diagnostic_mcp_views.py')
+          s = p.read_text(encoding='utf-8')
+          pairs = [
+              (
+                  'def _audit(authenticated, *, name, arguments, result, started, response_bytes=0):',
+                  'def _audit(authenticated, *, name, arguments, result, started, response_bytes=0, required=False):',
+              ),
+              (
+                  'if isinstance(arguments, dict) and isinstance(arguments.get("entity_set"), str):',
+                  'if result == "success" and isinstance(arguments, dict) and isinstance(arguments.get("entity_set"), str):',
+              ),
+              (
+                  'selected_fields = json.dumps(_safe_field_names(arguments), ensure_ascii=False, separators=(",", ":"))',
+                  'selected_fields = json.dumps(_safe_field_names(arguments) if result == "success" else [], ensure_ascii=False, separators=(",", ":"))',
+              ),
+              (
+                  '(name if isinstance(name, str) else "invalid_tool")[:100],',
+                  '(name if isinstance(name, str) and name in TOOL_NAMES else "invalid_tool")[:100],',
+              ),
+              (
+                  '        # Audit failure must not leak data or convert an authorization failure\n        # into a different response. Deployment smoke verifies the table exists.\n        pass',
+                  '        if required:\n            raise',
+              ),
+              (
+                  '            response_bytes=response_bytes,\n        )',
+                  '            response_bytes=response_bytes,\n            required=True,\n        )',
+              ),
+          ]
+          for old, new in pairs:
+              assert old in s, f'views transform anchor missing: {old[:50]}'
+              s = s.replace(old, new, 1)
+          p.write_text(s, encoding='utf-8')
+          PY
       - run: python -m pip install -r requirements.txt
-      - run: |
+      - name: Validate and test
+        run: |
           python manage.py check --settings=service_site.test_settings
           python manage.py makemigrations --check --dry-run --settings=service_site.test_settings
           python manage.py test pool_service.tests.test_onec_diagnostic_mcp pool_service.tests.test_finance_mcp --settings=service_site.test_settings --verbosity 1
           git diff --check
-      - run: |
+      - name: Commit fixes
+        run: |
           git rm docs/ai/diag-review-fix.patch .github/workflows/apply-diag-review-fix.yml
           git config user.name service2-ci
           git config user.email service2-ci@users.noreply.github.com
