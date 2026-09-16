@@ -47,6 +47,7 @@ TOOL_NAMES = (
     "list_1c_entities",
     "get_1c_entity_schema",
     "read_1c_rows",
+    "get_1c_nomenclature_sales",
 )
 
 
@@ -262,6 +263,16 @@ def _tool_definitions():
             },
             required=("entity_set", "fields", "filters"),
         ),
+        _tool_definition(
+            "get_1c_nomenclature_sales",
+            "Calculates complete net sales for matching 1C nomenclature in an inclusive date range.",
+            {
+                "query": {"type": "string", "minLength": 1, "maxLength": 100},
+                "start_date": {"type": "string", "format": "date"},
+                "end_date": {"type": "string", "format": "date"},
+            },
+            required=("query", "start_date", "end_date"),
+        ),
     ]
 
 
@@ -300,6 +311,16 @@ def _tool_dispatch(name, arguments):
             fields=fields,
             filters=filters,
             top=arguments.get("top", min(20, config.max_rows)),
+        )
+    if name == "get_1c_nomenclature_sales":
+        _reject_unknown_arguments(arguments, {"query", "start_date", "end_date"})
+        if not all(isinstance(arguments.get(key), str) for key in ("query", "start_date", "end_date")):
+            raise DiagnosticToolValidationError("Некорректные sales arguments.")
+        return onec_diagnostic.get_nomenclature_sales(
+            config,
+            query=arguments["query"],
+            start_date=arguments["start_date"],
+            end_date=arguments["end_date"],
         )
     raise DiagnosticToolValidationError("Неизвестный инструмент.")
 

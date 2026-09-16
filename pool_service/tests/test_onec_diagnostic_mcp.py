@@ -215,6 +215,34 @@ class OneCDiagnosticMcpTests(TestCase):
                     self.assertTrue(response.json()["result"]["isError"])
                     reader.assert_not_called()
 
+    def test_sales_tool_has_only_fixed_inputs_and_delegates(self):
+        result = {"kind": "onec_nomenclature_sales", "complete": True, "matches": []}
+        with patch(
+            "pool_service.onec_diagnostic_mcp_views.onec_diagnostic.get_nomenclature_sales",
+            return_value=result,
+        ) as sales:
+            response = self._post_mcp({
+                "jsonrpc": "2.0", "id": 30, "method": "tools/call",
+                "params": {"name": "get_1c_nomenclature_sales", "arguments": {
+                    "query": "sand", "start_date": "2025-08-01", "end_date": "2025-08-31",
+                }},
+            })
+        self.assertFalse(response.json()["result"]["isError"])
+        sales.assert_called_once()
+        for forbidden in ("entity_set", "$filter", "$select", "url", "nextLink", "organization_guid"):
+            with self.subTest(forbidden=forbidden), patch(
+                "pool_service.onec_diagnostic_mcp_views.onec_diagnostic.get_nomenclature_sales"
+            ) as denied:
+                response = self._post_mcp({
+                    "jsonrpc": "2.0", "id": 31, "method": "tools/call",
+                    "params": {"name": "get_1c_nomenclature_sales", "arguments": {
+                        "query": "sand", "start_date": "2025-08-01", "end_date": "2025-08-31",
+                        forbidden: "unsafe",
+                    }},
+                })
+                self.assertTrue(response.json()["result"]["isError"])
+                denied.assert_not_called()
+
     def test_read_tool_delegates_to_foundation_gateway(self):
         config = ODataConfig(
             base_url=MCP_SETTINGS["ONEC_ODATA_BASE_URL"],
