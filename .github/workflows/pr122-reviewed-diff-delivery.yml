@@ -19,14 +19,17 @@ jobs:
       - name: Checkout delivery commit
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
         with:
-          fetch-depth: 2
+          fetch-depth: 5
 
       - name: Validate exact delivery base
         shell: bash
         run: |
           set -euo pipefail
+          base="4a0a3cb841f158cd1f89f86f717e60540223f636"
+          workflow=".github/workflows/pr122-reviewed-diff-delivery.yml"
           test "${GITHUB_REF_NAME}" = "feat/onec-diagnostic-sales-query"
-          test "$(git rev-parse HEAD^)" = "4a0a3cb841f158cd1f89f86f717e60540223f636"
+          git merge-base --is-ancestor "$base" HEAD
+          test "$(git diff --name-only "$base" HEAD)" = "$workflow"
 
       - name: Fetch exact reviewed diff from PR comment
         shell: bash
@@ -74,12 +77,15 @@ jobs:
           PY
           git apply --check /tmp/pr122-reviewed.patch
 
-      - name: Apply reviewed diff and remove temporary workflow
+      - name: Apply reviewed diff and validate exact final tree
         shell: bash
         run: |
           set -euo pipefail
+          base="4a0a3cb841f158cd1f89f86f717e60540223f636"
           git apply /tmp/pr122-reviewed.patch
           git rm -- .github/workflows/pr122-reviewed-diff-delivery.yml
+          git add -A
+          git diff --cached --check
           expected="$RUNNER_TEMP/expected.txt"
           actual="$RUNNER_TEMP/actual.txt"
           cat > "$expected" <<'EOF'
@@ -90,12 +96,8 @@ jobs:
           pool_service/tests/test_onec_diagnostic_mcp_chatgpt.py
           pool_service/tests/test_onec_diagnostic_sales.py
           EOF
-          git diff --name-only 4a0a3cb841f158cd1f89f86f717e60540223f636 | sort > "$actual"
           sort "$expected" -o "$expected"
-          diff -u "$expected" "$actual"
-          git add -A
-          git diff --cached --check
-          git diff --cached --name-only 4a0a3cb841f158cd1f89f86f717e60540223f636 | sort > "$actual"
+          git diff --cached --name-only "$base" | sort > "$actual"
           diff -u "$expected" "$actual"
 
       - name: Commit and push exact reviewed tree
