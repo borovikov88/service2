@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 import json
 import re
@@ -45,8 +45,14 @@ MAX_ROW_PAGE_BYTES = 2 * 1024 * 1024
 MAX_NUMERIC_INPUT_CHARS = 80
 MAX_NUMERIC_EXPONENT_ABS = 100
 MAX_NUMERIC_RENDERED_CHARS = 160
+MAX_SALES_MATCHES = 20
+MAX_SALES_PAGES = 100
+MAX_SALES_ROWS = 100000
 
-DIAGNOSTIC_ACCESS_ROLES = frozenset({"owner", "accountant"})
+NOMENCLATURE_ENTITY = "Catalog_Номенклатура"
+SALES_ENTITY = "AccumulationRegister_Продажи_RecordType"
+
+DIAGNOSTIC_ACCESS_ROLES = frozenset({"owner", "admin", "accountant"})
 
 EDM_NAMESPACES = {
     "http://schemas.microsoft.com/ado/2006/04/edm",
@@ -192,7 +198,7 @@ def _target_organization_id() -> int | None:
 
 
 def can_access_diagnostic_mcp(user, organization) -> bool:
-    """Allow only active owner/accountant of the configured 1C target organization."""
+    """Apply the target-scoped management policy for the Diagnostic MCP."""
     if (
         not user
         or not getattr(user, "is_authenticated", False)
@@ -203,6 +209,8 @@ def can_access_diagnostic_mcp(user, organization) -> bool:
     target_id = _target_organization_id()
     if target_id is None or getattr(organization, "pk", None) != target_id:
         return False
+    if getattr(user, "is_superuser", False):
+        return True
     return OrganizationAccess.objects.filter(
         user=user,
         organization_id=target_id,
@@ -656,7 +664,9 @@ def _payload_page(raw: bytes):
     return rows, next_link
 
 
-def _bounded_odata_pages(config: ODataConfig, initial_url: str, *, opener=None):
+def _bounded_odata_pages(
+    config: ODataConfig, initial_url: str, *, opener=None, max_pages=None
+):
     """Read GET-only OData pages with same-origin and per-page byte limits."""
     config = _validated_config(config)
     try:
@@ -667,7 +677,11 @@ def _bounded_odata_pages(config: ODataConfig, initial_url: str, *, opener=None):
     client = opener or build_opener(NoRedirectHandler())
     authorization = _authorization(config)
     seen_urls: set[str] = set()
-    page_limit = min(config.max_pages, MAX_READ_PAGES)
+    page_limit = (
+        min(config.max_pages, MAX_READ_PAGES)
+        if max_pages is None
+        else max_pages
+    )
 
     for page_count in range(1, page_limit + 1):
         if current_url in seen_urls:
@@ -700,6 +714,173 @@ def _bounded_odata_pages(config: ODataConfig, initial_url: str, *, opener=None):
             raise OneCDiagnosticError("ODATA_UNSAFE_NEXT_LINK") from exc
 
     raise OneCDiagnosticError("ODATA_PAGINATION_LIMIT")
+
+
+def _sales_schema(index, entity_name, expected):
+    schema = index.get(entity_name)
+    if schema is None:
+        raise OneCDiagnosticError("SALES_ENTITY_NOT_PUBLISHED")
+    types = schema.field_types
+    if any(types.get(name) != declared for name, declared in expected.items()):
+        raise OneCDiagnosticError("SALES_SCHEMA_MISMATCH")
+
+
+def _sales_date(value, code):
+    if not isinstance(value, str) or len(value) != 10:
+        raise OneCDiagnosticError(code)
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as exc:
+        raise OneCDiagnosticError(code) from exc
+    if parsed.isoformat() != value:
+        raise OneCDiagnosticError(code)
+    return parsed
+
+
+def _row_guid(row, field, code):
+    try:
+        return str(UUID(str(row.get(field)))).lower()
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise OneCDiagnosticError(code) from exc
+
+
+def _row_decimal(row, field):
+    value = row.get(field)
+    if isinstance(value, bool):
+        raise OneCDiagnosticError("INVALID_SALES_NUMBER")
+    try:
+        result = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise OneCDiagnosticError("INVALID_SALES_NUMBER") from exc
+    if not result.is_finite():
+        raise OneCDiagnosticError("INVALID_SALES_NUMBER")
+    return result
+
+
+def get_nomenclature_sales(
+    config: ODataConfig,
+    *,
+    query: str,
+    start_date: str,
+    end_date: str,
+    opener=None,
+    metadata_raw: bytes | None = None,
+):
+    """Resolve nomenclature and calculate complete, net sales using fixed entities."""
+    config = _validated_config(config)
+    if not isinstance(query, str) or not 1 <= len(query) <= 100 or not query.strip():
+        raise OneCDiagnosticError("INVALID_SALES_QUERY")
+    start = _sales_date(start_date, "INVALID_START_DATE")
+    end = _sales_date(end_date, "INVALID_END_DATE")
+    if end < start or end == date.max:
+        raise OneCDiagnosticError("INVALID_SALES_DATE_RANGE")
+    end_exclusive = end + timedelta(days=1)
+
+    raw = metadata_raw if metadata_raw is not None else fetch_metadata(config, opener=opener)
+    index = parse_metadata(raw)
+    _sales_schema(index, NOMENCLATURE_ENTITY, {
+        "Ref_Key": "Edm.Guid", "Code": "Edm.String",
+        "Description": "Edm.String", "DeletionMark": "Edm.Boolean",
+    })
+    _sales_schema(index, SALES_ENTITY, {
+        "Period": "Edm.DateTime", "Active": "Edm.Boolean",
+        "Номенклатура_Key": "Edm.Guid",
+        "Организация_Key": "Edm.Guid", "Количество": "Edm.Decimal", "Сумма": "Edm.Decimal",
+    })
+
+    literal = _string_literal(query.strip())
+    catalog_filter = (
+        f"DeletionMark eq false and (substringof({literal},Description) eq true "
+        f"or substringof({literal},Code) eq true)"
+    )
+    catalog_url = (
+        f"{config.base_url}{quote(NOMENCLATURE_ENTITY, safe='')}?"
+        f"$select={quote('Ref_Key,Code,Description,DeletionMark')}&"
+        f"$filter={quote(catalog_filter)}&$top={MAX_SALES_MATCHES + 1}"
+    )
+    matches = []
+    seen = set()
+    for rows, _page in _bounded_odata_pages(
+        config, catalog_url, opener=opener, max_pages=MAX_READ_PAGES
+    ):
+        for row in rows:
+            if not isinstance(row, dict):
+                raise OneCDiagnosticError("INVALID_ODATA_ROW")
+            if row.get("DeletionMark") is not False:
+                continue
+            ref = _row_guid(row, "Ref_Key", "INVALID_NOMENCLATURE_KEY")
+            if ref in seen:
+                continue
+            if not isinstance(row.get("Code"), str) or not isinstance(row.get("Description"), str):
+                raise OneCDiagnosticError("INVALID_NOMENCLATURE_ROW")
+            seen.add(ref)
+            matches.append({"Ref_Key": ref, "Code": row["Code"], "Description": row["Description"]})
+            if len(matches) > MAX_SALES_MATCHES:
+                raise OneCDiagnosticError("NOMENCLATURE_MATCH_LIMIT")
+
+    totals = {item["Ref_Key"]: [Decimal(0), Decimal(0), 0] for item in matches}
+    allowed_orgs = {str(UUID(value)).lower() for value in config.organization_guids}
+    if matches:
+        org_clause = " or ".join(
+            f"Организация_Key eq guid'{value}'" for value in sorted(allowed_orgs)
+        )
+        item_clause = " or ".join(
+            f"Номенклатура_Key eq guid'{value}'" for value in sorted(totals)
+        )
+        lower = datetime.combine(start, time.min).isoformat(timespec="seconds")
+        upper = datetime.combine(end_exclusive, time.min).isoformat(timespec="seconds")
+        expression = (
+            f"Active eq true and ({org_clause}) and ({item_clause}) and "
+            f"Period ge datetime'{lower}' and Period lt datetime'{upper}'"
+        )
+        sales_url = (
+            f"{config.base_url}{quote(SALES_ENTITY, safe='')}?"
+            f"$select={quote('Period,Active,Номенклатура_Key,Организация_Key,Количество,Сумма')}&"
+            f"$filter={quote(expression)}&$top={MAX_SALES_ROWS + 1}"
+        )
+        row_count = 0
+        for rows, _page in _bounded_odata_pages(
+            config, sales_url, opener=opener, max_pages=MAX_SALES_PAGES
+        ):
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise OneCDiagnosticError("INVALID_ODATA_ROW")
+                if row.get("Active") is not True:
+                    raise OneCDiagnosticError("INACTIVE_SALES_MOVEMENT")
+                row_count += 1
+                if row_count > MAX_SALES_ROWS:
+                    raise OneCDiagnosticError("SALES_ROW_LIMIT")
+                organization = _row_guid(row, "Организация_Key", "INVALID_ORGANIZATION_SCOPE")
+                item = _row_guid(row, "Номенклатура_Key", "INVALID_NOMENCLATURE_KEY")
+                if organization not in allowed_orgs:
+                    raise OneCDiagnosticError("ORGANIZATION_SCOPE_VIOLATION")
+                if item not in totals:
+                    raise OneCDiagnosticError("NOMENCLATURE_SCOPE_VIOLATION")
+                try:
+                    period = datetime.fromisoformat(str(row.get("Period")).replace("Z", "+00:00"))
+                except ValueError as exc:
+                    raise OneCDiagnosticError("INVALID_SALES_PERIOD") from exc
+                if period.tzinfo is not None:
+                    raise OneCDiagnosticError("INVALID_SALES_PERIOD")
+                if not datetime.combine(start, time.min) <= period < datetime.combine(end_exclusive, time.min):
+                    raise OneCDiagnosticError("SALES_DATE_SCOPE_VIOLATION")
+                totals[item][0] += _row_decimal(row, "Количество")
+                totals[item][1] += _row_decimal(row, "Сумма")
+                totals[item][2] += 1
+
+    result_matches = []
+    for match in matches:
+        quantity, amount, count = totals[match["Ref_Key"]]
+        result_matches.append({**match, "quantity_net": str(quantity), "amount_net": str(amount), "row_count": count})
+    result = {
+        "kind": "onec_nomenclature_sales", "start_date": start_date, "end_date": end_date,
+        "matches": result_matches, "complete": True,
+        "organization_scope_enforced": True, "source": "live_1c_odata",
+    }
+    # A combined number is meaningful only for one resolved position.
+    if len(result_matches) == 1:
+        result.update({key: result_matches[0][key] for key in ("quantity_net", "amount_net", "row_count")})
+    return result
 
 
 def _json_safe_scalar(value):
@@ -817,6 +998,7 @@ __all__ = [
     "config_from_settings",
     "describe_metadata",
     "fetch_metadata",
+    "get_nomenclature_sales",
     "get_entity_schema",
     "parse_metadata",
     "read_entity_rows",

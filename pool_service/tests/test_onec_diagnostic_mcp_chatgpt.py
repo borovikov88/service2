@@ -57,7 +57,10 @@ class OneCDiagnosticMcpChatGptDiscoveryTests(SimpleTestCase):
         tools = response.json()["result"]["tools"]
         self.assertEqual(
             [tool["name"] for tool in tools],
-            ["list_1c_entities", "get_1c_entity_schema", "read_1c_rows"],
+            [
+                "list_1c_entities", "get_1c_entity_schema", "read_1c_rows",
+                "get_1c_nomenclature_sales",
+            ],
         )
         for tool in tools:
             expected = [{"type": "oauth2", "scopes": ["onec.diagnostic.read"]}]

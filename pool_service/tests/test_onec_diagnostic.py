@@ -379,29 +379,38 @@ class OneCDiagnosticTests(TestCase):
         with self.assertRaisesRegex(diagnostic.OneCDiagnosticError, "DIAGNOSTIC_ODATA_REQUIRES_HTTPS"):
             diagnostic.describe_metadata(config, metadata_raw=METADATA)
 
-    def test_diagnostic_access_is_target_owner_accountant_only(self):
+    def test_diagnostic_access_uses_target_management_roles_and_superuser(self):
         target = Organization.objects.create(name="Diagnostic Target Org")
         other = Organization.objects.create(name="Diagnostic Other Org")
         owner = User.objects.create_user(username="diag-owner")
         accountant = User.objects.create_user(username="diag-accountant")
         admin = User.objects.create_user(username="diag-admin")
         manager = User.objects.create_user(username="diag-manager")
+        service = User.objects.create_user(username="diag-service")
+        installer = User.objects.create_user(username="diag-installer")
         other_owner = User.objects.create_user(username="diag-other-owner")
         outsider = User.objects.create_user(username="diag-outsider")
+        superuser = User.objects.create_superuser(username="diag-super", password="pass")
         OrganizationAccess.objects.create(user=owner, organization=target, role="owner")
         OrganizationAccess.objects.create(user=accountant, organization=target, role="accountant")
         OrganizationAccess.objects.create(user=admin, organization=target, role="admin")
         OrganizationAccess.objects.create(user=manager, organization=target, role="manager")
+        OrganizationAccess.objects.create(user=service, organization=target, role="service")
+        OrganizationAccess.objects.create(user=installer, organization=target, role="installer")
         OrganizationAccess.objects.create(user=other_owner, organization=other, role="owner")
 
         with self.settings(ONEC_ODATA_TARGET_ORGANIZATION_ID=target.pk):
             self.assertTrue(diagnostic.can_access_diagnostic_mcp(owner, target))
             self.assertTrue(diagnostic.can_access_diagnostic_mcp(accountant, target))
-            self.assertFalse(diagnostic.can_access_diagnostic_mcp(admin, target))
+            self.assertTrue(diagnostic.can_access_diagnostic_mcp(admin, target))
+            self.assertTrue(diagnostic.can_access_diagnostic_mcp(superuser, target))
             self.assertFalse(diagnostic.can_access_diagnostic_mcp(manager, target))
+            self.assertFalse(diagnostic.can_access_diagnostic_mcp(service, target))
+            self.assertFalse(diagnostic.can_access_diagnostic_mcp(installer, target))
             self.assertFalse(diagnostic.can_access_diagnostic_mcp(outsider, target))
             self.assertFalse(diagnostic.can_access_diagnostic_mcp(other_owner, other))
             self.assertFalse(diagnostic.can_access_diagnostic_mcp(owner, other))
+            self.assertFalse(diagnostic.can_access_diagnostic_mcp(superuser, other))
             self.assertFalse(diagnostic.can_access_diagnostic_mcp(AnonymousUser(), target))
             self.assertFalse(diagnostic.can_access_diagnostic_mcp(owner, None))
 
