@@ -12,6 +12,10 @@ from pool_service.onec_diagnostic_mcp_views import MCP_PROTOCOL_VERSION
     ADVISOR_ONEC_DIAGNOSTIC_MCP_RESOURCE_URL="https://service2.aqualine22.ru/mcp/1c",
     ADVISOR_ONEC_DIAGNOSTIC_MCP_AUTH_ISSUER="https://service2.aqualine22.ru/onec-diagnostic",
     ADVISOR_ONEC_DIAGNOSTIC_MCP_ALLOWED_ORIGINS={"https://chatgpt.com"},
+    ADVISOR_FINANCE_MCP_ENABLED=True,
+    ADVISOR_FINANCE_MCP_RESOURCE_URL="https://service2.aqualine22.ru/mcp/finance",
+    ADVISOR_FINANCE_MCP_AUTH_ISSUER="https://service2.aqualine22.ru",
+    ADVISOR_FINANCE_MCP_ALLOWED_ORIGINS={"https://chatgpt.com"},
 )
 class OneCDiagnosticMcpChatGptDiscoveryTests(SimpleTestCase):
     def _post(self, payload, *, protocol=True):
@@ -83,12 +87,14 @@ class OneCDiagnosticMcpChatGptDiscoveryTests(SimpleTestCase):
         )
         self.assertEqual(response.status_code, 200)
         data = response.json()
+        self.assertEqual(data["issuer"], "https://service2.aqualine22.ru")
         self.assertEqual(
             data["authorization_endpoint"],
-            "https://service2.aqualine22.ru/oauth/1c/authorize",
+            "https://service2.aqualine22.ru/oauth/finance/authorize",
         )
         self.assertEqual(
             data["token_endpoint"],
-            "https://service2.aqualine22.ru/oauth/1c/token",
+            "https://service2.aqualine22.ru/oauth/finance/token",
         )
+        self.assertIn("onec.diagnostic.read", data["scopes_supported"])
         self.assertNotIn("rovikpool.ru", json.dumps(data))

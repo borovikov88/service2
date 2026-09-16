@@ -12,23 +12,21 @@ from django.templatetags.static import static
 from django.conf.urls.static import static as static_serve
 from pool_service.mcp_views import mcp_test
 from pool_service.finance_mcp_views import (
-    finance_authorization_server_metadata,
     finance_mcp,
-    finance_oauth_authorize,
-    finance_oauth_token,
     finance_protected_resource_metadata,
 )
-from pool_service.onec_diagnostic_mcp_chatgpt import (
-    onec_diagnostic_authorization_server_metadata,
-    onec_diagnostic_mcp,
-    onec_diagnostic_oauth_authorize,
-    onec_diagnostic_oauth_token,
-    onec_diagnostic_protected_resource_metadata,
+from pool_service.onec_diagnostic_mcp_chatgpt import onec_diagnostic_mcp
+from pool_service.mcp_oauth_shared import (
+    diagnostic_protected_resource_metadata,
+    shared_authorization_server_metadata,
+    shared_oauth_authorize,
+    shared_oauth_token,
 )
 
 urlpatterns = [
     # Keep transport URLs byte-for-byte identical to their OAuth resource
-    # identifiers. Each MCP has an isolated protected-resource/scope contract.
+    # identifiers. Finance and Diagnostic keep isolated resources/scopes while
+    # sharing the proven Finance authorization-server issuer and endpoints.
     path('mcp/finance', finance_mcp, name='finance_mcp'),
     path(
         '.well-known/oauth-protected-resource/mcp/finance',
@@ -37,24 +35,27 @@ urlpatterns = [
     ),
     path(
         '.well-known/oauth-authorization-server',
-        finance_authorization_server_metadata,
+        shared_authorization_server_metadata,
         name='finance_mcp_authorization_server_metadata',
     ),
-    path('oauth/finance/authorize', finance_oauth_authorize, name='finance_mcp_authorize'),
-    path('oauth/finance/token', finance_oauth_token, name='finance_mcp_token'),
+    path('oauth/finance/authorize', shared_oauth_authorize, name='finance_mcp_authorize'),
+    path('oauth/finance/token', shared_oauth_token, name='finance_mcp_token'),
     path('mcp/1c', onec_diagnostic_mcp, name='onec_diagnostic_mcp'),
     path(
         '.well-known/oauth-protected-resource/mcp/1c',
-        onec_diagnostic_protected_resource_metadata,
+        diagnostic_protected_resource_metadata,
         name='onec_diagnostic_mcp_protected_resource_metadata',
     ),
+    # Backward-compatible route aliases. They now advertise and execute the
+    # same shared root issuer so OAuth metadata and authorization-response iss
+    # cannot disagree for saved Diagnostic clients that rediscover metadata.
     path(
         '.well-known/oauth-authorization-server/onec-diagnostic',
-        onec_diagnostic_authorization_server_metadata,
+        shared_authorization_server_metadata,
         name='onec_diagnostic_mcp_authorization_server_metadata',
     ),
-    path('oauth/1c/authorize', onec_diagnostic_oauth_authorize, name='onec_diagnostic_mcp_authorize'),
-    path('oauth/1c/token', onec_diagnostic_oauth_token, name='onec_diagnostic_mcp_token'),
+    path('oauth/1c/authorize', shared_oauth_authorize, name='onec_diagnostic_mcp_authorize'),
+    path('oauth/1c/token', shared_oauth_token, name='onec_diagnostic_mcp_token'),
     path('mcp/test/', mcp_test, name='mcp_test'),
     path('admin/', admin.site.urls),
     path('', include('pool_service.urls')),
