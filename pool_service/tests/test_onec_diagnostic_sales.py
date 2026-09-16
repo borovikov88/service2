@@ -15,7 +15,7 @@ METADATA = """<?xml version="1.0" encoding="utf-8"?>
 <edmx:Edmx xmlns:edmx="http://schemas.microsoft.com/ado/2007/06/edmx"><edmx:DataServices>
 <Schema xmlns="http://schemas.microsoft.com/ado/2008/09/edm" Namespace="S">
 <EntityType Name="N"><Property Name="Ref_Key" Type="Edm.Guid"/><Property Name="Code" Type="Edm.String"/><Property Name="Description" Type="Edm.String"/><Property Name="DeletionMark" Type="Edm.Boolean"/></EntityType>
-<EntityType Name="P"><Property Name="Period" Type="Edm.DateTime"/><Property Name="Номенклатура_Key" Type="Edm.Guid"/><Property Name="Организация_Key" Type="Edm.Guid"/><Property Name="Количество" Type="Edm.Decimal"/><Property Name="Сумма" Type="Edm.Decimal"/></EntityType>
+<EntityType Name="P"><Property Name="Period" Type="Edm.DateTime"/><Property Name="Active" Type="Edm.Boolean"/><Property Name="Номенклатура_Key" Type="Edm.Guid"/><Property Name="Организация_Key" Type="Edm.Guid"/><Property Name="Количество" Type="Edm.Decimal"/><Property Name="Сумма" Type="Edm.Decimal"/></EntityType>
 <EntityContainer Name="C"><EntitySet Name="Catalog_Номенклатура" EntityType="S.N"/><EntitySet Name="AccumulationRegister_Продажи_RecordType" EntityType="S.P"/></EntityContainer>
 </Schema></edmx:DataServices></edmx:Edmx>""".encode()
 
@@ -43,8 +43,8 @@ def catalog(*items, next_link=None):
     return payload
 
 
-def sale(ref, period, quantity, amount, organization=ORG):
-    return {"Period": period, "Номенклатура_Key": ref,
+def sale(ref, period, quantity, amount, organization=ORG, active=True):
+    return {"Period": period, "Active": active, "Номенклатура_Key": ref,
             "Организация_Key": organization, "Количество": quantity, "Сумма": amount}
 
 
@@ -72,7 +72,18 @@ class OneCDiagnosticSalesTests(SimpleTestCase):
         self.assertEqual(result["amount_net"], "80")
         self.assertEqual(result["row_count"], 2)
         self.assertIn("Builder''s", unquote(opener.urls[0]))
-        self.assertIn("Period lt datetime'2025-09-01T00:00:00'", unquote(opener.urls[1]))
+        sales_url = unquote(opener.urls[1])
+        self.assertIn("Active", sales_url.split("&")[0])
+        self.assertIn("Active eq true", sales_url)
+        self.assertIn("Period lt datetime'2025-09-01T00:00:00'", sales_url)
+
+    def test_inactive_sales_movement_fails_closed(self):
+        opener = Opener([
+            catalog((SAND, "1", "Sand", False)),
+            {"value": [sale(SAND, "2025-08-10T00:00:00", "100", "1000", active=False)]},
+        ])
+        with self.assertRaisesRegex(diagnostic.OneCDiagnosticError, "INACTIVE_SALES_MOVEMENT"):
+            self.call(opener)
 
     def test_deleted_items_are_excluded_and_multiple_matches_have_no_total(self):
         opener = Opener([

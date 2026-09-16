@@ -783,7 +783,8 @@ def get_nomenclature_sales(
         "Description": "Edm.String", "DeletionMark": "Edm.Boolean",
     })
     _sales_schema(index, SALES_ENTITY, {
-        "Period": "Edm.DateTime", "Номенклатура_Key": "Edm.Guid",
+        "Period": "Edm.DateTime", "Active": "Edm.Boolean",
+        "Номенклатура_Key": "Edm.Guid",
         "Организация_Key": "Edm.Guid", "Количество": "Edm.Decimal", "Сумма": "Edm.Decimal",
     })
 
@@ -829,12 +830,12 @@ def get_nomenclature_sales(
         lower = datetime.combine(start, time.min).isoformat(timespec="seconds")
         upper = datetime.combine(end_exclusive, time.min).isoformat(timespec="seconds")
         expression = (
-            f"({org_clause}) and ({item_clause}) and "
+            f"Active eq true and ({org_clause}) and ({item_clause}) and "
             f"Period ge datetime'{lower}' and Period lt datetime'{upper}'"
         )
         sales_url = (
             f"{config.base_url}{quote(SALES_ENTITY, safe='')}?"
-            f"$select={quote('Period,Номенклатура_Key,Организация_Key,Количество,Сумма')}&"
+            f"$select={quote('Period,Active,Номенклатура_Key,Организация_Key,Количество,Сумма')}&"
             f"$filter={quote(expression)}&$top={MAX_SALES_ROWS + 1}"
         )
         row_count = 0
@@ -844,6 +845,8 @@ def get_nomenclature_sales(
             for row in rows:
                 if not isinstance(row, dict):
                     raise OneCDiagnosticError("INVALID_ODATA_ROW")
+                if row.get("Active") is not True:
+                    raise OneCDiagnosticError("INACTIVE_SALES_MOVEMENT")
                 row_count += 1
                 if row_count > MAX_SALES_ROWS:
                     raise OneCDiagnosticError("SALES_ROW_LIMIT")
