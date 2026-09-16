@@ -350,11 +350,24 @@ class OneCDiagnosticMcpTests(TestCase):
         self.assertEqual(protected.status_code, 200)
         self.assertEqual(protected.json()["resource"], DIAGNOSTIC_RESOURCE)
         self.assertEqual(protected.json()["scopes_supported"], [DIAGNOSTIC_READ_SCOPE])
+        self.assertEqual(
+            protected.json()["authorization_servers"],
+            [MCP_SETTINGS["ADVISOR_FINANCE_MCP_AUTH_ISSUER"]],
+        )
 
         auth_server = self.client.get(reverse("onec_diagnostic_mcp_authorization_server_metadata"))
         self.assertEqual(auth_server.status_code, 200)
-        self.assertIn("/oauth/1c/authorize", auth_server.json()["authorization_endpoint"])
-        self.assertIn(DIAGNOSTIC_READ_SCOPE, auth_server.json()["scopes_supported"])
+        data = auth_server.json()
+        self.assertEqual(data["issuer"], MCP_SETTINGS["ADVISOR_FINANCE_MCP_AUTH_ISSUER"])
+        self.assertEqual(
+            data["authorization_endpoint"],
+            f'{MCP_SETTINGS["ADVISOR_FINANCE_MCP_AUTH_ISSUER"]}/oauth/finance/authorize',
+        )
+        self.assertEqual(
+            data["token_endpoint"],
+            f'{MCP_SETTINGS["ADVISOR_FINANCE_MCP_AUTH_ISSUER"]}/oauth/finance/token',
+        )
+        self.assertIn(DIAGNOSTIC_READ_SCOPE, data["scopes_supported"])
 
     def test_origin_and_transport_are_fail_closed(self):
         response = self.client.options(
