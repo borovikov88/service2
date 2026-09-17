@@ -59,7 +59,7 @@ class OneCDiagnosticMcpChatGptDiscoveryTests(SimpleTestCase):
             [tool["name"] for tool in tools],
             [
                 "list_1c_entities", "get_1c_entity_schema", "read_1c_rows",
-                "get_1c_nomenclature_sales",
+                "get_1c_nomenclature_sales", "query_1c_rows",
             ],
         )
         for tool in tools:

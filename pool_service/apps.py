@@ -46,5 +46,8 @@ class PoolServiceConfig(AppConfig):
 
     def ready(self):
         _wire_onec_diagnostic_mcp_environment()
+        # Install the universal read-only Diagnostic composition layer after
+        # Django models are loaded, before URL/MCP discovery starts.
+        import pool_service.onec_diagnostic_mcp_universal  # noqa: F401
         # Импортируем модуль с сигналами, чтобы он был зарегистрирован при запуске приложения
         import pool_service.signals
