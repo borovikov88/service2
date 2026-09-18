@@ -17,10 +17,12 @@ from .odata_payroll_drafts import auto_coverage_config
 from .odata_profit import ODataPreviewError, validate_config
 from .odata_profit_drafts import config_from_settings
 from .odata_unified_sync import (
+    PREVIEW_AUTO_SUPERSEDE_SECONDS,
     SUPPORTED_REPORT_TYPES,
     SyncConflictError,
     _add_months,
     _has_report_permission,
+    cancel_idle_preview_run,
     start_unified_sync,
     step_unified_sync,
 )
@@ -89,10 +91,21 @@ def _schedule_slot(local):
 def _select_run(config, now):
     with transaction.atomic():
         organization = Organization.objects.select_for_update().get(pk=config.organization_id)
-        active = OneCODataSyncRun.objects.filter(
+        active = OneCODataSyncRun.objects.select_for_update().filter(
             organization=organization,
             status__in=[OneCODataSyncRun.STATUS_PENDING, OneCODataSyncRun.STATUS_RUNNING],
         ).first()
+        if (
+            active
+            and active.mode == OneCODataSyncRun.MODE_PREVIEW
+            and cancel_idle_preview_run(
+                active,
+                now=now,
+                min_idle_seconds=PREVIEW_AUTO_SUPERSEDE_SECONDS,
+                message="Незавершённая проверка без применения отменена автоматическим обновлением 1С.",
+            )
+        ):
+            active = None
         if active:
             return (active if active.mode == OneCODataSyncRun.MODE_AUTO_APPLY else None), "busy"
 

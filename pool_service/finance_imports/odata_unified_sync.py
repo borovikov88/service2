@@ -67,6 +67,7 @@ SUPPORTED_REPORT_TYPES = (REPORT_PROFIT, REPORT_CASHFLOW, REPORT_PAYROLL)
 CHUNK_MONTHS = 12
 INITIAL_MONTHS = 12
 LEASE_SECONDS = 300
+PREVIEW_AUTO_SUPERSEDE_SECONDS = 15 * 60
 SAFE_ERROR_MESSAGE = "Не удалось проверить данные 1С. Продолжите проверку позже."
 logger = logging.getLogger(__name__)
 
@@ -294,6 +295,43 @@ def _scope_fingerprint(organization_id, report_types, scopes):
     ).hexdigest()
 
 
+def cancel_idle_preview_run(
+    run,
+    *,
+    now=None,
+    min_idle_seconds=0,
+    message="Проверка без применения отменена, чтобы не блокировать обновление данных 1С.",
+):
+    """Cancel an abandoned preview run without touching active finance versions."""
+    now = now or timezone.now()
+    if (
+        run.mode != OneCODataSyncRun.MODE_PREVIEW
+        or run.status not in {OneCODataSyncRun.STATUS_PENDING, OneCODataSyncRun.STATUS_RUNNING}
+    ):
+        return False
+    if (
+        run.lease_token
+        and run.lease_started_at
+        and run.lease_started_at > now - timedelta(seconds=LEASE_SECONDS)
+    ):
+        return False
+    activity_at = run.lease_started_at or run.started_at or run.created_at
+    if activity_at and activity_at > now - timedelta(seconds=max(0, int(min_idle_seconds))):
+        return False
+    run.status = OneCODataSyncRun.STATUS_CANCELLED
+    run.finished_at = now
+    run.error_message = message
+    progress = dict(run.progress or {})
+    progress.update({"step_state": "cancelled", "outcome": "cancelled"})
+    run.progress = progress
+    _clear_lease(run)
+    run.save(update_fields=[
+        "status", "finished_at", "error_message", "progress",
+        "lease_token", "lease_report_type", "lease_chunk", "lease_started_at",
+    ])
+    return True
+
+
 def start_unified_sync(
     organization, user, report_types, *, today=None,
     mode=OneCODataSyncRun.MODE_PREVIEW, period_start=None, period_end=None,
@@ -338,10 +376,16 @@ def start_unified_sync(
             }
             queue.extend({"report_type": report_type, **chunk} for chunk in chunks)
         fingerprint = _scope_fingerprint(locked.pk, requested, scopes)
-        existing = OneCODataSyncRun.objects.filter(
+        existing = OneCODataSyncRun.objects.select_for_update().filter(
             organization=locked,
             status__in=[OneCODataSyncRun.STATUS_PENDING, OneCODataSyncRun.STATUS_RUNNING],
         ).first()
+        if (
+            existing
+            and mode == OneCODataSyncRun.MODE_AUTO_APPLY
+            and cancel_idle_preview_run(existing, min_idle_seconds=0)
+        ):
+            existing = None
         if existing:
             existing_fingerprint = (existing.sync_scope or {}).get("_scope_fingerprint")
             if existing.mode == mode and (

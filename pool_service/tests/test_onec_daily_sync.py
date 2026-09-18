@@ -114,6 +114,23 @@ class DailyFinanceTests(TestCase):
         step.assert_not_called()
         self.assertEqual(OneCODataSyncRun.objects.count(), 1)
 
+    def test_abandoned_preview_no_longer_blocks_scheduled_refresh(self):
+        preview = self.run_record(mode=OneCODataSyncRun.MODE_PREVIEW)
+        OneCODataSyncRun.objects.filter(pk=preview.pk).update(
+            created_at=NOW - timedelta(minutes=16)
+        )
+        with patch(MODULE + ".step_unified_sync", side_effect=self.finish), patch(
+            MODULE + ".finalize_finance_position_step", return_value="completed"
+        ):
+            result = worker_tick(now=NOW)
+        preview.refresh_from_db()
+        self.assertEqual(preview.status, OneCODataSyncRun.STATUS_CANCELLED)
+        self.assertEqual(result["state"], "completed")
+        self.assertEqual(
+            OneCODataSyncRun.objects.filter(mode=OneCODataSyncRun.MODE_AUTO_APPLY).count(),
+            1,
+        )
+
     def test_other_organization_run_is_untouched(self):
         other = Organization.objects.create(name="Other synthetic")
         foreign = self.run_record(organization=other)
