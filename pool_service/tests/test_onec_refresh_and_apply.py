@@ -228,6 +228,19 @@ class RefreshAndApplyTests(TestCase):
         with self.assertRaises(SyncConflictError):
             start_unified_sync(self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1))
 
+    def test_auto_refresh_cancels_idle_preview_instead_of_conflicting(self):
+        preview, _ = start_unified_sync(
+            self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1)
+        )
+
+        auto = self.start()
+
+        preview.refresh_from_db()
+        self.assertEqual(preview.status, OneCODataSyncRun.STATUS_CANCELLED)
+        self.assertEqual(preview.progress["outcome"], "cancelled")
+        self.assertNotEqual(auto.pk, preview.pk)
+        self.assertEqual(auto.mode, OneCODataSyncRun.MODE_AUTO_APPLY)
+
     def test_period_over_24_months_creates_no_run(self):
         with self.assertRaises(ValidationError):
             self.start(start=date(2023, 5, 1), end=date(2025, 5, 1))
