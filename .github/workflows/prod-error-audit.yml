@@ -1,0 +1,65 @@
+name: Production error audit
+
+on:
+  push:
+    branches: ["qa/prod-error-audit"]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Read-only recent error summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_error_audit
+          chmod 600 ~/.ssh/service2_error_audit
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          PORT="${DEPLOY_PORT:-22}"
+          HOST_LOOKUP="$DEPLOY_HOST"
+          if [[ "$PORT" != "22" ]]; then HOST_LOOKUP="[$DEPLOY_HOST]:$PORT"; fi
+          ssh-keygen -F "$HOST_LOOKUP" -f ~/.ssh/known_hosts >/dev/null
+
+      - name: Summarize recent server log errors
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          ssh -i ~/.ssh/service2_error_audit             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes             -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST"             "bash -s -- '$DEPLOY_APP_PATH'" <<'SH'
+          set -Eeuo pipefail
+          app_path="$1"
+          root="$(dirname "$app_path")"
+          printf 'ERROR_AUDIT_ROOT=%s\n' "$(basename "$root")"
+          found=0
+          while IFS= read -r file; do
+            found=1
+            size="$(wc -c < "$file" | tr -d ' ')"
+            modified="$(date -r "$file" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || true)"
+            recent="$(tail -n 5000 "$file" 2>/dev/null || true)"
+            tracebacks="$(printf '%s\n' "$recent" | grep -c 'Traceback (most recent call last)' || true)"
+            server_errors="$(printf '%s\n' "$recent" | grep -Eic 'Internal Server Error|ERROR|CRITICAL' || true)"
+            printf 'ERROR_LOG file=%s size=%s modified=%s tracebacks=%s error_markers=%s\n'               "$(basename "$file")" "$size" "$modified" "$tracebacks" "$server_errors"
+            printf '%s\n' "$recent"               | grep -Eo '[A-Za-z_][A-Za-z0-9_.]*(Error|Exception)'               | sort               | uniq -c               | sort -nr               | head -n 12               | sed 's/^/ERROR_TYPE /' || true
+          done < <(
+            find "$root" -maxdepth 3 -type f               \( -name '*.log' -o -name 'error_log' -o -name 'stderr.log' -o -name 'passenger*.log' \)               -mtime -14 -size +0c 2>/dev/null | sort
+          )
+          if [[ "$found" -eq 0 ]]; then
+            echo "ERROR_LOG none_found"
+          fi
+          SH
