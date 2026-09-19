@@ -755,7 +755,7 @@ class PoolForm(forms.ModelForm):
             "service_frequency",
             "service_monthly_price",
             "service_details_comment",
-            "service_suspended",
+            "service_status",
             "daily_readings_required",
             "water_system_type",
             "water_source",
@@ -797,7 +797,7 @@ class PoolForm(forms.ModelForm):
                     "placeholder": "Условия обслуживания, особенности доступа, договорённости с клиентом",
                 }
             ),
-            "service_suspended": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+            "service_status": forms.Select(attrs={"class": "form-select"}),
             "daily_readings_required": forms.CheckboxInput(attrs={"class": "form-check-input"}),
             "water_system_type": forms.Select(attrs={"class": "form-select"}),
             "water_source": forms.Select(attrs={"class": "form-select"}),
@@ -815,6 +815,23 @@ class PoolForm(forms.ModelForm):
         user = kwargs.pop("user", None)
         selected_client_id = kwargs.pop("selected_client_id", None)
         service_details_only = kwargs.pop("service_details_only", False)
+
+        # Existing clients may still submit the object form without the new
+        # status field. Preserve the current status (or default to active)
+        # instead of rejecting an otherwise valid update.
+        instance = kwargs.get("instance")
+        bound_data = args[0] if args else kwargs.get("data")
+        if bound_data is not None and "service_status" not in bound_data:
+            bound_data = bound_data.copy()
+            bound_data["service_status"] = (
+                getattr(instance, "service_status", None)
+                or Pool.SERVICE_STATUS_ACTIVE
+            )
+            if args:
+                args = (bound_data, *args[1:])
+            else:
+                kwargs["data"] = bound_data
+
         super().__init__(*args, **kwargs)
         if "confirm_object_type_change" in self.fields:
             self.fields["confirm_object_type_change"].widget.attrs.update({"class": "form-check-input"})
@@ -823,6 +840,7 @@ class PoolForm(forms.ModelForm):
                 "service_frequency",
                 "service_monthly_price",
                 "service_details_comment",
+                "service_status",
             }
             for field_name in list(self.fields):
                 if field_name not in allowed_fields:

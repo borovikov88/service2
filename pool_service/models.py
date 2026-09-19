@@ -220,6 +220,17 @@ class Pool(models.Model):
         (SERVICE_FREQ_YEARLY, "\u0420\u0430\u0437 \u0432 \u0433\u043e\u0434"),
     ]
 
+    SERVICE_STATUS_ACTIVE = "active"
+    SERVICE_STATUS_SUSPENDED = "suspended"
+    SERVICE_STATUS_WINTERIZED = "winterized"
+    SERVICE_STATUS_STOPPED = "stopped"
+    SERVICE_STATUS_CHOICES = [
+        (SERVICE_STATUS_ACTIVE, "На обслуживании"),
+        (SERVICE_STATUS_SUSPENDED, "Обслуживание приостановлено"),
+        (SERVICE_STATUS_WINTERIZED, "Законсервирован"),
+        (SERVICE_STATUS_STOPPED, "Больше не обслуживаем"),
+    ]
+
     client = models.ForeignKey(Client, on_delete=models.CASCADE)
     address = models.CharField(max_length=255)
     organization = models.ForeignKey(
@@ -248,6 +259,13 @@ class Pool(models.Model):
     service_monthly_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     service_details_comment = models.TextField(null=True, blank=True)
     service_interval_days = models.PositiveSmallIntegerField(null=True, blank=True)
+    service_status = models.CharField(
+        max_length=20,
+        choices=SERVICE_STATUS_CHOICES,
+        default=SERVICE_STATUS_ACTIVE,
+    )
+    # Legacy compatibility flag used by existing scheduling/query code.
+    # New UI edits service_status and keeps this value in sync.
     service_suspended = models.BooleanField(default=False)
     daily_readings_required = models.BooleanField(default=False)
     water_system_type = models.CharField(max_length=30, choices=WATER_SYSTEM_CHOICES, null=True, blank=True)
@@ -276,6 +294,34 @@ class Pool(models.Model):
         org_name = self.organization.name if self.organization else "без организации"
         label = self.get_object_type_display() if hasattr(self, "get_object_type_display") else "Объект"
         return f"{label}: {self.address} ({org_name})"
+
+
+class PoolStatusHistory(models.Model):
+    pool = models.ForeignKey(
+        Pool,
+        on_delete=models.CASCADE,
+        related_name="status_history",
+    )
+    old_status = models.CharField(max_length=20, choices=Pool.SERVICE_STATUS_CHOICES)
+    new_status = models.CharField(max_length=20, choices=Pool.SERVICE_STATUS_CHOICES)
+    changed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="pool_status_changes",
+    )
+    comment = models.CharField(max_length=255, blank=True)
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-changed_at", "-id"]
+        indexes = [
+            models.Index(fields=["pool", "changed_at"], name="pool_status_hist_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.pool_id}: {self.old_status} -> {self.new_status}"
 
 
 class DataAuditLog(models.Model):

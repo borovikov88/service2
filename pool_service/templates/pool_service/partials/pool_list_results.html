@@ -12,11 +12,16 @@
             <div class="pool-object-card card card-soft p-3 h-100 hover-shadow">
                 <div class="d-flex align-items-start justify-content-between gap-3">
                     <div class="d-flex gap-3 align-items-start min-w-0">
-                        <div class="pool-object-card__icon {% if pool.service_suspended %}bg-secondary{% elif pool.object_type == 'water' %}bg-success bg-gradient{% else %}bg-primary bg-gradient{% endif %} text-white rounded-3 d-flex align-items-center justify-content-center" style="width:48px;height:48px;">
+                        <div class="pool-object-card__icon {% if pool.service_status == 'stopped' %}bg-dark{% elif pool.service_status == 'winterized' %}bg-info bg-gradient{% elif pool.service_status == 'suspended' %}bg-secondary{% elif pool.object_type == 'water' %}bg-success bg-gradient{% else %}bg-primary bg-gradient{% endif %} text-white rounded-3 d-flex align-items-center justify-content-center" style="width:48px;height:48px;">
                             {% if pool.object_type == 'water' %}
                                 <i class="bi bi-funnel fs-4"></i>
                             {% else %}
-                                <i class="bi bi-water fs-4"></i>
+                                <svg class="pool-icon-svg" viewBox="0 0 32 32" width="25" height="25" aria-hidden="true">
+                                    <rect x="3" y="8" width="26" height="17" rx="4" fill="none" stroke="currentColor" stroke-width="2"/>
+                                    <path d="M7 14c2-1.5 4-1.5 6 0s4 1.5 6 0 4-1.5 6 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                                    <path d="M7 19c2-1.5 4-1.5 6 0s4 1.5 6 0 4-1.5 6 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                                    <path d="M24 4v8M28 4v8M24 7h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                                </svg>
                             {% endif %}
                         </div>
                         <div class="min-w-0">
@@ -29,9 +34,9 @@
 
                 <div class="pool-object-card__desktop d-none d-lg-block">
                     <div class="d-flex align-items-center justify-content-between gap-2 flex-wrap">
-                        <span class="pool-object-status {% if pool.service_suspended %}pool-object-status--paused{% else %}pool-object-status--active{% endif %}">
-                            <i class="bi {% if pool.service_suspended %}bi-pause-circle{% else %}bi-check-circle{% endif %}"></i>
-                            {% if pool.service_suspended %}Обслуживание приостановлено{% else %}На обслуживании{% endif %}
+                        <span class="pool-object-status pool-object-status--{{ pool.service_status }}">
+                            <i class="bi {% if pool.service_status == 'active' %}bi-check-circle{% elif pool.service_status == 'suspended' %}bi-pause-circle{% elif pool.service_status == 'winterized' %}bi-snow{% else %}bi-x-circle{% endif %}"></i>
+                            {{ pool.get_service_status_display }}
                         </span>
                         <span class="pool-object-type">{{ pool.get_object_type_display }}</span>
                     </div>
@@ -44,18 +49,8 @@
                             </div>
                         </div>
                         <div class="pool-object-fact">
-                            <div class="pool-object-fact__label">Следующий выезд</div>
-                            <div class="pool-object-fact__value">
-                                {% if pool.next_visit_date %}{{ pool.next_visit_date|date:"d.m.Y" }}{% else %}Не запланирован{% endif %}
-                            </div>
-                        </div>
-                        <div class="pool-object-fact">
                             <div class="pool-object-fact__label">Частота</div>
                             <div class="pool-object-fact__value">{{ pool.get_service_frequency_display|default:"Не задана" }}</div>
-                        </div>
-                        <div class="pool-object-fact">
-                            <div class="pool-object-fact__label">История</div>
-                            <div class="pool-object-fact__value">{{ pool.num_readings }} записей</div>
                         </div>
                     </div>
                 </div>
