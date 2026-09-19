@@ -181,3 +181,5 @@ jobs:
               | grep -Ei '^(cache-control|content-encoding|content-length|etag|last-modified|age|vary):' \
               | sed 's/^/ASSET_HEADER /' || true
           done
+
+# rerun after profit summary narrowing
