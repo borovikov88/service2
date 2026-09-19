@@ -11,6 +11,8 @@ from pool_service.models import (
     Organization,
     OrganizationAccess,
     Pool,
+    PoolServiceStatusEvent,
+    Profile,
     ServiceVisitPlan,
     WaterReading,
 )
@@ -98,7 +100,7 @@ class ObjectCardRoleRedesignTests(TestCase):
             .count()
         )
 
-    def test_manager_gets_manager_desktop_card_and_recent_visits(self):
+    def test_manager_gets_manager_desktop_card(self):
         response = self._get_detail(self.manager)
 
         self.assertEqual(response.status_code, 200)
@@ -109,7 +111,6 @@ class ObjectCardRoleRedesignTests(TestCase):
             self._expected_open_service_issue_count(),
         )
         self.assertContains(response, "Карточка менеджера")
-        self.assertContains(response, "Короткая сводка для менеджера")
         self.assertContains(response, "Стоимость обслуживания")
         self.assertContains(response, "Промывка фильтра")
         self.assertContains(response, 'id="object-visits"', html=False)
@@ -117,7 +118,8 @@ class ObjectCardRoleRedesignTests(TestCase):
         self.assertContains(response, 'class="object-layout-wide"', html=False)
         self.assertContains(response, 'class="object-layout-wide__aside"', html=False)
         self.assertContains(response, 'class="object-info-grid row g-2 mt-3"', html=False)
-        self.assertContains(response, "grid-template-columns: 430px minmax(0, 1fr)", html=False)
+        self.assertContains(response, "grid-template-columns: 330px minmax(0, 1fr)", html=False)
+        self.assertContains(response, ".object-layout-wide__aside .object-info-grid > .col-lg-4", html=False)
         self.assertEqual(response.context["audit_logs"], [])
         self.assertNotContains(response, "Журнал изменений")
         self.assertNotContains(response, 'href="#object-changes"', html=False)
@@ -144,4 +146,52 @@ class ObjectCardRoleRedesignTests(TestCase):
         self.assertNotContains(response, 'href="#object-changes"', html=False)
         self.assertContains(response, 'data-bs-target="#serviceIssueCreateModal"', html=False)
         self.assertNotContains(response, "Стоимость обслуживания")
-        self.assertNotContains(response, "Короткая сводка для менеджера")
+
+    def test_manager_status_change_creates_history_event_and_syncs_legacy_flag(self):
+        self.client.force_login(self.manager)
+        response = self.client.post(
+            reverse("pool_edit", kwargs={"pool_uuid": self.pool.uuid}),
+            {
+                "service_frequency": Pool.SERVICE_FREQ_WEEKLY,
+                "service_monthly_price": "25000.00",
+                "service_details_comment": "Тест",
+                "service_status": Pool.SERVICE_STATUS_WINTERIZED,
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.pool.refresh_from_db()
+        self.assertEqual(self.pool.service_status, Pool.SERVICE_STATUS_WINTERIZED)
+        self.assertTrue(self.pool.service_suspended)
+
+        event = PoolServiceStatusEvent.objects.get(pool=self.pool)
+        self.assertEqual(event.previous_status, Pool.SERVICE_STATUS_ACTIVE)
+        self.assertEqual(event.status, Pool.SERVICE_STATUS_WINTERIZED)
+        self.assertEqual(event.changed_by, self.manager)
+
+        detail = self._get_detail(self.manager)
+        self.assertContains(detail, "Законсервирован")
+        self.assertContains(detail, "Статус изменён: На обслуживании → Законсервирован")
+        self.assertContains(detail, "Менеджер")
+
+    def test_new_visit_keeps_browser_local_time_as_correct_aware_instant(self):
+        profile, _ = Profile.objects.get_or_create(user=self.service)
+        profile.timezone = "Asia/Barnaul"
+        profile.save(update_fields=["timezone"])
+
+        self.client.force_login(self.service)
+        response = self.client.post(
+            reverse("water_reading_create", kwargs={"pool_uuid": self.pool.uuid}),
+            {
+                "date": "2026-09-19T16:30:00",
+                "temperature": "28",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+
+        created = WaterReading.objects.filter(pool=self.pool, temperature=28).latest("id")
+        self.assertTrue(timezone.is_aware(created.date))
+        self.assertEqual(created.date.astimezone(timezone.get_fixed_timezone(420)).strftime("%H:%M"), "16:30")
+
+        detail = self._get_detail(self.service)
+        self.assertContains(detail, "19.09.2026 16:30")
