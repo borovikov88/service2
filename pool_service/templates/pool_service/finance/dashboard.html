@@ -4,13 +4,15 @@
 {% block title %}Мои финансы{% endblock %}
 
 {% block content %}
-<div class="d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-4">
+{% include "pool_service/finance/_desktop_workspace_styles.html" %}
+<div class="finance-desktop">
+<div class="finance-page-header d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-4">
   <div>
     <div class="text-muted small mb-1">Финансы</div>
     <h1 class="h3 fw-bold mb-1">Мои финансы</h1>
     <div class="text-muted">Подотчёт, расходы компании и чеки</div>
   </div>
-  <div class="d-flex flex-wrap gap-2">
+  <div class="finance-page-actions d-flex flex-wrap gap-2">
     <a href="{% url 'finance_expense_create' %}" class="btn btn-primary" data-finance-modal data-modal-title="Новый расход" data-modal-size="xl"><i class="bi bi-receipt me-2"></i>Добавить расход</a>
     <a href="{% url 'finance_income_create' %}" class="btn btn-outline-success" data-finance-modal data-modal-title="Приход денег" data-modal-size="lg"><i class="bi bi-wallet2 me-2"></i>Приход денег</a>
     <a href="{% url 'finance_accountable_return_create' %}" class="btn btn-outline-primary" data-finance-modal data-modal-title="Возврат подотчёта" data-modal-size="lg"><i class="bi bi-arrow-return-left me-2"></i>Возврат подотчёта</a>
@@ -25,22 +27,22 @@
 
 <div id="finance-sync-status" class="alert alert-info d-none mb-4"></div>
 
-<div class="row g-3 mb-4">
+<div class="finance-kpi-grid row g-3 mb-4">
   {% if can_manage_finance %}
   <div class="col-12 col-md-4">
-    <div class="card card-soft p-4 h-100">
+    <div class="finance-kpi-card card card-soft p-4 h-100">
       <div class="text-muted small mb-1">Подтверждено за {{ month_label }}</div>
       <div class="fs-3 fw-bold text-success">{{ approved_total|money }}</div>
     </div>
   </div>
   <div class="col-12 col-md-4">
-    <div class="card card-soft p-4 h-100">
+    <div class="finance-kpi-card card card-soft p-4 h-100">
       <div class="text-muted small mb-1">На проверке</div>
       <div class="fs-3 fw-bold text-warning">{{ pending_total|money }}</div>
     </div>
   </div>
   <div class="col-12 col-md-4">
-    <div class="card card-soft p-4 h-100">
+    <div class="finance-kpi-card card card-soft p-4 h-100">
       <div class="text-muted small mb-1">Из кассы компании</div>
       <div class="fs-3 fw-bold">{{ company_cash_total|money }}</div>
     </div>
@@ -48,20 +50,20 @@
   {% else %}
   {% for row in balance_rows %}
   <div class="col-12 col-md-6">
-    <div class="card card-soft p-4 h-100">
+    <div class="finance-kpi-card card card-soft p-4 h-100">
       <div class="text-muted small mb-1">Остаток на подотчёте</div>
       <div class="fs-3 fw-bold {% if row.operational_balance < 0 %}text-danger{% else %}text-success{% endif %}">{{ row.operational_balance|money }}</div>
     </div>
   </div>
   <div class="col-12 col-md-6">
-    <div class="card card-soft p-4 h-100">
+    <div class="finance-kpi-card card card-soft p-4 h-100">
       <div class="text-muted small mb-1">Чеки на проверке</div>
       <div class="fs-3 fw-bold text-warning">{{ pending_total|money }}</div>
     </div>
   </div>
   {% empty %}
   <div class="col-12">
-    <div class="card card-soft p-4 h-100">
+    <div class="finance-kpi-card card card-soft p-4 h-100">
       <div class="text-muted small mb-1">Остаток на подотчёте</div>
       <div class="fs-3 fw-bold text-success">0,00 ₽</div>
     </div>
@@ -71,7 +73,7 @@
 </div>
 
 {% if can_manage_finance %}
-<div class="card card-soft p-3 p-lg-4 mb-4">
+<div class="finance-data-card card card-soft p-3 p-lg-4 mb-4">
   <div class="d-flex align-items-center justify-content-between gap-3 mb-3">
     <div>
       <h2 class="h5 fw-bold mb-1">Остатки подотчёта</h2>
@@ -116,7 +118,7 @@
 
 <div class="row g-4">
   <div class="col-12 col-xl-8">
-    <div class="card card-soft p-3 p-lg-4 h-100">
+    <div class="finance-data-card card card-soft p-3 p-lg-4 h-100">
       <h2 class="h5 fw-bold mb-3">Последние расходы</h2>
       <div class="table-responsive">
         <table class="table align-middle mb-0">
@@ -153,7 +155,7 @@
   </div>
 
   <div class="col-12 col-xl-4">
-    <div class="card card-soft p-3 p-lg-4 h-100">
+    <div class="finance-data-card card card-soft p-3 p-lg-4 h-100">
       <h2 class="h5 fw-bold mb-3">Движения подотчёта</h2>
       <div class="d-flex flex-column gap-3">
         {% for movement in latest_transactions %}
@@ -227,6 +229,8 @@
       </div>
     </div>
   </div>
+</div>
+
 </div>
 
 <div class="modal fade" id="financeFormModal" tabindex="-1" aria-hidden="true">
