@@ -1,0 +1,33 @@
+name: Client dependency latency audit
+
+on:
+  push:
+    branches: ["qa/client-network-deps"]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Measure client dependency delivery
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Measure blocking external and local assets
+        run: |
+          set -Eeuo pipefail
+          urls=(
+            "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css"
+            "https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js"
+            "https://service2.aqualine22.ru/static/assets/css/style.css?v=18"
+            "https://service2.aqualine22.ru/static/assets/css/base-shell.css?v=2"
+            "https://service2.aqualine22.ru/static/assets/js/base-shell-pre.js?v=1"
+            "https://service2.aqualine22.ru/sw.js"
+          )
+          for url in "${urls[@]}"; do
+            echo "DEP_URL $url"
+            for n in 1 2; do
+              curl --compressed -sS -o /dev/null                 -w "DEP_RUN $n code=%{http_code} dns=%{time_namelookup} connect=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total} bytes=%{size_download} http=%{http_version}\n"                 "$url"
+            done
+            curl --compressed -sSI "$url" | tr -d '\r' | grep -Ei '^(cache-control|content-encoding|content-length|etag|last-modified|age):' | sed 's/^/DEP_HEADER /' || true
+          done
