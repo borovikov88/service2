@@ -23,7 +23,7 @@ from .models import (
 
 
 class WaterReadingForm(forms.ModelForm):
-    date = forms.DateTimeField(widget=forms.HiddenInput())
+    date = forms.DateTimeField(widget=forms.HiddenInput(), required=False)
 
     class Meta:
         model = WaterReading
