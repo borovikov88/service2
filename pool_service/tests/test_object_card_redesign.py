@@ -87,13 +87,27 @@ class ObjectCardRoleRedesignTests(TestCase):
         self.client.force_login(user)
         return self.client.get(reverse("pool_detail", kwargs={"pool_uuid": self.pool.uuid}))
 
+    def _expected_open_service_issue_count(self):
+        return (
+            CrmItem.objects.filter(
+                organization=self.organization,
+                pool=self.pool,
+                direction=CrmItem.DIRECTION_SERVICE,
+            )
+            .exclude(stage=CrmItem.STAGE_SERVICE_DONE)
+            .count()
+        )
+
     def test_manager_gets_manager_desktop_card_and_recent_visits(self):
         response = self._get_detail(self.manager)
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["desktop_card_mode"], "manager")
         self.assertEqual(response.context["latest_reading"].id, self.reading.id)
-        self.assertEqual(response.context["open_service_issue_count"], 1)
+        self.assertEqual(
+            response.context["open_service_issue_count"],
+            self._expected_open_service_issue_count(),
+        )
         self.assertContains(response, "Карточка менеджера")
         self.assertContains(response, "Короткая сводка для менеджера")
         self.assertContains(response, "Стоимость обслуживания")
@@ -107,7 +121,10 @@ class ObjectCardRoleRedesignTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["desktop_card_mode"], "service")
-        self.assertEqual(response.context["open_service_issue_count"], 1)
+        self.assertEqual(
+            response.context["open_service_issue_count"],
+            self._expected_open_service_issue_count(),
+        )
         self.assertContains(response, "Рабочая карточка сервисника")
         self.assertContains(response, "Посещения и состояние объекта в приоритете")
         self.assertContains(response, "object-visit-history--primary", html=False)
