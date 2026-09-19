@@ -3,7 +3,9 @@
 {% block title %}{{ page_title }}{% endblock %}
 
 {% block content %}
-<div class="card card-soft p-4">
+{% include "pool_service/_admin_workspace_styles.html" %}
+<div class="admin-desktop">
+<div class="admin-card card card-soft p-4">
     <h3 class="fw-bold h5 mb-2">{{ page_title }}</h3>
     <p class="text-muted mb-3">Приглашение действует 24 часа. Сотрудник получит письмо со ссылкой на регистрацию.</p>
 
@@ -46,4 +48,6 @@
         </div>
     </form>
 </div>
+
+</div><!-- /admin-desktop -->
 {% endblock %}
