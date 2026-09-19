@@ -818,6 +818,10 @@ class PoolForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         if "confirm_object_type_change" in self.fields:
             self.fields["confirm_object_type_change"].widget.attrs.update({"class": "form-check-input"})
+        if "service_status" in self.fields:
+            # Backward compatibility for old clients/tests that do not yet
+            # submit the newly introduced status field.
+            self.fields["service_status"].required = False
         if service_details_only:
             allowed_fields = {
                 "service_frequency",
@@ -871,6 +875,13 @@ class PoolForm(forms.ModelForm):
                         pass
                 elif not client_self.exists():
                     self.fields["client"].initial = None
+
+    def clean_service_status(self):
+        value = self.cleaned_data.get("service_status")
+        if value:
+            return value
+        current = getattr(self.instance, "service_status", None)
+        return current or Pool.SERVICE_STATUS_ACTIVE
 
     def clean(self):
         cleaned = super().clean()
