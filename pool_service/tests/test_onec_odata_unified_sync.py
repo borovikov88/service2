@@ -641,7 +641,7 @@ class UnifiedSyncTests(TestCase):
         cases = (
             ("profit_read", "profit_read_failed", {"read": TimeoutError("https://secret.example/?token=x")}),
             ("profit_nomenclature_lookup", "profit_nomenclature_lookup_failed", {"lookup": RuntimeError("Authorization: Basic secret")}),
-            ("profit_normalization", "profit_normalization_failed", {"normalize": ValueError("guid=abc")}),
+            ("profit_enrichment", "profit_enrichment_failed", {"normalize": ValueError("guid=abc")}),
         )
         for stage, error_code, kwargs in cases:
             with self.subTest(stage=stage):
@@ -683,6 +683,38 @@ class UnifiedSyncTests(TestCase):
         self.assertFalse(OneCImportBatch.objects.filter(status="previewed").exists())
         self.assertEqual(OneCReportPeriodState.objects.get().active_batch, active)
         self.assertEqual([path for path in Path(self.private.name).rglob("*") if path.is_file()], [])
+
+    def test_profit_document_lookup_page_limit_has_specific_safe_stage(self):
+        run, _ = start_unified_sync(
+            self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1)
+        )
+        with patch(
+            "pool_service.finance_imports.odata_unified_sync.read_profit_rows",
+            return_value=([self._raw_profit_row()], 1),
+        ), patch(
+            "pool_service.finance_imports.odata_unified_sync._read_reference_map",
+            return_value={},
+        ), patch(
+            "pool_service.finance_imports.odata_unified_sync._read_profit_documents",
+            side_effect=ODataPreviewError("1C document lookups exceeded the page limit"),
+        ):
+            failed = step_unified_sync(
+                run.id, self.user, [REPORT_PROFIT], 0, config=config()
+            )
+
+        item = failed.result_summary[REPORT_PROFIT]
+        self.assertEqual(item["status"], "retryable_error")
+        self.assertEqual(item["error_stage"], "profit_document_lookup")
+        self.assertEqual(item["error_code"], "profit_document_lookup_failed")
+        self.assertEqual(item["error_reason"], "page_limit")
+        self.assertEqual(
+            failed.progress["error_hint"],
+            "документы продаж: превышен лимит страниц",
+        )
+        self.assertEqual(failed.cursor["index"], 0)
+        self.assertEqual(failed.cursor["version"], 0)
+        self.assertIsNone(failed.lease_token)
+        self.assertFalse(OneCImportBatch.objects.filter(status="previewed").exists())
 
     def test_profit_customer_and_responsible_lookup_failures_have_safe_substages(self):
         stages = (

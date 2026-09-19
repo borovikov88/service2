@@ -65,6 +65,7 @@ REPORT_CASHFLOW = OneCImportBatch.TYPE_CASHFLOW
 REPORT_PAYROLL = OneCImportBatch.TYPE_PAYROLL_ACCRUAL
 SUPPORTED_REPORT_TYPES = (REPORT_PROFIT, REPORT_CASHFLOW, REPORT_PAYROLL)
 CHUNK_MONTHS = 12
+PROFIT_CHUNK_MONTHS = 3
 INITIAL_MONTHS = 12
 LEASE_SECONDS = 300
 PREVIEW_AUTO_SUPERSEDE_SECONDS = 15 * 60
@@ -79,6 +80,8 @@ STAGE_PROFIT_REFERENCE_GUID_VALIDATION = "profit_reference_guid_validation"
 STAGE_PROFIT_NOMENCLATURE_LOOKUP = "profit_nomenclature_lookup"
 STAGE_PROFIT_CUSTOMER_LOOKUP = "profit_customer_lookup"
 STAGE_PROFIT_RESPONSIBLE_LOOKUP = "profit_responsible_lookup"
+STAGE_PROFIT_DOCUMENT_LOOKUP = "profit_document_lookup"
+STAGE_PROFIT_ENRICHMENT = "profit_enrichment"
 STAGE_PROFIT_NORMALIZATION = "profit_normalization"
 STAGE_CASHFLOW_READ = "cashflow_read"
 STAGE_CASHFLOW_REFERENCE_LOOKUP = "cashflow_reference_lookup"
@@ -90,6 +93,8 @@ STEP_ERROR_CODES = {
     STAGE_PROFIT_NOMENCLATURE_LOOKUP: "profit_nomenclature_lookup_failed",
     STAGE_PROFIT_CUSTOMER_LOOKUP: "profit_customer_lookup_failed",
     STAGE_PROFIT_RESPONSIBLE_LOOKUP: "profit_responsible_lookup_failed",
+    STAGE_PROFIT_DOCUMENT_LOOKUP: "profit_document_lookup_failed",
+    STAGE_PROFIT_ENRICHMENT: "profit_enrichment_failed",
     STAGE_PROFIT_NORMALIZATION: "profit_normalization_failed",
     STAGE_CASHFLOW_READ: "cashflow_read_failed",
     STAGE_CASHFLOW_REFERENCE_LOOKUP: "cashflow_reference_lookup_failed",
@@ -119,10 +124,20 @@ PROFIT_CUSTOMER_ERROR_REASONS = frozenset({
     "unexpected",
 })
 PROFIT_RESPONSIBLE_ERROR_REASONS = PROFIT_CUSTOMER_ERROR_REASONS
+PROFIT_DOCUMENT_ERROR_REASONS = frozenset({
+    "http_error",
+    "request_failed",
+    "page_limit",
+    "unexpected_rows",
+    "invalid_document",
+    "document_missing",
+    "unexpected",
+})
 STAGE_ERROR_REASONS = {
     STAGE_PROFIT_NOMENCLATURE_LOOKUP: PROFIT_NOMENCLATURE_ERROR_REASONS,
     STAGE_PROFIT_CUSTOMER_LOOKUP: PROFIT_CUSTOMER_ERROR_REASONS,
     STAGE_PROFIT_RESPONSIBLE_LOOKUP: PROFIT_RESPONSIBLE_ERROR_REASONS,
+    STAGE_PROFIT_DOCUMENT_LOOKUP: PROFIT_DOCUMENT_ERROR_REASONS,
 }
 STAGE_PUBLIC_LABELS = {
     STAGE_CONFIG: "настройка подключения",
@@ -131,6 +146,8 @@ STAGE_PUBLIC_LABELS = {
     STAGE_PROFIT_NOMENCLATURE_LOOKUP: "справочник номенклатуры",
     STAGE_PROFIT_CUSTOMER_LOOKUP: "справочник контрагентов",
     STAGE_PROFIT_RESPONSIBLE_LOOKUP: "справочник ответственных",
+    STAGE_PROFIT_DOCUMENT_LOOKUP: "документы продаж",
+    STAGE_PROFIT_ENRICHMENT: "подготовка строк продаж",
     STAGE_PROFIT_NORMALIZATION: "обработка продаж",
     STAGE_CASHFLOW_READ: "чтение ДДС",
     STAGE_CASHFLOW_REFERENCE_LOOKUP: "справочники ДДС",
@@ -146,6 +163,8 @@ ERROR_REASON_PUBLIC_LABELS = {
     "missing_description": "у ссылки нет наименования",
     "invalid_nomenclature_type": "некорректный тип номенклатуры",
     "reference_missing": "ссылка не найдена в 1С",
+    "invalid_document": "некорректный документ 1С",
+    "document_missing": "документ не найден в 1С",
     "unexpected": "непредвиденная ошибка",
 }
 
@@ -239,6 +258,33 @@ def _profit_customer_error_reason(exc):
     return "unexpected"
 
 
+def _profit_document_error_reason(exc):
+    """Return a persisted-safe reason only for controlled document lookup errors."""
+    if not isinstance(exc, ODataPreviewError):
+        return None
+    message = str(exc)
+    if message.startswith("OData HTTP error "):
+        return "http_error"
+    if message.startswith("OData request failed"):
+        return "request_failed"
+    if message in {
+        "OData pagination exceeded the configured page limit",
+        "1C document lookups exceeded the page limit",
+    }:
+        return "page_limit"
+    if message.startswith("1C document lookup returned unexpected"):
+        return "unexpected_rows"
+    if message.startswith("1C document is missing or unavailable"):
+        return "document_missing"
+    if (
+        message.startswith("1C document ")
+        or message.startswith("Document ")
+        or message.startswith("1C document type ")
+    ):
+        return "invalid_document"
+    return "unexpected"
+
+
 def _log_step_failure(stage, correlation_id, exc):
     """Write only allowlisted diagnostic fields to the dedicated log."""
     logger.error(
@@ -300,12 +346,12 @@ def _scope_for(organization, report_type, today):
     return start, today, initial
 
 
-def _chunk_scope(start, end):
+def _chunk_scope(start, end, *, chunk_months=CHUNK_MONTHS):
     months = _months(start, end)
     return [
         {"start": part[0].isoformat(), "end": part[-1].isoformat()}
-        for index in range(0, len(months), CHUNK_MONTHS)
-        if (part := months[index:index + CHUNK_MONTHS])
+        for index in range(0, len(months), chunk_months)
+        if (part := months[index:index + chunk_months])
     ]
 
 
@@ -358,6 +404,43 @@ def cancel_idle_preview_run(
     return True
 
 
+def cancel_empty_retryable_auto_run(
+    run,
+    *,
+    now=None,
+    message="Предыдущее обновление с повторяемой ошибкой отменено перед новым запуском.",
+):
+    """Cancel a retryable auto-run before any candidate data was collected."""
+    now = now or timezone.now()
+    if (
+        run.mode != OneCODataSyncRun.MODE_AUTO_APPLY
+        or run.status not in {OneCODataSyncRun.STATUS_PENDING, OneCODataSyncRun.STATUS_RUNNING}
+        or (run.progress or {}).get("step_state") != "retryable_error"
+        or int((run.cursor or {}).get("index", 0)) != 0
+    ):
+        return False
+    if (
+        run.lease_token
+        and run.lease_started_at
+        and run.lease_started_at > now - timedelta(seconds=LEASE_SECONDS)
+    ):
+        return False
+    if OneCImportBatch.objects.filter(sync_run=run).exists():
+        return False
+    run.status = OneCODataSyncRun.STATUS_CANCELLED
+    run.finished_at = now
+    run.error_message = message
+    progress = dict(run.progress or {})
+    progress.update({"step_state": "cancelled", "outcome": "cancelled"})
+    run.progress = progress
+    _clear_lease(run)
+    run.save(update_fields=[
+        "status", "finished_at", "error_message", "progress",
+        "lease_token", "lease_report_type", "lease_chunk", "lease_started_at",
+    ])
+    return True
+
+
 def start_unified_sync(
     organization, user, report_types, *, today=None,
     mode=OneCODataSyncRun.MODE_PREVIEW, period_start=None, period_end=None,
@@ -393,7 +476,16 @@ def start_unified_sync(
                 start, end, initial = period_start, period_end, False
             else:
                 start, end, initial = _scope_for(locked, report_type, today)
-            chunks = _chunk_scope(start, end)
+            chunks = _chunk_scope(
+                start,
+                end,
+                chunk_months=(
+                    PROFIT_CHUNK_MONTHS
+                    if mode == OneCODataSyncRun.MODE_AUTO_APPLY
+                    and report_type == REPORT_PROFIT
+                    else CHUNK_MONTHS
+                ),
+            )
             if report_type == REPORT_PAYROLL:
                 chunks = [{"start": month.isoformat(), "end": month.isoformat()} for month in _months(start, end)]
             scopes[report_type] = {
@@ -410,6 +502,12 @@ def start_unified_sync(
             existing
             and mode == OneCODataSyncRun.MODE_AUTO_APPLY
             and cancel_idle_preview_run(existing, min_idle_seconds=0)
+        ):
+            existing = None
+        if (
+            existing
+            and mode == OneCODataSyncRun.MODE_AUTO_APPLY
+            and cancel_empty_retryable_auto_run(existing)
         ):
             existing = None
         if existing:
@@ -562,9 +660,16 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
         documents = _read_profit_documents(
             config, rows, opener=opener, page_budget=budget
         )
+    except Exception as exc:
+        _raise_stage_error(
+            STAGE_PROFIT_DOCUMENT_LOOKUP,
+            exc,
+            error_reason=_profit_document_error_reason(exc),
+        )
+    try:
         return _enrich_rows(rows, references, documents, organization_id), pages
     except Exception as exc:
-        _raise_stage_error(STAGE_PROFIT_NORMALIZATION, exc)
+        _raise_stage_error(STAGE_PROFIT_ENRICHMENT, exc)
 
 
 def _collect_cashflow_chunk(start, end, *, config, opener):

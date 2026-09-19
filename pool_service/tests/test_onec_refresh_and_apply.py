@@ -228,6 +228,26 @@ class RefreshAndApplyTests(TestCase):
         with self.assertRaises(SyncConflictError):
             start_unified_sync(self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1))
 
+    def test_auto_refresh_restarts_zero_progress_retryable_run(self):
+        first = self.start()
+        first.progress = {
+            **first.progress,
+            "step_state": "retryable_error",
+            "error_stage": "profit_document_lookup",
+            "error_reason": "page_limit",
+            "error_hint": "документы продаж: превышен лимит страниц",
+        }
+        first.error_message = "Не удалось проверить данные 1С. Продолжите проверку позже."
+        first.save(update_fields=["progress", "error_message"])
+
+        second = self.start()
+
+        first.refresh_from_db()
+        self.assertEqual(first.status, OneCODataSyncRun.STATUS_CANCELLED)
+        self.assertEqual(first.progress["outcome"], "cancelled")
+        self.assertNotEqual(first.pk, second.pk)
+        self.assertEqual(second.cursor["index"], 0)
+
     def test_auto_refresh_cancels_idle_preview_instead_of_conflicting(self):
         preview, _ = start_unified_sync(
             self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1)
@@ -240,6 +260,33 @@ class RefreshAndApplyTests(TestCase):
         self.assertEqual(preview.progress["outcome"], "cancelled")
         self.assertNotEqual(auto.pk, preview.pk)
         self.assertEqual(auto.mode, OneCODataSyncRun.MODE_AUTO_APPLY)
+
+    def test_long_profit_refresh_is_split_into_quarterly_chunks(self):
+        run = self.start(
+            start=date(2025, 1, 1),
+            end=date(2026, 9, 1),
+        )
+        chunks = [
+            item for item in run.cursor["queue"]
+            if item["report_type"] == REPORT_PROFIT
+        ]
+        self.assertEqual(len(chunks), 7)
+        self.assertEqual(
+            chunks[0],
+            {
+                "report_type": REPORT_PROFIT,
+                "start": "2025-01-01",
+                "end": "2025-03-01",
+            },
+        )
+        self.assertEqual(
+            chunks[-1],
+            {
+                "report_type": REPORT_PROFIT,
+                "start": "2026-07-01",
+                "end": "2026-09-01",
+            },
+        )
 
     def test_period_over_24_months_creates_no_run(self):
         with self.assertRaises(ValidationError):
