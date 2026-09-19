@@ -16,6 +16,12 @@ class AdminDesktopRedesignTests(SimpleTestCase):
         "pool_service/client_staff.html",
         "pool_service/client_invite_create.html",
         "pool_service/invite_create.html",
+        "pool_service/billing_admin.html",
+        "pool_service/pool_service_details.html",
+        "pool_service/water_reading_form.html",
+        "pool_service/development/iteration_form.html",
+        "pool_service/finance_mcp/authorize.html",
+        "pool_service/onec_diagnostic_mcp/authorize.html",
     ]
 
     def test_admin_templates_compile_with_desktop_workspace(self):
