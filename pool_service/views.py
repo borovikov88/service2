@@ -1434,20 +1434,17 @@ def pool_list(request):
 
     pools_page = paginator.get_page(page_number)
 
-    page_pool_ids = [pool.id for pool in pools_page.object_list]
-    next_visit_by_pool = {}
-    if page_pool_ids:
-        next_visit_plans = (
-            ServiceVisitPlan.objects.filter(
-                pool_id__in=page_pool_ids,
-                planned_date__gte=timezone.localdate(),
-            )
-            .order_by("pool_id", "planned_date", "id")
-        )
-        for visit_plan in next_visit_plans:
-            next_visit_by_pool.setdefault(visit_plan.pool_id, visit_plan.planned_date)
+    service_timezone_name = getattr(settings, "SERVICE_TIME_ZONE", "Asia/Barnaul")
+    try:
+        service_timezone = ZoneInfo(service_timezone_name)
+    except Exception:
+        service_timezone = ZoneInfo("Asia/Barnaul")
     for pool in pools_page.object_list:
-        pool.next_visit_date = next_visit_by_pool.get(pool.id)
+        pool.last_reading_display = (
+            timezone.localtime(pool.last_reading, service_timezone)
+            if pool.last_reading
+            else None
+        )
 
     query_params = request.GET.copy()
 
@@ -5415,6 +5412,7 @@ def pool_edit(request, pool_uuid):
     if request.method == "POST":
 
         before = _snapshot_instance(pool, POOL_AUDIT_FIELDS)
+        previous_service_status = pool.service_status
 
         form = PoolForm(request.POST, instance=pool, user=request.user, service_details_only=service_details_only)
 
@@ -5427,6 +5425,19 @@ def pool_edit(request, pool_uuid):
                 updated.client = user_client
 
             updated.save()
+
+            if previous_service_status != updated.service_status:
+                status_labels = dict(Pool.SERVICE_STATUS_CHOICES)
+                old_label = status_labels.get(previous_service_status, previous_service_status)
+                new_label = status_labels.get(updated.service_status, updated.service_status)
+                PoolServiceStatusChange.objects.create(
+                    pool=updated,
+                    previous_status=previous_service_status,
+                    new_status=updated.service_status,
+                    changed_by=request.user,
+                    comment=f"Статус изменён: {old_label} → {new_label}",
+                )
+
             _write_data_audit(
                 request,
                 action=DataAuditLog.ACTION_UPDATE,
@@ -8853,7 +8864,7 @@ def water_reading_create(request, pool_uuid):
 
             reading = form.save(commit=False)
 
-            reading.date = reading.date.replace(tzinfo=None)
+            reading.date = timezone.now()
 
             reading.pool = pool
 
