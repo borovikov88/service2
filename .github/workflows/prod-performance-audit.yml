@@ -1,0 +1,155 @@
+name: Production performance audit
+
+on:
+  push:
+    branches: ["qa/prod-performance-audit"]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Read-only production timings
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_perf
+          chmod 600 ~/.ssh/service2_perf
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          PORT="${DEPLOY_PORT:-22}"
+          HOST_LOOKUP="$DEPLOY_HOST"
+          if [[ "$PORT" != "22" ]]; then HOST_LOOKUP="[$DEPLOY_HOST]:$PORT"; fi
+          ssh-keygen -F "$HOST_LOOKUP" -f ~/.ssh/known_hosts >/dev/null
+
+      - name: Measure production GET views without writes
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          ssh -i ~/.ssh/service2_perf             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes             -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST"             "cd '$DEPLOY_APP_PATH' && ../venv/bin/python manage.py shell" <<'PY'
+          import json
+          import time
+
+          from django.contrib.auth import get_user_model
+          from django.contrib.messages.storage.fallback import FallbackStorage
+          from django.db import connection
+          from django.test import RequestFactory
+          from django.test.utils import CaptureQueriesContext
+          from django.urls import resolve, reverse
+
+          from pool_service.models import (
+              Client,
+              CrmItem,
+              Notification,
+              OrganizationAccess,
+              Pool,
+              ServiceTask,
+              WaterReading,
+          )
+
+          User = get_user_model()
+          access = (
+              OrganizationAccess.objects.filter(
+                  role__in=["owner", "admin"],
+                  user__is_active=True,
+              )
+              .select_related("organization", "user")
+              .order_by("organization_id", "id")
+              .first()
+          )
+          if access is None:
+              raise SystemExit("No active owner/admin access found for audit")
+
+          user_id = access.user_id
+          organization_id = access.organization_id
+          counts = {
+              "clients": Client.objects.filter(organization_id=organization_id).count(),
+              "pools": Pool.objects.filter(organization_id=organization_id, is_deleted=False).count(),
+              "readings": WaterReading.objects.filter(pool__organization_id=organization_id, is_deleted=False).count(),
+              "crm_items": CrmItem.objects.filter(organization_id=organization_id).count(),
+              "tasks": ServiceTask.objects.filter(organization_id=organization_id).count(),
+              "notifications": Notification.objects.filter(user_id=user_id, is_resolved=False).count(),
+          }
+          print("PERF_COUNTS " + json.dumps(counts, ensure_ascii=False, sort_keys=True))
+
+          pool = Pool.objects.filter(organization_id=organization_id, is_deleted=False).order_by("id").first()
+          routes = [
+              ("pools", reverse("pool_list")),
+              ("clients", reverse("clients_list")),
+              ("users", reverse("users")),
+              ("crm-index", reverse("crm_index")),
+              ("crm-service", reverse("crm_list", kwargs={"direction": "service"})),
+              ("crm-tasks", reverse("crm_tasks")),
+              ("calendar", reverse("readings_all")),
+              ("notifications", reverse("notifications")),
+              ("finance-kkm", reverse("finance_kkm_cash_dashboard")),
+              ("finance-dashboard", reverse("finance_dashboard")),
+          ]
+          if pool is not None:
+              routes.insert(1, ("pool-detail", reverse("pool_detail", kwargs={"pool_uuid": pool.uuid})))
+
+          factory = RequestFactory()
+
+          def profile(label, path):
+              user = User.objects.select_related("profile").get(pk=user_id)
+              request = factory.get(path, HTTP_HOST="service2.aqualine22.ru")
+              request.user = user
+              request.session = {}
+              request._messages = FallbackStorage(request)
+              match = resolve(path)
+              request.resolver_match = match
+
+              started = time.perf_counter()
+              with CaptureQueriesContext(connection) as captured:
+                  response = match.func(request, *match.args, **match.kwargs)
+                  if hasattr(response, "render"):
+                      response.render()
+              elapsed_ms = (time.perf_counter() - started) * 1000.0
+              slow = sorted(
+                  (
+                      {
+                          "time_ms": round(float(query.get("time") or 0) * 1000.0, 2),
+                          "sql": " ".join((query.get("sql") or "").split())[:260],
+                      }
+                      for query in captured.captured_queries
+                  ),
+                  key=lambda item: item["time_ms"],
+                  reverse=True,
+              )[:5]
+              result = {
+                  "page": label,
+                  "path": path,
+                  "status": getattr(response, "status_code", None),
+                  "elapsed_ms": round(elapsed_ms, 1),
+                  "queries": len(captured),
+                  "html_kb": round(len(getattr(response, "content", b"")) / 1024.0, 1),
+                  "slow_sql": slow,
+              }
+              print("PERF_PAGE " + json.dumps(result, ensure_ascii=False, sort_keys=True))
+
+          for label, path in routes:
+              try:
+                  profile(label, path)
+              except Exception as exc:
+                  print("PERF_ERROR " + json.dumps({
+                      "page": label,
+                      "path": path,
+                      "type": type(exc).__name__,
+                      "message": str(exc)[:300],
+                  }, ensure_ascii=False, sort_keys=True))
+          PY
