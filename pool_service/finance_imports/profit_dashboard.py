@@ -201,20 +201,54 @@ def monthly_profit_summary(organization, first_month, last_month):
         .order_by()
     )
     period_cost_ratio = apply_period_analytics(rows)
-    monthly = []
-    for month_index in range(
-        (last_month.year - first_month.year) * 12
-        + last_month.month - first_month.month + 1
-    ):
-        month = add_months(first_month, month_index)
-        monthly.append({
-            "month": month,
-            **summarize(row for row in rows if row.period_month == month),
-        })
+    months = [
+        add_months(first_month, month_index)
+        for month_index in range(
+            (last_month.year - first_month.year) * 12
+            + last_month.month - first_month.month + 1
+        )
+    ]
+    monthly_totals = {
+        month: {
+            "revenue": Decimal("0"),
+            "cost": Decimal("0"),
+            "gross_profit": Decimal("0"),
+        }
+        for month in months
+    }
+    totals = {
+        "revenue": Decimal("0"),
+        "cost": Decimal("0"),
+        "gross_profit": Decimal("0"),
+    }
+    for row in rows:
+        revenue = row.dashboard_revenue
+        cost = row.dashboard_analytical_cost or Decimal("0")
+        gross_profit = row.dashboard_gross_profit or Decimal("0")
+        bucket = monthly_totals.get(row.period_month)
+        if bucket is not None:
+            bucket["revenue"] += revenue
+            bucket["cost"] += cost
+            bucket["gross_profit"] += gross_profit
+        totals["revenue"] += revenue
+        totals["cost"] += cost
+        totals["gross_profit"] += gross_profit
+
+    def present(values):
+        return {
+            **values,
+            "profitability": calculate_profitability(
+                values["gross_profit"], values["revenue"]
+            ),
+        }
+
     return {
         "rows": rows,
-        "totals": summarize(rows),
-        "monthly": monthly,
+        "totals": present(totals),
+        "monthly": [
+            {"month": month, **present(monthly_totals[month])}
+            for month in months
+        ],
         "period_cost_ratio": period_cost_ratio,
     }
 
