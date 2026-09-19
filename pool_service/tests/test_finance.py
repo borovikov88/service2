@@ -5,6 +5,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from io import BytesIO
 from urllib.parse import parse_qs, urlparse
+from unittest.mock import patch
 
 from PIL import Image
 from django.contrib.auth.models import User
@@ -131,6 +132,40 @@ class FinanceTests(TestCase):
             occurred_on=date.today(),
             status=CashOperation.STATUS_PENDING,
         )
+
+    def test_kkm_dashboard_shows_onec_balance_and_snapshot_time(self):
+        self.client.force_login(self.manager)
+        snapshot_at = timezone.now().replace(microsecond=0)
+        with patch(
+            "pool_service.finance_views.get_finance_position",
+            return_value={
+                "available": True,
+                "cash_kkm": Decimal("7529.00"),
+                "snapshot_at": snapshot_at,
+                "source_timezone": "Asia/Barnaul",
+                "last_success_at": snapshot_at,
+                "freshness": {"is_stale": False},
+            },
+        ):
+            response = self.client.get(reverse("finance_kkm_cash_dashboard"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["onec_kkm_balance"]["balance"], Decimal("7529.00"))
+        self.assertContains(response, "Остаток денежных средств в ККМ по данным 1С")
+        self.assertContains(response, "7&nbsp;529,00&nbsp;₽", html=True)
+        self.assertContains(response, "Обновлено:")
+
+    def test_kkm_dashboard_handles_missing_onec_snapshot(self):
+        self.client.force_login(self.manager)
+        with patch(
+            "pool_service.finance_views.get_finance_position",
+            return_value={"available": False},
+        ):
+            response = self.client.get(reverse("finance_kkm_cash_dashboard"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.context["onec_kkm_balance"])
+        self.assertContains(response, "Нет актуального снимка 1С")
 
     def test_installer_has_finance_access(self):
         self.client.force_login(self.installer)
