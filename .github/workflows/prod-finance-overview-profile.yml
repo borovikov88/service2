@@ -1,0 +1,129 @@
+name: Finance overview stage profile
+
+on:
+  push:
+    branches: ["qa/prod-finance-overview-profile"]
+
+permissions:
+  contents: read
+
+jobs:
+  profile:
+    name: Profile finance overview stages
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_perf
+          chmod 600 ~/.ssh/service2_perf
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Profile read-only finance overview stages
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          ssh -i ~/.ssh/service2_perf -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "cd '$DEPLOY_APP_PATH' && ../venv/bin/python manage.py shell" <<'PY'
+          import json
+          import time
+          from datetime import date
+
+          from django.db import connection
+          from django.test.utils import CaptureQueriesContext
+
+          from pool_service.models import OrganizationAccess, OneCMonthlyProfit, CashFlowRow
+          from pool_service.finance_imports.owner_dashboard import (
+              _comparison_specs, _range_data, _seasonality, resolve_owner_period,
+          )
+          from pool_service.finance_imports.cost_control import (
+              get_onec_cost_anomalies, summarize_cost_anomalies,
+          )
+          from pool_service.finance_imports.finance_position_dashboard import finance_position_dashboard_data
+
+          access = (
+              OrganizationAccess.objects.filter(role__in=["owner", "admin"], user__is_active=True)
+              .select_related("organization")
+              .order_by("organization_id", "id")
+              .first()
+          )
+          org = access.organization
+          today = date.today()
+          period = resolve_owner_period({}, today=today)
+          specs = _comparison_specs(period)
+
+          def timed(label, fn):
+              started = time.perf_counter()
+              with CaptureQueriesContext(connection) as q:
+                  value = fn()
+              elapsed = (time.perf_counter() - started) * 1000
+              print("STAGE " + json.dumps({
+                  "label": label,
+                  "ms": round(elapsed, 1),
+                  "queries": len(q),
+                  "sql_ms": round(sum(float(x.get("time") or 0) for x in q.captured_queries) * 1000, 1),
+              }, ensure_ascii=False, sort_keys=True))
+              return value
+
+          print("PROFILE_HEAD", __import__("subprocess").check_output(["git","rev-parse","HEAD"], text=True).strip())
+          print("PROFILE_PERIOD", period["first_month"], period["last_month"])
+
+          current = timed("range-current", lambda: _range_data(org, period["first_month"], period["last_month"]))
+          for spec in specs:
+              timed(
+                  "range-comparison-" + spec["key"],
+                  lambda spec=spec: _range_data(org, spec["first"], spec["last"], include_freshness=False),
+              )
+
+          year_first = date(today.year, 1, 1)
+          year_last = today.replace(day=1)
+          prev_first = date(today.year - 1, 1, 1)
+          prev_last = date(today.year - 1, today.month, 1)
+          timed("range-season-current", lambda: _range_data(org, year_first, year_last, include_freshness=False))
+          timed("range-season-previous", lambda: _range_data(org, prev_first, prev_last, include_freshness=False))
+          timed("seasonality-full", lambda: _seasonality(org, today))
+
+          timed(
+              "cost-anomalies",
+              lambda: summarize_cost_anomalies(
+                  get_onec_cost_anomalies(org).filter(
+                      period_month__range=(period["first_month"], period["last_month"])
+                  )
+              ),
+          )
+          timed("finance-position", lambda: finance_position_dashboard_data(org))
+
+          months = sorted({
+              period["first_month"], period["last_month"],
+              year_first, year_last, prev_first, prev_last,
+              *[spec["first"] for spec in specs], *[spec["last"] for spec in specs],
+          })
+          min_month, max_month = min(months), max(months)
+          profit_rows = OneCMonthlyProfit.objects.active_for(org).filter(
+              period_month__range=(min_month, max_month)
+          ).count()
+          cash_rows = CashFlowRow.objects.active_for(org, "cashflow").filter(
+              period_month__range=(min_month, max_month)
+          ).count()
+          print("ROW_COUNTS " + json.dumps({
+              "from": min_month.isoformat(),
+              "to": max_month.isoformat(),
+              "profit": profit_rows,
+              "cashflow": cash_rows,
+          }, ensure_ascii=False, sort_keys=True))
+          PY
