@@ -354,6 +354,62 @@ class FinanceOverviewTests(TestCase):
         self.assertTrue(incomplete["seasonality"]["gross_profit"]["available"])
         self.assertTrue(incomplete["seasonality"]["net_cash_flow"]["available"])
 
+    def test_seasonality_cashflow_matches_canonical_operating_monthly_values(self):
+        for year in (2025, 2026):
+            for month_number in range(1, 4):
+                month = date(year, month_number, 1)
+                if OneCReportPeriodState.objects.filter(
+                    organization=self.organization,
+                    report_type=OneCImportBatch.TYPE_CASHFLOW,
+                    period_month=month,
+                ).exists():
+                    continue
+                self._add_month(
+                    month,
+                    revenue=100 + month_number,
+                    cost=40,
+                    accrued=10,
+                    receipts=90 + month_number,
+                    payments=60,
+                )
+
+        data = finance_overview_data(
+            self.organization,
+            {"period": "current_month"},
+            today=date(2026, 3, 20),
+        )
+        current_cashflow = cashflow_dashboard_data(
+            self.organization,
+            date(2026, 1, 1),
+            date(2026, 3, 1),
+        )
+        previous_cashflow = cashflow_dashboard_data(
+            self.organization,
+            date(2025, 1, 1),
+            date(2025, 3, 1),
+        )
+        current_by_month = {
+            item["period_month"]: item["operating"]["net_cash_flow"]
+            for item in current_cashflow["monthly"]
+        }
+        previous_by_month = {
+            item["period_month"]: item["operating"]["net_cash_flow"]
+            for item in previous_cashflow["monthly"]
+        }
+
+        rows = data["seasonality"]["net_cash_flow"]["rows"]
+        self.assertEqual(len(rows), 3)
+        for row in rows:
+            month_number = row["month_number"]
+            self.assertEqual(
+                row["current"],
+                current_by_month[date(2026, month_number, 1)],
+            )
+            self.assertEqual(
+                row["previous"],
+                previous_by_month[date(2025, month_number, 1)],
+            )
+
     def test_overview_and_filtered_cashflow_detail_use_identical_totals(self):
         data = finance_overview_data(
             self.organization,
