@@ -193,17 +193,6 @@
     .object-role-kpi--warning .object-role-kpi__value { color: #b77900; }
     .object-role-kpi--danger .object-role-kpi__value { color: #dc3545; }
 
-    .object-manager-preview {
-      padding: 13px 14px 7px !important;
-      margin-bottom: 14px !important;
-      border-radius: 10px !important;
-    }
-    .object-manager-preview h3 { font-size: 0.98rem; }
-    .object-manager-preview .table { font-size: 0.79rem; }
-    .object-manager-preview .table > :not(caption) > * > * {
-      padding-top: 0.42rem;
-      padding-bottom: 0.42rem;
-    }
     .object-visit-history--primary {
       border-color: #cdddf2 !important;
       box-shadow: 0 7px 22px rgba(25, 86, 150, 0.075) !important;
@@ -211,11 +200,6 @@
     .object-visit-history--primary > .d-flex:first-child {
       padding-bottom: 7px;
       border-bottom: 1px solid #edf1f6;
-    }
-  }
-  @media (min-width: 1920px) {
-    .object-summary-card .row.g-2 > .col-lg-4 {
-      width: 25%;
     }
   }
 
@@ -249,12 +233,42 @@
     .object-issues-header {
       gap: 12px;
     }
+
+    .object-status-change-row > td {
+      background: #f4f8fd !important;
+      border-top-color: #dbe6f3 !important;
+    }
+
+    .object-status-change {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 30px;
+    }
+
+    .object-status-change__badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: #eaf2ff;
+      color: #1e5fae;
+      font-size: 0.72rem;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .object-status-change__comment {
+      color: #53657a;
+      font-size: 0.76rem;
+    }
   }
 
   @media (min-width: 1920px) {
     .object-layout-wide {
       display: grid;
-      grid-template-columns: 430px minmax(0, 1fr);
+      grid-template-columns: 340px minmax(0, 1fr);
       gap: 16px;
       align-items: start;
     }
@@ -274,7 +288,7 @@
     }
 
     .object-layout-wide__aside .object-info-grid > .col-lg-4 {
-      width: 50%;
+      width: 100%;
     }
 
     .object-layout-wide__aside .object-info-grid > .col-12:not(.col-md-6) {
@@ -293,7 +307,7 @@
 
   @media (min-width: 2560px) {
     .object-layout-wide {
-      grid-template-columns: 480px minmax(0, 1fr);
+      grid-template-columns: 360px minmax(0, 1fr);
       gap: 18px;
     }
   }
@@ -520,9 +534,9 @@
 {% if desktop_card_mode != "standard" %}
 <div class="object-role-kpis d-none d-lg-grid">
     {% if desktop_card_mode == "manager" %}
-        <div class="object-role-kpi {% if pool.service_suspended %}object-role-kpi--warning{% else %}object-role-kpi--success{% endif %}">
+        <div class="object-role-kpi {% if pool.service_status == 'active' %}object-role-kpi--success{% elif pool.service_status == 'ended' %}object-role-kpi--danger{% else %}object-role-kpi--warning{% endif %}">
             <div class="object-role-kpi__label">Статус обслуживания</div>
-            <div class="object-role-kpi__value">{% if pool.service_suspended %}Приостановлено{% else %}На обслуживании{% endif %}</div>
+            <div class="object-role-kpi__value">{{ pool.get_service_status_display }}</div>
             <div class="object-role-kpi__meta">{{ pool.get_service_frequency_display|default:"График не задан" }}</div>
         </div>
         <div class="object-role-kpi">
@@ -532,8 +546,8 @@
         </div>
         <div class="object-role-kpi">
             <div class="object-role-kpi__label">Последнее посещение</div>
-            <div class="object-role-kpi__value">{% if latest_reading %}{{ latest_reading.date|date:"d.m.Y" }}{% else %}Нет посещений{% endif %}</div>
-            <div class="object-role-kpi__meta">{% if latest_reading %}{{ latest_reading.date|date:"H:i" }}{% else %}История пока пустая{% endif %}</div>
+            <div class="object-role-kpi__value">{% if latest_reading %}{{ latest_reading.display_date|date:"d.m.Y" }}{% else %}Нет посещений{% endif %}</div>
+            <div class="object-role-kpi__meta">{% if latest_reading %}{{ latest_reading.display_date|date:"H:i" }}{% else %}История пока пустая{% endif %}</div>
         </div>
         <div class="object-role-kpi">
             <div class="object-role-kpi__label">Стоимость обслуживания</div>
@@ -553,8 +567,8 @@
         </div>
         <div class="object-role-kpi">
             <div class="object-role-kpi__label">Последнее посещение</div>
-            <div class="object-role-kpi__value">{% if latest_reading %}{{ latest_reading.date|date:"d.m.Y" }}{% else %}Нет посещений{% endif %}</div>
-            <div class="object-role-kpi__meta">{% if latest_reading %}{{ latest_reading.date|date:"H:i" }}{% else %}Добавьте первую запись{% endif %}</div>
+            <div class="object-role-kpi__value">{% if latest_reading %}{{ latest_reading.display_date|date:"d.m.Y" }}{% else %}Нет посещений{% endif %}</div>
+            <div class="object-role-kpi__meta">{% if latest_reading %}{{ latest_reading.display_date|date:"H:i" }}{% else %}Добавьте первую запись{% endif %}</div>
         </div>
         <div class="object-role-kpi">
             <div class="object-role-kpi__label">Частота визитов</div>
@@ -575,46 +589,12 @@
 </div>
 {% endif %}
 
-{% if desktop_card_mode == "manager" and recent_readings %}
-<div class="object-manager-preview card card-soft d-none d-lg-block">
-    <div class="d-flex align-items-center justify-content-between gap-3 mb-2">
-        <div>
-            <h3 class="fw-bold mb-1">Последние посещения</h3>
-            <div class="text-muted small">Короткая сводка для менеджера</div>
-        </div>
-        <a href="#object-visits" class="btn btn-outline-secondary btn-sm">Вся история <i class="bi bi-arrow-down ms-1"></i></a>
-    </div>
-    <div class="table-responsive">
-        <table class="table align-middle mb-0">
-            <thead>
-                <tr>
-                    <th>Дата</th>
-                    <th>Сервисник</th>
-                    <th>Работы / комментарий</th>
-                    <th>Материалы / расходники</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for reading in recent_readings %}
-                <tr>
-                    <td class="fw-semibold">{{ reading.date|date:"d.m.Y H:i" }}</td>
-                    <td>{% if reading.added_by %}{{ reading.added_by.get_full_name|default:reading.added_by.username }}{% else %}—{% endif %}</td>
-                    <td>{% if reading.performed_works %}{{ reading.performed_works }}{% elif reading.comment %}{{ reading.comment }}{% else %}—{% endif %}</td>
-                    <td>{% if reading.required_materials %}{{ reading.required_materials }}{% elif reading.consumables_replaced %}{{ reading.consumables_replaced }}{% else %}—{% endif %}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</div>
-{% endif %}
-
 {% if readings %}
 <div id="object-visits" class="object-visit-history {% if desktop_card_mode == 'service' %}object-visit-history--primary{% endif %} object-section-card card card-soft p-4 mb-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
         <div>
             <h3 class="fw-bold h5 mb-1">{% if is_water_object %}История посещений{% else %}История показаний{% endif %}</h3>
-            <div class="text-muted small">Последние {{ per_page }} записей</div>
+            <div class="text-muted small">Последние {{ per_page }} записей · время {{ service_timezone_name }}</div>
         </div>
         <div class="d-flex align-items-center gap-2">
             {% if desktop_card_mode == "service" and can_add_reading %}
@@ -623,28 +603,16 @@
             </a>
             {% endif %}
             <form method="get" class="d-flex align-items-center gap-2">
-            <input type="hidden" name="per_page" id="pool-readings-per-page-input" value="{{ per_page|default:20 }}">
-            <button class="btn pool-readings-per-page-trigger dropdown-toggle" type="button" id="pool-readings-per-page-button" data-bs-toggle="dropdown" aria-expanded="false">
-                {{ per_page|default:20 }} &#47; &#1089;&#1090;&#1088;
-            </button>
-            <ul class="dropdown-menu pool-readings-per-page-menu" aria-labelledby="pool-readings-per-page-button">
-                <li>
-                    <button class="dropdown-item {% if per_page == 20 %}active{% endif %}" type="button" data-value="20">
-                        20 &#47; &#1089;&#1090;&#1088;
-                    </button>
-                </li>
-                <li>
-                    <button class="dropdown-item {% if per_page == 50 %}active{% endif %}" type="button" data-value="50">
-                        50 &#47; &#1089;&#1090;&#1088;
-                    </button>
-                </li>
-                <li>
-                    <button class="dropdown-item {% if per_page == 100 %}active{% endif %}" type="button" data-value="100">
-                        100 &#47; &#1089;&#1090;&#1088;
-                    </button>
-                </li>
-            </ul>
-        </form>
+                <input type="hidden" name="per_page" id="pool-readings-per-page-input" value="{{ per_page|default:20 }}">
+                <button class="btn pool-readings-per-page-trigger dropdown-toggle" type="button" id="pool-readings-per-page-button" data-bs-toggle="dropdown" aria-expanded="false">
+                    {{ per_page|default:20 }} / стр
+                </button>
+                <ul class="dropdown-menu pool-readings-per-page-menu" aria-labelledby="pool-readings-per-page-button">
+                    <li><button class="dropdown-item {% if per_page == 20 %}active{% endif %}" type="button" data-value="20">20 / стр</button></li>
+                    <li><button class="dropdown-item {% if per_page == 50 %}active{% endif %}" type="button" data-value="50">50 / стр</button></li>
+                    <li><button class="dropdown-item {% if per_page == 100 %}active{% endif %}" type="button" data-value="100">100 / стр</button></li>
+                </ul>
+            </form>
         </div>
     </div>
 
@@ -662,11 +630,27 @@
             </thead>
             <tbody>
                 {% for reading in readings %}
+                    {% if reading.timeline_kind == "status" %}
+                    <tr class="object-status-change-row border-top">
+                        <td class="fw-semibold">{{ reading.display_date|date:"d.m.Y H:i" }} ({{ reading.display_date|date:"D" }})</td>
+                        <td>
+                            {% if reading.changed_by %}
+                                {{ reading.changed_by.get_full_name|default:reading.changed_by.username }}
+                            {% else %}—{% endif %}
+                        </td>
+                        <td colspan="3">
+                            <div class="object-status-change">
+                                <span class="object-status-change__badge"><i class="bi bi-arrow-repeat"></i>{{ reading.get_new_status_display }}</span>
+                                <span class="object-status-change__comment">{{ reading.comment }}</span>
+                            </div>
+                        </td>
+                    </tr>
+                    {% else %}
                     <tr class="border-top">
-                        <td class="fw-semibold">{{ reading.date|date:"d.m.Y H:i" }} ({{ reading.date|date:"D" }})</td>
+                        <td class="fw-semibold">{{ reading.display_date|date:"d.m.Y H:i" }} ({{ reading.display_date|date:"D" }})</td>
                         <td>
                             {% if reading.added_by %}
-                                {% if reading.added_by.get_full_name %}{{ reading.added_by.get_full_name }}{% else %}{{ reading.added_by.username }}{% endif %}
+                                {{ reading.added_by.get_full_name|default:reading.added_by.username }}
                             {% else %}—{% endif %}
                         </td>
                         <td>{{ reading.comment|default:"-" }}</td>
@@ -689,6 +673,7 @@
                             </div>
                         </td>
                     </tr>
+                    {% endif %}
                 {% endfor %}
             </tbody>
         </table>
@@ -721,11 +706,27 @@
             </thead>
             <tbody>
                 {% for reading in readings %}
+                    {% if reading.timeline_kind == "status" %}
+                    <tr class="object-status-change-row border-top">
+                        <td class="fw-semibold">{{ reading.display_date|date:"d.m.Y H:i" }} ({{ reading.display_date|date:"D" }})</td>
+                        <td>
+                            {% if reading.changed_by %}
+                                {{ reading.changed_by.get_full_name|default:reading.changed_by.username }}
+                            {% else %}—{% endif %}
+                        </td>
+                        <td colspan="{% if pool.dosing_station %}11{% else %}8{% endif %}">
+                            <div class="object-status-change">
+                                <span class="object-status-change__badge"><i class="bi bi-arrow-repeat"></i>{{ reading.get_new_status_display }}</span>
+                                <span class="object-status-change__comment">{{ reading.comment }}</span>
+                            </div>
+                        </td>
+                    </tr>
+                    {% else %}
                     <tr class="border-top">
-                        <td class="fw-semibold">{{ reading.date|date:"d.m.Y H:i" }} ({{ reading.date|date:"D" }})</td>
+                        <td class="fw-semibold">{{ reading.display_date|date:"d.m.Y H:i" }} ({{ reading.display_date|date:"D" }})</td>
                         <td>
                             {% if reading.added_by %}
-                                {% if reading.added_by.get_full_name %}{{ reading.added_by.get_full_name }}{% else %}{{ reading.added_by.username }}{% endif %}
+                                {{ reading.added_by.get_full_name|default:reading.added_by.username }}
                             {% else %}—{% endif %}
                         </td>
                         <td>
@@ -786,22 +787,22 @@
                             </div>
                         </td>
                     </tr>
+                    {% endif %}
                 {% endfor %}
             </tbody>
         </table>
         {% endif %}
     </div>
+
     {% if readings.has_other_pages %}
         <div class="d-flex justify-content-between align-items-center mt-3">
-            <div class="text-muted small">
-                &#1057;&#1090;&#1088;&#1072;&#1085;&#1080;&#1094;&#1072; {{ readings.number }} &#1080;&#1079; {{ readings.paginator.num_pages }}
-            </div>
+            <div class="text-muted small">Страница {{ readings.number }} из {{ readings.paginator.num_pages }}</div>
             <div class="btn-group">
                 {% if readings.has_previous %}
-                    <a class="btn btn-outline-secondary btn-sm" href="?page={{ readings.previous_page_number }}{% if pagination_query %}&{{ pagination_query }}{% endif %}">&#1053;&#1072;&#1079;&#1072;&#1076;</a>
+                    <a class="btn btn-outline-secondary btn-sm" href="?page={{ readings.previous_page_number }}{% if pagination_query %}&{{ pagination_query }}{% endif %}">Назад</a>
                 {% endif %}
                 {% if readings.has_next %}
-                    <a class="btn btn-outline-secondary btn-sm" href="?page={{ readings.next_page_number }}{% if pagination_query %}&{{ pagination_query }}{% endif %}">&#1042;&#1087;&#1077;&#1088;&#1077;&#1076;</a>
+                    <a class="btn btn-outline-secondary btn-sm" href="?page={{ readings.next_page_number }}{% if pagination_query %}&{{ pagination_query }}{% endif %}">Вперед</a>
                 {% endif %}
             </div>
         </div>
