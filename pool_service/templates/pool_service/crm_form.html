@@ -1,247 +1,222 @@
 {% extends 'pool_service/base.html' %}
 
-
-
 {% block title %}{{ page_title }}{% endblock %}
 
-
-
-{% block content %}
-
-<div class="card card-soft p-4">
-
-    <h4 class="fw-bold mb-3">{{ page_title }}</h4>
-
-
-
-    {% if form.non_field_errors %}
-
-        <div class="alert alert-danger">{{ form.non_field_errors|join:", " }}</div>
-
-    {% endif %}
-
-
-
-    <form method="post" novalidate>
-
-        {% csrf_token %}
-        {% for name, value in return_context_fields %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
-
-        <div class="row g-3">
-            {% for row in crm_form_layout %}
-                {% for cell in row %}
-                    <div class="{{ cell.width }}">
-                        <label class="form-label">{{ cell.label }}</label>
-                        {{ cell.bound_field }}
-                        {% if cell.bound_field.errors %}<div class="text-danger small">{{ cell.bound_field.errors.0 }}</div>{% endif %}
-                    </div>
-                {% endfor %}
-            {% endfor %}
-        </div>
-
-            <div class="d-flex gap-2 mt-3">
-
-                <button type="submit" class="btn btn-primary">&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;</button>
-
-                <a href="{% if item %}{{ return_url }}{% else %}{% url 'crm_list' direction=direction %}{% endif %}" class="btn btn-outline-secondary">&#1054;&#1090;&#1084;&#1077;&#1085;&#1072;</a>
-
-            </div>
-
-            {% if item_photo_urls %}
-
-                <div class="mt-4">
-
-                    <label class="form-label">&#1060;&#1086;&#1090;&#1086;</label>
-
-                    <div class="issue-photo-thumbs issue-photo-thumbs--large" data-photos="{{ item_photo_urls_json|escape }}">
-
-                        {% for url in item_photo_urls %}
-
-                            <button type="button" class="issue-photo-thumb issue-photo-thumb--large" data-index="{{ forloop.counter0 }}">
-
-                                <img src="{{ url }}" alt="&#1060;&#1086;&#1090;&#1086; {{ forloop.counter }}">
-
-                            </button>
-
-                        {% endfor %}
-
-                    </div>
-
-                </div>
-
-            {% endif %}
-
-    </form>
-
-</div>
-
-
-
-{% if item_photo_urls %}
-
-<div class="modal fade" id="issuePhotoModal" tabindex="-1" aria-hidden="true">
-
-  <div class="modal-dialog modal-dialog-centered modal-lg">
-
-    <div class="modal-content">
-
-      <div class="modal-body p-0">
-
-        <div id="issuePhotoCarousel" class="carousel slide" data-bs-ride="false">
-
-          <div class="carousel-indicators"></div>
-
-          <div class="carousel-inner"></div>
-
-          <button class="carousel-control-prev" type="button" data-bs-target="#issuePhotoCarousel" data-bs-slide="prev">
-
-            <span class="carousel-control-prev-icon" aria-hidden="true"></span>
-
-            <span class="visually-hidden">&#1053;&#1072;&#1079;&#1072;&#1076;</span>
-
-          </button>
-
-          <button class="carousel-control-next" type="button" data-bs-target="#issuePhotoCarousel" data-bs-slide="next">
-
-            <span class="carousel-control-next-icon" aria-hidden="true"></span>
-
-            <span class="visually-hidden">&#1042;&#1087;&#1077;&#1088;&#1105;&#1076;</span>
-
-          </button>
-
-        </div>
-
-      </div>
-
-    </div>
-
-  </div>
-
-</div>
-
-
-
-<script>
-
-  (function () {
-
-    const modalEl = document.getElementById("issuePhotoModal");
-
-    const carouselEl = document.getElementById("issuePhotoCarousel");
-
-    if (!modalEl || !carouselEl) return;
-
-    const getModal = () => {
-
-      if (typeof bootstrap === "undefined") return null;
-
-      return bootstrap.Modal.getOrCreateInstance(modalEl);
-
-    };
-
-
-
-    function renderCarousel(urls, startIndex) {
-
-      const indicators = carouselEl.querySelector(".carousel-indicators");
-
-      const inner = carouselEl.querySelector(".carousel-inner");
-
-      if (!indicators || !inner) return;
-
-      indicators.innerHTML = "";
-
-      inner.innerHTML = "";
-
-      urls.forEach((url, idx) => {
-
-        const indicator = document.createElement("button");
-
-        indicator.type = "button";
-
-        indicator.dataset.bsTarget = "#issuePhotoCarousel";
-
-        indicator.dataset.bsSlideTo = String(idx);
-
-        if (idx === startIndex) indicator.classList.add("active");
-
-        indicators.appendChild(indicator);
-
-
-
-        const item = document.createElement("div");
-
-        item.className = "carousel-item" + (idx === startIndex ? " active" : "");
-
-        const img = document.createElement("img");
-
-        img.className = "d-block w-100";
-
-        img.src = url;
-
-        img.alt = "&#1060;&#1086;&#1090;&#1086; " + (idx + 1);
-
-        item.appendChild(img);
-
-        inner.appendChild(item);
-
-      });
-
+{% block extra_head %}
+{{ block.super }}
+<style>
+  @media (min-width: 992px) {
+    .crm-form-page {
+      max-width: 1180px;
     }
-
-
-
-    function openPhotos(urls, startIndex) {
-
-      if (!urls.length) return;
-
-      const modal = getModal();
-
-      if (!modal) return;
-
-      renderCarousel(urls, startIndex);
-
-      modal.show();
-
+    .crm-form-header {
+      margin-bottom: 12px;
     }
+    .crm-form-header h1 {
+      margin: 0;
+      font-size: 1.55rem;
+      line-height: 1.1;
+    }
+    .crm-form-card {
+      padding: 14px 16px !important;
+      border-radius: 10px !important;
+      box-shadow: 0 4px 14px rgba(15, 23, 42, 0.04) !important;
+    }
+    .crm-form-grid {
+      --bs-gutter-x: 0.7rem;
+      --bs-gutter-y: 0.7rem;
+    }
+    .crm-form-card .form-label {
+      margin-bottom: 4px;
+      color: #6f7f93;
+      font-size: 0.7rem;
+      font-weight: 650;
+    }
+    .crm-form-card .form-control,
+    .crm-form-card .form-select {
+      min-height: 35px;
+      padding: 0.38rem 0.58rem;
+      border-radius: 8px;
+      font-size: 0.79rem;
+    }
+    .crm-form-card textarea.form-control {
+      min-height: 88px;
+      line-height: 1.4;
+    }
+    .crm-form-card input[type="file"].form-control {
+      padding-top: 0.32rem;
+      padding-bottom: 0.32rem;
+    }
+    .crm-form-error {
+      margin-top: 3px;
+      font-size: 0.68rem;
+    }
+    .crm-form-actions {
+      justify-content: flex-end;
+      margin-top: 12px !important;
+      padding-top: 11px;
+      border-top: 1px solid #edf1f6;
+    }
+    .crm-form-actions .btn {
+      min-height: 34px;
+      padding: 0.4rem 0.72rem;
+      border-radius: 8px;
+      font-size: 0.78rem;
+    }
+    .crm-form-photos {
+      margin-top: 14px !important;
+      padding-top: 12px;
+      border-top: 1px solid #edf1f6;
+    }
+    .crm-form-photos .issue-photo-thumb--large,
+    .crm-form-photos .issue-photo-thumb--large img {
+      width: 76px;
+      height: 76px;
+      border-radius: 10px;
+    }
+  }
 
-
-
-    document.addEventListener("click", (event) => {
-
-      const btn = event.target.closest(".issue-photo-thumb");
-
-      if (!btn) return;
-
-      const container = btn.closest(".issue-photo-thumbs");
-
-      if (!container) return;
-
-      let urls = [];
-
-      try {
-
-        urls = JSON.parse(container.dataset.photos || "[]");
-
-      } catch (e) {
-
-        urls = [];
-
-      }
-
-      if (!urls.length) return;
-
-      const startIndex = Number(btn.dataset.index || 0);
-
-      openPhotos(urls, startIndex);
-
-    });
-
-  })();
-
-</script>
-
-{% endif %}
-
+  @media (min-width: 1920px) {
+    .crm-form-page {
+      max-width: 1320px;
+    }
+    .crm-form-card {
+      padding: 15px 18px !important;
+    }
+  }
+</style>
 {% endblock %}
 
+{% block content %}
+<div class="crm-form-page">
+  <div class="crm-form-header">
+    <div class="text-muted small mb-1">CRM</div>
+    <h1 class="fw-bold">{{ page_title }}</h1>
+  </div>
+
+  <div class="crm-form-card card card-soft p-4">
+    {% if form.non_field_errors %}
+      <div class="alert alert-danger py-2 px-3 mb-3">{{ form.non_field_errors|join:", " }}</div>
+    {% endif %}
+
+    <form method="post" novalidate>
+      {% csrf_token %}
+      {% for name, value in return_context_fields %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+
+      <div class="crm-form-grid row g-3">
+        {% for row in crm_form_layout %}
+          {% for cell in row %}
+            <div class="{{ cell.width }}">
+              <label class="form-label">{{ cell.label }}</label>
+              {{ cell.bound_field }}
+              {% if cell.bound_field.errors %}<div class="crm-form-error text-danger">{{ cell.bound_field.errors.0 }}</div>{% endif %}
+            </div>
+          {% endfor %}
+        {% endfor %}
+      </div>
+
+      <div class="crm-form-actions d-flex flex-wrap gap-2 mt-3">
+        <a href="{% if item %}{{ return_url }}{% else %}{% url 'crm_list' direction=direction %}{% endif %}" class="btn btn-outline-secondary">Отмена</a>
+        <button type="submit" class="btn btn-primary">Сохранить</button>
+      </div>
+
+      {% if item_photo_urls %}
+        <div class="crm-form-photos mt-4">
+          <label class="form-label">Фото</label>
+          <div class="issue-photo-thumbs issue-photo-thumbs--large" data-photos="{{ item_photo_urls_json|escape }}">
+            {% for url in item_photo_urls %}
+              <button type="button" class="issue-photo-thumb issue-photo-thumb--large" data-index="{{ forloop.counter0 }}">
+                <img src="{{ url }}" alt="Фото {{ forloop.counter }}">
+              </button>
+            {% endfor %}
+          </div>
+        </div>
+      {% endif %}
+    </form>
+  </div>
+</div>
+
+{% if item_photo_urls %}
+<div class="modal fade" id="issuePhotoModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content">
+      <div class="modal-body p-0">
+        <div id="issuePhotoCarousel" class="carousel slide" data-bs-ride="false">
+          <div class="carousel-indicators"></div>
+          <div class="carousel-inner"></div>
+          <button class="carousel-control-prev" type="button" data-bs-target="#issuePhotoCarousel" data-bs-slide="prev">
+            <span class="carousel-control-prev-icon" aria-hidden="true"></span>
+            <span class="visually-hidden">Назад</span>
+          </button>
+          <button class="carousel-control-next" type="button" data-bs-target="#issuePhotoCarousel" data-bs-slide="next">
+            <span class="carousel-control-next-icon" aria-hidden="true"></span>
+            <span class="visually-hidden">Вперёд</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    const modalEl = document.getElementById("issuePhotoModal");
+    const carouselEl = document.getElementById("issuePhotoCarousel");
+    if (!modalEl || !carouselEl) return;
+    const getModal = () => {
+      if (typeof bootstrap === "undefined") return null;
+      return bootstrap.Modal.getOrCreateInstance(modalEl);
+    };
+
+    function renderCarousel(urls, startIndex) {
+      const indicators = carouselEl.querySelector(".carousel-indicators");
+      const inner = carouselEl.querySelector(".carousel-inner");
+      if (!indicators || !inner) return;
+      indicators.innerHTML = "";
+      inner.innerHTML = "";
+      urls.forEach((url, idx) => {
+        const indicator = document.createElement("button");
+        indicator.type = "button";
+        indicator.dataset.bsTarget = "#issuePhotoCarousel";
+        indicator.dataset.bsSlideTo = String(idx);
+        if (idx === startIndex) indicator.classList.add("active");
+        indicators.appendChild(indicator);
+
+        const item = document.createElement("div");
+        item.className = "carousel-item" + (idx === startIndex ? " active" : "");
+        const img = document.createElement("img");
+        img.className = "d-block w-100";
+        img.src = url;
+        img.alt = "Фото " + (idx + 1);
+        item.appendChild(img);
+        inner.appendChild(item);
+      });
+    }
+
+    function openPhotos(urls, startIndex) {
+      if (!urls.length) return;
+      const modal = getModal();
+      if (!modal) return;
+      renderCarousel(urls, startIndex);
+      modal.show();
+    }
+
+    document.addEventListener("click", (event) => {
+      const btn = event.target.closest(".issue-photo-thumb");
+      if (!btn) return;
+      const container = btn.closest(".issue-photo-thumbs");
+      if (!container) return;
+      let urls = [];
+      try {
+        urls = JSON.parse(container.dataset.photos || "[]");
+      } catch (e) {
+        urls = [];
+      }
+      if (!urls.length) return;
+      const startIndex = Number(btn.dataset.index || 0);
+      openPhotos(urls, startIndex);
+    });
+  })();
+</script>
+{% endif %}
+{% endblock %}
