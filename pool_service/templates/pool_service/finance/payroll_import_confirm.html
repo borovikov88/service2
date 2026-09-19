@@ -1,7 +1,10 @@
 {% extends "pool_service/base.html" %}
-{% block title %}Подтверждение импорта ФОТ{% endblock %}
+{% block title %}Подтверждение импорта ФОТ</div>
+{% endblock %>
 {% block content %}
-<h1 class="h3 mb-3">Подтверждение импорта ФОТ</h1>
+{% include "pool_service/finance/_desktop_workspace_styles.html" %}
+<div class="finance-desktop">
+<div class="finance-secondary-header"><h1 class="h3 mb-3">Подтверждение импорта ФОТ</h1></div>
 {% if confirmation_state.code == "already_confirmed" %}
 <div class="alert alert-info"><strong>Импорт уже подтверждён.</strong> Повторное подтверждение недоступно.</div>
 {% elif confirmation_state.code == "stale_parser" %}
@@ -18,7 +21,7 @@
 <div class="alert alert-warning"><strong>Это финальный шаг.</strong> После подтверждения данные станут активными.</div>
 {% endif %}
 
-<div class="card card-soft p-3 mb-3">
+<div class="finance-secondary-card card card-soft p-3 mb-3">
   <div><strong>Файл:</strong> {{ batch.original_filename }}</div>
   <div><strong>SHA-256:</strong> {{ batch.file_sha256|slice:':12' }}…</div>
   <div><strong>Статус:</strong> {{ batch.get_status_display }}</div>
@@ -30,11 +33,11 @@
 </div>
 
 <div class="small text-muted mb-2">Контрольные итоги исходного файла по строкам сотрудников и месяцев.</div>
-<div class="row g-3 mb-3">
-  <div class="col-md"><div class="card p-3">Контрольный начальный остаток: {{ summary.opening_balance }}</div></div>
-  <div class="col-md"><div class="card p-3">Начислено: {{ summary.accrued }}</div></div>
-  <div class="col-md"><div class="card p-3">Выплачено: {{ summary.paid }}</div></div>
-  <div class="col-md"><div class="card p-3">Контрольный конечный остаток: {{ summary.closing_balance }}</div></div>
+<div class="finance-secondary-kpis row g-3 mb-3">
+  <div class="col-md"><div class="finance-secondary-kpi card p-3">Контрольный начальный остаток: {{ summary.opening_balance }}</div></div>
+  <div class="col-md"><div class="finance-secondary-kpi card p-3">Начислено: {{ summary.accrued }}</div></div>
+  <div class="col-md"><div class="finance-secondary-kpi card p-3">Выплачено: {{ summary.paid }}</div></div>
+  <div class="col-md"><div class="finance-secondary-kpi card p-3">Контрольный конечный остаток: {{ summary.closing_balance }}</div></div>
 </div>
 
 {% if overlap_months %}<div class="alert alert-warning"><strong>Будут заменены активные данные за:</strong> {{ overlap_months|join:', ' }}.<br>Предыдущие импортированные строки останутся в истории.</div>{% endif %}
@@ -50,5 +53,5 @@
   <div><button class="btn btn-success" type="submit">Подтвердить импорт</button></div>
 </form>
 {% endif %}
-<div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="{% url 'finance_payroll_import_preview' batch.id %}">К предпросмотру</a><a class="btn btn-outline-secondary" href="{% url 'finance_payroll_import_list' %}">К истории</a><a class="btn btn-outline-secondary" href="{% url 'finance_payroll_dashboard' %}">К ФОТ</a></div>
+<div class="finance-secondary-actions d-flex gap-2"><a class="btn btn-outline-secondary" href="{% url 'finance_payroll_import_preview' batch.id %}">К предпросмотру</a><a class="btn btn-outline-secondary" href="{% url 'finance_payroll_import_list' %}">К истории</a><a class="btn btn-outline-secondary" href="{% url 'finance_payroll_dashboard' %}">К ФОТ</a></div>
 {% endblock %}
