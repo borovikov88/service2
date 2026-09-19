@@ -6702,11 +6702,7 @@ def pool_detail(request, pool_uuid):
         .order_by("planned_date", "id")
         .first()
     )
-    open_pool_task_count = (
-        ServiceTask.objects.filter(pool=pool, is_archived=False)
-        .exclude(status__in=[ServiceTask.STATUS_DONE, ServiceTask.STATUS_CANCELLED])
-        .count()
-    )
+    open_pool_task_count = 0
 
 
 
@@ -6848,6 +6844,7 @@ def pool_detail(request, pool_uuid):
                 else ""
             )
             reading_task_map.setdefault(task.water_reading_id, []).append(task)
+        open_pool_task_count = sum(1 for task in supply_tasks if not task.is_done)
     for reading in readings:
         reading.linked_supply_tasks = reading_task_map.get(reading.id, [])
 
