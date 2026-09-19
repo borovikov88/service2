@@ -198,6 +198,7 @@ def monthly_profit_summary(organization, first_month, last_month):
             "cost_calculation_ratio",
             "analytical_gross_profit",
         )
+        .order_by()
     )
     period_cost_ratio = apply_period_analytics(rows)
     monthly = []
