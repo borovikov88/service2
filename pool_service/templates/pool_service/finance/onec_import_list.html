@@ -30,7 +30,6 @@
     <td>{{ batch.warnings_count }}</td>
   </tr>{% empty %}<tr><td colspan="8" class="text-center text-muted py-4">Импортов пока нет.</td></tr>{% endfor %}</tbody>
 </table></div></div>
-</div>
 <script>
 (() => {
   const root = document.querySelector("[data-sync-root]");
@@ -127,4 +126,6 @@
   document.querySelectorAll("[data-sync-step-form]").forEach(bindStepForm);
 })();
 </script>
+
+</div><!-- /finance-desktop -->
 {% endblock %}
