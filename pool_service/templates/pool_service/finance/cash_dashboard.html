@@ -3,8 +3,108 @@
 
 {% block title %}{% if cashbox_section == "company" %}Касса организации{% else %}Касса ККМ{% endif %}{% endblock %}
 
+{% block extra_head %}
+{{ block.super }}
+<style>
+  @media (min-width: 992px) {
+    .kkm-page-header {
+      margin-bottom: 14px !important;
+      align-items: flex-end !important;
+    }
+    .kkm-page-header h1 {
+      font-size: 1.72rem;
+      line-height: 1.08;
+      margin-bottom: 4px !important;
+    }
+    .kkm-page-header .text-muted {
+      font-size: 0.82rem;
+    }
+    .kkm-actions {
+      gap: 7px !important;
+    }
+    .kkm-actions .btn {
+      min-height: 34px;
+      padding: 0.4rem 0.68rem;
+      font-size: 0.79rem;
+      background: #fff;
+    }
+    .kkm-actions .btn-primary {
+      background: #0d6efd;
+    }
+    .kkm-overview {
+      padding: 14px !important;
+      margin-bottom: 14px !important;
+      border-radius: 10px !important;
+    }
+    .kkm-section-heading {
+      margin-bottom: 10px !important;
+    }
+    .kkm-section-heading h2 {
+      font-size: 0.96rem;
+    }
+    .kkm-section-heading .text-muted {
+      font-size: 0.74rem;
+    }
+    .kkm-onec-panel {
+      padding: 15px 18px !important;
+      border-width: 1px !important;
+      background: #effaf4 !important;
+      border-color: #72c895 !important;
+      min-height: 92px;
+    }
+    .kkm-onec-panel .fs-2 {
+      font-size: 1.78rem !important;
+      line-height: 1.05;
+    }
+    .kkm-onec-panel .fs-4 {
+      font-size: 1.15rem !important;
+    }
+    .kkm-onec-panel .small {
+      font-size: 0.73rem;
+    }
+    .kkm-onec-mark {
+      width: 46px !important;
+      height: 46px !important;
+      font-size: 1rem !important;
+      border-radius: 9px !important;
+    }
+    .kkm-metrics {
+      margin-top: 10px !important;
+      margin-bottom: 0 !important;
+    }
+    .kkm-metric {
+      padding: 14px 16px !important;
+      min-height: 82px;
+      box-shadow: none !important;
+    }
+    .kkm-metric .fs-3 {
+      font-size: 1.45rem !important;
+      line-height: 1.1;
+    }
+    .kkm-history-card {
+      padding: 14px 14px 8px !important;
+      border-radius: 10px !important;
+    }
+    .kkm-history-card > h2 {
+      font-size: 1rem;
+      margin-bottom: 8px !important;
+    }
+    .kkm-history-card .table {
+      margin-top: 0;
+    }
+    .kkm-history-card .table > :not(caption) > * > * {
+      padding-top: 0.46rem;
+      padding-bottom: 0.46rem;
+    }
+    .kkm-history-card tbody tr:nth-child(even) > * {
+      background: rgba(247, 249, 252, 0.55);
+    }
+  }
+</style>
+{% endblock %}
+
 {% block content %}
-<div class="d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-4">
+<div class="kkm-page-header d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-4">
   <div>
     <h1 class="h3 fw-bold mb-1">{% if cashbox_section == "company" %}Касса организации{% else %}Касса ККМ{% endif %}</h1>
     <div class="text-muted">
@@ -16,7 +116,7 @@
     </div>
   </div>
   {% if cashbox_section == "kkm" %}
-  <div class="d-flex flex-wrap gap-2">
+  <div class="kkm-actions d-flex flex-wrap gap-2">
     {% if can_create_manager_cash %}
       <a href="{% url 'finance_cash_income_create' %}" class="btn btn-outline-success"><i class="bi bi-plus-circle me-2"></i>Получил деньги</a>
       <a href="{% url 'finance_expense_create' %}?source=kkm_cash" class="btn btn-outline-danger" data-finance-modal data-modal-title="Расход из кассы ККМ" data-modal-size="xl"><i class="bi bi-receipt me-2"></i>Расход из кассы</a>
@@ -38,19 +138,19 @@
   </div>
 <div class="row g-3 mb-4">
     <div class="col-12 col-md-4">
-      <div class="card card-soft p-4 h-100">
+      <div class="kkm-metric card card-soft p-4 h-100">
         <div class="text-muted small mb-1">Касса компании</div>
         <div class="fs-3 fw-bold text-success">{{ company_balance.balance|money }}</div>
       </div>
     </div>
     <div class="col-12 col-md-4">
-      <div class="card card-soft p-4 h-100">
+      <div class="kkm-metric card card-soft p-4 h-100">
         <div class="text-muted small mb-1">Поступило от менеджеров</div>
         <div class="fs-3 fw-bold">{{ company_balance.income|money }}</div>
       </div>
     </div>
     <div class="col-12 col-md-4">
-      <div class="card card-soft p-4 h-100">
+      <div class="kkm-metric card card-soft p-4 h-100">
         <div class="text-muted small mb-1">Сдача на проверке</div>
         <div class="fs-3 fw-bold text-warning">{{ company_balance.pending_transfer|money }}</div>
       </div>
@@ -73,8 +173,8 @@
 {% endif %}
 
 {% if cashbox_section == "kkm" %}
-<div class="card card-soft p-3 p-lg-4 mb-4">
-  <div class="d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-3">
+<div class="kkm-overview card card-soft p-3 p-lg-4 mb-4">
+  <div class="kkm-section-heading d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-3">
     <div>
       <h2 class="h5 fw-bold mb-1">Касса ККМ</h2>
       <div class="text-muted small">Одна общая касса для менеджеров, бухгалтера, администратора и владельца</div>
@@ -83,13 +183,13 @@
       <a href="{% url 'finance_cash_count_create' cashbox_type='kkm' %}" class="btn btn-outline-secondary"><i class="bi bi-calculator me-2"></i>Пересчёт ККМ</a>
     {% endif %}
   </div>
-  <div class="row g-3 mb-4">
+  <div class="kkm-metrics row g-3 mb-4">
     <div class="col-12">
-      <div class="rounded-3 border border-success border-2 bg-success bg-opacity-10 p-3 p-lg-4">
+      <div class="kkm-onec-panel rounded-3 border border-success border-2 bg-success bg-opacity-10 p-3 p-lg-4">
         <div class="row g-3 align-items-center">
           <div class="col-12 col-lg-5">
             <div class="d-flex align-items-center gap-3">
-              <div class="d-inline-flex align-items-center justify-content-center rounded-3 bg-warning-subtle text-danger fw-bold fs-5 flex-shrink-0" style="width:56px;height:56px;">1C</div>
+              <div class="kkm-onec-mark d-inline-flex align-items-center justify-content-center rounded-3 bg-warning-subtle text-danger fw-bold fs-5 flex-shrink-0" style="width:56px;height:56px;">1C</div>
               <div>
                 <div class="text-muted small mb-1">Остаток денежных средств в ККМ по данным 1С</div>
                 {% if onec_kkm_balance %}
@@ -135,19 +235,19 @@
       </div>
     </div>
     <div class="col-12 col-md-4">
-      <div class="card card-soft p-4 h-100">
+      <div class="kkm-metric card card-soft p-4 h-100">
         <div class="text-muted small mb-1">Расчётный остаток Service2</div>
         <div class="fs-3 fw-bold {% if kkm_balance.balance < 0 %}text-danger{% else %}text-success{% endif %}">{{ kkm_balance.balance|money }}</div>
       </div>
     </div>
     <div class="col-12 col-md-4">
-      <div class="card card-soft p-4 h-100">
+      <div class="kkm-metric card card-soft p-4 h-100">
         <div class="text-muted small mb-1">Операции на проверке</div>
         <div class="fs-3 fw-bold text-warning">{{ kkm_balance.pending_total|money }}</div>
       </div>
     </div>
     <div class="col-12 col-md-4">
-      <div class="card card-soft p-4 h-100">
+      <div class="kkm-metric card card-soft p-4 h-100">
         <div class="text-muted small mb-1">Доступно с учётом резерва</div>
         <div class="fs-3 fw-bold {% if kkm_balance.available_balance < 0 %}text-danger{% else %}text-success{% endif %}">{{ kkm_balance.available_balance|money }}</div>
       </div>
@@ -157,7 +257,7 @@
 {% endif %}
 
 {% if cashbox_section == "kkm" %}
-<div class="card card-soft p-3 p-lg-4">
+<div class="kkm-history-card card card-soft p-3 p-lg-4">
   <h2 class="h5 fw-bold mb-3">История движений ККМ</h2>
   <div class="table-responsive">
     <table class="table align-middle mb-0">
