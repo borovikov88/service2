@@ -1,0 +1,234 @@
+<style>
+  /* Shared desktop density for finance screens. Mobile/tablet layouts stay unchanged. */
+  @media (min-width: 992px) {
+    .finance-desktop {
+      --finance-gap: 12px;
+      --finance-card-radius: 10px;
+    }
+
+    .finance-desktop .finance-page-header {
+      margin-bottom: 12px !important;
+      align-items: flex-end !important;
+    }
+
+    .finance-desktop .finance-page-header h1 {
+      font-size: 1.62rem;
+      line-height: 1.08;
+      margin-bottom: 3px !important;
+    }
+
+    .finance-desktop .finance-page-header .text-muted {
+      font-size: 0.78rem;
+    }
+
+    .finance-desktop .finance-page-actions {
+      gap: 6px !important;
+    }
+
+    .finance-desktop .finance-page-actions .btn {
+      min-height: 33px;
+      padding: 0.38rem 0.66rem;
+      font-size: 0.77rem;
+    }
+
+    .finance-desktop .finance-filter-card {
+      padding: 10px 12px !important;
+      margin-bottom: 12px !important;
+      border-radius: var(--finance-card-radius) !important;
+    }
+
+    .finance-desktop .finance-filter-card .row {
+      --bs-gutter-x: 0.65rem;
+      --bs-gutter-y: 0.55rem;
+    }
+
+    .finance-desktop .finance-filter-card .form-label {
+      margin-bottom: 4px;
+      color: #6d7d91;
+      font-size: 0.7rem;
+      font-weight: 600;
+    }
+
+    .finance-desktop .finance-filter-card .form-control,
+    .finance-desktop .finance-filter-card .form-select,
+    .finance-desktop .finance-filter-card .btn {
+      min-height: 34px;
+      font-size: 0.79rem;
+    }
+
+    .finance-desktop .finance-kpi-grid {
+      --bs-gutter-x: 0.7rem;
+      --bs-gutter-y: 0.7rem;
+      margin-bottom: 12px !important;
+    }
+
+    .finance-desktop .finance-kpi-card {
+      min-height: 88px;
+      padding: 12px 14px !important;
+      border-radius: var(--finance-card-radius) !important;
+      box-shadow: 0 4px 14px rgba(15, 23, 42, 0.035);
+    }
+
+    .finance-desktop .finance-kpi-card .text-muted {
+      font-size: 0.7rem;
+    }
+
+    .finance-desktop .finance-kpi-card .fs-3,
+    .finance-desktop .finance-kpi-card .h3,
+    .finance-desktop .finance-kpi-card .h4 {
+      margin-top: 4px;
+      font-size: 1.32rem !important;
+      line-height: 1.12;
+    }
+
+    .finance-desktop .finance-data-card {
+      padding: 12px 14px !important;
+      margin-bottom: 12px !important;
+      border-radius: var(--finance-card-radius) !important;
+      box-shadow: 0 4px 14px rgba(15, 23, 42, 0.035);
+    }
+
+    .finance-desktop .finance-data-card h2 {
+      font-size: 0.96rem;
+      margin-bottom: 6px;
+    }
+
+    .finance-desktop .finance-data-card .table {
+      font-size: 0.77rem;
+    }
+
+    .finance-desktop .finance-data-card .table > :not(caption) > * > * {
+      padding: 0.42rem 0.5rem;
+    }
+
+    .finance-desktop .finance-data-card thead th {
+      color: #66778c;
+      font-size: 0.67rem;
+      font-weight: 650;
+      background: #f6f8fb;
+      white-space: nowrap;
+    }
+
+    .finance-desktop .finance-chart-card {
+      min-width: 0;
+    }
+
+    .finance-desktop .finance-inline-note {
+      padding-top: 7px;
+      padding-bottom: 7px;
+      margin-bottom: 12px !important;
+      font-size: 0.76rem;
+    }
+
+    .finance-desktop .finance-section-title {
+      margin-top: 14px;
+      margin-bottom: 8px;
+    }
+
+    .finance-owner-overview .owner-heading {
+      margin-bottom: 12px !important;
+    }
+
+    .finance-owner-overview .owner-section-header {
+      margin: 14px 0 7px;
+    }
+
+    .finance-owner-overview .owner-kpi {
+      min-height: 10.5rem;
+      padding: 12px 14px;
+      border-radius: var(--finance-card-radius);
+    }
+
+    .finance-owner-overview .owner-kpi-value {
+      margin: 0.42rem 0 0.2rem;
+      font-size: 1.46rem;
+    }
+
+    .finance-owner-overview .owner-comparisons {
+      gap: 0.3rem;
+      margin-top: 0.5rem;
+      padding-top: 0.48rem;
+    }
+
+    .finance-owner-overview .owner-freshness {
+      padding-top: 0.42rem;
+    }
+
+    .finance-owner-overview .owner-chart-grid {
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .finance-owner-overview .owner-chart-card {
+      padding: 12px 14px;
+      border-radius: var(--finance-card-radius);
+    }
+
+    .finance-owner-overview .owner-mini-chart {
+      height: 7.6rem;
+    }
+
+    .finance-owner-overview .owner-mini-chart canvas {
+      max-height: 6.2rem;
+    }
+
+    .finance-owner-overview .owner-cash-chart {
+      height: 24rem;
+    }
+
+    .finance-owner-overview .owner-season-chart {
+      height: 14rem;
+    }
+  }
+
+  @media (min-width: 1920px) {
+    .finance-desktop {
+      --finance-gap: 14px;
+    }
+
+    .finance-owner-overview .owner-kpi-grid {
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 12px;
+    }
+
+    .finance-owner-overview .owner-kpi {
+      min-height: 9.8rem;
+    }
+
+    .finance-desktop .finance-wide-pair {
+      display: grid;
+      grid-template-columns: minmax(0, 1.75fr) minmax(360px, 0.75fr);
+      gap: var(--finance-gap);
+      align-items: stretch;
+      margin-bottom: 12px;
+    }
+
+    .finance-desktop .finance-wide-pair > .finance-data-card {
+      margin-bottom: 0 !important;
+    }
+
+    .finance-desktop .finance-kpi-card {
+      min-height: 84px;
+    }
+
+    .finance-desktop .finance-data-card .table {
+      font-size: 0.8rem;
+    }
+  }
+
+  @media (min-width: 2560px) {
+    .finance-desktop .finance-page-header h1 {
+      font-size: 1.72rem;
+    }
+
+    .finance-desktop .finance-kpi-card .fs-3,
+    .finance-desktop .finance-kpi-card .h3,
+    .finance-desktop .finance-kpi-card .h4 {
+      font-size: 1.42rem !important;
+    }
+
+    .finance-desktop .finance-data-card .table {
+      font-size: 0.82rem;
+    }
+  }
+</style>
