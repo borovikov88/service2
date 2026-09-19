@@ -80,16 +80,17 @@
     .owner-signal-link { grid-column:2; }
   }
 </style>
+{% include "pool_service/finance/_desktop_workspace_styles.html" %}
 
-<div class="owner-dashboard">
-  <header class="owner-heading mb-4">
+<div class="owner-dashboard finance-desktop finance-owner-overview">
+  <header class="finance-page-header owner-heading mb-4">
     <div><div class="owner-eyebrow mb-1">Финансы · контур собственника</div><h1 class="h2 mb-1">Группа Аквалайн</h1><div class="text-muted small">Основные финансовые показатели компании: консолидированная экономика и движение денег по действующим активным импортам.</div></div>
     <div class="owner-scope">Консолидировано: 4 юрлица</div>
   </header>
 
   {% if can_refresh_all_onec %}<div class="mb-3"><a class="btn btn-outline-primary" href="{% url 'finance_onec_import_list' %}#update-all">Обновление всех данных из 1С →</a></div>{% endif %}
 
-  <form method="get" class="card card-soft p-3 mb-3" id="owner-period-form">
+  <form method="get" class="finance-filter-card card card-soft p-3 mb-3" id="owner-period-form">
     <div class="d-flex justify-content-between align-items-start gap-3 mb-3"><div><div class="owner-eyebrow">Единый фильтр</div><h2 class="h5 mb-0">Период</h2></div><div class="text-end"><strong>{{ effective_period_label }}</strong><div class="text-muted small">полные календарные месяцы</div></div></div>
     <div class="owner-period-presets">
       <button class="owner-period-button{% if period.preset == 'current_month' %} active{% endif %}" name="period" value="current_month">Текущий месяц</button>
@@ -115,7 +116,7 @@
     <div class="owner-section-header"><div><div class="owner-eyebrow">Результат</div><h2 class="h5 mb-0" id="owner-economy-title">Экономика</h2></div><div class="owner-section-help">Начисления и валовая экономика</div></div>
     <div class="owner-kpi-grid">
       {% for card in economy_cards %}
-        <article class="card card-soft owner-kpi">
+        <article class="finance-kpi-card card card-soft owner-kpi">
           <div class="owner-kpi-label">{{ card.label }}</div>
           <div class="owner-kpi-value">{% if card.has_data %}{% if card.value_type == 'money' %}{{ card.value|money }}{% else %}{{ card.value|floatformat:2 }}%{% endif %}{% else %}—{% endif %}</div>
           {% if card.preliminary %}<span class="owner-badge preliminary">Предварительно</span>{% endif %}{% if card.partial %}<span class="owner-badge partial mt-1">Неполные данные</span>{% endif %}
@@ -135,7 +136,7 @@
     <div class="owner-section-header"><div><div class="owner-eyebrow">ДДС</div><h2 class="h5 mb-0" id="owner-cash-title">Движение денег</h2></div><div class="owner-section-help">Денежные потоки показаны отдельно от валовой прибыли</div></div>
     <div class="owner-kpi-grid">
       {% for card in cashflow_cards %}
-        <article class="card card-soft owner-kpi">
+        <article class="finance-kpi-card card card-soft owner-kpi">
           <div class="owner-kpi-label">{{ card.label }}</div>
           <div class="owner-kpi-value">{% if card.has_data %}{{ card.value|money }}{% else %}—{% endif %}</div>
           {% if card.preliminary %}<span class="owner-badge preliminary">Предварительно</span>{% endif %}{% if card.partial %}<span class="owner-badge partial mt-1">Неполные данные</span>{% endif %}
@@ -149,7 +150,7 @@
     <div class="owner-section-header mt-4"><div><div class="owner-eyebrow">Структура</div><h3 class="h6 mb-0">Внешний, ликвидностный, финансовый и внутренний потоки</h3></div><div class="owner-section-help">Отдельно от операционного ДДС</div></div>
     <div class="owner-kpi-grid">
       {% for card in cashflow_structure_cards %}
-        <article class="card card-soft owner-kpi">
+        <article class="finance-kpi-card card card-soft owner-kpi">
           <div class="owner-kpi-label">{{ card.label }}</div>
           <div class="owner-kpi-value">{% if card.has_data %}{{ card.value|money }}{% else %}—{% endif %}</div>
           {% if card.partial %}<span class="owner-badge partial mt-1">Неполные данные</span>{% endif %}
@@ -163,12 +164,12 @@
   {% include "pool_service/finance/_finance_position.html" %}
 
   <section class="owner-chart-grid" aria-label="Графики финансового обзора">
-    <article class="card card-soft owner-chart-card"><div class="owner-eyebrow">Динамика</div><h2>Экономика по месяцам</h2><div class="owner-small-multiples"><div class="owner-mini-chart"><div class="owner-mini-chart-head">Выручка</div><canvas id="owner-revenue-chart"></canvas></div><div class="owner-mini-chart"><div class="owner-mini-chart-head">Валовая прибыль</div><canvas id="owner-profit-chart"></canvas></div><div class="owner-mini-chart"><div class="owner-mini-chart-head">Начисленный ФОТ</div><canvas id="owner-payroll-chart"></canvas></div></div></article>
-    <article class="card card-soft owner-chart-card"><div class="owner-eyebrow">Динамика</div><h2>Денежные потоки</h2><div class="owner-cash-chart"><canvas id="owner-cashflow-chart"></canvas></div></article>
-    <article class="card card-soft owner-chart-card owner-seasonality"><div class="d-flex justify-content-between align-items-start gap-3"><div><div class="owner-eyebrow">Сезонность</div><h2>Текущий и предыдущий год</h2></div><div class="owner-section-help">Только одинаковые полностью доступные месяцы</div></div><div class="owner-season-tabs" role="tablist"><button class="owner-season-tab active" type="button" data-metric="gross_profit">Валовая прибыль</button><button class="owner-season-tab" type="button" data-metric="payroll">ФОТ</button><button class="owner-season-tab" type="button" data-metric="net_cash_flow">Чистый денежный поток</button></div><div class="owner-season-chart"><canvas id="owner-season-chart"></canvas><div class="owner-empty-chart d-none" id="owner-season-empty"><strong>Нет полного сопоставимого периода</strong></div></div></article>
+    <article class="finance-data-card card card-soft owner-chart-card"><div class="owner-eyebrow">Динамика</div><h2>Экономика по месяцам</h2><div class="owner-small-multiples"><div class="owner-mini-chart"><div class="owner-mini-chart-head">Выручка</div><canvas id="owner-revenue-chart"></canvas></div><div class="owner-mini-chart"><div class="owner-mini-chart-head">Валовая прибыль</div><canvas id="owner-profit-chart"></canvas></div><div class="owner-mini-chart"><div class="owner-mini-chart-head">Начисленный ФОТ</div><canvas id="owner-payroll-chart"></canvas></div></div></article>
+    <article class="finance-data-card card card-soft owner-chart-card"><div class="owner-eyebrow">Динамика</div><h2>Денежные потоки</h2><div class="owner-cash-chart"><canvas id="owner-cashflow-chart"></canvas></div></article>
+    <article class="finance-data-card card card-soft owner-chart-card owner-seasonality"><div class="d-flex justify-content-between align-items-start gap-3"><div><div class="owner-eyebrow">Сезонность</div><h2>Текущий и предыдущий год</h2></div><div class="owner-section-help">Только одинаковые полностью доступные месяцы</div></div><div class="owner-season-tabs" role="tablist"><button class="owner-season-tab active" type="button" data-metric="gross_profit">Валовая прибыль</button><button class="owner-season-tab" type="button" data-metric="payroll">ФОТ</button><button class="owner-season-tab" type="button" data-metric="net_cash_flow">Чистый денежный поток</button></div><div class="owner-season-chart"><canvas id="owner-season-chart"></canvas><div class="owner-empty-chart d-none" id="owner-season-empty"><strong>Нет полного сопоставимого периода</strong></div></div></article>
   </section>
 
-  <section class="card card-soft p-3 mt-3" aria-labelledby="owner-signals-title">
+  <section class="finance-data-card card card-soft p-3 mt-3" aria-labelledby="owner-signals-title">
     <div class="owner-section-header mt-0"><div><div class="owner-eyebrow">Объективные сигналы</div><h2 class="h5 mb-0" id="owner-signals-title">Требует внимания</h2></div><div class="owner-section-help">Без несогласованных числовых порогов</div></div>
     <div class="owner-signals">{% for signal in signals %}{% url signal.route_name as signal_url %}<a class="owner-signal {{ signal.kind }}" href="{{ signal_url }}{% if signal.query %}?{{ signal.query }}{% endif %}"><span class="owner-signal-icon">{% if signal.kind == 'negative' %}−{% elif signal.kind == 'cost' %}!{% else %}i{% endif %}</span><span><strong class="owner-signal-title">{{ signal.title }}</strong><span class="owner-signal-detail">{% if signal.detail_type == 'money' %}{{ signal.detail|money }}{% elif signal.detail_type == 'rows' %}Строк: {{ signal.detail }}{% else %}{{ signal.detail }}{% endif %}</span></span><span class="owner-signal-link">Открыть отчёт ↗</span></a>{% empty %}<div class="text-muted small py-2">Объективных сигналов для выбранного периода нет.</div>{% endfor %}</div>
   </section>
