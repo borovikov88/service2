@@ -228,6 +228,26 @@ class RefreshAndApplyTests(TestCase):
         with self.assertRaises(SyncConflictError):
             start_unified_sync(self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1))
 
+    def test_auto_refresh_restarts_zero_progress_retryable_run(self):
+        first = self.start()
+        first.progress = {
+            **first.progress,
+            "step_state": "retryable_error",
+            "error_stage": "profit_document_lookup",
+            "error_reason": "page_limit",
+            "error_hint": "документы продаж: превышен лимит страниц",
+        }
+        first.error_message = "Не удалось проверить данные 1С. Продолжите проверку позже."
+        first.save(update_fields=["progress", "error_message"])
+
+        second = self.start()
+
+        first.refresh_from_db()
+        self.assertEqual(first.status, OneCODataSyncRun.STATUS_CANCELLED)
+        self.assertEqual(first.progress["outcome"], "cancelled")
+        self.assertNotEqual(first.pk, second.pk)
+        self.assertEqual(second.cursor["index"], 0)
+
     def test_auto_refresh_cancels_idle_preview_instead_of_conflicting(self):
         preview, _ = start_unified_sync(
             self.organization, self.user, [REPORT_PROFIT], today=date(2025, 5, 1)
