@@ -415,7 +415,11 @@ class VisualDesktopQaTests(StaticLiveServerTestCase):
         WebDriverWait(self.browser, 10).until(
             lambda driver: driver.execute_script("return document.readyState") == "complete"
         )
-        nav = self.browser.find_elements("css selector", ".crm-nav")
+        nav = [
+            element
+            for element in self.browser.find_elements("css selector", ".crm-nav")
+            if element.is_displayed() and element.size["width"] > 0 and element.size["height"] > 0
+        ]
         if nav:
             menu = nav[0].find_element("css selector", ".crm-nav__menu")
             started = timezone.now()
