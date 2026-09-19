@@ -4,7 +4,9 @@
 {% block title %}Подотчёт сотрудника{% endblock %}
 
 {% block content %}
-<div class="d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-4">
+{% include "pool_service/finance/_desktop_workspace_styles.html" %}
+<div class="finance-desktop">
+<div class="finance-secondary-header d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-4">
   <div>
     <h1 class="h3 fw-bold mb-1">{{ employee|finance_employee_name }}</h1>
     <div class="text-muted">История операций, приходов денег и расходов сотрудника</div>
@@ -12,34 +14,34 @@
   <a href="{% url 'finance_my' %}" class="btn btn-outline-secondary">Назад</a>
 </div>
 
-<div class="row g-3 mb-4">
+<div class="finance-secondary-kpis row g-3 mb-4">
   <div class="col-6 col-lg-3">
-    <div class="card card-soft p-3 h-100">
+    <div class="finance-secondary-kpi card card-soft p-3 h-100">
       <div class="text-muted small mb-1">Остаток</div>
       <div class="fs-4 fw-bold {% if balance.operational_balance < 0 %}text-danger{% else %}text-success{% endif %}">{{ balance.operational_balance|money }}</div>
     </div>
   </div>
   <div class="col-6 col-lg-3">
-    <div class="card card-soft p-3 h-100">
+    <div class="finance-secondary-kpi card card-soft p-3 h-100">
       <div class="text-muted small mb-1">Выдано и получено</div>
       <div class="fs-4 fw-bold">{{ balance.issued|money }}</div>
     </div>
   </div>
   <div class="col-6 col-lg-3">
-    <div class="card card-soft p-3 h-100">
+    <div class="finance-secondary-kpi card card-soft p-3 h-100">
       <div class="text-muted small mb-1">Чеки на проверке</div>
       <div class="fs-4 fw-bold text-warning">{{ balance.pending|money }}</div>
     </div>
   </div>
   <div class="col-6 col-lg-3">
-    <div class="card card-soft p-3 h-100">
+    <div class="finance-secondary-kpi card card-soft p-3 h-100">
       <div class="text-muted small mb-1">Возврат</div>
       <div class="fs-4 fw-bold">{{ balance.returned|money }}</div>
     </div>
   </div>
 </div>
 
-<div class="card card-soft p-3 p-lg-4 mb-4">
+<div class="finance-secondary-card card card-soft p-3 p-lg-4 mb-4">
   <h2 class="h5 fw-bold mb-3">Движения подотчёта</h2>
   <div class="table-responsive">
     <table class="table align-middle mb-0">
@@ -115,7 +117,7 @@
   </div>
 </div>
 
-<div class="card card-soft p-3 p-lg-4 mb-4">
+<div class="finance-secondary-card card card-soft p-3 p-lg-4 mb-4">
   <h2 class="h5 fw-bold mb-3">Последние расходы</h2>
   <div class="table-responsive">
     <table class="table align-middle mb-0">
@@ -142,7 +144,7 @@
 </div>
 
 {% if can_close_finance %}
-<div class="card card-soft p-3 p-lg-4">
+<div class="finance-secondary-card card card-soft p-3 p-lg-4">
   <h2 class="h5 fw-bold mb-3">История правок и удалений</h2>
   <div class="table-responsive">
     <table class="table align-middle mb-0">
@@ -165,4 +167,6 @@
   </div>
 </div>
 {% endif %}
+
+</div><!-- /finance-desktop -->
 {% endblock %}
