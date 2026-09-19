@@ -5,7 +5,9 @@ from zoneinfo import ZoneInfo
 from django.apps import apps
 
 from django.contrib.auth.models import User
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 
@@ -133,6 +135,34 @@ class ObjectCardRoleRedesignTests(TestCase):
         self.assertContains(response, 'id="service-issue-form"', html=False)
         self.assertNotContains(response, "Последние посещения")
         self.assertNotContains(response, "Рабочая карточка сервисника")
+
+    def test_service_detail_does_not_query_roles_once_per_reading(self):
+        for index in range(24):
+            WaterReading.objects.create(
+                pool=self.pool,
+                date=timezone.now() - timedelta(hours=index + 2),
+                added_by=self.service,
+                temperature=26.0,
+                ph=7.2,
+            )
+
+        self.client.force_login(self.service)
+        with CaptureQueriesContext(connection) as queries:
+            response = self.client.get(
+                reverse("pool_detail", kwargs={"pool_uuid": self.pool.uuid})
+            )
+
+        self.assertEqual(response.status_code, 200)
+        access_queries = [
+            query
+            for query in queries.captured_queries
+            if "pool_service_organizationaccess" in query["sql"].lower()
+        ]
+        self.assertLessEqual(
+            len(access_queries),
+            3,
+            f"OrganizationAccess query count regressed: {len(access_queries)}",
+        )
 
     def test_service_gets_visit_first_desktop_card_without_manager_finance(self):
         response = self._get_detail(self.service)
