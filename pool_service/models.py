@@ -292,10 +292,33 @@ class Pool(models.Model):
     delete_reason = models.TextField(blank=True)
 
     def save(self, *args, **kwargs):
-        self.service_suspended = self.service_status != self.SERVICE_STATUS_ACTIVE
         update_fields = kwargs.get("update_fields")
+        update_field_set = set(update_fields or [])
+
+        # Keep legacy boolean writes compatible while service_status becomes
+        # the canonical field for the UI and business flow.
+        legacy_boolean_write = (
+            "service_suspended" in update_field_set
+            and "service_status" not in update_field_set
+        )
+        if legacy_boolean_write or (
+            self._state.adding
+            and self.service_suspended
+            and self.service_status == self.SERVICE_STATUS_ACTIVE
+        ):
+            self.service_status = (
+                self.SERVICE_STATUS_PAUSED
+                if self.service_suspended
+                else self.SERVICE_STATUS_ACTIVE
+            )
+        else:
+            self.service_suspended = self.service_status != self.SERVICE_STATUS_ACTIVE
+
         if update_fields is not None:
-            kwargs["update_fields"] = set(update_fields) | {"service_suspended"}
+            kwargs["update_fields"] = update_field_set | {
+                "service_status",
+                "service_suspended",
+            }
         super().save(*args, **kwargs)
 
     def __str__(self):
