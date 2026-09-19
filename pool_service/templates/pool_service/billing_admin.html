@@ -4,9 +4,11 @@
 {% block title %}&#1055;&#1083;&#1072;&#1090;&#1077;&#1078;&#1080;{% endblock %}
 
 {% block content %}
-<div class="row g-4">
+{% include "pool_service/_admin_workspace_styles.html" %}
+<div class="admin-desktop">
+<div class="row g-3">
   <div class="col-12">
-    <div class="card card-soft p-4">
+    <div class="admin-card card card-soft p-4">
       <h4 class="fw-bold mb-3">&#1047;&#1072;&#1103;&#1074;&#1082;&#1080; &#1085;&#1072; &#1087;&#1088;&#1086;&#1076;&#1083;&#1077;&#1085;&#1080;&#1077;</h4>
       <div class="table-responsive">
         <table class="table align-middle">
@@ -53,7 +55,7 @@
   </div>
 
   <div class="col-12">
-    <div class="card card-soft p-4">
+    <div class="admin-card card card-soft p-4">
       <h4 class="fw-bold mb-3">&#1056;&#1091;&#1095;&#1085;&#1086;&#1077; &#1087;&#1088;&#1086;&#1076;&#1083;&#1077;&#1085;&#1080;&#1077;</h4>
       <form method="post" action="{% url 'billing_admin' %}">
         {% csrf_token %}
@@ -89,7 +91,7 @@
   </div>
 
   <div class="col-12">
-    <div class="card card-soft p-4">
+    <div class="admin-card card card-soft p-4">
       <h4 class="fw-bold mb-3">&#1048;&#1089;&#1090;&#1086;&#1088;&#1080;&#1103; &#1087;&#1088;&#1086;&#1076;&#1083;&#1077;&#1085;&#1080;&#1081;</h4>
       <div class="table-responsive">
         <table class="table align-middle">
@@ -120,4 +122,6 @@
     </div>
   </div>
 </div>
+
+</div><!-- /admin-desktop -->
 {% endblock %}
