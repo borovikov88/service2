@@ -816,6 +816,8 @@ class PoolForm(forms.ModelForm):
         selected_client_id = kwargs.pop("selected_client_id", None)
         service_details_only = kwargs.pop("service_details_only", False)
         super().__init__(*args, **kwargs)
+        if "service_status" in self.fields:
+            self.fields["service_status"].required = False
         if "confirm_object_type_change" in self.fields:
             self.fields["confirm_object_type_change"].widget.attrs.update({"class": "form-check-input"})
         if service_details_only:
@@ -896,8 +898,9 @@ class PoolForm(forms.ModelForm):
 
     def save(self, commit=True):
         instance = super().save(commit=False)
-        if "service_status" in self.cleaned_data:
-            instance.service_status = self.cleaned_data["service_status"]
+        service_status = self.cleaned_data.get("service_status")
+        if service_status:
+            instance.service_status = service_status
             instance.service_suspended = instance.service_status != Pool.SERVICE_STATUS_ACTIVE
         if commit:
             instance.save()
