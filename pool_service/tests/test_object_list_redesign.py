@@ -5,7 +5,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from pool_service.models import Client, Organization, OrganizationAccess, Pool, ServiceVisitPlan, WaterReading
+from pool_service.models import Client, Organization, OrganizationAccess, Pool, WaterReading
 
 
 class ObjectListDesktopRedesignTests(TestCase):
@@ -40,37 +40,36 @@ class ObjectListDesktopRedesignTests(TestCase):
             added_by=self.user,
             ph=7.2,
         )
-        self.next_visit = timezone.localdate() + timedelta(days=4)
-        ServiceVisitPlan.objects.create(
-            pool=self.pool,
-            week_start=timezone.localdate(),
-            planned_date=self.next_visit,
-            created_by=self.user,
-        )
 
-    def test_desktop_object_card_uses_existing_service_data(self):
+    def test_desktop_object_card_is_simplified_and_uses_pool_icon(self):
         self.client.force_login(self.user)
         response = self.client.get(reverse("pool_list"))
 
         self.assertEqual(response.status_code, 200)
         listed_pool = list(response.context["pools"])[0]
-        self.assertEqual(listed_pool.next_visit_date, self.next_visit)
+        self.assertIsNotNone(listed_pool.last_reading_display)
         self.assertContains(response, "На обслуживании")
         self.assertContains(response, "Последнее посещение")
-        self.assertContains(response, "Следующий выезд")
         self.assertContains(response, "Частота")
-        self.assertContains(response, "История")
-        self.assertContains(response, "1 записей")
-        self.assertContains(response, self.next_visit.strftime("%d.%m.%Y"))
+        self.assertContains(response, "pool-object-card__pool-icon", html=False)
         self.assertContains(response, "pool-object-card__desktop d-none d-lg-block", html=False)
+        self.assertNotContains(response, "Следующий выезд")
+        self.assertNotContains(response, ">История</div>", html=False)
+        self.assertNotContains(response, "next_visit_date", html=False)
 
-    def test_desktop_object_card_marks_suspended_service(self):
-        self.pool.service_suspended = True
-        self.pool.save(update_fields=["service_suspended"])
-
+    def test_desktop_object_card_renders_all_service_statuses(self):
         self.client.force_login(self.user)
-        response = self.client.get(reverse("pool_list"))
+        cases = (
+            (Pool.SERVICE_STATUS_ACTIVE, "На обслуживании", "pool-object-status--active"),
+            (Pool.SERVICE_STATUS_PAUSED, "Обслуживание приостановлено", "pool-object-status--paused"),
+            (Pool.SERVICE_STATUS_CONSERVED, "Законсервирован", "pool-object-status--conserved"),
+            (Pool.SERVICE_STATUS_ENDED, "Больше не обслуживаем", "pool-object-status--ended"),
+        )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Обслуживание приостановлено")
-        self.assertContains(response, "pool-object-status--paused", html=False)
+        for status, label, css_class in cases:
+            with self.subTest(status=status):
+                self.pool.service_status = status
+                self.pool.save(update_fields=["service_status"])
+                response = self.client.get(reverse("pool_list"))
+                self.assertContains(response, label)
+                self.assertContains(response, css_class, html=False)
