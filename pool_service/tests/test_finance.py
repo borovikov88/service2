@@ -153,7 +153,8 @@ class FinanceTests(TestCase):
         self.assertEqual(response.context["onec_kkm_balance"]["balance"], Decimal("7529.00"))
         self.assertContains(response, "Остаток денежных средств в ККМ по данным 1С")
         self.assertContains(response, "7&nbsp;529,00&nbsp;₽", html=True)
-        self.assertContains(response, "Обновлено:")
+        self.assertContains(response, "Последнее обновление из 1С")
+        self.assertContains(response, "Данные актуальны")
 
     def test_kkm_dashboard_handles_missing_onec_snapshot(self):
         self.client.force_login(self.manager)
