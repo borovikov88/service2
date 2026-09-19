@@ -300,12 +300,12 @@ def _scope_for(organization, report_type, today):
     return start, today, initial
 
 
-def _chunk_scope(start, end):
+def _chunk_scope(start, end, *, chunk_months=CHUNK_MONTHS):
     months = _months(start, end)
     return [
         {"start": part[0].isoformat(), "end": part[-1].isoformat()}
-        for index in range(0, len(months), CHUNK_MONTHS)
-        if (part := months[index:index + CHUNK_MONTHS])
+        for index in range(0, len(months), chunk_months)
+        if (part := months[index:index + chunk_months])
     ]
 
 
@@ -393,7 +393,15 @@ def start_unified_sync(
                 start, end, initial = period_start, period_end, False
             else:
                 start, end, initial = _scope_for(locked, report_type, today)
-            chunks = _chunk_scope(start, end)
+            chunks = _chunk_scope(
+                start,
+                end,
+                chunk_months=(
+                    PROFIT_CHUNK_MONTHS
+                    if report_type == REPORT_PROFIT
+                    else CHUNK_MONTHS
+                ),
+            )
             if report_type == REPORT_PAYROLL:
                 chunks = [{"start": month.isoformat(), "end": month.isoformat()} for month in _months(start, end)]
             scopes[report_type] = {
