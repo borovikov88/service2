@@ -332,6 +332,8 @@ from .models import (
 
     PoolAccess,
 
+    PoolServiceStatusEvent,
+
     WaterReading,
 
     DataAuditLog,
@@ -836,6 +838,7 @@ POOL_AUDIT_FIELDS = [
     "service_frequency",
     "service_monthly_price",
     "service_details_comment",
+    "service_status",
     "service_suspended",
     "daily_readings_required",
     "water_system_type",
@@ -5413,6 +5416,7 @@ def pool_edit(request, pool_uuid):
     if request.method == "POST":
 
         before = _snapshot_instance(pool, POOL_AUDIT_FIELDS)
+        previous_service_status = pool.service_status
 
         form = PoolForm(request.POST, instance=pool, user=request.user, service_details_only=service_details_only)
 
@@ -5425,6 +5429,13 @@ def pool_edit(request, pool_uuid):
                 updated.client = user_client
 
             updated.save()
+            if previous_service_status != updated.service_status:
+                PoolServiceStatusEvent.objects.create(
+                    pool=updated,
+                    previous_status=previous_service_status,
+                    status=updated.service_status,
+                    changed_by=request.user,
+                )
             _write_data_audit(
                 request,
                 action=DataAuditLog.ACTION_UPDATE,
@@ -6698,7 +6709,10 @@ def pool_detail(request, pool_uuid):
 
     can_add_reading = role in {"editor", "service", "admin"}
 
-    readings_list = WaterReading.objects.filter(pool=pool, is_deleted=False).select_related("added_by").order_by("-date")
+    readings_list = WaterReading.objects.filter(
+        pool=pool,
+        is_deleted=False,
+    ).select_related("added_by").order_by("-date")
 
     desktop_card_mode = (
         "service"
@@ -6708,7 +6722,6 @@ def pool_detail(request, pool_uuid):
         else "standard"
     )
     latest_reading = readings_list.first()
-    recent_readings = list(readings_list[:3])
     next_visit_plan = (
         ServiceVisitPlan.objects.filter(
             pool=pool,
@@ -6719,16 +6732,26 @@ def pool_detail(request, pool_uuid):
     )
     open_pool_task_count = 0
 
+    history_entries = list(readings_list)
+    for reading in history_entries:
+        reading.history_type = "reading"
+        reading.history_at = reading.date
 
+    status_events = list(
+        PoolServiceStatusEvent.objects.filter(pool=pool)
+        .select_related("changed_by")
+        .order_by("-created_at", "-id")
+    )
+    for event in status_events:
+        event.history_type = "status"
+        event.history_at = event.created_at
+
+    history_entries.extend(status_events)
+    history_entries.sort(key=lambda entry: entry.history_at, reverse=True)
 
     per_page = _parse_per_page(request.GET.get("per_page"), 20)
-
-
-
-    paginator = Paginator(readings_list, per_page)
-
+    paginator = Paginator(history_entries, per_page)
     page_number = request.GET.get("page")
-
     readings = paginator.get_page(page_number)
 
     query_params = request.GET.copy()
@@ -6743,6 +6766,8 @@ def pool_detail(request, pool_uuid):
     if can_add_reading:
 
         for reading in readings:
+            if getattr(reading, "history_type", "reading") != "reading":
+                continue
 
             if _reading_edit_allowed(reading, request.user):
 
@@ -6861,7 +6886,8 @@ def pool_detail(request, pool_uuid):
             reading_task_map.setdefault(task.water_reading_id, []).append(task)
         open_pool_task_count = sum(1 for task in supply_tasks if not task.is_done)
     for reading in readings:
-        reading.linked_supply_tasks = reading_task_map.get(reading.id, [])
+        if getattr(reading, "history_type", "reading") == "reading":
+            reading.linked_supply_tasks = reading_task_map.get(reading.id, [])
 
     # Audit records continue to be written by _write_data_audit, but the
     # object card no longer exposes the journal to any role.
@@ -6880,7 +6906,6 @@ def pool_detail(request, pool_uuid):
         "role": role,
         "desktop_card_mode": desktop_card_mode,
         "latest_reading": latest_reading,
-        "recent_readings": recent_readings,
         "next_visit_plan": next_visit_plan,
         "open_pool_task_count": open_pool_task_count,
         "open_service_issue_count": open_service_issue_count,
@@ -8832,7 +8857,7 @@ def water_reading_create(request, pool_uuid):
 
             reading = form.save(commit=False)
 
-            reading.date = reading.date.replace(tzinfo=None)
+            # Keep the aware datetime produced in the active user timezone.
 
             reading.pool = pool
 
