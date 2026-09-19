@@ -382,6 +382,8 @@ from .services.permissions import (
 
     organization_for_user,
 
+    organization_accesses_for_user,
+
 )
 
 from django import forms
@@ -736,11 +738,11 @@ def _pool_role_for_user(user, pool):
 
     client_access = ClientAccess.objects.filter(user=user, client=pool.client).first()
 
-    org_roles = list(
-
-        OrganizationAccess.objects.filter(user=user, organization=pool.organization).values_list("role", flat=True)
-
-    )
+    org_roles = [
+        access.role
+        for access in organization_accesses_for_user(user)
+        if access.organization_id == pool.organization_id
+    ]
 
 
 
@@ -802,15 +804,11 @@ def _can_view_pool_service_details(user, pool):
 
         return False
 
-    return OrganizationAccess.objects.filter(
-
-        user=user,
-
-        organization=pool.organization,
-
-        role__in=["owner", "admin", "manager", "accountant"],
-
-    ).exists()
+    allowed_roles = {"owner", "admin", "manager", "accountant"}
+    return any(
+        access.organization_id == pool.organization_id and access.role in allowed_roles
+        for access in organization_accesses_for_user(user)
+    )
 
 
 
@@ -1237,11 +1235,10 @@ def _can_restore_pool_data(user, pool):
         return False
     if not pool.organization_id:
         return False
-    return OrganizationAccess.objects.filter(
-        user=user,
-        organization=pool.organization,
-        role__in=["owner", "admin"],
-    ).exists()
+    return any(
+        access.organization_id == pool.organization_id and access.role in {"owner", "admin"}
+        for access in organization_accesses_for_user(user)
+    )
 
 
 def _reading_delete_allowed(reading, user):
@@ -1588,7 +1585,11 @@ def pool_delete(request, pool_uuid):
     if blocked:
         return blocked
 
-    pool = get_object_or_404(Pool, uuid=pool_uuid, is_deleted=False)
+    pool = get_object_or_404(
+        Pool.objects.select_related("client", "organization"),
+        uuid=pool_uuid,
+        is_deleted=False,
+    )
     if not _can_restore_pool_data(request.user, pool):
         return HttpResponseForbidden()
 
@@ -6686,7 +6687,11 @@ def pool_detail(request, pool_uuid):
 
     """Детальная страница объекта с показателями и доступами."""
 
-    pool = get_object_or_404(Pool, uuid=pool_uuid, is_deleted=False)
+    pool = get_object_or_404(
+        Pool.objects.select_related("client", "organization"),
+        uuid=pool_uuid,
+        is_deleted=False,
+    )
 
 
 
@@ -6704,10 +6709,12 @@ def pool_detail(request, pool_uuid):
 
     can_add_reading = role in {"editor", "service", "admin"}
 
-    readings_list = WaterReading.objects.filter(
-        pool=pool,
-        is_deleted=False,
-    ).select_related("added_by").order_by("-date")
+    readings_list = list(
+        WaterReading.objects.filter(
+            pool=pool,
+            is_deleted=False,
+        ).select_related("added_by").order_by("-date")
+    )
 
     desktop_card_mode = (
         "service"
@@ -6716,7 +6723,7 @@ def pool_detail(request, pool_uuid):
         if can_view_service_details
         else "standard"
     )
-    latest_reading = readings_list.first()
+    latest_reading = readings_list[0] if readings_list else None
     next_visit_plan = (
         ServiceVisitPlan.objects.filter(
             pool=pool,
@@ -6727,7 +6734,7 @@ def pool_detail(request, pool_uuid):
     )
     open_pool_task_count = 0
 
-    timeline_entries = list(readings_list)
+    timeline_entries = readings_list.copy()
     for reading in timeline_entries:
         reading.timeline_kind = "reading"
         reading.timeline_at = reading.date
@@ -6771,7 +6778,7 @@ def pool_detail(request, pool_uuid):
             if _reading_edit_allowed(reading, request.user):
 
                 editable_reading_ids.append(reading.id)
-            if _reading_delete_allowed(reading, request.user):
+            if can_delete_pool or _reading_edit_allowed(reading, request.user):
                 deletable_reading_ids.append(reading.id)
 
 
@@ -6789,14 +6796,10 @@ def pool_detail(request, pool_uuid):
 
     if pool.organization_id:
 
-        org_staff_access = OrganizationAccess.objects.filter(
-
-            user=request.user,
-
-            organization=pool.organization,
-
-
-        ).exists()
+        org_staff_access = any(
+            access.organization_id == pool.organization_id
+            for access in organization_accesses_for_user(request.user)
+        )
 
         show_service_issues = org_staff_access or request.user.is_superuser
 
@@ -6804,8 +6807,7 @@ def pool_detail(request, pool_uuid):
 
         if show_service_issues:
 
-            service_issues = (
-
+            service_issues = list(
                 CrmItem.objects.filter(
 
                     direction=CrmItem.DIRECTION_SERVICE,
@@ -6821,7 +6823,6 @@ def pool_detail(request, pool_uuid):
                 .prefetch_related("photos")
 
                 .order_by("-created_at")
-
             )
 
             for issue in service_issues:
@@ -6842,9 +6843,9 @@ def pool_detail(request, pool_uuid):
 
                 issue.photo_urls_json = json.dumps(photo_urls, ensure_ascii=False)
 
-            open_service_issue_count = service_issues.exclude(
-                stage=CrmItem.STAGE_SERVICE_DONE
-            ).count()
+            open_service_issue_count = sum(
+                1 for issue in service_issues if issue.stage != CrmItem.STAGE_SERVICE_DONE
+            )
 
             if can_manage_service_issues:
 
@@ -6852,7 +6853,7 @@ def pool_detail(request, pool_uuid):
 
     reading_task_map = {}
     supply_tasks = []
-    reading_ids = list(readings_list.values_list("id", flat=True))
+    reading_ids = [reading.id for reading in readings_list]
     if reading_ids:
         supply_tasks = list(
             ServiceTask.objects.filter(
