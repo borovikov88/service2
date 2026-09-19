@@ -1,6 +1,8 @@
 name: Visual desktop QA
 
 on:
+  push:
+    branches: ["qa/visual-desktop-audit"]
   pull_request:
     branches: [main]
     paths:
