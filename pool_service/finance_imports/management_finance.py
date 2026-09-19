@@ -811,14 +811,21 @@ def management_cashflow_data(
     article_buckets = {}
     review_buckets = {}
     mappings = _mapping_index(organization)
+    classifications = {
+        key: _classification(mapping) for key, mapping in mappings.items()
+    }
 
     for row in _confirmed_cashflow_rows(organization, first_month, last_month):
         month = months.setdefault(
             row["period_month"],
             _new_month(row["period_month"], has_data=True),
         )
-        mapping = mappings.get(row["normalized_article_name"])
-        classification = _classification(mapping)
+        article_name = row["normalized_article_name"]
+        mapping = mappings.get(article_name)
+        classification = classifications.get(article_name)
+        if classification is None:
+            classification = _classification(None)
+            classifications[article_name] = classification
         if not _matches_cashflow_filters(row, classification, filters):
             continue
         receipts = row["receipts"] if row["receipts"] is not None else ZERO
