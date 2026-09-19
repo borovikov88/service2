@@ -17,6 +17,7 @@ from pool_service.models import (
     Profile,
 )
 from pool_service.services.notifications import notify_users
+from pool_service.services.permissions import organization_accesses_for_user
 
 
 DEFAULT_EXPENSE_CATEGORIES = [
@@ -42,29 +43,29 @@ def can_configure_automatic_lock(user):
         return False
     if user.is_superuser:
         return True
-    return OrganizationAccess.objects.filter(
-        user=user,
-        role__in=MANAGEMENT_FINANCE_ROLES,
-    ).exists()
+    return any(
+        access.role in MANAGEMENT_FINANCE_ROLES
+        for access in organization_accesses_for_user(user)
+    )
 
 
 def automatic_lock_is_disabled(user):
     """Return the server-authoritative automatic-lock preference for a user."""
-    return can_configure_automatic_lock(user) and Profile.objects.filter(
-        user=user,
-        automatic_lock_disabled=True,
-    ).exists()
+    profile = getattr(user, "profile", None)
+    if not profile or not profile.automatic_lock_disabled:
+        return False
+    return can_configure_automatic_lock(user)
 
 
 def organization_roles(user, organization):
     if not user or not user.is_authenticated or not organization:
         return set()
-    return set(
-        OrganizationAccess.objects.filter(
-            user=user,
-            organization=organization,
-        ).values_list("role", flat=True)
-    )
+    organization_id = getattr(organization, "pk", None)
+    return {
+        access.role
+        for access in organization_accesses_for_user(user)
+        if access.organization_id == organization_id
+    }
 
 
 def can_access_finance(user, organization):
