@@ -270,99 +270,7 @@
         <a class="object-role-nav__link {% if desktop_card_mode == 'service' %}is-active{% endif %}" href="#object-visits"><i class="bi bi-clock-history"></i>Посещения</a>
         {% if supply_tasks %}<a class="object-role-nav__link" href="#object-tasks"><i class="bi bi-list-check"></i>Задачи</a>{% endif %}
         {% if show_service_issues %}<a class="object-role-nav__link" href="#object-issues"><i class="bi bi-exclamation-diamond"></i>Неисправности</a>{% endif %}
-        {% if desktop_card_mode != "standard" %}
-<div class="object-role-kpis d-none d-lg-grid">
-    {% if desktop_card_mode == "manager" %}
-        <div class="object-role-kpi {% if pool.service_suspended %}object-role-kpi--warning{% else %}object-role-kpi--success{% endif %}">
-            <div class="object-role-kpi__label">Статус обслуживания</div>
-            <div class="object-role-kpi__value">{% if pool.service_suspended %}Приостановлено{% else %}На обслуживании{% endif %}</div>
-            <div class="object-role-kpi__meta">{{ pool.get_service_frequency_display|default:"График не задан" }}</div>
-        </div>
-        <div class="object-role-kpi">
-            <div class="object-role-kpi__label">Следующий выезд</div>
-            <div class="object-role-kpi__value">{% if next_visit_plan %}{{ next_visit_plan.planned_date|date:"d.m.Y" }}{% else %}Не запланирован{% endif %}</div>
-            <div class="object-role-kpi__meta">По календарю обслуживания</div>
-        </div>
-        <div class="object-role-kpi">
-            <div class="object-role-kpi__label">Последнее посещение</div>
-            <div class="object-role-kpi__value">{% if latest_reading %}{{ latest_reading.date|date:"d.m.Y" }}{% else %}Нет посещений{% endif %}</div>
-            <div class="object-role-kpi__meta">{% if latest_reading %}{{ latest_reading.date|date:"H:i" }}{% else %}История пока пустая{% endif %}</div>
-        </div>
-        <div class="object-role-kpi">
-            <div class="object-role-kpi__label">Стоимость обслуживания</div>
-            <div class="object-role-kpi__value">{% if service_monthly_price_display %}{{ service_monthly_price_display }}{% else %}—{% endif %}</div>
-            <div class="object-role-kpi__meta">В месяц</div>
-        </div>
-        <div class="object-role-kpi {% if open_service_issue_count %}object-role-kpi--warning{% else %}object-role-kpi--success{% endif %}">
-            <div class="object-role-kpi__label">Открытые неисправности</div>
-            <div class="object-role-kpi__value">{{ open_service_issue_count }}</div>
-            <div class="object-role-kpi__meta">{% if open_service_issue_count %}Требуют внимания{% else %}Нет открытых заявок{% endif %}</div>
-        </div>
-    {% else %}
-        <div class="object-role-kpi">
-            <div class="object-role-kpi__label">Следующий выезд</div>
-            <div class="object-role-kpi__value">{% if next_visit_plan %}{{ next_visit_plan.planned_date|date:"d.m.Y" }}{% else %}Не запланирован{% endif %}</div>
-            <div class="object-role-kpi__meta">План обслуживания</div>
-        </div>
-        <div class="object-role-kpi">
-            <div class="object-role-kpi__label">Последнее посещение</div>
-            <div class="object-role-kpi__value">{% if latest_reading %}{{ latest_reading.date|date:"d.m.Y" }}{% else %}Нет посещений{% endif %}</div>
-            <div class="object-role-kpi__meta">{% if latest_reading %}{{ latest_reading.date|date:"H:i" }}{% else %}Добавьте первую запись{% endif %}</div>
-        </div>
-        <div class="object-role-kpi">
-            <div class="object-role-kpi__label">Частота визитов</div>
-            <div class="object-role-kpi__value">{{ pool.get_service_frequency_display|default:"Не задана" }}</div>
-            <div class="object-role-kpi__meta">График обслуживания</div>
-        </div>
-        <div class="object-role-kpi {% if open_service_issue_count %}object-role-kpi--warning{% else %}object-role-kpi--success{% endif %}">
-            <div class="object-role-kpi__label">Неисправности</div>
-            <div class="object-role-kpi__value">{{ open_service_issue_count }}</div>
-            <div class="object-role-kpi__meta">{% if open_service_issue_count %}Открытые заявки{% else %}Всё спокойно{% endif %}</div>
-        </div>
-        <div class="object-role-kpi {% if open_pool_task_count %}object-role-kpi--warning{% else %}object-role-kpi--success{% endif %}">
-            <div class="object-role-kpi__label">Открытые задачи</div>
-            <div class="object-role-kpi__value">{{ open_pool_task_count }}</div>
-            <div class="object-role-kpi__meta">{% if open_pool_task_count %}По этому объекту{% else %}Нет активных задач{% endif %}</div>
-        </div>
-    {% endif %}
-</div>
-{% endif %}
-
-{% if desktop_card_mode == "manager" and recent_readings %}
-<div class="object-manager-preview card card-soft d-none d-lg-block">
-    <div class="d-flex align-items-center justify-content-between gap-3 mb-2">
-        <div>
-            <h3 class="fw-bold mb-1">Последние посещения</h3>
-            <div class="text-muted small">Короткая сводка для менеджера</div>
-        </div>
-        <a href="#object-visits" class="btn btn-outline-secondary btn-sm">Вся история <i class="bi bi-arrow-down ms-1"></i></a>
-    </div>
-    <div class="table-responsive">
-        <table class="table align-middle mb-0">
-            <thead>
-                <tr>
-                    <th>Дата</th>
-                    <th>Сервисник</th>
-                    <th>Работы / комментарий</th>
-                    <th>Материалы / расходники</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for reading in recent_readings %}
-                <tr>
-                    <td class="fw-semibold">{{ reading.date|date:"d.m.Y H:i" }}</td>
-                    <td>{% if reading.added_by %}{{ reading.added_by.get_full_name|default:reading.added_by.username }}{% else %}—{% endif %}</td>
-                    <td>{% if reading.performed_works %}{{ reading.performed_works }}{% elif reading.comment %}{{ reading.comment }}{% else %}—{% endif %}</td>
-                    <td>{% if reading.required_materials %}{{ reading.required_materials }}{% elif reading.consumables_replaced %}{{ reading.consumables_replaced }}{% else %}—{% endif %}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</div>
-{% endif %}
-
-{% if audit_logs %}<a class="object-role-nav__link" href="#object-changes"><i class="bi bi-journal-text"></i>Изменения</a>{% endif %}
+        {% if audit_logs %}<a class="object-role-nav__link" href="#object-changes"><i class="bi bi-journal-text"></i>Изменения</a>{% endif %}
     </nav>
 </div>
 {% endif %}
@@ -525,6 +433,98 @@
         </div>
     </div>
 </div>
+
+{% if desktop_card_mode != "standard" %}
+<div class="object-role-kpis d-none d-lg-grid">
+    {% if desktop_card_mode == "manager" %}
+        <div class="object-role-kpi {% if pool.service_suspended %}object-role-kpi--warning{% else %}object-role-kpi--success{% endif %}">
+            <div class="object-role-kpi__label">Статус обслуживания</div>
+            <div class="object-role-kpi__value">{% if pool.service_suspended %}Приостановлено{% else %}На обслуживании{% endif %}</div>
+            <div class="object-role-kpi__meta">{{ pool.get_service_frequency_display|default:"График не задан" }}</div>
+        </div>
+        <div class="object-role-kpi">
+            <div class="object-role-kpi__label">Следующий выезд</div>
+            <div class="object-role-kpi__value">{% if next_visit_plan %}{{ next_visit_plan.planned_date|date:"d.m.Y" }}{% else %}Не запланирован{% endif %}</div>
+            <div class="object-role-kpi__meta">По календарю обслуживания</div>
+        </div>
+        <div class="object-role-kpi">
+            <div class="object-role-kpi__label">Последнее посещение</div>
+            <div class="object-role-kpi__value">{% if latest_reading %}{{ latest_reading.date|date:"d.m.Y" }}{% else %}Нет посещений{% endif %}</div>
+            <div class="object-role-kpi__meta">{% if latest_reading %}{{ latest_reading.date|date:"H:i" }}{% else %}История пока пустая{% endif %}</div>
+        </div>
+        <div class="object-role-kpi">
+            <div class="object-role-kpi__label">Стоимость обслуживания</div>
+            <div class="object-role-kpi__value">{% if service_monthly_price_display %}{{ service_monthly_price_display }}{% else %}—{% endif %}</div>
+            <div class="object-role-kpi__meta">В месяц</div>
+        </div>
+        <div class="object-role-kpi {% if open_service_issue_count %}object-role-kpi--warning{% else %}object-role-kpi--success{% endif %}">
+            <div class="object-role-kpi__label">Открытые неисправности</div>
+            <div class="object-role-kpi__value">{{ open_service_issue_count }}</div>
+            <div class="object-role-kpi__meta">{% if open_service_issue_count %}Требуют внимания{% else %}Нет открытых заявок{% endif %}</div>
+        </div>
+    {% else %}
+        <div class="object-role-kpi">
+            <div class="object-role-kpi__label">Следующий выезд</div>
+            <div class="object-role-kpi__value">{% if next_visit_plan %}{{ next_visit_plan.planned_date|date:"d.m.Y" }}{% else %}Не запланирован{% endif %}</div>
+            <div class="object-role-kpi__meta">План обслуживания</div>
+        </div>
+        <div class="object-role-kpi">
+            <div class="object-role-kpi__label">Последнее посещение</div>
+            <div class="object-role-kpi__value">{% if latest_reading %}{{ latest_reading.date|date:"d.m.Y" }}{% else %}Нет посещений{% endif %}</div>
+            <div class="object-role-kpi__meta">{% if latest_reading %}{{ latest_reading.date|date:"H:i" }}{% else %}Добавьте первую запись{% endif %}</div>
+        </div>
+        <div class="object-role-kpi">
+            <div class="object-role-kpi__label">Частота визитов</div>
+            <div class="object-role-kpi__value">{{ pool.get_service_frequency_display|default:"Не задана" }}</div>
+            <div class="object-role-kpi__meta">График обслуживания</div>
+        </div>
+        <div class="object-role-kpi {% if open_service_issue_count %}object-role-kpi--warning{% else %}object-role-kpi--success{% endif %}">
+            <div class="object-role-kpi__label">Неисправности</div>
+            <div class="object-role-kpi__value">{{ open_service_issue_count }}</div>
+            <div class="object-role-kpi__meta">{% if open_service_issue_count %}Открытые заявки{% else %}Всё спокойно{% endif %}</div>
+        </div>
+        <div class="object-role-kpi {% if open_pool_task_count %}object-role-kpi--warning{% else %}object-role-kpi--success{% endif %}">
+            <div class="object-role-kpi__label">Открытые задачи</div>
+            <div class="object-role-kpi__value">{{ open_pool_task_count }}</div>
+            <div class="object-role-kpi__meta">{% if open_pool_task_count %}По этому объекту{% else %}Нет активных задач{% endif %}</div>
+        </div>
+    {% endif %}
+</div>
+{% endif %}
+
+{% if desktop_card_mode == "manager" and recent_readings %}
+<div class="object-manager-preview card card-soft d-none d-lg-block">
+    <div class="d-flex align-items-center justify-content-between gap-3 mb-2">
+        <div>
+            <h3 class="fw-bold mb-1">Последние посещения</h3>
+            <div class="text-muted small">Короткая сводка для менеджера</div>
+        </div>
+        <a href="#object-visits" class="btn btn-outline-secondary btn-sm">Вся история <i class="bi bi-arrow-down ms-1"></i></a>
+    </div>
+    <div class="table-responsive">
+        <table class="table align-middle mb-0">
+            <thead>
+                <tr>
+                    <th>Дата</th>
+                    <th>Сервисник</th>
+                    <th>Работы / комментарий</th>
+                    <th>Материалы / расходники</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for reading in recent_readings %}
+                <tr>
+                    <td class="fw-semibold">{{ reading.date|date:"d.m.Y H:i" }}</td>
+                    <td>{% if reading.added_by %}{{ reading.added_by.get_full_name|default:reading.added_by.username }}{% else %}—{% endif %}</td>
+                    <td>{% if reading.performed_works %}{{ reading.performed_works }}{% elif reading.comment %}{{ reading.comment }}{% else %}—{% endif %}</td>
+                    <td>{% if reading.required_materials %}{{ reading.required_materials }}{% elif reading.consumables_replaced %}{{ reading.consumables_replaced }}{% else %}—{% endif %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
 
 {% if audit_logs %}
 <div id="object-changes" class="object-section-card card card-soft p-4 mb-4">
