@@ -1,5 +1,8 @@
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone as datetime_timezone
+import importlib
 from zoneinfo import ZoneInfo
+
+from django.apps import apps
 
 from django.contrib.auth.models import User
 from django.test import TestCase
@@ -202,3 +205,33 @@ class ObjectCardRoleRedesignTests(TestCase):
 
         detail = self.client.get(reverse("pool_detail", kwargs={"pool_uuid": self.pool.uuid}))
         self.assertContains(detail, "19.09.2026 16:00")
+
+    def test_legacy_visit_time_normalization_uses_author_timezone(self):
+        profile, _ = Profile.objects.get_or_create(user=self.service)
+        profile.timezone = "Asia/Barnaul"
+        profile.save(update_fields=["timezone"])
+
+        legacy_reading = WaterReading.objects.create(
+            pool=self.pool,
+            date=datetime(2026, 6, 12, 14, 0, tzinfo=datetime_timezone.utc),
+            added_by=self.service,
+            comment="Старое локальное время",
+        )
+
+        migration = importlib.import_module(
+            "pool_service.migrations.0105_normalize_water_reading_timezone"
+        )
+        migration.normalize_legacy_water_reading_dates(apps, None)
+
+        legacy_reading.refresh_from_db()
+        self.assertEqual(
+            legacy_reading.date,
+            datetime(2026, 6, 12, 7, 0, tzinfo=datetime_timezone.utc),
+        )
+        self.assertEqual(
+            timezone.localtime(
+                legacy_reading.date,
+                ZoneInfo("Asia/Barnaul"),
+            ).strftime("%d.%m.%Y %H:%M"),
+            "12.06.2026 14:00",
+        )
