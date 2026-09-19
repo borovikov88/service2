@@ -187,6 +187,7 @@ from pool_service.finance_imports.management_finance import (
 )
 from pool_service.finance_imports.overview import finance_overview_data
 from pool_service.finance_imports.finance_position_dashboard import finance_position_dashboard_data
+from pool_service.finance_imports.finance_position import get_finance_position
 from pool_service.services.permissions import is_org_access_blocked, organization_for_user
 
 logger = logging.getLogger(__name__)
@@ -776,6 +777,7 @@ def _render_cash_dashboard(request, section):
     manager_rows = []
     company_balance = None
     kkm_balance = None
+    onec_kkm_balance = None
     company_counts = []
     kkm_counts = []
     if section == "company":
@@ -787,6 +789,15 @@ def _render_cash_dashboard(request, section):
         )
     else:
         kkm_balance = kkm_cash_balance(organization)
+        finance_position = get_finance_position(organization)
+        if finance_position["available"]:
+            onec_kkm_balance = {
+                "balance": finance_position["cash_kkm"],
+                "snapshot_at": finance_position["snapshot_at"],
+                "source_timezone": finance_position["source_timezone"],
+                "last_success_at": finance_position["last_success_at"],
+                "is_stale": finance_position["freshness"]["is_stale"],
+            }
         kkm_history = _kkm_history_entries(organization, request.user)
         kkm_counts = (
             CashCount.objects.filter(organization=organization, cashbox_type=CashCount.CASHBOX_KKM)
@@ -807,6 +818,7 @@ def _render_cash_dashboard(request, section):
             "can_delete_cash_operations": request.user.is_superuser or "admin" in roles,
             "company_balance": company_balance,
             "kkm_balance": kkm_balance,
+            "onec_kkm_balance": onec_kkm_balance,
             "manager_rows": manager_rows,
             "kkm_history": kkm_history,
             "company_counts": company_counts,
