@@ -1,10 +1,12 @@
 {% extends "pool_service/base.html" %}
 
 {% block content %}
+{% include "pool_service/_admin_workspace_styles.html" %}
+<div class="admin-desktop admin-form">
 <main class="container py-4" style="max-width: 720px;">
-  <section class="card shadow-sm">
+  <section class="admin-card card shadow-sm">
     <div class="card-body p-4">
-      <h1 class="h3 mb-3">Подключение финансового советника</h1>
+      <div class="admin-page-header"><h1 class="h3 mb-3">Подключение финансового советника</h1></div>
       <p>
         Приложение <strong>{{ client.display_name }}</strong> запрашивает только
         чтение управленческих показателей Service2.
@@ -23,7 +25,7 @@
         Доступ можно отозвать в Service2 командой управления финансовым MCP. Токены
         не показываются на этой странице и не передаются в URL.
       </p>
-      <form method="post" class="d-flex gap-2 flex-wrap">
+      <form method="post" class="admin-actions d-flex gap-2 flex-wrap">
         {% csrf_token %}
         {% for key, value in oauth_params.items %}
           <input type="hidden" name="{{ key }}" value="{{ value }}">
@@ -34,4 +36,6 @@
     </div>
   </section>
 </main>
+
+</div><!-- /admin-desktop -->
 {% endblock %}
