@@ -210,7 +210,8 @@ class FinanceTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIsNone(response.context["onec_kkm_balance"])
-        self.assertContains(response, "Нет актуального снимка 1С")
+        self.assertContains(response, "Снимок кассы пока не загружен")
+        self.assertContains(response, "Нужны данные 1С и пересчёт")
 
     def test_installer_has_finance_access(self):
         self.client.force_login(self.installer)
