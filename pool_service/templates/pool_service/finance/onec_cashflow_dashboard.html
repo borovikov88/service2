@@ -24,15 +24,161 @@
     .cashflow-monthly-desktop, .cashflow-breakdown-desktop { display:none; }
     .cashflow-mobile-months, .cashflow-breakdown-mobile { display:block; }
   }
+
+  /* Desktop cashflow density. */
+  @media (min-width: 992px) {
+    .cashflow-page-header {
+      margin-bottom: 10px !important;
+      align-items: flex-end !important;
+    }
+    .cashflow-page-header h1 {
+      font-size: 1.65rem;
+      line-height: 1.08;
+      margin-bottom: 3px !important;
+    }
+    .cashflow-page-header .text-muted {
+      font-size: .76rem;
+    }
+    .cashflow-page-header .btn {
+      min-height: 32px;
+      padding: .35rem .65rem;
+      font-size: .77rem;
+    }
+    .cashflow-page-alert {
+      margin-bottom: 10px !important;
+      padding: .55rem .75rem;
+      font-size: .74rem;
+    }
+    #cashflow-period-form {
+      padding: 10px 12px !important;
+      margin-bottom: 10px !important;
+      border-radius: 10px !important;
+    }
+    #cashflow-period-form .row {
+      --bs-gutter-x: .65rem;
+      --bs-gutter-y: .55rem;
+    }
+    #cashflow-period-form .form-label {
+      margin-bottom: 3px;
+      font-size: .7rem;
+      color: #748399;
+    }
+    #cashflow-period-form .form-control,
+    #cashflow-period-form .btn {
+      min-height: 34px;
+      padding-top: .33rem;
+      padding-bottom: .33rem;
+      font-size: .79rem;
+    }
+    .cashflow-management-grid,
+    .cashflow-structure-grid {
+      --bs-gutter-x: .65rem;
+      --bs-gutter-y: .65rem;
+      margin-bottom: 10px !important;
+    }
+    .cashflow-management-card,
+    .cashflow-structure-card {
+      border-radius: 10px !important;
+      box-shadow: 0 4px 14px rgba(15, 23, 42, .035);
+    }
+    .cashflow-management-card {
+      min-height: 88px;
+      padding: 11px 12px !important;
+    }
+    .cashflow-management-card .text-muted {
+      font-size: .7rem;
+    }
+    .cashflow-management-card .h4 {
+      margin-top: 4px;
+      font-size: 1.25rem;
+    }
+    .cashflow-management-card .small {
+      margin-top: 5px !important;
+      font-size: .66rem;
+    }
+    .cashflow-structure-card {
+      min-height: 66px;
+      padding: 10px 11px !important;
+    }
+    .cashflow-structure-card .small {
+      font-size: .68rem;
+    }
+    .cashflow-structure-card strong {
+      display: block;
+      margin-top: 4px;
+      font-size: .92rem;
+    }
+    .cashflow-desktop-card {
+      padding: 11px 12px !important;
+      margin-bottom: 10px !important;
+      border-radius: 10px !important;
+    }
+    .cashflow-desktop-card h2 {
+      font-size: .95rem;
+      margin-bottom: 6px;
+    }
+    .cashflow-desktop-card .small {
+      font-size: .69rem;
+    }
+    .cashflow-article-options {
+      max-height: 12.5rem;
+      font-size: .76rem;
+    }
+    .cashflow-article-options .form-check {
+      padding-top: .15rem !important;
+      padding-bottom: .15rem !important;
+    }
+    .cashflow-article-chip {
+      padding: .22rem .5rem;
+      font-size: .7rem;
+    }
+    .cashflow-chart-wrap {
+      min-height: 255px;
+      height: 255px;
+    }
+    .cashflow-monthly-desktop .table,
+    .cashflow-breakdown-desktop .table {
+      font-size: .75rem;
+    }
+    .cashflow-monthly-desktop .table > :not(caption) > * > *,
+    .cashflow-breakdown-desktop .table > :not(caption) > * > * {
+      padding: .38rem .45rem;
+      vertical-align: middle;
+    }
+    .cashflow-monthly-desktop thead th,
+    .cashflow-breakdown-desktop thead th {
+      font-size: .66rem;
+      white-space: nowrap;
+    }
+    #cashflow-mapping-registry {
+      padding: 11px 12px !important;
+      margin-top: 10px !important;
+      border-radius: 10px !important;
+    }
+  }
+
+  @media (min-width: 1920px) {
+    .cashflow-management-card .h4 {
+      font-size: 1.35rem;
+    }
+    .cashflow-chart-wrap {
+      min-height: 285px;
+      height: 285px;
+    }
+    .cashflow-monthly-desktop .table,
+    .cashflow-breakdown-desktop .table {
+      font-size: .78rem;
+    }
+  }
 </style>
-<div class="d-flex justify-content-between align-items-center mb-3">
+<div class="cashflow-page-header d-flex justify-content-between align-items-center mb-3">
   <div><h1 class="h3 mb-1">ДДС</h1><div class="text-muted">Фактические движения денег из активных подтверждённых версий 1С</div></div>
   <div class="d-flex flex-wrap gap-2">
     {% if can_manage_cashflow_classification %}<a class="btn btn-outline-primary" href="{% url 'finance_onec_cashflow_mapping' %}{% if period_from or period_to %}?period_from={{ period_from|date:'Y-m' }}&amp;period_to={{ period_to|date:'Y-m' }}{% endif %}">Классифицировать статьи</a>{% endif %}
     <a class="btn btn-outline-secondary" href="{% url 'finance_onec_import_list' %}">Импорты 1С</a>
   </div>
 </div>
-<div class="alert alert-info">Итоги строятся только по активным подтверждённым версиям. Внешний поток отделён от внутренних оборотов; подтверждённые статьи, исключённые из внешнего потока без признака внутреннего оборота, показаны отдельно.</div>
+<div class="cashflow-page-alert alert alert-info">Итоги строятся только по активным подтверждённым версиям. Внешний поток отделён от внутренних оборотов; подтверждённые статьи, исключённые из внешнего потока без признака внутреннего оборота, показаны отдельно.</div>
 
 <form method="get" class="card card-soft p-3 mb-3" id="cashflow-period-form">
   <input type="hidden" name="article_mode" value="{{ article_trend.mode }}">
@@ -45,13 +191,13 @@
   {% if period_error %}<div class="text-danger mt-2">{{ period_error }}</div>{% endif %}
 </form>
 
-<div class="row g-3 mb-3" aria-label="Операционный денежный поток">
+<div class="cashflow-management-grid row g-3 mb-3" aria-label="Операционный денежный поток">
   <div class="col-md-4"><div class="card p-3 cashflow-management-card"><div class="text-muted">Операционные поступления</div><div class="h4 mb-0">{{ operating.receipts|money }}</div><div class="small text-muted mt-2">Только внешний операционный поток</div></div></div>
   <div class="col-md-4"><div class="card p-3 cashflow-management-card"><div class="text-muted">Операционные платежи</div><div class="h4 mb-0">{{ operating.payments|money }}</div><div class="small text-muted mt-2">Платежи сохранены положительными</div></div></div>
   <div class="col-md-4"><div class="card p-3 cashflow-management-card"><div class="text-muted">Операционный чистый поток</div><div class="h4 mb-0">{{ operating.net_cash_flow|money }}</div><div class="small text-muted mt-2">Поступления − платежи</div></div></div>
 </div>
 
-<div class="row g-3 mb-3" aria-label="Структура управленческого денежного потока">
+<div class="cashflow-structure-grid row g-3 mb-3" aria-label="Структура управленческого денежного потока">
   <div class="col-sm-6 col-lg"><div class="card p-3 cashflow-structure-card"><div class="text-muted small">Внешний поток</div><strong>{{ external.net_cash_flow|money }}</strong></div></div>
   <div class="col-sm-6 col-lg"><div class="card p-3 cashflow-structure-card"><div class="text-muted small">Ликвидностный</div><strong>{{ liquidity.net_cash_flow|money }}</strong></div></div>
   <div class="col-sm-6 col-lg"><div class="card p-3 cashflow-structure-card"><div class="text-muted small">Финансовый</div><strong>{{ financing.net_cash_flow|money }}</strong></div></div>
@@ -62,7 +208,7 @@
 {% if unclassified_article_count %}<div class="alert alert-warning py-2 mb-3"><strong>Неклассифицированный поток:</strong> поступления {{ unclassified.receipts|money }}, платежи {{ unclassified.payments|money }}, чистый поток {{ unclassified.net_cash_flow|money }}. Он не включён в операционный поток. <a href="#cashflow-mapping-registry">Открыть причины</a>.</div>{% endif %}
 {% if mapping_review_registry %}<div class="alert alert-warning py-2 mb-3"><strong>Требуется решение по статьям ДДС.</strong> Неклассифицированные, ликвидностные и отдельно исключённые статьи сохранены в read-only реестре ниже и не меняют mappings автоматически.</div>{% endif %}
 
-<div class="card card-soft p-3 mb-3">
+<div class="cashflow-desktop-card card card-soft p-3 mb-3">
   <div class="d-flex flex-wrap align-items-start justify-content-between gap-2 mb-3">
     <div><h2 class="h5 mb-1">Динамика по статьям</h2><div class="small text-muted">Аналитический график чистого потока; выбор не меняет итоговые показатели ДДС.</div></div>
     <span class="badge text-bg-light">до {{ article_trend.max_series }} серий</span>
@@ -93,7 +239,7 @@
   {% if article_trend.datasets %}<div class="cashflow-chart-wrap mt-3"><canvas id="cashflow-article-chart"></canvas></div>{% elif article_trend.mode == 'selected' and not article_trend.selection_error %}<div class="text-muted small mt-3">Выберите хотя бы одну статью.</div>{% elif not article_trend.has_active_months %}<div class="text-muted small mt-3">Нет активных данных за выбранный период.</div>{% endif %}
 </div>
 
-<div class="card card-soft p-3 mb-3">
+<div class="cashflow-desktop-card card card-soft p-3 mb-3">
   <h2 class="h5">По месяцам</h2><div class="small text-muted mb-2">Точная управленческая разбивка; отсутствующий активный месяц не заменяется нулём.</div>
   <div class="table-responsive cashflow-monthly-desktop"><table class="table table-sm align-middle"><thead><tr><th>Месяц</th><th class="text-end">Опер. поступления</th><th class="text-end">Опер. платежи</th><th class="text-end">Опер. чистый</th><th class="text-end">Внешний</th><th class="text-end">Ликвидность</th><th class="text-end">Финансовый</th><th class="text-end">Неклассиф.</th><th class="text-end">Внутренний</th><th class="text-end">Вне внешнего</th></tr></thead><tbody>
     {% for item in monthly %}{% if item.has_data %}<tr><td>{{ item.period_month|date:"m.Y" }}</td><td class="text-end">{{ item.operating.receipts|money }}</td><td class="text-end">{{ item.operating.payments|money }}</td><td class="text-end">{{ item.operating.net_cash_flow|money }}</td><td class="text-end">{{ item.external.net_cash_flow|money }}</td><td class="text-end">{{ item.liquidity.net_cash_flow|money }}</td><td class="text-end">{{ item.financing.net_cash_flow|money }}</td><td class="text-end">{{ item.unclassified.net_cash_flow|money }}</td><td class="text-end">{{ item.internal.net_cash_flow|money }}</td><td class="text-end">{{ item.non_external.net_cash_flow|money }}</td></tr>{% else %}<tr><td>{{ item.period_month|date:"m.Y" }}</td><td colspan="9" class="text-muted">Нет активной подтверждённой версии.</td></tr>{% endif %}{% empty %}<tr><td colspan="10">Нет активных подтверждённых данных.</td></tr>{% endfor %}
@@ -144,7 +290,7 @@
   <div class="cashflow-breakdown-mobile">{% for flow in breakdown %}<details class="cashflow-mobile-breakdown-flow"><summary><span>{{ flow.label }}</span><strong>{{ flow.totals.net_cash_flow|money }}</strong></summary>{% for category in flow.categories %}<details class="cashflow-mobile-breakdown-category"><summary><span>{{ category.category }}</span><strong>{{ category.totals.net_cash_flow|money }}</strong></summary>{% for item in category.articles %}<article class="cashflow-mobile-article"><strong>{{ item.article_raw }}</strong><strong>{{ item.net_cash_flow|money }}</strong><span class="cashflow-mobile-article-meta">{{ item.allocation_label }} · поступления {{ item.receipts|money }} · платежи {{ item.payments|money }}</span></article>{% endfor %}</details>{% endfor %}</details>{% empty %}<div class="text-muted small">Нет активных подтверждённых данных.</div>{% endfor %}</div>
 </div>
 
-{% if mapping_review_registry %}<section class="card card-soft p-3 mt-3" id="cashflow-mapping-registry" aria-labelledby="cashflow-mapping-registry-title"><h2 class="h5" id="cashflow-mapping-registry-title">Read-only реестр решений по mappings</h2><div class="small text-muted mb-2">Сервис не создаёт и не изменяет mappings: здесь только статьи активных подтверждённых версий, для которых требуется решение.{% if can_manage_cashflow_classification %} <a href="{% url 'finance_onec_cashflow_mapping' %}{% if period_from or period_to %}?period_from={{ period_from|date:'Y-m' }}&amp;period_to={{ period_to|date:'Y-m' }}{% endif %}">Открыть управляемую классификацию</a>.{% endif %}</div><div class="table-responsive"><table class="table table-sm align-middle mb-0"><thead><tr><th>Статья</th><th>Причина</th><th>Группа</th><th class="text-end">Поступления</th><th class="text-end">Платежи</th><th class="text-end">Чистый поток</th></tr></thead><tbody>{% for item in mapping_review_registry %}<tr><td>{{ item.article_raw }}</td><td>{{ item.reason_labels|join:"; " }}</td><td>{{ item.allocation_label }}</td><td class="text-end">{{ item.receipts|money }}</td><td class="text-end">{{ item.payments|money }}</td><td class="text-end">{{ item.net_cash_flow|money }}</td></tr>{% endfor %}</tbody></table></div></section>{% endif %}
+{% if mapping_review_registry %}<section class="cashflow-desktop-card card card-soft p-3 mt-3" id="cashflow-mapping-registry" aria-labelledby="cashflow-mapping-registry-title"><h2 class="h5" id="cashflow-mapping-registry-title">Read-only реестр решений по mappings</h2><div class="small text-muted mb-2">Сервис не создаёт и не изменяет mappings: здесь только статьи активных подтверждённых версий, для которых требуется решение.{% if can_manage_cashflow_classification %} <a href="{% url 'finance_onec_cashflow_mapping' %}{% if period_from or period_to %}?period_from={{ period_from|date:'Y-m' }}&amp;period_to={{ period_to|date:'Y-m' }}{% endif %}">Открыть управляемую классификацию</a>.{% endif %}</div><div class="table-responsive"><table class="table table-sm align-middle mb-0"><thead><tr><th>Статья</th><th>Причина</th><th>Группа</th><th class="text-end">Поступления</th><th class="text-end">Платежи</th><th class="text-end">Чистый поток</th></tr></thead><tbody>{% for item in mapping_review_registry %}<tr><td>{{ item.article_raw }}</td><td>{{ item.reason_labels|join:"; " }}</td><td>{{ item.allocation_label }}</td><td class="text-end">{{ item.receipts|money }}</td><td class="text-end">{{ item.payments|money }}</td><td class="text-end">{{ item.net_cash_flow|money }}</td></tr>{% endfor %}</tbody></table></div></section>{% endif %}
 
 {{ article_trend|json_script:"cashflow-article-trend-data" }}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
