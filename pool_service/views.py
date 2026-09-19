@@ -6704,7 +6704,10 @@ def pool_detail(request, pool_uuid):
 
     can_add_reading = role in {"editor", "service", "admin"}
 
-    readings_list = WaterReading.objects.filter(pool=pool, is_deleted=False).select_related("added_by").order_by("-date")
+    readings_list = WaterReading.objects.filter(
+        pool=pool,
+        is_deleted=False,
+    ).select_related("added_by").order_by("-date")
 
     desktop_card_mode = (
         "service"
@@ -6714,7 +6717,6 @@ def pool_detail(request, pool_uuid):
         else "standard"
     )
     latest_reading = readings_list.first()
-    recent_readings = list(readings_list[:3])
     next_visit_plan = (
         ServiceVisitPlan.objects.filter(
             pool=pool,
@@ -6725,13 +6727,26 @@ def pool_detail(request, pool_uuid):
     )
     open_pool_task_count = 0
 
+    timeline_entries = list(readings_list)
+    for reading in timeline_entries:
+        reading.timeline_kind = "reading"
+        reading.timeline_at = reading.date
 
+    status_history = list(
+        PoolStatusHistory.objects.filter(pool=pool)
+        .select_related("changed_by")
+        .order_by("-changed_at", "-id")
+    )
+    for status_change in status_history:
+        status_change.timeline_kind = "status"
+        status_change.timeline_at = status_change.changed_at
+        timeline_entries.append(status_change)
+
+    timeline_entries.sort(key=lambda entry: entry.timeline_at, reverse=True)
 
     per_page = _parse_per_page(request.GET.get("per_page"), 20)
 
-
-
-    paginator = Paginator(readings_list, per_page)
+    paginator = Paginator(timeline_entries, per_page)
 
     page_number = request.GET.get("page")
 
@@ -6749,6 +6764,9 @@ def pool_detail(request, pool_uuid):
     if can_add_reading:
 
         for reading in readings:
+
+            if getattr(reading, "timeline_kind", "reading") != "reading":
+                continue
 
             if _reading_edit_allowed(reading, request.user):
 
@@ -6867,7 +6885,8 @@ def pool_detail(request, pool_uuid):
             reading_task_map.setdefault(task.water_reading_id, []).append(task)
         open_pool_task_count = sum(1 for task in supply_tasks if not task.is_done)
     for reading in readings:
-        reading.linked_supply_tasks = reading_task_map.get(reading.id, [])
+        if getattr(reading, "timeline_kind", "reading") == "reading":
+            reading.linked_supply_tasks = reading_task_map.get(reading.id, [])
 
     # Audit records continue to be written by _write_data_audit, but the
     # object card no longer exposes the journal to any role.
@@ -6886,7 +6905,6 @@ def pool_detail(request, pool_uuid):
         "role": role,
         "desktop_card_mode": desktop_card_mode,
         "latest_reading": latest_reading,
-        "recent_readings": recent_readings,
         "next_visit_plan": next_visit_plan,
         "open_pool_task_count": open_pool_task_count,
         "open_service_issue_count": open_service_issue_count,
