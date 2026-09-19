@@ -1236,11 +1236,367 @@
     .task-history[open] .task-history__summary::after {
       transform: rotate(180deg);
     }
+
+
+    /* Desktop workspace foundation.
+       Mobile/tablet behavior below 992px intentionally remains unchanged. */
+    @media (min-width: 992px) {
+      :root {
+        --desktop-sidebar-width: 220px;
+        --desktop-topbar-height: 62px;
+        --desktop-content-gutter: 18px;
+        --desktop-workspace-max: 2480px;
+      }
+
+      body:not(.app-embedded) {
+        background: #f4f7fb;
+      }
+
+      .desktop-sidebar {
+        position: fixed;
+        inset: 0 auto 0 0;
+        width: var(--desktop-sidebar-width);
+        z-index: 1040;
+        flex-direction: column;
+        background:
+          radial-gradient(circle at 18% 0%, rgba(29, 111, 255, 0.16), transparent 28%),
+          linear-gradient(180deg, #10253f 0%, #0d2138 52%, #0a1b2f 100%);
+        color: #dce7f5;
+        border-right: 1px solid rgba(255, 255, 255, 0.06);
+        box-shadow: 8px 0 26px rgba(15, 23, 42, 0.08);
+        overflow-y: auto;
+        overscroll-behavior: contain;
+      }
+
+      .desktop-sidebar__brand {
+        min-height: var(--desktop-topbar-height);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 18px;
+        color: #fff;
+        text-decoration: none;
+        font-size: 1.12rem;
+        font-weight: 700;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        flex: 0 0 auto;
+      }
+
+      .desktop-sidebar__brand:hover {
+        color: #fff;
+      }
+
+      .desktop-sidebar__brand-mark {
+        width: 31px;
+        height: 31px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 9px;
+        background: linear-gradient(145deg, #1887ff, #0d5bd7);
+        color: #fff;
+        box-shadow: 0 8px 18px rgba(13, 110, 253, 0.28);
+        flex: 0 0 auto;
+      }
+
+      .desktop-sidebar__nav {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 18px 8px 12px;
+      }
+
+      .desktop-sidebar__link {
+        position: relative;
+        min-height: 42px;
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        padding: 8px 12px;
+        border-radius: 8px;
+        color: #d6e1ee;
+        text-decoration: none;
+        font-size: 0.9rem;
+        font-weight: 500;
+        transition: background 0.16s ease, color 0.16s ease, transform 0.16s ease;
+      }
+
+      .desktop-sidebar__link > i {
+        width: 20px;
+        text-align: center;
+        font-size: 1.05rem;
+        color: #b9cae0;
+      }
+
+      .desktop-sidebar__link:hover {
+        background: rgba(255, 255, 255, 0.07);
+        color: #fff;
+      }
+
+      .desktop-sidebar__link:hover > i {
+        color: #fff;
+      }
+
+      .desktop-sidebar__link.is-active {
+        color: #fff;
+        background: linear-gradient(90deg, rgba(13, 110, 253, 0.9), rgba(38, 124, 242, 0.68));
+        box-shadow: inset 3px 0 0 #65b7ff, 0 8px 18px rgba(0, 0, 0, 0.12);
+      }
+
+      .desktop-sidebar__link.is-active > i {
+        color: #fff;
+      }
+
+      .desktop-sidebar__subnav {
+        margin: 0 5px 6px 32px;
+        padding: 3px 0 4px 10px;
+        border-left: 1px solid rgba(255, 255, 255, 0.13);
+      }
+
+      .desktop-sidebar__subheading {
+        color: #8197b0;
+        font-size: 0.68rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        padding: 7px 9px 3px;
+      }
+
+      .desktop-sidebar__sublink {
+        display: block;
+        padding: 6px 9px;
+        border-radius: 7px;
+        color: #aebfd2;
+        text-decoration: none;
+        font-size: 0.78rem;
+        line-height: 1.25;
+      }
+
+      .desktop-sidebar__sublink:hover,
+      .desktop-sidebar__sublink.is-active {
+        color: #fff;
+        background: rgba(255, 255, 255, 0.07);
+      }
+
+      .desktop-sidebar__footer {
+        margin-top: auto;
+        padding: 14px 18px 18px;
+        color: #8197b0;
+        font-size: 0.74rem;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      body:not(.app-embedded) .app-header {
+        margin-left: var(--desktop-sidebar-width);
+        min-height: var(--desktop-topbar-height);
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
+        background: rgba(255, 255, 255, 0.96);
+        border-bottom: 1px solid #e3eaf3;
+        box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);
+        backdrop-filter: blur(10px);
+      }
+
+      body:not(.app-embedded) .app-header > .container,
+      body:not(.app-embedded) .page-shell > .container {
+        width: 100%;
+        max-width: var(--desktop-workspace-max);
+        padding-left: var(--desktop-content-gutter);
+        padding-right: var(--desktop-content-gutter);
+      }
+
+      body:not(.app-embedded) .app-header__row {
+        display: none !important;
+      }
+
+      .desktop-topbar {
+        min-height: var(--desktop-topbar-height);
+        width: 100%;
+      }
+
+      .desktop-topbar__section {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        color: #17283f;
+        min-width: 0;
+        font-size: 0.88rem;
+        font-weight: 600;
+      }
+
+      .desktop-topbar__home {
+        width: 32px;
+        height: 32px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 8px;
+        color: #5b6c82;
+        text-decoration: none;
+      }
+
+      .desktop-topbar__home:hover {
+        background: #eef4fc;
+        color: #0d6efd;
+      }
+
+      .desktop-topbar__divider {
+        width: 1px;
+        height: 24px;
+        background: #e3eaf3;
+      }
+
+      .desktop-topbar__profile {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        color: #17283f;
+        text-decoration: none;
+        font-size: 0.84rem;
+        font-weight: 600;
+      }
+
+      .desktop-topbar__avatar {
+        width: 34px;
+        height: 34px;
+        border-radius: 50%;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: #21354e;
+        color: #fff;
+        font-size: 0.72rem;
+        font-weight: 700;
+      }
+
+      body:not(.app-embedded) .page-shell {
+        margin-left: var(--desktop-sidebar-width);
+        min-height: calc(100vh - var(--desktop-topbar-height));
+        padding: 18px 0 32px;
+        overflow-x: clip;
+      }
+
+      body.app-embedded .page-shell {
+        margin-left: 0;
+      }
+
+      .page-shell .card-soft {
+        border-radius: 11px;
+        border-color: #e2e9f2;
+        box-shadow: 0 5px 16px rgba(15, 23, 42, 0.045);
+      }
+
+      .page-shell .btn {
+        --bs-btn-font-size: 0.86rem;
+        --bs-btn-padding-y: 0.46rem;
+        --bs-btn-padding-x: 0.82rem;
+        --bs-btn-border-radius: 0.5rem;
+      }
+
+      .page-shell .form-control,
+      .page-shell .form-select {
+        font-size: 0.87rem;
+        border-radius: 8px;
+      }
+
+      .page-shell .table {
+        font-size: 0.84rem;
+      }
+
+      .page-shell .table > :not(caption) > * > * {
+        padding: 0.52rem 0.62rem;
+        vertical-align: middle;
+      }
+
+      .page-shell .table thead th {
+        color: #61738a;
+        font-size: 0.76rem;
+        font-weight: 600;
+        background: #f4f7fb;
+        border-bottom-color: #e3eaf3;
+      }
+
+      .desktop-kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .desktop-content-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 14px;
+      }
+
+      .desktop-split-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+        gap: 14px;
+      }
+    }
+
+    @media (min-width: 1440px) {
+      :root {
+        --desktop-sidebar-width: 232px;
+        --desktop-content-gutter: 24px;
+      }
+
+      .desktop-kpi-grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+    }
+
+    @media (min-width: 1920px) {
+      :root {
+        --desktop-sidebar-width: 244px;
+        --desktop-content-gutter: 32px;
+      }
+
+      .desktop-kpi-grid {
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .desktop-content-grid {
+        grid-template-columns: repeat(12, minmax(0, 1fr));
+        gap: 16px;
+      }
+
+      .desktop-split-grid {
+        grid-template-columns: minmax(0, 2.35fr) minmax(340px, 1fr);
+        gap: 16px;
+      }
+
+      .page-shell .table {
+        font-size: 0.86rem;
+      }
+    }
+
+    @media (min-width: 2560px) {
+      :root {
+        --desktop-sidebar-width: 252px;
+        --desktop-content-gutter: 40px;
+        --desktop-workspace-max: 2600px;
+      }
+
+      .desktop-kpi-grid {
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 16px;
+      }
+
+      .page-shell .table {
+        font-size: 0.9rem;
+      }
+
+      .page-shell .table > :not(caption) > * > * {
+        padding: 0.58rem 0.72rem;
+      }
+    }
   </style>
   {% block extra_head %}{% endblock %}
 </head>
 
-<body data-current-user-id="{% if user.is_authenticated %}{{ user.id }}{% endif %}">
+<body class="{% if hide_header %}app-embedded{% endif %}" data-current-user-id="{% if user.is_authenticated %}{{ user.id }}{% endif %}">
   <!-- Yandex.Metrika counter (noscript) -->
   <noscript>
     <div>
@@ -1248,9 +1604,168 @@
     </div>
   </noscript>
   <!-- /Yandex.Metrika counter (noscript) -->
+  {% if user.is_authenticated and not hide_header %}
+  <aside class="desktop-sidebar d-none d-lg-flex" aria-label="Основная навигация">
+    <a href="{{ home_url|default:'/pools/' }}" class="desktop-sidebar__brand">
+      <span class="desktop-sidebar__brand-mark" aria-hidden="true"><i class="bi bi-layers-fill"></i></span>
+      <span>{{ brand_name }}</span>
+    </a>
+
+    <nav class="desktop-sidebar__nav">
+      <a href="{{ home_url|default:'/pools/' }}" class="desktop-sidebar__link">
+        <i class="bi bi-house"></i><span>Главная</span>
+      </a>
+
+      {% if can_access_crm %}
+      <a href="{% url 'crm_index' %}" class="desktop-sidebar__link {% if active_tab == 'crm' %}is-active{% endif %}">
+        <i class="bi bi-kanban"></i><span>CRM</span>
+      </a>
+      {% if active_tab == 'crm' %}
+      <div class="desktop-sidebar__subnav">
+        <a href="{% url 'crm_tasks' %}" class="desktop-sidebar__sublink {% if request.resolver_match.url_name == 'crm_tasks' %}is-active{% endif %}">Задачи</a>
+        <a href="{% url 'crm_list' direction='service' %}" class="desktop-sidebar__sublink {% if request.resolver_match.kwargs.direction == 'service' %}is-active{% endif %}">Сервис</a>
+        {% if not crm_service_only %}
+        <a href="{% url 'crm_list' direction='project' %}" class="desktop-sidebar__sublink {% if request.resolver_match.kwargs.direction == 'project' %}is-active{% endif %}">Проекты</a>
+        <a href="{% url 'crm_list' direction='sales' %}" class="desktop-sidebar__sublink {% if request.resolver_match.kwargs.direction == 'sales' %}is-active{% endif %}">Продажи</a>
+        <a href="{% url 'crm_list' direction='tender' %}" class="desktop-sidebar__sublink {% if request.resolver_match.kwargs.direction == 'tender' %}is-active{% endif %}">Торги</a>
+        {% endif %}
+      </div>
+      {% endif %}
+      {% endif %}
+
+      {% if not is_personal_user and not finance_only_user %}
+      <a href="/readings/all" class="desktop-sidebar__link {% if active_tab == 'readings' %}is-active{% endif %}">
+        <i class="bi bi-calendar3"></i><span>Календарь</span>
+      </a>
+      {% endif %}
+
+      {% if not finance_only_user %}
+      <a href="{{ personal_pool_url|default:'/pools' }}" class="desktop-sidebar__link {% if active_tab == 'pools' %}is-active{% endif %}">
+        <i class="bi bi-building"></i>
+        <span>{% if is_personal_user %}Мой объект{% else %}Объекты{% endif %}</span>
+      </a>
+      {% endif %}
+
+      {% if is_org_staff %}
+      <a href="{% url 'clients_list' %}" class="desktop-sidebar__link {% if active_tab == 'clients' %}is-active{% endif %}">
+        <i class="bi bi-people"></i><span>Клиенты</span>
+      </a>
+      {% endif %}
+
+      {% if can_access_finance %}
+      <a href="{% url 'finance_dashboard' %}" class="desktop-sidebar__link {% if active_tab == 'finance' %}is-active{% endif %}">
+        <i class="bi bi-bar-chart-line"></i><span>Финансы</span>
+      </a>
+      {% if active_tab == 'finance' %}
+      <div class="desktop-sidebar__subnav">
+        {% for group in finance_navigation %}{% if group.items %}
+          <div class="desktop-sidebar__subheading">{{ group.label }}</div>
+          {% for item in group.items %}
+            <a href="{{ item.url }}" class="desktop-sidebar__sublink {% if item.active %}is-active{% endif %}">{{ item.label }}</a>
+          {% endfor %}
+        {% endif %}{% endfor %}
+      </div>
+      {% endif %}
+      {% endif %}
+
+      {% if can_access_users %}
+      <a href="{% url 'users' %}" class="desktop-sidebar__link {% if active_tab == 'users' %}is-active{% endif %}">
+        <i class="bi bi-person-gear"></i><span>Пользователи</span>
+      </a>
+      {% endif %}
+
+      {% if can_access_development %}
+      <a href="{% url 'development_task_list' %}" class="desktop-sidebar__link {% if active_tab == 'development' %}is-active{% endif %}">
+        <i class="bi bi-code-slash"></i><span>Разработка</span>
+      </a>
+      {% endif %}
+
+      {% if user.is_superuser %}
+      <a href="{% url 'billing_admin' %}" class="desktop-sidebar__link {% if active_tab == 'billing_admin' %}is-active{% endif %}">
+        <i class="bi bi-credit-card"></i><span>Продления</span>
+      </a>
+      {% endif %}
+
+      <a href="{% url 'profile' %}" class="desktop-sidebar__link {% if active_tab == 'profile' %}is-active{% endif %}">
+        <i class="bi bi-gear"></i><span>Профиль</span>
+      </a>
+    </nav>
+
+    <div class="desktop-sidebar__footer">
+      <div class="fw-semibold text-white mb-1">{{ brand_name }}</div>
+      <div>Рабочая система Аквалайн</div>
+    </div>
+  </aside>
+  {% endif %}
+
   {% if user.is_authenticated %}
   <header class="app-header py-2" {% if hide_header %}style="display:none"{% endif %}>
     <div class="container">
+      <div class="desktop-topbar d-none d-lg-flex align-items-center justify-content-between gap-3">
+        <div class="desktop-topbar__section">
+          <a href="{{ home_url|default:'/pools/' }}" class="desktop-topbar__home" aria-label="Главная"><i class="bi bi-house"></i></a>
+          <i class="bi bi-chevron-right text-muted small"></i>
+          <span>
+            {% if active_tab == 'crm' %}CRM
+            {% elif active_tab == 'readings' %}Календарь
+            {% elif active_tab == 'pools' %}Объекты
+            {% elif active_tab == 'clients' %}Клиенты
+            {% elif active_tab == 'finance' %}Финансы
+            {% elif active_tab == 'users' %}Пользователи
+            {% elif active_tab == 'development' %}Разработка
+            {% elif active_tab == 'billing_admin' %}Продления
+            {% elif active_tab == 'profile' %}Профиль
+            {% else %}{{ brand_name }}{% endif %}
+          </span>
+        </div>
+        <div class="d-flex align-items-center gap-2">
+          {% if show_add_button and add_url and not page_action_label %}
+            <a href="{{ add_url }}" class="btn btn-primary btn-sm d-inline-flex align-items-center gap-2 {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
+              <i class="bi bi-plus-lg"></i><span>Добавить</span>
+            </a>
+          {% endif %}
+
+          {% if plan_badge and show_plan_badge %}
+            <div class="d-flex align-items-center">
+              {% if plan_badge.type == 'company_expired' %}
+                <a href="{{ payment_url|default:'/billing/' }}" class="plan-badge plan-badge--company_expired text-decoration-none">Trial: 0 дней</a>
+              {% else %}
+                <span class="plan-badge plan-badge--{{ plan_badge.type }}">
+                  {% if plan_badge.type == 'personal_free' %}Free
+                  {% elif plan_badge.type == 'company_trial' %}Trial: {{ plan_badge.days_left }} дней
+                  {% elif plan_badge.type == 'company_paid' %}Paid до {{ plan_badge.paid_until|date:"d.m.Y" }}{% endif %}
+                </span>
+              {% endif %}
+            </div>
+          {% endif %}
+
+          <a class="header-icon position-relative" href="{% url 'notifications' %}" aria-label="Уведомления" title="Уведомления">
+            <i class="bi bi-bell fs-5"></i>
+            {% if notifications_unread_count %}
+              <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger">{{ notifications_unread_count }}</span>
+            {% endif %}
+          </a>
+
+          {% if security_quick_unlock_enabled %}
+          <form method="post" action="{% url 'security_lock' %}" class="d-inline-flex m-0">
+            {% csrf_token %}
+            <input type="hidden" name="next" value="{{ request.get_full_path }}">
+            <button type="submit" class="header-icon text-muted" aria-label="Заблокировать" title="Заблокировать">
+              <i class="bi bi-lock fs-5"></i>
+            </button>
+          </form>
+          {% endif %}
+
+          <span class="desktop-topbar__divider" aria-hidden="true"></span>
+          <a href="{% url 'profile' %}" class="desktop-topbar__profile">
+            <span class="desktop-topbar__avatar">
+              {% if user.first_name %}{{ user.first_name|slice:":1" }}{% else %}{{ user.username|slice:":1" }}{% endif %}{% if user.last_name %}{{ user.last_name|slice:":1" }}{% endif %}
+            </span>
+            <span>{% if user.get_full_name %}{{ user.get_full_name }}{% else %}{{ user.username }}{% endif %}</span>
+            <i class="bi bi-chevron-down small text-muted"></i>
+          </a>
+        </div>
+      </div>
       <div class="app-header__row d-flex flex-wrap justify-content-between align-items-center gap-3">
         <a href="{{ home_url|default:'/pools/' }}" class="app-header__brand d-flex align-items-center gap-3 text-decoration-none">
           <img src="{% static brand_logo %}" class="app-logo{% if brand_logo_wide %} app-logo--wide{% endif %}" alt="{{ brand_name }}">
