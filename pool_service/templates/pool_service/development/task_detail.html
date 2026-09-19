@@ -1,7 +1,9 @@
 {% extends "pool_service/base.html" %}
 {% block title %}{{ task.reference }} — {{ task.title }}{% endblock %}
 {% block content %}
-<div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+{% include "pool_service/_admin_workspace_styles.html" %}
+<div class="admin-desktop">
+<div class="admin-page-header d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
   <div>
     <a class="text-decoration-none" href="{% url 'development_task_list' %}">← Задачи разработки</a>
     <div class="text-muted fw-semibold mt-3">{{ task.reference }}</div>
@@ -24,7 +26,7 @@
 </div>
 
 {% if analysis_iteration %}
-<div class="card card-soft p-3 p-lg-4 mb-4">
+<div class="admin-card card card-soft p-3 p-lg-4 mb-4">
   <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
     <div>
       <h2 class="h5 mb-1">Первичный AI-анализ</h2>
@@ -48,7 +50,7 @@
 {% endif %}
 
 {% if unknown_review_recovery_available %}
-<div class="card card-soft border-danger p-3 p-lg-4 mb-4">
+<div class="admin-card card card-soft border-danger p-3 p-lg-4 mb-4">
   <h2 class="h5 mb-2">Не удалось подтвердить запуск AI Review</h2>
   <div class="alert alert-warning py-2">
     Неизвестно, был ли запрос AI Review принят внешним сервисом. Автоматический повтор отключён для защиты от дублирующего платного запроса.
@@ -71,7 +73,7 @@
 {% endif %}
 
 {% if human_review_resolution_available %}
-<div class="card card-soft border-warning p-3 p-lg-4 mb-4">
+<div class="admin-card card card-soft border-warning p-3 p-lg-4 mb-4">
   <h2 class="h5 mb-2">Требуется решение по AI Review</h2>
   {% if human_review_summary %}<div class="mb-2">{{ human_review_summary|linebreaksbr }}</div>{% endif %}
   {% if human_review_reason %}<div class="alert alert-warning py-2">{{ human_review_reason|linebreaksbr }}</div>{% endif %}
@@ -88,7 +90,7 @@
 {% endif %}
 
 {% if human_audit_finalization_available %}
-<div class="card card-soft border-success p-3 p-lg-4 mb-4">
+<div class="admin-card card card-soft border-success p-3 p-lg-4 mb-4">
   <h2 class="h5 mb-2">Завершение после human audit</h2>
   <p class="text-muted">Используйте это действие только после независимого подтверждения результата.</p>
   <form method="post" action="{% url 'development_task_finalize_audit' task.id %}">
@@ -100,7 +102,7 @@
 </div>
 {% endif %}
 
-<div class="card card-soft p-3 p-lg-4 mb-4">
+<div class="admin-card card card-soft p-3 p-lg-4 mb-4">
   <h2 class="h5 mb-3">Стоимость AI</h2>
   <div class="row g-3">
     <div class="col-md-4"><div class="text-muted">Анализ</div><div class="fs-5">{{ ai_costs.analysis.amount_display }}</div>{% for call in ai_costs.analysis.records %}<div class="small text-muted">Модель: {% if call.model is not None %}{{ call.model }}{% else %}Нет данных{% endif %}<br>Input tokens: {% if call.input_tokens is not None %}{{ call.input_tokens }}{% else %}Нет данных{% endif %}<br>Cached input tokens: {% if call.cached_input_tokens is not None %}{{ call.cached_input_tokens }}{% else %}Нет данных{% endif %}<br>Output tokens: {% if call.output_tokens is not None %}{{ call.output_tokens }}{% else %}Нет данных{% endif %}</div>{% empty %}<div class="small text-muted">Нет данных</div>{% endfor %}</div>
@@ -110,7 +112,7 @@
 </div>
 
 {% if task.status == "ready_for_codex" or codex_iteration %}
-<div class="card card-soft p-3 p-lg-4 mb-4">
+<div class="admin-card card card-soft p-3 p-lg-4 mb-4">
   <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
     <div>
       <h2 class="h5 mb-1">Выполнение в Codex</h2>
@@ -146,7 +148,7 @@
 </div>
 {% endif %}
 
-<div class="card card-soft p-3 p-lg-4 mb-4">
+<div class="admin-card card card-soft p-3 p-lg-4 mb-4">
   <h2 class="h5 mb-3">Этапы</h2>
   <div class="d-flex flex-wrap gap-3">
     {% for stage in stage_rows %}
@@ -157,9 +159,9 @@
   </div>
 </div>
 
-<div class="row g-4 mb-4">
+<div class="row g-3 mb-3">
   <div class="col-lg-8">
-    <div class="card card-soft p-3 p-lg-4 h-100">
+    <div class="admin-card card card-soft p-3 p-lg-4 h-100">
       <section class="mb-4"><h2 class="h6 text-uppercase text-muted">Исходная задача</h2><div>{{ task.description|linebreaksbr }}</div></section>
       <section class="mb-4"><h2 class="h6 text-uppercase text-muted">Бизнес-цель</h2><div>{{ task.business_goal|default:"—"|linebreaksbr }}</div></section>
       <section class="mb-4"><h2 class="h6 text-uppercase text-muted">Definition of Done</h2><div>{{ task.definition_of_done|default:"—"|linebreaksbr }}</div></section>
@@ -185,7 +187,7 @@
   </div>
 </div>
 
-<div class="card card-soft p-3 p-lg-4 mb-4">
+<div class="admin-card card card-soft p-3 p-lg-4 mb-4">
   <div class="d-flex justify-content-between align-items-center mb-3"><h2 class="h4 mb-0">История итераций</h2><span class="text-muted">{{ iterations|length }}</span></div>
   {% for iteration in iterations %}
   <article class="border rounded-3 p-3 mb-3">
@@ -215,5 +217,7 @@
     <div class="d-flex gap-3"><div class="text-muted text-nowrap">{{ event.created_at|date:"d.m.Y H:i" }}</div><div>{{ event.message }}</div></div>
     {% empty %}<div class="text-muted">Событий пока нет.</div>{% endfor %}
   </div>
+</div>
+
 </div>
 {% endblock %}
