@@ -293,8 +293,9 @@ class RefreshAndApplyTests(TestCase):
         run.save(update_fields=["progress", "error_message"])
 
         status = self.client.get(reverse("finance_onec_refresh_apply_status", args=[run.id]))
-        self.assertContains(status, "справочник ответственных")
-        self.assertNotContains(status, "apply_plan")
+        payload = status.json()
+        self.assertIn("справочник ответственных", payload["progress"]["error_hint"])
+        self.assertNotIn("apply_plan", payload)
 
         page = self.client.get(reverse("finance_onec_import_list"))
         self.assertContains(page, "Этап: справочник ответственных")
