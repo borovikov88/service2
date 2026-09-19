@@ -3602,6 +3602,7 @@
 
     function showInstallBanner() {
       if (!installBanner) return;
+      if (window.matchMedia("(min-width: 992px)").matches) return;
       installBanner.style.display = "block";
     }
     function hideInstallBanner() {
@@ -3675,6 +3676,7 @@
     if (!isStandalone()) clearLegacyInstalledMarker();
     function showIosBanner() {
       if (!iosBanner) return;
+      if (window.matchMedia("(min-width: 992px)").matches) return;
       iosBanner.style.display = "block";
     }
     function hideIosBanner() {
