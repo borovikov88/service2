@@ -40,3 +40,38 @@ class FinanceDesktopRedesignTests(SimpleTestCase):
                 source = get_template(template_name).template.source
                 self.assertIn("finance-filter-card", source)
                 self.assertIn("finance-data-card", source)
+
+    def test_secondary_finance_templates_use_compact_workspace(self):
+        for template_name in [
+            "pool_service/finance/onec_import_list.html",
+            "pool_service/finance/onec_import_detail.html",
+            "pool_service/finance/onec_import_upload.html",
+            "pool_service/finance/onec_import_preview.html",
+            "pool_service/finance/onec_cashflow_preview.html",
+            "pool_service/finance/onec_cashflow_mapping.html",
+            "pool_service/finance/onec_cost_control.html",
+            "pool_service/finance/payroll_employee_mapping.html",
+            "pool_service/finance/payroll_import_list.html",
+            "pool_service/finance/payroll_import_upload.html",
+            "pool_service/finance/payroll_import_preview.html",
+            "pool_service/finance/payroll_import_confirm.html",
+            "pool_service/finance/payroll_accrual_fetch.html",
+            "pool_service/finance/payroll_accrual_preview.html",
+        ]:
+            with self.subTest(template=template_name):
+                source = get_template(template_name).template.source
+                self.assertIn("finance-desktop", source)
+                self.assertIn(
+                    'pool_service/finance/_desktop_workspace_styles.html',
+                    source,
+                )
+
+    def test_secondary_finance_workspace_has_shared_density_classes(self):
+        source = get_template(
+            "pool_service/finance/_desktop_workspace_styles.html"
+        ).template.source
+
+        self.assertIn("finance-secondary-header", source)
+        self.assertIn("finance-secondary-card", source)
+        self.assertIn("finance-secondary-kpi", source)
+

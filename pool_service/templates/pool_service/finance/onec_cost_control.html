@@ -2,7 +2,9 @@
 {% load finance_tags %}
 {% block title %}Контроль себестоимости 1С{% endblock %}
 {% block content %}
-<div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+{% include "pool_service/finance/_desktop_workspace_styles.html" %}
+<div class="finance-desktop">
+<div class="finance-secondary-header d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
   <div>
     <h1 class="h3 mb-1">Контроль себестоимости 1С</h1>
     <div class="text-muted">Отчёт показывает товары, которые проданы, но в активных импортированных данных 1С отсутствует себестоимость.</div>
@@ -10,7 +12,7 @@
   {% if can_import_gross_profit %}<a class="btn btn-outline-secondary" href="{% url 'finance_onec_import_list' %}">Обновить данные</a>{% endif %}
 </div>
 
-<form method="get" class="card card-soft p-3 mb-4">
+<form method="get" class="finance-secondary-card card card-soft p-3 mb-4">
   {% if form.errors %}<div class="alert alert-warning py-2">Проверьте параметры фильтра.</div>{% endif %}
   <div class="row g-3 align-items-end">
     <div class="col-sm-6 col-lg-2">
@@ -101,5 +103,7 @@
 </ul></nav>
 {% endif %}
 
-<div class="alert alert-light border mt-4 mb-0">Список является диагностикой для ручной проверки. Импортированные значения не изменяются, корректировки автоматически не создаются.</div>
+<div class="finance-secondary-note alert alert-light border mt-4 mb-0">Список является диагностикой для ручной проверки. Импортированные значения не изменяются, корректировки автоматически не создаются.</div>
+
+</div><!-- /finance-desktop -->
 {% endblock %}
