@@ -273,12 +273,10 @@
       font-size: 1.18rem;
     }
 
-    .object-layout-wide__aside .object-info-grid > .col-lg-4 {
+    .object-layout-wide__aside .object-info-grid > [class*="col-"] {
       width: 100%;
-    }
-
-    .object-layout-wide__aside .object-info-grid > .col-12:not(.col-md-6) {
-      width: 100%;
+      max-width: 100%;
+      flex: 0 0 100%;
     }
 
     .object-layout-wide__aside .object-info-grid > div > .d-flex,
