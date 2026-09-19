@@ -1310,6 +1310,34 @@
         color: #fff;
       }
 
+      .desktop-sidebar__group {
+        width: 100%;
+      }
+
+      .desktop-sidebar__group > summary {
+        cursor: pointer;
+        list-style: none;
+      }
+
+      .desktop-sidebar__group > summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .desktop-sidebar__group > summary > span {
+        flex: 1 1 auto;
+      }
+
+      .desktop-sidebar__group-chevron {
+        margin-left: auto;
+        width: auto !important;
+        font-size: 0.72rem !important;
+        transition: transform 0.12s ease;
+      }
+
+      .desktop-sidebar__group[open] .desktop-sidebar__group-chevron {
+        transform: rotate(180deg);
+      }
+
       .desktop-sidebar__subnav {
         margin: 0 5px 6px 32px;
         padding: 3px 0 4px 10px;
