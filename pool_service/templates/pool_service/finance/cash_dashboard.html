@@ -84,9 +84,29 @@
     {% endif %}
   </div>
   <div class="row g-3 mb-4">
+    <div class="col-12">
+      <div class="card card-soft p-4 h-100">
+        <div class="d-flex flex-column flex-md-row align-items-md-end justify-content-between gap-2">
+          <div>
+            <div class="text-muted small mb-1">Остаток денежных средств в ККМ по данным 1С</div>
+            {% if onec_kkm_balance %}
+              <div class="fs-3 fw-bold {% if onec_kkm_balance.balance < 0 %}text-danger{% else %}text-success{% endif %}">{{ onec_kkm_balance.balance|money }}</div>
+            {% else %}
+              <div class="fs-5 fw-semibold text-muted">Нет актуального снимка 1С</div>
+            {% endif %}
+          </div>
+          {% if onec_kkm_balance %}
+            <div class="text-muted small text-md-end">
+              Обновлено: {{ onec_kkm_balance.snapshot_at|date:"d.m.Y H:i" }}
+              {% if onec_kkm_balance.is_stale %}<span class="badge text-bg-warning ms-1">данные устарели</span>{% endif %}
+            </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
     <div class="col-12 col-md-4">
       <div class="card card-soft p-4 h-100">
-        <div class="text-muted small mb-1">Остаток ККМ</div>
+        <div class="text-muted small mb-1">Расчётный остаток Service2</div>
         <div class="fs-3 fw-bold {% if kkm_balance.balance < 0 %}text-danger{% else %}text-success{% endif %}">{{ kkm_balance.balance|money }}</div>
       </div>
     </div>
