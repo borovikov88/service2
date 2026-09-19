@@ -12,7 +12,7 @@ from datetime import date, datetime
 from decimal import Decimal
 import re
 
-from django.db.models import F
+from django.db.models import F, Sum
 from django.utils import timezone
 
 from pool_service.finance_imports.cost_control import (
@@ -248,12 +248,23 @@ def cashflow_operating_monthly_summary(organization, first_month, last_month):
     state_by_month = {item.period_month: item for item in states}
     requested_months = _month_sequence(first_month, last_month)
     mappings = _mapping_index(organization)
+    classifications = {
+        key: _classification(mapping) for key, mapping in mappings.items()
+    }
     net_by_month = {month: ZERO for month in requested_months}
 
-    for row in _confirmed_cashflow_rows(organization, first_month, last_month):
-        classification = _classification(
-            mappings.get(row["normalized_article_name"])
-        )
+    rows = (
+        _confirmed_cashflow_queryset(organization, first_month, last_month)
+        .order_by()
+        .values("period_month", "normalized_article_name")
+        .annotate(receipts=Sum("receipts"), payments=Sum("payments"))
+    )
+    for row in rows:
+        article_name = row["normalized_article_name"]
+        classification = classifications.get(article_name)
+        if classification is None:
+            classification = _classification(None)
+            classifications[article_name] = classification
         if (
             classification["allocation"] != ALLOCATION_EXTERNAL
             or classification["flow_type"] != CashFlowArticleMapping.FLOW_OPERATING
@@ -806,14 +817,21 @@ def management_cashflow_data(
     article_buckets = {}
     review_buckets = {}
     mappings = _mapping_index(organization)
+    classifications = {
+        key: _classification(mapping) for key, mapping in mappings.items()
+    }
 
     for row in _confirmed_cashflow_rows(organization, first_month, last_month):
         month = months.setdefault(
             row["period_month"],
             _new_month(row["period_month"], has_data=True),
         )
-        mapping = mappings.get(row["normalized_article_name"])
-        classification = _classification(mapping)
+        article_name = row["normalized_article_name"]
+        mapping = mappings.get(article_name)
+        classification = classifications.get(article_name)
+        if classification is None:
+            classification = _classification(None)
+            classifications[article_name] = classification
         if not _matches_cashflow_filters(row, classification, filters):
             continue
         receipts = row["receipts"] if row["receipts"] is not None else ZERO
