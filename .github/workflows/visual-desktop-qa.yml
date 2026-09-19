@@ -1,0 +1,45 @@
+name: Visual desktop QA
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "pool_service/tests/visual_qa.py"
+      - ".github/workflows/visual-desktop-qa.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  visual:
+    name: Capture desktop screenshots
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      SECRET_KEY: visual-qa-secret
+      DEBUG: "1"
+      ALLOWED_HOSTS: testserver,localhost,127.0.0.1
+      EMAIL_BACKEND: django.core.mail.backends.locmem.EmailBackend
+      ADVISOR_MCP_TEST_ENABLED: "false"
+      VISUAL_QA_OUTPUT: visual-qa
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install application and browser dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install "selenium==4.35.0"
+          google-chrome --version
+      - name: Capture representative desktop pages
+        run: python manage.py test pool_service.tests.visual_qa --settings=service_site.test_settings --verbosity 2
+      - name: Upload screenshots and metrics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: visual-desktop-qa
+          path: visual-qa
+          if-no-files-found: warn
+          retention-days: 3
