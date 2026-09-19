@@ -6685,6 +6685,25 @@ def pool_detail(request, pool_uuid):
 
     readings_list = WaterReading.objects.filter(pool=pool, is_deleted=False).select_related("added_by").order_by("-date")
 
+    desktop_card_mode = (
+        "service"
+        if role == "service"
+        else "manager"
+        if can_view_service_details
+        else "standard"
+    )
+    latest_reading = readings_list.first()
+    recent_readings = list(readings_list[:3])
+    next_visit_plan = (
+        ServiceVisitPlan.objects.filter(
+            pool=pool,
+            planned_date__gte=timezone.localdate(),
+        )
+        .order_by("planned_date", "id")
+        .first()
+    )
+    open_pool_task_count = 0
+
 
 
     per_page = _parse_per_page(request.GET.get("per_page"), 20)
@@ -6727,6 +6746,7 @@ def pool_detail(request, pool_uuid):
     service_issue_form = None
 
     service_issue_stage_choices = CRM_STAGE_CHOICES_BY_DIRECTION.get(CrmItem.DIRECTION_SERVICE, [])
+    open_service_issue_count = 0
 
     if pool.organization_id:
 
@@ -6783,6 +6803,10 @@ def pool_detail(request, pool_uuid):
 
                 issue.photo_urls_json = json.dumps(photo_urls, ensure_ascii=False)
 
+            open_service_issue_count = service_issues.exclude(
+                stage=CrmItem.STAGE_SERVICE_DONE
+            ).count()
+
             if can_manage_service_issues:
 
                 service_issue_form = CrmServiceIssueForm()
@@ -6820,6 +6844,7 @@ def pool_detail(request, pool_uuid):
                 else ""
             )
             reading_task_map.setdefault(task.water_reading_id, []).append(task)
+        open_pool_task_count = sum(1 for task in supply_tasks if not task.is_done)
     for reading in readings:
         reading.linked_supply_tasks = reading_task_map.get(reading.id, [])
 
@@ -6842,6 +6867,12 @@ def pool_detail(request, pool_uuid):
         "per_page": per_page,
 
         "role": role,
+        "desktop_card_mode": desktop_card_mode,
+        "latest_reading": latest_reading,
+        "recent_readings": recent_readings,
+        "next_visit_plan": next_visit_plan,
+        "open_pool_task_count": open_pool_task_count,
+        "open_service_issue_count": open_service_issue_count,
 
         "can_edit_pool": can_edit_pool,
         "can_delete_pool": can_delete_pool,
