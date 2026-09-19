@@ -1080,7 +1080,13 @@ class UnifiedSyncTests(TestCase):
                 item = failed.result_summary[REPORT_PROFIT]
                 self.assertEqual(item["error_stage"], stage)
                 self.assertEqual(item["error_code"], error_code)
-                self.assertNotIn("error_reason", item)
+                self.assertEqual(item["error_reason"], "deleted_reference")
+                self.assertEqual(failed.progress["error_stage"], stage)
+                self.assertEqual(failed.progress["error_reason"], "deleted_reference")
+                self.assertEqual(
+                    failed.progress["error_hint"],
+                    "справочник ответственных: историческая ссылка помечена на удаление",
+                )
                 self.assertEqual(failed.cursor["index"], 0)
                 self.assertEqual(failed.cursor["version"], 0)
                 self.assertIsNone(failed.lease_token)

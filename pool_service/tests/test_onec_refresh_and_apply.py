@@ -280,6 +280,28 @@ class RefreshAndApplyTests(TestCase):
         for forbidden in ("apply_plan", "baseline", "scope_fingerprint", "batch_id", "snapshot", "raw payload", "traceback"):
             self.assertNotIn(forbidden, body.lower())
 
+    def test_retryable_auto_run_exposes_safe_hint_and_retry_button(self):
+        run = self.start()
+        run.progress = {
+            **run.progress,
+            "step_state": "retryable_error",
+            "error_stage": "profit_responsible_lookup",
+            "error_reason": "deleted_reference",
+            "error_hint": "справочник ответственных: историческая ссылка помечена на удаление",
+        }
+        run.error_message = "Не удалось проверить данные 1С. Продолжите проверку позже."
+        run.save(update_fields=["progress", "error_message"])
+
+        status = self.client.get(reverse("finance_onec_refresh_apply_status", args=[run.id]))
+        payload = status.json()
+        self.assertIn("справочник ответственных", payload["progress"]["error_hint"])
+        self.assertNotIn("apply_plan", payload)
+
+        page = self.client.get(reverse("finance_onec_import_list"))
+        self.assertContains(page, "Этап: справочник ответственных")
+        self.assertContains(page, "Повторить сейчас")
+        self.assertContains(page, reverse("finance_onec_refresh_apply_step", args=[run.id]))
+
     def test_internal_candidate_is_not_in_manual_list(self):
         run = self.start()
         candidate = OneCImportBatch.objects.create(
