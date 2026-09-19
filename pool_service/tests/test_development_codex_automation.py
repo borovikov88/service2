@@ -1275,33 +1275,33 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
                     expected_triggers = ["workflow_dispatch"]
                 self.assertEqual(workflow_trigger_names(text), expected_triggers)
 
-    def test_ci_deploy_workflow_enforces_review_and_fail_closed_deployment_policy(self):
+    def test_ci_deploy_workflow_enforces_ci_first_and_fail_closed_deployment_policy(self):
         workflow = (Path(settings.BASE_DIR) / ".github/workflows/ci-deploy.yml").read_text(
             encoding="utf-8"
         )
-        self.assertIn("pull-requests: read", workflow)
+        self.assertIn("contents: read", workflow)
+        self.assertNotIn("pull-requests: read", workflow)
         self.assertIn("ADVISOR_MCP_TEST_ENABLED: \"false\"", workflow)
         self.assertIn("confirm_main_sha:", workflow)
         self.assertIn("required: true", workflow)
-        self.assertIn("review-gate:", workflow)
+        self.assertNotIn("review-gate:", workflow)
+        self.assertNotIn("verify_deploy_review.py", workflow)
         self.assertIn("github.event_name == 'push'", workflow)
         self.assertIn("github.event_name == 'workflow_dispatch'", workflow)
         main_pipeline_condition = (
             "(github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&\n"
             "      github.ref == 'refs/heads/main'"
         )
-        self.assertEqual(workflow.count(main_pipeline_condition), 2)
-        self.assertIn("Require exact current main confirmation for manual recovery", workflow)
+        self.assertEqual(workflow.count(main_pipeline_condition), 1)
+        self.assertIn("Confirm exact current main for manual deployment", workflow)
         self.assertIn("CONFIRM_MAIN_SHA: ${{ inputs.confirm_main_sha }}", workflow)
         self.assertIn('[[ "$WORKFLOW_REF" == "refs/heads/main" ]]', workflow)
         self.assertIn('[[ "$CONFIRM_MAIN_SHA" == "$COMMIT_SHA" ]]', workflow)
-        self.assertIn("Recheck current main before manual deployment", workflow)
-        self.assertEqual(workflow.count('"$api/git/ref/heads/main"'), 2)
-        self.assertIn(".merge_commit_sha == $sha", workflow)
-        self.assertIn("gh api --paginate --slurp", workflow)
-        self.assertIn("verify_deploy_review.py", workflow)
-        self.assertIn("needs: [test, review-gate]", workflow)
+        self.assertEqual(workflow.count('"$api/git/ref/heads/main"'), 1)
+        self.assertIn("needs: test", workflow)
+        self.assertNotIn("needs: [test, review-gate]", workflow)
         self.assertIn("environment: production", workflow)
+        self.assertIn("Checkout exact tested commit", workflow)
         self.assertIn("ref: ${{ github.sha }}", workflow)
         self.assertIn("persist-credentials: false", workflow)
         self.assertIn("StrictHostKeyChecking=yes", workflow)
