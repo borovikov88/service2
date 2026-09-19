@@ -2968,7 +2968,10 @@ def _auto_run_payload(run):
         "cursor": (run.cursor or {}).get("version", 0),
         "progress": {
             key: value for key, value in (run.progress or {}).items()
-            if key in {"completed_chunks", "total_chunks", "step_state", "outcome", "applied_batches"}
+            if key in {
+                "completed_chunks", "total_chunks", "step_state", "outcome",
+                "applied_batches", "error_stage", "error_reason", "error_hint",
+            }
         },
         "changed_month_counts": changed,
         "missing_payroll_months": (run.result_summary or {}).get(REPORT_PAYROLL, {}).get("missing_preserved_months", []),
