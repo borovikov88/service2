@@ -133,6 +133,31 @@ class FinanceTests(TestCase):
             status=CashOperation.STATUS_PENDING,
         )
 
+    def test_desktop_shell_and_existing_mobile_navigation_render_together(self):
+        self.client.force_login(self.manager)
+        with patch(
+            "pool_service.finance_views.get_finance_position",
+            return_value={"available": False},
+        ):
+            response = self.client.get(reverse("finance_kkm_cash_dashboard"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'class="desktop-sidebar d-none d-lg-flex"', html=False)
+        self.assertContains(response, 'class="desktop-topbar d-none d-lg-flex', html=False)
+        self.assertContains(response, 'class="mobile-bottom-nav"', html=False)
+
+    def test_desktop_shell_keeps_finance_navigation_in_sidebar(self):
+        self.client.force_login(self.manager)
+        with patch(
+            "pool_service.finance_views.get_finance_position",
+            return_value={"available": False},
+        ):
+            response = self.client.get(reverse("finance_kkm_cash_dashboard"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, ">Финансы</span>", html=False)
+        self.assertContains(response, "desktop-sidebar__subnav")
+
     def test_kkm_dashboard_shows_onec_balance_and_snapshot_time(self):
         self.client.force_login(self.manager)
         snapshot_at = timezone.now().replace(microsecond=0)
