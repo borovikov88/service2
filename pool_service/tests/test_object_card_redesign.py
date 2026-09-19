@@ -131,6 +131,28 @@ class ObjectCardRoleRedesignTests(TestCase):
         self.assertContains(response, 'id="service-issue-form"', html=False)
         self.assertNotContains(response, "Рабочая карточка сервисника")
 
+    def test_object_edit_uses_four_service_statuses_instead_of_suspended_checkbox(self):
+        self.client.force_login(self.service)
+        response = self.client.get(reverse("pool_edit", kwargs={"pool_uuid": self.pool.uuid}))
+
+        self.assertEqual(response.status_code, 200)
+        form = response.context["form"]
+        self.assertIn("service_status", form.fields)
+        self.assertNotIn("service_suspended", form.fields)
+        self.assertEqual(
+            [value for value, _ in form.fields["service_status"].choices],
+            [
+                Pool.SERVICE_STATUS_ACTIVE,
+                Pool.SERVICE_STATUS_PAUSED,
+                Pool.SERVICE_STATUS_CONSERVED,
+                Pool.SERVICE_STATUS_ENDED,
+            ],
+        )
+        self.assertContains(response, "Статус обслуживания")
+        self.assertContains(response, "Законсервирован")
+        self.assertContains(response, "Больше не обслуживаем")
+        self.assertNotContains(response, "Временно не обслуживается")
+
     def test_editing_service_status_records_author_and_timeline_event(self):
         self.client.force_login(self.service)
         edit_url = reverse("pool_edit", kwargs={"pool_uuid": self.pool.uuid})
