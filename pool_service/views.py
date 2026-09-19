@@ -330,6 +330,8 @@ from .models import (
 
     Pool,
 
+    PoolServiceStatusChange,
+
     PoolAccess,
 
     WaterReading,
@@ -836,7 +838,7 @@ POOL_AUDIT_FIELDS = [
     "service_frequency",
     "service_monthly_price",
     "service_details_comment",
-    "service_suspended",
+    "service_status",
     "daily_readings_required",
     "water_system_type",
     "water_source",
