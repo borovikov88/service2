@@ -124,11 +124,75 @@
       margin-top: 14px;
       margin-bottom: 8px;
     }
+
+    .finance-owner-overview .owner-heading {
+      margin-bottom: 12px !important;
+    }
+
+    .finance-owner-overview .owner-section-header {
+      margin: 14px 0 7px;
+    }
+
+    .finance-owner-overview .owner-kpi {
+      min-height: 10.5rem;
+      padding: 12px 14px;
+      border-radius: var(--finance-card-radius);
+    }
+
+    .finance-owner-overview .owner-kpi-value {
+      margin: 0.42rem 0 0.2rem;
+      font-size: 1.46rem;
+    }
+
+    .finance-owner-overview .owner-comparisons {
+      gap: 0.3rem;
+      margin-top: 0.5rem;
+      padding-top: 0.48rem;
+    }
+
+    .finance-owner-overview .owner-freshness {
+      padding-top: 0.42rem;
+    }
+
+    .finance-owner-overview .owner-chart-grid {
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .finance-owner-overview .owner-chart-card {
+      padding: 12px 14px;
+      border-radius: var(--finance-card-radius);
+    }
+
+    .finance-owner-overview .owner-mini-chart {
+      height: 7.6rem;
+    }
+
+    .finance-owner-overview .owner-mini-chart canvas {
+      max-height: 6.2rem;
+    }
+
+    .finance-owner-overview .owner-cash-chart {
+      height: 24rem;
+    }
+
+    .finance-owner-overview .owner-season-chart {
+      height: 14rem;
+    }
   }
 
   @media (min-width: 1920px) {
     .finance-desktop {
       --finance-gap: 14px;
+    }
+
+    .finance-owner-overview .owner-kpi-grid {
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 12px;
+    }
+
+    .finance-owner-overview .owner-kpi {
+      min-height: 9.8rem;
     }
 
     .finance-desktop .finance-wide-pair {
