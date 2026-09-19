@@ -3,8 +3,10 @@
 {% block title %}{% if is_edit %}Редактирование объекта{% else %}Новый объект{% endif %}{% endblock %}
 
 {% block content %}
-<div class="card card-soft p-4">
-    <h3 class="fw-bold h5 mb-3">{% if is_edit %}Редактирование объекта{% else %}Создание объекта{% endif %}</h3>
+{% include "pool_service/_admin_workspace_styles.html" %}
+<div class="admin-desktop admin-form">
+<div class="admin-card card card-soft p-4">
+    <div class="admin-page-header"><h3 class="fw-bold h5 mb-3">{% if is_edit %}Редактирование объекта{% else %}Создание объекта{% endif %}</h3></div>
     <form method="post" class="offline-queue-form" action="{% if is_edit %}{% url 'pool_edit' pool.uuid %}{% else %}{% url 'pool_create' %}{% endif %}">
         {% csrf_token %}
         {% if form.client %}
@@ -73,7 +75,7 @@
         </div>
         {% endif %}
         {% if form.shape %}
-        <div class="card card-soft p-3 mb-3 js-object-pool">
+        <div class="admin-card card card-soft p-3 mb-3 js-object-pool">
             <h4 class="fw-bold h6 mb-3">Параметры бассейна</h4>
             <div class="row g-3">
                 <div class="col-md-6">
@@ -149,7 +151,7 @@
         </div>
         {% endif %}
         {% if form.water_system_type %}
-        <div class="card card-soft p-3 mb-3 js-object-water d-none">
+        <div class="admin-card card card-soft p-3 mb-3 js-object-water d-none">
             <h4 class="fw-bold h6 mb-3">Параметры водоподготовки</h4>
             <div class="row g-3">
                 <div class="col-md-6">
@@ -205,7 +207,7 @@
             </div>
         </div>
         {% endif %}
-        <div class="card card-soft p-3 mb-3">
+        <div class="admin-card card card-soft p-3 mb-3">
             <h4 class="fw-bold h6 mb-3">&#1056;&#1077;&#1075;&#1083;&#1072;&#1084;&#1077;&#1085;&#1090; &#1086;&#1073;&#1089;&#1083;&#1091;&#1078;&#1080;&#1074;&#1072;&#1085;&#1080;&#1103;</h4>
             <div class="row g-3">
                 <div class="col-md-6">
@@ -561,4 +563,6 @@
         }
     });
 </script>
+
+</div><!-- /admin-desktop -->
 {% endblock %}

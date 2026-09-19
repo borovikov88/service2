@@ -3,8 +3,10 @@
 {% block title %}&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;{% endblock %}
 
 {% block content %}
-<div class="card card-soft p-4">
-  <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+{% include "pool_service/_admin_workspace_styles.html" %}
+<div class="admin-desktop">
+<div class="admin-card card card-soft p-4">
+  <div class="admin-page-header d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
     <h4 class="fw-bold mb-0">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099; &#1089;&#1077;&#1088;&#1074;&#1080;&#1089;&#1085;&#1086;&#1081; &#1082;&#1086;&#1084;&#1087;&#1072;&#1085;&#1080;&#1080;</h4>
     <ul class="nav nav-pills gap-2" id="clients-tab" role="tablist">
       <li class="nav-item" role="presentation">
@@ -270,4 +272,6 @@
     });
   });
 </script>
+
+</div><!-- /admin-desktop -->
 {% endblock %}

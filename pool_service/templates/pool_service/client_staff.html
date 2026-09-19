@@ -3,6 +3,8 @@
 {% block title %}Сотрудники клиента{% endblock %}
 
 {% block content %}
+{% include "pool_service/_admin_workspace_styles.html" %}
+<div class="admin-desktop">
 <div class="card card-soft p-4 mb-4">
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
         <a href="{% url 'clients_list' %}" class="btn btn-outline-secondary rounded-3 d-flex align-items-center gap-2">
@@ -128,7 +130,7 @@
     </div>
 </div>
 
-<div class="card card-soft p-4">
+<div class="admin-card card card-soft p-4">
     <h4 class="fw-bold mb-3">Приглашения</h4>
     <div class="table-responsive">
         <table class="table align-middle">
@@ -201,4 +203,6 @@
         </table>
     </div>
 </div>
+
+</div><!-- /admin-desktop -->
 {% endblock %}

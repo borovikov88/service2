@@ -3,6 +3,8 @@
 {% block title %}&#1059;&#1074;&#1077;&#1076;&#1086;&#1084;&#1083;&#1077;&#1085;&#1080;&#1103;{% endblock %}
 
 {% block content %}
+{% include "pool_service/_admin_workspace_styles.html" %}
+<div class="admin-desktop">
 <style>
     .tg-notifications {
         max-width: 900px;
@@ -365,4 +367,6 @@
         });
     })();
 </script>
+
+</div><!-- /admin-desktop -->
 {% endblock %}

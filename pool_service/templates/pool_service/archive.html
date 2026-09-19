@@ -3,6 +3,8 @@
 {% block title %}{{ page_title }}{% endblock %}
 
 {% block content %}
+{% include "pool_service/_admin_workspace_styles.html" %}
+<div class="admin-desktop">
 <style>
     .archive-toolbar {
         display: flex;
@@ -373,4 +375,6 @@
         syncState();
     })();
 </script>
+
+</div><!-- /admin-desktop -->
 {% endblock %}

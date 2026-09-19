@@ -1,0 +1,30 @@
+<style>
+  @media (min-width: 992px) {
+    .admin-desktop { --admin-radius: 10px; --admin-gap: 12px; }
+    .admin-desktop .admin-page-header { margin-bottom: 12px !important; align-items: flex-end !important; }
+    .admin-desktop .admin-page-header h1,
+    .admin-desktop .admin-page-header h2,
+    .admin-desktop .admin-page-header h3,
+    .admin-desktop .admin-page-header h4 { margin-bottom: 3px !important; font-size: 1.48rem !important; line-height: 1.1; }
+    .admin-desktop .admin-page-header .text-muted { font-size: 0.76rem; }
+    .admin-desktop .admin-card { padding: 12px 14px !important; margin-bottom: 12px !important; border-radius: var(--admin-radius) !important; box-shadow: 0 4px 14px rgba(15, 23, 42, 0.035); }
+    .admin-desktop .admin-card h2,
+    .admin-desktop .admin-card h3,
+    .admin-desktop .admin-card h4 { font-size: 0.95rem; margin-bottom: 8px !important; }
+    .admin-desktop .admin-card .table { margin-bottom: 0; font-size: 0.77rem; }
+    .admin-desktop .admin-card .table > :not(caption) > * > * { padding: 0.4rem 0.48rem; }
+    .admin-desktop .admin-card thead th { color: #66778c; font-size: 0.67rem; font-weight: 650; background: #f6f8fb; white-space: nowrap; }
+    .admin-desktop .admin-form { max-width: 1040px; }
+    .admin-desktop .admin-form .form-label { margin-bottom: 4px; color: #6d7d91; font-size: 0.7rem; font-weight: 600; }
+    .admin-desktop .admin-form .form-control,
+    .admin-desktop .admin-form .form-select { min-height: 35px; padding: 0.38rem 0.58rem; border-radius: 8px; font-size: 0.79rem; }
+    .admin-desktop .admin-form textarea.form-control { min-height: 84px; }
+    .admin-desktop .admin-form .row { --bs-gutter-x: 0.7rem; --bs-gutter-y: 0.7rem; }
+    .admin-desktop .admin-actions { gap: 6px !important; }
+    .admin-desktop .admin-actions .btn,
+    .admin-desktop .btn { min-height: 33px; padding: 0.38rem 0.66rem; font-size: 0.77rem; }
+    .admin-desktop .nav-pills { gap: 5px !important; }
+    .admin-desktop .nav-pills .nav-link { padding: 0.36rem 0.65rem; font-size: 0.75rem; border-radius: 8px; }
+  }
+  @media (min-width: 1920px) { .admin-desktop .admin-form { max-width: 1180px; } }
+</style>
