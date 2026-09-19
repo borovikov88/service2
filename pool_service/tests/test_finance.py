@@ -158,9 +158,18 @@ class FinanceTests(TestCase):
         self.assertContains(response, ">Финансы</span>", html=False)
         self.assertContains(response, "desktop-sidebar__subnav")
 
-    def test_kkm_dashboard_shows_onec_balance_and_snapshot_time(self):
+    def test_kkm_dashboard_shows_compact_balance_summary(self):
         self.client.force_login(self.manager)
         snapshot_at = timezone.now().replace(microsecond=0)
+        CashCount.objects.create(
+            organization=self.organization,
+            cashbox_type=CashCount.CASHBOX_KKM,
+            counted_by=self.manager,
+            occurred_on=date.today(),
+            total=Decimal("7000.00"),
+            denominations={},
+        )
+        self.create_pending_cash_operation()
         with patch(
             "pool_service.finance_views.get_finance_position",
             return_value={
@@ -176,10 +185,20 @@ class FinanceTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["onec_kkm_balance"]["balance"], Decimal("7529.00"))
-        self.assertContains(response, "Остаток денежных средств в ККМ по данным 1С")
+        self.assertEqual(response.context["kkm_pending_count"], 1)
+        self.assertEqual(response.context["kkm_latest_count"].total, Decimal("7000.00"))
+        self.assertEqual(response.context["kkm_discrepancy"], Decimal("-529.00"))
+        self.assertContains(response, "Остаток денег в кассе ККМ")
         self.assertContains(response, "7&nbsp;529,00&nbsp;₽", html=True)
-        self.assertContains(response, "Последнее обновление из 1С")
-        self.assertContains(response, "Данные актуальны")
+        self.assertContains(response, "Фактический остаток в кассе")
+        self.assertContains(response, "Расхождение с учётом 1С")
+        self.assertContains(response, "Доступно с учётом резерва")
+        self.assertContains(response, "На проверке: 1")
+        self.assertNotContains(response, "Последнее обновление из 1С")
+        self.assertNotContains(response, "Барнаул")
+        self.assertNotContains(response, "Данные актуальны")
+        self.assertNotContains(response, "Последний снимок загружен")
+        self.assertNotContains(response, "Расчётный остаток Service2")
 
     def test_kkm_dashboard_handles_missing_onec_snapshot(self):
         self.client.force_login(self.manager)
