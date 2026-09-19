@@ -755,7 +755,7 @@ class PoolForm(forms.ModelForm):
             "service_frequency",
             "service_monthly_price",
             "service_details_comment",
-            "service_suspended",
+            "service_status",
             "daily_readings_required",
             "water_system_type",
             "water_source",
@@ -797,7 +797,7 @@ class PoolForm(forms.ModelForm):
                     "placeholder": "Условия обслуживания, особенности доступа, договорённости с клиентом",
                 }
             ),
-            "service_suspended": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+            "service_status": forms.Select(attrs={"class": "form-select"}),
             "daily_readings_required": forms.CheckboxInput(attrs={"class": "form-check-input"}),
             "water_system_type": forms.Select(attrs={"class": "form-select"}),
             "water_source": forms.Select(attrs={"class": "form-select"}),
@@ -823,6 +823,7 @@ class PoolForm(forms.ModelForm):
                 "service_frequency",
                 "service_monthly_price",
                 "service_details_comment",
+                "service_status",
             }
             for field_name in list(self.fields):
                 if field_name not in allowed_fields:
