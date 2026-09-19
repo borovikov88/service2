@@ -3,7 +3,9 @@
 {% block title %}&#1053;&#1086;&#1088;&#1084;&#1072;&#1090;&#1080;&#1074;&#1099; &#1074;&#1086;&#1076;&#1099;{% endblock %}
 
 {% block content %}
-<div class="card card-soft p-4">
+{% include "pool_service/_admin_workspace_styles.html" %}
+<div class="admin-desktop admin-form">
+<div class="admin-card card card-soft p-4">
     <h4 class="fw-bold mb-3">&#1053;&#1086;&#1088;&#1084;&#1072;&#1090;&#1080;&#1074;&#1099; &#1074;&#1086;&#1076;&#1099;</h4>
     <form method="post">
         {% csrf_token %}
@@ -44,4 +46,6 @@
         </div>
     </form>
 </div>
+
+</div><!-- /admin-desktop -->
 {% endblock %}
