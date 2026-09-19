@@ -121,6 +121,16 @@ class FinanceOverviewTests(TestCase):
             )["totals"],
         )
         self.assertEqual(data["payroll_accrued"], Decimal("20.00"))
+        profit_summary = monthly_profit_summary(
+            self.organization, date(2026, 1, 1), date(2026, 2, 1)
+        )
+        self.assertEqual(
+            [(item["month"], item["revenue"], item["gross_profit"]) for item in profit_summary["monthly"]],
+            [
+                (date(2026, 1, 1), Decimal("100.00"), Decimal("40.00")),
+                (date(2026, 2, 1), Decimal("200.00"), Decimal("100.00")),
+            ],
+        )
         self.assertEqual(self._card(data, "revenue")["value"], Decimal("300.00"))
         self.assertEqual(self._card(data, "gross_profit")["value"], Decimal("140.00"))
         self.assertEqual(self._card(data, "receipts")["value"], Decimal("200.00"))
