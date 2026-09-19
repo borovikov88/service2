@@ -123,6 +123,8 @@ class ObjectCardRoleRedesignTests(TestCase):
         self.assertContains(response, 'class="object-layout-wide__aside"', html=False)
         self.assertContains(response, 'class="object-info-grid row g-2 mt-3"', html=False)
         self.assertContains(response, "grid-template-columns: 320px minmax(0, 1fr)", html=False)
+        self.assertContains(response, '.object-layout-wide__aside .object-info-grid > [class*="col-"]', html=False)
+        self.assertContains(response, "flex: 0 0 100%", html=False)
         self.assertEqual(response.context["audit_logs"], [])
         self.assertNotContains(response, "Журнал изменений")
         self.assertNotContains(response, 'href="#object-changes"', html=False)
