@@ -13,9 +13,11 @@
 {% endblock %}
 
 {% block content %}
+{% include "pool_service/finance/_desktop_workspace_styles.html" %}
+<div class="finance-desktop finance-secondary-form">
 <div class="{% if finance_modal %}p-3 p-lg-4{% else %}mx-auto{% endif %}"{% if not finance_modal %} style="max-width:820px;"{% endif %}>
   {% if not finance_modal %}
-  <div class="d-flex align-items-center justify-content-between gap-3 mb-4">
+  <div class="finance-secondary-header d-flex align-items-center justify-content-between gap-3 mb-4">
     <div>
       <h1 class="h3 fw-bold mb-1">Новая оплата переводом</h1>
       <div class="text-muted">Укажите клиента, сумму, назначение и приложите подтверждение оплаты</div>
@@ -24,7 +26,7 @@
   </div>
   {% endif %}
 
-  <form method="post" enctype="multipart/form-data" class="{% if not finance_modal %}card card-soft p-3 p-lg-4{% endif %}" id="card-transfer-form" data-receipt-required="1">
+  <form method="post" enctype="multipart/form-data" class="{% if not finance_modal %}finance-secondary-card card card-soft p-3 p-lg-4{% endif %}" id="card-transfer-form" data-receipt-required="1">
     {% csrf_token %}
     {{ form.client_id }}
     {{ form.receipt_missing_confirmed }}
@@ -160,4 +162,6 @@
     });
   });
 </script>
+
+</div><!-- /finance-desktop -->
 {% endblock %}
