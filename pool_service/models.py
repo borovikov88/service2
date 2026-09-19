@@ -220,6 +220,18 @@ class Pool(models.Model):
         (SERVICE_FREQ_YEARLY, "\u0420\u0430\u0437 \u0432 \u0433\u043e\u0434"),
     ]
 
+    SERVICE_STATUS_ACTIVE = "active"
+    SERVICE_STATUS_PAUSED = "paused"
+    SERVICE_STATUS_CONSERVED = "conserved"
+    SERVICE_STATUS_ENDED = "ended"
+    SERVICE_STATUS_CHOICES = [
+        (SERVICE_STATUS_ACTIVE, "На обслуживании"),
+        (SERVICE_STATUS_PAUSED, "Обслуживание приостановлено"),
+        (SERVICE_STATUS_CONSERVED, "Законсервирован"),
+        (SERVICE_STATUS_ENDED, "Больше не обслуживаем"),
+    ]
+
+
     client = models.ForeignKey(Client, on_delete=models.CASCADE)
     address = models.CharField(max_length=255)
     organization = models.ForeignKey(
@@ -248,6 +260,13 @@ class Pool(models.Model):
     service_monthly_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     service_details_comment = models.TextField(null=True, blank=True)
     service_interval_days = models.PositiveSmallIntegerField(null=True, blank=True)
+    service_status = models.CharField(
+        max_length=20,
+        choices=SERVICE_STATUS_CHOICES,
+        default=SERVICE_STATUS_ACTIVE,
+    )
+    # Deprecated compatibility flag. New code should use service_status.
+    # It is kept in sync so existing scheduling code remains safe during migration.
     service_suspended = models.BooleanField(default=False)
     daily_readings_required = models.BooleanField(default=False)
     water_system_type = models.CharField(max_length=30, choices=WATER_SYSTEM_CHOICES, null=True, blank=True)
@@ -272,10 +291,45 @@ class Pool(models.Model):
     )
     delete_reason = models.TextField(blank=True)
 
+    def save(self, *args, **kwargs):
+        self.service_suspended = self.service_status != self.SERVICE_STATUS_ACTIVE
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None:
+            kwargs["update_fields"] = set(update_fields) | {"service_suspended"}
+        super().save(*args, **kwargs)
+
     def __str__(self):
         org_name = self.organization.name if self.organization else "без организации"
         label = self.get_object_type_display() if hasattr(self, "get_object_type_display") else "Объект"
         return f"{label}: {self.address} ({org_name})"
+
+
+class PoolServiceStatusChange(models.Model):
+    pool = models.ForeignKey(
+        Pool,
+        on_delete=models.CASCADE,
+        related_name="service_status_changes",
+    )
+    previous_status = models.CharField(max_length=20, choices=Pool.SERVICE_STATUS_CHOICES)
+    new_status = models.CharField(max_length=20, choices=Pool.SERVICE_STATUS_CHOICES)
+    changed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="pool_service_status_changes",
+    )
+    comment = models.CharField(max_length=255, blank=True)
+    changed_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["-changed_at", "-id"]
+        indexes = [
+            models.Index(fields=["pool", "changed_at"], name="pool_status_changed_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.pool_id}: {self.previous_status} -> {self.new_status}"
 
 
 class DataAuditLog(models.Model):
