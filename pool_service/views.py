@@ -1432,6 +1432,21 @@ def pool_list(request):
 
     pools_page = paginator.get_page(page_number)
 
+    page_pool_ids = [pool.id for pool in pools_page.object_list]
+    next_visit_by_pool = {}
+    if page_pool_ids:
+        next_visit_plans = (
+            ServiceVisitPlan.objects.filter(
+                pool_id__in=page_pool_ids,
+                planned_date__gte=timezone.localdate(),
+            )
+            .order_by("pool_id", "planned_date", "id")
+        )
+        for visit_plan in next_visit_plans:
+            next_visit_by_pool.setdefault(visit_plan.pool_id, visit_plan.planned_date)
+    for pool in pools_page.object_list:
+        pool.next_visit_date = next_visit_by_pool.get(pool.id)
+
     query_params = request.GET.copy()
 
     query_params.pop("page", None)
