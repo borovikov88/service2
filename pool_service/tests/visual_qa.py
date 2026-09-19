@@ -56,7 +56,7 @@ class VisualDesktopQaTests(StaticLiveServerTestCase):
         OrganizationAccess.objects.create(
             user=cls.superuser,
             organization=cls.organization,
-            role="owner",
+            role="admin",
         )
 
         cls.staff = []
