@@ -160,6 +160,133 @@
             font-size: 0.8rem;
         }
     }
+
+    /* Desktop task density. Mobile remains on the current layout. */
+    @media (min-width: 992px) {
+        .ui-toolbar-card {
+            padding: 10px 12px !important;
+            margin-bottom: 12px !important;
+            border-radius: 10px;
+            box-shadow: 0 4px 14px rgba(15, 23, 42, 0.04);
+            background: #fff;
+        }
+        .ui-toolbar-grid {
+            gap: 8px;
+        }
+        .ui-toolbar-main {
+            max-width: none;
+        }
+        .ui-search__field {
+            min-height: 34px;
+            padding: 5px 9px;
+            border-radius: 8px;
+            box-shadow: none;
+        }
+        .ui-search__field > i {
+            font-size: 0.9rem;
+        }
+        .ui-search__input {
+            font-size: 0.8rem;
+        }
+        .ui-search__tag {
+            padding: 3px 7px;
+            font-size: 0.7rem;
+            max-width: 190px;
+        }
+        .ui-toolbar-actions {
+            gap: 6px;
+        }
+        .ui-pill-btn {
+            min-height: 32px;
+            padding: 0 9px;
+            border-radius: 8px;
+            font-size: 0.77rem;
+            box-shadow: none;
+        }
+        .ui-chipbar {
+            gap: 6px;
+            margin-bottom: 12px !important;
+        }
+        .ui-chip {
+            min-height: 26px;
+            padding: 4px 9px;
+            gap: 6px;
+            font-size: 0.72rem;
+            box-shadow: none;
+        }
+        .crm-tasks-table {
+            border-radius: 10px;
+            box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04);
+        }
+        .crm-tasks-table > .d-flex {
+            padding: 11px 12px 6px !important;
+        }
+        .crm-tasks-table > .d-flex h3 {
+            font-size: 0.96rem;
+        }
+        .crm-tasks-table > .d-flex .small {
+            font-size: 0.7rem;
+        }
+        .crm-tasks-table .table-responsive {
+            padding-left: 12px !important;
+            padding-right: 12px !important;
+            padding-bottom: 10px !important;
+        }
+        .crm-tasks-table .table {
+            font-size: 0.78rem;
+        }
+        .crm-tasks-table .table > :not(caption) > * > * {
+            padding: 0.42rem 0.5rem;
+        }
+        .crm-tasks-table thead th {
+            font-size: 0.68rem;
+            background: #f7f9fc;
+            white-space: nowrap;
+        }
+        .crm-tasks-row-title {
+            font-size: 0.8rem;
+        }
+        .crm-tasks-row-subtitle {
+            font-size: 0.67rem;
+            margin-top: 2px;
+        }
+        .crm-stage-pill {
+            gap: 5px;
+            padding: 4px 8px;
+            font-size: 0.7rem;
+        }
+        .crm-select-col {
+            width: 34px;
+        }
+        .crm-select-checkbox {
+            width: 15px;
+            height: 15px;
+        }
+        .crm-tasks-empty {
+            padding: 28px 12px;
+        }
+        .crm-bulkbar {
+            border-radius: 10px;
+            padding: 6px 8px;
+        }
+        .crm-bulkbar__count,
+        .crm-bulkbar .ui-select__control,
+        .crm-bulkbar .btn {
+            min-height: 32px;
+            font-size: 0.76rem;
+            border-radius: 8px;
+        }
+    }
+
+    @media (min-width: 1920px) {
+        .crm-tasks-table .table {
+            font-size: 0.8rem;
+        }
+        .crm-tasks-table .table > :not(caption) > * > * {
+            padding-left: 0.58rem;
+            padding-right: 0.58rem;
+        }
+    }
 </style>
 
 <div class="card ui-toolbar-card p-4 mb-4">

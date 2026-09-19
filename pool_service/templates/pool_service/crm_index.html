@@ -2,14 +2,60 @@
 
 {% block title %}CRM{% endblock %}
 
+{% block extra_head %}
+{{ block.super }}
+<style>
+  @media (min-width: 992px) {
+    .crm-index-grid {
+      --bs-gutter-x: 0.8rem;
+      --bs-gutter-y: 0.8rem;
+    }
+    .crm-index-secondary {
+      margin-top: 0.8rem !important;
+    }
+    .crm-index-card {
+      padding: 14px !important;
+      min-height: 84px;
+      border-radius: 10px !important;
+      box-shadow: 0 4px 14px rgba(15, 23, 42, 0.04) !important;
+      transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+    }
+    a:hover .crm-index-card {
+      transform: translateY(-1px);
+      border-color: #cbd9eb;
+      box-shadow: 0 8px 20px rgba(15, 23, 42, 0.07) !important;
+    }
+    .crm-index-card__icon {
+      width: 38px !important;
+      height: 38px !important;
+      border-radius: 9px !important;
+    }
+    .crm-index-card__icon .fs-4 {
+      font-size: 1rem !important;
+    }
+    .crm-index-card .fw-semibold {
+      font-size: 0.86rem;
+    }
+    .crm-index-card .small {
+      font-size: 0.72rem;
+    }
+  }
+  @media (min-width: 1920px) {
+    .crm-index-primary > div {
+      width: 20%;
+    }
+  }
+</style>
+{% endblock %}
+
 {% block content %}
-<div class="row g-4">
+<div class="crm-index-grid crm-index-primary row g-4">
     {% for card in primary_cards %}
         <div class="col-12 col-md-6 col-xl-3">
             <a href="{{ card.url }}" class="text-decoration-none">
-                <div class="card card-soft p-4 h-100">
+                <div class="crm-index-card card card-soft p-4 h-100">
                     <div class="d-flex align-items-center gap-3 mb-2">
-                        <span class="d-inline-flex align-items-center justify-content-center bg-primary-subtle text-primary rounded-3" style="width:44px;height:44px;">
+                        <span class="crm-index-card__icon d-inline-flex align-items-center justify-content-center bg-primary-subtle text-primary rounded-3" style="width:44px;height:44px;">
                             <i class="bi {{ card.icon }} fs-4"></i>
                         </span>
                         <div>
@@ -23,13 +69,13 @@
     {% endfor %}
 </div>
 
-<div class="row g-4 mt-2">
+<div class="crm-index-grid crm-index-secondary row g-4 mt-2">
     {% for card in secondary_cards %}
         <div class="col-12 col-md-6">
             <a href="{{ card.url }}" class="text-decoration-none">
-                <div class="card card-soft p-4 h-100">
+                <div class="crm-index-card card card-soft p-4 h-100">
                     <div class="d-flex align-items-center gap-3 mb-2">
-                        <span class="d-inline-flex align-items-center justify-content-center bg-info-subtle text-info rounded-3" style="width:44px;height:44px;">
+                        <span class="crm-index-card__icon d-inline-flex align-items-center justify-content-center bg-info-subtle text-info rounded-3" style="width:44px;height:44px;">
                             <i class="bi {{ card.icon }} fs-4"></i>
                         </span>
                         <div>
