@@ -15,7 +15,7 @@ from pool_service.finance_imports.cashflow_dashboard import (
     cashflow_dashboard_data,
 )
 from pool_service.finance_imports.owner_dashboard import resolve_owner_period
-from pool_service.finance_imports.profit_dashboard import dashboard_data, resolve_period
+from pool_service.finance_imports.profit_dashboard import dashboard_data, monthly_profit_summary, resolve_period
 from pool_service.finance_imports.payroll_dashboard import payroll_dashboard_data
 from pool_service.models import (
     CashFlowArticleMapping, CashFlowRow, EmployeeOneCIdentity, OneCImportBatch, OneCMonthlyProfit,
@@ -130,6 +130,37 @@ class FinanceOverviewTests(TestCase):
         self.assertEqual(data["period"]["last_month"], date(2026, 2, 1))
         self.assertEqual(data["freshness"]["gross_profit"]["data_through"], date(2026, 2, 1))
         self.assertEqual(data["freshness"]["payroll"]["data_through"], date(2026, 2, 1))
+
+    def test_monthly_profit_summary_does_not_load_heavy_detail_fields(self):
+        row = OneCMonthlyProfit.objects.filter(
+            organization=self.organization,
+            period_month=date(2026, 1, 1),
+        ).first()
+        row.source_data = {"payload": "x" * 5000}
+        row.customer_name = "Тяжёлый покупатель"
+        row.document_name = "Большой документ"
+        row.save(update_fields=["source_data", "customer_name", "document_name"])
+
+        with CaptureQueriesContext(connection) as queries:
+            summary = monthly_profit_summary(
+                self.organization,
+                date(2026, 1, 1),
+                date(2026, 2, 1),
+            )
+
+        self.assertEqual(summary["totals"]["revenue"], Decimal("300.00"))
+        profit_selects = [
+            query["sql"].lower()
+            for query in queries.captured_queries
+            if "from `pool_service_onecmonthlyprofit`" in query["sql"].lower()
+            or 'from "pool_service_onecmonthlyprofit"' in query["sql"].lower()
+        ]
+        self.assertTrue(profit_selects)
+        combined_sql = " ".join(profit_selects)
+        self.assertNotIn("source_data", combined_sql)
+        self.assertNotIn("customer_name", combined_sql)
+        self.assertNotIn("document_name", combined_sql)
+        self.assertNotIn("manager_name", combined_sql)
 
     def test_overview_permissions_and_owner_kpis(self):
         self.client.force_login(self.manager)
