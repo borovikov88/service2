@@ -248,12 +248,17 @@ def cashflow_operating_monthly_summary(organization, first_month, last_month):
     state_by_month = {item.period_month: item for item in states}
     requested_months = _month_sequence(first_month, last_month)
     mappings = _mapping_index(organization)
+    classifications = {
+        key: _classification(mapping) for key, mapping in mappings.items()
+    }
     net_by_month = {month: ZERO for month in requested_months}
 
     for row in _confirmed_cashflow_rows(organization, first_month, last_month):
-        classification = _classification(
-            mappings.get(row["normalized_article_name"])
-        )
+        article_name = row["normalized_article_name"]
+        classification = classifications.get(article_name)
+        if classification is None:
+            classification = _classification(None)
+            classifications[article_name] = classification
         if (
             classification["allocation"] != ALLOCATION_EXTERNAL
             or classification["flow_type"] != CashFlowArticleMapping.FLOW_OPERATING
