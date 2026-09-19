@@ -118,9 +118,35 @@ PROFIT_CUSTOMER_ERROR_REASONS = frozenset({
     "reference_missing",
     "unexpected",
 })
+PROFIT_RESPONSIBLE_ERROR_REASONS = PROFIT_CUSTOMER_ERROR_REASONS
 STAGE_ERROR_REASONS = {
     STAGE_PROFIT_NOMENCLATURE_LOOKUP: PROFIT_NOMENCLATURE_ERROR_REASONS,
     STAGE_PROFIT_CUSTOMER_LOOKUP: PROFIT_CUSTOMER_ERROR_REASONS,
+    STAGE_PROFIT_RESPONSIBLE_LOOKUP: PROFIT_RESPONSIBLE_ERROR_REASONS,
+}
+STAGE_PUBLIC_LABELS = {
+    STAGE_CONFIG: "настройка подключения",
+    STAGE_PROFIT_READ: "чтение продаж",
+    STAGE_PROFIT_REFERENCE_GUID_VALIDATION: "проверка ссылок продаж",
+    STAGE_PROFIT_NOMENCLATURE_LOOKUP: "справочник номенклатуры",
+    STAGE_PROFIT_CUSTOMER_LOOKUP: "справочник контрагентов",
+    STAGE_PROFIT_RESPONSIBLE_LOOKUP: "справочник ответственных",
+    STAGE_PROFIT_NORMALIZATION: "обработка продаж",
+    STAGE_CASHFLOW_READ: "чтение ДДС",
+    STAGE_CASHFLOW_REFERENCE_LOOKUP: "справочники ДДС",
+    STAGE_CASHFLOW_NORMALIZATION: "обработка ДДС",
+}
+ERROR_REASON_PUBLIC_LABELS = {
+    "http_error": "1С вернула ошибку",
+    "request_failed": "нет ответа от 1С",
+    "page_limit": "превышен лимит страниц",
+    "unexpected_rows": "1С вернула неожиданные строки",
+    "invalid_reference_row": "некорректная ссылка",
+    "deleted_reference": "историческая ссылка помечена на удаление",
+    "missing_description": "у ссылки нет наименования",
+    "invalid_nomenclature_type": "некорректный тип номенклатуры",
+    "reference_missing": "ссылка не найдена в 1С",
+    "unexpected": "непредвиденная ошибка",
 }
 
 
@@ -512,6 +538,8 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
                 lookup_kwargs["allow_deleted_nomenclature"] = True
             elif kind == "customer":
                 lookup_kwargs["allow_deleted_customer"] = True
+            elif kind == "responsible":
+                lookup_kwargs["allow_deleted_responsible"] = True
             references[kind] = _read_reference_map(
                 config,
                 kind,
@@ -522,7 +550,10 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
             error_reason = None
             if stage == STAGE_PROFIT_NOMENCLATURE_LOOKUP:
                 error_reason = _profit_nomenclature_error_reason(exc)
-            elif stage == STAGE_PROFIT_CUSTOMER_LOOKUP:
+            elif stage in {
+                STAGE_PROFIT_CUSTOMER_LOOKUP,
+                STAGE_PROFIT_RESPONSIBLE_LOOKUP,
+            }:
                 error_reason = _profit_customer_error_reason(exc)
             _raise_stage_error(
                 stage,
@@ -976,6 +1007,8 @@ def _claim_step(
             run.started_at = now
         progress = dict(run.progress)
         progress["step_state"] = "running"
+        for key in ("error_stage", "error_reason", "error_hint"):
+            progress.pop(key, None)
         run.progress = progress
         run.save(update_fields=[
             "lease_token", "lease_report_type", "lease_chunk", "lease_started_at",
@@ -1012,6 +1045,18 @@ def _safe_step_failure(run_id, token, expected_cursor, stage, exc, *, error_reas
         run.error_message = SAFE_ERROR_MESSAGE
         progress = dict(run.progress)
         progress["step_state"] = "retryable_error"
+        progress["error_stage"] = stage
+        stage_label = STAGE_PUBLIC_LABELS.get(stage, "проверка данных 1С")
+        reason_label = ERROR_REASON_PUBLIC_LABELS.get(error_reason)
+        if error_reason in STAGE_ERROR_REASONS.get(stage, frozenset()):
+            progress["error_reason"] = error_reason
+        else:
+            progress.pop("error_reason", None)
+        progress["error_hint"] = (
+            f"{stage_label}: {reason_label}"
+            if reason_label
+            else f"{stage_label}: повторите попытку позже"
+        )
         run.progress = progress
         _clear_lease(run)
         run.save(update_fields=[
