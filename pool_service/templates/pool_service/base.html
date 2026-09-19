@@ -1719,11 +1719,7 @@
           </span>
         </div>
         <div class="d-flex align-items-center gap-2">
-          {% if page_action_label and page_action_url %}
-            <a href="{{ page_action_url }}" class="btn btn-primary btn-sm d-inline-flex align-items-center gap-2 {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
-              <i class="bi bi-plus-lg"></i><span>{{ page_action_label }}</span>
-            </a>
-          {% elif show_add_button and add_url %}
+          {% if show_add_button and add_url and not page_action_label %}
             <a href="{{ add_url }}" class="btn btn-primary btn-sm d-inline-flex align-items-center gap-2 {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
               <i class="bi bi-plus-lg"></i><span>Добавить</span>
             </a>
