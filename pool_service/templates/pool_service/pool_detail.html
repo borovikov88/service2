@@ -631,15 +631,18 @@
                 </tr>
             </thead>
             <tbody>
-                {% for reading in readings %}
-                    {% if reading.history_type == "status" %}
+                {% for entry in readings %}
+                    {% if entry.kind == "status" %}
+                    {% with reading=entry.event %}
                     <tr class="border-top bg-light">
                         <td class="fw-semibold">{{ reading.created_at|localtime|date:"d.m.Y H:i" }} ({{ reading.created_at|localtime|date:"D" }})</td>
                         <td>{% if reading.changed_by %}{{ reading.changed_by.get_full_name|default:reading.changed_by.username }}{% else %}—{% endif %}</td>
                         <td colspan="2"><span class="badge bg-secondary-subtle text-secondary border me-2">{{ reading.get_status_display }}</span>{{ reading.comment }}</td>
                         <td></td>
                     </tr>
+                    {% endwith %}
                     {% else %}
+                    {% with reading=entry.reading %}
                     <tr class="border-top">
                         <td class="fw-semibold">{{ reading.date|localtime|date:"d.m.Y H:i" }} ({{ reading.date|localtime|date:"D" }})</td>
                         <td>
@@ -668,6 +671,7 @@
                         </td>
                     </tr>
                 
+                    {% endwith %}
                     {% endif %}
                 {% endfor %}
             </tbody>
@@ -700,8 +704,9 @@
                 </tr>
             </thead>
             <tbody>
-                {% for reading in readings %}
-                    {% if reading.history_type == "status" %}
+                {% for entry in readings %}
+                    {% if entry.kind == "status" %}
+                    {% with reading=entry.event %}
                     <tr class="border-top bg-light">
                         <td class="fw-semibold">{{ reading.created_at|localtime|date:"d.m.Y H:i" }} ({{ reading.created_at|localtime|date:"D" }})</td>
                         <td>{% if reading.changed_by %}{{ reading.changed_by.get_full_name|default:reading.changed_by.username }}{% else %}—{% endif %}</td>
@@ -713,7 +718,9 @@
                         <td class="fw-semibold">{{ reading.date|localtime|date:"d.m.Y H:i" }} ({{ reading.date|localtime|date:"D" }})</td>
                         <td>
                             {% if reading.added_by %}
-                                {% if reading.added_by.get_full_name %}{{ reading.added_by.get_full_name }}{% else %}{{ reading.added_by.username }}{% endif %}
+                                {% if reading.added_by.get_full_name %}{{ reading.added_by.get_full_name }}{% endwith %}
+                    {% else %}
+                    {% with reading=entry.reading %}{{ reading.added_by.username }}{% endif %}
                             {% else %}—{% endif %}
                         </td>
                         <td>
@@ -774,7 +781,8 @@
                             </div>
                         </td>
                     </tr>
-                {% endif %}
+                {% endwith %}
+                    {% endif %}
                 {% endfor %}
             </tbody>
         </table>
