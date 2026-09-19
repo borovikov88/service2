@@ -481,7 +481,8 @@ def start_unified_sync(
                 end,
                 chunk_months=(
                     PROFIT_CHUNK_MONTHS
-                    if report_type == REPORT_PROFIT
+                    if mode == OneCODataSyncRun.MODE_AUTO_APPLY
+                    and report_type == REPORT_PROFIT
                     else CHUNK_MONTHS
                 ),
             )
