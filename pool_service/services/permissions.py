@@ -10,6 +10,22 @@ from pool_service.models import Client, Organization, OrganizationAccess, Pool
 TRIAL_DAYS = 14
 
 
+def organization_accesses_for_user(user):
+    """Return organization accesses with organizations loaded, cached on this user instance."""
+    if not user or not getattr(user, "is_authenticated", False):
+        return []
+    cached = getattr(user, "_organization_accesses_cache", None)
+    if cached is not None:
+        return cached
+    cached = list(
+        OrganizationAccess.objects.filter(user=user)
+        .select_related("organization")
+        .order_by("id")
+    )
+    user._organization_accesses_cache = cached
+    return cached
+
+
 def trial_ends_at(org: Organization | None):
     if not org or not org.trial_started_at:
         return None
@@ -42,7 +58,7 @@ def company_trial_days_left(org: Organization | None, now=None) -> int:
 def is_personal_free(user) -> bool:
     if not user or not getattr(user, "is_authenticated", False):
         return False
-    if OrganizationAccess.objects.filter(user=user).exists():
+    if organization_accesses_for_user(user):
         return False
     client = Client.objects.filter(user=user, organization__isnull=True).first()
     if not client:
@@ -53,7 +69,7 @@ def is_personal_free(user) -> bool:
 def is_personal_user(user) -> bool:
     if not user or not getattr(user, "is_authenticated", False):
         return False
-    if OrganizationAccess.objects.filter(user=user).exists():
+    if organization_accesses_for_user(user):
         return False
     return Client.objects.filter(user=user, organization__isnull=True).exists()
 
@@ -68,12 +84,10 @@ def personal_pool(user):
 
 
 def organization_for_user(user):
-    if not user or not getattr(user, "is_authenticated", False):
+    accesses = organization_accesses_for_user(user)
+    if not accesses:
         return None
-    access = OrganizationAccess.objects.filter(user=user).select_related("organization").first()
-    if not access:
-        return None
-    return access.organization
+    return accesses[0].organization
 
 
 def is_org_access_blocked(user, now=None) -> bool:

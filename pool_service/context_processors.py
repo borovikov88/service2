@@ -72,14 +72,16 @@ def plan_status_context(request):
         is_personal_user,
         is_personal_free,
         is_org_access_blocked,
+        organization_accesses_for_user,
         organization_for_user,
         personal_pool,
         trial_ends_at,
     )
     from pool_service.services.finance import automatic_lock_is_disabled
 
+    accesses = organization_accesses_for_user(user)
     personal_user = is_personal_user(user)
-    org_roles = list(OrganizationAccess.objects.filter(user=user).values_list("role", flat=True))
+    org_roles = [access.role for access in accesses]
     operational_roles = {"owner", "admin", "manager", "service", "installer"}
     finance_only_user = (
         not user.is_superuser
@@ -101,7 +103,10 @@ def plan_status_context(request):
     is_org_staff = bool(operational_roles & set(org_roles))
     personal_free = is_personal_free(user)
     security_pin_enabled = bool(getattr(getattr(user, "profile", None), "security_pin_hash", ""))
-    security_passkey_enabled = WebAuthnCredential.objects.filter(user=user).exists()
+    security_passkey_enabled = getattr(user, "_has_passkey_cache", None)
+    if security_passkey_enabled is None:
+        security_passkey_enabled = WebAuthnCredential.objects.filter(user=user).exists()
+        user._has_passkey_cache = security_passkey_enabled
     security_show_quick_setup_prompt = (
         has_fresh_password_login(request)
         and (not security_pin_enabled or not security_passkey_enabled)
@@ -176,11 +181,9 @@ def plan_status_context(request):
     elif payroll_mapping_access:
         context["payroll_entry_url"] = reverse("finance_payroll_employee_mapping")
 
-    context["can_access_development"] = user.is_superuser or OrganizationAccess.objects.filter(
-        user=user,
-        organization=org,
-        role__in={"owner", "admin"},
-    ).exists()
+    context["can_access_development"] = user.is_superuser or bool(
+        {"owner", "admin"} & set(org_roles)
+    )
 
     if "service" in org_roles:
         context["home_url"] = reverse("readings_all")

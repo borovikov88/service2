@@ -17,6 +17,7 @@ from .security import (
     unlock_url,
 )
 from .services.finance import automatic_lock_is_disabled
+from .services.permissions import organization_accesses_for_user
 
 
 class TimezoneMiddleware:
@@ -111,6 +112,7 @@ class SessionSecurityMiddleware:
             return self.get_response(request)
 
         has_passkey = user.webauthn_credentials.exists()
+        user._has_passkey_cache = has_passkey
         if not has_security_pin(user) and not has_passkey:
             request.session[SESSION_LOCKED_KEY] = False
             request.session[SESSION_LAST_ACTIVITY_KEY] = timestamp_now()
@@ -164,9 +166,8 @@ class FinanceOnlyRoleMiddleware:
     def __call__(self, request):
         user = request.user
         if user.is_authenticated and not user.is_superuser:
-            roles = set(
-                OrganizationAccess.objects.filter(user=user).values_list("role", flat=True)
-            )
+            accesses = organization_accesses_for_user(user)
+            roles = {access.role for access in accesses}
             finance_only = "accountant" in roles and not bool(roles & self.operational_roles)
             if finance_only and request.path.startswith("/pools/"):
                 if request.path.endswith("/service-details/"):
