@@ -404,6 +404,43 @@ def cancel_idle_preview_run(
     return True
 
 
+def cancel_empty_retryable_auto_run(
+    run,
+    *,
+    now=None,
+    message="Предыдущее обновление с повторяемой ошибкой отменено перед новым запуском.",
+):
+    """Cancel a retryable auto-run before any candidate data was collected."""
+    now = now or timezone.now()
+    if (
+        run.mode != OneCODataSyncRun.MODE_AUTO_APPLY
+        or run.status not in {OneCODataSyncRun.STATUS_PENDING, OneCODataSyncRun.STATUS_RUNNING}
+        or (run.progress or {}).get("step_state") != "retryable_error"
+        or int((run.cursor or {}).get("index", 0)) != 0
+    ):
+        return False
+    if (
+        run.lease_token
+        and run.lease_started_at
+        and run.lease_started_at > now - timedelta(seconds=LEASE_SECONDS)
+    ):
+        return False
+    if OneCImportBatch.objects.filter(sync_run=run).exists():
+        return False
+    run.status = OneCODataSyncRun.STATUS_CANCELLED
+    run.finished_at = now
+    run.error_message = message
+    progress = dict(run.progress or {})
+    progress.update({"step_state": "cancelled", "outcome": "cancelled"})
+    run.progress = progress
+    _clear_lease(run)
+    run.save(update_fields=[
+        "status", "finished_at", "error_message", "progress",
+        "lease_token", "lease_report_type", "lease_chunk", "lease_started_at",
+    ])
+    return True
+
+
 def start_unified_sync(
     organization, user, report_types, *, today=None,
     mode=OneCODataSyncRun.MODE_PREVIEW, period_start=None, period_end=None,
@@ -464,6 +501,12 @@ def start_unified_sync(
             existing
             and mode == OneCODataSyncRun.MODE_AUTO_APPLY
             and cancel_idle_preview_run(existing, min_idle_seconds=0)
+        ):
+            existing = None
+        if (
+            existing
+            and mode == OneCODataSyncRun.MODE_AUTO_APPLY
+            and cancel_empty_retryable_auto_run(existing)
         ):
             existing = None
         if existing:
