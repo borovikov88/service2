@@ -76,4 +76,5 @@ class CrmDesktopDensityTests(TestCase):
         self.assertContains(response, "crm-view-shell")
         self.assertContains(response, "@media (min-width: 992px)", html=False)
         self.assertContains(response, "border-radius: 10px", html=False)
+        self.assertContains(response, "align-content: start", html=False)
 
