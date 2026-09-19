@@ -127,3 +127,5 @@ jobs:
               "cashflow": cash_rows,
           }, ensure_ascii=False, sort_keys=True))
           PY
+
+# rerun after lightweight seasonality
