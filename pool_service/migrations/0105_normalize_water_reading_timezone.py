@@ -13,7 +13,11 @@ def normalize_legacy_water_reading_dates(apps, schema_editor):
     WaterReading = apps.get_model("pool_service", "WaterReading")
     timezone_by_user = _profile_timezone_map(apps)
 
-    for reading in WaterReading.objects.exclude(added_by_id=None).iterator(chunk_size=500):
+    readings = list(
+        WaterReading.objects.exclude(added_by_id=None).only("id", "added_by_id", "date")
+    )
+    corrected_readings = []
+    for reading in readings:
         timezone_name = timezone_by_user.get(reading.added_by_id)
         if not timezone_name or not reading.date:
             continue
@@ -32,17 +36,28 @@ def normalize_legacy_water_reading_dates(apps, schema_editor):
         else:
             stored_utc = stored_utc.astimezone(datetime_timezone.utc)
         intended_wall_time = stored_utc.replace(tzinfo=None)
-        corrected = intended_wall_time.replace(
+        reading.date = intended_wall_time.replace(
             tzinfo=user_timezone
         ).astimezone(datetime_timezone.utc)
-        WaterReading.objects.filter(pk=reading.pk).update(date=corrected)
+        corrected_readings.append(reading)
+
+    if corrected_readings:
+        WaterReading.objects.bulk_update(
+            corrected_readings,
+            ["date"],
+            batch_size=500,
+        )
 
 
 def restore_legacy_water_reading_dates(apps, schema_editor):
     WaterReading = apps.get_model("pool_service", "WaterReading")
     timezone_by_user = _profile_timezone_map(apps)
 
-    for reading in WaterReading.objects.exclude(added_by_id=None).iterator(chunk_size=500):
+    readings = list(
+        WaterReading.objects.exclude(added_by_id=None).only("id", "added_by_id", "date")
+    )
+    restored_readings = []
+    for reading in readings:
         timezone_name = timezone_by_user.get(reading.added_by_id)
         if not timezone_name or not reading.date:
             continue
@@ -55,8 +70,15 @@ def restore_legacy_water_reading_dates(apps, schema_editor):
         if corrected_utc.tzinfo is None:
             corrected_utc = corrected_utc.replace(tzinfo=datetime_timezone.utc)
         local_wall_time = corrected_utc.astimezone(user_timezone).replace(tzinfo=None)
-        legacy_value = local_wall_time.replace(tzinfo=datetime_timezone.utc)
-        WaterReading.objects.filter(pk=reading.pk).update(date=legacy_value)
+        reading.date = local_wall_time.replace(tzinfo=datetime_timezone.utc)
+        restored_readings.append(reading)
+
+    if restored_readings:
+        WaterReading.objects.bulk_update(
+            restored_readings,
+            ["date"],
+            batch_size=500,
+        )
 
 
 class Migration(migrations.Migration):
