@@ -815,6 +815,23 @@ class PoolForm(forms.ModelForm):
         user = kwargs.pop("user", None)
         selected_client_id = kwargs.pop("selected_client_id", None)
         service_details_only = kwargs.pop("service_details_only", False)
+
+        # Existing clients may still submit the object form without the new
+        # status field. Preserve the current status (or default to active)
+        # instead of rejecting an otherwise valid update.
+        instance = kwargs.get("instance")
+        bound_data = args[0] if args else kwargs.get("data")
+        if bound_data is not None and "service_status" not in bound_data:
+            bound_data = bound_data.copy()
+            bound_data["service_status"] = (
+                getattr(instance, "service_status", None)
+                or Pool.SERVICE_STATUS_ACTIVE
+            )
+            if args:
+                args = (bound_data, *args[1:])
+            else:
+                kwargs["data"] = bound_data
+
         super().__init__(*args, **kwargs)
         if "confirm_object_type_change" in self.fields:
             self.fields["confirm_object_type_change"].widget.attrs.update({"class": "form-check-input"})
