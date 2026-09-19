@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.db import migrations, models
 import django.db.models.deletion
+import django.utils.timezone
 
 
 def backfill_service_status(apps, schema_editor):
@@ -74,7 +75,7 @@ class Migration(migrations.Migration):
                     ),
                 ),
                 ("comment", models.CharField(blank=True, max_length=255)),
-                ("changed_at", models.DateTimeField()),
+                ("changed_at", models.DateTimeField(default=django.utils.timezone.now)),
                 (
                     "changed_by",
                     models.ForeignKey(
