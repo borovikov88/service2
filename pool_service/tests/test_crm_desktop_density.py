@@ -49,3 +49,31 @@ class CrmDesktopDensityTests(TestCase):
         self.assertContains(response, "crm-tasks-table")
         self.assertContains(response, "Desktop task density")
         self.assertContains(response, "min-height: 34px", html=False)
+
+    def test_crm_create_form_uses_compact_desktop_form(self):
+        response = self.client.get(reverse("crm_create", kwargs={"direction": "service"}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "crm-form-page")
+        self.assertContains(response, "crm-form-card")
+        self.assertContains(response, "crm-form-actions")
+
+    def test_crm_detail_uses_compact_desktop_cards(self):
+        from pool_service.models import CrmItem
+
+        item = CrmItem.objects.create(
+            organization=self.organization,
+            direction=CrmItem.DIRECTION_SERVICE,
+            title="Тестовая заявка",
+            stage=CrmItem.STAGE_SERVICE_NEW,
+            created_by=self.user,
+        )
+        response = self.client.get(
+            reverse("crm_view", kwargs={"direction": "service", "item_id": item.id})
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "crm-view-shell")
+        self.assertContains(response, "@media (min-width: 992px)", html=False)
+        self.assertContains(response, "border-radius: 10px", html=False)
+
