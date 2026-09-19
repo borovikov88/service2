@@ -227,13 +227,13 @@
                     </div>
                     {% if form.daily_readings_required.errors %}<div class="text-danger small mt-1">{{ form.daily_readings_required.errors.0 }}</div>{% endif %}
                 </div>
-                <div class="col-12">
-                    <div class="form-check">
-                        {{ form.service_suspended }}
-                        <label class="form-check-label" for="{{ form.service_suspended.id_for_label }}">&#1042;&#1088;&#1077;&#1084;&#1077;&#1085;&#1085;&#1086; &#1085;&#1077; &#1086;&#1073;&#1089;&#1083;&#1091;&#1078;&#1080;&#1074;&#1072;&#1077;&#1090;&#1089;&#1103;</label>
-                    </div>
-                    {% if form.service_suspended.errors %}<div class="text-danger small mt-1">{{ form.service_suspended.errors.0 }}</div>{% endif %}
+                {% if form.service_status %}
+                <div class="col-md-6">
+                    <label class="form-label" for="{{ form.service_status.id_for_label }}">Статус обслуживания</label>
+                    {{ form.service_status }}
+                    {% if form.service_status.errors %}<div class="text-danger small mt-1">{{ form.service_status.errors.0 }}</div>{% endif %}
                 </div>
+                {% endif %}
                 {% if form.service_details_comment %}
                 <div class="col-12">
                     <label class="form-label" for="{{ form.service_details_comment.id_for_label }}">Комментарий по обслуживанию</label>
