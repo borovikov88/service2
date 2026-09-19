@@ -172,6 +172,7 @@ def _read_reference_map(
     page_budget,
     allow_deleted_nomenclature=False,
     allow_deleted_customer=False,
+    allow_deleted_responsible=False,
 ):
     entity_set, fields = CATALOGS[kind]
     expected = set(guids)
@@ -197,6 +198,7 @@ def _read_reference_map(
                     and (
                         (kind == "nomenclature" and allow_deleted_nomenclature)
                         or (kind == "customer" and allow_deleted_customer)
+                        or (kind == "responsible" and allow_deleted_responsible)
                     )
                 )
                 if raw.get("DeletionMark") is not False and not allows_historical_deleted_reference:
