@@ -40,6 +40,22 @@ class ClientShellPerformanceTests(TestCase):
         self.assertContains(response, "assets/js/base-shell-post-b.js")
         self.assertNotContains(response, "mc.yandex.ru/metrika")
 
+    def test_desktop_sidebar_submenus_expand_without_navigation(self):
+        response = self.client.get(
+            reverse("pool_list"),
+            HTTP_HOST="service2.aqualine22.ru",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'class="desktop-sidebar__group"', count=2)
+        self.assertContains(response, "Обзор CRM")
+        self.assertContains(response, "АНАЛИТИКА")
+
+        source = get_template("pool_service/base.html").template.source
+        self.assertIn('class="desktop-sidebar__group"', source)
+        self.assertIn("<summary", source)
+        self.assertIn("desktop-sidebar__group-chevron", source)
+
     def test_public_indexable_host_keeps_metrika(self):
         response = self.client.get(
             reverse("pool_list"),

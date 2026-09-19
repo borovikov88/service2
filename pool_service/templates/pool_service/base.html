@@ -19,7 +19,7 @@
   <meta name="application-name" content="{{ brand_name }}" />
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" />
   <link href="{% static 'assets/css/style.css' %}?v=18" rel="stylesheet" />
-  <link href="{% static 'assets/css/base-shell.css' %}?v=1" rel="stylesheet" />
+  <link href="{% static 'assets/css/base-shell.css' %}?v=2" rel="stylesheet" />
 
   {% if allow_indexing %}
   <!-- Yandex.Metrika counter -->
@@ -82,20 +82,21 @@
       </a>
 
       {% if can_access_crm %}
-      <a href="{% url 'crm_index' %}" class="desktop-sidebar__link {% if active_tab == 'crm' %}is-active{% endif %}">
-        <i class="bi bi-kanban"></i><span>CRM</span>
-      </a>
-      {% if active_tab == 'crm' %}
-      <div class="desktop-sidebar__subnav">
-        <a href="{% url 'crm_tasks' %}" class="desktop-sidebar__sublink {% if request.resolver_match.url_name == 'crm_tasks' %}is-active{% endif %}">Задачи</a>
-        <a href="{% url 'crm_list' direction='service' %}" class="desktop-sidebar__sublink {% if request.resolver_match.kwargs.direction == 'service' %}is-active{% endif %}">Сервис</a>
-        {% if not crm_service_only %}
-        <a href="{% url 'crm_list' direction='project' %}" class="desktop-sidebar__sublink {% if request.resolver_match.kwargs.direction == 'project' %}is-active{% endif %}">Проекты</a>
-        <a href="{% url 'crm_list' direction='sales' %}" class="desktop-sidebar__sublink {% if request.resolver_match.kwargs.direction == 'sales' %}is-active{% endif %}">Продажи</a>
-        <a href="{% url 'crm_list' direction='tender' %}" class="desktop-sidebar__sublink {% if request.resolver_match.kwargs.direction == 'tender' %}is-active{% endif %}">Торги</a>
-        {% endif %}
-      </div>
-      {% endif %}
+      <details class="desktop-sidebar__group" {% if active_tab == 'crm' %}open{% endif %}>
+        <summary class="desktop-sidebar__link {% if active_tab == 'crm' %}is-active{% endif %}">
+          <i class="bi bi-kanban"></i><span>CRM</span><i class="bi bi-chevron-down desktop-sidebar__group-chevron"></i>
+        </summary>
+        <div class="desktop-sidebar__subnav">
+          <a href="{% url 'crm_index' %}" class="desktop-sidebar__sublink {% if request.resolver_match.url_name == 'crm_index' %}is-active{% endif %}">Обзор CRM</a>
+          <a href="{% url 'crm_tasks' %}" class="desktop-sidebar__sublink {% if request.resolver_match.url_name == 'crm_tasks' %}is-active{% endif %}">Задачи</a>
+          <a href="{% url 'crm_list' direction='service' %}" class="desktop-sidebar__sublink {% if request.resolver_match.kwargs.direction == 'service' %}is-active{% endif %}">Сервис</a>
+          {% if not crm_service_only %}
+          <a href="{% url 'crm_list' direction='project' %}" class="desktop-sidebar__sublink {% if request.resolver_match.kwargs.direction == 'project' %}is-active{% endif %}">Проекты</a>
+          <a href="{% url 'crm_list' direction='sales' %}" class="desktop-sidebar__sublink {% if request.resolver_match.kwargs.direction == 'sales' %}is-active{% endif %}">Продажи</a>
+          <a href="{% url 'crm_list' direction='tender' %}" class="desktop-sidebar__sublink {% if request.resolver_match.kwargs.direction == 'tender' %}is-active{% endif %}">Торги</a>
+          {% endif %}
+        </div>
+      </details>
       {% endif %}
 
       {% if not is_personal_user and not finance_only_user %}
@@ -118,19 +119,19 @@
       {% endif %}
 
       {% if can_access_finance %}
-      <a href="{% url 'finance_dashboard' %}" class="desktop-sidebar__link {% if active_tab == 'finance' %}is-active{% endif %}">
-        <i class="bi bi-bar-chart-line"></i><span>Финансы</span>
-      </a>
-      {% if active_tab == 'finance' %}
-      <div class="desktop-sidebar__subnav">
-        {% for group in finance_navigation %}{% if group.items %}
-          <div class="desktop-sidebar__subheading">{{ group.label }}</div>
-          {% for item in group.items %}
-            <a href="{{ item.url }}" class="desktop-sidebar__sublink {% if item.active %}is-active{% endif %}">{{ item.label }}</a>
-          {% endfor %}
-        {% endif %}{% endfor %}
-      </div>
-      {% endif %}
+      <details class="desktop-sidebar__group" {% if active_tab == 'finance' %}open{% endif %}>
+        <summary class="desktop-sidebar__link {% if active_tab == 'finance' %}is-active{% endif %}">
+          <i class="bi bi-bar-chart-line"></i><span>Финансы</span><i class="bi bi-chevron-down desktop-sidebar__group-chevron"></i>
+        </summary>
+        <div class="desktop-sidebar__subnav">
+          {% for group in finance_navigation %}{% if group.items %}
+            <div class="desktop-sidebar__subheading">{{ group.label }}</div>
+            {% for item in group.items %}
+              <a href="{{ item.url }}" class="desktop-sidebar__sublink {% if item.active %}is-active{% endif %}">{{ item.label }}</a>
+            {% endfor %}
+          {% endif %}{% endfor %}
+        </div>
+      </details>
       {% endif %}
 
       {% if can_access_users %}
