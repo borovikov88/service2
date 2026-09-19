@@ -780,6 +780,9 @@ def _render_cash_dashboard(request, section):
     onec_kkm_balance = None
     company_counts = []
     kkm_counts = []
+    kkm_pending_count = 0
+    kkm_latest_count = None
+    kkm_discrepancy = None
     if section == "company":
         company_balance = company_cash_balance(organization)
         company_counts = (
@@ -799,11 +802,25 @@ def _render_cash_dashboard(request, section):
                 "is_stale": finance_position["freshness"]["is_stale"],
             }
         kkm_history = _kkm_history_entries(organization, request.user)
-        kkm_counts = (
+        kkm_counts = list(
             CashCount.objects.filter(organization=organization, cashbox_type=CashCount.CASHBOX_KKM)
             .select_related("counted_by")
             .order_by("-occurred_on", "-id")[:20]
         )
+        kkm_latest_count = kkm_counts[0] if kkm_counts else None
+        kkm_pending_count = (
+            CashOperation.objects.filter(
+                organization=organization,
+                status=CashOperation.STATUS_PENDING,
+            ).count()
+            + Expense.objects.filter(
+                organization=organization,
+                source=Expense.SOURCE_KKM_CASH,
+                status=Expense.STATUS_PENDING,
+            ).count()
+        )
+        if onec_kkm_balance is not None and kkm_latest_count is not None:
+            kkm_discrepancy = kkm_latest_count.total - onec_kkm_balance["balance"]
 
     return render(
         request,
@@ -823,6 +840,9 @@ def _render_cash_dashboard(request, section):
             "kkm_history": kkm_history,
             "company_counts": company_counts,
             "kkm_counts": kkm_counts,
+            "kkm_pending_count": kkm_pending_count,
+            "kkm_latest_count": kkm_latest_count,
+            "kkm_discrepancy": kkm_discrepancy,
             "active_tab": "finance",
             "show_add_button": False,
         },
