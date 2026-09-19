@@ -12,7 +12,7 @@ from datetime import date, datetime
 from decimal import Decimal
 import re
 
-from django.db.models import F
+from django.db.models import F, Sum
 from django.utils import timezone
 
 from pool_service.finance_imports.cost_control import (
@@ -253,7 +253,13 @@ def cashflow_operating_monthly_summary(organization, first_month, last_month):
     }
     net_by_month = {month: ZERO for month in requested_months}
 
-    for row in _confirmed_cashflow_rows(organization, first_month, last_month):
+    rows = (
+        _confirmed_cashflow_queryset(organization, first_month, last_month)
+        .order_by()
+        .values("period_month", "normalized_article_name")
+        .annotate(receipts=Sum("receipts"), payments=Sum("payments"))
+    )
+    for row in rows:
         article_name = row["normalized_article_name"]
         classification = classifications.get(article_name)
         if classification is None:
