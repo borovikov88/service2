@@ -10,6 +10,7 @@ from django.db.models import Max
 from django.utils import timezone
 
 from pool_service.finance_imports.cashflow_dashboard import cashflow_dashboard_data
+from pool_service.finance_imports.management_finance import cashflow_operating_monthly_summary
 from pool_service.finance_imports.cost_control import (
     get_onec_cost_anomalies,
     summarize_cost_anomalies,
@@ -427,40 +428,120 @@ CASHFLOW_STRUCTURE_CARDS = (
 
 
 def _seasonality(organization, today):
+    """Build the comparison chart without materializing detail cash-flow data."""
     current_first = date(today.year, 1, 1)
     current_last = today.replace(day=1)
     previous_first = date(today.year - 1, 1, 1)
     previous_last = date(today.year - 1, today.month, 1)
-    current = _range_data(
+    current_months = month_sequence(current_first, current_last)
+    previous_months = month_sequence(previous_first, previous_last)
+
+    current_profit = monthly_profit_summary(
+        organization, current_first, current_last
+    )
+    previous_profit = monthly_profit_summary(
+        organization, previous_first, previous_last
+    )
+    current_profit_state = _source_state(
+        organization, "profit", current_months, include_freshness=False
+    )
+    previous_profit_state = _source_state(
+        organization, "profit", previous_months, include_freshness=False
+    )
+
+    current_payroll = accrual_dashboard_data(
         organization, current_first, current_last, include_freshness=False
     )
-    previous = _range_data(
+    previous_payroll = accrual_dashboard_data(
         organization, previous_first, previous_last, include_freshness=False
     )
-    result = {}
-    definitions = {
-        "gross_profit": ("Валовая прибыль", ("profit",)),
-        "payroll": ("ФОТ", ("payroll",)),
-        "net_cash_flow": ("Чистый денежный поток", ("cashflow",)),
+    current_payroll_missing = [
+        month for month in current_months
+        if month not in current_payroll["states"]
+    ]
+    previous_payroll_missing = [
+        month for month in previous_months
+        if month not in previous_payroll["states"]
+    ]
+
+    current_cashflow = cashflow_operating_monthly_summary(
+        organization, current_first, current_last
+    )
+    previous_cashflow = cashflow_operating_monthly_summary(
+        organization, previous_first, previous_last
+    )
+
+    profit_current = {
+        item["month"]: item["gross_profit"]
+        for item in current_profit["monthly"]
     }
-    for metric, (label, source_keys) in definitions.items():
-        available = all(
-            current["sources"][key]["complete"]
-            and previous["sources"][key]["complete"]
-            for key in source_keys
-        )
+    profit_previous = {
+        item["month"]: item["gross_profit"]
+        for item in previous_profit["monthly"]
+    }
+    payroll_current = {
+        item["period_month"]: item["accrued"]
+        for item in current_payroll["months"]
+    }
+    payroll_previous = {
+        item["period_month"]: item["accrued"]
+        for item in previous_payroll["months"]
+    }
+    cash_current = {
+        item["period_month"]: item["net_cash_flow"]
+        for item in current_cashflow["months"]
+    }
+    cash_previous = {
+        item["period_month"]: item["net_cash_flow"]
+        for item in previous_cashflow["months"]
+    }
+
+    definitions = {
+        "gross_profit": {
+            "label": "Валовая прибыль",
+            "available": (
+                current_profit_state["complete"]
+                and previous_profit_state["complete"]
+            ),
+            "current": profit_current,
+            "previous": profit_previous,
+        },
+        "payroll": {
+            "label": "ФОТ",
+            "available": (
+                not current_payroll_missing
+                and not previous_payroll_missing
+            ),
+            "current": payroll_current,
+            "previous": payroll_previous,
+        },
+        "net_cash_flow": {
+            "label": "Чистый денежный поток",
+            "available": (
+                not current_cashflow["missing_months"]
+                and not previous_cashflow["missing_months"]
+            ),
+            "current": cash_current,
+            "previous": cash_previous,
+        },
+    }
+
+    result = {}
+    for metric, definition in definitions.items():
         rows = []
-        if available:
-            for current_row, previous_row in zip(current["monthly"], previous["monthly"]):
+        if definition["available"]:
+            for current_month, previous_month in zip(
+                current_months, previous_months
+            ):
                 rows.append({
-                    "month_number": current_row["month"].month,
-                    "label": MONTH_SHORT_NAMES[current_row["month"].month],
-                    "current": current_row[metric],
-                    "previous": previous_row[metric],
+                    "month_number": current_month.month,
+                    "label": MONTH_SHORT_NAMES[current_month.month],
+                    "current": definition["current"].get(current_month, ZERO),
+                    "previous": definition["previous"].get(previous_month, ZERO),
                 })
         result[metric] = {
-            "label": label,
-            "available": available,
+            "label": definition["label"],
+            "available": definition["available"],
             "rows": rows,
             "current_year": today.year,
             "previous_year": today.year - 1,
