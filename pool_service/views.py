@@ -6863,13 +6863,9 @@ def pool_detail(request, pool_uuid):
     for reading in readings:
         reading.linked_supply_tasks = reading_task_map.get(reading.id, [])
 
+    # Audit records continue to be written by _write_data_audit, but the
+    # object card no longer exposes the journal to any role.
     audit_logs = []
-    if can_view_service_details:
-        audit_logs = (
-            DataAuditLog.objects.filter(pool=pool)
-            .select_related("actor")
-            .order_by("-created_at", "-id")[:20]
-        )
 
 
     context = {
