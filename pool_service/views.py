@@ -6717,22 +6717,23 @@ def pool_detail(request, pool_uuid):
     )
     open_pool_task_count = 0
 
-    history_entries = list(readings_list)
-    for reading in history_entries:
-        reading.history_type = "reading"
-        reading.history_at = reading.date
-
-    status_events = list(
-        PoolServiceStatusEvent.objects.filter(pool=pool)
-        .select_related("changed_by")
-        .order_by("-created_at", "-id")
+    history_entries = [
+        {"kind": "reading", "at": reading.date, "reading": reading}
+        for reading in readings_list
+    ]
+    history_entries.extend(
+        {
+            "kind": "status",
+            "at": event.created_at,
+            "event": event,
+        }
+        for event in (
+            PoolServiceStatusEvent.objects.filter(pool=pool)
+            .select_related("changed_by")
+            .order_by("-created_at", "-id")
+        )
     )
-    for event in status_events:
-        event.history_type = "status"
-        event.history_at = event.created_at
-
-    history_entries.extend(status_events)
-    history_entries.sort(key=lambda entry: entry.history_at, reverse=True)
+    history_entries.sort(key=lambda entry: entry["at"], reverse=True)
 
     per_page = _parse_per_page(request.GET.get("per_page"), 20)
     paginator = Paginator(history_entries, per_page)
@@ -6750,9 +6751,10 @@ def pool_detail(request, pool_uuid):
 
     if can_add_reading:
 
-        for reading in readings:
-            if getattr(reading, "history_type", "reading") != "reading":
+        for history_entry in readings:
+            if history_entry["kind"] != "reading":
                 continue
+            reading = history_entry["reading"]
 
             if _reading_edit_allowed(reading, request.user):
 
@@ -6870,8 +6872,9 @@ def pool_detail(request, pool_uuid):
             )
             reading_task_map.setdefault(task.water_reading_id, []).append(task)
         open_pool_task_count = sum(1 for task in supply_tasks if not task.is_done)
-    for reading in readings:
-        if getattr(reading, "history_type", "reading") == "reading":
+    for history_entry in readings:
+        if history_entry["kind"] == "reading":
+            reading = history_entry["reading"]
             reading.linked_supply_tasks = reading_task_map.get(reading.id, [])
 
     # Audit records continue to be written by _write_data_audit, but the
