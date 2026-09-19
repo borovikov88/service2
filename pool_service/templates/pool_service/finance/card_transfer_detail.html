@@ -4,7 +4,9 @@
 {% block title %}Перечисление {{ payment.amount|money }}{% endblock %}
 
 {% block content %}
-<div class="d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-4">
+{% include "pool_service/finance/_desktop_workspace_styles.html" %}
+<div class="finance-desktop">
+<div class="finance-secondary-header d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-4">
   <div>
     <div class="d-flex align-items-center gap-2 mb-1">
       <h1 class="h3 fw-bold mb-0">{{ payment.amount|money }}</h1>
@@ -30,7 +32,7 @@
 
 <div class="row g-4">
   <div class="col-12 col-lg-7">
-    <div class="card card-soft p-3 p-lg-4 mb-4">
+    <div class="finance-secondary-card card card-soft p-3 p-lg-4 mb-4">
       <h2 class="h5 fw-bold mb-3">Данные платежа</h2>
       <div class="row g-3">
         <div class="col-12 col-md-6">
@@ -66,7 +68,7 @@
       </div>
     </div>
 
-    <div class="card card-soft p-3 p-lg-4">
+    <div class="finance-secondary-card card card-soft p-3 p-lg-4">
       <h2 class="h5 fw-bold mb-3">Подтверждение оплаты</h2>
       <div class="row g-3">
         {% for attachment in payment.attachments.all %}
@@ -94,7 +96,7 @@
 
   <div class="col-12 col-lg-5">
     {% if can_review %}
-      <div class="card card-soft p-3 p-lg-4 mb-4">
+      <div class="finance-secondary-card card card-soft p-3 p-lg-4 mb-4">
         <h2 class="h5 fw-bold mb-3">Подтверждение</h2>
         <form method="post" action="{% url 'finance_card_transfer_review' payment.id %}" class="d-flex flex-column gap-3">
           {% csrf_token %}
@@ -111,7 +113,7 @@
       </div>
     {% endif %}
 
-    <div class="card card-soft p-3 p-lg-4">
+    <div class="finance-secondary-card card card-soft p-3 p-lg-4">
       <h2 class="h5 fw-bold mb-3">История</h2>
       <div class="d-flex flex-column gap-3">
         {% for change in payment.changes.all %}
@@ -127,4 +129,6 @@
     </div>
   </div>
 </div>
+
+</div><!-- /finance-desktop -->
 {% endblock %}

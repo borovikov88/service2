@@ -4,7 +4,9 @@
 {% block title %}Кассовая операция{% endblock %}
 
 {% block content %}
-<div class="d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-4">
+{% include "pool_service/finance/_desktop_workspace_styles.html" %}
+<div class="finance-desktop">
+<div class="finance-secondary-header d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-4">
   <div>
     <h1 class="h3 fw-bold mb-1">{{ operation.get_operation_type_display }}</h1>
     <div class="text-muted">Касса ККМ и касса компании</div>
@@ -23,7 +25,7 @@
   </div>
 </div>
 
-<div class="card card-soft p-3 p-lg-4 mb-4">
+<div class="finance-secondary-card card card-soft p-3 p-lg-4 mb-4">
   <h2 class="h5 fw-bold mb-3">Данные операции</h2>
   <div class="row g-3">
     <div class="col-6 col-lg-3"><div class="text-muted small">Дата</div><div class="fw-semibold">{{ operation.occurred_on|date:"d.m.Y" }}</div></div>
@@ -37,7 +39,7 @@
 </div>
 
 {% if can_manage_cash %}
-<div class="card card-soft p-3 p-lg-4">
+<div class="finance-secondary-card card card-soft p-3 p-lg-4">
   <h2 class="h5 fw-bold mb-3">История</h2>
   <div class="table-responsive">
     <table class="table align-middle mb-0">
@@ -58,4 +60,6 @@
   </div>
 </div>
 {% endif %}
+
+</div><!-- /finance-desktop -->
 {% endblock %}

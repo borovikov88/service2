@@ -3,9 +3,11 @@
 {% block title %}{{ title }}{% endblock %}
 
 {% block content %}
+{% include "pool_service/finance/_desktop_workspace_styles.html" %}
+<div class="finance-desktop finance-secondary-form">
 <div class="{% if finance_modal %}p-3 p-lg-4{% else %}mx-auto{% endif %}"{% if not finance_modal %} style="max-width:760px;"{% endif %}>
   {% if not finance_modal %}
-  <div class="d-flex align-items-center justify-content-between gap-3 mb-4">
+  <div class="finance-secondary-header d-flex align-items-center justify-content-between gap-3 mb-4">
     <div>
       <h1 class="h3 fw-bold mb-1">{{ title }}</h1>
       <div class="text-muted">{{ subtitle }}</div>
@@ -14,7 +16,7 @@
   </div>
   {% endif %}
 
-  <form method="post" class="{% if not finance_modal %}card card-soft p-3 p-lg-4{% endif %}">
+  <form method="post" class="{% if not finance_modal %}finance-secondary-card card card-soft p-3 p-lg-4{% endif %}">
     {% csrf_token %}
     {% if return_to %}<input type="hidden" name="return_to" value="{{ return_to }}">{% endif %}
     <div class="row g-3">
@@ -36,4 +38,6 @@
     </div>
   </form>
 </div>
+
+</div><!-- /finance-desktop -->
 {% endblock %}

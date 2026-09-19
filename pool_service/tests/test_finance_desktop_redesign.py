@@ -75,3 +75,25 @@ class FinanceDesktopRedesignTests(SimpleTestCase):
         self.assertIn("finance-secondary-card", source)
         self.assertIn("finance-secondary-kpi", source)
 
+    def test_finance_operation_templates_use_compact_workspace(self):
+        for template_name in [
+            "pool_service/finance/expense_form.html",
+            "pool_service/finance/expense_detail.html",
+            "pool_service/finance/cash_form.html",
+            "pool_service/finance/cash_detail.html",
+            "pool_service/finance/income_form.html",
+            "pool_service/finance/transaction_form.html",
+            "pool_service/finance/card_transfer_dashboard.html",
+            "pool_service/finance/card_transfer_form.html",
+            "pool_service/finance/card_transfer_detail.html",
+            "pool_service/finance/cash_count_form.html",
+            "pool_service/finance/employee_detail.html",
+        ]:
+            with self.subTest(template=template_name):
+                source = get_template(template_name).template.source
+                self.assertIn("finance-desktop", source)
+                self.assertIn(
+                    'pool_service/finance/_desktop_workspace_styles.html',
+                    source,
+                )
+

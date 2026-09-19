@@ -4,7 +4,9 @@
 {% block title %}Перечисления{% endblock %}
 
 {% block content %}
-<div class="d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-4">
+{% include "pool_service/finance/_desktop_workspace_styles.html" %}
+<div class="finance-desktop">
+<div class="finance-secondary-header d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-4">
   <div>
     <h1 class="h3 fw-bold mb-1">Перечисления</h1>
     <div class="text-muted">Оплаты переводом на карту с подтверждением документов</div>
@@ -14,7 +16,7 @@
   </a>
 </div>
 
-<div class="card card-soft p-3 p-lg-4 mb-4">
+<div class="finance-secondary-card card card-soft p-3 p-lg-4 mb-4">
   <form method="get" class="row g-3 align-items-end">
     <div class="col-12 col-lg-4">
       <label class="form-label" for="transfer-client-filter">Клиент</label>
@@ -40,7 +42,7 @@
   </form>
 </div>
 
-<div class="card card-soft p-3 p-lg-4">
+<div class="finance-secondary-card card card-soft p-3 p-lg-4">
   <h2 class="h5 fw-bold mb-3">История перечислений</h2>
   <div class="table-responsive">
     <table class="table align-middle mb-0">
@@ -161,4 +163,6 @@
     });
   });
 </script>
+
+</div><!-- /finance-desktop -->
 {% endblock %}

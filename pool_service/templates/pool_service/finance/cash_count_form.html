@@ -4,6 +4,8 @@
 {% block title %}{{ title }}{% endblock %}
 
 {% block content %}
+{% include "pool_service/finance/_desktop_workspace_styles.html" %}
+<div class="finance-desktop">
 <style>
   .cash-count-meta {
     display: grid;
@@ -66,9 +68,9 @@
   }
 </style>
 
-<div class="{% if finance_modal %}p-3 p-lg-4{% else %}mx-auto{% endif %}"{% if not finance_modal %} style="max-width:640px;"{% endif %}>
+<div class="{% if finance_modal %}p-3 p-lg-4{% else %}mx-auto{% endif %}"{% if not finance_modal %} style="max-width:760px;"{% endif %}>
   {% if not finance_modal %}
-  <div class="d-flex align-items-center justify-content-between gap-3 mb-4">
+  <div class="finance-secondary-header d-flex align-items-center justify-content-between gap-3 mb-4">
     <div>
       <h1 class="h3 fw-bold mb-1">{{ title }}</h1>
       <div class="text-muted">&#1044;&#1072;&#1090;&#1072; &#1080; &#1074;&#1088;&#1077;&#1084;&#1103; &#1089;&#1090;&#1072;&#1074;&#1103;&#1090;&#1089;&#1103; &#1072;&#1074;&#1090;&#1086;&#1084;&#1072;&#1090;&#1080;&#1095;&#1077;&#1089;&#1082;&#1080; &#1074; &#1084;&#1086;&#1084;&#1077;&#1085;&#1090; &#1087;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1078;&#1076;&#1077;&#1085;&#1080;&#1103;.</div>
@@ -270,4 +272,6 @@
     updateTotal();
   });
 </script>
+
+</div><!-- /finance-desktop -->
 {% endblock %}
