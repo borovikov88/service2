@@ -53,11 +53,56 @@
   .materials-task-icon {
     flex: 0 0 auto;
   }
+
+  /* Desktop object card foundation. Role-specific content comes in the next migration step. */
+  @media (min-width: 992px) {
+    .object-desktop-actions {
+      margin-bottom: 12px !important;
+    }
+    .object-summary-card {
+      padding: 14px !important;
+      margin-bottom: 14px !important;
+      border-radius: 10px !important;
+    }
+    .object-summary-card h2 {
+      font-size: 1.35rem;
+    }
+    .object-summary-card .row.g-2 {
+      --bs-gutter-x: 0.55rem;
+      --bs-gutter-y: 0.55rem;
+    }
+    .object-summary-card .row.g-2 > div > .d-flex,
+    .object-summary-card .row.g-2 > div > .p-2 {
+      min-height: 42px;
+      padding: 7px 9px !important;
+      border: 1px solid #e7edf4;
+      background: #f8fafc !important;
+    }
+    .object-summary-card .small {
+      font-size: 0.73rem;
+    }
+    .object-summary-card .fw-semibold {
+      font-size: 0.8rem;
+    }
+    .object-section-card {
+      padding: 14px !important;
+      margin-bottom: 14px !important;
+      border-radius: 10px !important;
+    }
+    .object-section-card .table {
+      font-size: 0.82rem;
+    }
+  }
+  @media (min-width: 1920px) {
+    .object-summary-card .row.g-2 > .col-lg-4 {
+      width: 25%;
+    }
+  }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
+<div class="object-desktop-actions d-flex justify-content-between align-items-center mb-3">
     {% if not is_personal_user or pool.client.user_id != user.id or pool.client.pool_set.count != 1 %}
     <a href="{% url 'pool_list' %}" class="text-decoration-none d-flex align-items-center gap-2 text-dark">
         <i class="bi bi-arrow-left"></i>
@@ -89,7 +134,7 @@
     {% endif %}
 </div>
 
-<div class="card card-soft p-4 mb-4">
+<div class="object-summary-card card card-soft p-4 mb-4">
     <div class="d-flex justify-content-between align-items-start gap-3">
         <div>
             <h2 class="fw-bold h4 mb-1">{{ pool.client.name }}</h2>
@@ -249,7 +294,7 @@
 </div>
 
 {% if audit_logs %}
-<div class="card card-soft p-4 mb-4">
+<div class="object-section-card card card-soft p-4 mb-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
         <div>
             <h3 class="fw-bold h5 mb-1">Журнал изменений</h3>
@@ -295,7 +340,7 @@
 
 
 {% if readings %}
-<div class="card card-soft p-4 mb-4">
+<div class="object-section-card card card-soft p-4 mb-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
         <div>
             <h3 class="fw-bold h5 mb-1">{% if is_water_object %}История посещений{% else %}История показаний{% endif %}</h3>
@@ -492,7 +537,7 @@
 {% endif %}
 
 {% if supply_tasks %}
-<div class="card card-soft p-4 mb-4">
+<div class="object-section-card card card-soft p-4 mb-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
         <div>
             <h3 class="fw-bold h5 mb-1">Задачи по материалам</h3>
@@ -563,7 +608,7 @@
 {% endif %}
 
 {% if show_service_issues %}
-<div class="card card-soft p-4 mb-4">
+<div class="object-section-card card card-soft p-4 mb-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
         <div>
             <h3 class="fw-bold h5 mb-1">Неисправности</h3>

@@ -1287,16 +1287,23 @@
       }
 
       .desktop-sidebar__brand-mark {
-        width: 31px;
-        height: 31px;
+        width: 34px;
+        height: 34px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
         border-radius: 9px;
-        background: linear-gradient(145deg, #1887ff, #0d5bd7);
-        color: #fff;
-        box-shadow: 0 8px 18px rgba(13, 110, 253, 0.28);
+        background: rgba(255, 255, 255, 0.96);
+        box-shadow: 0 8px 18px rgba(0, 0, 0, 0.16);
+        overflow: hidden;
         flex: 0 0 auto;
+      }
+
+      .desktop-sidebar__brand-mark img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        display: block;
       }
 
       .desktop-sidebar__nav {
@@ -1607,7 +1614,9 @@
   {% if user.is_authenticated and not hide_header %}
   <aside class="desktop-sidebar d-none d-lg-flex" aria-label="Основная навигация">
     <a href="{{ home_url|default:'/pools/' }}" class="desktop-sidebar__brand">
-      <span class="desktop-sidebar__brand-mark" aria-hidden="true"><i class="bi bi-layers-fill"></i></span>
+      <span class="desktop-sidebar__brand-mark" aria-hidden="true">
+        <img src="{% static brand_favicon %}" alt="">
+      </span>
       <span>{{ brand_name }}</span>
     </a>
 
@@ -1745,16 +1754,6 @@
               <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger">{{ notifications_unread_count }}</span>
             {% endif %}
           </a>
-
-          {% if security_quick_unlock_enabled %}
-          <form method="post" action="{% url 'security_lock' %}" class="d-inline-flex m-0">
-            {% csrf_token %}
-            <input type="hidden" name="next" value="{{ request.get_full_path }}">
-            <button type="submit" class="header-icon text-muted" aria-label="Заблокировать" title="Заблокировать">
-              <i class="bi bi-lock fs-5"></i>
-            </button>
-          </form>
-          {% endif %}
 
           <span class="desktop-topbar__divider" aria-hidden="true"></span>
           <a href="{% url 'profile' %}" class="desktop-topbar__profile">

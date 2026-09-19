@@ -8,6 +8,57 @@
   {% endif %}
 {% endblock %}
 
+{% block extra_head %}
+{{ block.super }}
+<style>
+  /* Desktop objects workspace; mobile styles below 992px remain unchanged. */
+  @media (min-width: 992px) {
+    .pool-controls {
+      padding: 10px;
+      margin-bottom: 14px !important;
+      border: 1px solid #e2e9f2;
+      border-radius: 10px;
+      background: #fff;
+      box-shadow: 0 4px 14px rgba(15, 23, 42, 0.04);
+    }
+    .pool-controls__search {
+      flex-basis: 520px !important;
+    }
+    .pool-controls .form-control,
+    .pool-controls .btn {
+      min-height: 36px;
+      font-size: 0.82rem;
+    }
+    #pool-results .pool-card .card {
+      padding: 12px !important;
+      border-radius: 10px;
+      min-height: 76px;
+      box-shadow: 0 4px 14px rgba(15, 23, 42, 0.035);
+    }
+    #pool-results .pool-card .rounded-3 {
+      width: 42px !important;
+      height: 42px !important;
+      border-radius: 9px !important;
+    }
+    #pool-results .pool-card .fw-bold {
+      font-size: 0.88rem;
+    }
+    #pool-results .pool-card .small {
+      font-size: 0.75rem;
+    }
+  }
+  @media (min-width: 1440px) {
+    #pool-results .pool-result-item { width: 25%; }
+  }
+  @media (min-width: 1920px) {
+    #pool-results .pool-result-item { width: 20%; }
+  }
+  @media (min-width: 2560px) {
+    #pool-results .pool-result-item { width: 16.66666667%; }
+  }
+</style>
+{% endblock %}
+
 {% block content %}
 {% if show_pool_controls %}
 <form method="get" class="pool-controls" id="pool-search-form">

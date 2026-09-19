@@ -1,6 +1,6 @@
 <div class="row g-3">
     {% for pool in pools %}
-    <div class="col-12 col-md-6 col-lg-4">
+    <div class="pool-result-item col-12 col-md-6 col-lg-4">
         <a href="{% url 'pool_detail' pool.uuid %}" class="text-decoration-none text-dark h-100 d-block pool-card" data-client="{{ pool.client.name|default:'' }}" data-address="{{ pool.address|default:'' }}">
             <div class="card card-soft p-3 h-100 hover-shadow">
                 <div class="d-flex align-items-start justify-content-between">
