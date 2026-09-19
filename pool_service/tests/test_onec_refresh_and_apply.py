@@ -241,6 +241,33 @@ class RefreshAndApplyTests(TestCase):
         self.assertNotEqual(auto.pk, preview.pk)
         self.assertEqual(auto.mode, OneCODataSyncRun.MODE_AUTO_APPLY)
 
+    def test_long_profit_refresh_is_split_into_quarterly_chunks(self):
+        run = self.start(
+            start=date(2025, 1, 1),
+            end=date(2026, 9, 1),
+        )
+        chunks = [
+            item for item in run.cursor["queue"]
+            if item["report_type"] == REPORT_PROFIT
+        ]
+        self.assertEqual(len(chunks), 7)
+        self.assertEqual(
+            chunks[0],
+            {
+                "report_type": REPORT_PROFIT,
+                "start": "2025-01-01",
+                "end": "2025-03-01",
+            },
+        )
+        self.assertEqual(
+            chunks[-1],
+            {
+                "report_type": REPORT_PROFIT,
+                "start": "2026-07-01",
+                "end": "2026-09-01",
+            },
+        )
+
     def test_period_over_24_months_creates_no_run(self):
         with self.assertRaises(ValidationError):
             self.start(start=date(2023, 5, 1), end=date(2025, 5, 1))
