@@ -11,6 +11,7 @@ from pool_service.models import (
     Organization,
     OrganizationAccess,
     Pool,
+    PoolServiceStatusChange,
     ServiceVisitPlan,
     WaterReading,
 )
@@ -98,7 +99,7 @@ class ObjectCardRoleRedesignTests(TestCase):
             .count()
         )
 
-    def test_manager_gets_manager_desktop_card_and_recent_visits(self):
+    def test_manager_gets_compact_manager_desktop_card(self):
         response = self._get_detail(self.manager)
 
         self.assertEqual(response.status_code, 200)
@@ -109,7 +110,8 @@ class ObjectCardRoleRedesignTests(TestCase):
             self._expected_open_service_issue_count(),
         )
         self.assertContains(response, "Карточка менеджера")
-        self.assertContains(response, "Короткая сводка для менеджера")
+        self.assertNotContains(response, "Короткая сводка для менеджера")
+        self.assertNotContains(response, ">Последние посещения<", html=False)
         self.assertContains(response, "Стоимость обслуживания")
         self.assertContains(response, "Промывка фильтра")
         self.assertContains(response, 'id="object-visits"', html=False)
@@ -117,7 +119,9 @@ class ObjectCardRoleRedesignTests(TestCase):
         self.assertContains(response, 'class="object-layout-wide"', html=False)
         self.assertContains(response, 'class="object-layout-wide__aside"', html=False)
         self.assertContains(response, 'class="object-info-grid row g-2 mt-3"', html=False)
-        self.assertContains(response, "grid-template-columns: 430px minmax(0, 1fr)", html=False)
+        self.assertContains(response, "grid-template-columns: 340px minmax(0, 1fr)", html=False)
+        self.assertContains(response, ".object-layout-wide__aside .object-info-grid > .col-lg-4", html=False)
+        self.assertContains(response, "width: 100%;", html=False)
         self.assertEqual(response.context["audit_logs"], [])
         self.assertNotContains(response, "Журнал изменений")
         self.assertNotContains(response, 'href="#object-changes"', html=False)
@@ -125,6 +129,43 @@ class ObjectCardRoleRedesignTests(TestCase):
         self.assertContains(response, 'id="serviceIssueCreateModal"', html=False)
         self.assertContains(response, 'id="service-issue-form"', html=False)
         self.assertNotContains(response, "Рабочая карточка сервисника")
+
+    def test_service_status_change_renders_in_visit_timeline(self):
+        PoolServiceStatusChange.objects.create(
+            pool=self.pool,
+            previous_status=Pool.SERVICE_STATUS_ACTIVE,
+            new_status=Pool.SERVICE_STATUS_CONSERVED,
+            changed_by=self.manager,
+            comment="Статус изменён: На обслуживании → Законсервирован",
+        )
+
+        response = self._get_detail(self.manager)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Законсервирован")
+        self.assertContains(response, "Статус изменён: На обслуживании → Законсервирован")
+        self.assertContains(response, "object-status-change-row", html=False)
+
+    def test_new_visit_uses_server_time_not_browser_supplied_time(self):
+        self.client.force_login(self.service)
+        before = timezone.now()
+        response = self.client.post(
+            reverse("water_reading_create", kwargs={"pool_uuid": self.pool.uuid}),
+            {
+                "date": "2020-01-01T00:00:00",
+                "ph": "7.40",
+                "comment": "Проверка серверного времени",
+            },
+        )
+        after = timezone.now()
+
+        self.assertEqual(response.status_code, 302)
+        created = WaterReading.objects.filter(
+            pool=self.pool,
+            comment="Проверка серверного времени",
+        ).latest("id")
+        self.assertGreaterEqual(created.date, before)
+        self.assertLessEqual(created.date, after)
 
     def test_service_gets_visit_first_desktop_card_without_manager_finance(self):
         response = self._get_detail(self.service)
