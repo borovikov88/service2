@@ -45,41 +45,48 @@
     .kkm-section-heading .text-muted {
       font-size: 0.74rem;
     }
-    .kkm-onec-panel {
-      padding: 15px 18px !important;
-      border-width: 1px !important;
-      background: #effaf4 !important;
-      border-color: #72c895 !important;
-      min-height: 92px;
-    }
-    .kkm-onec-panel .fs-2 {
-      font-size: 1.78rem !important;
-      line-height: 1.05;
-    }
-    .kkm-onec-panel .fs-4 {
-      font-size: 1.15rem !important;
-    }
-    .kkm-onec-panel .small {
-      font-size: 0.73rem;
-    }
-    .kkm-onec-mark {
-      width: 46px !important;
-      height: 46px !important;
-      font-size: 1rem !important;
-      border-radius: 9px !important;
-    }
     .kkm-metrics {
+      display: grid !important;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
       margin-top: 10px !important;
       margin-bottom: 0 !important;
     }
-    .kkm-metric {
-      padding: 14px 16px !important;
-      min-height: 82px;
-      box-shadow: none !important;
+    .kkm-metrics > [class*="col-"] {
+      width: auto;
+      max-width: none;
+      padding: 0;
     }
-    .kkm-metric .fs-3 {
-      font-size: 1.45rem !important;
-      line-height: 1.1;
+    .kkm-metric {
+      padding: 13px 14px !important;
+      min-height: 96px;
+      box-shadow: none !important;
+      border: 1px solid #e2e8f0;
+    }
+    .kkm-metric--primary {
+      border-color: #b8d9c4;
+      background: #f4fbf6;
+    }
+    .kkm-metric__label {
+      color: #718096;
+      font-size: 0.72rem;
+      font-weight: 600;
+      margin-bottom: 5px;
+    }
+    .kkm-metric__value {
+      font-size: 1.45rem;
+      line-height: 1.08;
+      font-weight: 700;
+      color: #1f2937;
+    }
+    .kkm-metric__meta {
+      margin-top: 7px;
+      color: #8794a6;
+      font-size: 0.7rem;
+      line-height: 1.3;
+    }
+    .kkm-metric__meta + .kkm-metric__meta {
+      margin-top: 3px;
     }
     .kkm-history-card {
       padding: 14px 14px 8px !important;
@@ -98,6 +105,16 @@
     }
     .kkm-history-card tbody tr:nth-child(even) > * {
       background: rgba(247, 249, 252, 0.55);
+    }
+  }
+  @media (max-width: 1199.98px) {
+    .kkm-metrics {
+      grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    }
+  }
+  @media (max-width: 767.98px) {
+    .kkm-metrics {
+      grid-template-columns: 1fr !important;
     }
   }
 </style>
@@ -177,79 +194,57 @@
   <div class="kkm-section-heading d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-3">
     <div>
       <h2 class="h5 fw-bold mb-1">Касса ККМ</h2>
-      <div class="text-muted small">Одна общая касса для менеджеров, бухгалтера, администратора и владельца</div>
+      <div class="text-muted small">Ключевые остатки и контроль кассы</div>
     </div>
     {% if can_count_kkm %}
       <a href="{% url 'finance_cash_count_create' cashbox_type='kkm' %}" class="btn btn-outline-secondary"><i class="bi bi-calculator me-2"></i>Пересчёт ККМ</a>
     {% endif %}
   </div>
-  <div class="kkm-metrics row g-3 mb-4">
-    <div class="col-12">
-      <div class="kkm-onec-panel rounded-3 border border-success border-2 bg-success bg-opacity-10 p-3 p-lg-4">
-        <div class="row g-3 align-items-center">
-          <div class="col-12 col-lg-5">
-            <div class="d-flex align-items-center gap-3">
-              <div class="kkm-onec-mark d-inline-flex align-items-center justify-content-center rounded-3 bg-warning-subtle text-danger fw-bold fs-5 flex-shrink-0" style="width:56px;height:56px;">1C</div>
-              <div>
-                <div class="text-muted small mb-1">Остаток денежных средств в ККМ по данным 1С</div>
-                {% if onec_kkm_balance %}
-                  <div class="fs-2 fw-bold {% if onec_kkm_balance.balance < 0 %}text-danger{% else %}text-dark{% endif %}">{{ onec_kkm_balance.balance|money }}</div>
-                {% else %}
-                  <div class="fs-5 fw-semibold text-muted">Нет актуального снимка 1С</div>
-                {% endif %}
-              </div>
-            </div>
+  <div class="kkm-metrics mb-4">
+    <div class="col-12 col-md-6 col-xl-3">
+      <div class="kkm-metric kkm-metric--primary card card-soft h-100">
+        <div class="kkm-metric__label">Остаток денег в кассе ККМ</div>
+        {% if onec_kkm_balance %}
+          <div class="kkm-metric__value {% if onec_kkm_balance.balance < 0 %}text-danger{% endif %}">{{ onec_kkm_balance.balance|money }}</div>
+          <div class="kkm-metric__meta">Обновлено {{ onec_kkm_balance.snapshot_at|date:"d.m.Y H:i" }}</div>
+        {% else %}
+          <div class="kkm-metric__value text-muted">Нет данных</div>
+          <div class="kkm-metric__meta">Снимок кассы пока не загружен</div>
+        {% endif %}
+        <div class="kkm-metric__meta">На проверке: {{ kkm_pending_count }} · {{ kkm_balance.pending_total|money }}</div>
+      </div>
+    </div>
+    <div class="col-12 col-md-6 col-xl-3">
+      <div class="kkm-metric card card-soft h-100">
+        <div class="kkm-metric__label">Фактический остаток в кассе</div>
+        {% if kkm_latest_count %}
+          <div class="kkm-metric__value">{{ kkm_latest_count.total|money }}</div>
+          <div class="kkm-metric__meta">Пересчёт {{ kkm_latest_count.created_at|date:"d.m.Y H:i" }}</div>
+        {% else %}
+          <div class="kkm-metric__value text-muted">Не указан</div>
+          <div class="kkm-metric__meta">Нужен пересчёт кассы</div>
+        {% endif %}
+      </div>
+    </div>
+    <div class="col-12 col-md-6 col-xl-3">
+      <div class="kkm-metric card card-soft h-100">
+        <div class="kkm-metric__label">Расхождение с учётом 1С</div>
+        {% if kkm_discrepancy != None %}
+          <div class="kkm-metric__value {% if kkm_discrepancy < 0 %}text-danger{% elif kkm_discrepancy > 0 %}text-warning{% else %}text-success{% endif %}">
+            {{ kkm_discrepancy|money }}
           </div>
-          {% if onec_kkm_balance %}
-            <div class="col-12 col-lg-4 border-lg-start">
-              <div class="d-flex align-items-center gap-2">
-                <i class="bi bi-clock fs-4 text-muted"></i>
-                <div>
-                  <div class="text-muted small">Последнее обновление из 1С</div>
-                  <div class="fw-semibold">{{ onec_kkm_balance.snapshot_at|date:"d.m.Y H:i" }}</div>
-                  <div class="text-muted small">Барнаул</div>
-                </div>
-              </div>
-            </div>
-            <div class="col-12 col-lg-3">
-              {% if onec_kkm_balance.is_stale %}
-                <div class="d-flex align-items-center gap-2 text-warning">
-                  <i class="bi bi-exclamation-triangle-fill fs-4"></i>
-                  <div>
-                    <div class="fw-semibold">Данные устарели</div>
-                    <div class="small text-muted">Ожидается следующее обновление</div>
-                  </div>
-                </div>
-              {% else %}
-                <div class="d-flex align-items-center gap-2 text-success">
-                  <i class="bi bi-check-circle-fill fs-4"></i>
-                  <div>
-                    <div class="fw-semibold">Данные актуальны</div>
-                    <div class="small text-muted">Последний снимок загружен</div>
-                  </div>
-                </div>
-              {% endif %}
-            </div>
-          {% endif %}
-        </div>
+          <div class="kkm-metric__meta">{% if kkm_discrepancy == 0 %}Факт совпадает с учётом{% elif kkm_discrepancy < 0 %}Фактически меньше учётного{% else %}Фактически больше учётного{% endif %}</div>
+        {% else %}
+          <div class="kkm-metric__value text-muted">—</div>
+          <div class="kkm-metric__meta">Нужны данные 1С и пересчёт</div>
+        {% endif %}
       </div>
     </div>
-    <div class="col-12 col-md-4">
-      <div class="kkm-metric card card-soft p-4 h-100">
-        <div class="text-muted small mb-1">Расчётный остаток Service2</div>
-        <div class="fs-3 fw-bold {% if kkm_balance.balance < 0 %}text-danger{% else %}text-success{% endif %}">{{ kkm_balance.balance|money }}</div>
-      </div>
-    </div>
-    <div class="col-12 col-md-4">
-      <div class="kkm-metric card card-soft p-4 h-100">
-        <div class="text-muted small mb-1">Операции на проверке</div>
-        <div class="fs-3 fw-bold text-warning">{{ kkm_balance.pending_total|money }}</div>
-      </div>
-    </div>
-    <div class="col-12 col-md-4">
-      <div class="kkm-metric card card-soft p-4 h-100">
-        <div class="text-muted small mb-1">Доступно с учётом резерва</div>
-        <div class="fs-3 fw-bold {% if kkm_balance.available_balance < 0 %}text-danger{% else %}text-success{% endif %}">{{ kkm_balance.available_balance|money }}</div>
+    <div class="col-12 col-md-6 col-xl-3">
+      <div class="kkm-metric card card-soft h-100">
+        <div class="kkm-metric__label">Доступно с учётом резерва</div>
+        <div class="kkm-metric__value {% if kkm_balance.available_balance < 0 %}text-danger{% else %}text-success{% endif %}">{{ kkm_balance.available_balance|money }}</div>
+        <div class="kkm-metric__meta">В резерве: {{ kkm_balance.reserved_total|money }}</div>
       </div>
     </div>
   </div>
