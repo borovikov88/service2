@@ -57,6 +57,8 @@ class FinanceDesktopRedesignTests(SimpleTestCase):
             "pool_service/finance/payroll_import_confirm.html",
             "pool_service/finance/payroll_accrual_fetch.html",
             "pool_service/finance/payroll_accrual_preview.html",
+            "pool_service/finance/data.html",
+            "pool_service/finance/report.html",
         ]:
             with self.subTest(template=template_name):
                 source = get_template(template_name).template.source
