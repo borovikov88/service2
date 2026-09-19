@@ -225,7 +225,9 @@ def _confirmed_cashflow_queryset(organization, first_month=None, last_month=None
 
 
 def _confirmed_cashflow_rows(organization, first_month=None, last_month=None):
-    rows = _confirmed_cashflow_queryset(organization, first_month, last_month)
+    rows = _confirmed_cashflow_queryset(
+        organization, first_month, last_month
+    ).order_by()
     return list(rows.values(
         "period_month",
         "article_raw",
@@ -233,6 +235,53 @@ def _confirmed_cashflow_rows(organization, first_month=None, last_month=None):
         "receipts",
         "payments",
     ))
+
+
+def cashflow_operating_monthly_summary(organization, first_month, last_month):
+    """Return only monthly external operating net cash flow for seasonality."""
+    first_month = _month_start(first_month)
+    last_month = _month_start(last_month)
+    if first_month > last_month:
+        raise ValueError("Начальный месяц не может быть позже конечного.")
+
+    states = _confirmed_cashflow_states(organization, first_month, last_month)
+    state_by_month = {item.period_month: item for item in states}
+    requested_months = _month_sequence(first_month, last_month)
+    mappings = _mapping_index(organization)
+    net_by_month = {month: ZERO for month in requested_months}
+
+    for row in _confirmed_cashflow_rows(organization, first_month, last_month):
+        classification = _classification(
+            mappings.get(row["normalized_article_name"])
+        )
+        if (
+            classification["allocation"] != ALLOCATION_EXTERNAL
+            or classification["flow_type"] != CashFlowArticleMapping.FLOW_OPERATING
+        ):
+            continue
+        receipts = row["receipts"] if row["receipts"] is not None else ZERO
+        payments = row["payments"] if row["payments"] is not None else ZERO
+        net_by_month[row["period_month"]] = (
+            net_by_month.get(row["period_month"], ZERO) + receipts - payments
+        )
+
+    return {
+        "states": state_by_month,
+        "has_data": bool(states),
+        "missing_months": [
+            month for month in requested_months if month not in state_by_month
+        ],
+        "months": [
+            {
+                "period_month": month,
+                "net_cash_flow": (
+                    net_by_month.get(month, ZERO)
+                    if month in state_by_month else None
+                ),
+            }
+            for month in requested_months
+        ],
+    }
 
 
 def _safe_cashflow_source_display(value):
