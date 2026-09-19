@@ -22,6 +22,9 @@ class AdminDesktopRedesignTests(SimpleTestCase):
         "pool_service/development/iteration_form.html",
         "pool_service/finance_mcp/authorize.html",
         "pool_service/onec_diagnostic_mcp/authorize.html",
+        "pool_service/development/task_list.html",
+        "pool_service/development/task_form.html",
+        "pool_service/development/task_detail.html",
     ]
 
     def test_admin_templates_compile_with_desktop_workspace(self):
