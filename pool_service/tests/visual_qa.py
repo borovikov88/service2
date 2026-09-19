@@ -202,6 +202,7 @@ class VisualDesktopQaTests(StaticLiveServerTestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
+        cls.setUpTestData()
         options = Options()
         options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
