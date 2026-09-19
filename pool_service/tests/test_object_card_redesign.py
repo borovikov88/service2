@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+from django import forms as django_forms
 from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import reverse
@@ -129,6 +130,41 @@ class ObjectCardRoleRedesignTests(TestCase):
         self.assertContains(response, 'id="serviceIssueCreateModal"', html=False)
         self.assertContains(response, 'id="service-issue-form"', html=False)
         self.assertNotContains(response, "Рабочая карточка сервисника")
+
+    def test_editing_service_status_records_author_and_timeline_event(self):
+        self.client.force_login(self.service)
+        edit_url = reverse("pool_edit", kwargs={"pool_uuid": self.pool.uuid})
+        get_response = self.client.get(edit_url)
+        self.assertEqual(get_response.status_code, 200)
+
+        form = get_response.context["form"]
+        data = {}
+        for name, field in form.fields.items():
+            value = form[name].value()
+            if isinstance(field.widget, django_forms.CheckboxInput):
+                if value:
+                    data[name] = "on"
+            elif value not in (None, ""):
+                data[name] = value
+        data["service_status"] = Pool.SERVICE_STATUS_CONSERVED
+
+        response = self.client.post(edit_url, data)
+        self.assertEqual(response.status_code, 302)
+
+        self.pool.refresh_from_db()
+        self.assertEqual(self.pool.service_status, Pool.SERVICE_STATUS_CONSERVED)
+        self.assertTrue(self.pool.service_suspended)
+
+        change = PoolServiceStatusChange.objects.get(pool=self.pool)
+        self.assertEqual(change.changed_by, self.service)
+        self.assertEqual(change.previous_status, Pool.SERVICE_STATUS_ACTIVE)
+        self.assertEqual(change.new_status, Pool.SERVICE_STATUS_CONSERVED)
+        self.assertIn("На обслуживании", change.comment)
+        self.assertIn("Законсервирован", change.comment)
+
+        detail = self._get_detail(self.service)
+        self.assertContains(detail, "Статус изменён: На обслуживании → Законсервирован")
+        self.assertContains(detail, "Сервисник")
 
     def test_service_status_change_renders_in_visit_timeline(self):
         PoolServiceStatusChange.objects.create(
