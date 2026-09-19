@@ -2,13 +2,14 @@ from datetime import timedelta
 
 from django.contrib.auth.models import User
 from django.template.loader import get_template
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
 from pool_service.models import Organization, OrganizationAccess
 
 
+@override_settings(ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1", "service2.aqualine22.ru", "rovikpool.ru"])
 class ClientShellPerformanceTests(TestCase):
     def setUp(self):
         self.organization = Organization.objects.create(
