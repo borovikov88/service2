@@ -1,0 +1,88 @@
+name: Finance overview production check
+
+on:
+  push:
+    branches: ["qa/prod-finance-overview-check"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Measure production finance overview
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_perf
+          chmod 600 ~/.ssh/service2_perf
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Measure overview only
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          ssh -i ~/.ssh/service2_perf -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "cd '$DEPLOY_APP_PATH' && ../venv/bin/python manage.py shell" <<'PY'
+          import json
+          import statistics
+          import subprocess
+          import time
+          from django.contrib.auth import get_user_model
+          from django.contrib.messages.storage.fallback import FallbackStorage
+          from django.db import connection
+          from django.test import RequestFactory
+          from django.test.utils import CaptureQueriesContext
+          from django.urls import resolve, reverse
+          from pool_service.models import OrganizationAccess
+
+          User=get_user_model()
+          access=(OrganizationAccess.objects.filter(role__in=["owner","admin"],user__is_active=True)
+                  .select_related("organization","user").order_by("organization_id","id").first())
+          path=reverse("finance_overview")
+          match=resolve(path)
+          factory=RequestFactory()
+          print("CHECK_HEAD", subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip())
+          timings=[]
+          for iteration in range(1,4):
+              user=User.objects.select_related("profile").get(pk=access.user_id)
+              request=factory.get(path,HTTP_HOST="service2.aqualine22.ru")
+              request.user=user
+              request.session={}
+              request._messages=FallbackStorage(request)
+              request.resolver_match=match
+              started=time.perf_counter()
+              with CaptureQueriesContext(connection) as captured:
+                  response=match.func(request,*match.args,**match.kwargs)
+                  if hasattr(response,"render"):
+                      response.render()
+              ms=(time.perf_counter()-started)*1000
+              timings.append(ms)
+              slow=sorted(
+                  [{"ms":round(float(q.get("time") or 0)*1000,1),
+                    "sql":" ".join((q.get("sql") or "").split())[:240]}
+                   for q in captured.captured_queries],
+                  key=lambda x:x["ms"],reverse=True
+              )[:6]
+              print("OVERVIEW_RUN "+json.dumps({
+                  "iteration":iteration,"ms":round(ms,1),"queries":len(captured),
+                  "status":response.status_code,"slow_sql":slow
+              },ensure_ascii=False,sort_keys=True))
+          print("OVERVIEW_MEDIAN_MS", round(statistics.median(timings),1))
+          PY
