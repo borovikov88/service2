@@ -538,8 +538,6 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
                 lookup_kwargs["allow_deleted_nomenclature"] = True
             elif kind == "customer":
                 lookup_kwargs["allow_deleted_customer"] = True
-            elif kind == "responsible":
-                lookup_kwargs["allow_deleted_responsible"] = True
             references[kind] = _read_reference_map(
                 config,
                 kind,
