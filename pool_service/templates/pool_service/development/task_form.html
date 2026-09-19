@@ -1,12 +1,14 @@
 {% extends "pool_service/base.html" %}
 {% block title %}Новая задача разработки{% endblock %}
 {% block content %}
-<div class="mb-4">
+{% include "pool_service/_admin_workspace_styles.html" %}
+<div class="admin-desktop">
+<div class="admin-page-header mb-4">
   <a class="text-decoration-none" href="{% url 'development_task_list' %}">← К задачам разработки</a>
   <h1 class="h3 mt-3 mb-1">Новая задача разработки</h1>
   <div class="text-muted">Зафиксируйте исходную задачу и критерии её завершения.</div>
 </div>
-<form method="post" class="card card-soft p-3 p-lg-4">
+<form method="post" class="admin-card admin-form card card-soft p-3 p-lg-4">
   {% csrf_token %}
   {% if form.non_field_errors %}<div class="alert alert-danger">{{ form.non_field_errors }}</div>{% endif %}
   <div class="row g-3">
@@ -18,6 +20,8 @@
     </div>
     {% endfor %}
   </div>
-  <div class="d-flex gap-2 mt-4"><button class="btn btn-primary" type="submit">Создать задачу</button><a class="btn btn-outline-secondary" href="{% url 'development_task_list' %}">Отмена</a></div>
+  <div class="admin-actions d-flex gap-2 mt-4"><button class="btn btn-primary" type="submit">Создать задачу</button><a class="btn btn-outline-secondary" href="{% url 'development_task_list' %}">Отмена</a></div>
 </form>
+
+</div>
 {% endblock %}
