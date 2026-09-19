@@ -43,6 +43,8 @@ class FinanceDesktopRedesignTests(SimpleTestCase):
 
     def test_secondary_finance_templates_use_compact_workspace(self):
         for template_name in [
+            "pool_service/finance/onec_import_list.html",
+            "pool_service/finance/onec_import_detail.html",
             "pool_service/finance/onec_import_upload.html",
             "pool_service/finance/onec_import_preview.html",
             "pool_service/finance/onec_cashflow_preview.html",
@@ -51,7 +53,10 @@ class FinanceDesktopRedesignTests(SimpleTestCase):
             "pool_service/finance/payroll_employee_mapping.html",
             "pool_service/finance/payroll_import_list.html",
             "pool_service/finance/payroll_import_upload.html",
+            "pool_service/finance/payroll_import_preview.html",
+            "pool_service/finance/payroll_import_confirm.html",
             "pool_service/finance/payroll_accrual_fetch.html",
+            "pool_service/finance/payroll_accrual_preview.html",
         ]:
             with self.subTest(template=template_name):
                 source = get_template(template_name).template.source
