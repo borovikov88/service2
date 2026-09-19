@@ -334,6 +334,8 @@ from .models import (
 
     WaterReading,
 
+    PoolStatusHistory,
+
     DataAuditLog,
 
     Client,
@@ -836,6 +838,7 @@ POOL_AUDIT_FIELDS = [
     "service_frequency",
     "service_monthly_price",
     "service_details_comment",
+    "service_status",
     "service_suspended",
     "daily_readings_required",
     "water_system_type",
@@ -1431,21 +1434,6 @@ def pool_list(request):
     page_number = request.GET.get("page")
 
     pools_page = paginator.get_page(page_number)
-
-    page_pool_ids = [pool.id for pool in pools_page.object_list]
-    next_visit_by_pool = {}
-    if page_pool_ids:
-        next_visit_plans = (
-            ServiceVisitPlan.objects.filter(
-                pool_id__in=page_pool_ids,
-                planned_date__gte=timezone.localdate(),
-            )
-            .order_by("pool_id", "planned_date", "id")
-        )
-        for visit_plan in next_visit_plans:
-            next_visit_by_pool.setdefault(visit_plan.pool_id, visit_plan.planned_date)
-    for pool in pools_page.object_list:
-        pool.next_visit_date = next_visit_by_pool.get(pool.id)
 
     query_params = request.GET.copy()
 
@@ -5309,6 +5297,9 @@ def pool_create(request):
 
                         pool.organization_id = org_access.organization_id
 
+            pool.service_suspended = pool.service_status != Pool.SERVICE_STATUS_ACTIVE
+
+
             pool.save()
             _write_data_audit(
                 request,
@@ -5413,6 +5404,7 @@ def pool_edit(request, pool_uuid):
     if request.method == "POST":
 
         before = _snapshot_instance(pool, POOL_AUDIT_FIELDS)
+        old_service_status = pool.service_status
 
         form = PoolForm(request.POST, instance=pool, user=request.user, service_details_only=service_details_only)
 
@@ -5424,7 +5416,21 @@ def pool_edit(request, pool_uuid):
 
                 updated.client = user_client
 
+            updated.service_suspended = updated.service_status != Pool.SERVICE_STATUS_ACTIVE
             updated.save()
+
+            if old_service_status != updated.service_status:
+                status_labels = dict(Pool.SERVICE_STATUS_CHOICES)
+                old_label = status_labels.get(old_service_status, old_service_status)
+                new_label = status_labels.get(updated.service_status, updated.service_status)
+                PoolStatusHistory.objects.create(
+                    pool=updated,
+                    old_status=old_service_status,
+                    new_status=updated.service_status,
+                    changed_by=request.user,
+                    comment=f"Статус изменён: {old_label} → {new_label}",
+                )
+
             _write_data_audit(
                 request,
                 action=DataAuditLog.ACTION_UPDATE,
@@ -8831,8 +8837,6 @@ def water_reading_create(request, pool_uuid):
         if form.is_valid():
 
             reading = form.save(commit=False)
-
-            reading.date = reading.date.replace(tzinfo=None)
 
             reading.pool = pool
 
