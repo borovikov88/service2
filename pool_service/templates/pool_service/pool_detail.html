@@ -92,6 +92,126 @@
     .object-section-card .table {
       font-size: 0.82rem;
     }
+
+    .object-role-strip {
+      min-height: 48px;
+      margin-bottom: 12px;
+      padding: 7px 9px 7px 12px;
+      border: 1px solid #e1e8f1;
+      border-radius: 10px;
+      background: #fff;
+      box-shadow: 0 4px 14px rgba(15, 23, 42, 0.035);
+    }
+    .object-role-strip__identity {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-width: 210px;
+    }
+    .object-role-strip__icon {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: #edf4ff;
+      color: #0d6efd;
+      flex: 0 0 auto;
+    }
+    .object-role-strip__title {
+      font-size: 0.8rem;
+      font-weight: 700;
+      color: #24364d;
+      line-height: 1.15;
+    }
+    .object-role-strip__meta {
+      font-size: 0.69rem;
+      color: #8190a3;
+      line-height: 1.15;
+      margin-top: 2px;
+    }
+    .object-role-nav {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .object-role-nav__link {
+      min-height: 30px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 9px;
+      border-radius: 7px;
+      color: #607188;
+      text-decoration: none;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .object-role-nav__link:hover {
+      background: #f1f5fa;
+      color: #234b7b;
+    }
+    .object-role-nav__link.is-active {
+      background: #eaf2ff;
+      color: #0d6efd;
+    }
+    .object-role-kpis {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .object-role-kpi {
+      min-height: 84px;
+      padding: 12px 13px;
+      border: 1px solid #e2e9f2;
+      border-radius: 10px;
+      background: #fff;
+      box-shadow: 0 4px 14px rgba(15, 23, 42, 0.035);
+    }
+    .object-role-kpi__label {
+      color: #7c8ca1;
+      font-size: 0.7rem;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .object-role-kpi__value {
+      color: #1d2f46;
+      font-size: 1rem;
+      font-weight: 700;
+      line-height: 1.15;
+    }
+    .object-role-kpi__meta {
+      color: #94a1b1;
+      font-size: 0.68rem;
+      margin-top: 5px;
+    }
+    .object-role-kpi--success .object-role-kpi__value { color: #198754; }
+    .object-role-kpi--warning .object-role-kpi__value { color: #b77900; }
+    .object-role-kpi--danger .object-role-kpi__value { color: #dc3545; }
+
+    .object-manager-preview {
+      padding: 13px 14px 7px !important;
+      margin-bottom: 14px !important;
+      border-radius: 10px !important;
+    }
+    .object-manager-preview h3 { font-size: 0.98rem; }
+    .object-manager-preview .table { font-size: 0.79rem; }
+    .object-manager-preview .table > :not(caption) > * > * {
+      padding-top: 0.42rem;
+      padding-bottom: 0.42rem;
+    }
+    .object-visit-history--primary {
+      border-color: #cdddf2 !important;
+      box-shadow: 0 7px 22px rgba(25, 86, 150, 0.075) !important;
+    }
+    .object-visit-history--primary > .d-flex:first-child {
+      padding-bottom: 7px;
+      border-bottom: 1px solid #edf1f6;
+    }
   }
   @media (min-width: 1920px) {
     .object-summary-card .row.g-2 > .col-lg-4 {
@@ -134,7 +254,120 @@
     {% endif %}
 </div>
 
-<div class="object-summary-card card card-soft p-4 mb-4">
+{% if desktop_card_mode != "standard" %}
+<div class="object-role-strip d-none d-lg-flex align-items-center justify-content-between gap-3">
+    <div class="object-role-strip__identity">
+        <span class="object-role-strip__icon">
+            <i class="bi {% if desktop_card_mode == 'service' %}bi-tools{% else %}bi-person-workspace{% endif %}"></i>
+        </span>
+        <div>
+            <div class="object-role-strip__title">{% if desktop_card_mode == "service" %}Рабочая карточка сервисника{% else %}Карточка менеджера{% endif %}</div>
+            <div class="object-role-strip__meta">{% if desktop_card_mode == "service" %}Посещения и состояние объекта в приоритете{% else %}Сводка по клиенту и обслуживанию{% endif %}</div>
+        </div>
+    </div>
+    <nav class="object-role-nav" aria-label="Разделы карточки объекта">
+        <a class="object-role-nav__link {% if desktop_card_mode == 'manager' %}is-active{% endif %}" href="#object-overview"><i class="bi bi-grid"></i>Обзор</a>
+        <a class="object-role-nav__link {% if desktop_card_mode == 'service' %}is-active{% endif %}" href="#object-visits"><i class="bi bi-clock-history"></i>Посещения</a>
+        {% if supply_tasks %}<a class="object-role-nav__link" href="#object-tasks"><i class="bi bi-list-check"></i>Задачи</a>{% endif %}
+        {% if show_service_issues %}<a class="object-role-nav__link" href="#object-issues"><i class="bi bi-exclamation-diamond"></i>Неисправности</a>{% endif %}
+        {% if desktop_card_mode != "standard" %}
+<div class="object-role-kpis d-none d-lg-grid">
+    {% if desktop_card_mode == "manager" %}
+        <div class="object-role-kpi {% if pool.service_suspended %}object-role-kpi--warning{% else %}object-role-kpi--success{% endif %}">
+            <div class="object-role-kpi__label">Статус обслуживания</div>
+            <div class="object-role-kpi__value">{% if pool.service_suspended %}Приостановлено{% else %}На обслуживании{% endif %}</div>
+            <div class="object-role-kpi__meta">{{ pool.get_service_frequency_display|default:"График не задан" }}</div>
+        </div>
+        <div class="object-role-kpi">
+            <div class="object-role-kpi__label">Следующий выезд</div>
+            <div class="object-role-kpi__value">{% if next_visit_plan %}{{ next_visit_plan.planned_date|date:"d.m.Y" }}{% else %}Не запланирован{% endif %}</div>
+            <div class="object-role-kpi__meta">По календарю обслуживания</div>
+        </div>
+        <div class="object-role-kpi">
+            <div class="object-role-kpi__label">Последнее посещение</div>
+            <div class="object-role-kpi__value">{% if latest_reading %}{{ latest_reading.date|date:"d.m.Y" }}{% else %}Нет посещений{% endif %}</div>
+            <div class="object-role-kpi__meta">{% if latest_reading %}{{ latest_reading.date|date:"H:i" }}{% else %}История пока пустая{% endif %}</div>
+        </div>
+        <div class="object-role-kpi">
+            <div class="object-role-kpi__label">Стоимость обслуживания</div>
+            <div class="object-role-kpi__value">{% if service_monthly_price_display %}{{ service_monthly_price_display }}{% else %}—{% endif %}</div>
+            <div class="object-role-kpi__meta">В месяц</div>
+        </div>
+        <div class="object-role-kpi {% if open_service_issue_count %}object-role-kpi--warning{% else %}object-role-kpi--success{% endif %}">
+            <div class="object-role-kpi__label">Открытые неисправности</div>
+            <div class="object-role-kpi__value">{{ open_service_issue_count }}</div>
+            <div class="object-role-kpi__meta">{% if open_service_issue_count %}Требуют внимания{% else %}Нет открытых заявок{% endif %}</div>
+        </div>
+    {% else %}
+        <div class="object-role-kpi">
+            <div class="object-role-kpi__label">Следующий выезд</div>
+            <div class="object-role-kpi__value">{% if next_visit_plan %}{{ next_visit_plan.planned_date|date:"d.m.Y" }}{% else %}Не запланирован{% endif %}</div>
+            <div class="object-role-kpi__meta">План обслуживания</div>
+        </div>
+        <div class="object-role-kpi">
+            <div class="object-role-kpi__label">Последнее посещение</div>
+            <div class="object-role-kpi__value">{% if latest_reading %}{{ latest_reading.date|date:"d.m.Y" }}{% else %}Нет посещений{% endif %}</div>
+            <div class="object-role-kpi__meta">{% if latest_reading %}{{ latest_reading.date|date:"H:i" }}{% else %}Добавьте первую запись{% endif %}</div>
+        </div>
+        <div class="object-role-kpi">
+            <div class="object-role-kpi__label">Частота визитов</div>
+            <div class="object-role-kpi__value">{{ pool.get_service_frequency_display|default:"Не задана" }}</div>
+            <div class="object-role-kpi__meta">График обслуживания</div>
+        </div>
+        <div class="object-role-kpi {% if open_service_issue_count %}object-role-kpi--warning{% else %}object-role-kpi--success{% endif %}">
+            <div class="object-role-kpi__label">Неисправности</div>
+            <div class="object-role-kpi__value">{{ open_service_issue_count }}</div>
+            <div class="object-role-kpi__meta">{% if open_service_issue_count %}Открытые заявки{% else %}Всё спокойно{% endif %}</div>
+        </div>
+        <div class="object-role-kpi {% if open_pool_task_count %}object-role-kpi--warning{% else %}object-role-kpi--success{% endif %}">
+            <div class="object-role-kpi__label">Открытые задачи</div>
+            <div class="object-role-kpi__value">{{ open_pool_task_count }}</div>
+            <div class="object-role-kpi__meta">{% if open_pool_task_count %}По этому объекту{% else %}Нет активных задач{% endif %}</div>
+        </div>
+    {% endif %}
+</div>
+{% endif %}
+
+{% if desktop_card_mode == "manager" and recent_readings %}
+<div class="object-manager-preview card card-soft d-none d-lg-block">
+    <div class="d-flex align-items-center justify-content-between gap-3 mb-2">
+        <div>
+            <h3 class="fw-bold mb-1">Последние посещения</h3>
+            <div class="text-muted small">Короткая сводка для менеджера</div>
+        </div>
+        <a href="#object-visits" class="btn btn-outline-secondary btn-sm">Вся история <i class="bi bi-arrow-down ms-1"></i></a>
+    </div>
+    <div class="table-responsive">
+        <table class="table align-middle mb-0">
+            <thead>
+                <tr>
+                    <th>Дата</th>
+                    <th>Сервисник</th>
+                    <th>Работы / комментарий</th>
+                    <th>Материалы / расходники</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for reading in recent_readings %}
+                <tr>
+                    <td class="fw-semibold">{{ reading.date|date:"d.m.Y H:i" }}</td>
+                    <td>{% if reading.added_by %}{{ reading.added_by.get_full_name|default:reading.added_by.username }}{% else %}—{% endif %}</td>
+                    <td>{% if reading.performed_works %}{{ reading.performed_works }}{% elif reading.comment %}{{ reading.comment }}{% else %}—{% endif %}</td>
+                    <td>{% if reading.required_materials %}{{ reading.required_materials }}{% elif reading.consumables_replaced %}{{ reading.consumables_replaced }}{% else %}—{% endif %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+{% if audit_logs %}<a class="object-role-nav__link" href="#object-changes"><i class="bi bi-journal-text"></i>Изменения</a>{% endif %}
+    </nav>
+</div>
+{% endif %}
+
+<div id="object-overview" class="object-summary-card card card-soft p-4 mb-4">
     <div class="d-flex justify-content-between align-items-start gap-3">
         <div>
             <h2 class="fw-bold h4 mb-1">{{ pool.client.name }}</h2>
@@ -294,7 +527,7 @@
 </div>
 
 {% if audit_logs %}
-<div class="object-section-card card card-soft p-4 mb-4">
+<div id="object-changes" class="object-section-card card card-soft p-4 mb-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
         <div>
             <h3 class="fw-bold h5 mb-1">Журнал изменений</h3>
@@ -340,13 +573,19 @@
 
 
 {% if readings %}
-<div class="object-section-card card card-soft p-4 mb-4">
+<div id="object-visits" class="object-visit-history {% if desktop_card_mode == 'service' %}object-visit-history--primary{% endif %} object-section-card card card-soft p-4 mb-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
         <div>
             <h3 class="fw-bold h5 mb-1">{% if is_water_object %}История посещений{% else %}История показаний{% endif %}</h3>
             <div class="text-muted small">Последние {{ per_page }} записей</div>
         </div>
-        <form method="get" class="d-flex align-items-center gap-2">
+        <div class="d-flex align-items-center gap-2">
+            {% if desktop_card_mode == "service" and can_add_reading %}
+            <a class="btn btn-primary btn-sm d-none d-lg-inline-flex align-items-center gap-2 {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %} href="{% if is_water_object %}{% url 'water_object_visit_create' pool.uuid %}{% else %}{% url 'water_reading_create' pool.uuid %}{% endif %}">
+                <i class="bi bi-plus-lg"></i>Новое посещение
+            </a>
+            {% endif %}
+            <form method="get" class="d-flex align-items-center gap-2">
             <input type="hidden" name="per_page" id="pool-readings-per-page-input" value="{{ per_page|default:20 }}">
             <button class="btn pool-readings-per-page-trigger dropdown-toggle" type="button" id="pool-readings-per-page-button" data-bs-toggle="dropdown" aria-expanded="false">
                 {{ per_page|default:20 }} &#47; &#1089;&#1090;&#1088;
@@ -369,6 +608,7 @@
                 </li>
             </ul>
         </form>
+        </div>
     </div>
 
     <div class="table-responsive">
@@ -531,13 +771,13 @@
     {% endif %}
 </div>
 {% else %}
-    <div class="card card-soft p-4 text-center text-muted">
+    <div id="object-visits" class="card card-soft p-4 text-center text-muted">
         {% if is_water_object %}Пока нет записей{% else %}Пока нет показаний{% endif %}
     </div>
 {% endif %}
 
 {% if supply_tasks %}
-<div class="object-section-card card card-soft p-4 mb-4">
+<div id="object-tasks" class="object-section-card card card-soft p-4 mb-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
         <div>
             <h3 class="fw-bold h5 mb-1">Задачи по материалам</h3>
@@ -608,7 +848,7 @@
 {% endif %}
 
 {% if show_service_issues %}
-<div class="object-section-card card card-soft p-4 mb-4">
+<div id="object-issues" class="object-section-card card card-soft p-4 mb-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
         <div>
             <h3 class="fw-bold h5 mb-1">Неисправности</h3>
