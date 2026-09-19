@@ -10,6 +10,7 @@ from django.urls import reverse
 from django.utils import timezone
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 
 from pool_service.models import (
@@ -210,7 +211,28 @@ class VisualDesktopQaTests(StaticLiveServerTestCase):
         options.add_argument("--disable-gpu")
         options.add_argument("--force-device-scale-factor=1")
         options.add_argument("--hide-scrollbars")
+        options.set_capability("goog:loggingPrefs", {"browser": "ALL"})
         cls.browser = webdriver.Chrome(options=options)
+        cls.browser.execute_cdp_cmd(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {
+                "source": """
+                  window.__qaLongTasks = [];
+                  if ('PerformanceObserver' in window) {
+                    try {
+                      new PerformanceObserver((list) => {
+                        for (const entry of list.getEntries()) {
+                          window.__qaLongTasks.push({
+                            start: Math.round(entry.startTime * 10) / 10,
+                            duration: Math.round(entry.duration * 10) / 10,
+                          });
+                        }
+                      }).observe({entryTypes: ['longtask']});
+                    } catch (e) {}
+                  }
+                """,
+            },
+        )
         cls.browser.set_page_load_timeout(30)
         cls.output_dir = os.environ.get("VISUAL_QA_OUTPUT", "visual-qa")
         os.makedirs(cls.output_dir, exist_ok=True)
@@ -282,10 +304,36 @@ class VisualDesktopQaTests(StaticLiveServerTestCase):
             };
             """
         )
+        browser_perf = self.browser.execute_script(
+            """
+            const nav = performance.getEntriesByType('navigation')[0];
+            const longTasks = window.__qaLongTasks || [];
+            return {
+              responseStartMs: nav ? Math.round(nav.responseStart * 10) / 10 : null,
+              domContentLoadedMs: nav ? Math.round(nav.domContentLoadedEventEnd * 10) / 10 : null,
+              loadEventMs: nav ? Math.round(nav.loadEventEnd * 10) / 10 : null,
+              transferSize: nav ? nav.transferSize : null,
+              encodedBodySize: nav ? nav.encodedBodySize : null,
+              decodedBodySize: nav ? nav.decodedBodySize : null,
+              longTaskCount: longTasks.length,
+              longTaskTotalMs: Math.round(longTasks.reduce((sum, item) => sum + item.duration, 0) * 10) / 10,
+              maxLongTaskMs: longTasks.length ? Math.max(...longTasks.map(item => item.duration)) : 0,
+            };
+            """
+        )
+        browser_logs = self.browser.get_log("browser")
+        severe_logs = [
+            entry for entry in browser_logs
+            if entry.get("level") in {"SEVERE"}
+            and "favicon" not in str(entry.get("message", "")).lower()
+        ]
+
         metrics["page"] = name
         metrics["url"] = path
         metrics["requestedWidth"] = width
         metrics["requestedHeight"] = height
+        metrics["browserPerformance"] = browser_perf
+        metrics["severeConsoleErrors"] = severe_logs
 
         result = self.browser.execute_cdp_cmd(
             "Page.captureScreenshot",
@@ -340,3 +388,45 @@ class VisualDesktopQaTests(StaticLiveServerTestCase):
                 for item in severe_overflow
             )
             self.fail(f"Detected severe horizontal overflow: {summary}")
+
+        console_errors = [
+            (item["page"], item["requestedWidth"], item["severeConsoleErrors"])
+            for item in metrics
+            if item["severeConsoleErrors"]
+        ]
+        if console_errors:
+            self.fail(f"Detected severe browser console errors: {console_errors[:5]}")
+
+        slow_main_thread = [
+            item
+            for item in metrics
+            if item["browserPerformance"]["maxLongTaskMs"] > 500
+        ]
+        if slow_main_thread:
+            summary = ", ".join(
+                f"{item['page']}@{item['requestedWidth']}={item['browserPerformance']['maxLongTaskMs']}ms"
+                for item in slow_main_thread
+            )
+            self.fail(f"Detected browser long tasks over 500ms: {summary}")
+
+        self._authenticate(self.owner)
+        self.browser.set_window_size(1920, 1080)
+        self.browser.get(self.live_server_url + reverse("crm_index"))
+        WebDriverWait(self.browser, 10).until(
+            lambda driver: driver.execute_script("return document.readyState") == "complete"
+        )
+        nav = self.browser.find_elements("css selector", ".crm-nav")
+        if nav:
+            menu = nav[0].find_element("css selector", ".crm-nav__menu")
+            started = timezone.now()
+            ActionChains(self.browser).move_to_element(nav[0]).perform()
+            WebDriverWait(self.browser, 2).until(
+                lambda driver: driver.execute_script(
+                    "return getComputedStyle(arguments[0]).visibility === 'visible' && parseFloat(getComputedStyle(arguments[0]).opacity) > 0.9",
+                    menu,
+                )
+            )
+            elapsed_ms = (timezone.now() - started).total_seconds() * 1000
+            with open(os.path.join(self.output_dir, "menu-latency.json"), "w", encoding="utf-8") as fh:
+                json.dump({"desktopMenuOpenMs": round(elapsed_ms, 1)}, fh, ensure_ascii=False, indent=2)
+            self.assertLess(elapsed_ms, 500, f"Desktop dropdown feels delayed: {elapsed_ms:.1f}ms")
