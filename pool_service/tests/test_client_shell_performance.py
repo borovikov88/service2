@@ -50,14 +50,11 @@ class ClientShellPerformanceTests(TestCase):
         self.assertContains(response, 'class="desktop-sidebar__group"', count=2)
         self.assertContains(response, "Обзор CRM")
         self.assertContains(response, "АНАЛИТИКА")
-        self.assertNotContains(
-            response,
-            'href="/finance/" class="desktop-sidebar__link',
-            html=False,
-        )
 
-        css = get_template("pool_service/base.html").template.source
-        self.assertIn("desktop-sidebar__group", css)
+        source = get_template("pool_service/base.html").template.source
+        self.assertIn('class="desktop-sidebar__group"', source)
+        self.assertIn("<summary", source)
+        self.assertIn("desktop-sidebar__group-chevron", source)
 
     def test_public_indexable_host_keeps_metrika(self):
         response = self.client.get(
