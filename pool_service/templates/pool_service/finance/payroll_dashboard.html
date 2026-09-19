@@ -1,27 +1,148 @@
 {% extends "pool_service/base.html" %}
 {% load finance_tags %}
 {% block title %}ФОТ / Расчёты с персоналом{% endblock %}
+{% block extra_head %}
+{{ block.super }}
+<style>
+  /* Desktop payroll density. */
+  @media (min-width: 992px) {
+    .payroll-page-header {
+      margin-bottom: 10px !important;
+      align-items: flex-end;
+    }
+    .payroll-page-header h1 {
+      font-size: 1.65rem;
+      line-height: 1.08;
+      margin-bottom: 3px !important;
+    }
+    .payroll-page-header .text-muted {
+      font-size: .76rem;
+    }
+    .payroll-page-header .btn {
+      min-height: 32px;
+      padding: .35rem .65rem;
+      font-size: .77rem;
+    }
+    .payroll-period-form {
+      padding: 10px 12px !important;
+      margin-bottom: 10px !important;
+      border-radius: 10px !important;
+    }
+    .payroll-period-form .row {
+      --bs-gutter-x: .65rem;
+      --bs-gutter-y: .55rem;
+    }
+    .payroll-period-form .form-label {
+      margin-bottom: 3px;
+      font-size: .7rem;
+      color: #748399;
+    }
+    .payroll-period-form .form-control,
+    .payroll-period-form .btn {
+      min-height: 34px;
+      padding-top: .33rem;
+      padding-bottom: .33rem;
+      font-size: .79rem;
+    }
+    .payroll-section-card {
+      padding: 11px 12px !important;
+      margin-bottom: 10px !important;
+      border-radius: 10px !important;
+    }
+    .payroll-section-card h2 {
+      margin-bottom: 6px;
+      font-size: .95rem;
+    }
+    .payroll-section-card > .h3 {
+      margin-bottom: 5px;
+      font-size: 1.4rem;
+    }
+    .payroll-section-card > p.text-muted {
+      margin-bottom: 8px;
+      font-size: .72rem;
+    }
+    .payroll-kpi-grid {
+      --bs-gutter-x: .65rem;
+      --bs-gutter-y: .65rem;
+      margin-bottom: 10px !important;
+    }
+    .payroll-kpi-card {
+      min-height: 76px;
+      padding: 10px 11px !important;
+      border-radius: 10px !important;
+      box-shadow: 0 4px 14px rgba(15, 23, 42, .035) !important;
+    }
+    .payroll-kpi-card .small {
+      font-size: .68rem;
+    }
+    .payroll-kpi-card .h4 {
+      margin-top: 5px;
+      font-size: 1.12rem;
+    }
+    .payroll-subheading {
+      margin-top: 10px;
+      margin-bottom: 3px;
+      font-size: .95rem;
+    }
+    .payroll-subheading + .text-muted {
+      margin-bottom: 8px;
+      font-size: .72rem;
+    }
+    .payroll-section-card .table,
+    .payroll-personal-card .table {
+      font-size: .76rem;
+    }
+    .payroll-section-card .table > :not(caption) > * > *,
+    .payroll-personal-card .table > :not(caption) > * > * {
+      padding: .38rem .46rem;
+      vertical-align: middle;
+    }
+    .payroll-section-card thead th,
+    .payroll-personal-card thead th {
+      font-size: .67rem;
+      white-space: nowrap;
+    }
+    .payroll-personal-card {
+      padding: 11px 12px !important;
+      border-radius: 10px !important;
+    }
+    .payroll-personal-card h2 {
+      font-size: .95rem;
+    }
+  }
+
+  @media (min-width: 1920px) {
+    .payroll-kpi-card .h4 {
+      font-size: 1.2rem;
+    }
+    .payroll-section-card .table,
+    .payroll-personal-card .table {
+      font-size: .79rem;
+    }
+  }
+</style>
+{% endblock %}
 {% block content %}
-<div class="d-flex flex-wrap justify-content-between gap-2 mb-3">
+<div class="payroll-page-header d-flex flex-wrap justify-content-between gap-2 mb-3">
   <div><h1 class="h3 mb-1">ФОТ / Расчёты с персоналом</h1><div class="text-muted">ФОТ из 1С и подробные расчёты по отчётам Excel</div></div>
   <div class="d-flex gap-2">{% if can_manage_mapping %}<a class="btn btn-outline-secondary" href="{% url 'finance_payroll_employee_mapping' %}">Сопоставление{% if unresolved_count %} · {{ unresolved_count }}{% endif %}</a>{% endif %}{% if can_import_payroll %}<a class="btn btn-outline-secondary" href="{% url 'finance_payroll_import_list' %}">Обновить данные</a>{% endif %}</div>
 </div>
-<form method="get" class="card card-soft p-3 mb-3"><div class="row g-2 align-items-end"><div class="col-sm-4 col-lg-3"><label class="form-label">С месяца</label><input class="form-control" type="month" name="period_from" value="{{ period_from|date:'Y-m' }}"></div><div class="col-sm-4 col-lg-3"><label class="form-label">По месяц</label><input class="form-control" type="month" name="period_to" value="{{ period_to|date:'Y-m' }}"></div><div class="col-sm-4 col-lg-2"><button class="btn btn-primary w-100">Показать</button></div></div>{% if period_error %}<div class="text-danger mt-2">{{ period_error }}</div>{% endif %}</form>
-<div class="card card-soft p-3 mb-4">
+<form method="get" class="payroll-period-form card card-soft p-3 mb-3"><div class="row g-2 align-items-end"><div class="col-sm-4 col-lg-3"><label class="form-label">С месяца</label><input class="form-control" type="month" name="period_from" value="{{ period_from|date:'Y-m' }}"></div><div class="col-sm-4 col-lg-3"><label class="form-label">По месяц</label><input class="form-control" type="month" name="period_to" value="{{ period_to|date:'Y-m' }}"></div><div class="col-sm-4 col-lg-2"><button class="btn btn-primary w-100">Показать</button></div></div>{% if period_error %}<div class="text-danger mt-2">{{ period_error }}</div>{% endif %}</form>
+<div class="payroll-section-card card card-soft p-3 mb-4">
 <h2 class="h5">ФОТ: начисления</h2>
 {% if accrual_summary.currency_conflict %}<div class="alert alert-warning">В активных начислениях разные валюты. Общий итог скрыт до сверки.</div>{% elif accrual_summary.accrued != None %}<div class="h3">{{ accrual_summary.accrued|money }}</div>{% else %}<p class="text-muted">Нет подтверждённых начислений за период.</p>{% endif %}
 <p class="text-muted">За каждый месяц используются подтверждённые начисления из 1С, а при их отсутствии — начисления из Excel. Источники за один месяц не складываются.</p>
 <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Месяц</th><th class="text-end">Начислено</th><th>Источник</th></tr></thead><tbody>{% for row in accrual_summary.months %}<tr><td>{{ row.period_month|date:'m.Y' }}</td><td class="text-end">{% if row.has_data %}{{ row.accrued|money }}{% else %}—{% endif %}</td><td>{{ row.source_label }}</td></tr>{% endfor %}</tbody></table></div>
 </div>
-<h2 class="h5">Расчёты с персоналом — отчёты Excel</h2>
+<h2 class="payroll-subheading h5">Расчёты с персоналом — отчёты Excel</h2>
 <p class="text-muted">Выплаты, остатки и сотрудники показаны по загруженным отчётам Excel. Их начисления могут отличаться от обновлённого ФОТ выше.</p>
-<div class="row g-3 mb-4">
-  <div class="col-sm-6 col-xl"><div class="card card-soft p-3 h-100"><div class="text-muted small">Начислено</div><div class="h4 mb-0">{{ data.accrued|money }}</div></div></div>
-  <div class="col-sm-6 col-xl"><div class="card card-soft p-3 h-100"><div class="text-muted small">Выплачено</div><div class="h4 mb-0">{{ data.paid|money }}</div></div></div>
-  <div class="col-sm-6 col-xl"><div class="card card-soft p-3 h-100"><div class="text-muted small">Задолженность на начало</div><div class="h4 mb-0">{% if data.opening != None %}{{ data.opening|money }}{% else %}—{% endif %}</div></div></div>
-  <div class="col-sm-6 col-xl"><div class="card card-soft p-3 h-100"><div class="text-muted small">Задолженность на конец</div><div class="h4 mb-0">{% if data.closing != None %}{{ data.closing|money }}{% else %}—{% endif %}</div></div></div>
-  <div class="col-sm-6 col-xl"><div class="card card-soft p-3 h-100"><div class="text-muted small">Изменение задолженности</div><div class="h4 mb-0">{% if data.debt_change != None %}{{ data.debt_change|money }}{% else %}—{% endif %}</div></div></div>
+<div class="payroll-kpi-grid row g-3 mb-4">
+  <div class="col-sm-6 col-xl"><div class="payroll-kpi-card card card-soft p-3 h-100"><div class="text-muted small">Начислено</div><div class="h4 mb-0">{{ data.accrued|money }}</div></div></div>
+  <div class="col-sm-6 col-xl"><div class="payroll-kpi-card card card-soft p-3 h-100"><div class="text-muted small">Выплачено</div><div class="h4 mb-0">{{ data.paid|money }}</div></div></div>
+  <div class="col-sm-6 col-xl"><div class="payroll-kpi-card card card-soft p-3 h-100"><div class="text-muted small">Задолженность на начало</div><div class="h4 mb-0">{% if data.opening != None %}{{ data.opening|money }}{% else %}—{% endif %}</div></div></div>
+  <div class="col-sm-6 col-xl"><div class="payroll-kpi-card card card-soft p-3 h-100"><div class="text-muted small">Задолженность на конец</div><div class="h4 mb-0">{% if data.closing != None %}{{ data.closing|money }}{% else %}—{% endif %}</div></div></div>
+  <div class="col-sm-6 col-xl"><div class="payroll-kpi-card card card-soft p-3 h-100"><div class="text-muted small">Изменение задолженности</div><div class="h4 mb-0">{% if data.debt_change != None %}{{ data.debt_change|money }}{% else %}—{% endif %}</div></div></div>
 </div>
-<div class="card card-soft p-3 mb-4"><h2 class="h5">Динамика по месяцам</h2><div class="table-responsive"><table class="table table-sm align-middle mb-0"><thead><tr><th>Месяц</th><th class="text-end">Начислено</th><th class="text-end">Выплачено</th><th class="text-end">Задолженность на конец</th></tr></thead><tbody>{% for row in data.months %}<tr><td>{{ row.period_month|date:'F Y' }}</td>{% if row.has_data %}<td class="text-end">{{ row.accrued|money }}</td><td class="text-end">{{ row.paid|money }}</td><td class="text-end">{{ row.closing|money }}</td>{% else %}<td colspan="3" class="text-muted">Нет данных за месяц</td>{% endif %}</tr>{% endfor %}</tbody></table></div></div>
-{% if show_personal %}<div class="card card-soft p-3"><h2 class="h5">Сотрудники</h2><div class="table-responsive"><table class="table table-sm align-middle mb-0"><thead><tr><th>Сотрудник</th><th>Подразделение</th><th class="text-end">Начислено</th><th class="text-end">Выплачено</th><th class="text-end">На начало</th><th class="text-end">На конец</th><th>Статус</th></tr></thead><tbody>{% for row in data.employees %}<tr><td>{{ row.employee_identity__employee__display_name|default:row.employee_identity__raw_name }}</td><td>{{ row.employee_identity__department_name|default:'—' }}</td><td class="text-end">{{ row.accrued|money }}</td><td class="text-end">{{ row.paid|money }}</td><td class="text-end">{% if row.opening != None %}{{ row.opening|money }}{% else %}—{% endif %}</td><td class="text-end">{% if row.closing != None %}{{ row.closing|money }}{% else %}—{% endif %}</td><td>{{ row.status_label }}</td></tr>{% empty %}<tr><td colspan="7" class="text-muted">Нет данных за период</td></tr>{% endfor %}</tbody></table></div></div>{% elif not data.has_data %}<div class="alert alert-info">Нет данных за период.</div>{% endif %}
+<div class="payroll-section-card card card-soft p-3 mb-4"><h2 class="h5">Динамика по месяцам</h2><div class="table-responsive"><table class="table table-sm align-middle mb-0"><thead><tr><th>Месяц</th><th class="text-end">Начислено</th><th class="text-end">Выплачено</th><th class="text-end">Задолженность на конец</th></tr></thead><tbody>{% for row in data.months %}<tr><td>{{ row.period_month|date:'F Y' }}</td>{% if row.has_data %}<td class="text-end">{{ row.accrued|money }}</td><td class="text-end">{{ row.paid|money }}</td><td class="text-end">{{ row.closing|money }}</td>{% else %}<td colspan="3" class="text-muted">Нет данных за месяц</td>{% endif %}</tr>{% endfor %}</tbody></table></div></div>
+{% if show_personal %}<div class="payroll-personal-card card card-soft p-3"><h2 class="h5">Сотрудники</h2><div class="table-responsive"><table class="table table-sm align-middle mb-0"><thead><tr><th>Сотрудник</th><th>Подразделение</th><th class="text-end">Начислено</th><th class="text-end">Выплачено</th><th class="text-end">На начало</th><th class="text-end">На конец</th><th>Статус</th></tr></thead><tbody>{% for row in data.employees %}<tr><td>{{ row.employee_identity__employee__display_name|default:row.employee_identity__raw_name }}</td><td>{{ row.employee_identity__department_name|default:'—' }}</td><td class="text-end">{{ row.accrued|money }}</td><td class="text-end">{{ row.paid|money }}</td><td class="text-end">{% if row.opening != None %}{{ row.opening|money }}{% else %}—{% endif %}</td><td class="text-end">{% if row.closing != None %}{{ row.closing|money }}{% else %}—{% endif %}</td><td>{{ row.status_label }}</td></tr>{% empty %}<tr><td colspan="7" class="text-muted">Нет данных за период</td></tr>{% endfor %}</tbody></table></div></div>{% elif not data.has_data %}<div class="alert alert-info">Нет данных за период.</div>{% endif %}
 {% endblock %}
