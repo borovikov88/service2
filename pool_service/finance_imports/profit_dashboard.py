@@ -182,9 +182,23 @@ def comparison(current, previous):
 
 def monthly_profit_summary(organization, first_month, last_month):
     """Return active import-time analytics without building detail breakdowns."""
-    rows = list(OneCMonthlyProfit.objects.active_for(organization).filter(
-        period_month__range=(first_month, last_month)
-    ))
+    rows = list(
+        OneCMonthlyProfit.objects.active_for(organization)
+        .filter(period_month__range=(first_month, last_month))
+        .only(
+            "id",
+            "period_month",
+            "nomenclature_type",
+            "quantity",
+            "revenue",
+            "cost",
+            "gross_profit",
+            "calculated_cost",
+            "cost_source",
+            "cost_calculation_ratio",
+            "analytical_gross_profit",
+        )
+    )
     period_cost_ratio = apply_period_analytics(rows)
     monthly = []
     for month_index in range(
