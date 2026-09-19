@@ -218,6 +218,86 @@
       width: 25%;
     }
   }
+
+  /* Object layout refinement: dense info + sticky wide summary. */
+  @media (min-width: 992px) {
+    .object-summary-card__body {
+      width: 100%;
+      min-width: 0;
+    }
+
+    .object-info-grid > .col-lg-4 {
+      width: 20%;
+    }
+
+    .object-info-grid > .col-lg-4 > .d-flex {
+      min-width: 0;
+      flex-wrap: wrap;
+      align-content: center;
+    }
+
+    .object-info-grid > .col-lg-4 > .d-flex .fw-semibold {
+      margin-left: auto;
+      text-align: right;
+      max-width: 100%;
+    }
+
+    .object-layout-wide__main {
+      min-width: 0;
+    }
+
+    .object-issues-header {
+      gap: 12px;
+    }
+  }
+
+  @media (min-width: 1920px) {
+    .object-layout-wide {
+      display: grid;
+      grid-template-columns: 430px minmax(0, 1fr);
+      gap: 16px;
+      align-items: start;
+    }
+
+    .object-layout-wide__aside {
+      position: sticky;
+      top: calc(var(--desktop-topbar-height, 62px) + 18px);
+      align-self: start;
+    }
+
+    .object-layout-wide__aside .object-summary-card {
+      margin-bottom: 0 !important;
+    }
+
+    .object-layout-wide__aside .object-summary-card h2 {
+      font-size: 1.18rem;
+    }
+
+    .object-layout-wide__aside .object-info-grid > .col-lg-4 {
+      width: 50%;
+    }
+
+    .object-layout-wide__aside .object-info-grid > .col-12:not(.col-md-6) {
+      width: 100%;
+    }
+
+    .object-layout-wide__aside .object-info-grid > div > .d-flex,
+    .object-layout-wide__aside .object-info-grid > div > .p-2 {
+      min-height: 50px;
+    }
+
+    .object-layout-wide__main .object-role-kpis {
+      margin-top: 0;
+    }
+  }
+
+  @media (min-width: 2560px) {
+    .object-layout-wide {
+      grid-template-columns: 480px minmax(0, 1fr);
+      gap: 18px;
+    }
+  }
+
 </style>
 {% endblock %}
 
@@ -270,14 +350,15 @@
         <a class="object-role-nav__link {% if desktop_card_mode == 'service' %}is-active{% endif %}" href="#object-visits"><i class="bi bi-clock-history"></i>Посещения</a>
         {% if supply_tasks %}<a class="object-role-nav__link" href="#object-tasks"><i class="bi bi-list-check"></i>Задачи</a>{% endif %}
         {% if show_service_issues %}<a class="object-role-nav__link" href="#object-issues"><i class="bi bi-exclamation-diamond"></i>Неисправности</a>{% endif %}
-        {% if audit_logs %}<a class="object-role-nav__link" href="#object-changes"><i class="bi bi-journal-text"></i>Изменения</a>{% endif %}
     </nav>
 </div>
 {% endif %}
 
+<div class="object-layout-wide">
+<aside class="object-layout-wide__aside">
 <div id="object-overview" class="object-summary-card card card-soft p-4 mb-4">
     <div class="d-flex justify-content-between align-items-start gap-3">
-        <div>
+        <div class="object-summary-card__body">
             <h2 class="fw-bold h4 mb-1">{{ pool.client.name }}</h2>
             <div class="text-muted mb-1"><i class="bi bi-geo-alt me-1"></i>{{ pool.address }}</div>
             {% if pool.description %}
@@ -290,7 +371,7 @@
                 </span>
             </div>
             {% if not is_water_object %}
-            <div class="row g-2 mt-3">
+            <div class="object-info-grid row g-2 mt-3">
                 <div class="col-12 col-md-6 col-lg-4">
                     <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
                         <i class="bi bi-bounding-box text-primary"></i>
@@ -364,7 +445,7 @@
                 {% include "pool_service/_pool_service_tiles.html" %}
             </div>
             {% else %}
-            <div class="row g-2 mt-3">
+            <div class="object-info-grid row g-2 mt-3">
                 <div class="col-12 col-md-6 col-lg-4">
                     <div class="d-flex align-items-center gap-2 p-2 rounded-3 bg-light">
                         <i class="bi bi-gear text-success"></i>
@@ -434,6 +515,8 @@
     </div>
 </div>
 
+</aside>
+<main class="object-layout-wide__main">
 {% if desktop_card_mode != "standard" %}
 <div class="object-role-kpis d-none d-lg-grid">
     {% if desktop_card_mode == "manager" %}
@@ -525,52 +608,6 @@
     </div>
 </div>
 {% endif %}
-
-{% if audit_logs %}
-<div id="object-changes" class="object-section-card card card-soft p-4 mb-4">
-    <div class="d-flex justify-content-between align-items-center mb-3">
-        <div>
-            <h3 class="fw-bold h5 mb-1">Журнал изменений</h3>
-            <div class="text-muted small">Последние действия по объекту и его записям</div>
-        </div>
-    </div>
-    <div class="table-responsive">
-        <table class="table align-middle table-borderless mb-0">
-            <thead class="small text-muted">
-                <tr>
-                    <th>Дата</th>
-                    <th>Действие</th>
-                    <th>Пользователь</th>
-                    <th>Что изменено</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for audit in audit_logs %}
-                <tr class="border-top">
-                    <td class="fw-semibold">{{ audit.created_at|date:"d.m.Y H:i" }}</td>
-                    <td>{{ audit.get_action_display }}</td>
-                    <td>
-                        {% if audit.actor %}
-                            {% if audit.actor.get_full_name %}{{ audit.actor.get_full_name }}{% else %}{{ audit.actor.username }}{% endif %}
-                        {% else %}
-                            -
-                        {% endif %}
-                    </td>
-                    <td>
-                        {% if audit.changed_fields %}
-                            {{ audit.changed_fields|join:", " }}
-                        {% else %}
-                            -
-                        {% endif %}
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</div>
-{% endif %}
-
 
 {% if readings %}
 <div id="object-visits" class="object-visit-history {% if desktop_card_mode == 'service' %}object-visit-history--primary{% endif %} object-section-card card card-soft p-4 mb-4">
@@ -849,50 +886,22 @@
 
 {% if show_service_issues %}
 <div id="object-issues" class="object-section-card card card-soft p-4 mb-4">
-    <div class="d-flex justify-content-between align-items-center mb-3">
+    <div class="object-issues-header d-flex justify-content-between align-items-center mb-3">
         <div>
             <h3 class="fw-bold h5 mb-1">Неисправности</h3>
             <div class="text-muted small">Заявки по работам и оборудованию</div>
         </div>
+        {% if can_manage_service_issues and service_issue_form %}
+        <button type="button"
+                class="btn btn-primary btn-sm d-inline-flex align-items-center gap-2 {% if access_blocked %}opacity-50{% endif %}"
+                {% if access_blocked %}data-requires-access="true"{% endif %}
+                data-bs-toggle="modal"
+                data-bs-target="#serviceIssueCreateModal">
+            <i class="bi bi-plus-lg"></i>
+            <span>Добавить неисправность</span>
+        </button>
+        {% endif %}
     </div>
-
-    {% if can_manage_service_issues and service_issue_form %}
-    <form method="post" action="{% url 'pool_issue_create' pool.uuid %}" class="row g-3 mb-4" enctype="multipart/form-data" id="service-issue-form">
-        {% csrf_token %}
-        <div class="col-12 col-lg-6">
-            <label class="form-label">Неисправность</label>
-            {{ service_issue_form.title }}
-            {% if service_issue_form.title.errors %}<div class="text-danger small">{{ service_issue_form.title.errors.0 }}</div>{% endif %}
-        </div>
-        <div class="col-12 col-md-6 col-lg-3">
-            <label class="form-label">Срочность</label>
-            {{ service_issue_form.urgency }}
-            {% if service_issue_form.urgency.errors %}<div class="text-danger small">{{ service_issue_form.urgency.errors.0 }}</div>{% endif %}
-        </div>
-        <div class="col-12 col-md-6 col-lg-3">
-            <label class="form-label">Фото</label>
-            {{ service_issue_form.photos }}
-            {% if service_issue_form.photos.errors %}<div class="text-danger small">{{ service_issue_form.photos.errors.0 }}</div>{% endif %}
-        </div>
-        <div class="col-12">
-            <label class="form-label">Комментарий</label>
-            {{ service_issue_form.description }}
-            {% if service_issue_form.description.errors %}<div class="text-danger small">{{ service_issue_form.description.errors.0 }}</div>{% endif %}
-        </div>
-        <div class="col-12 d-flex gap-2">
-            <button type="submit" class="btn btn-primary {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
-                Добавить
-            </button>
-        </div>
-    </form>
-    <script>
-      (function () {
-        const input = document.querySelector("#service-issue-form input[type='file'][name='photos']");
-        if (!input) return;
-        input.dataset.photoPicker = "1";
-      })();
-    </script>
-    {% endif %}
 
     <div class="table-responsive">
         <table class="table table-hover align-middle">
@@ -976,7 +985,66 @@
         </table>
     </div>
 </div>
+
+{% if can_manage_service_issues and service_issue_form %}
+<div class="modal fade" id="serviceIssueCreateModal" tabindex="-1" aria-labelledby="serviceIssueCreateModalTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable modal-lg">
+    <div class="modal-content">
+      <form method="post" action="{% url 'pool_issue_create' pool.uuid %}" enctype="multipart/form-data" id="service-issue-form">
+        {% csrf_token %}
+        <div class="modal-header">
+          <div>
+            <h5 class="modal-title" id="serviceIssueCreateModalTitle">Добавить неисправность</h5>
+            <div class="text-muted small">Новая заявка по объекту {{ pool.client.name }}</div>
+          </div>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+        </div>
+        <div class="modal-body">
+          <div class="row g-3">
+            <div class="col-12 col-lg-7">
+              <label class="form-label">Неисправность</label>
+              {{ service_issue_form.title }}
+              {% if service_issue_form.title.errors %}<div class="text-danger small">{{ service_issue_form.title.errors.0 }}</div>{% endif %}
+            </div>
+            <div class="col-12 col-lg-5">
+              <label class="form-label">Срочность</label>
+              {{ service_issue_form.urgency }}
+              {% if service_issue_form.urgency.errors %}<div class="text-danger small">{{ service_issue_form.urgency.errors.0 }}</div>{% endif %}
+            </div>
+            <div class="col-12">
+              <label class="form-label">Комментарий</label>
+              {{ service_issue_form.description }}
+              {% if service_issue_form.description.errors %}<div class="text-danger small">{{ service_issue_form.description.errors.0 }}</div>{% endif %}
+            </div>
+            <div class="col-12">
+              <label class="form-label">Фото</label>
+              {{ service_issue_form.photos }}
+              {% if service_issue_form.photos.errors %}<div class="text-danger small">{{ service_issue_form.photos.errors.0 }}</div>{% endif %}
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+          <button type="submit" class="btn btn-primary {% if access_blocked %}opacity-50{% endif %}" {% if access_blocked %}data-requires-access="true"{% endif %}>
+            Добавить неисправность
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+<script>
+  (function () {
+    const input = document.querySelector("#service-issue-form input[type='file'][name='photos']");
+    if (!input) return;
+    input.dataset.photoPicker = "1";
+  })();
+</script>
 {% endif %}
+{% endif %}
+
+</main>
+</div>
 
 <script>
   (function () {
