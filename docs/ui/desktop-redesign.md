@@ -186,4 +186,4 @@ Wide monitors should display more columns instead of forcing horizontal scrollin
 - No desktop redesign rule may alter mobile layout below 992px.
 - No financial or service calculation changes are part of the redesign.
 - Permission checks remain server-side; UI visibility follows those permissions.
-- Each migration stage is delivered through CI, independent review and production deployment.
+- Each migration stage is delivered through CI and production deployment; independent review is optional for higher-risk changes.
