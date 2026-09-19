@@ -2,6 +2,18 @@
 {% block title %}{{ task.reference }} — {{ task.title }}{% endblock %}
 {% block content %}
 {% include "pool_service/_admin_workspace_styles.html" %}
+<style>
+  @media (min-width: 992px) {
+    .development-state-form textarea.form-control {
+      min-height: 72px !important;
+      height: 72px;
+      resize: vertical;
+    }
+    .development-state-form .mb-3 {
+      margin-bottom: 0.65rem !important;
+    }
+  }
+</style>
 <div class="admin-desktop">
 <div class="admin-page-header d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
   <div>
@@ -159,9 +171,9 @@
   </div>
 </div>
 
-<div class="row g-3 mb-3">
+<div class="row g-3 mb-3 align-items-start">
   <div class="col-lg-8">
-    <div class="admin-card card card-soft p-3 p-lg-4 h-100">
+    <div class="admin-card card card-soft p-3 p-lg-4">
       <section class="mb-4"><h2 class="h6 text-uppercase text-muted">Исходная задача</h2><div>{{ task.description|linebreaksbr }}</div></section>
       <section class="mb-4"><h2 class="h6 text-uppercase text-muted">Бизнес-цель</h2><div>{{ task.business_goal|default:"—"|linebreaksbr }}</div></section>
       <section class="mb-4"><h2 class="h6 text-uppercase text-muted">Definition of Done</h2><div>{{ task.definition_of_done|default:"—"|linebreaksbr }}</div></section>
@@ -175,14 +187,14 @@
     </div>
   </div>
   <div class="col-lg-4">
-    <form method="post" action="{% url 'development_task_update' task.id %}" class="card card-soft p-3 h-100">
+    <form method="post" action="{% url 'development_task_update' task.id %}" class="admin-card card card-soft p-3 development-state-form">
       {% csrf_token %}
       <h2 class="h5 mb-3">Состояние задачи</h2>
       {% if update_form.non_field_errors %}<div class="alert alert-danger">{{ update_form.non_field_errors }}</div>{% endif %}
       {% for field in update_form %}
       <div class="mb-3"><label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}</div>
       {% endfor %}
-      <button class="btn btn-outline-primary mt-auto" type="submit">Сохранить состояние</button>
+      <button class="btn btn-outline-primary" type="submit">Сохранить состояние</button>
     </form>
   </div>
 </div>
