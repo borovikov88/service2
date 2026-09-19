@@ -8886,7 +8886,8 @@ def water_reading_create(request, pool_uuid):
             duplicate_filters = {
                 "pool": pool,
                 "added_by": request.user,
-                "date": reading.date,
+                "date__gte": reading.date - timedelta(seconds=10),
+                "date__lte": reading.date + timedelta(seconds=1),
             }
             for field_name in duplicate_fields:
                 duplicate_filters[field_name] = getattr(reading, field_name)
