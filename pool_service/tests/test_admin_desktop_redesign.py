@@ -44,3 +44,21 @@ class AdminDesktopRedesignTests(SimpleTestCase):
         self.assertIn("admin-page-header", source)
         self.assertIn("admin-card", source)
         self.assertIn("admin-form", source)
+
+    def test_visual_qa_desktop_density_regressions(self):
+        reading = get_template("pool_service/water_reading_form.html").template.source
+        self.assertIn("reading-entry-form", reading)
+        self.assertIn('height: 88px', reading)
+
+        development = get_template(
+            "pool_service/development/task_detail.html"
+        ).template.source
+        self.assertIn("development-state-form", development)
+        self.assertIn("align-items-start", development)
+        self.assertIn("height: 72px", development)
+
+        notifications = get_template(
+            "pool_service/notifications.html"
+        ).template.source
+        self.assertIn("max-width: 1360px", notifications)
+

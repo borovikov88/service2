@@ -10,6 +10,19 @@
 
 {% block content %}
 {% include "pool_service/_admin_workspace_styles.html" %}
+<style>
+  @media (min-width: 992px) {
+    .reading-entry-form textarea.form-control {
+      min-height: 88px !important;
+      height: 88px;
+      resize: vertical;
+    }
+    .reading-entry-form textarea[name="comment"] {
+      min-height: 104px !important;
+      height: 104px;
+    }
+  }
+</style>
 <div class="admin-desktop admin-form">
 <div class="admin-page-header d-flex justify-content-between align-items-center mb-3">
     <a href="{% url 'pool_detail' pool.uuid %}" class="text-decoration-none d-flex align-items-center gap-2 text-dark">
@@ -51,7 +64,7 @@
         </p>
 
         <div id="offline-status" class="alert alert-warning d-none mb-3"></div>
-        <form method="post" class="offline-queue-form" novalidate>
+        <form method="post" class="offline-queue-form reading-entry-form" novalidate>
             {% csrf_token %}
             {{ form.date }}
 

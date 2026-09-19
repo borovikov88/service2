@@ -146,6 +146,21 @@ class FinanceTests(TestCase):
         self.assertContains(response, 'class="desktop-topbar d-none d-lg-flex', html=False)
         self.assertContains(response, 'class="mobile-bottom-nav"', html=False)
 
+    def test_desktop_pwa_banner_is_guarded(self):
+        self.client.force_login(self.manager)
+        with patch(
+            "pool_service.finance_views.get_finance_position",
+            return_value={"available": False},
+        ):
+            response = self.client.get(reverse("finance_kkm_cash_dashboard"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            'window.matchMedia("(min-width: 992px)").matches',
+            html=False,
+        )
+
     def test_desktop_shell_keeps_finance_navigation_in_sidebar(self):
         self.client.force_login(self.manager)
         with patch(
