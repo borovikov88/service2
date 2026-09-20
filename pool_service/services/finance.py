@@ -299,7 +299,7 @@ def finance_operations_navigation(user, organization, *, current_route=""):
         ))
     if can_access_cash(user, organization):
         operations.append(_finance_nav_item(
-            "ККМ", "finance_kkm_cash_dashboard",
+            "Касса ККМ", "finance_kkm_cash_dashboard",
             (
                 "finance_cash_dashboard", "finance_cash_income_create",
                 "finance_cash_transfer_create", "finance_cash_accountable_issue_create",
