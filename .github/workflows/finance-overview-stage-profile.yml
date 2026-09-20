@@ -1,0 +1,107 @@
+name: Finance overview production stage profile
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/finance-overview-stage-profile.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  profile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_deploy
+          chmod 600 ~/.ssh/service2_deploy
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Read-only Finance Overview stage profile
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -euo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          ssh -i ~/.ssh/service2_deploy -o BatchMode=yes -o StrictHostKeyChecking=yes -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash -s -- '$DEPLOY_APP_PATH'" <<'REMOTE'
+          set -euo pipefail
+          app_path="$1"
+          cd "$app_path"
+          source venv/bin/activate
+          python manage.py shell <<'PY'
+          import json
+          import time
+          from collections import Counter
+          from datetime import date
+          from django.db import connection
+          from django.test.utils import CaptureQueriesContext
+          from pool_service.models import Organization
+          from pool_service.finance_imports.owner_dashboard import (
+              _comparison_specs,
+              _range_data,
+              _seasonality,
+              finance_overview_data,
+              resolve_owner_period,
+          )
+
+          org = Organization.objects.get(pk=1)
+          today = date(2026, 9, 20)
+          period = resolve_owner_period({}, today=today)
+
+          def profile(label, func):
+              started = time.perf_counter()
+              with CaptureQueriesContext(connection) as captured:
+                  func()
+              elapsed_ms = (time.perf_counter() - started) * 1000
+              sql_ms = sum(float(q.get("time") or 0) * 1000 for q in captured.captured_queries)
+              tables = Counter()
+              for q in captured.captured_queries:
+                  sql = (q.get("sql") or "").lower()
+                  for marker in (
+                      "pool_service_onecreportperiodstate",
+                      "pool_service_onecmonthlyprofit",
+                      "pool_service_payrollaccrualmonth",
+                      "pool_service_payrollrow",
+                      "pool_service_cashflowrow",
+                      "pool_service_cashflowarticlemapping",
+                      "pool_service_onecimportbatch",
+                  ):
+                      if marker in sql:
+                          tables[marker] += 1
+              print("FINANCE_STAGE", json.dumps({
+                  "stage": label,
+                  "elapsed_ms": round(elapsed_ms, 1),
+                  "queries": len(captured),
+                  "sql_ms": round(sql_ms, 1),
+                  "table_hits": dict(tables),
+              }, sort_keys=True))
+
+          profile(
+              "current_range",
+              lambda: _range_data(
+                  org, period["first_month"], period["last_month"]
+              ),
+          )
+          for spec in _comparison_specs(period):
+              profile(
+                  "comparison_" + spec["key"],
+                  lambda spec=spec: _range_data(
+                      org, spec["first"], spec["last"], include_freshness=False
+                  ),
+              )
+          profile("seasonality", lambda: _seasonality(org, today))
+          profile("full_overview_data", lambda: finance_overview_data(org, {}, today=today))
+          PY
+          REMOTE
