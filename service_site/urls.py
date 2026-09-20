@@ -4,6 +4,7 @@ URL configuration for service_site project.
 from django.contrib import admin
 from django.urls import path, include
 from pool_service.views import CustomLoginView, robots_txt, sitemap_xml
+from service_site.health_views import health_live, health_ready
 from django.contrib.auth import views as auth_views
 from django.views.generic import TemplateView
 from django.urls import reverse_lazy
@@ -24,6 +25,8 @@ from pool_service.mcp_oauth_shared import (
 )
 
 urlpatterns = [
+    path('health/live/', health_live, name='health_live'),
+    path('health/ready/', health_ready, name='health_ready'),
     # Keep transport URLs byte-for-byte identical to their OAuth resource
     # identifiers. Finance and Diagnostic keep isolated resources/scopes while
     # sharing the proven Finance authorization-server issuer and endpoints.
