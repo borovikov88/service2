@@ -259,3 +259,142 @@ jobs:
           ssh -i ~/.ssh/service2_deploy \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
+
+
+  finance-overview-production-profile:
+    if: github.event_name == 'pull_request' && github.head_ref == 'qa/finance-overview-profile-after-162'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_deploy
+          chmod 600 ~/.ssh/service2_deploy
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Profile deployed Finance Overview read-only
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -euo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          ssh -i ~/.ssh/service2_deploy -o BatchMode=yes -o StrictHostKeyChecking=yes -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash -s -- '$DEPLOY_APP_PATH'" <<'REMOTE'
+          set -euo pipefail
+          app_path="$1"
+          cd "$app_path"
+          source venv/bin/activate
+          python manage.py shell <<'PY'
+          import json
+          import time
+          from collections import Counter
+          from datetime import date
+
+          from django.contrib.auth import get_user_model
+          from django.contrib.messages.storage.fallback import FallbackStorage
+          from django.db import connection
+          from django.test import RequestFactory
+          from django.test.utils import CaptureQueriesContext
+          from django.urls import resolve, reverse
+
+          from pool_service.models import OrganizationAccess
+          from pool_service.finance_imports.owner_dashboard import (
+              _comparison_specs,
+              _range_data,
+              _seasonality,
+              finance_overview_data,
+              resolve_owner_period,
+          )
+
+          def summarize_queries(captured):
+              tables = Counter()
+              for q in captured.captured_queries:
+                  sql = (q.get("sql") or "").lower()
+                  for marker in (
+                      "pool_service_onecreportperiodstate",
+                      "pool_service_onecmonthlyprofit",
+                      "pool_service_payrollaccrualmonth",
+                      "pool_service_payrollrow",
+                      "pool_service_cashflowrow",
+                      "pool_service_cashflowarticlemapping",
+                      "pool_service_onecimportbatch",
+                  ):
+                      if marker in sql:
+                          tables[marker] += 1
+              return dict(tables)
+
+          def profile(label, func):
+              started = time.perf_counter()
+              with CaptureQueriesContext(connection) as captured:
+                  result = func()
+                  if hasattr(result, "render"):
+                      result.render()
+              elapsed_ms = (time.perf_counter() - started) * 1000
+              sql_ms = sum(float(q.get("time") or 0) * 1000 for q in captured.captured_queries)
+              print("FINANCE_PROFILE", json.dumps({
+                  "stage": label,
+                  "elapsed_ms": round(elapsed_ms, 1),
+                  "queries": len(captured),
+                  "sql_ms": round(sql_ms, 1),
+                  "table_hits": summarize_queries(captured),
+              }, sort_keys=True))
+              return result
+
+          access = (
+              OrganizationAccess.objects.filter(
+                  role__in=["owner", "admin"],
+                  user__is_active=True,
+              )
+              .select_related("organization", "user")
+              .order_by("organization_id", "id")
+              .first()
+          )
+          if access is None:
+              raise SystemExit("No owner/admin access")
+
+          org = access.organization
+          user_id = access.user_id
+          today = date(2026, 9, 20)
+          params = {}
+          period = resolve_owner_period(params, today=today)
+
+          profile(
+              "current_range",
+              lambda: _range_data(org, period["first_month"], period["last_month"]),
+          )
+          for spec in _comparison_specs(period):
+              profile(
+                  "comparison_" + spec["key"],
+                  lambda spec=spec: _range_data(
+                      org, spec["first"], spec["last"], include_freshness=False
+                  ),
+              )
+          profile("seasonality", lambda: _seasonality(org, today))
+          profile("overview_data", lambda: finance_overview_data(org, params, today=today))
+
+          User = get_user_model()
+          user = User.objects.select_related("profile").get(pk=user_id)
+          path = reverse("finance_overview")
+          request = RequestFactory().get(path, HTTP_HOST="service2.aqualine22.ru")
+          request.user = user
+          request.session = {}
+          request._messages = FallbackStorage(request)
+          match = resolve(path)
+          request.resolver_match = match
+          response = profile(
+              "full_view",
+              lambda: match.func(request, *match.args, **match.kwargs),
+          )
+          print("FINANCE_PROFILE_STATUS", getattr(response, "status_code", None))
+          print("FINANCE_PROFILE_HTML_KB", round(len(getattr(response, "content", b"")) / 1024, 1))
+          PY
+          REMOTE
