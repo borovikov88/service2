@@ -149,7 +149,6 @@ from pool_service.services.finance import (
     can_access_finance_operations,
     can_access_finance_overview,
     can_access_finance_section,
-    can_access_management_finance,
     can_access_my_finances,
     can_close_finance_period,
     can_confirm_accountable_issue,
@@ -868,15 +867,14 @@ def finance_dashboard(request):
     )
     if denied:
         return denied
-    if can_access_management_finance(request.user, organization):
-        if can_access_finance_overview(request.user, organization):
-            return redirect("finance_overview")
-        if can_access_finance_data(request.user, organization):
-            return redirect("finance_data")
-        if can_view_cashflow(request.user, organization):
-            return redirect("finance_onec_cashflow_dashboard")
-    if can_access_finance_operations(request.user, organization):
-        return redirect("finance_operations")
+    if can_access_finance_overview(request.user, organization):
+        return redirect("finance_overview")
+    if can_access_my_finances(request.user, organization):
+        return redirect("finance_my")
+    if can_access_finance_data(request.user, organization):
+        return redirect("finance_data")
+    if can_view_cashflow(request.user, organization):
+        return redirect("finance_onec_cashflow_dashboard")
     return HttpResponseForbidden("Недостаточно прав для финансовых разделов.")
 
 
