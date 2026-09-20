@@ -1,0 +1,236 @@
+name: Full Service2 production audit
+
+on:
+  push:
+    branches: ["qa/full-service2-audit"]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Read-only full production audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_audit
+          chmod 600 ~/.ssh/service2_audit
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          PORT="${DEPLOY_PORT:-22}"
+          HOST_LOOKUP="$DEPLOY_HOST"
+          if [[ "$PORT" != "22" ]]; then HOST_LOOKUP="[$DEPLOY_HOST]:$PORT"; fi
+          ssh-keygen -F "$HOST_LOOKUP" -f ~/.ssh/known_hosts >/dev/null
+
+      - name: Run production checks and collect state
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          ssh -i ~/.ssh/service2_audit \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash -s -- '$DEPLOY_APP_PATH'" <<'SH'
+          set -Eeuo pipefail
+          app_path="$1"
+          cd "$app_path"
+          echo "AUDIT_HEAD $(git rev-parse HEAD)"
+          echo "AUDIT_STATUS_BEGIN"
+          git status --short || true
+          echo "AUDIT_STATUS_END"
+
+          echo "AUDIT_DJANGO_CHECK_BEGIN"
+          ../venv/bin/python manage.py check
+          ../venv/bin/python manage.py makemigrations --check --dry-run
+          echo "AUDIT_DJANGO_CHECK_END"
+
+          echo "AUDIT_MIGRATIONS_BEGIN"
+          ../venv/bin/python manage.py showmigrations --plan | tail -n 120
+          echo "AUDIT_MIGRATIONS_END"
+
+          echo "AUDIT_SYNC_CONFIG_BEGIN"
+          ../venv/bin/python manage.py sync_onec_finance --check
+          echo "AUDIT_SYNC_CONFIG_END"
+
+          echo "AUDIT_DB_AND_STATE_BEGIN"
+          ../venv/bin/python manage.py shell <<'PY'
+          import json
+          import time
+          from django.contrib.auth import get_user_model
+          from django.contrib.messages.storage.fallback import FallbackStorage
+          from django.db import connection
+          from django.test import RequestFactory
+          from django.test.utils import CaptureQueriesContext
+          from django.urls import resolve, reverse
+          from django.utils import timezone
+
+          from pool_service.models import (
+              OneCODataSyncRun,
+              OneCImportBatch,
+              OneCReportPeriodState,
+              OrganizationAccess,
+              Pool,
+          )
+
+          cursor = connection.cursor()
+          cursor.execute("SELECT 1")
+          print("AUDIT_DB_OK", cursor.fetchone()[0])
+
+          print("AUDIT_SYNC_RUN_COUNTS", json.dumps({
+              status: OneCODataSyncRun.objects.filter(status=status).count()
+              for status in ["pending","running","completed","partial_failed","failed","cancelled"]
+          }, sort_keys=True))
+
+          latest = list(
+              OneCODataSyncRun.objects.order_by("-created_at").values(
+                  "id","status","mode","created_at","started_at","finished_at",
+                  "requested_report_types","error_message"
+              )[:10]
+          )
+          for item in latest:
+              for key, value in list(item.items()):
+                  if hasattr(value, "isoformat"):
+                      item[key] = value.isoformat()
+                  elif value is not None and not isinstance(value, (str,int,float,bool,list,dict)):
+                      item[key] = str(value)
+          print("AUDIT_SYNC_RUN_LATEST", json.dumps(latest, ensure_ascii=False))
+
+          print("AUDIT_IMPORT_COUNTS", json.dumps({
+              status: OneCImportBatch.objects.filter(status=status).count()
+              for status in ["uploaded","previewed","confirmed","failed","cancelled"]
+          }, sort_keys=True))
+          print("AUDIT_ACTIVE_PERIODS", OneCReportPeriodState.objects.count())
+
+          access = (
+              OrganizationAccess.objects.filter(
+                  role__in=["owner","admin"],
+                  user__is_active=True,
+              )
+              .select_related("organization","user")
+              .order_by("organization_id","id")
+              .first()
+          )
+          if access is None:
+              raise SystemExit("No owner/admin access")
+          user_id = access.user_id
+          org_id = access.organization_id
+          pool = Pool.objects.filter(
+              organization_id=org_id,
+              is_deleted=False,
+          ).order_by("id").first()
+
+          routes = [
+              ("pools", reverse("pool_list")),
+              ("clients", reverse("clients_list")),
+              ("users", reverse("users")),
+              ("crm-index", reverse("crm_index")),
+              ("crm-service", reverse("crm_list", kwargs={"direction":"service"})),
+              ("crm-tasks", reverse("crm_tasks")),
+              ("calendar", reverse("readings_all")),
+              ("notifications", reverse("notifications")),
+              ("finance-overview", reverse("finance_overview")),
+              ("finance-kkm", reverse("finance_kkm_cash_dashboard")),
+              ("finance-data", reverse("finance_data")),
+              ("finance-report", reverse("finance_report")),
+          ]
+          if pool is not None:
+              routes.insert(1, ("pool-detail", reverse("pool_detail", kwargs={"pool_uuid": pool.uuid})))
+
+          User=get_user_model()
+          factory=RequestFactory()
+          for label,path in routes:
+              user=User.objects.select_related("profile").get(pk=user_id)
+              request=factory.get(path, HTTP_HOST="service2.aqualine22.ru")
+              request.user=user
+              request.session={}
+              request._messages=FallbackStorage(request)
+              match=resolve(path)
+              request.resolver_match=match
+              started=time.perf_counter()
+              try:
+                  with CaptureQueriesContext(connection) as captured:
+                      response=match.func(request,*match.args,**match.kwargs)
+                      if hasattr(response,"render"):
+                          response.render()
+                  elapsed=(time.perf_counter()-started)*1000
+                  sql_ms=sum(float(q.get("time") or 0)*1000 for q in captured.captured_queries)
+                  print("AUDIT_PAGE", json.dumps({
+                      "page":label,
+                      "path":path,
+                      "status":getattr(response,"status_code",None),
+                      "elapsed_ms":round(elapsed,1),
+                      "queries":len(captured),
+                      "sql_ms":round(sql_ms,1),
+                      "html_kb":round(len(getattr(response,"content",b""))/1024,1),
+                  }, ensure_ascii=False, sort_keys=True))
+              except Exception as exc:
+                  print("AUDIT_PAGE_FAIL", json.dumps({
+                      "page":label,
+                      "path":path,
+                      "type":type(exc).__name__,
+                      "message":str(exc)[:500],
+                  }, ensure_ascii=False))
+          PY
+          echo "AUDIT_DB_AND_STATE_END"
+
+          echo "AUDIT_RESOURCE_BEGIN"
+          df -h "$app_path" | tail -n 1 || true
+          du -sh "$app_path" ../public_static ../tmp 2>/dev/null || true
+          ps -eo pid,etimes,pcpu,pmem,comm,args --sort=-pcpu | head -n 25 || true
+          echo "AUDIT_RESOURCE_END"
+
+          echo "AUDIT_RECENT_ERRORS_BEGIN"
+          roots=("$(dirname "$app_path")" "$HOME")
+          seen=""
+          for root in "${roots[@]}"; do
+            while IFS= read -r file; do
+              case "$seen" in *"|$file|"*) continue;; esac
+              seen="$seen|$file|"
+              out="$(tail -n 1500 "$file" 2>/dev/null | grep -E -B 5 -A 20 'Traceback \(most recent call last\)|Internal Server Error|OperationalError|ERROR|CRITICAL' | tail -n 120 || true)"
+              if [[ -n "$out" ]]; then
+                echo "AUDIT_LOG_FILE $file"
+                printf '%s\n' "$out"
+              fi
+            done < <(
+              find "$root" -maxdepth 5 -type f \
+                \( -name '*.log' -o -name 'error_log' -o -name 'stderr.log' -o -name 'passenger*.log' -o -name '*error*.log' \) \
+                -mtime -2 -size +0c 2>/dev/null | sort
+            )
+          done
+          echo "AUDIT_RECENT_ERRORS_END"
+          SH
+
+      - name: Measure public delivery
+        run: |
+          set -Eeuo pipefail
+          base="https://service2.aqualine22.ru"
+          urls=(
+            "/"
+            "/static/assets/css/style.css?v=18"
+            "/static/assets/css/base-shell.css?v=2"
+            "/static/assets/js/base-shell-pre.js?v=1"
+            "/static/assets/js/base-shell-post-a.js?v=1"
+            "/static/assets/js/base-shell-post-b.js?v=1"
+            "/sw.js"
+          )
+          for path in "${urls[@]}"; do
+            echo "AUDIT_HTTP_URL $path"
+            curl --compressed -sS -o /dev/null \
+              --connect-timeout 10 --max-time 30 \
+              -w 'AUDIT_HTTP code=%{http_code} dns=%{time_namelookup} connect=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total} bytes=%{size_download}\n' \
+              "$base$path"
+          done
