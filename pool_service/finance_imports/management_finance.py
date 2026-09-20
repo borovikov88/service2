@@ -295,6 +295,122 @@ def cashflow_operating_monthly_summary(organization, first_month, last_month):
     }
 
 
+def cashflow_overview_summary(organization, first_month, last_month):
+    """Return owner-overview cash-flow aggregates without article drilldown."""
+    first_month = _month_start(first_month)
+    last_month = _month_start(last_month)
+    if first_month > last_month:
+        raise ValueError("Начальный месяц не может быть позже конечного.")
+
+    states = _confirmed_cashflow_states(organization, first_month, last_month)
+    state_by_month = {item.period_month: item for item in states}
+    requested_months = _month_sequence(first_month, last_month)
+    months = {
+        month: _new_month(month, has_data=month in state_by_month)
+        for month in requested_months
+    }
+    totals = _empty_money()
+    flow_totals = {flow: _empty_money() for flow in MANAGEMENT_FLOW_TYPES}
+    external_flow_totals = {
+        flow: _empty_money() for flow in EXTERNAL_FLOW_TYPES
+    }
+    allocation_totals = {
+        ALLOCATION_EXTERNAL: _empty_money(),
+        ALLOCATION_INTERNAL: _empty_money(),
+        ALLOCATION_NON_EXTERNAL: _empty_money(),
+    }
+
+    mappings = _mapping_index(organization)
+    classifications = {
+        key: _classification(mapping) for key, mapping in mappings.items()
+    }
+    unclassified_articles = set()
+    has_rows = False
+
+    rows = (
+        _confirmed_cashflow_queryset(organization, first_month, last_month)
+        .order_by()
+        .values("period_month", "normalized_article_name")
+        .annotate(receipts=Sum("receipts"), payments=Sum("payments"))
+    )
+    for row in rows:
+        has_rows = True
+        article_name = row["normalized_article_name"]
+        classification = classifications.get(article_name)
+        if classification is None:
+            classification = _classification(None)
+            classifications[article_name] = classification
+
+        receipts = row["receipts"] if row["receipts"] is not None else ZERO
+        payments = row["payments"] if row["payments"] is not None else ZERO
+        month = months[row["period_month"]]
+
+        _add_money(totals, receipts, payments)
+        _add_money(month["totals"], receipts, payments)
+        _add_money(flow_totals[classification["flow_type"]], receipts, payments)
+        _add_money(
+            month["flow_totals"][classification["flow_type"]],
+            receipts,
+            payments,
+        )
+        _add_money(
+            allocation_totals[classification["allocation"]],
+            receipts,
+            payments,
+        )
+        _add_money(
+            month["allocation_totals"][classification["allocation"]],
+            receipts,
+            payments,
+        )
+        if (
+            classification["allocation"] == ALLOCATION_EXTERNAL
+            and classification["flow_type"] in EXTERNAL_FLOW_TYPES
+        ):
+            _add_money(
+                external_flow_totals[classification["flow_type"]],
+                receipts,
+                payments,
+            )
+            _add_money(
+                month["external_flow_totals"][classification["flow_type"]],
+                receipts,
+                payments,
+            )
+        if classification["flow_type"] == CashFlowArticleMapping.FLOW_UNCLASSIFIED:
+            unclassified_articles.add(article_name)
+
+    management_totals = _presentation_totals(
+        flow_totals, external_flow_totals, allocation_totals
+    )
+    return {
+        "period_first": first_month,
+        "period_last": last_month,
+        "totals": _copy_money(totals),
+        **management_totals,
+        "monthly": [_present_month(months[month]) for month in requested_months],
+        "unclassified_article_count": len(unclassified_articles),
+        "has_rows": has_rows,
+        "has_active_months": bool(states),
+        "active_months": list(state_by_month),
+        "missing_months": [
+            month for month in requested_months if month not in state_by_month
+        ],
+        "data_through": max(state_by_month, default=None),
+        "last_updated": max((state.updated_at for state in states), default=None),
+        "active_versions": [
+            {
+                "period_month": state.period_month,
+                "report_type": OneCImportBatch.TYPE_CASHFLOW,
+                "batch_id": str(state.active_batch_id),
+                "confirmed_at": state.active_batch.confirmed_at,
+                "source_type": state.active_batch.source_type,
+            }
+            for state in states
+        ],
+    }
+
+
 def _safe_cashflow_source_display(value):
     """Return only a clean human display string from a stored source field.
 
