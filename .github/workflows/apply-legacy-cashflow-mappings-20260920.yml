@@ -1,0 +1,105 @@
+name: Apply legacy confirmed cashflow mappings
+
+on:
+  push:
+    branches:
+      - ops/apply-legacy-cashflow-mappings-20260920
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_ops
+          chmod 600 ~/.ssh/service2_ops
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Apply legacy owner-confirmed mappings
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+          EXPECTED_PROD_SHA: "3dd0244ded667c86694e410ed8545cb566bf2a66"
+        run: |
+          set -euo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          ssh -i ~/.ssh/service2_ops -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash -s -- '$DEPLOY_APP_PATH' '$EXPECTED_PROD_SHA'" <<'REMOTE'
+          set -euo pipefail
+          app_path="$1"
+          expected_sha="$2"
+          cd "$app_path"
+          actual_sha="$(git rev-parse HEAD)"
+          test "$actual_sha" = "$expected_sha"
+          ../venv/bin/python manage.py shell <<'PY'
+          from datetime import date
+          from django.db import transaction
+          from pool_service.models import Organization, OrganizationAccess, CashFlowArticleMapping
+          from pool_service.finance_imports.cashflow_dashboard import cashflow_dashboard_data
+          from pool_service.services.cashflow_classification import save_explicit_cashflow_mapping
+
+          organization = Organization.objects.get(pk=1)
+          access = (
+              OrganizationAccess.objects.filter(
+                  organization=organization,
+                  role__in=["owner", "admin"],
+                  user__is_active=True,
+              )
+              .select_related("user")
+              .order_by("id")
+              .first()
+          )
+          if access is None:
+              raise SystemExit("No owner/admin actor")
+          actor = access.user
+
+          specs = {
+              "Аренда инструмента": ("Аренда инструмента", "operating", False),
+              "Возмещение по претензиям и компенсации": ("Претензии и компенсации", "operating", False),
+              "Командировки": ("Командировки", "operating", False),
+              "Перечисление денежных средств на другой счет": ("Внутренние перемещения", "internal", False),
+          }
+
+          data = cashflow_dashboard_data(
+              organization,
+              date(2025, 1, 1),
+              date(2026, 9, 1),
+          )
+          active = {item["article_raw"]: item for item in data["articles"]}
+          missing = sorted(set(specs) - set(active))
+          if missing:
+              raise SystemExit(f"Active articles missing: {missing}")
+
+          with transaction.atomic():
+              for article_name, (category, flow_type, is_dividend) in specs.items():
+                  item = active[article_name]
+                  save_explicit_cashflow_mapping(
+                      organization=organization,
+                      article_name=item["article_raw"],
+                      expected_normalized_article_name=item["normalized_article_name"],
+                      values={
+                          "management_category": category,
+                          "flow_type": flow_type,
+                          "classification_status": CashFlowArticleMapping.CLASS_CONFIRMED,
+                          "is_dividend": is_dividend,
+                          "comment": "Подтверждено владельцем при настройке управленческого ДДС 20.09.2026.",
+                      },
+                      user=actor,
+                  )
+
+          print(f"LEGACY_MAPPINGS_APPLIED total={len(specs)}")
+          PY
+          REMOTE
