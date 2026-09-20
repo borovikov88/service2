@@ -182,5 +182,24 @@ jobs:
               }
 
           print("COMP_RESULT", json.dumps(result, ensure_ascii=False, sort_keys=True))
+          monthly_output = {}
+          for owner in ("Александр", "Юрий"):
+              monthly_output[owner] = []
+              for year, count in ((2025, 12), (2026, 8)):
+                  for month in range(1, count + 1):
+                      key = date(year, month, 1).isoformat()
+                      salary_paid = Decimal(
+                          salary[owner]["months"].get(key, {}).get("paid", "0")
+                      )
+                      dividend_paid = Decimal(
+                          dividends[owner].get(key, {}).get("payments", "0")
+                      )
+                      monthly_output[owner].append({
+                          "month": key,
+                          "salary_paid": str(salary_paid),
+                          "dividends_paid": str(dividend_paid),
+                          "total_received": str(salary_paid + dividend_paid),
+                      })
+          print("COMP_MONTHLY", json.dumps(monthly_output, ensure_ascii=False, sort_keys=True))
           PY
           REMOTE
