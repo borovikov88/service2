@@ -19,7 +19,7 @@
   <meta name="application-name" content="{{ brand_name }}" />
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" />
   <link href="{% static 'assets/css/style.css' %}?v=18" rel="stylesheet" />
-  <link href="{% static 'assets/css/base-shell.css' %}?v=2" rel="stylesheet" />
+  <link href="{% static 'assets/css/base-shell.css' %}?v=3" rel="stylesheet" />
 
   {% if allow_indexing %}
   <!-- Yandex.Metrika counter -->
@@ -169,20 +169,35 @@
     <div class="container">
       <div class="desktop-topbar d-none d-lg-flex align-items-center justify-content-between gap-3">
         <div class="desktop-topbar__section">
-          <a href="{{ home_url|default:'/pools/' }}" class="desktop-topbar__home" aria-label="Главная"><i class="bi bi-house"></i></a>
-          <i class="bi bi-chevron-right text-muted small"></i>
-          <span>
-            {% if active_tab == 'crm' %}CRM
-            {% elif active_tab == 'readings' %}Календарь
-            {% elif active_tab == 'pools' %}Объекты
-            {% elif active_tab == 'clients' %}Клиенты
-            {% elif active_tab == 'finance' %}Финансы
-            {% elif active_tab == 'users' %}Пользователи
-            {% elif active_tab == 'development' %}Разработка
-            {% elif active_tab == 'billing_admin' %}Продления
-            {% elif active_tab == 'profile' %}Профиль
-            {% else %}{{ brand_name }}{% endif %}
-          </span>
+          <button type="button" class="desktop-topbar__back" data-history-back aria-label="Назад" title="Назад">
+            <i class="bi bi-arrow-left"></i><span>Назад</span>
+          </button>
+          <a href="{{ home_url|default:'/pools/' }}" class="desktop-topbar__home" aria-label="Главная" title="Главная"><i class="bi bi-house"></i></a>
+          <div class="desktop-topbar__breadcrumbs" aria-label="Хлебные крошки">
+            {% if topbar_breadcrumbs %}
+              {% for crumb in topbar_breadcrumbs %}
+                {% if not forloop.first %}<i class="bi bi-chevron-right desktop-topbar__crumb-separator" aria-hidden="true"></i>{% endif %}
+                {% if crumb.url %}
+                  <a href="{{ crumb.url }}" class="desktop-topbar__crumb">{{ crumb.label }}</a>
+                {% else %}
+                  <span class="desktop-topbar__crumb desktop-topbar__crumb--current" aria-current="page">{{ crumb.label }}</span>
+                {% endif %}
+              {% endfor %}
+            {% else %}
+              <span class="desktop-topbar__crumb desktop-topbar__crumb--current">
+                {% if active_tab == 'crm' %}CRM
+                {% elif active_tab == 'readings' %}Календарь
+                {% elif active_tab == 'pools' %}Объекты
+                {% elif active_tab == 'clients' %}Клиенты
+                {% elif active_tab == 'finance' %}Финансы
+                {% elif active_tab == 'users' %}Пользователи
+                {% elif active_tab == 'development' %}Разработка
+                {% elif active_tab == 'billing_admin' %}Продления
+                {% elif active_tab == 'profile' %}Профиль
+                {% else %}{{ brand_name }}{% endif %}
+              </span>
+            {% endif %}
+          </div>
         </div>
         <div class="d-flex align-items-center gap-2">
           {% if show_add_button and add_url and not page_action_label %}
@@ -725,6 +740,11 @@
   
   <script>
     document.addEventListener("DOMContentLoaded", function () {
+      document.querySelectorAll("[data-history-back]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          window.history.back();
+        });
+      });
       document.querySelectorAll(".toast").forEach(function (el) {
         const toast = new bootstrap.Toast(el, { delay: 4000 });
         toast.show();
