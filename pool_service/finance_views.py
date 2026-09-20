@@ -84,6 +84,7 @@ from pool_service.finance_imports.payroll_dashboard import (
 )
 from pool_service.finance_imports.payroll_plan import (
     PayrollPlanSyncError,
+    current_payroll_plan_date,
     payroll_compensation_dashboard_data,
     refresh_payroll_plan_snapshot,
 )
@@ -3535,7 +3536,7 @@ def finance_payroll_dashboard(request):
     accrual_summary = accrual_dashboard_data(organization, period_from, period_to)
     compensation = (
         payroll_compensation_dashboard_data(
-            organization, timezone.localdate().replace(day=1)
+            organization, current_payroll_plan_date().replace(day=1)
         )
         if show_personal
         else None
@@ -3565,7 +3566,7 @@ def finance_payroll_plan_refresh(request):
         snapshot, created = refresh_payroll_plan_snapshot(
             organization,
             request.user,
-            as_of=timezone.localdate(),
+            as_of=current_payroll_plan_date(),
         )
     except (PayrollPlanSyncError, ValidationError) as exc:
         messages.error(request, str(exc))
