@@ -146,8 +146,10 @@ from pool_service.services.finance import (
     can_access_cash,
     can_access_finance,
     can_access_finance_data,
+    can_access_finance_operations,
     can_access_finance_overview,
     can_access_finance_section,
+    can_access_management_finance,
     can_access_my_finances,
     can_close_finance_period,
     can_confirm_accountable_issue,
@@ -862,19 +864,36 @@ def _render_cash_dashboard(request, section):
 def finance_dashboard(request):
     organization, denied = _capability_guard(
         request, can_access_finance_section,
-        denied_message="Недостаточно прав для раздела Финансы.",
+        denied_message="Недостаточно прав для финансовых разделов.",
     )
     if denied:
         return denied
-    if can_access_finance_overview(request.user, organization):
-        return redirect("finance_overview")
+    if can_access_management_finance(request.user, organization):
+        if can_access_finance_overview(request.user, organization):
+            return redirect("finance_overview")
+        if can_access_finance_data(request.user, organization):
+            return redirect("finance_data")
+        if can_view_cashflow(request.user, organization):
+            return redirect("finance_onec_cashflow_dashboard")
+    if can_access_finance_operations(request.user, organization):
+        return redirect("finance_operations")
+    return HttpResponseForbidden("Недостаточно прав для финансовых разделов.")
+
+
+@login_required
+def finance_operations(request):
+    organization, denied = _capability_guard(
+        request,
+        can_access_finance_operations,
+        denied_message="Недостаточно прав для финансовых операций.",
+    )
+    if denied:
+        return denied
+    if can_access_cash(request.user, organization):
+        return redirect("finance_kkm_cash_dashboard")
     if can_access_my_finances(request.user, organization):
         return redirect("finance_my")
-    if can_access_finance_data(request.user, organization):
-        return redirect("finance_data")
-    if can_view_cashflow(request.user, organization):
-        return redirect("finance_onec_cashflow_dashboard")
-    return HttpResponseForbidden("Недостаточно прав для раздела Финансы.")
+    return HttpResponseForbidden("Недостаточно прав для финансовых операций.")
 
 
 @login_required
