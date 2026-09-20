@@ -22,6 +22,7 @@ from pool_service.finance_imports.profit_dashboard import (
     MONTH_SHORT_NAMES,
     add_months,
     comparison_period_label,
+    monthly_gross_profit_series,
     monthly_profit_summary,
 )
 from pool_service.models import OneCImportBatch, OneCReportPeriodState
@@ -438,10 +439,10 @@ def _seasonality(organization, today):
     current_months = month_sequence(current_first, current_last)
     previous_months = month_sequence(previous_first, previous_last)
 
-    current_profit = monthly_profit_summary(
+    current_profit = monthly_gross_profit_series(
         organization, current_first, current_last
     )
-    previous_profit = monthly_profit_summary(
+    previous_profit = monthly_gross_profit_series(
         organization, previous_first, previous_last
     )
     current_profit_state = _source_state(

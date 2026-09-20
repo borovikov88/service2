@@ -248,33 +248,30 @@ def cashflow_operating_monthly_summary(organization, first_month, last_month):
     state_by_month = {item.period_month: item for item in states}
     requested_months = _month_sequence(first_month, last_month)
     mappings = _mapping_index(organization)
-    classifications = {
-        key: _classification(mapping) for key, mapping in mappings.items()
-    }
+    operating_names = [
+        key
+        for key, mapping in mappings.items()
+        if (
+            (classification := _classification(mapping))["allocation"]
+            == ALLOCATION_EXTERNAL
+            and classification["flow_type"]
+            == CashFlowArticleMapping.FLOW_OPERATING
+        )
+    ]
     net_by_month = {month: ZERO for month in requested_months}
 
-    rows = (
-        _confirmed_cashflow_queryset(organization, first_month, last_month)
-        .order_by()
-        .values("period_month", "normalized_article_name")
-        .annotate(receipts=Sum("receipts"), payments=Sum("payments"))
-    )
-    for row in rows:
-        article_name = row["normalized_article_name"]
-        classification = classifications.get(article_name)
-        if classification is None:
-            classification = _classification(None)
-            classifications[article_name] = classification
-        if (
-            classification["allocation"] != ALLOCATION_EXTERNAL
-            or classification["flow_type"] != CashFlowArticleMapping.FLOW_OPERATING
-        ):
-            continue
-        receipts = row["receipts"] if row["receipts"] is not None else ZERO
-        payments = row["payments"] if row["payments"] is not None else ZERO
-        net_by_month[row["period_month"]] = (
-            net_by_month.get(row["period_month"], ZERO) + receipts - payments
+    if operating_names:
+        rows = (
+            _confirmed_cashflow_queryset(organization, first_month, last_month)
+            .filter(normalized_article_name__in=operating_names)
+            .order_by()
+            .values("period_month")
+            .annotate(receipts=Sum("receipts"), payments=Sum("payments"))
         )
+        for row in rows:
+            receipts = row["receipts"] if row["receipts"] is not None else ZERO
+            payments = row["payments"] if row["payments"] is not None else ZERO
+            net_by_month[row["period_month"]] = receipts - payments
 
     return {
         "states": state_by_month,

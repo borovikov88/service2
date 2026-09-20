@@ -5,6 +5,7 @@ from decimal import Decimal
 import re
 from uuid import UUID
 
+from django.db.models import Sum
 from django.utils import timezone
 
 from pool_service.finance_imports.monthly_profit_parser import classify_nomenclature_type
@@ -179,6 +180,52 @@ def comparison(current, previous):
         result[key] = {"absolute": absolute, "percent": percent}
     return result
 
+
+def monthly_gross_profit_series(organization, first_month, last_month):
+    """Return monthly analytical gross profit without materializing sale rows.
+
+    The query groups by the same fields used by apply_period_analytics so
+    nomenclature classification stays in the existing Python helper instead of
+    being reimplemented in database-specific SQL.
+    """
+    grouped = (
+        OneCMonthlyProfit.objects.active_for(organization)
+        .filter(period_month__range=(first_month, last_month))
+        .order_by()
+        .values("period_month", "nomenclature_type", "cost_source")
+        .annotate(
+            source_gross_profit=Sum("gross_profit"),
+            analytical_gross_profit=Sum("analytical_gross_profit"),
+        )
+    )
+    months = [
+        add_months(first_month, month_index)
+        for month_index in range(
+            (last_month.year - first_month.year) * 12
+            + last_month.month - first_month.month + 1
+        )
+    ]
+    gross_profit_by_month = {month: Decimal("0") for month in months}
+    for item in grouped:
+        cost_source = item["cost_source"]
+        use_stored_calculation = (
+            cost_source == OneCMonthlyProfit.COST_SOURCE_CALCULATED
+            and classify_nomenclature_type(item["nomenclature_type"]) == "goods"
+        )
+        if cost_source == OneCMonthlyProfit.COST_SOURCE_UNDEFINED:
+            value = Decimal("0")
+        elif use_stored_calculation:
+            value = item["analytical_gross_profit"] or Decimal("0")
+        else:
+            value = item["source_gross_profit"] or Decimal("0")
+        gross_profit_by_month[item["period_month"]] += value
+
+    return {
+        "monthly": [
+            {"month": month, "gross_profit": gross_profit_by_month[month]}
+            for month in months
+        ],
+    }
 
 def monthly_profit_summary(organization, first_month, last_month):
     """Return active import-time analytics without building detail breakdowns."""
