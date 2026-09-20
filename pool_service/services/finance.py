@@ -136,6 +136,14 @@ def can_manage_employee_mapping(user, organization):
     return _has_management_finance_role(user, organization)
 
 
+def can_view_employee_hr(user, organization):
+    if not user or not user.is_authenticated or not organization:
+        return False
+    if user.is_superuser:
+        return True
+    return user.has_perm("pool_service.view_employee_hr")
+
+
 def can_view_gross_profit(user, organization):
     """Semantic analytics capability; effective access remains unchanged."""
     return can_manage_finance(user, organization)
