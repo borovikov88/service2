@@ -2220,6 +2220,9 @@ class Employee(models.Model):
 
     class Meta:
         ordering = ["display_name", "id"]
+        permissions = [
+            ("view_employee_hr", "Can view employee HR records"),
+        ]
         indexes = [
             models.Index(fields=["organization", "is_active"], name="employee_org_active_idx"),
         ]
