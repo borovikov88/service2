@@ -127,7 +127,7 @@ class EmployeeCompensationMonthTests(TestCase):
         self.assertContains(response, "История зарплаты по месяцам")
         self.assertContains(response, "Компенсация транспорта")
         self.assertContains(response, "Удержания")
-        self.assertContains(response, "80 500")
+        self.assertEqual(response.context["salary"]["total"], Decimal("80500"))
         self.assertContains(response, "2 дн.")
 
     def test_monthly_components_can_be_saved_and_are_audited(self):
