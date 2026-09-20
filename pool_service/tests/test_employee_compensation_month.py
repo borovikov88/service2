@@ -258,6 +258,43 @@ class EmployeeCompensationMonthTests(TestCase):
         self.assertIn("note", audit.changed_fields)
         self.assertNotIn("percent_amount", audit.changed_fields)
 
+    @patch("pool_service.finance_views.current_payroll_plan_date", return_value=date(2026, 9, 20))
+    def test_posted_month_cannot_backdate_current_compensation(self, _date):
+        self.client.force_login(self.owner)
+
+        response = self.client.post(
+            reverse(
+                "finance_payroll_employee_compensation_update",
+                args=[self.employee.pk],
+            ),
+            {
+                "period_month": "2026-08",
+                "percent_amount": "1000",
+                "bonus_amount": "2000",
+                "extra_days_count": "0",
+                "extra_days_amount": "0",
+                "transport_compensation_amount": "0",
+                "deduction_amount": "0",
+                "note": "Текущий месяц",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(
+            EmployeeCompensationMonth.objects.filter(
+                organization=self.organization,
+                employee=self.employee,
+                period_month=date(2026, 9, 1),
+            ).exists()
+        )
+        self.assertFalse(
+            EmployeeCompensationMonth.objects.filter(
+                organization=self.organization,
+                employee=self.employee,
+                period_month=date(2026, 8, 1),
+            ).exists()
+        )
+
     def test_negative_components_are_rejected(self):
         self.client.force_login(self.owner)
 
