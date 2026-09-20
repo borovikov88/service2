@@ -176,44 +176,71 @@ def can_access_finance_data(user, organization):
     ))
 
 
-def can_access_finance_section(user, organization):
+def can_access_management_finance(user, organization):
+    """Owner/admin/accountant management-finance workspace."""
+    return _has_management_finance_role(user, organization)
+
+
+def can_access_finance_operations(user, organization):
+    """Operational money workflows: employee finance, cash and transfers."""
     return any((
-        can_access_finance_overview(user, organization),
         can_access_my_finances(user, organization),
+        can_access_cash(user, organization),
+    ))
+
+
+def can_access_finance_section(user, organization):
+    """Backward-compatible umbrella access for all finance-related routes."""
+    return any((
+        can_access_management_finance(user, organization),
+        can_access_finance_operations(user, organization),
         can_access_finance_data(user, organization),
         can_view_cashflow(user, organization),
         can_import_cashflow(user, organization),
     ))
 
 
-def finance_navigation(user, organization, *, current_route=""):
-    """Return the shared, permission-filtered Finance navigation model."""
+def _finance_nav_item(label, route_name, active_routes=(), query_string=""):
+    routes = (route_name, *active_routes)
+    url = reverse(route_name)
+    if query_string:
+        url = f"{url}?{query_string}"
+    return {
+        "label": label,
+        "route_name": route_name,
+        "url": url,
+        "active": False,
+        "active_routes": routes,
+    }
 
-    def item(label, route_name, active_routes=(), query_string=""):
-        routes = (route_name, *active_routes)
-        url = reverse(route_name)
-        if query_string:
-            url = f"{url}?{query_string}"
-        return {
-            "label": label,
-            "route_name": route_name,
-            "url": url,
-            "active": current_route in routes,
-        }
 
+def _mark_finance_navigation_active(groups, current_route):
+    result = []
+    for group in groups:
+        items = []
+        for item in group["items"]:
+            item = dict(item)
+            item["active"] = current_route in item.pop("active_routes", ())
+            items.append(item)
+        result.append({**group, "items": items})
+    return result
+
+
+def management_finance_navigation(user, organization, *, current_route=""):
+    """Management finance only: analytics, FOT and 1C source data."""
     analytics = []
     if can_access_finance_overview(user, organization):
-        analytics.append(item("Обзор", "finance_overview"))
+        analytics.append(_finance_nav_item("Обзор", "finance_overview"))
     if can_view_gross_profit(user, organization):
-        analytics.append(item(
+        analytics.append(_finance_nav_item(
             "Валовая прибыль",
             "finance_onec_profit_dashboard",
             query_string="period=current_month",
         ))
     if can_view_cashflow(user, organization):
-        analytics.append(item("ДДС", "finance_onec_cashflow_dashboard"))
+        analytics.append(_finance_nav_item("ДДС", "finance_onec_cashflow_dashboard"))
     if can_view_payroll_summary(user, organization):
-        analytics.append(item(
+        analytics.append(_finance_nav_item(
             "Фонд оплаты труда",
             "finance_payroll_dashboard",
             (
@@ -224,46 +251,14 @@ def finance_navigation(user, organization, *, current_route=""):
             ),
         ))
     if can_view_cost_control(user, organization):
-        analytics.append(item("Контроль себестоимости", "finance_onec_cost_control"))
-
-    operations = []
-    if can_access_my_finances(user, organization):
-        operations.append(item(
-            "Мои финансы",
-            "finance_my",
-            (
-                "finance_transaction_create", "finance_transaction_confirm",
-                "finance_transaction_review", "finance_transaction_void",
-                "finance_employee_detail", "finance_income_create",
-                "finance_income_edit", "finance_income_delete",
-                "finance_expense_create", "finance_expense_detail",
-                "finance_expense_edit", "finance_expense_delete",
-                "finance_expense_review", "finance_report", "finance_report_export",
-            ),
+        analytics.append(_finance_nav_item(
+            "Контроль себестоимости",
+            "finance_onec_cost_control",
         ))
-    if can_access_cash(user, organization):
-        operations.append(item(
-            "Касса ККМ", "finance_kkm_cash_dashboard",
-            (
-                "finance_cash_dashboard", "finance_cash_income_create",
-                "finance_cash_transfer_create", "finance_cash_accountable_issue_create",
-                "finance_accountable_return_create", "finance_cash_operation_detail",
-                "finance_cash_operation_edit", "finance_cash_operation_review",
-            ),
-        ))
-        operations.append(item(
-            "Перечисления", "finance_card_transfer_dashboard",
-            (
-                "finance_card_transfer_create", "finance_card_transfer_detail",
-                "finance_card_transfer_review", "finance_card_transfer_attachment_download",
-            ),
-        ))
-    if can_manage_cash(user, organization):
-        operations.append(item("Касса организации", "finance_company_cash_dashboard"))
 
     data = []
     if can_access_finance_data(user, organization):
-        data.append(item(
+        data.append(_finance_nav_item(
             "Данные 1С", "finance_data",
             (
                 "finance_onec_import_list", "finance_onec_monthly_profit_upload",
@@ -279,10 +274,73 @@ def finance_navigation(user, organization, *, current_route=""):
             ),
         ))
 
-    return [
+    return _mark_finance_navigation_active([
         {"key": "analytics", "label": "АНАЛИТИКА", "items": analytics},
-        {"key": "operations", "label": "ОПЕРАЦИИ", "items": operations},
         {"key": "data", "label": "ДАННЫЕ", "items": data},
+    ], current_route)
+
+
+def finance_operations_navigation(user, organization, *, current_route=""):
+    """Operational finance only: employee money, cashboxes and transfers."""
+    operations = []
+    if can_access_my_finances(user, organization):
+        operations.append(_finance_nav_item(
+            "Мои финансы",
+            "finance_my",
+            (
+                "finance_transaction_create", "finance_transaction_confirm",
+                "finance_transaction_review", "finance_transaction_void",
+                "finance_employee_detail", "finance_income_create",
+                "finance_income_edit", "finance_income_delete",
+                "finance_expense_create", "finance_expense_detail",
+                "finance_expense_edit", "finance_expense_delete",
+                "finance_expense_review", "finance_report", "finance_report_export",
+            ),
+        ))
+    if can_access_cash(user, organization):
+        operations.append(_finance_nav_item(
+            "Касса ККМ", "finance_kkm_cash_dashboard",
+            (
+                "finance_cash_dashboard", "finance_cash_income_create",
+                "finance_cash_transfer_create", "finance_cash_accountable_issue_create",
+                "finance_accountable_return_create", "finance_cash_operation_detail",
+                "finance_cash_operation_edit", "finance_cash_operation_review",
+            ),
+        ))
+        operations.append(_finance_nav_item(
+            "Перечисления", "finance_card_transfer_dashboard",
+            (
+                "finance_card_transfer_create", "finance_card_transfer_detail",
+                "finance_card_transfer_review", "finance_card_transfer_attachment_download",
+            ),
+        ))
+    if can_manage_cash(user, organization):
+        operations.append(_finance_nav_item(
+            "Касса организации",
+            "finance_company_cash_dashboard",
+        ))
+
+    return _mark_finance_navigation_active([
+        {"key": "operations", "label": "", "items": operations},
+    ], current_route)
+
+
+def finance_navigation(user, organization, *, current_route=""):
+    """Backward-compatible combined model used by older callers/tests."""
+    management = management_finance_navigation(
+        user, organization, current_route=current_route
+    )
+    operations = finance_operations_navigation(
+        user, organization, current_route=current_route
+    )
+    groups = {
+        group["key"]: group
+        for group in [*management, *operations]
+    }
+    return [
+        groups.get("analytics", {"key": "analytics", "label": "АНАЛИТИКА", "items": []}),
+        groups.get("operations", {"key": "operations", "label": "ОПЕРАЦИИ", "items": []}),
+        groups.get("data", {"key": "data", "label": "ДАННЫЕ", "items": []}),
     ]
 
 
