@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone as dt_timezone
 from decimal import Decimal
 import uuid
 from unittest.mock import patch
@@ -10,6 +10,7 @@ from django.utils import timezone
 
 from pool_service.finance_imports.payroll_plan import (
     PayrollPlanSyncError,
+    current_payroll_plan_date,
     payroll_compensation_dashboard_data,
     refresh_payroll_plan_snapshot,
 )
@@ -29,6 +30,20 @@ CURRENCY_GUID = "22222222-2222-2222-2222-222222222222"
 EMPLOYEE_GUID = "33333333-3333-3333-3333-333333333333"
 TYPE_GUID = "44444444-4444-4444-4444-444444444444"
 OTHER_TYPE_GUID = "55555555-5555-5555-5555-555555555555"
+
+
+class PayrollPlanCalendarTests(TestCase):
+    @patch("pool_service.finance_imports.payroll_plan.calendar_timezone")
+    def test_current_plan_date_uses_1c_business_timezone(self, calendar_timezone_mock):
+        from zoneinfo import ZoneInfo
+
+        calendar_timezone_mock.return_value = ZoneInfo("Asia/Barnaul")
+        utc_time = datetime(2026, 8, 31, 19, 30, tzinfo=dt_timezone.utc)
+
+        self.assertEqual(
+            current_payroll_plan_date(utc_time),
+            date(2026, 9, 1),
+        )
 
 
 class PayrollPlanReaderTests(TestCase):
