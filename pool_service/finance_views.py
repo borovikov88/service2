@@ -3772,6 +3772,7 @@ def finance_payroll_plan_refresh(request):
     organization, denied = _payroll_access(request, can_import_payroll)
     if denied:
         return denied
+    wants_json = request.headers.get("X-Requested-With") == "XMLHttpRequest"
     try:
         snapshot, created = refresh_payroll_plan_snapshot(
             organization,
@@ -3779,8 +3780,12 @@ def finance_payroll_plan_refresh(request):
             as_of=current_payroll_plan_date(),
         )
     except (PayrollPlanSyncError, ValidationError) as exc:
+        if wants_json:
+            return JsonResponse({"ok": False, "error": str(exc)}, status=502)
         messages.error(request, str(exc))
     except PermissionDenied:
+        if wants_json:
+            return JsonResponse({"ok": False, "error": "Недостаточно прав."}, status=403)
         return HttpResponseForbidden("Недостаточно прав для обновления окладов.")
     else:
         message = (
@@ -3788,7 +3793,7 @@ def finance_payroll_plan_refresh(request):
             if created
             else "Оклады из 1С не изменились."
         )
-        if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        if wants_json:
             return JsonResponse({
                 "ok": True,
                 "created": created,
