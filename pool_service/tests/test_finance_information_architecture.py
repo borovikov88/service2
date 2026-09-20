@@ -210,7 +210,7 @@ class FinanceInformationArchitectureTests(TestCase):
         self.assertEqual(set(groups), {"analytics", "operations", "data"})
         self.assertEqual(analytics["Валовая прибыль"], f"{reverse('finance_onec_profit_dashboard')}?period=current_month")
         self.assertEqual(analytics["ДДС"], reverse("finance_onec_cashflow_dashboard"))
-        self.assertEqual(analytics["Фонд оплаты труда"], reverse("finance_payroll_dashboard"))
+        self.assertEqual(analytics["ФОТ"], reverse("finance_payroll_dashboard"))
         self.assertEqual(analytics["Контроль себестоимости"], reverse("finance_onec_cost_control"))
 
     @patch("pool_service.services.finance.can_manage_cash", return_value=False)
@@ -224,8 +224,8 @@ class FinanceInformationArchitectureTests(TestCase):
         labels = {item["label"] for group in navigation for item in group["items"]}
 
         self.assertFalse(groups["analytics"]["items"])
-        self.assertIn("Мои финансы", labels)
-        self.assertIn("Касса ККМ", labels)
+        self.assertIn("Мои операции", labels)
+        self.assertIn("ККМ", labels)
         self.assertIn("Перечисления", labels)
         self.assertNotIn("Касса организации", labels)
 
@@ -263,7 +263,7 @@ class FinanceInformationArchitectureTests(TestCase):
 
         self.assertEqual(
             [item["label"] for item in groups["analytics"]["items"]],
-            ["Фонд оплаты труда"],
+            ["ФОТ"],
         )
         self.assertFalse(groups["data"]["items"])
 
@@ -273,8 +273,8 @@ class FinanceInformationArchitectureTests(TestCase):
         response = self.client.get(reverse("finance_overview"))
 
         for label in (
-            "Валовая прибыль", "ДДС", "Фонд оплаты труда", "Контроль себестоимости",
-            "Мои финансы", "Касса ККМ", "Перечисления", "Данные 1С",
+            "Валовая прибыль", "ДДС", "ФОТ", "Контроль себестоимости",
+            "Мои операции", "ККМ", "Перечисления", "Данные 1С",
         ):
             self.assertContains(response, label)
 
