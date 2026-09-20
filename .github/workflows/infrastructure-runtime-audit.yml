@@ -1,0 +1,148 @@
+name: Service2 infrastructure runtime audit
+
+on:
+  push:
+    branches:
+      - qa/infrastructure-runtime-audit-20260920
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_audit
+          chmod 600 ~/.ssh/service2_audit
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Read-only infrastructure and runtime audit
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+          EXPECTED_PROD_SHA: "ea62a40da730b8d7783a8043e97aff94554d6639"
+        run: |
+          set -euo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          ssh -i ~/.ssh/service2_audit \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash -s -- '$DEPLOY_APP_PATH' '$EXPECTED_PROD_SHA'" <<'REMOTE'
+          set -euo pipefail
+          app_path="$1"
+          expected_sha="$2"
+          cd "$app_path"
+          actual_sha="$(git rev-parse HEAD)"
+          test "$actual_sha" = "$expected_sha"
+          echo "INFRA_HEAD $actual_sha"
+
+          echo "INFRA_FILESYSTEM_BEGIN"
+          df -h "$app_path" | tail -n 1
+          df -i "$app_path" | tail -n 1
+          if command -v quota >/dev/null 2>&1; then
+            echo "INFRA_QUOTA_AVAILABLE yes"
+            quota -s 2>&1 | sed -n '1,20p' || true
+          else
+            echo "INFRA_QUOTA_AVAILABLE no"
+          fi
+          echo "INFRA_FILESYSTEM_END"
+
+          echo "INFRA_HOME_USAGE_BEGIN"
+          timeout 25s du -sk "$HOME"/* 2>/dev/null | sort -n | tail -n 25 | while read -r kb path; do
+            printf 'HOME_ITEM_KB %s %s\n' "$kb" "$(basename "$path")"
+          done || echo "HOME_USAGE_TIMEOUT"
+          echo "INFRA_HOME_USAGE_END"
+
+          echo "INFRA_APP_USAGE_BEGIN"
+          for relative in . public_static media private_media ../var/log ../tmp; do
+            if [[ -e "$relative" ]]; then
+              kb="$(du -sk "$relative" 2>/dev/null | awk '{print $1}' || true)"
+              printf 'APP_ITEM_KB %s %s\n' "${kb:-unknown}" "$relative"
+            fi
+          done
+          echo "INFRA_APP_USAGE_END"
+
+          echo "INFRA_LIMITS_BEGIN"
+          printf 'ULIMIT_NOFILE %s\n' "$(ulimit -n)"
+          printf 'ULIMIT_NPROC %s\n' "$(ulimit -u)"
+          printf 'PASSENGER_WSGI_COUNT %s\n' "$(ps -u "$USER" -o args= | grep -c '[w]sgi-loader.py' || true)"
+          ps -u "$USER" -o pid=,etimes=,pcpu=,pmem=,rss=,comm= | sort -k3 -nr | head -n 15
+          echo "INFRA_LIMITS_END"
+
+          echo "INFRA_RUNTIME_BEGIN"
+          ../venv/bin/python manage.py shell <<'PY'
+          import json
+          import os
+          import stat
+          from pathlib import Path
+          from django.conf import settings
+          from django.db import connection
+
+          with connection.cursor() as cursor:
+              cursor.execute("SELECT 1")
+              db_ok = cursor.fetchone()[0] == 1
+
+          def mode_info(path):
+              p = Path(path)
+              if not p.exists():
+                  return {"exists": False}
+              mode = stat.S_IMODE(p.stat().st_mode)
+              return {
+                  "exists": True,
+                  "is_dir": p.is_dir(),
+                  "mode": oct(mode),
+                  "owner_write": bool(mode & stat.S_IWUSR),
+                  "group_write": bool(mode & stat.S_IWGRP),
+                  "other_write": bool(mode & stat.S_IWOTH),
+              }
+
+          payload = {
+              "db_ok": db_ok,
+              "debug": bool(settings.DEBUG),
+              "secure_ssl_redirect": bool(settings.SECURE_SSL_REDIRECT),
+              "session_cookie_secure": bool(settings.SESSION_COOKIE_SECURE),
+              "csrf_cookie_secure": bool(settings.CSRF_COOKIE_SECURE),
+              "hsts_seconds": int(settings.SECURE_HSTS_SECONDS),
+              "hsts_include_subdomains": bool(settings.SECURE_HSTS_INCLUDE_SUBDOMAINS),
+              "hsts_preload": bool(settings.SECURE_HSTS_PRELOAD),
+              "allowed_hosts_count": len(settings.ALLOWED_HOSTS),
+              "secure_proxy_ssl_header_configured": bool(getattr(settings, "SECURE_PROXY_SSL_HEADER", None)),
+              "advisor_test_mcp_enabled": bool(getattr(settings, "ADVISOR_MCP_TEST_ENABLED", False)),
+              "finance_mcp_enabled": bool(getattr(settings, "ADVISOR_FINANCE_MCP_ENABLED", False)),
+              "private_media": mode_info(settings.PRIVATE_MEDIA_ROOT),
+              "media": mode_info(settings.MEDIA_ROOT),
+              "error_log_dir": mode_info(Path(settings.BASE_DIR).parent / "var" / "log"),
+              "django_error_log_exists": (Path(settings.BASE_DIR).parent / "var" / "log" / "django-request-error.log").exists(),
+          }
+          print("INFRA_RUNTIME", json.dumps(payload, sort_keys=True))
+          PY
+          echo "INFRA_RUNTIME_END"
+
+          echo "INFRA_LOG_SIZES_BEGIN"
+          log_dir="../var/log"
+          if [[ -d "$log_dir" ]]; then
+            find "$log_dir" -maxdepth 1 -type f -printf '%s %f\n' 2>/dev/null | sort -n | tail -n 20 | awk '{printf "LOG_BYTES %s %s\n",$1,$2}'
+          fi
+          echo "INFRA_LOG_SIZES_END"
+          REMOTE
+
+      - name: Public health endpoints
+        run: |
+          set -euo pipefail
+          for path in /health/live/ /health/ready/; do
+            code="$(curl -sS --max-time 20 -o /tmp/health.out -w '%{http_code}' "https://service2.aqualine22.ru$path")"
+            body="$(cat /tmp/health.out)"
+            printf 'PUBLIC_HEALTH %s %s %s\n' "$path" "$code" "$body"
+          done
