@@ -13,6 +13,7 @@ from pool_service.finance_imports.payroll_plan import (
     payroll_compensation_dashboard_data,
     refresh_payroll_plan_snapshot,
 )
+from pool_service.finance_imports.odata_payroll_plan import read_current_plan
 from pool_service.models import (
     Employee,
     EmployeeOneCIdentity,
@@ -28,6 +29,88 @@ CURRENCY_GUID = "22222222-2222-2222-2222-222222222222"
 EMPLOYEE_GUID = "33333333-3333-3333-3333-333333333333"
 TYPE_GUID = "44444444-4444-4444-4444-444444444444"
 OTHER_TYPE_GUID = "55555555-5555-5555-5555-555555555555"
+
+
+class PayrollPlanReaderTests(TestCase):
+    @patch("pool_service.finance_imports.odata_payroll_plan.Reader")
+    def test_reader_uses_latest_effective_plan_and_marks_only_salary(self, reader_cls):
+        reader = reader_cls.return_value
+
+        def pages(entity, options):
+            if entity == "InformationRegister_ПлановыеНачисленияИУдержания_RecordType":
+                return [[
+                    {
+                        "Active": True,
+                        "Period": "2026-01-01T00:00:00",
+                        "Актуальность": True,
+                        "Организация_Key": ORG_GUID,
+                        "Сотрудник_Key": EMPLOYEE_GUID,
+                        "Валюта_Key": CURRENCY_GUID,
+                        "ВидНачисленияУдержания_Key": TYPE_GUID,
+                        "Сумма": "50000.00",
+                    },
+                    {
+                        "Active": True,
+                        "Period": "2026-06-04T00:00:00",
+                        "Актуальность": True,
+                        "Организация_Key": ORG_GUID,
+                        "Сотрудник_Key": EMPLOYEE_GUID,
+                        "Валюта_Key": CURRENCY_GUID,
+                        "ВидНачисленияУдержания_Key": TYPE_GUID,
+                        "Сумма": "60000.00",
+                    },
+                    {
+                        "Active": True,
+                        "Period": "2026-06-04T00:00:00",
+                        "Актуальность": True,
+                        "Организация_Key": ORG_GUID,
+                        "Сотрудник_Key": EMPLOYEE_GUID,
+                        "Валюта_Key": CURRENCY_GUID,
+                        "ВидНачисленияУдержания_Key": OTHER_TYPE_GUID,
+                        "Сумма": "5000.00",
+                    },
+                ]]
+            if entity == "Catalog_Сотрудники":
+                return [[{
+                    "Ref_Key": EMPLOYEE_GUID,
+                    "Description": "Иванов Иван Иванович",
+                    "DeletionMark": False,
+                }]]
+            if entity == "Catalog_ВидыНачисленийИУдержаний":
+                return [[
+                    {
+                        "Ref_Key": TYPE_GUID,
+                        "Description": "Оклад",
+                        "Тип": "Начисление",
+                        "IsFolder": False,
+                        "DeletionMark": False,
+                    },
+                    {
+                        "Ref_Key": OTHER_TYPE_GUID,
+                        "Description": "Доплата",
+                        "Тип": "Начисление",
+                        "IsFolder": False,
+                        "DeletionMark": False,
+                    },
+                ]]
+            raise AssertionError(entity)
+
+        reader.pages_for.side_effect = pages
+        result = read_current_plan(
+            {
+                "ONEC_ODATA_ORGANIZATION_GUIDS": ORG_GUID,
+                "ONEC_ODATA_PAYROLL_CURRENCY_GUID": CURRENCY_GUID,
+            },
+            date(2026, 9, 20),
+        )
+
+        self.assertEqual(result["source_rows"], 3)
+        by_type = {item["accrual_type_name"]: item for item in result["items"]}
+        self.assertEqual(by_type["Оклад"]["amount"], "60000.00")
+        self.assertTrue(by_type["Оклад"]["is_base_salary"])
+        self.assertEqual(by_type["Доплата"]["amount"], "5000.00")
+        self.assertFalse(by_type["Доплата"]["is_base_salary"])
+        reader.check_time.assert_called_once()
 
 
 class PayrollCurrentCompensationTests(TestCase):
