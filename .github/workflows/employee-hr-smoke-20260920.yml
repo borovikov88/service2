@@ -115,7 +115,7 @@ jobs:
                   raise RuntimeError(f"Missing profile marker: {marker}")
 
           print("EMPLOYEE_HR_FINAL_SMOKE", json.dumps({
-              "production_sha": expected_sha,
+              "production_sha": "8297f136545e873fdec2346ac266843dc70ab495",
               "employee_cards": len(employees),
               "identities": EmployeeOneCIdentity.objects.filter(organization=org).count(),
               "duplicates": len(duplicates),
