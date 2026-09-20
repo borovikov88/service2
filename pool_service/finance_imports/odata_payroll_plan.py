@@ -150,7 +150,7 @@ def read_current_plan(config, as_of, *, organization_guids=(), opener=None):
                 raise PayrollError("RESPONSE_LIMIT", "register")
             if type(row.get("Active")) is not bool or type(row.get("Актуальность")) is not bool:
                 raise PayrollError("INVALID_ROW", "register")
-            if not row["Active"] or not row["Актуальность"]:
+            if not row["Active"]:
                 continue
             org = guid(row.get("Организация_Key"))
             if org not in selected:
