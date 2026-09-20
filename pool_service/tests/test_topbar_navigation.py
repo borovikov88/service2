@@ -16,7 +16,7 @@ class FinanceTopbarBreadcrumbBuilderTests(TestCase):
                 "label": "ОПЕРАЦИИ",
                 "items": [
                     {
-                        "label": "Мои финансы",
+                        "label": "Мои операции",
                         "route_name": "finance_my",
                         "url": "/finance/my/",
                         "active": True,
@@ -35,7 +35,7 @@ class FinanceTopbarBreadcrumbBuilderTests(TestCase):
             breadcrumbs,
             [
                 {"label": "Операции", "url": reverse("finance_operations")},
-                {"label": "Мои финансы", "url": "/finance/my/"},
+                {"label": "Мои операции", "url": "/finance/my/"},
                 {"label": "Сотрудник", "url": ""},
             ],
         )
