@@ -7,7 +7,7 @@
   <div class="finance-secondary-header d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4">
     <div>
       <h1 class="h3 mb-1">{{ employee.display_name }}</h1>
-      <div class="text-muted">Кадровая карточка сотрудника</div>
+      <div class="text-muted">Карточка сотрудника: зарплата, ФОТ и кадровые данные</div>
     </div>
     <a class="btn btn-outline-secondary" href="{% url 'finance_payroll_employee_list' %}">К сотрудникам</a>
   </div>
@@ -20,54 +20,130 @@
   </div>
 
   <div class="finance-secondary-card card card-soft p-3 mb-4">
-    <h2 class="h5 mb-3">Трудовые данные</h2>
+    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
+      <div>
+        <h2 class="h5 mb-1">Зарплата текущего месяца · {{ period_month|date:"m.Y" }}</h2>
+        <div class="small text-muted">Оклад — из 1С. Остальные составляющие хранятся помесячно в Service2.</div>
+      </div>
+      {% if can_edit_compensation %}
+        <details>
+          <summary class="btn btn-sm btn-outline-primary">Изменить составляющие</summary>
+          <form method="post" action="{% url 'finance_payroll_employee_compensation_update' employee.id %}" class="card card-soft p-3 mt-2" style="min-width:min(720px,90vw)">
+            {% csrf_token %}
+            <div class="row g-2">
+              <div class="col-sm-4 col-lg-3"><label class="form-label">{{ compensation_form.period_month.label }}</label>{{ compensation_form.period_month }}</div>
+              <div class="col-sm-4 col-lg-3"><label class="form-label">{{ compensation_form.percent_amount.label }}</label>{{ compensation_form.percent_amount }}</div>
+              <div class="col-sm-4 col-lg-3"><label class="form-label">{{ compensation_form.bonus_amount.label }}</label>{{ compensation_form.bonus_amount }}</div>
+              <div class="col-sm-4 col-lg-3"><label class="form-label">{{ compensation_form.extra_days_count.label }}</label>{{ compensation_form.extra_days_count }}</div>
+              <div class="col-sm-4 col-lg-3"><label class="form-label">{{ compensation_form.extra_days_amount.label }}</label>{{ compensation_form.extra_days_amount }}</div>
+              <div class="col-sm-4 col-lg-3"><label class="form-label">{{ compensation_form.transport_compensation_amount.label }}</label>{{ compensation_form.transport_compensation_amount }}</div>
+              <div class="col-sm-4 col-lg-3"><label class="form-label">{{ compensation_form.deduction_amount.label }}</label>{{ compensation_form.deduction_amount }}</div>
+              <div class="col-12"><label class="form-label">{{ compensation_form.note.label }}</label>{{ compensation_form.note }}</div>
+              <div class="col-12"><button class="btn btn-primary" type="submit">Сохранить месяц</button></div>
+            </div>
+          </form>
+        </details>
+      {% endif %}
+    </div>
+
     <div class="row g-3">
-      <div class="col-md-4"><div class="text-muted small">Дата приёма</div><div class="fw-semibold">{{ employee.hired_at|date:"d.m.Y"|default:"не загружена из 1С" }}</div></div>
-      <div class="col-md-4"><div class="text-muted small">Дата увольнения</div><div class="fw-semibold">{{ employee.dismissed_at|date:"d.m.Y"|default:"—" }}</div></div>
-      <div class="col-md-4"><div class="text-muted small">1С identity</div><div class="fw-semibold">{{ identities|length }}</div></div>
+      <div class="col-6 col-lg"><div class="card card-soft p-3 h-100"><div class="text-muted small">Оклад</div><div class="h5 mb-0">{{ salary.base_salary|money }}</div></div></div>
+      <div class="col-6 col-lg"><div class="card card-soft p-3 h-100"><div class="text-muted small">Проценты</div><div class="h5 mb-0">{{ salary.percent_amount|money }}</div></div></div>
+      <div class="col-6 col-lg"><div class="card card-soft p-3 h-100"><div class="text-muted small">Бонусы</div><div class="h5 mb-0">{{ salary.bonus_amount|money }}</div></div></div>
+      <div class="col-6 col-lg"><div class="card card-soft p-3 h-100"><div class="text-muted small">Доп. дни</div><div class="h5 mb-0">{{ salary.extra_days_amount|money }}</div>{% if salary.extra_days_count %}<div class="small text-muted">{{ salary.extra_days_count }} дн.</div>{% endif %}</div></div>
+      <div class="col-6 col-lg"><div class="card card-soft p-3 h-100"><div class="text-muted small">Компенсация транспорта</div><div class="h5 mb-0">{{ salary.transport_compensation_amount|money }}</div></div></div>
+      <div class="col-6 col-lg"><div class="card card-soft p-3 h-100"><div class="text-muted small">Удержания</div><div class="h5 mb-0">− {{ salary.deduction_amount|money }}</div></div></div>
+      <div class="col-12 col-lg"><div class="card card-soft p-3 h-100"><div class="text-muted small">Итого</div><div class="h5 mb-0">{{ salary.total|money }}</div></div></div>
+    </div>
+
+    <div class="small text-muted mt-3">Итого = оклад + проценты + бонусы + доп. дни + компенсация транспорта − удержания.</div>
+
+    {% if plan.items %}
+      <details class="mt-3">
+        <summary class="small text-muted">Источник оклада из 1С</summary>
+        <div class="table-responsive mt-2">
+          <table class="table table-sm align-middle mb-0">
+            <thead><tr><th>Плановое начисление</th><th>Действует с</th><th class="text-end">Сумма</th></tr></thead>
+            <tbody>{% for item in plan.items %}<tr><td>{{ item.accrual_type_name }}{% if item.is_base_salary %} <span class="badge text-bg-light">оклад</span>{% endif %}</td><td>{{ item.source_period|date:"d.m.Y" }}</td><td class="text-end">{{ item.amount|money }}</td></tr>{% endfor %}</tbody>
+          </table>
+        </div>
+      </details>
+    {% endif %}
+  </div>
+
+  <div class="finance-secondary-card card card-soft p-3 mb-4">
+    <h2 class="h5 mb-3">История зарплаты по месяцам</h2>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead>
+          <tr>
+            <th>Месяц</th>
+            <th class="text-end">Оклад</th>
+            <th class="text-end">Проценты</th>
+            <th class="text-end">Бонусы</th>
+            <th class="text-end">Доп. дни</th>
+            <th class="text-end">Транспорт</th>
+            <th class="text-end">Удержания</th>
+            <th class="text-end">Итого</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for row in compensation_history %}
+          <tr>
+            <td>{{ row.period_month|date:"m.Y" }}</td>
+            <td class="text-end">{{ row.base_salary|money }}</td>
+            <td class="text-end">{{ row.percent_amount|money }}</td>
+            <td class="text-end">{{ row.bonus_amount|money }}</td>
+            <td class="text-end">{{ row.extra_days_amount|money }}{% if row.extra_days_count %}<div class="small text-muted">{{ row.extra_days_count }} дн.</div>{% endif %}</td>
+            <td class="text-end">{{ row.transport_compensation_amount|money }}</td>
+            <td class="text-end">{% if row.deduction_amount %}− {{ row.deduction_amount|money }}{% else %}{{ row.deduction_amount|money }}{% endif %}</td>
+            <td class="text-end fw-semibold">{{ row.total|money }}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="8" class="text-muted">История зарплаты пока не сформирована.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
     </div>
   </div>
 
   <div class="finance-secondary-card card card-soft p-3 mb-4">
-    <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
-      <div><h2 class="h5 mb-1">Зарплата текущего месяца · {{ period_month|date:"m.Y" }}</h2><div class="small text-muted">Оклад из 1С; проценты и бонусы будут рассчитываться в Service2.</div></div>
+    <h2 class="h5 mb-3">Фактические начисления и выплаты</h2>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead><tr><th>Месяц</th><th class="text-end">Начислено</th><th class="text-end">Выплачено</th><th class="text-end">Остаток на конец</th></tr></thead>
+        <tbody>
+        {% for row in payroll_history %}
+          <tr><td>{{ row.period_month|date:"m.Y" }}</td><td class="text-end">{{ row.accrued|money }}</td><td class="text-end">{{ row.paid|money }}</td><td class="text-end">{{ row.closing_balance|money }}</td></tr>
+        {% empty %}
+          <tr><td colspan="4" class="text-muted">Фактических данных пока нет.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
     </div>
-    <div class="row g-3 mb-3">
-      <div class="col-sm-6 col-xl-3"><div class="card card-soft p-3 h-100"><div class="text-muted small">Оклад</div><div class="h4 mb-0">{{ plan.base_salary|money }}</div></div></div>
-      <div class="col-sm-6 col-xl-3"><div class="card card-soft p-3 h-100"><div class="text-muted small">Проценты</div><div class="h4 mb-0">—</div></div></div>
-      <div class="col-sm-6 col-xl-3"><div class="card card-soft p-3 h-100"><div class="text-muted small">Бонусы</div><div class="h4 mb-0">—</div></div></div>
-      <div class="col-sm-6 col-xl-3"><div class="card card-soft p-3 h-100"><div class="text-muted small">План сейчас</div><div class="h4 mb-0">{{ plan.base_salary|money }}</div></div></div>
-    </div>
-    {% if plan.items %}
-      <div class="table-responsive">
-        <table class="table table-sm align-middle mb-0">
-          <thead><tr><th>Вид планового начисления 1С</th><th>Действует с</th><th class="text-end">Сумма</th></tr></thead>
-          <tbody>{% for item in plan.items %}<tr><td>{{ item.accrual_type_name }}{% if item.is_base_salary %} <span class="badge text-bg-light">оклад</span>{% endif %}</td><td>{{ item.source_period|date:"d.m.Y" }}</td><td class="text-end">{{ item.amount|money }}</td></tr>{% endfor %}</tbody>
-        </table>
-      </div>
-    {% else %}
-      <div class="text-muted">Плановых начислений за текущий месяц нет.</div>
-    {% endif %}
   </div>
 
   <div class="row g-3 mb-4">
     <div class="col-lg-6">
       <div class="finance-secondary-card card card-soft p-3 h-100">
-        <h2 class="h5 mb-3">Отпуска и отгулы</h2>
-        <div class="text-muted">Источник 1С пока не подключён. Раздел зарезервирован для отпусков, отгулов, больничных и других отсутствий.</div>
+        <h2 class="h5 mb-3">Трудовые данные</h2>
+        <div class="row g-3">
+          <div class="col-md-6"><div class="text-muted small">Дата приёма</div><div class="fw-semibold">{{ employee.hired_at|date:"d.m.Y"|default:"не загружена" }}</div></div>
+          <div class="col-md-6"><div class="text-muted small">Дата увольнения</div><div class="fw-semibold">{{ employee.dismissed_at|date:"d.m.Y"|default:"—" }}</div></div>
+        </div>
       </div>
     </div>
     <div class="col-lg-6">
       <div class="finance-secondary-card card card-soft p-3 h-100">
-        <h2 class="h5 mb-3">Проценты и бонусы</h2>
-        <div class="text-muted">Правила расчёта пока не настроены. Здесь будут храниться схема мотивации, процент от ВП, разовые бонусы и история изменений.</div>
+        <h2 class="h5 mb-3">Отпуска и отгулы</h2>
+        <div class="text-muted">Раздел зарезервирован для отпусков, отгулов, больничных и других отсутствий.</div>
       </div>
     </div>
   </div>
 
-  <div class="finance-secondary-card card card-soft p-3 mb-4">
-    <h2 class="h5 mb-3">Связь с 1С</h2>
-    <div class="table-responsive">
+  <details class="finance-secondary-card card card-soft p-3">
+    <summary class="fw-semibold">Системные данные / связь с 1С</summary>
+    <div class="table-responsive mt-3">
       <table class="table table-sm align-middle mb-0">
         <thead><tr><th>Имя в 1С</th><th>Подразделение</th><th>ID 1С</th><th>Табельный №</th><th>Статус</th></tr></thead>
         <tbody>
@@ -79,22 +155,6 @@
         </tbody>
       </table>
     </div>
-  </div>
-
-  <div class="finance-secondary-card card card-soft p-3">
-    <h2 class="h5 mb-3">ФОТ по месяцам</h2>
-    <div class="table-responsive">
-      <table class="table table-sm align-middle mb-0">
-        <thead><tr><th>Месяц</th><th class="text-end">Начислено</th><th class="text-end">Выплачено</th><th class="text-end">Остаток на конец</th></tr></thead>
-        <tbody>
-        {% for row in history %}
-          <tr><td>{{ row.period_month|date:"m.Y" }}</td><td class="text-end">{{ row.accrued|money }}</td><td class="text-end">{{ row.paid|money }}</td><td class="text-end">{{ row.closing_balance|money }}</td></tr>
-        {% empty %}
-          <tr><td colspan="4" class="text-muted">Истории ФОТ пока нет.</td></tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </div>
+  </details>
 </div>
 {% endblock %}
