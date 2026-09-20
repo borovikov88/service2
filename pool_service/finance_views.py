@@ -4056,12 +4056,7 @@ def finance_payroll_employee_compensation_update(request, employee_id):
         pk=employee_id,
         organization=organization,
     )
-    raw_period = (request.POST.get("period_month") or "").strip()
-    try:
-        period_month = date.fromisoformat(f"{raw_period}-01")
-    except ValueError:
-        messages.error(request, "Укажите корректный месяц зарплаты.")
-        return redirect("finance_payroll_employee_profile", employee_id=employee.pk)
+    period_month = current_payroll_plan_date().replace(day=1)
 
     instance = EmployeeCompensationMonth.objects.filter(
         organization=organization,
@@ -4100,6 +4095,7 @@ def finance_payroll_employee_compensation_update(request, employee_id):
         compensation = form.save(commit=False)
         compensation.organization = organization
         compensation.employee = employee
+        compensation.period_month = period_month
         compensation.updated_by = request.user
         compensation.full_clean()
         compensation.save()
