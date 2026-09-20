@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.db import connection
@@ -268,6 +269,54 @@ class ManagementFinanceServiceTests(TestCase):
         )
         self.assertFalse(status["sources"]["cashflow"]["complete"])
         self.assertIn("2026-02-01", status["missing_months"])
+
+    def test_implicit_status_ignores_future_active_states_but_explicit_range_keeps_them(self):
+        future_month = date(2026, 2, 1)
+        self._activate(
+            self.cashflow_batch,
+            OneCImportBatch.TYPE_CASHFLOW,
+            future_month,
+        )
+        self._row(
+            "Будущий служебный месяц",
+            "0.00",
+            "0.00",
+            number=88,
+            month=future_month,
+        )
+
+        with patch(
+            "pool_service.finance_imports.management_finance.timezone.localdate",
+            return_value=date(2026, 1, 20),
+        ):
+            implicit = management_cashflow_data(self.organization)
+            status = get_finance_data_status(self.organization)
+            explicit = get_cashflow_breakdown(
+                self.organization,
+                "2026-02",
+                "2026-02",
+            )
+
+        self.assertEqual(implicit["period_last"], self.month)
+        self.assertEqual(implicit["data_through"], self.month)
+        self.assertNotIn(future_month, implicit["active_months"])
+        self.assertEqual(
+            status["sources"]["cashflow"]["period"]["to"],
+            "2026-01-01",
+        )
+        self.assertEqual(
+            status["sources"]["cashflow"]["data_through"],
+            "2026-01-01",
+        )
+        self.assertEqual(
+            explicit["period"],
+            {"from": "2026-02-01", "to": "2026-02-01"},
+        )
+        self.assertTrue(explicit["available"])
+        self.assertEqual(
+            explicit["metadata"]["data_through"],
+            "2026-02-01",
+        )
 
     def test_monthly_hierarchy_and_article_chart_share_canonical_buckets(self):
         self._mapping(

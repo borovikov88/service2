@@ -900,7 +900,13 @@ def management_cashflow_data(
         raise ValueError("Начальный месяц не может быть позже конечного.")
     filters = _cashflow_filters(filters)
 
-    states = _confirmed_cashflow_states(organization, first_month, last_month)
+    implicit_range = first_month is None and last_month is None
+    state_last_month = (
+        timezone.localdate().replace(day=1) if implicit_range else last_month
+    )
+    states = _confirmed_cashflow_states(
+        organization, first_month, state_last_month
+    )
     state_by_month = {item.period_month: item for item in states}
     if first_month is None and states:
         first_month = states[0].period_month
@@ -1231,6 +1237,10 @@ def _status_for_report(organization, report_types, first_month=None, last_month=
         states = states.filter(period_month__gte=first_month)
     if last_month is not None:
         states = states.filter(period_month__lte=last_month)
+    elif first_month is None:
+        states = states.filter(
+            period_month__lte=timezone.localdate().replace(day=1)
+        )
     states = list(states.order_by("period_month", "report_type"))
     periods = {item.period_month for item in states}
     # An omitted boundary means "the available reporting span", not an empty
