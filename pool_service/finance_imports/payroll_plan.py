@@ -27,6 +27,7 @@ from pool_service.finance_imports.odata_payroll_drafts import (
 from pool_service.finance_imports.odata_finance_position import calendar_timezone
 from pool_service.models import (
     DataAuditLog,
+    EmployeeCompensationMonth,
     PayrollPlanItem,
     PayrollPlanSnapshot,
 )
@@ -296,11 +297,21 @@ def payroll_compensation_dashboard_data(organization, period_month):
             "base_salary_total": ZERO,
             "percent_total": ZERO,
             "bonus_total": ZERO,
+            "extra_days_total": ZERO,
+            "transport_total": ZERO,
+            "deduction_total": ZERO,
             "total": ZERO,
             "other_plan_total": ZERO,
             "other_plan_items": 0,
         }
 
+    adjustments = {
+        item.employee_id: item
+        for item in EmployeeCompensationMonth.objects.filter(
+            organization=organization,
+            period_month=period_month,
+        )
+    }
     grouped = {}
     other_total = ZERO
     other_items = 0
@@ -308,19 +319,29 @@ def payroll_compensation_dashboard_data(organization, period_month):
         "employee_identity__employee"
     ).order_by("employee_raw_name", "id"):
         identity = item.employee_identity
-        key = identity.pk
+        employee = identity.employee
+        key = ("employee", employee.pk) if employee else ("identity", identity.pk)
         row = grouped.setdefault(
             key,
             {
+                "employee_id": employee.pk if employee else None,
                 "employee_name": (
-                    identity.employee.display_name
-                    if identity.employee_id and identity.employee.display_name
+                    employee.display_name
+                    if employee and employee.display_name
                     else item.employee_raw_name
                 ),
-                "department_name": identity.department_name,
+                "department_name": (
+                    employee.department_name
+                    if employee and employee.department_name
+                    else identity.department_name
+                ),
                 "base_salary": ZERO,
                 "percent_amount": ZERO,
                 "bonus_amount": ZERO,
+                "extra_days_count": ZERO,
+                "extra_days_amount": ZERO,
+                "transport_compensation_amount": ZERO,
+                "deduction_amount": ZERO,
                 "total": ZERO,
             },
         )
@@ -332,22 +353,41 @@ def payroll_compensation_dashboard_data(organization, period_month):
 
     employees = []
     for row in grouped.values():
-        row["total"] = row["base_salary"] + row["percent_amount"] + row["bonus_amount"]
+        adjustment = adjustments.get(row["employee_id"])
+        if adjustment:
+            row["percent_amount"] = adjustment.percent_amount
+            row["bonus_amount"] = adjustment.bonus_amount
+            row["extra_days_count"] = adjustment.extra_days_count
+            row["extra_days_amount"] = adjustment.extra_days_amount
+            row["transport_compensation_amount"] = adjustment.transport_compensation_amount
+            row["deduction_amount"] = adjustment.deduction_amount
+        row["total"] = (
+            row["base_salary"]
+            + row["percent_amount"]
+            + row["bonus_amount"]
+            + row["extra_days_amount"]
+            + row["transport_compensation_amount"]
+            - row["deduction_amount"]
+        )
         employees.append(row)
     employees.sort(key=lambda row: (-row["total"], row["employee_name"].casefold()))
 
-    base_total = sum((row["base_salary"] for row in employees), ZERO)
-    percent_total = sum((row["percent_amount"] for row in employees), ZERO)
-    bonus_total = sum((row["bonus_amount"] for row in employees), ZERO)
+    def summed(field):
+        return sum((row[field] for row in employees), ZERO)
+
     return {
         "period_month": period_month,
         "has_data": True,
         "snapshot": snapshot,
         "employees": employees,
-        "base_salary_total": base_total,
-        "percent_total": percent_total,
-        "bonus_total": bonus_total,
-        "total": base_total + percent_total + bonus_total,
+        "base_salary_total": summed("base_salary"),
+        "percent_total": summed("percent_amount"),
+        "bonus_total": summed("bonus_amount"),
+        "extra_days_total": summed("extra_days_amount"),
+        "transport_total": summed("transport_compensation_amount"),
+        "deduction_total": summed("deduction_amount"),
+        "total": summed("total"),
         "other_plan_total": other_total,
         "other_plan_items": other_items,
     }
+
