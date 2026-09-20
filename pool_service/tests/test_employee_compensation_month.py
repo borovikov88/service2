@@ -166,6 +166,98 @@ class EmployeeCompensationMonthTests(TestCase):
             ).exists()
         )
 
+    def test_payroll_summary_includes_adjustment_for_employee_missing_from_1c_snapshot(self):
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Петров Пётр",
+            department_name="Монтаж",
+        )
+        EmployeeCompensationMonth.objects.create(
+            organization=self.organization,
+            employee=employee,
+            period_month=self.month,
+            bonus_amount=Decimal("7000"),
+            transport_compensation_amount=Decimal("2500"),
+            updated_by=self.owner,
+        )
+
+        data = payroll_compensation_dashboard_data(self.organization, self.month)
+
+        row = next(item for item in data["employees"] if item["employee_id"] == employee.pk)
+        self.assertEqual(row["base_salary"], Decimal("0"))
+        self.assertEqual(row["bonus_amount"], Decimal("7000"))
+        self.assertEqual(row["transport_compensation_amount"], Decimal("2500"))
+        self.assertEqual(row["total"], Decimal("9500"))
+        self.assertEqual(data["total"], Decimal("69500"))
+
+    def test_payroll_summary_uses_service2_components_even_without_1c_snapshot(self):
+        month = date(2026, 10, 1)
+        EmployeeCompensationMonth.objects.create(
+            organization=self.organization,
+            employee=self.employee,
+            period_month=month,
+            bonus_amount=Decimal("8000"),
+            extra_days_amount=Decimal("3000"),
+            deduction_amount=Decimal("1000"),
+            updated_by=self.owner,
+        )
+
+        data = payroll_compensation_dashboard_data(self.organization, month)
+
+        self.assertTrue(data["has_data"])
+        self.assertIsNone(data["snapshot"])
+        self.assertEqual(len(data["employees"]), 1)
+        self.assertEqual(data["employees"][0]["base_salary"], Decimal("0"))
+        self.assertEqual(data["employees"][0]["total"], Decimal("10000"))
+        self.assertEqual(data["total"], Decimal("10000"))
+
+    def test_edit_audit_preserves_previous_month_values(self):
+        compensation = EmployeeCompensationMonth.objects.create(
+            organization=self.organization,
+            employee=self.employee,
+            period_month=self.month,
+            percent_amount=Decimal("10000"),
+            bonus_amount=Decimal("5000"),
+            extra_days_count=Decimal("2"),
+            extra_days_amount=Decimal("4000"),
+            transport_compensation_amount=Decimal("3000"),
+            deduction_amount=Decimal("1500"),
+            note="До изменения",
+            updated_by=self.owner,
+        )
+        self.client.force_login(self.owner)
+
+        response = self.client.post(
+            reverse(
+                "finance_payroll_employee_compensation_update",
+                args=[self.employee.pk],
+            ),
+            {
+                "period_month": "2026-09",
+                "percent_amount": "10000",
+                "bonus_amount": "7000",
+                "extra_days_count": "2",
+                "extra_days_amount": "4000",
+                "transport_compensation_amount": "3000",
+                "deduction_amount": "1500",
+                "note": "После изменения",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        audit = DataAuditLog.objects.get(
+            entity_type="EmployeeCompensationMonth",
+            entity_id=str(compensation.pk),
+            action=DataAuditLog.ACTION_UPDATE,
+        )
+        self.assertEqual(Decimal(audit.before["bonus_amount"]), Decimal("5000"))
+        self.assertEqual(Decimal(audit.after["bonus_amount"]), Decimal("7000"))
+        self.assertEqual(audit.before["note"], "До изменения")
+        self.assertEqual(audit.after["note"], "После изменения")
+        self.assertIn("bonus_amount", audit.changed_fields)
+        self.assertIn("note", audit.changed_fields)
+        self.assertNotIn("percent_amount", audit.changed_fields)
+
     def test_negative_components_are_rejected(self):
         self.client.force_login(self.owner)
 
