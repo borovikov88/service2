@@ -1,3 +1,5 @@
+from django.urls import reverse
+
 from .seo import is_indexable_host
 
 
@@ -134,7 +136,6 @@ def plan_status_context(request):
         return {}
 
     from django.utils import timezone
-    from django.urls import reverse
     from pool_service.models import OrganizationAccess, WebAuthnCredential
     from pool_service.security import (
         has_fresh_password_login,
