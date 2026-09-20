@@ -48,8 +48,10 @@ class ClientShellPerformanceTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'class="desktop-sidebar__group"', count=2)
+        self.assertContains(response, 'class="desktop-sidebar__group"', count=3)
         self.assertContains(response, "Обзор CRM")
+        self.assertContains(response, "Управленческие финансы")
+        self.assertContains(response, ">Операции<", html=False)
         self.assertContains(response, "АНАЛИТИКА")
 
         source = get_template("pool_service/base.html").template.source
