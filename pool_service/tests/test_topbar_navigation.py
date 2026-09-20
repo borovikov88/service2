@@ -115,7 +115,7 @@ class FinanceTopbarRenderedTests(TestCase):
         )
         self.assertContains(
             response,
-            f'href="{reverse("finance_my")}" class="desktop-topbar__crumb">Мои финансы</a>',
+            f'href="{reverse("finance_my")}" class="desktop-topbar__crumb">Мои операции</a>',
             html=False,
         )
         self.assertContains(
