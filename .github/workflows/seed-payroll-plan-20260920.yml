@@ -106,5 +106,24 @@ jobs:
               f"other_plan_items={dashboard['other_plan_items']}",
               f"other_plan_total={dashboard['other_plan_total']}",
           )
+
+          from django.test import Client
+          from django.urls import reverse
+          client = Client(HTTP_HOST="service2.aqualine22.ru")
+          client.force_login(access.user)
+          response = client.get(reverse("finance_payroll_dashboard"), secure=True)
+          body = response.content.decode("utf-8")
+          if response.status_code != 200:
+              raise SystemExit(f"Payroll page returned HTTP {response.status_code}")
+          if "Зарплата текущего месяца" not in body:
+              raise SystemExit("Current compensation block missing from payroll page")
+          if "918" not in body:
+              raise SystemExit("Current salary total missing from payroll page")
+          print(
+              "PAYROLL_PLAN_PAGE",
+              f"status={response.status_code}",
+              "block=ok",
+          )
+          client.logout()
           PY
           REMOTE
