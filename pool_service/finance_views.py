@@ -4068,20 +4068,25 @@ def finance_payroll_employee_compensation_update(request, employee_id):
         employee=employee,
         period_month=period_month,
     ).first()
+    def audit_payload(compensation):
+        return {
+            "period_month": compensation.period_month.isoformat(),
+            "percent_amount": f"{compensation.percent_amount:.2f}",
+            "bonus_amount": f"{compensation.bonus_amount:.2f}",
+            "extra_days_count": f"{compensation.extra_days_count:.2f}",
+            "extra_days_amount": f"{compensation.extra_days_amount:.2f}",
+            "transport_compensation_amount": (
+                f"{compensation.transport_compensation_amount:.2f}"
+            ),
+            "deduction_amount": f"{compensation.deduction_amount:.2f}",
+            "note": compensation.note,
+        }
+
     before = {}
     if instance:
         # Capture persisted values before binding the ModelForm: is_valid()
         # mutates the bound instance during _post_clean.
-        before = {
-            "period_month": instance.period_month.isoformat(),
-            "percent_amount": str(instance.percent_amount),
-            "bonus_amount": str(instance.bonus_amount),
-            "extra_days_count": str(instance.extra_days_count),
-            "extra_days_amount": str(instance.extra_days_amount),
-            "transport_compensation_amount": str(instance.transport_compensation_amount),
-            "deduction_amount": str(instance.deduction_amount),
-            "note": instance.note,
-        }
+        before = audit_payload(instance)
 
     form = EmployeeCompensationMonthForm(request.POST, instance=instance)
     if not form.is_valid():
@@ -4098,16 +4103,7 @@ def finance_payroll_employee_compensation_update(request, employee_id):
         compensation.updated_by = request.user
         compensation.full_clean()
         compensation.save()
-        after = {
-            "period_month": compensation.period_month.isoformat(),
-            "percent_amount": str(compensation.percent_amount),
-            "bonus_amount": str(compensation.bonus_amount),
-            "extra_days_count": str(compensation.extra_days_count),
-            "extra_days_amount": str(compensation.extra_days_amount),
-            "transport_compensation_amount": str(compensation.transport_compensation_amount),
-            "deduction_amount": str(compensation.deduction_amount),
-            "note": compensation.note,
-        }
+        after = audit_payload(compensation)
         changed_fields = (
             [
                 key
