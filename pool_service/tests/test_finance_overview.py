@@ -14,9 +14,17 @@ from pool_service.finance_imports.cashflow_dashboard import (
     cashflow_article_trend_data,
     cashflow_dashboard_data,
 )
-from pool_service.finance_imports.management_finance import cashflow_overview_summary
+from pool_service.finance_imports.management_finance import (
+    cashflow_operating_monthly_summary,
+    cashflow_overview_summary,
+)
 from pool_service.finance_imports.owner_dashboard import resolve_owner_period
-from pool_service.finance_imports.profit_dashboard import dashboard_data, monthly_profit_summary, resolve_period
+from pool_service.finance_imports.profit_dashboard import (
+    dashboard_data,
+    monthly_gross_profit_series,
+    monthly_profit_summary,
+    resolve_period,
+)
 from pool_service.finance_imports.payroll_dashboard import payroll_dashboard_data
 from pool_service.models import (
     CashFlowArticleMapping, CashFlowRow, EmployeeOneCIdentity, OneCImportBatch, OneCMonthlyProfit,
@@ -196,6 +204,131 @@ class FinanceOverviewTests(TestCase):
         self.assertNotIn("breakdown", summary)
         self.assertNotIn("mapping_review_registry", summary)
 
+    def test_monthly_gross_profit_series_matches_canonical_summary(self):
+        month = date(2026, 1, 1)
+        extra_rows = (
+            {
+                "source_row_number": 101,
+                "nomenclature": "Фактическая услуга",
+                "nomenclature_type": "Услуга",
+                "cost_source": OneCMonthlyProfit.COST_SOURCE_ACTUAL,
+                "gross_profit": Decimal("7.00"),
+                "analytical_gross_profit": Decimal("999.00"),
+            },
+            {
+                "source_row_number": 102,
+                "nomenclature": "Расчётный товар",
+                "nomenclature_type": " Товар ",
+                "cost_source": OneCMonthlyProfit.COST_SOURCE_CALCULATED,
+                "gross_profit": Decimal("3.00"),
+                "analytical_gross_profit": Decimal("13.00"),
+            },
+            {
+                "source_row_number": 103,
+                "nomenclature": "Расчётная услуга",
+                "nomenclature_type": "Работа",
+                "cost_source": OneCMonthlyProfit.COST_SOURCE_CALCULATED,
+                "gross_profit": Decimal("5.00"),
+                "analytical_gross_profit": Decimal("17.00"),
+            },
+            {
+                "source_row_number": 104,
+                "nomenclature": "Неопределённая себестоимость",
+                "nomenclature_type": "Запас",
+                "cost_source": OneCMonthlyProfit.COST_SOURCE_UNDEFINED,
+                "gross_profit": Decimal("9.00"),
+                "analytical_gross_profit": None,
+            },
+        )
+        for values in extra_rows:
+            OneCMonthlyProfit.objects.create(
+                organization=self.organization,
+                import_batch=self.profit_batch,
+                period_month=month,
+                revenue=Decimal("20.00"),
+                cost=Decimal("10.00"),
+                **values,
+            )
+
+        canonical = monthly_profit_summary(
+            self.organization, date(2026, 1, 1), date(2026, 2, 1)
+        )
+        lightweight = monthly_gross_profit_series(
+            self.organization, date(2026, 1, 1), date(2026, 2, 1)
+        )
+
+        self.assertEqual(
+            [(item["month"], item["gross_profit"]) for item in lightweight["monthly"]],
+            [(item["month"], item["gross_profit"]) for item in canonical["monthly"]],
+        )
+
+    def test_operating_cashflow_series_matches_canonical_allocation_rules(self):
+        month = date(2026, 1, 1)
+        CashFlowArticleMapping.objects.create(
+            organization=self.organization,
+            article_name="Внутренний перевод",
+            normalized_article_name="внутренний перевод",
+            management_category="Внутренние обороты",
+            flow_type=CashFlowArticleMapping.FLOW_OPERATING,
+            classification_status=CashFlowArticleMapping.CLASS_CONFIRMED,
+            is_internal_turnover=True,
+        )
+        CashFlowArticleMapping.objects.create(
+            organization=self.organization,
+            article_name="Не внешний поток",
+            normalized_article_name="не внешний поток",
+            management_category="Не внешний",
+            flow_type=CashFlowArticleMapping.FLOW_OPERATING,
+            classification_status=CashFlowArticleMapping.CLASS_CONFIRMED,
+            include_in_external_cashflow=False,
+        )
+        for row_number, article, amount in (
+            (201, "внутренний перевод", "1000.00"),
+            (202, "не внешний поток", "2000.00"),
+            (203, "без маппинга", "3000.00"),
+        ):
+            CashFlowRow.objects.create(
+                organization=self.organization,
+                import_batch=self.cashflow_batch,
+                period_month=month,
+                source_row_number=row_number,
+                article_raw=article,
+                normalized_article_name=article,
+                document_raw="Документ",
+                receipts=Decimal(amount),
+                payments=Decimal("0.00"),
+                net_cash_flow=Decimal(amount),
+            )
+
+        series = cashflow_operating_monthly_summary(
+            self.organization, month, month
+        )
+        canonical = cashflow_dashboard_data(self.organization, month, month)
+
+        self.assertEqual(
+            series["months"][0]["net_cash_flow"],
+            canonical["monthly"][0]["operating"]["net_cash_flow"],
+        )
+        self.assertEqual(series["months"][0]["net_cash_flow"], Decimal("30.00"))
+
+    def test_operating_cashflow_series_skips_fact_scan_without_operating_mappings(self):
+        CashFlowArticleMapping.objects.filter(organization=self.organization).delete()
+
+        with CaptureQueriesContext(connection) as queries:
+            series = cashflow_operating_monthly_summary(
+                self.organization, date(2026, 1, 1), date(2026, 2, 1)
+            )
+
+        self.assertEqual(
+            [item["net_cash_flow"] for item in series["months"]],
+            [Decimal("0.00"), Decimal("0.00")],
+        )
+        cashflow_selects = [
+            query["sql"].lower()
+            for query in queries.captured_queries
+            if "pool_service_cashflowrow" in query["sql"].lower()
+        ]
+        self.assertEqual(cashflow_selects, [])
     def test_monthly_profit_summary_does_not_load_heavy_detail_fields(self):
         row = OneCMonthlyProfit.objects.filter(
             organization=self.organization,
