@@ -69,7 +69,7 @@ jobs:
           client = Client(HTTP_HOST="service2.aqualine22.ru")
 
           management_results = {}
-          for role in ("owner", "accountant"):
+          for role in ("admin", "accountant"):
               user = user_for_role(role)
               client.force_login(user)
               response = client.get(reverse("finance_overview"), secure=True)
