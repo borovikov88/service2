@@ -52,8 +52,7 @@ jobs:
           actual_sha="$(git rev-parse HEAD)"
           test "$actual_sha" = "$expected_sha"
           echo "PROFILE_PROD_HEAD $actual_sha"
-          source venv/bin/activate
-          python manage.py shell <<'PY'
+          ../venv/bin/python manage.py shell <<'PY'
           import json
           import time
           from collections import Counter
