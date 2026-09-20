@@ -25,6 +25,7 @@ from pool_service.models import (
     Expense,
     ExpenseCategory,
     Employee,
+    EmployeeCompensationMonth,
 )
 from pool_service.services.finance import (
     finance_staff,
@@ -786,6 +787,52 @@ class PayrollConfirmForm(forms.Form):
         widget=forms.CheckboxInput(attrs={"class": "form-check-input"}),
         error_messages={"required": "Подтвердите, что проверили параметры импорта."},
     )
+
+
+class EmployeeCompensationMonthForm(forms.ModelForm):
+    period_month = forms.DateField(
+        label="Месяц",
+        input_formats=["%Y-%m"],
+        widget=forms.DateInput(
+            format="%Y-%m",
+            attrs={"type": "month", "class": "form-control"},
+        ),
+    )
+
+    class Meta:
+        model = EmployeeCompensationMonth
+        fields = [
+            "period_month",
+            "percent_amount",
+            "bonus_amount",
+            "extra_days_count",
+            "extra_days_amount",
+            "transport_compensation_amount",
+            "deduction_amount",
+            "note",
+        ]
+        labels = {
+            "percent_amount": "Проценты",
+            "bonus_amount": "Бонусы",
+            "extra_days_count": "Доп. дни, дней",
+            "extra_days_amount": "Доп. дни, сумма",
+            "transport_compensation_amount": "Компенсация транспорта",
+            "deduction_amount": "Удержания",
+            "note": "Комментарий",
+        }
+        widgets = {
+            "percent_amount": forms.NumberInput(attrs={"class": "form-control", "step": "0.01", "min": "0"}),
+            "bonus_amount": forms.NumberInput(attrs={"class": "form-control", "step": "0.01", "min": "0"}),
+            "extra_days_count": forms.NumberInput(attrs={"class": "form-control", "step": "0.01", "min": "0"}),
+            "extra_days_amount": forms.NumberInput(attrs={"class": "form-control", "step": "0.01", "min": "0"}),
+            "transport_compensation_amount": forms.NumberInput(attrs={"class": "form-control", "step": "0.01", "min": "0"}),
+            "deduction_amount": forms.NumberInput(attrs={"class": "form-control", "step": "0.01", "min": "0"}),
+            "note": forms.Textarea(attrs={"class": "form-control", "rows": 2}),
+        }
+
+    def clean_period_month(self):
+        value = self.cleaned_data["period_month"]
+        return value.replace(day=1)
 
 
 class EmployeeIdentityMappingForm(forms.Form):
