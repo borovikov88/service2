@@ -790,15 +790,9 @@ class PayrollConfirmForm(forms.Form):
 
 
 class EmployeeCompensationMonthForm(forms.ModelForm):
-    period_month = forms.DateField(
-        input_formats=["%Y-%m"],
-        widget=forms.HiddenInput(),
-    )
-
     class Meta:
         model = EmployeeCompensationMonth
         fields = [
-            "period_month",
             "percent_amount",
             "bonus_amount",
             "extra_days_count",
@@ -825,11 +819,6 @@ class EmployeeCompensationMonthForm(forms.ModelForm):
             "deduction_amount": forms.NumberInput(attrs={"class": "form-control", "step": "0.01", "min": "0"}),
             "note": forms.Textarea(attrs={"class": "form-control", "rows": 2}),
         }
-
-    def clean_period_month(self):
-        value = self.cleaned_data["period_month"]
-        return value.replace(day=1)
-
 
 class EmployeeIdentityMappingForm(forms.Form):
     employee = forms.ModelChoiceField(
