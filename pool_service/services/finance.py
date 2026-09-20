@@ -136,6 +136,14 @@ def can_manage_employee_mapping(user, organization):
     return _has_management_finance_role(user, organization)
 
 
+def can_view_employee_hr(user, organization):
+    if not user or not user.is_authenticated or not organization:
+        return False
+    if user.is_superuser:
+        return True
+    return user.has_perm("pool_service.view_employee_hr")
+
+
 def can_view_gross_profit(user, organization):
     """Semantic analytics capability; effective access remains unchanged."""
     return can_manage_finance(user, organization)
@@ -208,7 +216,12 @@ def finance_navigation(user, organization, *, current_route=""):
         analytics.append(item(
             "Фонд оплаты труда",
             "finance_payroll_dashboard",
-            ("finance_payroll_employee_mapping", "finance_payroll_employee_map"),
+            (
+                "finance_payroll_employee_mapping",
+                "finance_payroll_employee_map",
+                "finance_payroll_employee_list",
+                "finance_payroll_employee_profile",
+            ),
         ))
     if can_view_cost_control(user, organization):
         analytics.append(item("Контроль себестоимости", "finance_onec_cost_control"))
