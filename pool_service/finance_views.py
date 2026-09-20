@@ -44,6 +44,7 @@ from pool_service.finance_forms import (
     PayrollUploadForm,
     PayrollConfirmForm,
     EmployeeIdentityMappingForm,
+    EmployeeCompensationMonthForm,
     CashFlowArticleMappingForm,
 )
 from pool_service.models import (
@@ -63,7 +64,9 @@ from pool_service.models import (
     ExpensePeriod,
     ExpenseReceipt,
     Employee,
+    EmployeeCompensationMonth,
     EmployeeOneCIdentity,
+    DataAuditLog,
     OneCImportBatch,
     OneCMonthlyProfit,
     OneCODataSyncRun,
@@ -188,7 +191,11 @@ from pool_service.services.finance import (
     report_expenses,
     user_display_name,
 )
-from pool_service.services.employee_hr import employee_current_plan
+from pool_service.services.employee_hr import (
+    employee_compensation_history,
+    employee_current_plan,
+    employee_monthly_compensation,
+)
 from pool_service.services.cashflow_classification import (
     canonical_article_key,
     save_explicit_cashflow_mapping,
@@ -3992,13 +3999,13 @@ def finance_payroll_employee_profile(request, employee_id):
         organization=organization,
     )
     period_month = current_payroll_plan_date().replace(day=1)
-    plan = employee_current_plan(employee, period_month)
+    salary = employee_monthly_compensation(employee, period_month)
     identities = list(
         employee.onec_identities.select_related("confirmed_by").order_by(
             "raw_name", "id"
         )
     )
-    history = list(
+    payroll_history = list(
         PayrollRow.objects.active_for(
             organization, OneCImportBatch.TYPE_PAYROLL
         )
@@ -4012,14 +4019,110 @@ def finance_payroll_employee_profile(request, employee_id):
         )
         .order_by("-period_month")[:24]
     )
+    compensation_form = EmployeeCompensationMonthForm(
+        instance=salary["adjustment"],
+        initial={"period_month": period_month},
+    )
     return render(request, "pool_service/finance/payroll_employee_profile.html", {
         "employee": employee,
         "identities": identities,
-        "plan": plan,
+        "plan": salary["plan"],
+        "salary": salary,
         "period_month": period_month,
-        "history": history,
+        "compensation_history": employee_compensation_history(
+            employee, current_period=period_month, limit=24
+        ),
+        "payroll_history": payroll_history,
+        "compensation_form": compensation_form,
+        "can_edit_compensation": can_manage_finance(request.user, organization),
         "active_tab": "finance",
     })
+
+
+@login_required
+@require_POST
+def finance_payroll_employee_compensation_update(request, employee_id):
+    organization, denied = _payroll_access(
+        request,
+        lambda user, org: (
+            can_view_employee_hr(user, org)
+            and can_manage_finance(user, org)
+        ),
+    )
+    if denied:
+        return denied
+    employee = get_object_or_404(
+        Employee,
+        pk=employee_id,
+        organization=organization,
+    )
+    raw_period = (request.POST.get("period_month") or "").strip()
+    try:
+        period_month = date.fromisoformat(f"{raw_period}-01")
+    except ValueError:
+        messages.error(request, "Укажите корректный месяц зарплаты.")
+        return redirect("finance_payroll_employee_profile", employee_id=employee.pk)
+
+    instance = EmployeeCompensationMonth.objects.filter(
+        organization=organization,
+        employee=employee,
+        period_month=period_month,
+    ).first()
+    form = EmployeeCompensationMonthForm(request.POST, instance=instance)
+    if not form.is_valid():
+        messages.error(
+            request,
+            "Не удалось сохранить составляющие зарплаты. Проверьте значения.",
+        )
+        return redirect("finance_payroll_employee_profile", employee_id=employee.pk)
+
+    before = {}
+    if instance:
+        before = {
+            "percent_amount": str(instance.percent_amount),
+            "bonus_amount": str(instance.bonus_amount),
+            "extra_days_count": str(instance.extra_days_count),
+            "extra_days_amount": str(instance.extra_days_amount),
+            "transport_compensation_amount": str(instance.transport_compensation_amount),
+            "deduction_amount": str(instance.deduction_amount),
+            "note": instance.note,
+        }
+    with transaction.atomic():
+        compensation = form.save(commit=False)
+        compensation.organization = organization
+        compensation.employee = employee
+        compensation.updated_by = request.user
+        compensation.full_clean()
+        compensation.save()
+        after = {
+            "period_month": compensation.period_month.isoformat(),
+            "percent_amount": str(compensation.percent_amount),
+            "bonus_amount": str(compensation.bonus_amount),
+            "extra_days_count": str(compensation.extra_days_count),
+            "extra_days_amount": str(compensation.extra_days_amount),
+            "transport_compensation_amount": str(compensation.transport_compensation_amount),
+            "deduction_amount": str(compensation.deduction_amount),
+            "note": compensation.note,
+        }
+        DataAuditLog.objects.create(
+            entity_type="EmployeeCompensationMonth",
+            entity_id=str(compensation.pk),
+            action=(
+                DataAuditLog.ACTION_UPDATE
+                if instance
+                else DataAuditLog.ACTION_CREATE
+            ),
+            organization=organization,
+            actor=request.user,
+            before=before,
+            after=after,
+            changed_fields=list(after.keys()),
+        )
+    messages.success(
+        request,
+        f"Составляющие зарплаты за {compensation.period_month:%m.%Y} сохранены.",
+    )
+    return redirect("finance_payroll_employee_profile", employee_id=employee.pk)
 
 
 @login_required
