@@ -104,6 +104,23 @@ def resolve_employee_identity(
         )
     source_identity_key = None if has_stable_identifier else fallback_key
 
+    if has_stable_identifier:
+        legacy_candidates = list(
+            EmployeeOneCIdentity.objects.filter(
+                organization=organization,
+                normalized_name=normalized_name,
+                onec_employee_id__isnull=True,
+                personnel_number__isnull=True,
+            ).order_by("id")
+        )
+        if len(legacy_candidates) == 1:
+            legacy = legacy_candidates[0]
+            return _enrich_stable_identifiers(
+                legacy,
+                onec_employee_id=onec_employee_id,
+                personnel_number=personnel_number,
+            )
+
     confirmed = [
         identity for identity in
         EmployeeOneCIdentity.objects.filter(
