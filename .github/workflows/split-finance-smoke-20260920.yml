@@ -118,7 +118,7 @@ jobs:
               client.logout()
 
           print("SPLIT_FINANCE_SMOKE", json.dumps({
-              "production_sha": expected_sha,
+              "production_sha": "d58d248d808a4c09ad87ebc16d50802957a0e42f",
               "management": management_results,
               "operational": operational_results,
           }, ensure_ascii=False, sort_keys=True))
