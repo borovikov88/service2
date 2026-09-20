@@ -1,0 +1,92 @@
+name: Audit employee identity state
+
+on:
+  push:
+    branches:
+      - qa/employee-identity-audit-20260920
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_audit
+          chmod 600 ~/.ssh/service2_audit
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+      - name: Read employee identity state
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+          EXPECTED_PROD_SHA: "f8530094ee7a752630bb1e1e744a9ba8178c7c7e"
+        run: |
+          set -euo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          ssh -i ~/.ssh/service2_audit -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash -s -- '$DEPLOY_APP_PATH' '$EXPECTED_PROD_SHA'" <<'REMOTE'
+          set -euo pipefail
+          app_path="$1"
+          expected_sha="$2"
+          cd "$app_path"
+          test "$(git rev-parse HEAD)" = "$expected_sha"
+          ../venv/bin/python manage.py shell <<'PY'
+          import json
+          from collections import defaultdict
+          from pool_service.models import Employee, EmployeeOneCIdentity, Organization, OrganizationAccess
+
+          org = Organization.objects.get(pk=1)
+          employees = list(
+              Employee.objects.filter(organization=org)
+              .order_by("display_name", "id")
+              .values(
+                  "id","display_name","department_name","position_name",
+                  "employment_status","is_active","user_id","hired_at","dismissed_at"
+              )
+          )
+          identities = list(
+              EmployeeOneCIdentity.objects.filter(organization=org)
+              .order_by("normalized_name","id")
+              .values(
+                  "id","raw_name","normalized_name","department_name",
+                  "normalized_department_name","onec_employee_id","personnel_number",
+                  "status","match_method","employee_id","source_identity_key"
+              )
+          )
+          access_users = list(
+              OrganizationAccess.objects.filter(organization=org,user__is_active=True)
+              .select_related("user")
+              .order_by("user__last_name","user__first_name","user__username")
+              .values(
+                  "user_id","user__username","user__first_name","user__last_name","role"
+              )
+          )
+          groups = defaultdict(list)
+          for row in identities:
+              groups[row["normalized_name"]].append(row)
+          dupes = {name: rows for name, rows in groups.items() if len(rows) > 1}
+
+          print("EMPLOYEE_AUDIT_COUNTS", json.dumps({
+              "employees": len(employees),
+              "identities": len(identities),
+              "active_access_users": len(access_users),
+              "duplicate_identity_names": len(dupes),
+          }, ensure_ascii=False, default=str))
+          print("EMPLOYEE_ROWS", json.dumps(employees, ensure_ascii=False, default=str))
+          print("ACCESS_USERS", json.dumps(access_users, ensure_ascii=False, default=str))
+          print("DUPLICATE_IDENTITIES", json.dumps(dupes, ensure_ascii=False, default=str))
+          print("ALL_IDENTITIES", json.dumps(identities, ensure_ascii=False, default=str))
+          PY
+          REMOTE
