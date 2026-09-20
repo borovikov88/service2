@@ -1027,7 +1027,7 @@ def _finance_data_history(request, organization):
         rows.append({
             "created_at": run.created_at,
             "data_label": (
-                "Все данные"
+                "Валовая прибыль, ДДС, ФОТ"
                 if requested == all_reports
                 else ", ".join(
                     report_labels.get(item, item)
@@ -1062,6 +1062,8 @@ def _finance_data_history(request, organization):
         .select_related("uploaded_by")[:30]
     )
     for batch in batches:
+        if (batch.metadata or {}).get("automatically_detected_change"):
+            continue
         tone = {
             OneCImportBatch.STATUS_CONFIRMED: "success",
             OneCImportBatch.STATUS_FAILED: "danger",
@@ -1080,6 +1082,29 @@ def _finance_data_history(request, organization):
             "error_message": batch.error_message,
             "technical_kind": "Импорт файла",
         })
+    plan_snapshots = (
+        PayrollPlanSnapshot.objects.filter(organization=organization)
+        .select_related("fetched_by")[:20]
+    )
+    for snapshot in plan_snapshots:
+        rows.append({
+            "created_at": snapshot.fetched_at,
+            "data_label": "Оклады сотрудников",
+            "period_start": snapshot.period_month.strftime("%Y-%m"),
+            "period_end": snapshot.period_month.strftime("%Y-%m"),
+            "method": "Вручную",
+            "result_label": "Успешно",
+            "result_tone": "success",
+            "actor": (
+                snapshot.fetched_by.get_full_name()
+                or snapshot.fetched_by.username
+                if snapshot.fetched_by
+                else "Система"
+            ),
+            "error_message": "",
+            "technical_kind": "Снимок окладов",
+        })
+
     rows.sort(key=lambda item: item["created_at"], reverse=True)
     return rows[:40]
 
