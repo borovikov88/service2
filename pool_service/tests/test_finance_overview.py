@@ -14,6 +14,7 @@ from pool_service.finance_imports.cashflow_dashboard import (
     cashflow_article_trend_data,
     cashflow_dashboard_data,
 )
+from pool_service.finance_imports.management_finance import cashflow_overview_summary
 from pool_service.finance_imports.owner_dashboard import resolve_owner_period
 from pool_service.finance_imports.profit_dashboard import dashboard_data, monthly_profit_summary, resolve_period
 from pool_service.finance_imports.payroll_dashboard import payroll_dashboard_data
@@ -140,6 +141,60 @@ class FinanceOverviewTests(TestCase):
         self.assertEqual(data["period"]["last_month"], date(2026, 2, 1))
         self.assertEqual(data["freshness"]["gross_profit"]["data_through"], date(2026, 2, 1))
         self.assertEqual(data["freshness"]["payroll"]["data_through"], date(2026, 2, 1))
+
+    def test_lightweight_cashflow_summary_matches_canonical_overview_values(self):
+        first = date(2026, 1, 1)
+        last = date(2026, 2, 1)
+        canonical = cashflow_dashboard_data(self.organization, first, last)
+        summary = cashflow_overview_summary(self.organization, first, last)
+
+        self.assertEqual(summary["totals"], canonical["totals"])
+        for key in (
+            "operating",
+            "investing",
+            "financing",
+            "liquidity",
+            "external",
+            "internal",
+            "non_external",
+            "unclassified",
+            "external_unclassified",
+        ):
+            self.assertEqual(summary[key], canonical[key])
+
+        self.assertEqual(
+            [
+                (
+                    item["period_month"],
+                    item["operating"],
+                    item["external"],
+                    item["liquidity"],
+                    item["financing"],
+                    item["internal"],
+                    item["non_external"],
+                )
+                for item in summary["monthly"]
+            ],
+            [
+                (
+                    item["period_month"],
+                    item["operating"],
+                    item["external"],
+                    item["liquidity"],
+                    item["financing"],
+                    item["internal"],
+                    item["non_external"],
+                )
+                for item in canonical["monthly"]
+            ],
+        )
+        self.assertEqual(
+            summary["unclassified_article_count"],
+            canonical["unclassified_article_count"],
+        )
+        self.assertNotIn("articles", summary)
+        self.assertNotIn("breakdown", summary)
+        self.assertNotIn("mapping_review_registry", summary)
 
     def test_monthly_profit_summary_does_not_load_heavy_detail_fields(self):
         row = OneCMonthlyProfit.objects.filter(

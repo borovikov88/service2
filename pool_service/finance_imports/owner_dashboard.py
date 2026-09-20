@@ -9,8 +9,10 @@ from urllib.parse import urlencode
 from django.db.models import Max
 from django.utils import timezone
 
-from pool_service.finance_imports.cashflow_dashboard import cashflow_dashboard_data
-from pool_service.finance_imports.management_finance import cashflow_operating_monthly_summary
+from pool_service.finance_imports.management_finance import (
+    cashflow_operating_monthly_summary,
+    cashflow_overview_summary,
+)
 from pool_service.finance_imports.cost_control import (
     get_onec_cost_anomalies,
     summarize_cost_anomalies,
@@ -216,7 +218,7 @@ def _range_data(organization, first, last, *, include_freshness=True):
         "has_any": payroll["has_data"], "complete": not missing_payroll,
         "data_through": payroll["data_through"], "last_updated": payroll["last_updated"],
     }
-    cashflow = cashflow_dashboard_data(organization, first, last)
+    cashflow = cashflow_overview_summary(organization, first, last)
 
     profit_values = profit["totals"] if sources["profit"]["has_any"] else None
     payroll_value = payroll["accrued"] if sources["payroll"]["has_any"] else None
