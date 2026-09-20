@@ -68,6 +68,7 @@ from pool_service.models import (
     OneCMonthlyProfit,
     OneCODataSyncRun,
     OneCReportPeriodState,
+    PayrollRow,
 )
 from pool_service.finance_imports.payroll_services import (
     confirm_payroll,
@@ -163,6 +164,7 @@ from pool_service.services.finance import (
     can_view_payroll_personal,
     can_import_payroll,
     can_manage_employee_mapping,
+    can_view_employee_hr,
     can_import_gross_profit,
     can_import_cashflow,
     can_manage_cashflow_classification,
@@ -184,6 +186,7 @@ from pool_service.services.finance import (
     report_expenses,
     user_display_name,
 )
+from pool_service.services.employee_hr import employee_current_plan
 from pool_service.services.cashflow_classification import (
     canonical_article_key,
     save_explicit_cashflow_mapping,
@@ -3551,6 +3554,7 @@ def finance_payroll_dashboard(request):
         "show_personal": show_personal,
         "can_import_payroll": can_import_payroll(request.user, organization),
         "can_manage_mapping": mapping_access,
+        "can_view_employee_hr": can_view_employee_hr(request.user, organization),
         "unresolved_count": unresolved_count,
         "active_tab": "finance",
     })
@@ -3694,6 +3698,80 @@ def finance_payroll_import_confirm(request, batch_id):
         "parser_version_current": batch.parser_version == PAYROLL_PARSER_VERSION,
         "confirmation_state": confirmation_state,
         "form": form,
+        "active_tab": "finance",
+    })
+
+
+@login_required
+def finance_payroll_employee_list(request):
+    organization, denied = _payroll_access(request, can_view_employee_hr)
+    if denied:
+        return denied
+    period_month = current_payroll_plan_date().replace(day=1)
+    employees = list(
+        Employee.objects.filter(organization=organization, is_active=True)
+        .select_related("user")
+        .prefetch_related("onec_identities")
+        .order_by("display_name", "id")
+    )
+    rows = []
+    for employee in employees:
+        plan = employee_current_plan(employee, period_month)
+        identities = list(employee.onec_identities.all())
+        rows.append({
+            "employee": employee,
+            "plan": plan,
+            "identities": identities,
+            "onec_employee_ids": [
+                identity.onec_employee_id
+                for identity in identities
+                if identity.onec_employee_id
+            ],
+        })
+    return render(request, "pool_service/finance/payroll_employee_list.html", {
+        "rows": rows,
+        "period_month": period_month,
+        "active_tab": "finance",
+    })
+
+
+@login_required
+def finance_payroll_employee_profile(request, employee_id):
+    organization, denied = _payroll_access(request, can_view_employee_hr)
+    if denied:
+        return denied
+    employee = get_object_or_404(
+        Employee.objects.select_related("user"),
+        pk=employee_id,
+        organization=organization,
+    )
+    period_month = current_payroll_plan_date().replace(day=1)
+    plan = employee_current_plan(employee, period_month)
+    identities = list(
+        employee.onec_identities.select_related("confirmed_by").order_by(
+            "raw_name", "id"
+        )
+    )
+    history = list(
+        PayrollRow.objects.active_for(
+            organization, OneCImportBatch.TYPE_PAYROLL
+        )
+        .filter(employee_identity__employee=employee)
+        .values("period_month")
+        .annotate(
+            accrued=Sum("accrued"),
+            paid=Sum("paid"),
+            opening_balance=Sum("opening_balance"),
+            closing_balance=Sum("closing_balance"),
+        )
+        .order_by("-period_month")[:24]
+    )
+    return render(request, "pool_service/finance/payroll_employee_profile.html", {
+        "employee": employee,
+        "identities": identities,
+        "plan": plan,
+        "period_month": period_month,
+        "history": history,
         "active_tab": "finance",
     })
 
