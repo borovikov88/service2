@@ -181,12 +181,15 @@ def can_access_finance_section(user, organization):
 def finance_navigation(user, organization, *, current_route=""):
     """Return the shared, permission-filtered Finance navigation model."""
 
-    def item(label, route_name, active_routes=()):
+    def item(label, route_name, active_routes=(), query_string=""):
         routes = (route_name, *active_routes)
+        url = reverse(route_name)
+        if query_string:
+            url = f"{url}?{query_string}"
         return {
             "label": label,
             "route_name": route_name,
-            "url": reverse(route_name),
+            "url": url,
             "active": current_route in routes,
         }
 
@@ -194,7 +197,11 @@ def finance_navigation(user, organization, *, current_route=""):
     if can_access_finance_overview(user, organization):
         analytics.append(item("Обзор", "finance_overview"))
     if can_view_gross_profit(user, organization):
-        analytics.append(item("Валовая прибыль", "finance_onec_profit_dashboard"))
+        analytics.append(item(
+            "Валовая прибыль",
+            "finance_onec_profit_dashboard",
+            query_string="period=current_month",
+        ))
     if can_view_cashflow(user, organization):
         analytics.append(item("ДДС", "finance_onec_cashflow_dashboard"))
     if can_view_payroll_summary(user, organization):
