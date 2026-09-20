@@ -208,7 +208,7 @@ class FinanceInformationArchitectureTests(TestCase):
         analytics = {item["label"]: item["url"] for item in groups["analytics"]["items"]}
 
         self.assertEqual(set(groups), {"analytics", "operations", "data"})
-        self.assertEqual(analytics["Валовая прибыль"], reverse("finance_onec_profit_dashboard"))
+        self.assertEqual(analytics["Валовая прибыль"], f"{reverse('finance_onec_profit_dashboard')}?period=current_month")
         self.assertEqual(analytics["ДДС"], reverse("finance_onec_cashflow_dashboard"))
         self.assertEqual(analytics["Фонд оплаты труда"], reverse("finance_payroll_dashboard"))
         self.assertEqual(analytics["Контроль себестоимости"], reverse("finance_onec_cost_control"))
