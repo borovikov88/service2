@@ -2414,6 +2414,90 @@ class PayrollAccrualMonth(models.Model):
             raise ValidationError({"import_batch": "Загрузка не соответствует организации или типу ФОТ."})
 
 
+class PayrollPlanSnapshot(models.Model):
+    """Versioned current-month plan imported from 1C; page reads Service2 only."""
+
+    SOURCE_ODATA = "odata"
+
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name="payroll_plan_snapshots"
+    )
+    period_month = models.DateField()
+    source_type = models.CharField(max_length=20, default=SOURCE_ODATA)
+    source_hash = models.CharField(max_length=64)
+    source_rows = models.PositiveIntegerField(default=0)
+    source_organization_guids = models.JSONField(default=list)
+    currency_guid = models.UUIDField()
+    fetched_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="fetched_payroll_plan_snapshots",
+    )
+    fetched_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-fetched_at", "-id"]
+        indexes = [
+            models.Index(
+                fields=["organization", "period_month", "-fetched_at"],
+                name="pay_plan_org_month_idx",
+            ),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "period_month", "source_hash"],
+                name="unique_payroll_plan_snapshot",
+            ),
+        ]
+
+
+class PayrollPlanItem(models.Model):
+    snapshot = models.ForeignKey(
+        PayrollPlanSnapshot, on_delete=models.CASCADE, related_name="items"
+    )
+    employee_identity = models.ForeignKey(
+        EmployeeOneCIdentity, on_delete=models.PROTECT, related_name="payroll_plan_items"
+    )
+    onec_employee_id = models.CharField(max_length=120)
+    employee_raw_name = models.CharField(max_length=500)
+    accrual_type_id = models.CharField(max_length=120)
+    accrual_type_name = models.CharField(max_length=300)
+    amount = models.DecimalField(max_digits=20, decimal_places=2)
+    is_base_salary = models.BooleanField(default=False)
+    source_period = models.DateField()
+    source_organization_guid = models.UUIDField()
+
+    class Meta:
+        ordering = ["employee_raw_name", "accrual_type_name", "id"]
+        indexes = [
+            models.Index(
+                fields=["snapshot", "employee_identity"],
+                name="pay_plan_snap_emp_idx",
+            ),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=[
+                    "snapshot",
+                    "source_organization_guid",
+                    "onec_employee_id",
+                    "accrual_type_id",
+                ],
+                name="unique_payroll_plan_item",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if (
+            self.employee_identity_id
+            and self.snapshot_id
+            and self.employee_identity.organization_id != self.snapshot.organization_id
+        ):
+            raise ValidationError(
+                {"employee_identity": "Identity относится к другой организации."}
+            )
+
+
 class CashFlowRow(models.Model):
     import_batch = models.ForeignKey(
         OneCImportBatch, on_delete=models.PROTECT, related_name="cashflow_rows"
