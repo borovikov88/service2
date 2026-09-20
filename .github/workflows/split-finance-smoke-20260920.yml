@@ -1,0 +1,126 @@
+name: Smoke split finance navigation production
+
+on:
+  push:
+    branches:
+      - qa/split-finance-smoke-20260920
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_smoke
+          chmod 600 ~/.ssh/service2_smoke
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Verify role-specific finance tabs
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+          EXPECTED_PROD_SHA: "d58d248d808a4c09ad87ebc16d50802957a0e42f"
+        run: |
+          set -euo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          ssh -i ~/.ssh/service2_smoke -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash -s -- '$DEPLOY_APP_PATH' '$EXPECTED_PROD_SHA'" <<'REMOTE'
+          set -euo pipefail
+          app_path="$1"
+          expected_sha="$2"
+          cd "$app_path"
+          test "$(git rev-parse HEAD)" = "$expected_sha"
+          ../venv/bin/python manage.py shell <<'PY'
+          import json
+          from django.test import Client
+          from django.urls import reverse
+          from pool_service.models import Organization, OrganizationAccess
+
+          org = Organization.objects.get(pk=1)
+
+          def user_for_role(role):
+              access = (
+                  OrganizationAccess.objects.filter(
+                      organization=org,
+                      role=role,
+                      user__is_active=True,
+                  )
+                  .select_related("user")
+                  .order_by("id")
+                  .first()
+              )
+              if access is None:
+                  raise RuntimeError(f"No active user with role={role}")
+              return access.user
+
+          client = Client(HTTP_HOST="service2.aqualine22.ru")
+
+          management_results = {}
+          for role in ("owner", "accountant"):
+              user = user_for_role(role)
+              client.force_login(user)
+              response = client.get(reverse("finance_overview"), secure=True)
+              body = response.content.decode("utf-8")
+              management_results[role] = {
+                  "status": response.status_code,
+                  "management_tab": "Управленческие финансы" in body,
+                  "operations_tab": ">Операции<" in body,
+              }
+              if response.status_code != 200:
+                  raise RuntimeError(f"{role} overview HTTP {response.status_code}")
+              if not management_results[role]["management_tab"]:
+                  raise RuntimeError(f"{role} management tab missing")
+              if not management_results[role]["operations_tab"]:
+                  raise RuntimeError(f"{role} operations tab missing")
+              client.logout()
+
+          operational_results = {}
+          for role in ("manager", "service"):
+              user = user_for_role(role)
+              client.force_login(user)
+              response = client.get(reverse("finance_my"), secure=True)
+              body = response.content.decode("utf-8")
+              operational_results[role] = {
+                  "status": response.status_code,
+                  "management_tab": "Управленческие финансы" in body,
+                  "operations_tab": ">Операции<" in body,
+              }
+              if response.status_code != 200:
+                  raise RuntimeError(f"{role} finance_my HTTP {response.status_code}")
+              if operational_results[role]["management_tab"]:
+                  raise RuntimeError(f"{role} unexpectedly sees management tab")
+              if not operational_results[role]["operations_tab"]:
+                  raise RuntimeError(f"{role} operations tab missing")
+              entry = client.get(reverse("finance_operations"), secure=True)
+              expected = (
+                  reverse("finance_kkm_cash_dashboard")
+                  if role == "manager"
+                  else reverse("finance_my")
+              )
+              if entry.status_code != 302 or entry.url != expected:
+                  raise RuntimeError(
+                      f"{role} operations redirect {entry.status_code} {entry.url!r}, expected {expected!r}"
+                  )
+              operational_results[role]["operations_redirect"] = entry.url
+              client.logout()
+
+          print("SPLIT_FINANCE_SMOKE", json.dumps({
+              "production_sha": expected_sha,
+              "management": management_results,
+              "operational": operational_results,
+          }, ensure_ascii=False, sort_keys=True))
+          PY
+          REMOTE
