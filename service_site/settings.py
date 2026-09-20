@@ -330,6 +330,10 @@ LOGGING = {
             "format": "{asctime} {levelname} {name} {message}",
             "style": "{",
         },
+        "django_request_error": {
+            "format": "{asctime} {levelname} {name} status={status_code} {message}",
+            "style": "{",
+        },
     },
     "handlers": {
         "console": {"class": "logging.StreamHandler"},
@@ -341,9 +345,22 @@ LOGGING = {
             "encoding": "utf-8",
             "delay": True,
         },
+        "django_request_error": {
+            "class": "service_site.logging_handlers.FailOpenWatchedFileHandler",
+            "filename": str(BASE_DIR.parent / "var" / "log" / "django-request-error.log"),
+            "level": "ERROR",
+            "formatter": "django_request_error",
+            "encoding": "utf-8",
+            "delay": True,
+        },
     },
     "loggers": {
         "django.core.mail": {"handlers": ["console"], "level": "DEBUG"},
+        "django.request": {
+            "handlers": ["django_request_error"],
+            "level": "ERROR",
+            "propagate": False,
+        },
         "pool_service.finance_imports.odata_unified_sync": {
             "handlers": ["onec_unified_sync"],
             "level": "ERROR",
