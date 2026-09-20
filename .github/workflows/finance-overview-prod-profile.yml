@@ -12,6 +12,7 @@ jobs:
   profile:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    environment: production
     steps:
       - name: Configure SSH
         env:
