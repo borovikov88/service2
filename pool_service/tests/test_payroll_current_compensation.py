@@ -30,6 +30,7 @@ CURRENCY_GUID = "22222222-2222-2222-2222-222222222222"
 EMPLOYEE_GUID = "33333333-3333-3333-3333-333333333333"
 TYPE_GUID = "44444444-4444-4444-4444-444444444444"
 OTHER_TYPE_GUID = "55555555-5555-5555-5555-555555555555"
+ACCOUNT_GUID = "00000000-0000-0000-0000-000000000000"
 
 
 class PayrollPlanCalendarTests(TestCase):
@@ -63,6 +64,7 @@ class PayrollPlanReaderTests(TestCase):
                         "Валюта_Key": CURRENCY_GUID,
                         "ВидНачисленияУдержания_Key": TYPE_GUID,
                         "Сумма": "50000.00",
+                        "СчетЗатрат_Key": ACCOUNT_GUID,
                     },
                     {
                         "Active": True,
@@ -73,6 +75,7 @@ class PayrollPlanReaderTests(TestCase):
                         "Валюта_Key": CURRENCY_GUID,
                         "ВидНачисленияУдержания_Key": TYPE_GUID,
                         "Сумма": "60000.00",
+                        "СчетЗатрат_Key": ACCOUNT_GUID,
                     },
                     {
                         "Active": True,
@@ -83,6 +86,7 @@ class PayrollPlanReaderTests(TestCase):
                         "Валюта_Key": CURRENCY_GUID,
                         "ВидНачисленияУдержания_Key": OTHER_TYPE_GUID,
                         "Сумма": "5000.00",
+                        "СчетЗатрат_Key": ACCOUNT_GUID,
                     },
                 ]]
             if entity == "Catalog_Сотрудники":
@@ -126,6 +130,63 @@ class PayrollPlanReaderTests(TestCase):
         self.assertEqual(by_type["Доплата"]["amount"], "5000.00")
         self.assertFalse(by_type["Доплата"]["is_base_salary"])
         reader.check_time.assert_called_once()
+
+    @patch("pool_service.finance_imports.odata_payroll_plan.Reader")
+    def test_reader_does_not_resurrect_cancelled_salary(self, reader_cls):
+        reader = reader_cls.return_value
+
+        def pages(entity, options):
+            if entity == "InformationRegister_ПлановыеНачисленияИУдержания_RecordType":
+                return [[
+                    {
+                        "Active": True,
+                        "Period": "2026-01-01T00:00:00",
+                        "Актуальность": True,
+                        "Организация_Key": ORG_GUID,
+                        "Сотрудник_Key": EMPLOYEE_GUID,
+                        "Валюта_Key": CURRENCY_GUID,
+                        "ВидНачисленияУдержания_Key": TYPE_GUID,
+                        "Сумма": "60000.00",
+                        "СчетЗатрат_Key": ACCOUNT_GUID,
+                    },
+                    {
+                        "Active": True,
+                        "Period": "2026-08-01T00:00:00",
+                        "Актуальность": False,
+                        "Организация_Key": ORG_GUID,
+                        "Сотрудник_Key": EMPLOYEE_GUID,
+                        "Валюта_Key": CURRENCY_GUID,
+                        "ВидНачисленияУдержания_Key": TYPE_GUID,
+                        "Сумма": "60000.00",
+                        "СчетЗатрат_Key": ACCOUNT_GUID,
+                    },
+                ]]
+            if entity == "Catalog_Сотрудники":
+                return [[{
+                    "Ref_Key": EMPLOYEE_GUID,
+                    "Description": "Иванов Иван Иванович",
+                    "DeletionMark": False,
+                }]]
+            if entity == "Catalog_ВидыНачисленийИУдержаний":
+                return [[{
+                    "Ref_Key": TYPE_GUID,
+                    "Description": "Оклад",
+                    "Тип": "Начисление",
+                    "IsFolder": False,
+                    "DeletionMark": False,
+                }]]
+            raise AssertionError(entity)
+
+        reader.pages_for.side_effect = pages
+        result = read_current_plan(
+            {
+                "ONEC_ODATA_ORGANIZATION_GUIDS": ORG_GUID,
+                "ONEC_ODATA_PAYROLL_CURRENCY_GUID": CURRENCY_GUID,
+            },
+            date(2026, 9, 20),
+        )
+
+        self.assertEqual(result["items"], [])
 
 
 class PayrollCurrentCompensationTests(TestCase):
