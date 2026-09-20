@@ -1,0 +1,104 @@
+name: Smoke topbar breadcrumbs production
+
+on:
+  push:
+    branches:
+      - qa/topbar-smoke-20260920
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_smoke
+          chmod 600 ~/.ssh/service2_smoke
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Verify nested breadcrumbs and Back control
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+          EXPECTED_PROD_SHA: "12223e324598b5794661c42b674789df5f2b8c5b"
+        run: |
+          set -euo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          ssh -i ~/.ssh/service2_smoke -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash -s -- '$DEPLOY_APP_PATH' '$EXPECTED_PROD_SHA'" <<'REMOTE'
+          set -euo pipefail
+          app_path="$1"
+          expected_sha="$2"
+          cd "$app_path"
+          test "$(git rev-parse HEAD)" = "$expected_sha"
+          ../venv/bin/python manage.py shell <<'PY'
+          import json
+          from django.test import Client
+          from django.urls import reverse
+          from pool_service.models import Organization, OrganizationAccess
+
+          organization = Organization.objects.get(pk=1)
+          owner_access = (
+              OrganizationAccess.objects.filter(
+                  organization=organization,
+                  role__in=["owner", "admin"],
+                  user__is_active=True,
+              )
+              .select_related("user")
+              .order_by("id")
+              .first()
+          )
+          if owner_access is None:
+              raise RuntimeError("No owner/admin for topbar smoke")
+          employee_access = (
+              OrganizationAccess.objects.filter(
+                  organization=organization,
+                  user__is_active=True,
+              )
+              .exclude(user_id=owner_access.user_id)
+              .select_related("user")
+              .order_by("id")
+              .first()
+          )
+          if employee_access is None:
+              raise RuntimeError("No employee for topbar smoke")
+
+          client = Client(HTTP_HOST="service2.aqualine22.ru")
+          client.force_login(owner_access.user)
+          response = client.get(
+              reverse("finance_employee_detail", args=[employee_access.user_id]),
+              secure=True,
+          )
+          body = response.content.decode("utf-8")
+          expected = {
+              "status": response.status_code,
+              "back": 'data-history-back' in body and ">Назад<" in body,
+              "finance": (
+                  f'href="{reverse("finance_dashboard")}" class="desktop-topbar__crumb">Финансы</a>'
+                  in body
+              ),
+              "my_finance": (
+                  f'href="{reverse("finance_my")}" class="desktop-topbar__crumb">Мои финансы</a>'
+                  in body
+              ),
+              "employee": 'aria-current="page">Сотрудник</span>' in body,
+          }
+          if response.status_code != 200 or not all(
+              expected[key] for key in ("back", "finance", "my_finance", "employee")
+          ):
+              raise RuntimeError(f"Topbar smoke failed: {expected}")
+          print("TOPBAR_SMOKE", json.dumps(expected, ensure_ascii=False))
+          PY
+          REMOTE
