@@ -3783,13 +3783,23 @@ def finance_payroll_plan_refresh(request):
     except PermissionDenied:
         return HttpResponseForbidden("Недостаточно прав для обновления окладов.")
     else:
+        message = (
+            f"Оклады из 1С обновлены за {snapshot.period_month:%m.%Y}."
+            if created
+            else "Оклады из 1С не изменились."
+        )
+        if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+            return JsonResponse({
+                "ok": True,
+                "created": created,
+                "message": message,
+                "period_month": snapshot.period_month.isoformat(),
+                "fetched_at": snapshot.fetched_at.isoformat(),
+            })
         if created:
-            messages.success(
-                request,
-                f"Оклады из 1С обновлены за {snapshot.period_month:%m.%Y}.",
-            )
+            messages.success(request, message)
         else:
-            messages.info(request, "Оклады из 1С не изменились.")
+            messages.info(request, message)
     return redirect("finance_payroll_dashboard")
 
 
