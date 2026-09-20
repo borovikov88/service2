@@ -24,6 +24,7 @@ from pool_service.finance_imports.odata_payroll_drafts import (
     auto_coverage_config,
     config_from_settings,
 )
+from pool_service.finance_imports.odata_finance_position import calendar_timezone
 from pool_service.models import (
     DataAuditLog,
     PayrollPlanItem,
@@ -34,6 +35,13 @@ from pool_service.services.permissions import company_has_access
 
 
 ZERO = Decimal("0.00")
+
+
+def current_payroll_plan_date(now=None):
+    current = now or timezone.now()
+    if timezone.is_naive(current):
+        raise PayrollPlanSyncError("Часы финансового календаря должны содержать часовой пояс.")
+    return current.astimezone(calendar_timezone()).date()
 
 
 class PayrollPlanSyncError(ValidationError):
@@ -181,7 +189,7 @@ def refresh_payroll_plan_snapshot(organization, user, *, as_of=None):
     auto_coverage_config()
     config = config_from_settings()
     organizations, currency = _configured_scope(config)
-    as_of = as_of or timezone.localdate()
+    as_of = as_of or current_payroll_plan_date()
     payload = _read_plan_payload(config, as_of)
     items = _validated_items(payload, as_of, organizations, currency)
 
