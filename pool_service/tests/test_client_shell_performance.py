@@ -7,6 +7,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from pool_service.models import Organization, OrganizationAccess
+from pool_service.services.finance import finance_navigation
 
 
 @override_settings(ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1", "service2.aqualine22.ru", "rovikpool.ru"])
@@ -55,6 +56,26 @@ class ClientShellPerformanceTests(TestCase):
         self.assertIn('class="desktop-sidebar__group"', source)
         self.assertIn("<summary", source)
         self.assertIn("desktop-sidebar__group-chevron", source)
+
+    def test_gross_profit_navigation_opens_current_month_by_default(self):
+        navigation = finance_navigation(self.user, self.organization)
+        item = next(
+            item
+            for group in navigation
+            for item in group["items"]
+            if item["route_name"] == "finance_onec_profit_dashboard"
+        )
+
+        self.assertEqual(
+            item["url"],
+            f"{reverse('finance_onec_profit_dashboard')}?period=current_month",
+        )
+
+        response = self.client.get(
+            reverse("pool_list"),
+            HTTP_HOST="service2.aqualine22.ru",
+        )
+        self.assertContains(response, item["url"])
 
     def test_public_indexable_host_keeps_metrika(self):
         response = self.client.get(
