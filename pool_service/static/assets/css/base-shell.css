@@ -1415,6 +1415,61 @@
         font-weight: 600;
       }
 
+      .desktop-topbar__back {
+        height: 32px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 9px;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: #5b6c82;
+        font: inherit;
+        font-size: 0.82rem;
+        font-weight: 600;
+        cursor: pointer;
+      }
+
+      .desktop-topbar__back:hover {
+        background: #eef4fc;
+        color: #0d6efd;
+      }
+
+      .desktop-topbar__breadcrumbs {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+      }
+
+      .desktop-topbar__crumb {
+        color: #5b6c82;
+        text-decoration: none;
+        min-width: 0;
+      }
+
+      a.desktop-topbar__crumb:hover {
+        color: #0d6efd;
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+
+      .desktop-topbar__crumb--current {
+        color: #17283f;
+        font-weight: 700;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .desktop-topbar__crumb-separator {
+        flex: 0 0 auto;
+        color: #9aa8b8;
+        font-size: 0.72rem;
+      }
+
       .desktop-topbar__home {
         width: 32px;
         height: 32px;
