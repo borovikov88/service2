@@ -1268,6 +1268,8 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
                     expected_triggers = ["workflow_dispatch"]
                 elif workflow.name == "finance-sync.yml":
                     expected_triggers = ["schedule", "workflow_dispatch"]
+                elif workflow.name == "production-health.yml":
+                    expected_triggers = ["schedule", "workflow_dispatch"]
                 elif workflow.name == "hosting-connection-check.yml":
                     expected_triggers = ["workflow_dispatch", "push"]
                 elif workflow.name in allowed_automatic_workflows:
