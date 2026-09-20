@@ -118,14 +118,28 @@
       </a>
       {% endif %}
 
-      {% if can_access_finance %}
-      <details class="desktop-sidebar__group" {% if active_tab == 'finance' %}open{% endif %}>
-        <summary class="desktop-sidebar__link {% if active_tab == 'finance' %}is-active{% endif %}">
-          <i class="bi bi-bar-chart-line"></i><span>Финансы</span><i class="bi bi-chevron-down desktop-sidebar__group-chevron"></i>
+      {% if can_access_management_finance %}
+      <details class="desktop-sidebar__group" {% if active_finance_area == 'management' %}open{% endif %}>
+        <summary class="desktop-sidebar__link {% if active_finance_area == 'management' %}is-active{% endif %}">
+          <i class="bi bi-bar-chart-line"></i><span>Управленческие финансы</span><i class="bi bi-chevron-down desktop-sidebar__group-chevron"></i>
         </summary>
         <div class="desktop-sidebar__subnav">
-          {% for group in finance_navigation %}{% if group.items %}
-            <div class="desktop-sidebar__subheading">{{ group.label }}</div>
+          {% for group in management_finance_navigation %}{% if group.items %}
+            {% if group.label %}<div class="desktop-sidebar__subheading">{{ group.label }}</div>{% endif %}
+            {% for item in group.items %}
+              <a href="{{ item.url }}" class="desktop-sidebar__sublink {% if item.active %}is-active{% endif %}">{{ item.label }}</a>
+            {% endfor %}
+          {% endif %}{% endfor %}
+        </div>
+      </details>
+      {% endif %}
+      {% if can_access_finance_operations %}
+      <details class="desktop-sidebar__group" {% if active_finance_area == 'operations' %}open{% endif %}>
+        <summary class="desktop-sidebar__link {% if active_finance_area == 'operations' %}is-active{% endif %}">
+          <i class="bi bi-cash-stack"></i><span>Операции</span><i class="bi bi-chevron-down desktop-sidebar__group-chevron"></i>
+        </summary>
+        <div class="desktop-sidebar__subnav">
+          {% for group in finance_operations_navigation %}{% if group.items %}
             {% for item in group.items %}
               <a href="{{ item.url }}" class="desktop-sidebar__sublink {% if item.active %}is-active{% endif %}">{{ item.label }}</a>
             {% endfor %}
@@ -308,13 +322,24 @@
           {% if is_org_staff %}
             <a class="text-decoration-none {% if active_tab == 'clients' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'clients_list' %}">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;</a>
           {% endif %}
-          {% if can_access_finance %}
+          {% if can_access_management_finance %}
             <div class="crm-nav">
-              <a class="crm-nav__link text-decoration-none {% if active_tab == 'finance' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'finance_dashboard' %}">Финансы</a>
+              <a class="crm-nav__link text-decoration-none {% if active_finance_area == 'management' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'finance_dashboard' %}">Управленческие финансы</a>
               <span class="crm-nav__toggle" aria-hidden="true"><i class="bi bi-chevron-down"></i></span>
               <div class="crm-nav__menu">
-                {% for group in finance_navigation %}{% if group.items %}
-                  <div class="small text-muted fw-semibold px-3 pt-2 pb-1">{{ group.label }}</div>
+                {% for group in management_finance_navigation %}{% if group.items %}
+                  {% if group.label %}<div class="small text-muted fw-semibold px-3 pt-2 pb-1">{{ group.label }}</div>{% endif %}
+                  {% for item in group.items %}<a href="{{ item.url }}" class="ui-dropdown__item {% if item.active %}is-active{% endif %}"><span>{{ item.label }}</span></a>{% endfor %}
+                {% endif %}{% endfor %}
+              </div>
+            </div>
+          {% endif %}
+          {% if can_access_finance_operations %}
+            <div class="crm-nav">
+              <a class="crm-nav__link text-decoration-none {% if active_finance_area == 'operations' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'finance_operations' %}">Операции</a>
+              <span class="crm-nav__toggle" aria-hidden="true"><i class="bi bi-chevron-down"></i></span>
+              <div class="crm-nav__menu">
+                {% for group in finance_operations_navigation %}{% if group.items %}
                   {% for item in group.items %}<a href="{{ item.url }}" class="ui-dropdown__item {% if item.active %}is-active{% endif %}"><span>{{ item.label }}</span></a>{% endfor %}
                 {% endif %}{% endfor %}
               </div>
@@ -498,15 +523,28 @@
           {% if is_org_staff %}
           <a href="{% url 'clients_list' %}" class="list-group-item list-group-item-action">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;</a>
           {% endif %}
-          {% if can_access_finance %}
-          <details class="mobile-submenu mb-2" {% if active_tab == 'finance' %}open{% endif %}>
+          {% if can_access_management_finance %}
+          <details class="mobile-submenu mb-2" {% if active_finance_area == 'management' %}open{% endif %}>
             <summary class="mobile-submenu__summary">
-              <span>Финансы</span>
+              <span>Управленческие финансы</span>
               <i class="bi bi-chevron-down"></i>
             </summary>
             <div class="mobile-submenu__body">
-              {% for group in finance_navigation %}{% if group.items %}
-                <div class="small text-muted fw-semibold px-3 pt-2 pb-1">{{ group.label }}</div>
+              {% for group in management_finance_navigation %}{% if group.items %}
+                {% if group.label %}<div class="small text-muted fw-semibold px-3 pt-2 pb-1">{{ group.label }}</div>{% endif %}
+                {% for item in group.items %}<a href="{{ item.url }}" class="mobile-submenu__item {% if item.active %}is-active{% endif %}"><span>{{ item.label }}</span></a>{% endfor %}
+              {% endif %}{% endfor %}
+            </div>
+          </details>
+          {% endif %}
+          {% if can_access_finance_operations %}
+          <details class="mobile-submenu mb-2" {% if active_finance_area == 'operations' %}open{% endif %}>
+            <summary class="mobile-submenu__summary">
+              <span>Операции</span>
+              <i class="bi bi-chevron-down"></i>
+            </summary>
+            <div class="mobile-submenu__body">
+              {% for group in finance_operations_navigation %}{% if group.items %}
                 {% for item in group.items %}<a href="{{ item.url }}" class="mobile-submenu__item {% if item.active %}is-active{% endif %}"><span>{{ item.label }}</span></a>{% endfor %}
               {% endif %}{% endfor %}
             </div>
@@ -706,10 +744,16 @@
       </a>
       {% endif %}
       {% endif %}
-      {% if can_access_finance %}
-      <a href="{% url 'finance_dashboard' %}" class="bottom-item {% if active_tab == 'finance' %}active{% endif %}">
-        <i class="bi bi-wallet2 bottom-icon"></i>
+      {% if can_access_management_finance %}
+      <a href="{% url 'finance_dashboard' %}" class="bottom-item {% if active_finance_area == 'management' %}active{% endif %}">
+        <i class="bi bi-bar-chart-line bottom-icon"></i>
         <span>Финансы</span>
+      </a>
+      {% endif %}
+      {% if can_access_finance_operations %}
+      <a href="{% url 'finance_operations' %}" class="bottom-item {% if active_finance_area == 'operations' %}active{% endif %}">
+        <i class="bi bi-cash-stack bottom-icon"></i>
+        <span>Операции</span>
       </a>
       {% endif %}
       <a href="{% url 'profile' %}" class="bottom-item {% if active_tab == 'profile' %}active{% endif %}">

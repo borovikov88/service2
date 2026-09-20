@@ -26,6 +26,7 @@ class FinanceTopbarBreadcrumbBuilderTests(TestCase):
         ]
 
         breadcrumbs = _finance_topbar_breadcrumbs(
+            [],
             navigation,
             "finance_employee_detail",
         )
@@ -33,7 +34,7 @@ class FinanceTopbarBreadcrumbBuilderTests(TestCase):
         self.assertEqual(
             breadcrumbs,
             [
-                {"label": "Финансы", "url": reverse("finance_dashboard")},
+                {"label": "Операции", "url": reverse("finance_operations")},
                 {"label": "Мои финансы", "url": "/finance/my/"},
                 {"label": "Сотрудник", "url": ""},
             ],
@@ -56,13 +57,14 @@ class FinanceTopbarBreadcrumbBuilderTests(TestCase):
 
         breadcrumbs = _finance_topbar_breadcrumbs(
             navigation,
+            [],
             "finance_payroll_employee_profile",
         )
 
         self.assertEqual(
             breadcrumbs,
             [
-                {"label": "Финансы", "url": reverse("finance_dashboard")},
+                {"label": "Управленческие финансы", "url": reverse("finance_dashboard")},
                 {"label": "Фонд оплаты труда", "url": "/finance/payroll/"},
                 {"label": "Сотрудники", "url": reverse("finance_payroll_employee_list")},
                 {"label": "Карточка сотрудника", "url": ""},
@@ -108,7 +110,7 @@ class FinanceTopbarRenderedTests(TestCase):
         self.assertContains(response, ">Назад<", html=False)
         self.assertContains(
             response,
-            f'href="{reverse("finance_dashboard")}" class="desktop-topbar__crumb">Финансы</a>',
+            f'href="{reverse("finance_operations")}" class="desktop-topbar__crumb">Операции</a>',
             html=False,
         )
         self.assertContains(

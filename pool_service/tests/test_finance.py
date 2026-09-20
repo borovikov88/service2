@@ -170,7 +170,8 @@ class FinanceTests(TestCase):
             response = self.client.get(reverse("finance_kkm_cash_dashboard"))
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, ">Финансы</span>", html=False)
+        self.assertContains(response, ">Операции</span>", html=False)
+        self.assertNotContains(response, "Управленческие финансы")
         self.assertContains(response, "desktop-sidebar__subnav")
 
     def test_kkm_dashboard_shows_compact_balance_summary(self):
