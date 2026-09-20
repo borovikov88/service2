@@ -1,0 +1,129 @@
+name: Smoke employee HR production
+
+on:
+  push:
+    branches:
+      - qa/employee-hr-smoke-20260920
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_smoke
+          chmod 600 ~/.ssh/service2_smoke
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+      - name: Verify employee mapping and HR cards
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+          EXPECTED_PROD_SHA: "8297f136545e873fdec2346ac266843dc70ab495"
+        run: |
+          set -euo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          ssh -i ~/.ssh/service2_smoke -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash -s -- '$DEPLOY_APP_PATH' '$EXPECTED_PROD_SHA'" <<'REMOTE'
+          set -euo pipefail
+          app_path="$1"
+          expected_sha="$2"
+          cd "$app_path"
+          test "$(git rev-parse HEAD)" = "$expected_sha"
+          ../venv/bin/python manage.py shell <<'PY'
+          import json
+          from django.contrib.auth.models import User
+          from django.db.models import Count
+          from django.test import Client
+          from django.urls import reverse
+          from pool_service.models import Employee, EmployeeOneCIdentity, Organization
+
+          org = Organization.objects.get(pk=1)
+          alexander = User.objects.get(
+              organizationaccess__organization=org,
+              first_name="Александр",
+              last_name="Боровиков",
+              is_active=True,
+          )
+          employees = list(
+              Employee.objects.filter(organization=org, is_active=True)
+              .order_by("display_name", "id")
+          )
+          duplicates = list(
+              EmployeeOneCIdentity.objects.filter(organization=org)
+              .values("normalized_name")
+              .annotate(count=Count("id"))
+              .filter(count__gt=1)
+          )
+          if len(employees) != 17:
+              raise RuntimeError(f"Expected 17 employee cards, got {len(employees)}")
+          if duplicates:
+              raise RuntimeError(f"Duplicate identities remain: {duplicates}")
+
+          client = Client(HTTP_HOST="service2.aqualine22.ru")
+          client.force_login(alexander)
+          mapping = client.get(reverse("finance_payroll_employee_mapping"), secure=True)
+          staff = client.get(reverse("finance_payroll_employee_list"), secure=True)
+          if mapping.status_code != 200 or staff.status_code != 200:
+              raise RuntimeError(
+                  f"Unexpected HTTP mapping={mapping.status_code} staff={staff.status_code}"
+              )
+          mapping_body = mapping.content.decode("utf-8")
+          staff_body = staff.content.decode("utf-8")
+          expected_names = [
+              "Боровиков Александр Юрьевич",
+              "Боровикова Елена Александровна",
+              "Крафт Дарья Валерьевна",
+              "Цыкалов Дмитрий",
+              "Шукшин Илья Сергеевич",
+          ]
+          missing_mapping = [name for name in expected_names if name not in mapping_body]
+          missing_staff = [name for name in expected_names if name not in staff_body]
+          if missing_mapping or missing_staff:
+              raise RuntimeError(
+                  f"Missing names mapping={missing_mapping} staff={missing_staff}"
+              )
+          alex_employee = Employee.objects.get(organization=org, user=alexander)
+          profile = client.get(
+              reverse("finance_payroll_employee_profile", args=[alex_employee.pk]),
+              secure=True,
+          )
+          if profile.status_code != 200:
+              raise RuntimeError(f"Profile HTTP {profile.status_code}")
+          profile_body = profile.content.decode("utf-8")
+          for marker in (
+              "Кадровая карточка сотрудника",
+              "Зарплата текущего месяца",
+              "Связь с 1С",
+              "ФОТ по месяцам",
+              "Отпуска и отгулы",
+              "Проценты и бонусы",
+          ):
+              if marker not in profile_body:
+                  raise RuntimeError(f"Missing profile marker: {marker}")
+
+          print("EMPLOYEE_HR_FINAL_SMOKE", json.dumps({
+              "production_sha": expected_sha,
+              "employee_cards": len(employees),
+              "identities": EmployeeOneCIdentity.objects.filter(organization=org).count(),
+              "duplicates": len(duplicates),
+              "mapping_http": mapping.status_code,
+              "staff_http": staff.status_code,
+              "profile_http": profile.status_code,
+              "mapping_contains_service2_employees": True,
+              "profile_sections_ok": True,
+          }))
+          PY
+          REMOTE
