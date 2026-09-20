@@ -1,0 +1,292 @@
+name: Full Service2 system audit
+
+on:
+  push:
+    branches: ["qa/full-system-audit"]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Read-only production system audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_audit
+          chmod 600 ~/.ssh/service2_audit
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          PORT="${DEPLOY_PORT:-22}"
+          HOST_LOOKUP="$DEPLOY_HOST"
+          if [[ "$PORT" != "22" ]]; then HOST_LOOKUP="[$DEPLOY_HOST]:$PORT"; fi
+          ssh-keygen -F "$HOST_LOOKUP" -f ~/.ssh/known_hosts >/dev/null
+
+      - name: Audit production runtime and database
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          ssh -i ~/.ssh/service2_audit \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash -s -- '$DEPLOY_APP_PATH'" <<'SH'
+          set -Eeuo pipefail
+          app_path="$1"
+          cd "$app_path"
+
+          echo "=== GIT ==="
+          printf 'AUDIT_HEAD %s\n' "$(git rev-parse HEAD)"
+          printf 'AUDIT_BRANCH %s\n' "$(git branch --show-current)"
+          printf 'AUDIT_STATUS_BEGIN\n'
+          git status --short || true
+          printf 'AUDIT_STATUS_END\n'
+
+          echo "=== RUNTIME ==="
+          ../venv/bin/python - <<'PY'
+          import django, platform, sys
+          print("PYTHON_VERSION", sys.version.replace("\n", " "))
+          print("DJANGO_VERSION", django.get_version())
+          print("PLATFORM", platform.platform())
+          PY
+
+          echo "=== DJANGO CHECK ==="
+          ../venv/bin/python manage.py check
+          echo "=== MIGRATION DRIFT ==="
+          ../venv/bin/python manage.py makemigrations --check --dry-run
+          echo "=== MIGRATION PLAN ==="
+          ../venv/bin/python manage.py migrate --plan | tail -n 80
+
+          echo "=== FILESYSTEM ==="
+          df -h . ../tmp 2>/dev/null || true
+          du -sh . ../tmp public_static 2>/dev/null || true
+
+          echo "=== DATABASE AND APPLICATION STATE ==="
+          ../venv/bin/python manage.py shell <<'PY'
+          import json
+          import time
+          from datetime import timedelta
+
+          from django.contrib.auth import get_user_model
+          from django.db import connection
+          from django.db.migrations.recorder import MigrationRecorder
+          from django.utils import timezone
+
+          from pool_service.models import (
+              CashFlowArticleMapping,
+              Client,
+              CrmItem,
+              Employee,
+              OneCImportBatch,
+              OneCODataSyncRun,
+              OneCReportPeriodState,
+              Organization,
+              OrganizationAccess,
+              Pool,
+              ServiceTask,
+              WaterReading,
+          )
+
+          User = get_user_model()
+
+          with connection.cursor() as cursor:
+              for n in range(3):
+                  started = time.perf_counter()
+                  cursor.execute("SELECT 1")
+                  cursor.fetchone()
+                  print("DB_PING_MS", n + 1, round((time.perf_counter() - started) * 1000, 2))
+              try:
+                  cursor.execute("SELECT VERSION()")
+                  print("DB_VERSION", cursor.fetchone()[0])
+              except Exception as exc:
+                  print("DB_VERSION_ERROR", type(exc).__name__, str(exc))
+
+          applied = MigrationRecorder(connection).applied_migrations()
+          pool_applied = sorted(name for app, name in applied if app == "pool_service")
+          print("MIGRATIONS_POOL_APPLIED_COUNT", len(pool_applied))
+          print("MIGRATIONS_POOL_LAST", pool_applied[-10:])
+
+          counts = {
+              "organizations": Organization.objects.count(),
+              "users": User.objects.count(),
+              "organization_accesses": OrganizationAccess.objects.count(),
+              "clients": Client.objects.count(),
+              "pools_active": Pool.objects.filter(is_deleted=False).count(),
+              "water_readings_active": WaterReading.objects.filter(is_deleted=False).count(),
+              "service_tasks": ServiceTask.objects.count(),
+              "crm_items": CrmItem.objects.count(),
+              "employees": Employee.objects.count(),
+              "cashflow_mappings": CashFlowArticleMapping.objects.count(),
+              "active_report_period_states": OneCReportPeriodState.objects.count(),
+          }
+          print("APP_COUNTS " + json.dumps(counts, ensure_ascii=False, sort_keys=True))
+
+          now = timezone.now()
+          stuck_before = now - timedelta(minutes=30)
+          stale_before = now - timedelta(hours=6)
+
+          sync_counts = {
+              row["status"]: row["count"]
+              for row in OneCODataSyncRun.objects.values("status")
+              .order_by()
+              .annotate(count=__import__("django.db.models").db.models.Count("id"))
+          }
+          print("SYNC_STATUS_COUNTS " + json.dumps(sync_counts, sort_keys=True))
+          print(
+              "SYNC_STUCK_COUNT",
+              OneCODataSyncRun.objects.filter(
+                  status__in=[
+                      OneCODataSyncRun.STATUS_PENDING,
+                      OneCODataSyncRun.STATUS_RUNNING,
+                  ],
+                  created_at__lt=stuck_before,
+              ).count(),
+          )
+
+          latest_syncs = []
+          for run in OneCODataSyncRun.objects.select_related("organization").order_by("-created_at")[:12]:
+              latest_syncs.append({
+                  "id": str(run.id),
+                  "organization_id": run.organization_id,
+                  "mode": run.mode,
+                  "status": run.status,
+                  "created_at": run.created_at.isoformat() if run.created_at else None,
+                  "started_at": run.started_at.isoformat() if run.started_at else None,
+                  "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+                  "applied_at": run.applied_at.isoformat() if run.applied_at else None,
+                  "requested_report_types": run.requested_report_types,
+                  "error": (run.error_message or "")[:240],
+              })
+          print("LATEST_SYNCS " + json.dumps(latest_syncs, ensure_ascii=False))
+
+          recent_batches = []
+          for batch in OneCImportBatch.objects.select_related("organization").order_by("-uploaded_at")[:20]:
+              recent_batches.append({
+                  "id": str(batch.id),
+                  "organization_id": batch.organization_id,
+                  "type": batch.import_type,
+                  "source": batch.source_type,
+                  "status": batch.status,
+                  "uploaded_at": batch.uploaded_at.isoformat() if batch.uploaded_at else None,
+                  "confirmed_at": batch.confirmed_at.isoformat() if batch.confirmed_at else None,
+              })
+          print("LATEST_IMPORT_BATCHES " + json.dumps(recent_batches, ensure_ascii=False))
+
+          failed_recent = OneCImportBatch.objects.filter(
+              status=OneCImportBatch.STATUS_FAILED,
+              uploaded_at__gte=now - timedelta(days=2),
+          ).count()
+          print("FAILED_IMPORT_BATCHES_48H", failed_recent)
+          PY
+
+          echo "=== LOG HEALTH ==="
+          for file in ../development-analysis-poll.log ../development-codex-poll.log; do
+            if [[ -f "$file" ]]; then
+              echo "LOG_SUMMARY $file"
+              tail -n 200 "$file" | grep -E 'checked=|errors=|Traceback|OperationalError|Connection refused' | tail -n 60 || true
+            fi
+          done
+          SH
+
+      - name: Measure key application pages in production context
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          ssh -i ~/.ssh/service2_audit \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "cd '$DEPLOY_APP_PATH' && ../venv/bin/python manage.py shell" <<'PY'
+          import json
+          import time
+          import traceback
+
+          from django.contrib.auth import get_user_model
+          from django.contrib.messages.storage.fallback import FallbackStorage
+          from django.db import connection
+          from django.test import RequestFactory
+          from django.test.utils import CaptureQueriesContext
+          from django.urls import resolve, reverse
+
+          from pool_service.models import OrganizationAccess, Pool
+
+          User = get_user_model()
+          access = (
+              OrganizationAccess.objects.filter(role__in=["owner", "admin"], user__is_active=True)
+              .select_related("organization", "user")
+              .order_by("organization_id", "id")
+              .first()
+          )
+          if access is None:
+              raise SystemExit("No owner/admin access for audit")
+
+          pool = Pool.objects.filter(
+              organization=access.organization,
+              is_deleted=False,
+          ).order_by("id").first()
+
+          routes = [
+              ("pools", reverse("pool_list")),
+              ("clients", reverse("clients_list")),
+              ("users", reverse("users")),
+              ("crm-index", reverse("crm_index")),
+              ("crm-service", reverse("crm_list", kwargs={"direction": "service"})),
+              ("crm-tasks", reverse("crm_tasks")),
+              ("calendar", reverse("readings_all")),
+              ("notifications", reverse("notifications")),
+              ("finance-overview", reverse("finance_overview")),
+              ("finance-kkm", reverse("finance_kkm_cash_dashboard")),
+              ("finance-data", reverse("finance_data")),
+              ("finance-report", reverse("finance_report")),
+          ]
+          if pool is not None:
+              routes.insert(1, ("pool-detail", reverse("pool_detail", kwargs={"pool_uuid": pool.uuid})))
+
+          factory = RequestFactory()
+          for label, path in routes:
+              try:
+                  user = User.objects.select_related("profile").get(pk=access.user_id)
+                  request = factory.get(path, HTTP_HOST="service2.aqualine22.ru")
+                  request.user = user
+                  request.session = {}
+                  request._messages = FallbackStorage(request)
+                  match = resolve(path)
+                  request.resolver_match = match
+                  started = time.perf_counter()
+                  with CaptureQueriesContext(connection) as captured:
+                      response = match.func(request, *match.args, **match.kwargs)
+                      if hasattr(response, "render"):
+                          response.render()
+                  elapsed = (time.perf_counter() - started) * 1000
+                  query_ms = sum(float(q.get("time") or 0) * 1000 for q in captured.captured_queries)
+                  print("PAGE_AUDIT " + json.dumps({
+                      "page": label,
+                      "path": path,
+                      "status": getattr(response, "status_code", None),
+                      "elapsed_ms": round(elapsed, 1),
+                      "queries": len(captured),
+                      "query_ms": round(query_ms, 1),
+                      "html_kb": round(len(getattr(response, "content", b"")) / 1024, 1),
+                  }, ensure_ascii=False, sort_keys=True))
+              except Exception as exc:
+                  print("PAGE_FAIL", label, path, type(exc).__name__, str(exc))
+                  traceback.print_exc()
+          PY
