@@ -1,0 +1,151 @@
+name: Production emergency recovery
+
+on:
+  push:
+    branches: ["qa/prod-emergency-recovery"]
+
+permissions:
+  contents: read
+
+jobs:
+  recovery:
+    name: Restart Passenger and HTTP smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_recovery
+          chmod 600 ~/.ssh/service2_recovery
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          PORT="${DEPLOY_PORT:-22}"
+          HOST_LOOKUP="$DEPLOY_HOST"
+          if [[ "$PORT" != "22" ]]; then HOST_LOOKUP="[$DEPLOY_HOST]:$PORT"; fi
+          ssh-keygen -F "$HOST_LOOKUP" -f ~/.ssh/known_hosts >/dev/null
+
+      - name: Verify DB, restart Passenger, and smoke authenticated pages
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          ssh -i ~/.ssh/service2_recovery \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash -s -- '$DEPLOY_APP_PATH'" <<'SH'
+          set -Eeuo pipefail
+          app_path="$1"
+          cd "$app_path"
+          printf 'RECOVERY_HEAD %s\n' "$(git rev-parse HEAD)"
+          if [[ "$(git rev-parse HEAD)" != "d6ee081813a98ebccec2a08d23137c68817f00f2" ]]; then
+            echo "Unexpected production HEAD; refusing restart"
+            exit 1
+          fi
+
+          echo "DB_CHECK_BEGIN"
+          for n in 1 2 3; do
+            ../venv/bin/python manage.py shell -c "from django.db import connection; c=connection.cursor(); c.execute('SELECT 1'); print('DB_OK', c.fetchone()[0])"
+            sleep 2
+          done
+          echo "DB_CHECK_END"
+
+          touch ../tmp/restart.txt
+          echo "PASSENGER_RESTART_TRIGGERED"
+          sleep 6
+
+          ../venv/bin/python manage.py shell <<'PY'
+          import ssl
+          import urllib.error
+          import urllib.request
+          from django.conf import settings
+          from django.contrib.auth import BACKEND_SESSION_KEY, HASH_SESSION_KEY, SESSION_KEY, get_user_model
+          from django.contrib.sessions.backends.db import SessionStore
+          from django.urls import reverse
+          from pool_service.models import OrganizationAccess, Pool
+
+          User = get_user_model()
+          access = (
+              OrganizationAccess.objects.filter(
+                  role__in=["owner", "admin"],
+                  user__is_active=True,
+              )
+              .select_related("user", "organization")
+              .order_by("organization_id", "id")
+              .first()
+          )
+          if access is None:
+              raise SystemExit("No active owner/admin user for smoke test")
+
+          user = access.user
+          session = SessionStore()
+          session[SESSION_KEY] = str(user.pk)
+          session[BACKEND_SESSION_KEY] = "django.contrib.auth.backends.ModelBackend"
+          session[HASH_SESSION_KEY] = user.get_session_auth_hash()
+          session.save()
+          session_key = session.session_key
+          cookie_name = settings.SESSION_COOKIE_NAME
+          base = "https://service2.aqualine22.ru"
+
+          pool = Pool.objects.filter(
+              organization=access.organization,
+              is_deleted=False,
+          ).order_by("id").first()
+
+          paths = [
+              reverse("pool_list"),
+              reverse("clients_list"),
+              reverse("crm_index"),
+              reverse("crm_list", kwargs={"direction": "service"}),
+              reverse("readings_all"),
+              reverse("finance_overview"),
+              reverse("finance_kkm_cash_dashboard"),
+              reverse("finance_data"),
+              reverse("finance_report"),
+          ]
+          if pool is not None:
+              paths.insert(1, reverse("pool_detail", kwargs={"pool_uuid": pool.uuid}))
+
+          failures = []
+          try:
+              for path in paths:
+                  req = urllib.request.Request(
+                      base + path,
+                      headers={
+                          "Cookie": f"{cookie_name}={session_key}",
+                          "User-Agent": "Service2-Emergency-Smoke/1.0",
+                      },
+                  )
+                  try:
+                      with urllib.request.urlopen(req, timeout=20, context=ssl.create_default_context()) as response:
+                          status = response.getcode()
+                          final_url = response.geturl()
+                          payload = response.read(1024)
+                          print("HTTP_SMOKE", path, status, final_url, len(payload))
+                          if status >= 500:
+                              failures.append((path, status))
+                  except urllib.error.HTTPError as exc:
+                      print("HTTP_SMOKE", path, exc.code, exc.geturl(), "HTTPError")
+                      if exc.code >= 500:
+                          failures.append((path, exc.code))
+                  except Exception as exc:
+                      print("HTTP_SMOKE_ERROR", path, type(exc).__name__, str(exc))
+                      failures.append((path, type(exc).__name__))
+          finally:
+              session.delete(session_key)
+
+          if failures:
+              raise SystemExit(f"HTTP smoke failures: {failures}")
+          PY
+          SH
