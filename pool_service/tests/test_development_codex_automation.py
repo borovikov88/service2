@@ -1248,6 +1248,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
             "finance-sync.yml",
             "hosting-connection-check.yml",
             "management-finance-mysql.yml",
+            "production-health.yml",
         }
         expected_workflows = (
             manual_canary_workflows | {production_workflow} | allowed_automatic_workflows
