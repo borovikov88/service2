@@ -90,5 +90,21 @@ jobs:
               f"other_plan_total={other}",
               f"source_rows={snapshot.source_rows}",
           )
+          from pool_service.finance_imports.payroll_plan import payroll_compensation_dashboard_data
+          dashboard = payroll_compensation_dashboard_data(
+              organization,
+              snapshot.period_month,
+          )
+          print(
+              "PAYROLL_PLAN_DASHBOARD",
+              f"has_data={dashboard['has_data']}",
+              f"employees={len(dashboard['employees'])}",
+              f"base_salary_total={dashboard['base_salary_total']}",
+              f"percent_total={dashboard['percent_total']}",
+              f"bonus_total={dashboard['bonus_total']}",
+              f"total={dashboard['total']}",
+              f"other_plan_items={dashboard['other_plan_items']}",
+              f"other_plan_total={dashboard['other_plan_total']}",
+          )
           PY
           REMOTE
