@@ -1,13 +1,12 @@
 {% extends "pool_service/base.html" %}
 {% load finance_tags %}
-{% block title %}ФОТ / Расчёты с персоналом</div>
-{% endblock %}
+{% block title %}ФОТ{% endblock %}
 {% block content %}
 {% include "pool_service/finance/_desktop_workspace_styles.html" %}
 <div class="finance-desktop">
 <div class="finance-page-header d-flex flex-wrap justify-content-between gap-2 mb-3">
-  <div><h1 class="h3 mb-1">ФОТ / Расчёты с персоналом</h1><div class="text-muted">ФОТ из 1С и подробные расчёты по отчётам Excel</div></div>
-  <div class="finance-page-actions d-flex flex-wrap gap-2">{% if can_view_employee_hr %}<a class="btn btn-outline-primary" href="{% url 'finance_payroll_employee_list' %}">Сотрудники</a>{% endif %}{% if can_manage_mapping %}<a class="btn btn-outline-secondary" href="{% url 'finance_payroll_employee_mapping' %}">Сопоставление{% if unresolved_count %} · {{ unresolved_count }}{% endif %}</a>{% endif %}{% if can_import_payroll %}<a class="btn btn-outline-secondary" href="{% url 'finance_data' %}">Данные 1С</a>{% endif %}</div>
+  <div><h1 class="h3 mb-1">ФОТ</h1><div class="text-muted">Зарплата сотрудников, начисления, выплаты и задолженность</div></div>
+  <div class="finance-page-actions d-flex flex-wrap gap-2">{% if can_view_employee_hr %}<a class="btn btn-outline-primary" href="{% url 'finance_payroll_employee_list' %}">Сотрудники</a>{% endif %}{% if can_import_payroll %}<a class="btn btn-outline-secondary" href="{% url 'finance_data' %}">Данные 1С</a>{% endif %}</div>
 </div>
 <form method="get" class="finance-filter-card card card-soft p-3 mb-3"><div class="row g-2 align-items-end"><div class="col-sm-4 col-lg-3"><label class="form-label">С месяца</label><input class="form-control" type="month" name="period_from" value="{{ period_from|date:'Y-m' }}"></div><div class="col-sm-4 col-lg-3"><label class="form-label">По месяц</label><input class="form-control" type="month" name="period_to" value="{{ period_to|date:'Y-m' }}"></div><div class="col-sm-4 col-lg-2"><button class="btn btn-primary w-100">Показать</button></div></div>{% if period_error %}<div class="text-danger mt-2">{{ period_error }}</div>{% endif %}</form>
 {% if show_personal %}
@@ -15,20 +14,23 @@
   <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
     <div>
       <h2 class="h5 mb-1">Зарплата текущего месяца · {{ compensation.period_month|date:'m.Y' }}</h2>
-      <div class="text-muted small">Оклад — из плановых начислений 1С. Проценты и бонусы будут добавляться расчётом Service2.</div>
+      <div class="text-muted small">Оклад берётся из 1С. Остальные составляющие хранятся помесячно в Service2 и могут рассчитываться или корректироваться отдельно.</div>
     </div>
 
   </div>
   {% if compensation.has_data %}
     <div class="finance-kpi-grid row g-3 mb-3">
-      <div class="col-sm-6 col-xl"><div class="finance-kpi-card card card-soft p-3 h-100"><div class="text-muted small">Оклады</div><div class="h4 mb-0">{{ compensation.base_salary_total|money }}</div></div></div>
-      <div class="col-sm-6 col-xl"><div class="finance-kpi-card card card-soft p-3 h-100"><div class="text-muted small">Проценты</div><div class="h4 mb-0">{{ compensation.percent_total|money }}</div></div></div>
-      <div class="col-sm-6 col-xl"><div class="finance-kpi-card card card-soft p-3 h-100"><div class="text-muted small">Бонусы</div><div class="h4 mb-0">{{ compensation.bonus_total|money }}</div></div></div>
-      <div class="col-sm-6 col-xl"><div class="finance-kpi-card card card-soft p-3 h-100"><div class="text-muted small">Итого план</div><div class="h4 mb-0">{{ compensation.total|money }}</div></div></div>
+      <div class="col-6 col-lg"><div class="finance-kpi-card card card-soft p-3 h-100"><div class="text-muted small">Оклад</div><div class="h5 mb-0">{{ compensation.base_salary_total|money }}</div></div></div>
+      <div class="col-6 col-lg"><div class="finance-kpi-card card card-soft p-3 h-100"><div class="text-muted small">Проценты</div><div class="h5 mb-0">{{ compensation.percent_total|money }}</div></div></div>
+      <div class="col-6 col-lg"><div class="finance-kpi-card card card-soft p-3 h-100"><div class="text-muted small">Бонусы</div><div class="h5 mb-0">{{ compensation.bonus_total|money }}</div></div></div>
+      <div class="col-6 col-lg"><div class="finance-kpi-card card card-soft p-3 h-100"><div class="text-muted small">Доп. дни</div><div class="h5 mb-0">{{ compensation.extra_days_total|money }}</div></div></div>
+      <div class="col-6 col-lg"><div class="finance-kpi-card card card-soft p-3 h-100"><div class="text-muted small">Транспорт</div><div class="h5 mb-0">{{ compensation.transport_total|money }}</div></div></div>
+      <div class="col-6 col-lg"><div class="finance-kpi-card card card-soft p-3 h-100"><div class="text-muted small">Удержания</div><div class="h5 mb-0">− {{ compensation.deduction_total|money }}</div></div></div>
+      <div class="col-12 col-lg"><div class="finance-kpi-card card card-soft p-3 h-100"><div class="text-muted small">Итого</div><div class="h5 mb-0">{{ compensation.total|money }}</div></div></div>
     </div>
     <div class="table-responsive">
       <table class="table table-sm align-middle mb-0">
-        <thead><tr><th>Сотрудник</th><th>Подразделение</th><th class="text-end">Оклад из 1С</th><th class="text-end">Проценты</th><th class="text-end">Бонусы</th><th class="text-end">Итого</th></tr></thead>
+        <thead><tr><th>Сотрудник</th><th>Подразделение</th><th class="text-end">Оклад</th><th class="text-end">Проценты</th><th class="text-end">Бонусы</th><th class="text-end">Доп. дни</th><th class="text-end">Компенсация транспорта</th><th class="text-end">Удержания</th><th class="text-end">Итого</th></tr></thead>
         <tbody>
         {% for row in compensation.employees %}
           <tr>
@@ -37,10 +39,13 @@
             <td class="text-end">{{ row.base_salary|money }}</td>
             <td class="text-end">{% if row.percent_amount %}{{ row.percent_amount|money }}{% else %}—{% endif %}</td>
             <td class="text-end">{% if row.bonus_amount %}{{ row.bonus_amount|money }}{% else %}—{% endif %}</td>
+            <td class="text-end">{% if row.extra_days_amount %}{{ row.extra_days_amount|money }}{% else %}—{% endif %}{% if row.extra_days_count %}<div class="small text-muted">{{ row.extra_days_count }} дн.</div>{% endif %}</td>
+            <td class="text-end">{% if row.transport_compensation_amount %}{{ row.transport_compensation_amount|money }}{% else %}—{% endif %}</td>
+            <td class="text-end">{% if row.deduction_amount %}− {{ row.deduction_amount|money }}{% else %}—{% endif %}</td>
             <td class="text-end fw-semibold">{{ row.total|money }}</td>
           </tr>
         {% empty %}
-          <tr><td colspan="6" class="text-muted">В 1С нет действующих плановых начислений, распознанных для сотрудников.</td></tr>
+          <tr><td colspan="9" class="text-muted">В 1С нет действующих окладов, распознанных для сотрудников.</td></tr>
         {% endfor %}
         </tbody>
       </table>
@@ -60,8 +65,8 @@
 <p class="text-muted">За каждый месяц используются подтверждённые начисления из 1С, а при их отсутствии — начисления из Excel. Источники за один месяц не складываются.</p>
 <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Месяц</th><th class="text-end">Начислено</th><th>Источник</th></tr></thead><tbody>{% for row in accrual_summary.months %}<tr><td>{{ row.period_month|date:'m.Y' }}</td><td class="text-end">{% if row.has_data %}{{ row.accrued|money }}{% else %}—{% endif %}</td><td>{{ row.source_label }}</td></tr>{% endfor %}</tbody></table></div>
 </div>
-<h2 class="h5">Расчёты с персоналом — отчёты Excel</h2>
-<p class="text-muted">Выплаты, остатки и сотрудники показаны по загруженным отчётам Excel. Их начисления могут отличаться от обновлённого ФОТ выше.</p>
+<h2 class="h5">Выплаты и задолженность</h2>
+<p class="text-muted">Фактические выплаты и остатки по расчётам с сотрудниками за выбранный период.</p>
 <div class="finance-kpi-grid row g-3 mb-4">
   <div class="col-sm-6 col-xl"><div class="finance-kpi-card card card-soft p-3 h-100"><div class="text-muted small">Начислено</div><div class="h4 mb-0">{{ data.accrued|money }}</div></div></div>
   <div class="col-sm-6 col-xl"><div class="finance-kpi-card card card-soft p-3 h-100"><div class="text-muted small">Выплачено</div><div class="h4 mb-0">{{ data.paid|money }}</div></div></div>
