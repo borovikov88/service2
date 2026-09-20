@@ -1248,6 +1248,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
             "finance-sync.yml",
             "hosting-connection-check.yml",
             "management-finance-mysql.yml",
+            "production-health.yml",
         }
         expected_workflows = (
             manual_canary_workflows | {production_workflow} | allowed_automatic_workflows
@@ -1266,6 +1267,8 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
                 elif workflow.name == "direct-pr-review.yml":
                     expected_triggers = ["workflow_dispatch"]
                 elif workflow.name == "finance-sync.yml":
+                    expected_triggers = ["schedule", "workflow_dispatch"]
+                elif workflow.name == "production-health.yml":
                     expected_triggers = ["schedule", "workflow_dispatch"]
                 elif workflow.name == "hosting-connection-check.yml":
                     expected_triggers = ["workflow_dispatch", "push"]
