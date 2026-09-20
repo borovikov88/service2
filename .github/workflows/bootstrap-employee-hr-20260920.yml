@@ -1,0 +1,290 @@
+name: Bootstrap canonical employee HR profiles
+
+on:
+  push:
+    branches:
+      - ops/bootstrap-employee-hr-20260920
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_hr
+          chmod 600 ~/.ssh/service2_hr
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Consolidate identities and bootstrap employee cards
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+          EXPECTED_PROD_SHA: "8297f136545e873fdec2346ac266843dc70ab495"
+        run: |
+          set -euo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          ssh -i ~/.ssh/service2_hr -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash -s -- '$DEPLOY_APP_PATH' '$EXPECTED_PROD_SHA'" <<'REMOTE'
+          set -euo pipefail
+          app_path="$1"
+          expected_sha="$2"
+          cd "$app_path"
+          test "$(git rev-parse HEAD)" = "$expected_sha"
+          ../venv/bin/python manage.py shell <<'PY'
+          import json
+          from collections import Counter
+          from decimal import Decimal
+
+          from django.contrib.auth.models import Permission, User
+          from django.db import transaction
+          from django.db.models import Count, Sum
+          from django.test import Client
+          from django.urls import reverse
+
+          from pool_service.models import (
+              Employee,
+              EmployeeOneCIdentity,
+              Organization,
+              OrganizationAccess,
+              PayrollPlanItem,
+              PayrollRow,
+          )
+          from pool_service.services.employee_hr import bootstrap_employee_profiles
+
+          organization = Organization.objects.get(pk=1)
+
+          alexander_ids = list(
+              OrganizationAccess.objects.filter(
+                  organization=organization,
+                  user__is_active=True,
+                  user__first_name="Александр",
+                  user__last_name="Боровиков",
+              ).values_list("user_id", flat=True).distinct()
+          )
+          elena_ids = list(
+              OrganizationAccess.objects.filter(
+                  organization=organization,
+                  role="accountant",
+                  user__is_active=True,
+                  user__first_name="Елена",
+                  user__last_name="Боровикова",
+              ).values_list("user_id", flat=True).distinct()
+          )
+          if len(alexander_ids) != 1:
+              raise SystemExit(f"Expected one Alexander Borovikov, found {len(alexander_ids)}")
+          if len(elena_ids) != 1:
+              raise SystemExit(f"Expected one Elena Borovikova accountant, found {len(elena_ids)}")
+          actor_id = alexander_ids[0]
+          elena_id = elena_ids[0]
+
+          def duplicate_names():
+              return list(
+                  EmployeeOneCIdentity.objects.filter(organization=organization)
+                  .values("normalized_name")
+                  .annotate(count=Count("id"))
+                  .filter(count__gt=1)
+                  .order_by("normalized_name")
+              )
+
+          def sums():
+              payroll = PayrollRow.objects.filter(
+                  organization=organization
+              ).aggregate(
+                  count=Count("id"),
+                  accrued=Sum("accrued"),
+                  paid=Sum("paid"),
+                  opening=Sum("opening_balance"),
+                  closing=Sum("closing_balance"),
+              )
+              plan = PayrollPlanItem.objects.filter(
+                  snapshot__organization=organization
+              ).aggregate(
+                  count=Count("id"),
+                  amount=Sum("amount"),
+              )
+              return {
+                  "payroll_count": payroll["count"],
+                  "payroll_accrued": str(payroll["accrued"] or Decimal("0")),
+                  "payroll_paid": str(payroll["paid"] or Decimal("0")),
+                  "payroll_opening": str(payroll["opening"] or Decimal("0")),
+                  "payroll_closing": str(payroll["closing"] or Decimal("0")),
+                  "plan_count": plan["count"],
+                  "plan_amount": str(plan["amount"] or Decimal("0")),
+              }
+
+          before = {
+              "employees": Employee.objects.filter(organization=organization).count(),
+              "identities": EmployeeOneCIdentity.objects.filter(organization=organization).count(),
+              "duplicates": duplicate_names(),
+              **sums(),
+          }
+          print("EMPLOYEE_BOOTSTRAP_BEFORE", json.dumps(before, ensure_ascii=False))
+
+          with transaction.atomic():
+              actor = User.objects.get(pk=actor_id)
+              result = bootstrap_employee_profiles(organization, actor=actor)
+              if result["merge"]["skipped"] or result["skipped"]:
+                  raise RuntimeError(
+                      "Ambiguous employee identities remain: "
+                      + repr({
+                          "merge_skipped": result["merge"]["skipped"],
+                          "profile_skipped": result["skipped"],
+                      })
+                  )
+
+              permission = Permission.objects.get(
+                  codename="view_employee_hr",
+                  content_type__app_label="pool_service",
+                  content_type__model="employee",
+              )
+              allowed_ids = {actor_id, elena_id}
+              org_user_ids = set(
+                  OrganizationAccess.objects.filter(
+                      organization=organization,
+                      user__is_active=True,
+                  ).values_list("user_id", flat=True)
+              )
+              for user in User.objects.filter(pk__in=org_user_ids):
+                  if user.pk in allowed_ids:
+                      user.user_permissions.add(permission)
+                  else:
+                      user.user_permissions.remove(permission)
+
+              after = {
+                  "employees": Employee.objects.filter(organization=organization).count(),
+                  "identities": EmployeeOneCIdentity.objects.filter(organization=organization).count(),
+                  "duplicates": duplicate_names(),
+                  "unlinked_identities": EmployeeOneCIdentity.objects.filter(
+                      organization=organization,
+                      employee__isnull=True,
+                  ).count(),
+                  "linked_service2_users": Employee.objects.filter(
+                      organization=organization,
+                      user__isnull=False,
+                  ).count(),
+                  **sums(),
+              }
+
+              for key in (
+                  "payroll_count",
+                  "payroll_accrued",
+                  "payroll_paid",
+                  "payroll_opening",
+                  "payroll_closing",
+                  "plan_count",
+                  "plan_amount",
+              ):
+                  if after[key] != before[key]:
+                      raise RuntimeError(
+                          f"Financial invariant changed for {key}: "
+                          f"{before[key]} -> {after[key]}"
+                      )
+              if after["duplicates"]:
+                  raise RuntimeError(f"Duplicate identities remain: {after['duplicates']}")
+              if after["unlinked_identities"] != 0:
+                  raise RuntimeError(
+                      f"Unlinked identities remain: {after['unlinked_identities']}"
+                  )
+
+              direct_hr_ids = set(
+                  User.objects.filter(
+                      pk__in=org_user_ids,
+                      user_permissions=permission,
+                  ).values_list("pk", flat=True)
+              )
+              if direct_hr_ids != allowed_ids:
+                  raise RuntimeError(
+                      f"Unexpected HR permission set: {sorted(direct_hr_ids)}"
+                  )
+
+              print("EMPLOYEE_BOOTSTRAP_RESULT", json.dumps({
+                  "merged_pairs": result["merge"]["merged"],
+                  "created_employee_ids": result["created_employee_ids"],
+                  "linked_users": result["linked_users"],
+                  "attached_identities": result["attached_identities"],
+              }, ensure_ascii=False))
+              print("EMPLOYEE_BOOTSTRAP_AFTER", json.dumps(after, ensure_ascii=False))
+              print(
+                  "EMPLOYEE_HR_PERMISSION",
+                  json.dumps({
+                      "direct_user_ids": sorted(direct_hr_ids),
+                      "count": len(direct_hr_ids),
+                  })
+              )
+
+          # New ORM reads after commit.
+          alexander = User.objects.get(pk=actor_id)
+          elena = User.objects.get(pk=elena_id)
+          alexander_employee = Employee.objects.filter(
+              organization=organization,
+              user=alexander,
+          ).get()
+          unprivileged = (
+              User.objects.filter(
+                  organizationaccess__organization=organization,
+                  is_active=True,
+              )
+              .exclude(pk__in=[actor_id, elena_id])
+              .exclude(is_superuser=True)
+              .distinct()
+              .order_by("id")
+              .first()
+          )
+          if unprivileged is None:
+              raise SystemExit("No unprivileged active user available for HR smoke")
+
+          client = Client(HTTP_HOST="service2.aqualine22.ru")
+          client.force_login(alexander)
+          employee_list = client.get(reverse("finance_payroll_employee_list"), secure=True)
+          profile = client.get(
+              reverse("finance_payroll_employee_profile", args=[alexander_employee.pk]),
+              secure=True,
+          )
+          mapping = client.get(reverse("finance_payroll_employee_mapping"), secure=True)
+          if employee_list.status_code != 200:
+              raise RuntimeError(f"Owner employee list HTTP {employee_list.status_code}")
+          if profile.status_code != 200:
+              raise RuntimeError(f"Owner employee profile HTTP {profile.status_code}")
+          if mapping.status_code != 200:
+              raise RuntimeError(f"Owner mapping HTTP {mapping.status_code}")
+          list_body = employee_list.content.decode("utf-8")
+          profile_body = profile.content.decode("utf-8")
+          if "Боровиков Александр Юрьевич" not in list_body:
+              raise RuntimeError("Alexander employee card missing from list")
+          if "Кадровая карточка сотрудника" not in profile_body:
+              raise RuntimeError("Employee HR card marker missing")
+
+          client.force_login(elena)
+          elena_list = client.get(reverse("finance_payroll_employee_list"), secure=True)
+          if elena_list.status_code != 200:
+              raise RuntimeError(f"Accountant employee list HTTP {elena_list.status_code}")
+
+          client.force_login(unprivileged)
+          denied = client.get(reverse("finance_payroll_employee_list"), secure=True)
+          if denied.status_code != 403:
+              raise RuntimeError(
+                  f"Unprivileged employee list expected 403, got {denied.status_code}"
+              )
+
+          print("EMPLOYEE_HR_SMOKE", json.dumps({
+              "owner_list": employee_list.status_code,
+              "owner_profile": profile.status_code,
+              "owner_mapping": mapping.status_code,
+              "accountant_list": elena_list.status_code,
+              "unprivileged_list": denied.status_code,
+          }))
+          PY
+          REMOTE
