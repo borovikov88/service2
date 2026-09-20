@@ -48,6 +48,7 @@ PLAN_FIELDS = (
     "Валюта_Key",
     "ВидНачисленияУдержания_Key",
     "Сумма",
+    "СчетЗатрат_Key",
 )
 MAX_PLAN_ROWS = 10000
 
@@ -129,7 +130,7 @@ def read_current_plan(config, as_of, *, organization_guids=(), opener=None):
         "Организация_Key eq guid'%s'" % key for key in sorted(selected)
     )
     filters = (
-        "Active eq true and Актуальность eq true and "
+        "Active eq true and "
         "Period lt datetime'%sT00:00:00' and (%s)"
     ) % (next_day.isoformat(), org_filter)
 
@@ -165,7 +166,10 @@ def read_current_plan(config, as_of, *, organization_guids=(), opener=None):
             value = amount(row.get("Сумма"))
             if value != value.quantize(Decimal(".01")):
                 raise PayrollError("INVALID_AMOUNT", "register")
-            records.append((org, employee, kind, period, value))
+            account = guid(row.get("СчетЗатрат_Key"), zero=True)
+            records.append(
+                (org, employee, kind, account, period, row["Актуальность"], value)
+            )
             employees.add(employee)
             types.add(kind)
 
@@ -185,23 +189,36 @@ def read_current_plan(config, as_of, *, organization_guids=(), opener=None):
     )
 
     latest_period = {}
-    for org, employee, kind, period, value in records:
-        key = (org, employee, kind)
+    for org, employee, kind, account, period, actual, value in records:
+        key = (org, employee, kind, account)
         latest_period[key] = max(period, latest_period.get(key, period))
 
-    groups = defaultdict(lambda: {"amount": Decimal("0"), "source_rows": 0})
+    latest_rows = defaultdict(list)
+    for org, employee, kind, account, period, actual, value in records:
+        key = (org, employee, kind, account)
+        if period == latest_period[key]:
+            latest_rows[key].append((actual, value))
+
+    groups = defaultdict(lambda: {"amount": Decimal("0"), "source_rows": 0, "source_period": None})
     with localcontext() as context:
         context.prec = 64
-        for org, employee, kind, period, value in records:
-            key = (org, employee, kind)
-            if period != latest_period[key]:
+        for (org, employee, kind, account), rows in latest_rows.items():
+            if any(actual is False for actual, _value in rows):
                 continue
             type_info = type_catalog[kind]
             if type_info["type_value"] != "Начисление":
                 continue
-            group = groups[key]
-            group["amount"] += value
-            group["source_rows"] += 1
+            group = groups[(org, employee, kind)]
+            group["amount"] += sum(
+                (value for actual, value in rows if actual is True),
+                Decimal("0"),
+            )
+            group["source_rows"] += sum(actual is True for actual, _value in rows)
+            period = latest_period[(org, employee, kind, account)]
+            group["source_period"] = max(
+                period,
+                group["source_period"] or period,
+            )
 
     items = []
     for (org, employee, kind), values in sorted(groups.items()):
@@ -215,7 +232,7 @@ def read_current_plan(config, as_of, *, organization_guids=(), opener=None):
                 "accrual_type_guid": kind,
                 "accrual_type_name": type_name,
                 "amount": format(values["amount"], "f"),
-                "source_period": latest_period[(org, employee, kind)].isoformat(),
+                "source_period": values["source_period"].isoformat(),
                 "source_rows": values["source_rows"],
                 "is_base_salary": "оклад" in _normalize_name(type_name),
             }
