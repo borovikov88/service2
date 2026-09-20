@@ -646,7 +646,7 @@ class PayrollManagementUITests(TestCase):
             self.assertContains(response, "Данные 1С")
         with self._permissions():
             response = self.client.get(reverse("finance_overview"))
-            self.assertNotContains(response, "ФОТ")
+            self.assertNotContains(response, f'href="{dashboard}"')
 
     def test_manual_mapping_updates_all_historical_rows_through_identity_fk(self):
         identity = self._identity()
