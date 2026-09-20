@@ -216,7 +216,12 @@ def finance_navigation(user, organization, *, current_route=""):
         analytics.append(item(
             "Фонд оплаты труда",
             "finance_payroll_dashboard",
-            ("finance_payroll_employee_mapping", "finance_payroll_employee_map"),
+            (
+                "finance_payroll_employee_mapping",
+                "finance_payroll_employee_map",
+                "finance_payroll_employee_list",
+                "finance_payroll_employee_profile",
+            ),
         ))
     if can_view_cost_control(user, organization):
         analytics.append(item("Контроль себестоимости", "finance_onec_cost_control"))
