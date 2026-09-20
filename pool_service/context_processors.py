@@ -42,23 +42,40 @@ FINANCE_TOPBAR_DETAIL_CRUMBS = {
 }
 
 
-def _finance_topbar_breadcrumbs(navigation, current_route):
-    root = {
-        "label": "Финансы",
-        "url": "" if current_route == "finance_dashboard" else reverse("finance_dashboard"),
-    }
-    breadcrumbs = [root]
-    if current_route == "finance_dashboard":
-        return breadcrumbs
-
-    active_item = None
+def _active_finance_item(navigation):
     for group in navigation or []:
         for item in group.get("items", []):
             if item.get("active"):
-                active_item = item
-                break
-        if active_item:
-            break
+                return item
+    return None
+
+
+def _finance_topbar_breadcrumbs(
+    management_navigation,
+    operations_navigation,
+    current_route,
+):
+    management_item = _active_finance_item(management_navigation)
+    operations_item = _active_finance_item(operations_navigation)
+
+    if current_route == "finance_operations" or operations_item:
+        area = "operations"
+        root_label = "Операции"
+        root_route = "finance_operations"
+        active_item = operations_item
+    else:
+        area = "management"
+        root_label = "Управленческие финансы"
+        root_route = "finance_dashboard"
+        active_item = management_item
+
+    root = {
+        "label": root_label,
+        "url": "" if current_route == root_route else reverse(root_route),
+    }
+    breadcrumbs = [root]
+    if current_route == root_route:
+        return breadcrumbs
 
     if not active_item:
         return breadcrumbs
@@ -230,20 +247,43 @@ def plan_status_context(request):
         return context
 
     from pool_service.services.finance import (
+        can_access_finance_operations,
         can_access_finance_section,
+        can_access_management_finance,
         can_import_payroll,
         can_manage_employee_mapping,
         can_view_payroll_summary,
         finance_navigation,
+        finance_operations_navigation,
+        management_finance_navigation,
     )
     current_route = getattr(getattr(request, "resolver_match", None), "url_name", "") or ""
+    management_finance_access = can_access_management_finance(user, org)
+    finance_operations_access = can_access_finance_operations(user, org)
     context["can_access_finance"] = can_access_finance_section(user, org)
+    context["can_access_management_finance"] = management_finance_access
+    context["can_access_finance_operations"] = finance_operations_access
+    context["management_finance_navigation"] = management_finance_navigation(
+        user, org, current_route=current_route
+    )
+    context["finance_operations_navigation"] = finance_operations_navigation(
+        user, org, current_route=current_route
+    )
     context["finance_navigation"] = finance_navigation(
         user, org, current_route=current_route
     )
+    context["active_finance_area"] = (
+        "operations"
+        if current_route == "finance_operations"
+        or _active_finance_item(context["finance_operations_navigation"])
+        else "management"
+        if current_route.startswith("finance_")
+        else ""
+    )
     if current_route.startswith("finance_"):
         context["topbar_breadcrumbs"] = _finance_topbar_breadcrumbs(
-            context["finance_navigation"],
+            context["management_finance_navigation"],
+            context["finance_operations_navigation"],
             current_route,
         )
     payroll_summary_access = can_view_payroll_summary(user, org)
@@ -270,8 +310,10 @@ def plan_status_context(request):
         context["home_url"] = reverse("readings_all")
     elif "manager" in org_roles:
         context["home_url"] = reverse("finance_kkm_cash_dashboard")
-    elif can_access_finance:
+    elif management_finance_access:
         context["home_url"] = reverse("finance_dashboard")
+    elif finance_operations_access:
+        context["home_url"] = reverse("finance_operations")
 
     now = timezone.now()
     context["access_blocked"] = is_org_access_blocked(user, now=now)
