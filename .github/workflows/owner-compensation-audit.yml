@@ -1,0 +1,188 @@
+name: Owner compensation read-only audit
+
+on:
+  push:
+    branches:
+      - qa/owner-compensation-2025-2026
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_audit
+          chmod 600 ~/.ssh/service2_audit
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Calculate Alexander and Yuri compensation
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+          EXPECTED_PROD_SHA: "3dd0244ded667c86694e410ed8545cb566bf2a66"
+        run: |
+          set -euo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          ssh -i ~/.ssh/service2_audit -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash -s -- '$DEPLOY_APP_PATH' '$EXPECTED_PROD_SHA'" <<'REMOTE'
+          set -euo pipefail
+          app_path="$1"
+          expected_sha="$2"
+          cd "$app_path"
+          test "$(git rev-parse HEAD)" = "$expected_sha"
+          ../venv/bin/python manage.py shell <<'PY'
+          import json
+          from collections import defaultdict
+          from datetime import date
+          from decimal import Decimal
+          from django.db.models import Q, Sum
+          from pool_service.models import (
+              CashFlowRow,
+              OneCImportBatch,
+              Organization,
+              PayrollRow,
+          )
+
+          organization = Organization.objects.get(pk=1)
+          start = date(2025, 1, 1)
+          end = date(2026, 8, 1)
+
+          payroll = PayrollRow.objects.active_for(
+              organization,
+              OneCImportBatch.TYPE_PAYROLL,
+          ).filter(period_month__range=(start, end))
+
+          candidates = list(
+              payroll.filter(
+                  Q(employee_normalized_name__icontains="александр")
+                  | Q(employee_normalized_name__icontains="юрий")
+              )
+              .values_list("employee_raw_name", flat=True)
+              .distinct()
+              .order_by("employee_raw_name")
+          )
+          print("COMP_CANDIDATES", json.dumps(candidates, ensure_ascii=False))
+
+          owners = {
+              "Александр": payroll.filter(
+                  employee_normalized_name__icontains="боровиков",
+                  employee_normalized_name__icontains="александр",
+              ),
+              "Юрий": payroll.filter(
+                  employee_normalized_name__icontains="боровиков",
+                  employee_normalized_name__icontains="юрий",
+              ),
+          }
+
+          salary = {}
+          for owner, qs in owners.items():
+              rows = list(
+                  qs.values("period_month")
+                  .annotate(
+                      paid=Sum("paid"),
+                      accrued=Sum("accrued"),
+                  )
+                  .order_by("period_month")
+              )
+              salary[owner] = {
+                  "names": list(
+                      qs.values_list("employee_raw_name", flat=True)
+                      .distinct()
+                      .order_by("employee_raw_name")
+                  ),
+                  "months": {
+                      row["period_month"].isoformat(): {
+                          "paid": str(row["paid"] or Decimal("0")),
+                          "accrued": str(row["accrued"] or Decimal("0")),
+                      }
+                      for row in rows
+                  },
+              }
+
+          cashflow = CashFlowRow.objects.active_for(
+              organization,
+              OneCImportBatch.TYPE_CASHFLOW,
+          ).filter(
+              period_month__range=(start, end),
+              normalized_article_name__in=("александр", "юрий"),
+          )
+          dividend_rows = list(
+              cashflow.values("normalized_article_name", "period_month")
+              .annotate(payments=Sum("payments"), receipts=Sum("receipts"))
+              .order_by("normalized_article_name", "period_month")
+          )
+          dividends = {"Александр": {}, "Юрий": {}}
+          article_to_owner = {"александр": "Александр", "юрий": "Юрий"}
+          for row in dividend_rows:
+              owner = article_to_owner[row["normalized_article_name"]]
+              dividends[owner][row["period_month"].isoformat()] = {
+                  "payments": str(row["payments"] or Decimal("0")),
+                  "receipts": str(row["receipts"] or Decimal("0")),
+              }
+
+          def month_keys(year, count):
+              return [date(year, month, 1).isoformat() for month in range(1, count + 1)]
+
+          result = {}
+          for owner in ("Александр", "Юрий"):
+              result[owner] = {"names": salary[owner]["names"], "years": {}}
+              for year, count in ((2025, 12), (2026, 8)):
+                  keys = month_keys(year, count)
+                  salary_paid = sum(
+                      Decimal(salary[owner]["months"].get(key, {}).get("paid", "0"))
+                      for key in keys
+                  )
+                  salary_accrued = sum(
+                      Decimal(salary[owner]["months"].get(key, {}).get("accrued", "0"))
+                      for key in keys
+                  )
+                  dividend_paid = sum(
+                      Decimal(dividends[owner].get(key, {}).get("payments", "0"))
+                      for key in keys
+                  )
+                  total_received = salary_paid + dividend_paid
+                  result[owner]["years"][str(year)] = {
+                      "months": count,
+                      "salary_paid": str(salary_paid),
+                      "salary_accrued": str(salary_accrued),
+                      "dividends_paid": str(dividend_paid),
+                      "total_received": str(total_received),
+                      "average_salary_paid": str(salary_paid / count),
+                      "average_total_received": str(total_received / count),
+                  }
+
+              combined_months = 20
+              salary_paid_all = sum(
+                  Decimal(result[owner]["years"][str(year)]["salary_paid"])
+                  for year in (2025, 2026)
+              )
+              dividends_all = sum(
+                  Decimal(result[owner]["years"][str(year)]["dividends_paid"])
+                  for year in (2025, 2026)
+              )
+              total_all = salary_paid_all + dividends_all
+              result[owner]["combined"] = {
+                  "months": combined_months,
+                  "salary_paid": str(salary_paid_all),
+                  "dividends_paid": str(dividends_all),
+                  "total_received": str(total_all),
+                  "average_salary_paid": str(salary_paid_all / combined_months),
+                  "average_total_received": str(total_all / combined_months),
+              }
+
+          print("COMP_RESULT", json.dumps(result, ensure_ascii=False, sort_keys=True))
+          PY
+          REMOTE
