@@ -68,6 +68,7 @@ from pool_service.models import (
     OneCMonthlyProfit,
     OneCODataSyncRun,
     OneCReportPeriodState,
+    PayrollPlanSnapshot,
     PayrollRow,
 )
 from pool_service.finance_imports.payroll_services import (
@@ -923,6 +924,208 @@ def finance_overview(request):
     })
 
 
+def _finance_data_latest_state(organization, report_types):
+    return (
+        OneCReportPeriodState.objects.filter(
+            organization=organization,
+            report_type__in=report_types,
+            active_batch__organization=organization,
+            active_batch__status=OneCImportBatch.STATUS_CONFIRMED,
+        )
+        .filter(active_batch__import_type=F("report_type"))
+        .select_related("active_batch")
+        .order_by("-period_month", "-updated_at")
+        .first()
+    )
+
+
+def _finance_data_status_rows(organization):
+    profit = _finance_data_latest_state(
+        organization, [OneCImportBatch.TYPE_MONTHLY_PROFIT]
+    )
+    cashflow = _finance_data_latest_state(
+        organization, [OneCImportBatch.TYPE_CASHFLOW]
+    )
+    payroll = _finance_data_latest_state(
+        organization,
+        [OneCImportBatch.TYPE_PAYROLL_ACCRUAL, OneCImportBatch.TYPE_PAYROLL],
+    )
+    plan = (
+        PayrollPlanSnapshot.objects.filter(organization=organization)
+        .select_related("fetched_by")
+        .order_by("-fetched_at", "-id")
+        .first()
+    )
+    return [
+        {
+            "key": "profit",
+            "label": "Валовая прибыль",
+            "period_month": profit.period_month if profit else None,
+            "updated_at": profit.updated_at if profit else None,
+        },
+        {
+            "key": "cashflow",
+            "label": "ДДС",
+            "period_month": cashflow.period_month if cashflow else None,
+            "updated_at": cashflow.updated_at if cashflow else None,
+        },
+        {
+            "key": "payroll",
+            "label": "ФОТ",
+            "period_month": payroll.period_month if payroll else None,
+            "updated_at": payroll.updated_at if payroll else None,
+        },
+        {
+            "key": "payroll_plan",
+            "label": "Оклады сотрудников",
+            "period_month": plan.period_month if plan else None,
+            "updated_at": plan.fetched_at if plan else None,
+        },
+    ]
+
+
+def _finance_data_run_result(run):
+    progress = run.progress or {}
+    if run.status in {OneCODataSyncRun.STATUS_PENDING, OneCODataSyncRun.STATUS_RUNNING}:
+        return "Выполняется", "warning"
+    if run.status == OneCODataSyncRun.STATUS_CANCELLED:
+        return "Отменено", "secondary"
+    if run.status == OneCODataSyncRun.STATUS_FAILED:
+        return "Ошибка", "danger"
+    if run.status == OneCODataSyncRun.STATUS_PARTIAL_FAILED:
+        return "Частично выполнено", "warning"
+    if progress.get("outcome") == "no_change":
+        return "Без изменений", "secondary"
+    return "Успешно", "success"
+
+
+def _finance_data_history(request, organization):
+    rows = []
+    report_labels = {
+        REPORT_PROFIT: "Валовая прибыль",
+        REPORT_CASHFLOW: "ДДС",
+        REPORT_PAYROLL: "ФОТ",
+    }
+    all_reports = {REPORT_PROFIT, REPORT_CASHFLOW, REPORT_PAYROLL}
+    runs = (
+        OneCODataSyncRun.objects.filter(
+            organization=organization,
+            mode=OneCODataSyncRun.MODE_AUTO_APPLY,
+        )
+        .select_related("requested_by")[:30]
+    )
+    for run in runs:
+        scope = run.sync_scope or {}
+        requested = set(run.requested_report_types or [])
+        periods = [
+            scope.get(report_type) or {}
+            for report_type in run.requested_report_types or []
+        ]
+        starts = [item.get("start") for item in periods if item.get("start")]
+        ends = [item.get("end") for item in periods if item.get("end")]
+        result_label, result_tone = _finance_data_run_result(run)
+        rows.append({
+            "created_at": run.created_at,
+            "data_label": (
+                "Валовая прибыль, ДДС, ФОТ"
+                if requested == all_reports
+                else ", ".join(
+                    report_labels.get(item, item)
+                    for item in run.requested_report_types or []
+                )
+            ),
+            "period_start": min(starts)[:7] if starts else "",
+            "period_end": max(ends)[:7] if ends else "",
+            "method": "Автоматически" if scope.get("_schedule_day") else "Вручную",
+            "result_label": result_label,
+            "result_tone": result_tone,
+            "actor": (
+                run.requested_by.get_full_name()
+                or run.requested_by.username
+            ),
+            "error_message": run.error_message,
+            "technical_kind": "Обновление",
+        })
+
+    accessible_types = list(_onec_accessible_import_types(request.user, organization))
+    if can_import_payroll(request.user, organization):
+        accessible_types.extend([
+            OneCImportBatch.TYPE_PAYROLL,
+            OneCImportBatch.TYPE_PAYROLL_ACCRUAL,
+        ])
+    batches = (
+        OneCImportBatch.objects.filter(
+            organization=organization,
+            import_type__in=accessible_types,
+            sync_run__isnull=True,
+        )
+        .select_related("uploaded_by")[:30]
+    )
+    for batch in batches:
+        if (batch.metadata or {}).get("automatically_detected_change"):
+            continue
+        tone = {
+            OneCImportBatch.STATUS_CONFIRMED: "success",
+            OneCImportBatch.STATUS_FAILED: "danger",
+            OneCImportBatch.STATUS_CANCELLED: "secondary",
+            OneCImportBatch.STATUS_PREVIEWED: "warning",
+        }.get(batch.status, "secondary")
+        rows.append({
+            "created_at": batch.uploaded_at,
+            "data_label": batch.get_import_type_display(),
+            "period_start": batch.period_first.strftime("%Y-%m") if batch.period_first else "",
+            "period_end": batch.period_last.strftime("%Y-%m") if batch.period_last else "",
+            "method": "Вручную",
+            "result_label": batch.get_status_display(),
+            "result_tone": tone,
+            "actor": batch.uploaded_by.get_full_name() or batch.uploaded_by.username,
+            "error_message": batch.error_message,
+            "technical_kind": "Импорт файла",
+        })
+    plan_snapshots = (
+        PayrollPlanSnapshot.objects.filter(organization=organization)
+        .select_related("fetched_by")[:20]
+    )
+    for snapshot in plan_snapshots:
+        rows.append({
+            "created_at": snapshot.fetched_at,
+            "data_label": "Оклады сотрудников",
+            "period_start": snapshot.period_month.strftime("%Y-%m"),
+            "period_end": snapshot.period_month.strftime("%Y-%m"),
+            "method": "Вручную",
+            "result_label": "Успешно",
+            "result_tone": "success",
+            "actor": (
+                snapshot.fetched_by.get_full_name()
+                or snapshot.fetched_by.username
+                if snapshot.fetched_by
+                else "Система"
+            ),
+            "error_message": "",
+            "technical_kind": "Снимок окладов",
+        })
+
+    rows.sort(key=lambda item: item["created_at"], reverse=True)
+    return rows[:40]
+
+
+def _finance_data_default_period():
+    try:
+        zone = ZoneInfo(getattr(settings, "ONEC_FINANCE_TIME_ZONE", "Asia/Barnaul"))
+        end = timezone.now().astimezone(zone).date().replace(day=1)
+    except ZoneInfoNotFoundError:
+        end = timezone.localdate().replace(day=1)
+    try:
+        months = int(getattr(settings, "ONEC_FINANCE_LOOKBACK_MONTHS", 3))
+    except (TypeError, ValueError):
+        months = 3
+    if not 1 <= months <= 24:
+        months = 3
+    index = end.year * 12 + end.month - months
+    start = date(index // 12, index % 12 + 1, 1)
+    return start, end
+
+
 @login_required
 def finance_data(request):
     organization, denied = _capability_guard(
@@ -931,8 +1134,19 @@ def finance_data(request):
     )
     if denied:
         return denied
+    report_types = _onec_sync_report_types(request.user, organization, payroll=True)
+    can_refresh_all = (
+        is_odata_target_organization(organization)
+        and set(report_types) == {REPORT_PROFIT, REPORT_CASHFLOW, REPORT_PAYROLL}
+    )
+    default_start, default_end = _finance_data_default_period()
     return render(request, "pool_service/finance/data.html", {
         "organization": organization,
+        "source_statuses": _finance_data_status_rows(organization),
+        "update_history": _finance_data_history(request, organization),
+        "can_refresh_all_onec": can_refresh_all,
+        "refresh_default_start": default_start,
+        "refresh_default_end": default_end,
         "can_import_gross_profit": can_import_gross_profit(request.user, organization),
         "can_import_cashflow": can_import_cashflow(request.user, organization),
         "can_import_payroll": can_import_payroll(request.user, organization),
@@ -3583,6 +3797,7 @@ def finance_payroll_plan_refresh(request):
     organization, denied = _payroll_access(request, can_import_payroll)
     if denied:
         return denied
+    wants_json = request.headers.get("X-Requested-With") == "XMLHttpRequest"
     try:
         snapshot, created = refresh_payroll_plan_snapshot(
             organization,
@@ -3590,17 +3805,31 @@ def finance_payroll_plan_refresh(request):
             as_of=current_payroll_plan_date(),
         )
     except (PayrollPlanSyncError, ValidationError) as exc:
+        if wants_json:
+            return JsonResponse({"ok": False, "error": str(exc)}, status=502)
         messages.error(request, str(exc))
     except PermissionDenied:
+        if wants_json:
+            return JsonResponse({"ok": False, "error": "Недостаточно прав."}, status=403)
         return HttpResponseForbidden("Недостаточно прав для обновления окладов.")
     else:
+        message = (
+            f"Оклады из 1С обновлены за {snapshot.period_month:%m.%Y}."
+            if created
+            else "Оклады из 1С не изменились."
+        )
+        if wants_json:
+            return JsonResponse({
+                "ok": True,
+                "created": created,
+                "message": message,
+                "period_month": snapshot.period_month.isoformat(),
+                "fetched_at": snapshot.fetched_at.isoformat(),
+            })
         if created:
-            messages.success(
-                request,
-                f"Оклады из 1С обновлены за {snapshot.period_month:%m.%Y}.",
-            )
+            messages.success(request, message)
         else:
-            messages.info(request, "Оклады из 1С не изменились.")
+            messages.info(request, message)
     return redirect("finance_payroll_dashboard")
 
 

@@ -16,7 +16,7 @@ class FinanceTopbarBreadcrumbBuilderTests(TestCase):
                 "label": "ОПЕРАЦИИ",
                 "items": [
                     {
-                        "label": "Мои финансы",
+                        "label": "Мои операции",
                         "route_name": "finance_my",
                         "url": "/finance/my/",
                         "active": True,
@@ -35,7 +35,7 @@ class FinanceTopbarBreadcrumbBuilderTests(TestCase):
             breadcrumbs,
             [
                 {"label": "Операции", "url": reverse("finance_operations")},
-                {"label": "Мои финансы", "url": "/finance/my/"},
+                {"label": "Мои операции", "url": "/finance/my/"},
                 {"label": "Сотрудник", "url": ""},
             ],
         )
@@ -46,7 +46,7 @@ class FinanceTopbarBreadcrumbBuilderTests(TestCase):
                 "label": "АНАЛИТИКА",
                 "items": [
                     {
-                        "label": "Фонд оплаты труда",
+                        "label": "ФОТ",
                         "route_name": "finance_payroll_dashboard",
                         "url": "/finance/payroll/",
                         "active": True,
@@ -65,7 +65,7 @@ class FinanceTopbarBreadcrumbBuilderTests(TestCase):
             breadcrumbs,
             [
                 {"label": "Управленческие финансы", "url": reverse("finance_dashboard")},
-                {"label": "Фонд оплаты труда", "url": "/finance/payroll/"},
+                {"label": "ФОТ", "url": "/finance/payroll/"},
                 {"label": "Сотрудники", "url": reverse("finance_payroll_employee_list")},
                 {"label": "Карточка сотрудника", "url": ""},
             ],
@@ -115,7 +115,7 @@ class FinanceTopbarRenderedTests(TestCase):
         )
         self.assertContains(
             response,
-            f'href="{reverse("finance_my")}" class="desktop-topbar__crumb">Мои финансы</a>',
+            f'href="{reverse("finance_my")}" class="desktop-topbar__crumb">Мои операции</a>',
             html=False,
         )
         self.assertContains(

@@ -1,24 +1,225 @@
 {% extends "pool_service/base.html" %}
-{% block title %}Финансы — Данные 1С{% endblock %}
+{% block title %}Данные 1С{% endblock %}
 {% block content %}
 {% include "pool_service/finance/_desktop_workspace_styles.html" %}
 <div class="finance-desktop">
-<div class="finance-page-header mb-4">
-  <div class="text-muted small mb-1">Финансы</div>
-  <h1 class="h3 mb-1">Данные 1С</h1>
-  <div class="text-muted">Источники и история обновления финансовых данных.</div>
+  <div class="finance-page-header d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4">
+    <div>
+      <div class="text-muted small mb-1">Управленческие финансы</div>
+      <h1 class="h3 mb-1">Данные 1С</h1>
+      <div class="text-muted">Актуальность финансовых данных и единое обновление из 1С.</div>
+    </div>
+  </div>
+
+  <div class="row g-3 mb-4">
+    {% for source in source_statuses %}
+      <div class="col-12 col-md-6 col-xl-3">
+        <div class="card card-soft p-3 h-100">
+          <div class="d-flex justify-content-between gap-2 align-items-start mb-2">
+            <div class="fw-semibold">{{ source.label }}</div>
+            {% if source.period_month or source.updated_at %}
+              <span class="badge text-bg-success">Актуально</span>
+            {% else %}
+              <span class="badge text-bg-secondary">Нет данных</span>
+            {% endif %}
+          </div>
+          {% if source.period_month %}
+            <div class="h5 mb-1">по {{ source.period_month|date:"m.Y" }}</div>
+          {% elif source.updated_at %}
+            <div class="h5 mb-1">Данные получены</div>
+          {% else %}
+            <div class="h5 text-muted mb-1">Не загружено</div>
+          {% endif %}
+          {% if source.updated_at %}
+            <div class="small text-muted">Обновлено {{ source.updated_at|date:"d.m.Y H:i" }}</div>
+          {% endif %}
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+
+  <div class="card card-soft p-3 p-lg-4 mb-4" data-unified-refresh>
+    <div class="d-flex flex-column flex-lg-row justify-content-between align-items-lg-start gap-3">
+      <div>
+        <h2 class="h5 mb-1">Обновить данные из 1С</h2>
+        <div class="text-muted">Валовая прибыль, ДДС, ФОТ и текущие оклады сотрудников обновляются одним действием.</div>
+      </div>
+      {% if not can_refresh_all_onec %}
+        <span class="badge text-bg-warning">Полное обновление недоступно</span>
+      {% endif %}
+    </div>
+
+    {% if can_refresh_all_onec %}
+      <form method="post" action="{% url 'finance_onec_refresh_apply_start' %}" class="mt-3" data-refresh-start>
+        {% csrf_token %}
+        <div class="row g-2 align-items-end">
+          <div class="col-12 col-sm-5 col-lg-3">
+            <label class="form-label">С месяца</label>
+            <input type="month" name="period_start" class="form-control" value="{{ refresh_default_start|date:'Y-m' }}">
+          </div>
+          <div class="col-12 col-sm-5 col-lg-3">
+            <label class="form-label">По месяц</label>
+            <input type="month" name="period_end" class="form-control" value="{{ refresh_default_end|date:'Y-m' }}">
+          </div>
+          <div class="col-12 col-sm-2 col-lg-auto">
+            <button type="submit" class="btn btn-success w-100" data-refresh-button>Обновить данные</button>
+          </div>
+        </div>
+        <div class="form-text mt-2">По умолчанию обновляются текущий и два предыдущих месяца. Для глубокой сверки можно выбрать период до 24 месяцев.</div>
+      </form>
+      <div class="alert alert-info mt-3 mb-0 d-none" role="status" aria-live="polite" data-refresh-result></div>
+    {% else %}
+      <div class="alert alert-warning mt-3 mb-0">
+        Для единого обновления нужны права на валовую прибыль, ДДС и ФОТ, а также настроенное подключение 1С.
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="card card-soft p-3 p-lg-4">
+    <div class="d-flex flex-wrap justify-content-between gap-2 align-items-center mb-3">
+      <div>
+        <h2 class="h5 mb-1">История обновлений</h2>
+        <div class="text-muted small">Ручные и автоматические обновления собраны в одной истории.</div>
+      </div>
+    </div>
+    <div class="table-responsive">
+      <table class="table align-middle mb-0">
+        <thead>
+          <tr>
+            <th>Дата</th>
+            <th>Что обновлялось</th>
+            <th>Период</th>
+            <th>Способ</th>
+            <th>Результат</th>
+            <th>Кто запустил</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in update_history %}
+            <tr>
+              <td class="text-nowrap">{{ row.created_at|date:"d.m.Y H:i" }}</td>
+              <td>{{ row.data_label }}</td>
+              <td class="text-nowrap">
+                {% if row.period_start and row.period_end %}
+                  {{ row.period_start }}{% if row.period_end != row.period_start %} — {{ row.period_end }}{% endif %}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td>{{ row.method }}</td>
+              <td><span class="badge text-bg-{{ row.result_tone }}">{{ row.result_label }}</span></td>
+              <td>{{ row.actor }}</td>
+              <td class="text-end">
+                <details class="text-start">
+                  <summary class="btn btn-sm btn-outline-secondary">Подробнее</summary>
+                  <div class="small mt-2" style="min-width:230px">
+                    <div><strong>Тип:</strong> {{ row.technical_kind }}</div>
+                    {% if row.error_message %}<div class="text-danger mt-1">{{ row.error_message }}</div>{% endif %}
+                  </div>
+                </details>
+              </td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="7" class="text-center text-muted py-4">Истории обновлений пока нет.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <details class="mt-3">
+    <summary class="text-muted small">Технические инструменты</summary>
+    <div class="d-flex flex-wrap gap-2 mt-2">
+      {% if can_import_gross_profit or can_import_cashflow %}
+        <a class="btn btn-sm btn-outline-secondary" href="{% url 'finance_onec_import_list' %}">Импорты и диагностика 1С</a>
+      {% endif %}
+      {% if can_import_payroll %}
+        <a class="btn btn-sm btn-outline-secondary" href="{% url 'finance_payroll_import_list' %}">Импорты ФОТ</a>
+      {% endif %}
+      {% if can_manage_employee_mapping %}
+        <a class="btn btn-sm btn-outline-secondary" href="{% url 'finance_payroll_employee_mapping' %}">Сопоставление сотрудников</a>
+      {% endif %}
+    </div>
+  </details>
 </div>
 
-<div class="row g-3">
-  {% if can_import_gross_profit or can_import_cashflow %}
-  <div class="col-md-6"><a class="finance-data-card card card-soft p-4 h-100 text-decoration-none text-body" href="{% url 'finance_onec_import_list' %}"><div class="h5 mb-2">Управленческие данные 1С</div><div class="text-muted">Валовая прибыль и ДДС: история, проверка изменений и обновление →</div></a></div>
-  {% endif %}
-  {% if can_import_payroll %}
-  <div class="col-md-6"><a class="finance-data-card card card-soft p-4 h-100 text-decoration-none text-body" href="{% url 'finance_payroll_import_list' %}"><div class="h5 mb-2">Фонд оплаты труда</div><div class="text-muted">История отчётов «Расчёты с персоналом» →</div></a></div>
-  {% elif can_manage_employee_mapping %}
-  <div class="col-md-6"><a class="finance-data-card card card-soft p-4 h-100 text-decoration-none text-body" href="{% url 'finance_payroll_employee_mapping' %}"><div class="h5 mb-2">Сотрудники 1С</div><div class="text-muted">Сопоставление импортированных сотрудников →</div></a></div>
-  {% endif %}
-</div>
+{% if can_refresh_all_onec %}
+<script>
+(() => {
+  const root = document.querySelector("[data-unified-refresh]");
+  const startForm = root?.querySelector("[data-refresh-start]");
+  const result = root?.querySelector("[data-refresh-result]");
+  const button = root?.querySelector("[data-refresh-button]");
+  if (!root || !startForm || !result || !button) return;
 
-</div>
+  const csrf = startForm.querySelector("[name=csrfmiddlewaretoken]")?.value || "";
+  const terminal = new Set(["completed", "partial_failed", "failed", "cancelled"]);
+
+  function show(message, tone = "info") {
+    result.className = `alert alert-${tone} mt-3 mb-0`;
+    result.textContent = message;
+  }
+
+  async function jsonRequest(url, options = {}) {
+    const response = await fetch(url, {
+      credentials: "same-origin",
+      headers: {"X-Requested-With": "XMLHttpRequest", ...(options.headers || {})},
+      ...options,
+    });
+    let data = {};
+    try { data = await response.json(); } catch (_) {}
+    if (!response.ok) throw new Error(data.error || "Не удалось обновить данные из 1С.");
+    return data;
+  }
+
+  async function runSteps(stepUrl, cursor) {
+    let current = cursor;
+    while (true) {
+      const body = new FormData();
+      body.append("csrfmiddlewaretoken", csrf);
+      body.append("cursor", String(current));
+      const data = await jsonRequest(stepUrl, {method: "POST", body});
+      const progress = data.progress || {};
+      const done = progress.completed_chunks || 0;
+      const total = progress.total_chunks || 0;
+      show(`Обновление данных из 1С: ${done} из ${total} шагов…`, "info");
+      current = data.cursor ?? current;
+      if (terminal.has(data.status)) return data;
+      if (["retryable_error", "busy"].includes(progress.step_state)) {
+        throw new Error(data.message || "Обновление приостановлено. Повторите запуск после устранения причины.");
+      }
+    }
+  }
+
+  async function refreshPayrollPlan() {
+    const body = new FormData();
+    body.append("csrfmiddlewaretoken", csrf);
+    return jsonRequest("{% url 'finance_payroll_plan_refresh' %}", {method: "POST", body});
+  }
+
+  startForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    button.disabled = true;
+    button.textContent = "Обновляем…";
+    show("Запускаем обновление финансовых данных…", "info");
+    try {
+      const started = await jsonRequest(startForm.action, {method: "POST", body: new FormData(startForm)});
+      const finished = await runSteps(started.step_url, started.cursor);
+      if (finished.status !== "completed") {
+        throw new Error(finished.message || "Обновление завершилось не полностью. Активные данные сохранены безопасно.");
+      }
+      show("Финансовые данные обновлены. Обновляем текущие оклады сотрудников…", "info");
+      const payrollPlan = await refreshPayrollPlan();
+      show(payrollPlan.message || "Все данные из 1С успешно обновлены.", "success");
+      window.setTimeout(() => window.location.reload(), 900);
+    } catch (error) {
+      show(error.message || "Не удалось обновить данные.", "danger");
+      button.disabled = false;
+      button.textContent = "Обновить данные";
+    }
+  });
+})();
+</script>
+{% endif %}
 {% endblock %}

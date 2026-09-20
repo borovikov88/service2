@@ -65,13 +65,13 @@ class SplitFinanceNavigationTests(TestCase):
         self.assertIn("Обзор", management_labels)
         self.assertIn("Валовая прибыль", management_labels)
         self.assertIn("ДДС", management_labels)
-        self.assertIn("Фонд оплаты труда", management_labels)
+        self.assertIn("ФОТ", management_labels)
         self.assertIn("Данные 1С", management_labels)
         self.assertNotIn("Касса ККМ", management_labels)
         self.assertNotIn("Перечисления", management_labels)
 
-        self.assertIn("Мои финансы", operations_labels)
-        self.assertIn("Касса ККМ", operations_labels)
+        self.assertIn("Мои операции", operations_labels)
+        self.assertIn("ККМ", operations_labels)
         self.assertIn("Перечисления", operations_labels)
         self.assertIn("Касса организации", operations_labels)
         self.assertNotIn("Валовая прибыль", operations_labels)
@@ -86,7 +86,7 @@ class SplitFinanceNavigationTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, ">Операции<", html=False)
         self.assertNotContains(response, "Управленческие финансы")
-        self.assertContains(response, "Мои финансы")
+        self.assertContains(response, "Мои операции")
 
     def test_owner_renders_both_top_level_finance_workspaces(self):
         owner = self.user_with_role("owner")
