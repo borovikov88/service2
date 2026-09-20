@@ -1,0 +1,100 @@
+{% extends "pool_service/base.html" %}
+{% load finance_tags %}
+{% block title %}{{ employee.display_name }} · сотрудник{% endblock %}
+{% block content %}
+{% include "pool_service/finance/_desktop_workspace_styles.html" %}
+<div class="finance-desktop">
+  <div class="finance-secondary-header d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4">
+    <div>
+      <h1 class="h3 mb-1">{{ employee.display_name }}</h1>
+      <div class="text-muted">Кадровая карточка сотрудника</div>
+    </div>
+    <a class="btn btn-outline-secondary" href="{% url 'finance_payroll_employee_list' %}">К сотрудникам</a>
+  </div>
+
+  <div class="row g-3 mb-4">
+    <div class="col-md-6 col-xl-3"><div class="card card-soft p-3 h-100"><div class="text-muted small">Статус</div><div class="fw-semibold">{{ employee.get_employment_status_display }}</div></div></div>
+    <div class="col-md-6 col-xl-3"><div class="card card-soft p-3 h-100"><div class="text-muted small">Подразделение</div><div class="fw-semibold">{{ employee.department_name|default:"—" }}</div></div></div>
+    <div class="col-md-6 col-xl-3"><div class="card card-soft p-3 h-100"><div class="text-muted small">Должность</div><div class="fw-semibold">{{ employee.position_name|default:"—" }}</div></div></div>
+    <div class="col-md-6 col-xl-3"><div class="card card-soft p-3 h-100"><div class="text-muted small">Аккаунт Service2</div><div class="fw-semibold">{% if employee.user %}{{ employee.user.get_full_name|default:employee.user.username }}{% else %}не привязан{% endif %}</div></div></div>
+  </div>
+
+  <div class="finance-secondary-card card card-soft p-3 mb-4">
+    <h2 class="h5 mb-3">Трудовые данные</h2>
+    <div class="row g-3">
+      <div class="col-md-4"><div class="text-muted small">Дата приёма</div><div class="fw-semibold">{{ employee.hired_at|date:"d.m.Y"|default:"не загружена из 1С" }}</div></div>
+      <div class="col-md-4"><div class="text-muted small">Дата увольнения</div><div class="fw-semibold">{{ employee.dismissed_at|date:"d.m.Y"|default:"—" }}</div></div>
+      <div class="col-md-4"><div class="text-muted small">1С identity</div><div class="fw-semibold">{{ identities|length }}</div></div>
+    </div>
+  </div>
+
+  <div class="finance-secondary-card card card-soft p-3 mb-4">
+    <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
+      <div><h2 class="h5 mb-1">Зарплата текущего месяца · {{ period_month|date:"m.Y" }}</h2><div class="small text-muted">Оклад из 1С; проценты и бонусы будут рассчитываться в Service2.</div></div>
+    </div>
+    <div class="row g-3 mb-3">
+      <div class="col-sm-6 col-xl-3"><div class="card card-soft p-3 h-100"><div class="text-muted small">Оклад</div><div class="h4 mb-0">{{ plan.base_salary|money }}</div></div></div>
+      <div class="col-sm-6 col-xl-3"><div class="card card-soft p-3 h-100"><div class="text-muted small">Проценты</div><div class="h4 mb-0">—</div></div></div>
+      <div class="col-sm-6 col-xl-3"><div class="card card-soft p-3 h-100"><div class="text-muted small">Бонусы</div><div class="h4 mb-0">—</div></div></div>
+      <div class="col-sm-6 col-xl-3"><div class="card card-soft p-3 h-100"><div class="text-muted small">План сейчас</div><div class="h4 mb-0">{{ plan.base_salary|money }}</div></div></div>
+    </div>
+    {% if plan.items %}
+      <div class="table-responsive">
+        <table class="table table-sm align-middle mb-0">
+          <thead><tr><th>Вид планового начисления 1С</th><th>Действует с</th><th class="text-end">Сумма</th></tr></thead>
+          <tbody>{% for item in plan.items %}<tr><td>{{ item.accrual_type_name }}{% if item.is_base_salary %} <span class="badge text-bg-light">оклад</span>{% endif %}</td><td>{{ item.source_period|date:"d.m.Y" }}</td><td class="text-end">{{ item.amount|money }}</td></tr>{% endfor %}</tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="text-muted">Плановых начислений за текущий месяц нет.</div>
+    {% endif %}
+  </div>
+
+  <div class="row g-3 mb-4">
+    <div class="col-lg-6">
+      <div class="finance-secondary-card card card-soft p-3 h-100">
+        <h2 class="h5 mb-3">Отпуска и отгулы</h2>
+        <div class="text-muted">Источник 1С пока не подключён. Раздел зарезервирован для отпусков, отгулов, больничных и других отсутствий.</div>
+      </div>
+    </div>
+    <div class="col-lg-6">
+      <div class="finance-secondary-card card card-soft p-3 h-100">
+        <h2 class="h5 mb-3">Проценты и бонусы</h2>
+        <div class="text-muted">Правила расчёта пока не настроены. Здесь будут храниться схема мотивации, процент от ВП, разовые бонусы и история изменений.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="finance-secondary-card card card-soft p-3 mb-4">
+    <h2 class="h5 mb-3">Связь с 1С</h2>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead><tr><th>Имя в 1С</th><th>Подразделение</th><th>ID 1С</th><th>Табельный №</th><th>Статус</th></tr></thead>
+        <tbody>
+        {% for identity in identities %}
+          <tr><td>{{ identity.raw_name }}</td><td>{{ identity.department_name|default:"—" }}</td><td>{{ identity.onec_employee_id|default:"—" }}</td><td>{{ identity.personnel_number|default:"—" }}</td><td>{{ identity.get_status_display }}</td></tr>
+        {% empty %}
+          <tr><td colspan="5" class="text-muted">Связи с 1С нет.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="finance-secondary-card card card-soft p-3">
+    <h2 class="h5 mb-3">ФОТ по месяцам</h2>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead><tr><th>Месяц</th><th class="text-end">Начислено</th><th class="text-end">Выплачено</th><th class="text-end">Остаток на конец</th></tr></thead>
+        <tbody>
+        {% for row in history %}
+          <tr><td>{{ row.period_month|date:"m.Y" }}</td><td class="text-end">{{ row.accrued|money }}</td><td class="text-end">{{ row.paid|money }}</td><td class="text-end">{{ row.closing_balance|money }}</td></tr>
+        {% empty %}
+          <tr><td colspan="4" class="text-muted">Истории ФОТ пока нет.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
