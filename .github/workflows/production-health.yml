@@ -1,0 +1,43 @@
+name: Production health monitor
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: service2-production-health
+  cancel-in-progress: true
+
+jobs:
+  health:
+    name: Check Service2 production health
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check liveness and database readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_url="https://service2.aqualine22.ru"
+          for path in /health/live/ /health/ready/; do
+            url="${base_url}${path}"
+            body="$(mktemp)"
+            status="$(
+              curl --silent --show-error --location                 --retry 2 --retry-delay 5 --retry-all-errors                 --connect-timeout 10 --max-time 20                 --output "$body" --write-out '%{http_code}'                 "$url"
+            )"
+            if [[ "$status" != "200" ]]; then
+              printf 'Health check failed: %s returned HTTP %s\n' "$path" "$status" >&2
+              cat "$body" >&2
+              exit 1
+            fi
+            if ! grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' "$body"; then
+              printf 'Health check failed: %s returned unexpected body\n' "$path" >&2
+              cat "$body" >&2
+              exit 1
+            fi
+            rm -f "$body"
+          done
