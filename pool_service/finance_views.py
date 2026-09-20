@@ -3786,6 +3786,7 @@ def finance_payroll_employee_mapping(request):
         "identities": payroll_identity_rows(organization),
         "employees": employees,
         "employee_count": employees.count(),
+        "can_view_employee_hr": can_view_employee_hr(request.user, organization),
         "active_tab": "finance",
     })
 
