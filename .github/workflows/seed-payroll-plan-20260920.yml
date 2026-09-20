@@ -1,0 +1,94 @@
+name: Seed current payroll plan snapshot
+
+on:
+  push:
+    branches:
+      - ops/seed-payroll-plan-20260920
+
+permissions:
+  contents: read
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_seed
+          chmod 600 ~/.ssh/service2_seed
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Import current payroll plan from 1C into Service2
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+          EXPECTED_PROD_SHA: "f8530094ee7a752630bb1e1e744a9ba8178c7c7e"
+        run: |
+          set -euo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          ssh -i ~/.ssh/service2_seed -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash -s -- '$DEPLOY_APP_PATH' '$EXPECTED_PROD_SHA'" <<'REMOTE'
+          set -euo pipefail
+          app_path="$1"
+          expected_sha="$2"
+          cd "$app_path"
+          test "$(git rev-parse HEAD)" = "$expected_sha"
+          ../venv/bin/python manage.py shell <<'PY'
+          from decimal import Decimal
+          from django.db.models import Sum
+          from pool_service.models import Organization, OrganizationAccess, PayrollPlanItem
+          from pool_service.finance_imports.payroll_plan import (
+              current_payroll_plan_date,
+              refresh_payroll_plan_snapshot,
+          )
+
+          organization = Organization.objects.get(pk=1)
+          access = (
+              OrganizationAccess.objects.filter(
+                  organization=organization,
+                  role__in=["owner", "admin"],
+                  user__is_active=True,
+              )
+              .select_related("user")
+              .order_by("id")
+              .first()
+          )
+          if access is None:
+              raise SystemExit("No active owner/admin actor")
+
+          as_of = current_payroll_plan_date()
+          snapshot, created = refresh_payroll_plan_snapshot(
+              organization,
+              access.user,
+              as_of=as_of,
+          )
+          base = PayrollPlanItem.objects.filter(
+              snapshot=snapshot,
+              is_base_salary=True,
+          ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+          other = PayrollPlanItem.objects.filter(
+              snapshot=snapshot,
+              is_base_salary=False,
+          ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+          print(
+              "PAYROLL_PLAN_SNAPSHOT",
+              f"id={snapshot.pk}",
+              f"period={snapshot.period_month.isoformat()}",
+              f"created={created}",
+              f"items={snapshot.items.count()}",
+              f"base_salary_total={base}",
+              f"other_plan_total={other}",
+              f"source_rows={snapshot.source_rows}",
+          )
+          PY
+          REMOTE
