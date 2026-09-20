@@ -1,11 +1,11 @@
 from unittest.mock import patch
 
 from django.db import DatabaseError
-from django.test import SimpleTestCase
+from django.test import TestCase
 from django.urls import reverse
 
 
-class HealthEndpointTests(SimpleTestCase):
+class HealthEndpointTests(TestCase):
     def test_liveness_is_public_and_sanitized(self):
         response = self.client.get(reverse("health_live"))
 
