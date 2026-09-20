@@ -1,0 +1,149 @@
+name: Apply confirmed cashflow mappings
+
+on:
+  push:
+    branches:
+      - ops/apply-cashflow-mappings-20260920
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_ops
+          chmod 600 ~/.ssh/service2_ops
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Apply owner-confirmed mappings through guarded service
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+          EXPECTED_PROD_SHA: "3dd0244ded667c86694e410ed8545cb566bf2a66"
+        run: |
+          set -euo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          ssh -i ~/.ssh/service2_ops -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash -s -- '$DEPLOY_APP_PATH' '$EXPECTED_PROD_SHA'" <<'REMOTE'
+          set -euo pipefail
+          app_path="$1"
+          expected_sha="$2"
+          cd "$app_path"
+          actual_sha="$(git rev-parse HEAD)"
+          test "$actual_sha" = "$expected_sha"
+          ../venv/bin/python manage.py shell <<'PY'
+          from datetime import date
+          from django.db import transaction
+          from pool_service.models import Organization, OrganizationAccess, CashFlowArticleMapping
+          from pool_service.finance_imports.cashflow_dashboard import cashflow_dashboard_data
+          from pool_service.services.cashflow_classification import save_explicit_cashflow_mapping
+
+          organization = Organization.objects.get(pk=1)
+          access = (
+              OrganizationAccess.objects.filter(
+                  organization=organization,
+                  role__in=["owner", "admin"],
+                  user__is_active=True,
+              )
+              .select_related("user")
+              .order_by("id")
+              .first()
+          )
+          if access is None:
+              raise SystemExit("No owner/admin actor")
+          actor = access.user
+
+          specs = {
+              "Александр": ("Дивиденды собственникам", "financing", True),
+              "Аренда помещений": ("Аренда", "operating", False),
+              "Банковское обслуживание": ("Банковское обслуживание", "operating", False),
+              "Бухгалтерские расходы": ("Бухгалтерия", "operating", False),
+              "Возврат денежных средств от поставщика": ("Расчёты с поставщиками", "operating", False),
+              "Возврат Депозита": ("Депозиты", "liquidity", False),
+              "Возврат кредита /займа": ("Кредиты и займы", "financing", False),
+              "Возврат оплаты клиенту": ("Расчёты с покупателями", "operating", False),
+              "Возмещение расходов сотрудниками": ("Возмещение расходов сотрудниками", "operating", False),
+              "Заработная плата": ("ФОТ", "operating", False),
+              "Инструмент": ("Инструмент", "operating", False),
+              "Комиссии банка": ("Банковские комиссии", "operating", False),
+              "ЛАРГУС": ("Автотранспорт — ремонт и обслуживание", "operating", False),
+              "Обеспечение заявок на участие в торгах": ("Обеспечение заявок", "liquidity", False),
+              "Обслуживание офиса": ("Обслуживание офиса", "operating", False),
+              "Оплата налогов": ("Налоги", "operating", False),
+              "Оплата от покупателей": ("Расчёты с покупателями", "operating", False),
+              "Оплата поставщикам": ("Расчёты с поставщиками", "operating", False),
+              "Перемещение между кассами, счетами": ("Внутренние перемещения", "internal", False),
+              "Получение кредитов и займов": ("Кредиты и займы", "financing", False),
+              "Программное обеспечение": ("Программное обеспечение", "operating", False),
+              "Проценты по Депозиту": ("Проценты по депозитам", "financing", False),
+              "Проценты по кредитам / займам": ("Проценты по кредитам и займам", "financing", False),
+              "Размещение Депозита": ("Депозиты", "liquidity", False),
+              "Расходы на Авто (ГСМ)": ("Автотранспорт — ГСМ", "operating", False),
+              "Реклама и маркетинг": ("Реклама и маркетинг", "operating", False),
+              "Сайт и ИИ": ("Сайт и ИИ", "operating", False),
+              "Связь, интернет": ("Связь и интернет", "operating", False),
+              "Торги": ("Торги — невозвратные расходы", "operating", False),
+              "Транспортные расходы": ("Транспорт", "operating", False),
+              "Удержание по исполнительному листу": ("ФОТ — удержания", "operating", False),
+              "Юрий": ("Дивиденды собственникам", "financing", True),
+          }
+
+          data = cashflow_dashboard_data(
+              organization,
+              date(2026, 1, 1),
+              date(2026, 9, 1),
+          )
+          active = {
+              item["article_raw"]: item
+              for item in data["articles"]
+          }
+          missing = sorted(set(specs) - set(active))
+          if missing:
+              raise SystemExit(f"Active articles missing: {missing}")
+          if "Прочее" in specs:
+              raise SystemExit("Прочее must remain unclassified")
+
+          created = 0
+          updated = 0
+          with transaction.atomic():
+              for article_name, (category, flow_type, is_dividend) in specs.items():
+                  item = active[article_name]
+                  mapping, was_created = save_explicit_cashflow_mapping(
+                      organization=organization,
+                      article_name=item["article_raw"],
+                      expected_normalized_article_name=item["normalized_article_name"],
+                      values={
+                          "management_category": category,
+                          "flow_type": flow_type,
+                          "classification_status": CashFlowArticleMapping.CLASS_CONFIRMED,
+                          "is_dividend": is_dividend,
+                          "comment": "Подтверждено владельцем при настройке управленческого ДДС 20.09.2026.",
+                      },
+                      user=actor,
+                  )
+                  created += int(was_created)
+                  updated += int(not was_created)
+
+          print(f"MAPPINGS_APPLIED created={created} updated={updated} total={len(specs)}")
+          print(
+              "MAPPINGS_REMAINING_UNCLASSIFIED",
+              CashFlowArticleMapping.objects.filter(
+                  organization=organization,
+                  classification_status=CashFlowArticleMapping.CLASS_UNCLASSIFIED,
+              ).count(),
+          )
+          PY
+          REMOTE
