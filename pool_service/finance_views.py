@@ -82,6 +82,11 @@ from pool_service.finance_imports.payroll_dashboard import (
     payroll_identity_rows,
     unresolved_active_payroll_identity_count,
 )
+from pool_service.finance_imports.payroll_plan import (
+    PayrollPlanSyncError,
+    payroll_compensation_dashboard_data,
+    refresh_payroll_plan_snapshot,
+)
 from pool_service.finance_imports.cashflow_dashboard import (
     cashflow_article_trend_data,
     cashflow_dashboard_data,
@@ -3528,8 +3533,16 @@ def finance_payroll_dashboard(request):
         unresolved_count = unresolved_active_payroll_identity_count(organization)
     from pool_service.finance_imports.payroll_accrual_dashboard import accrual_dashboard_data
     accrual_summary = accrual_dashboard_data(organization, period_from, period_to)
+    compensation = (
+        payroll_compensation_dashboard_data(
+            organization, timezone.localdate().replace(day=1)
+        )
+        if show_personal
+        else None
+    )
     return render(request, "pool_service/finance/payroll_dashboard.html", {
         "accrual_summary": accrual_summary,
+        "compensation": compensation,
         "data": data,
         "period_from": period_from,
         "period_to": period_to,
@@ -3540,6 +3553,33 @@ def finance_payroll_dashboard(request):
         "unresolved_count": unresolved_count,
         "active_tab": "finance",
     })
+
+
+@login_required
+@require_POST
+def finance_payroll_plan_refresh(request):
+    organization, denied = _payroll_access(request, can_import_payroll)
+    if denied:
+        return denied
+    try:
+        snapshot, created = refresh_payroll_plan_snapshot(
+            organization,
+            request.user,
+            as_of=timezone.localdate(),
+        )
+    except (PayrollPlanSyncError, ValidationError) as exc:
+        messages.error(request, str(exc))
+    except PermissionDenied:
+        return HttpResponseForbidden("Недостаточно прав для обновления окладов.")
+    else:
+        if created:
+            messages.success(
+                request,
+                f"Оклады из 1С обновлены за {snapshot.period_month:%m.%Y}.",
+            )
+        else:
+            messages.info(request, "Оклады из 1С не изменились.")
+    return redirect("finance_payroll_dashboard")
 
 
 @login_required
