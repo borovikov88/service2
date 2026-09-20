@@ -64,6 +64,7 @@ class AuthRedirectMiddleware:
             "/signup/company/",
             "/api/smsru/",
             "/static/",
+            "/health/",
             "/consent/",
             "/sw.js",
             "/manifest.webmanifest",
