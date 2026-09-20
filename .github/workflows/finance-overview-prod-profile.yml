@@ -70,9 +70,13 @@ jobs:
               _comparison_specs,
               _range_data,
               _seasonality,
+              _source_state,
               finance_overview_data,
               resolve_owner_period,
           )
+          from pool_service.finance_imports.profit_dashboard import monthly_profit_summary
+          from pool_service.finance_imports.payroll_accrual_dashboard import accrual_dashboard_data
+          from pool_service.finance_imports.management_finance import cashflow_operating_monthly_summary
 
           TABLE_MARKERS = (
               "pool_service_onecreportperiodstate",
@@ -148,6 +152,77 @@ jobs:
                       include_freshness=False,
                   ),
               )
+          current_first = date(today.year, 1, 1)
+          current_last = today.replace(day=1)
+          previous_first = date(today.year - 1, 1, 1)
+          previous_last = date(today.year - 1, today.month, 1)
+
+          profile(
+              "seasonality_profit_current",
+              lambda: monthly_profit_summary(
+                  organization, current_first, current_last
+              ),
+          )
+          profile(
+              "seasonality_profit_previous",
+              lambda: monthly_profit_summary(
+                  organization, previous_first, previous_last
+              ),
+          )
+          profile(
+              "seasonality_profit_state_current",
+              lambda: _source_state(
+                  organization,
+                  "profit",
+                  [
+                      date(today.year, month, 1)
+                      for month in range(1, today.month + 1)
+                  ],
+                  include_freshness=False,
+              ),
+          )
+          profile(
+              "seasonality_profit_state_previous",
+              lambda: _source_state(
+                  organization,
+                  "profit",
+                  [
+                      date(today.year - 1, month, 1)
+                      for month in range(1, today.month + 1)
+                  ],
+                  include_freshness=False,
+              ),
+          )
+          profile(
+              "seasonality_payroll_current",
+              lambda: accrual_dashboard_data(
+                  organization,
+                  current_first,
+                  current_last,
+                  include_freshness=False,
+              ),
+          )
+          profile(
+              "seasonality_payroll_previous",
+              lambda: accrual_dashboard_data(
+                  organization,
+                  previous_first,
+                  previous_last,
+                  include_freshness=False,
+              ),
+          )
+          profile(
+              "seasonality_cashflow_current",
+              lambda: cashflow_operating_monthly_summary(
+                  organization, current_first, current_last
+              ),
+          )
+          profile(
+              "seasonality_cashflow_previous",
+              lambda: cashflow_operating_monthly_summary(
+                  organization, previous_first, previous_last
+              ),
+          )
           profile("seasonality", lambda: _seasonality(organization, today))
           profile(
               "overview_data",
