@@ -34,7 +34,7 @@ jobs:
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
-          EXPECTED_PROD_SHA: "46a52191e5ecb3cb9885bde2f3a4a514fb0009f9"
+          EXPECTED_PROD_SHA: "ea62a40da730b8d7783a8043e97aff94554d6639"
         run: |
           set -euo pipefail
           test -n "$DEPLOY_HOST"
@@ -74,7 +74,7 @@ jobs:
               finance_overview_data,
               resolve_owner_period,
           )
-          from pool_service.finance_imports.profit_dashboard import monthly_profit_summary
+          from pool_service.finance_imports.profit_dashboard import monthly_gross_profit_series
           from pool_service.finance_imports.payroll_accrual_dashboard import accrual_dashboard_data
           from pool_service.finance_imports.management_finance import cashflow_operating_monthly_summary
 
@@ -159,13 +159,13 @@ jobs:
 
           profile(
               "seasonality_profit_current",
-              lambda: monthly_profit_summary(
+              lambda: monthly_gross_profit_series(
                   organization, current_first, current_last
               ),
           )
           profile(
               "seasonality_profit_previous",
-              lambda: monthly_profit_summary(
+              lambda: monthly_gross_profit_series(
                   organization, previous_first, previous_last
               ),
           )
