@@ -4,6 +4,81 @@ from .seo import is_indexable_host
 BRAND_TAGLINE = "Система управления"
 
 
+FINANCE_TOPBAR_DETAIL_CRUMBS = {
+    "finance_employee_detail": [("Сотрудник", None)],
+    "finance_transaction_create": [("Новая операция", None)],
+    "finance_income_create": [("Новое поступление", None)],
+    "finance_income_edit": [("Поступление", None)],
+    "finance_expense_create": [("Новый расход", None)],
+    "finance_expense_detail": [("Расход", None)],
+    "finance_expense_edit": [("Расход", None)],
+    "finance_report": [("Отчёт", None)],
+    "finance_cash_dashboard": [("Операции кассы", None)],
+    "finance_cash_income_create": [("Новое поступление", None)],
+    "finance_cash_transfer_create": [("Перемещение", None)],
+    "finance_cash_accountable_issue_create": [("Выдача под отчёт", None)],
+    "finance_accountable_return_create": [("Возврат подотчёта", None)],
+    "finance_cash_operation_detail": [("Операция", None)],
+    "finance_cash_operation_edit": [("Операция", None)],
+    "finance_card_transfer_create": [("Новое перечисление", None)],
+    "finance_card_transfer_detail": [("Перечисление", None)],
+    "finance_onec_cashflow_mapping": [("Классификация статей", None)],
+    "finance_onec_import_list": [("История загрузок", None)],
+    "finance_onec_import_detail": [("Загрузка", None)],
+    "finance_onec_import_preview": [("Предпросмотр", None)],
+    "finance_onec_cashflow_detail": [("Загрузка ДДС", None)],
+    "finance_onec_cashflow_preview": [("Предпросмотр ДДС", None)],
+    "finance_payroll_import_list": [("Загрузки ФОТ", None)],
+    "finance_payroll_import_upload": [("Новая загрузка", None)],
+    "finance_payroll_import_preview": [("Предпросмотр", None)],
+    "finance_payroll_employee_mapping": [("Сопоставление сотрудников", None)],
+    "finance_payroll_employee_list": [("Сотрудники", None)],
+    "finance_payroll_employee_profile": [
+        ("Сотрудники", "finance_payroll_employee_list"),
+        ("Карточка сотрудника", None),
+    ],
+}
+
+
+def _finance_topbar_breadcrumbs(navigation, current_route):
+    root = {
+        "label": "Финансы",
+        "url": "" if current_route == "finance_dashboard" else reverse("finance_dashboard"),
+    }
+    breadcrumbs = [root]
+    if current_route == "finance_dashboard":
+        return breadcrumbs
+
+    active_item = None
+    for group in navigation or []:
+        for item in group.get("items", []):
+            if item.get("active"):
+                active_item = item
+                break
+        if active_item:
+            break
+
+    if not active_item:
+        return breadcrumbs
+
+    if current_route == active_item["route_name"]:
+        breadcrumbs.append({"label": active_item["label"], "url": ""})
+        return breadcrumbs
+
+    breadcrumbs.append({
+        "label": active_item["label"],
+        "url": active_item.get("url") or "",
+    })
+    details = FINANCE_TOPBAR_DETAIL_CRUMBS.get(current_route)
+    if details:
+        for label, route_name in details:
+            breadcrumbs.append({
+                "label": label,
+                "url": reverse(route_name) if route_name else "",
+            })
+    return breadcrumbs
+
+
 def brand_context(request):
     host = request.get_host().split(":", 1)[0].lower()
 
@@ -165,6 +240,11 @@ def plan_status_context(request):
     context["finance_navigation"] = finance_navigation(
         user, org, current_route=current_route
     )
+    if current_route.startswith("finance_"):
+        context["topbar_breadcrumbs"] = _finance_topbar_breadcrumbs(
+            context["finance_navigation"],
+            current_route,
+        )
     payroll_summary_access = can_view_payroll_summary(user, org)
     payroll_import_access = can_import_payroll(user, org)
     payroll_mapping_access = can_manage_employee_mapping(user, org)
