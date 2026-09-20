@@ -11,17 +11,30 @@ import re
 import signal
 import sys
 
-from odata_payroll import (
-    MAX_OUTPUT_BYTES,
-    PayrollError,
-    Reader,
-    amount,
-    calendar_date,
-    diagnostic,
-    guid,
-    identifier,
-    no_duplicate_keys,
-)
+try:
+    from .odata_payroll import (
+        MAX_OUTPUT_BYTES,
+        PayrollError,
+        Reader,
+        amount,
+        calendar_date,
+        diagnostic,
+        guid,
+        identifier,
+        no_duplicate_keys,
+    )
+except ImportError:
+    from odata_payroll import (
+        MAX_OUTPUT_BYTES,
+        PayrollError,
+        Reader,
+        amount,
+        calendar_date,
+        diagnostic,
+        guid,
+        identifier,
+        no_duplicate_keys,
+    )
 
 PLAN_REGISTER = "InformationRegister_ПлановыеНачисленияИУдержания_RecordType"
 EMPLOYEE_CATALOG = "Catalog_Сотрудники"
