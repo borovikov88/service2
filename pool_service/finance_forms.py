@@ -791,12 +791,8 @@ class PayrollConfirmForm(forms.Form):
 
 class EmployeeCompensationMonthForm(forms.ModelForm):
     period_month = forms.DateField(
-        label="Месяц",
         input_formats=["%Y-%m"],
-        widget=forms.DateInput(
-            format="%Y-%m",
-            attrs={"type": "month", "class": "form-control"},
-        ),
+        widget=forms.HiddenInput(),
     )
 
     class Meta:
