@@ -285,7 +285,7 @@ def finance_operations_navigation(user, organization, *, current_route=""):
     operations = []
     if can_access_my_finances(user, organization):
         operations.append(_finance_nav_item(
-            "Мои финансы",
+            "Мои операции",
             "finance_my",
             (
                 "finance_transaction_create", "finance_transaction_confirm",
