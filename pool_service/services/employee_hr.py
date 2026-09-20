@@ -12,6 +12,7 @@ from pool_service.models import (
     EmployeeOneCIdentity,
     OrganizationAccess,
     PayrollPlanItem,
+    PayrollPlanSnapshot,
     PayrollRow,
 )
 
@@ -317,26 +318,31 @@ def bootstrap_employee_profiles(organization, actor=None):
 
 
 def employee_current_plan(employee, period_month):
-    items = (
-        PayrollPlanItem.objects.filter(
-            snapshot__organization=employee.organization,
-            snapshot__period_month=period_month,
-            employee_identity__employee=employee,
+    snapshot = (
+        PayrollPlanSnapshot.objects.filter(
+            organization=employee.organization,
+            period_month=period_month,
         )
-        .select_related("snapshot", "employee_identity")
-        .order_by("-snapshot__fetched_at", "-snapshot_id", "accrual_type_name")
+        .order_by("-fetched_at", "-id")
+        .first()
     )
-    latest_snapshot_id = items.values_list("snapshot_id", flat=True).first()
-    if not latest_snapshot_id:
+    if snapshot is None:
         return {
             "snapshot": None,
             "base_salary": ZERO,
             "other_plan_total": ZERO,
             "items": [],
         }
-    current = list(items.filter(snapshot_id=latest_snapshot_id))
+    current = list(
+        PayrollPlanItem.objects.filter(
+            snapshot=snapshot,
+            employee_identity__employee=employee,
+        )
+        .select_related("snapshot", "employee_identity")
+        .order_by("accrual_type_name", "id")
+    )
     return {
-        "snapshot": current[0].snapshot if current else None,
+        "snapshot": snapshot,
         "base_salary": sum(
             (row.amount for row in current if row.is_base_salary),
             ZERO,
