@@ -4021,7 +4021,6 @@ def finance_payroll_employee_profile(request, employee_id):
     )
     compensation_form = EmployeeCompensationMonthForm(
         instance=salary["adjustment"],
-        initial={"period_month": period_month},
     )
     return render(request, "pool_service/finance/payroll_employee_profile.html", {
         "employee": employee,
