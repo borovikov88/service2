@@ -46,7 +46,7 @@ class FinanceTopbarBreadcrumbBuilderTests(TestCase):
                 "label": "АНАЛИТИКА",
                 "items": [
                     {
-                        "label": "Фонд оплаты труда",
+                        "label": "ФОТ",
                         "route_name": "finance_payroll_dashboard",
                         "url": "/finance/payroll/",
                         "active": True,
@@ -65,7 +65,7 @@ class FinanceTopbarBreadcrumbBuilderTests(TestCase):
             breadcrumbs,
             [
                 {"label": "Управленческие финансы", "url": reverse("finance_dashboard")},
-                {"label": "Фонд оплаты труда", "url": "/finance/payroll/"},
+                {"label": "ФОТ", "url": "/finance/payroll/"},
                 {"label": "Сотрудники", "url": reverse("finance_payroll_employee_list")},
                 {"label": "Карточка сотрудника", "url": ""},
             ],
