@@ -92,7 +92,7 @@ class FinanceInformationArchitectureTests(TestCase):
 
         self.assertRedirects(response, reverse("finance_my"), fetch_redirect_response=False)
         self.assertEqual(dashboard.status_code, 200)
-        self.assertContains(dashboard, "Мои финансы")
+        self.assertContains(dashboard, "Мои операции")
         self.assertNotContains(dashboard, "Валовая прибыль")
 
     @patch("pool_service.finance_views.can_access_finance_data", return_value=True)
