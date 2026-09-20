@@ -78,12 +78,10 @@ jobs:
 
           owners = {
               "Александр": payroll.filter(
-                  Q(employee_normalized_name__icontains="боровиков")
-                  & Q(employee_normalized_name__icontains="александр")
+                  employee_raw_name="Боровиков Александр Юрьевич"
               ),
               "Юрий": payroll.filter(
-                  Q(employee_normalized_name__icontains="боровиков")
-                  & Q(employee_normalized_name__icontains="юрий")
+                  employee_raw_name="Боровиков Юрий Михайлович"
               ),
           }
 
