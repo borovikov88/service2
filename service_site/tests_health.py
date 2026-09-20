@@ -14,11 +14,10 @@ class HealthEndpointTests(SimpleTestCase):
         self.assertEqual(response.headers["Cache-Control"], "max-age=0, no-cache, no-store, must-revalidate, private")
 
     def test_readiness_returns_ok_when_database_responds(self):
-        cursor = patch("service_site.health_views.connection.cursor").start()
-        self.addCleanup(patch.stopall)
-        context = cursor.return_value.__enter__.return_value
+        with patch("service_site.health_views.connection.cursor") as cursor:
+            context = cursor.return_value.__enter__.return_value
 
-        response = self.client.get(reverse("health_ready"))
+            response = self.client.get(reverse("health_ready"))
 
         self.assertEqual(response.status_code, 200)
         self.assertJSONEqual(response.content, {"status": "ok"})
