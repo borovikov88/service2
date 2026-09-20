@@ -4068,17 +4068,12 @@ def finance_payroll_employee_compensation_update(request, employee_id):
         employee=employee,
         period_month=period_month,
     ).first()
-    form = EmployeeCompensationMonthForm(request.POST, instance=instance)
-    if not form.is_valid():
-        messages.error(
-            request,
-            "Не удалось сохранить составляющие зарплаты. Проверьте значения.",
-        )
-        return redirect("finance_payroll_employee_profile", employee_id=employee.pk)
-
     before = {}
     if instance:
+        # Capture persisted values before binding the ModelForm: is_valid()
+        # mutates the bound instance during _post_clean.
         before = {
+            "period_month": instance.period_month.isoformat(),
             "percent_amount": str(instance.percent_amount),
             "bonus_amount": str(instance.bonus_amount),
             "extra_days_count": str(instance.extra_days_count),
@@ -4087,6 +4082,15 @@ def finance_payroll_employee_compensation_update(request, employee_id):
             "deduction_amount": str(instance.deduction_amount),
             "note": instance.note,
         }
+
+    form = EmployeeCompensationMonthForm(request.POST, instance=instance)
+    if not form.is_valid():
+        messages.error(
+            request,
+            "Не удалось сохранить составляющие зарплаты. Проверьте значения.",
+        )
+        return redirect("finance_payroll_employee_profile", employee_id=employee.pk)
+
     with transaction.atomic():
         compensation = form.save(commit=False)
         compensation.organization = organization
@@ -4104,6 +4108,15 @@ def finance_payroll_employee_compensation_update(request, employee_id):
             "deduction_amount": str(compensation.deduction_amount),
             "note": compensation.note,
         }
+        changed_fields = (
+            [
+                key
+                for key, value in after.items()
+                if before.get(key) != value
+            ]
+            if instance
+            else list(after.keys())
+        )
         DataAuditLog.objects.create(
             entity_type="EmployeeCompensationMonth",
             entity_id=str(compensation.pk),
@@ -4116,7 +4129,7 @@ def finance_payroll_employee_compensation_update(request, employee_id):
             actor=request.user,
             before=before,
             after=after,
-            changed_fields=list(after.keys()),
+            changed_fields=changed_fields,
         )
     messages.success(
         request,
