@@ -895,10 +895,10 @@ def finance_operations(request):
     )
     if denied:
         return denied
-    if can_access_cash(request.user, organization):
-        return redirect("finance_kkm_cash_dashboard")
     if can_access_my_finances(request.user, organization):
         return redirect("finance_my")
+    if can_access_cash(request.user, organization):
+        return redirect("finance_kkm_cash_dashboard")
     return HttpResponseForbidden("Недостаточно прав для финансовых операций.")
 
 
