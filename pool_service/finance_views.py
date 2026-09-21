@@ -4055,13 +4055,32 @@ def finance_payroll_employee_compensation_update(request, employee_id):
         pk=employee_id,
         organization=organization,
     )
-    period_month = current_payroll_plan_date().replace(day=1)
 
-    instance = EmployeeCompensationMonth.objects.filter(
-        organization=organization,
-        employee=employee,
-        period_month=period_month,
-    ).first()
+    current_period = current_payroll_plan_date().replace(day=1)
+    expected_raw = (request.POST.get("expected_period_month") or "").strip()
+    try:
+        expected_period = date.fromisoformat(expected_raw)
+    except ValueError:
+        expected_period = None
+    if (
+        expected_period is None
+        or expected_period.day != 1
+        or expected_period != current_period
+    ):
+        messages.error(
+            request,
+            "Месяц зарплаты изменился. Обновите карточку сотрудника и внесите данные заново.",
+        )
+        return redirect("finance_payroll_employee_profile", employee_id=employee.pk)
+
+    form = EmployeeCompensationMonthForm(request.POST)
+    if not form.is_valid():
+        messages.error(
+            request,
+            "Не удалось сохранить составляющие зарплаты. Проверьте значения.",
+        )
+        return redirect("finance_payroll_employee_profile", employee_id=employee.pk)
+
     def audit_payload(compensation):
         return {
             "period_month": compensation.period_month.isoformat(),
@@ -4076,28 +4095,36 @@ def finance_payroll_employee_compensation_update(request, employee_id):
             "note": compensation.note,
         }
 
-    before = {}
-    if instance:
-        # Capture persisted values before binding the ModelForm: is_valid()
-        # mutates the bound instance during _post_clean.
-        before = audit_payload(instance)
-
-    form = EmployeeCompensationMonthForm(request.POST, instance=instance)
-    if not form.is_valid():
-        messages.error(
-            request,
-            "Не удалось сохранить составляющие зарплаты. Проверьте значения.",
-        )
-        return redirect("finance_payroll_employee_profile", employee_id=employee.pk)
-
     with transaction.atomic():
-        compensation = form.save(commit=False)
-        compensation.organization = organization
-        compensation.employee = employee
-        compensation.period_month = period_month
+        # Lock the stable employee row first. This serializes all compensation
+        # writes for one employee, including the first insert when there is no
+        # EmployeeCompensationMonth row to lock yet.
+        locked_employee = Employee.objects.select_for_update().get(
+            pk=employee.pk,
+            organization=organization,
+        )
+        instance = (
+            EmployeeCompensationMonth.objects.select_for_update()
+            .filter(
+                organization=organization,
+                employee=locked_employee,
+                period_month=expected_period,
+            )
+            .first()
+        )
+        before = audit_payload(instance) if instance else {}
+
+        compensation = instance or EmployeeCompensationMonth(
+            organization=organization,
+            employee=locked_employee,
+            period_month=expected_period,
+        )
+        for field_name in EmployeeCompensationMonthForm.Meta.fields:
+            setattr(compensation, field_name, form.cleaned_data[field_name])
         compensation.updated_by = request.user
         compensation.full_clean()
         compensation.save()
+
         after = audit_payload(compensation)
         changed_fields = (
             [
@@ -4122,6 +4149,7 @@ def finance_payroll_employee_compensation_update(request, employee_id):
             after=after,
             changed_fields=changed_fields,
         )
+
     messages.success(
         request,
         f"Составляющие зарплаты за {compensation.period_month:%m.%Y} сохранены.",
