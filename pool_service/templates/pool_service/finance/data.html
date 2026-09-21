@@ -216,9 +216,10 @@
     }
   }
 
-  async function refreshPayrollPlan() {
+  async function refreshPayrollPlan(syncRunId) {
     const body = new FormData();
     body.append("csrfmiddlewaretoken", csrf);
+    if (syncRunId) body.append("sync_run_id", syncRunId);
     return jsonRequest("{% url 'finance_payroll_plan_refresh' %}", {method: "POST", body});
   }
 
@@ -231,7 +232,7 @@
       );
     }
     show("Финансовые данные обновлены. Обновляем текущие оклады сотрудников…", "info");
-    const payrollPlan = await refreshPayrollPlan();
+    const payrollPlan = await refreshPayrollPlan(finished.run_id);
     show(payrollPlan.message || "Все данные из 1С успешно обновлены.", "success");
     window.setTimeout(() => window.location.reload(), 900);
   }
