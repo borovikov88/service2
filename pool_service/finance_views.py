@@ -946,7 +946,27 @@ def _finance_data_latest_state(organization, report_types):
     )
 
 
-def _finance_data_status_rows(organization):
+def _finance_data_freshness(period_month, expected_month):
+    if period_month is None:
+        return {
+            "freshness": "missing",
+            "freshness_label": "Нет данных",
+            "freshness_tone": "secondary",
+        }
+    if period_month >= expected_month:
+        return {
+            "freshness": "current",
+            "freshness_label": "Актуально",
+            "freshness_tone": "success",
+        }
+    return {
+        "freshness": "stale",
+        "freshness_label": "Требует обновления",
+        "freshness_tone": "warning",
+    }
+
+
+def _finance_data_status_rows(organization, expected_month):
     profit = _finance_data_latest_state(
         organization, [OneCImportBatch.TYPE_MONTHLY_PROFIT]
     )
@@ -963,7 +983,7 @@ def _finance_data_status_rows(organization):
         .order_by("-fetched_at", "-id")
         .first()
     )
-    return [
+    sources = [
         {
             "key": "profit",
             "label": "Валовая прибыль",
@@ -989,6 +1009,51 @@ def _finance_data_status_rows(organization):
             "updated_at": plan.fetched_at if plan else None,
         },
     ]
+    for source in sources:
+        source.update(
+            _finance_data_freshness(source["period_month"], expected_month)
+        )
+    return sources
+
+
+def _finance_data_resumable_run(organization, allowed_report_types):
+    allowed = set(allowed_report_types)
+    runs = (
+        OneCODataSyncRun.objects.filter(
+            organization=organization,
+            mode=OneCODataSyncRun.MODE_AUTO_APPLY,
+            status__in=[
+                OneCODataSyncRun.STATUS_PENDING,
+                OneCODataSyncRun.STATUS_RUNNING,
+            ],
+        )
+        .select_related("requested_by")
+        .order_by("-created_at", "-id")[:20]
+    )
+    for run in runs:
+        scope = run.sync_scope or {}
+        if scope.get("_schedule_day"):
+            continue
+        if not set(run.requested_report_types).issubset(allowed):
+            continue
+        payload = _auto_run_payload(run)
+        payload.update({
+            "created_at": run.created_at,
+            "requested_by_label": (
+                run.requested_by.get_full_name()
+                or run.requested_by.username
+            ),
+            "step_url": reverse(
+                "finance_onec_refresh_apply_step",
+                kwargs={"run_id": run.id},
+            ),
+            "status_url": reverse(
+                "finance_onec_refresh_apply_status",
+                kwargs={"run_id": run.id},
+            ),
+        })
+        return payload
+    return None
 
 
 def _finance_data_run_result(run):
@@ -1147,11 +1212,19 @@ def finance_data(request):
         and set(report_types) == {REPORT_PROFIT, REPORT_CASHFLOW, REPORT_PAYROLL}
     )
     default_start, default_end = _finance_data_default_period()
+    resumable_run = (
+        _finance_data_resumable_run(organization, report_types)
+        if can_refresh_all
+        else None
+    )
     return render(request, "pool_service/finance/data.html", {
         "organization": organization,
-        "source_statuses": _finance_data_status_rows(organization),
+        "source_statuses": _finance_data_status_rows(
+            organization, default_end
+        ),
         "update_history": _finance_data_history(request, organization),
         "can_refresh_all_onec": can_refresh_all,
+        "active_refresh_run": resumable_run,
         "refresh_default_start": default_start,
         "refresh_default_end": default_end,
         "can_import_gross_profit": can_import_gross_profit(request.user, organization),
