@@ -121,6 +121,9 @@
                 {% else %}
                   —
                 {% endif %}
+                {% if row.payroll_period %}
+                  <div class="small text-muted">Оклады: {{ row.payroll_period }}</div>
+                {% endif %}
               </td>
               <td>{{ row.method }}</td>
               <td><span class="badge text-bg-{{ row.result_tone }}">{{ row.result_label }}</span></td>
