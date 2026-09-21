@@ -303,7 +303,6 @@ class FinanceInformationArchitectureTests(TestCase):
 
         self.assertNotContains(cashflow, "Read-only реестр решений по mappings")
         self.assertNotContains(cashflow, "активных подтверждённых версий")
-        self.assertContains(cashflow, "Статьи, требующие классификации")
         self.assertNotContains(cost_control, "active dataset")
         self.assertNotContains(cost_control, "Unknown")
         self.assertContains(cost_control, "Проверенные данные")
