@@ -221,6 +221,40 @@ class FinanceDataCenterTests(TestCase):
         self.assertNotContains(response, "Есть незавершённое обновление")
         self.assertContains(response, 'data-refresh-start')
 
+    @patch(
+        "pool_service.finance_views._finance_data_default_period",
+        return_value=(date(2026, 7, 1), date(2026, 9, 1)),
+    )
+    @patch("pool_service.finance_views.is_odata_target_organization", return_value=True)
+    def test_hourly_scheduled_refresh_is_not_offered_as_manual_resume(self, _target, _period):
+        OneCODataSyncRun.objects.create(
+            organization=self.organization,
+            requested_by=self.owner,
+            mode=OneCODataSyncRun.MODE_AUTO_APPLY,
+            status=OneCODataSyncRun.STATUS_RUNNING,
+            requested_report_types=["monthly_profit", "cashflow", "payroll_accrual"],
+            sync_scope={
+                "monthly_profit": {"start": "2026-07-01", "end": "2026-09-01"},
+                "cashflow": {"start": "2026-07-01", "end": "2026-09-01"},
+                "payroll_accrual": {"start": "2026-07-01", "end": "2026-09-01"},
+                "_schedule_slot": "2026-09-21T07",
+            },
+            cursor={"version": 3},
+            progress={"completed_chunks": 2, "total_chunks": 9},
+            result_summary={},
+        )
+        self.client.force_login(self.owner)
+
+        response = self.client.get(reverse("finance_data"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.context["active_refresh_run"])
+        self.assertNotContains(response, "Есть незавершённое обновление")
+        self.assertContains(
+            response,
+            f'action="{reverse("finance_onec_refresh_apply_start")}"',
+        )
+
     def test_operational_employee_cannot_open_management_data_center(self):
         self.client.force_login(self.service)
 
