@@ -454,8 +454,14 @@ class FinanceDataCenterTests(TestCase):
         self.assertIn("только что завершён", response.json()["error"])
         refresh.assert_not_called()
 
+    @patch(
+        "pool_service.finance_views._onec_sync_report_types",
+        return_value=["monthly_profit", "cashflow", "payroll_accrual"],
+    )
     @patch("pool_service.finance_views.refresh_payroll_plan_snapshot")
-    def test_reposting_step_for_old_completed_run_does_not_arm_payroll_link(self, refresh):
+    def test_reposting_step_for_old_completed_run_does_not_arm_payroll_link(
+        self, refresh, _report_types
+    ):
         run = self._completed_all_data_run(cursor={"version": 4})
         self.client.force_login(self.owner)
 
@@ -504,10 +510,14 @@ class FinanceDataCenterTests(TestCase):
         self.assertEqual(response.status_code, 400)
         refresh.assert_not_called()
 
+    @patch(
+        "pool_service.finance_views._onec_sync_report_types",
+        return_value=["monthly_profit", "cashflow", "payroll_accrual"],
+    )
     @patch("pool_service.finance_views.refresh_payroll_plan_snapshot")
     @patch("pool_service.finance_views.step_unified_sync")
     def test_step_that_completes_run_arms_same_session_for_payroll_link(
-        self, step_sync, refresh
+        self, step_sync, refresh, _report_types
     ):
         run = self._completed_all_data_run(
             status=OneCODataSyncRun.STATUS_RUNNING,
