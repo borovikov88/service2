@@ -1073,7 +1073,18 @@ def _finance_data_run_result(run):
 
 def _finance_data_history(request, organization):
     rows = []
-    linked_created_snapshot_ids = set()
+    linked_created_snapshot_ids = {
+        snapshot_id
+        for snapshot_id in OneCODataSyncRun.objects.filter(
+            organization=organization,
+            mode=OneCODataSyncRun.MODE_AUTO_APPLY,
+            result_summary__payroll_plan_refresh__created=True,
+        ).values_list(
+            "result_summary__payroll_plan_refresh__snapshot_id",
+            flat=True,
+        )
+        if snapshot_id is not None
+    }
     report_labels = {
         REPORT_PROFIT: "Валовая прибыль",
         REPORT_CASHFLOW: "ДДС",
@@ -1093,13 +1104,6 @@ def _finance_data_history(request, organization):
         payroll_plan = summary.get("payroll_plan_refresh")
         if not isinstance(payroll_plan, dict):
             payroll_plan = None
-        if (
-            payroll_plan
-            and payroll_plan.get("created")
-            and payroll_plan.get("snapshot_id")
-        ):
-            linked_created_snapshot_ids.add(payroll_plan["snapshot_id"])
-
         requested = set(run.requested_report_types or [])
         periods = [
             scope.get(report_type) or {}
@@ -1140,6 +1144,11 @@ def _finance_data_history(request, organization):
             "data_label": data_label,
             "period_start": min(starts)[:7] if starts else "",
             "period_end": max(ends)[:7] if ends else "",
+            "payroll_period": (
+                (payroll_plan.get("period_month") or "")[:7]
+                if payroll_plan
+                else ""
+            ),
             "method": (
                 "Автоматически"
                 if scope.get("_schedule_day") or scope.get("_schedule_slot")
