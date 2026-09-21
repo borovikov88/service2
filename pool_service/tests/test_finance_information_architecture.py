@@ -92,7 +92,7 @@ class FinanceInformationArchitectureTests(TestCase):
 
         self.assertRedirects(response, reverse("finance_my"), fetch_redirect_response=False)
         self.assertEqual(dashboard.status_code, 200)
-        self.assertContains(dashboard, "Мои операции")
+        self.assertContains(dashboard, "Расходы и подотчёт")
         self.assertNotContains(dashboard, "Валовая прибыль")
 
     @patch("pool_service.finance_views.can_access_finance_data", return_value=True)
@@ -224,7 +224,7 @@ class FinanceInformationArchitectureTests(TestCase):
         labels = {item["label"] for group in navigation for item in group["items"]}
 
         self.assertFalse(groups["analytics"]["items"])
-        self.assertIn("Мои операции", labels)
+        self.assertIn("Расходы и подотчёт", labels)
         self.assertIn("Касса ККМ", labels)
         self.assertIn("Перечисления", labels)
         self.assertNotIn("Касса организации", labels)
@@ -274,7 +274,7 @@ class FinanceInformationArchitectureTests(TestCase):
 
         for label in (
             "Валовая прибыль", "ДДС", "ФОТ", "Контроль себестоимости",
-            "Мои операции", "Касса ККМ", "Перечисления", "Данные 1С",
+            "Расходы и подотчёт", "Касса ККМ", "Перечисления", "Данные 1С",
         ):
             self.assertContains(response, label)
 
