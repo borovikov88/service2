@@ -3916,19 +3916,25 @@ def _payroll_plan_parent_run(request, organization):
         run_id = uuid.UUID(raw_run_id)
     except (TypeError, ValueError, AttributeError):
         raise ValidationError("Некорректный идентификатор обновления 1С.") from None
+
+    allowed = set(_onec_sync_report_types(request.user, organization, payroll=True))
+    required = {REPORT_PROFIT, REPORT_CASHFLOW, REPORT_PAYROLL}
+    if allowed != required:
+        raise PermissionDenied("Недостаточно прав для завершения общего обновления 1С.")
+
     run = OneCODataSyncRun.objects.filter(
         pk=run_id,
         organization=organization,
-        requested_by=request.user,
         mode=OneCODataSyncRun.MODE_AUTO_APPLY,
     ).first()
     if (
         run is None
         or run.status != OneCODataSyncRun.STATUS_COMPLETED
-        or set(run.requested_report_types or [])
-        != {REPORT_PROFIT, REPORT_CASHFLOW, REPORT_PAYROLL}
+        or set(run.requested_report_types or []) != required
     ):
         raise ValidationError("Обновление 1С не подходит для привязки окладов.")
+    if isinstance(run.result_summary, dict) and "payroll_plan_refresh" in run.result_summary:
+        raise ValidationError("Оклады уже привязаны к этому обновлению 1С.")
     return run
 
 
@@ -3945,6 +3951,11 @@ def _record_payroll_plan_run_result(
     with transaction.atomic():
         locked = OneCODataSyncRun.objects.select_for_update().get(pk=run.pk)
         summary = dict(locked.result_summary or {})
+        # The association is immutable. A replay or concurrent duplicate may
+        # finish its external call, but it must never rewrite historical
+        # ownership of the payroll-plan step.
+        if "payroll_plan_refresh" in summary:
+            return False
         summary["payroll_plan_refresh"] = {
             "status": status,
             "snapshot_id": snapshot.pk if snapshot is not None else None,
@@ -3963,6 +3974,7 @@ def _record_payroll_plan_run_result(
         }
         locked.result_summary = summary
         locked.save(update_fields=["result_summary"])
+        return True
 
 
 @login_required
@@ -3974,6 +3986,10 @@ def finance_payroll_plan_refresh(request):
     wants_json = request.headers.get("X-Requested-With") == "XMLHttpRequest"
     try:
         parent_run = _payroll_plan_parent_run(request, organization)
+    except PermissionDenied:
+        if wants_json:
+            return JsonResponse({"ok": False, "error": "Недостаточно прав."}, status=403)
+        return HttpResponseForbidden("Недостаточно прав для завершения обновления 1С.")
     except ValidationError as exc:
         if wants_json:
             return JsonResponse({"ok": False, "error": str(exc)}, status=400)
