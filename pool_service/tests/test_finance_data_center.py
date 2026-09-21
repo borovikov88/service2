@@ -119,6 +119,105 @@ class FinanceDataCenterTests(TestCase):
         self.assertNotContains(response, "История проверок")
         self.assertNotContains(response, "Управленческие данные 1С")
 
+    @patch(
+        "pool_service.finance_views._finance_data_default_period",
+        return_value=(date(2026, 7, 1), date(2026, 9, 1)),
+    )
+    @patch("pool_service.finance_views.is_odata_target_organization", return_value=True)
+    def test_data_page_marks_previous_month_as_requiring_update(self, _target, _period):
+        month = date(2026, 8, 1)
+        self.activate(OneCImportBatch.TYPE_MONTHLY_PROFIT, month)
+        self.activate(OneCImportBatch.TYPE_CASHFLOW, month)
+        self.activate(OneCImportBatch.TYPE_PAYROLL_ACCRUAL, month)
+        PayrollPlanSnapshot.objects.create(
+            organization=self.organization,
+            period_month=month,
+            source_hash="b" * 64,
+            source_rows=17,
+            source_organization_guids=[],
+            currency_guid=uuid.uuid4(),
+            fetched_by=self.owner,
+        )
+        self.client.force_login(self.owner)
+
+        response = self.client.get(reverse("finance_data"))
+
+        self.assertEqual(response.status_code, 200)
+        statuses = {row["key"]: row for row in response.context["source_statuses"]}
+        self.assertEqual(statuses["profit"]["freshness"], "stale")
+        self.assertEqual(statuses["cashflow"]["freshness"], "stale")
+        self.assertEqual(statuses["payroll"]["freshness"], "stale")
+        self.assertEqual(statuses["payroll_plan"]["freshness"], "stale")
+        self.assertContains(response, "Требует обновления", count=4)
+        self.assertNotContains(response, '<span class="badge text-bg-success">Актуально</span>')
+
+    @patch(
+        "pool_service.finance_views._finance_data_default_period",
+        return_value=(date(2026, 7, 1), date(2026, 9, 1)),
+    )
+    @patch("pool_service.finance_views.is_odata_target_organization", return_value=True)
+    def test_data_page_offers_resume_for_unfinished_manual_refresh(self, _target, _period):
+        run = OneCODataSyncRun.objects.create(
+            organization=self.organization,
+            requested_by=self.owner,
+            mode=OneCODataSyncRun.MODE_AUTO_APPLY,
+            status=OneCODataSyncRun.STATUS_RUNNING,
+            requested_report_types=["monthly_profit", "cashflow", "payroll_accrual"],
+            sync_scope={
+                "monthly_profit": {"start": "2026-07-01", "end": "2026-09-01"},
+                "cashflow": {"start": "2026-07-01", "end": "2026-09-01"},
+                "payroll_accrual": {"start": "2026-07-01", "end": "2026-09-01"},
+            },
+            cursor={"version": 7},
+            progress={"completed_chunks": 4, "total_chunks": 9},
+            result_summary={},
+        )
+        self.client.force_login(self.owner)
+
+        response = self.client.get(reverse("finance_data"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["active_refresh_run"]["run_id"], str(run.id))
+        self.assertEqual(response.context["active_refresh_run"]["cursor"], 7)
+        self.assertContains(response, "Есть незавершённое обновление")
+        self.assertContains(response, "Продолжить обновление")
+        self.assertContains(
+            response,
+            reverse("finance_onec_refresh_apply_step", kwargs={"run_id": run.id}),
+        )
+        self.assertNotContains(response, 'data-refresh-start')
+
+    @patch(
+        "pool_service.finance_views._finance_data_default_period",
+        return_value=(date(2026, 7, 1), date(2026, 9, 1)),
+    )
+    @patch("pool_service.finance_views.is_odata_target_organization", return_value=True)
+    def test_scheduled_refresh_is_not_offered_as_manual_resume(self, _target, _period):
+        OneCODataSyncRun.objects.create(
+            organization=self.organization,
+            requested_by=self.owner,
+            mode=OneCODataSyncRun.MODE_AUTO_APPLY,
+            status=OneCODataSyncRun.STATUS_RUNNING,
+            requested_report_types=["monthly_profit", "cashflow", "payroll_accrual"],
+            sync_scope={
+                "monthly_profit": {"start": "2026-07-01", "end": "2026-09-01"},
+                "cashflow": {"start": "2026-07-01", "end": "2026-09-01"},
+                "payroll_accrual": {"start": "2026-07-01", "end": "2026-09-01"},
+                "_schedule_day": "2026-09-21",
+            },
+            cursor={"version": 2},
+            progress={"completed_chunks": 1, "total_chunks": 9},
+            result_summary={},
+        )
+        self.client.force_login(self.owner)
+
+        response = self.client.get(reverse("finance_data"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.context["active_refresh_run"])
+        self.assertNotContains(response, "Есть незавершённое обновление")
+        self.assertContains(response, 'data-refresh-start')
+
     def test_operational_employee_cannot_open_management_data_center(self):
         self.client.force_login(self.service)
 
