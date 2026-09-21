@@ -70,7 +70,7 @@ class SplitFinanceNavigationTests(TestCase):
         self.assertNotIn("Касса ККМ", management_labels)
         self.assertNotIn("Перечисления", management_labels)
 
-        self.assertIn("Мои операции", operations_labels)
+        self.assertIn("Расходы и подотчёт", operations_labels)
         self.assertIn("Касса ККМ", operations_labels)
         self.assertIn("Перечисления", operations_labels)
         self.assertIn("Касса организации", operations_labels)
@@ -86,7 +86,7 @@ class SplitFinanceNavigationTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, ">Операции<", html=False)
         self.assertNotContains(response, "Управленческие финансы")
-        self.assertContains(response, "Мои операции")
+        self.assertContains(response, "Расходы и подотчёт")
 
     def test_owner_renders_both_top_level_finance_workspaces(self):
         owner = self.user_with_role("owner")
@@ -98,7 +98,7 @@ class SplitFinanceNavigationTests(TestCase):
         self.assertContains(response, "Управленческие финансы")
         self.assertContains(response, ">Операции<", html=False)
 
-    def test_operations_entry_uses_kkm_for_cash_roles(self):
+    def test_operations_entry_uses_expenses_and_accountable_for_cash_roles(self):
         manager = self.user_with_role("manager")
         self.client.force_login(manager)
 
@@ -106,7 +106,7 @@ class SplitFinanceNavigationTests(TestCase):
 
         self.assertRedirects(
             response,
-            reverse("finance_kkm_cash_dashboard"),
+            reverse("finance_my"),
             fetch_redirect_response=False,
         )
 
