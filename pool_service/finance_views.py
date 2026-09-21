@@ -1032,7 +1032,7 @@ def _finance_data_resumable_run(organization, allowed_report_types):
     )
     for run in runs:
         scope = run.sync_scope or {}
-        if scope.get("_schedule_day"):
+        if scope.get("_schedule_day") or scope.get("_schedule_slot"):
             continue
         if not set(run.requested_report_types).issubset(allowed):
             continue
