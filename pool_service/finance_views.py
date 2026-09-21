@@ -3428,7 +3428,8 @@ def finance_onec_refresh_apply_step(request, run_id):
         return JsonResponse({"error_code": "invalid_cursor", "error": "Некорректная версия шага."}, status=400)
     if expected != int((run.cursor or {}).get("version", 0)):
         return JsonResponse({"error_code": "stale_cursor", "error": "Шаг обновления устарел."}, status=409)
-    if run.status not in OneCODataSyncRun.TERMINAL_STATUSES:
+    was_terminal = run.status in OneCODataSyncRun.TERMINAL_STATUSES
+    if not was_terminal:
         try:
             run = step_unified_sync(
                 run.id, request.user, _onec_sync_report_types(request.user, organization, payroll=True), expected,
@@ -3436,6 +3437,8 @@ def finance_onec_refresh_apply_step(request, run_id):
             )
         except PermissionDenied:
             return JsonResponse({"error_code": "permission_denied", "error": "Недостаточно прав."}, status=403)
+    if not was_terminal and run.status == OneCODataSyncRun.STATUS_COMPLETED:
+        _remember_completed_interactive_run(request, run)
     return JsonResponse(_auto_run_payload(run))
 
 
@@ -3908,6 +3911,46 @@ def finance_payroll_dashboard(request):
     })
 
 
+_FINANCE_ONEC_COMPLETED_RUN_SESSION_KEY = "finance_onec_completed_interactive_run"
+_FINANCE_ONEC_COMPLETED_RUN_MAX_AGE_SECONDS = 600
+
+
+def _remember_completed_interactive_run(request, run):
+    scope = run.sync_scope or {}
+    if (
+        run.status != OneCODataSyncRun.STATUS_COMPLETED
+        or scope.get("_schedule_day")
+        or scope.get("_schedule_slot")
+    ):
+        return
+    request.session[_FINANCE_ONEC_COMPLETED_RUN_SESSION_KEY] = {
+        "run_id": str(run.id),
+        "completed_at": int(timezone.now().timestamp()),
+    }
+    request.session.modified = True
+
+
+def _consume_completed_interactive_run(request, run):
+    marker = request.session.get(_FINANCE_ONEC_COMPLETED_RUN_SESSION_KEY)
+    if not isinstance(marker, dict) or marker.get("run_id") != str(run.id):
+        raise ValidationError(
+            "Этот запуск не был только что завершён в текущей сессии."
+        )
+    try:
+        completed_at = int(marker.get("completed_at"))
+    except (TypeError, ValueError):
+        completed_at = 0
+    age = int(timezone.now().timestamp()) - completed_at
+    if age < 0 or age > _FINANCE_ONEC_COMPLETED_RUN_MAX_AGE_SECONDS:
+        request.session.pop(_FINANCE_ONEC_COMPLETED_RUN_SESSION_KEY, None)
+        request.session.modified = True
+        raise ValidationError(
+            "Срок завершения этого обновления истёк. Запустите обновление заново."
+        )
+    request.session.pop(_FINANCE_ONEC_COMPLETED_RUN_SESSION_KEY, None)
+    request.session.modified = True
+
+
 def _payroll_plan_parent_run(request, organization):
     raw_run_id = (request.POST.get("sync_run_id") or "").strip()
     if not raw_run_id:
@@ -3927,14 +3970,18 @@ def _payroll_plan_parent_run(request, organization):
         organization=organization,
         mode=OneCODataSyncRun.MODE_AUTO_APPLY,
     ).first()
+    scope = (run.sync_scope or {}) if run is not None else {}
     if (
         run is None
         or run.status != OneCODataSyncRun.STATUS_COMPLETED
         or set(run.requested_report_types or []) != required
+        or scope.get("_schedule_day")
+        or scope.get("_schedule_slot")
     ):
         raise ValidationError("Обновление 1С не подходит для привязки окладов.")
     if isinstance(run.result_summary, dict) and "payroll_plan_refresh" in run.result_summary:
         raise ValidationError("Оклады уже привязаны к этому обновлению 1С.")
+    _consume_completed_interactive_run(request, run)
     return run
 
 
