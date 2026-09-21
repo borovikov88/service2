@@ -1,7 +1,7 @@
 {% extends "pool_service/base.html" %}
 {% load finance_tags %}
 
-{% block title %}Мои операции{% endblock %}
+{% block title %}Расходы и подотчёт{% endblock %}
 
 {% block content %}
 {% include "pool_service/finance/_desktop_workspace_styles.html" %}
@@ -9,8 +9,8 @@
 <div class="finance-page-header d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-4">
   <div>
     <div class="text-muted small mb-1">Операции</div>
-    <h1 class="h3 fw-bold mb-1">Мои операции</h1>
-    <div class="text-muted">Подотчёт, расходы компании и чеки</div>
+    <h1 class="h3 fw-bold mb-1">Расходы и подотчёт</h1>
+    <div class="text-muted">Подотчётные средства, расходы компании, возвраты и чеки</div>
   </div>
   <div class="finance-page-actions d-flex flex-wrap gap-2">
     <a href="{% url 'finance_expense_create' %}" class="btn btn-primary" data-finance-modal data-modal-title="Новый расход" data-modal-size="xl"><i class="bi bi-receipt me-2"></i>Добавить расход</a>

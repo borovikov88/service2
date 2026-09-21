@@ -16,7 +16,7 @@ class FinanceTopbarBreadcrumbBuilderTests(TestCase):
                 "label": "ОПЕРАЦИИ",
                 "items": [
                     {
-                        "label": "Мои операции",
+                        "label": "Расходы и подотчёт",
                         "route_name": "finance_my",
                         "url": "/finance/my/",
                         "active": True,
@@ -35,7 +35,7 @@ class FinanceTopbarBreadcrumbBuilderTests(TestCase):
             breadcrumbs,
             [
                 {"label": "Операции", "url": reverse("finance_operations")},
-                {"label": "Мои операции", "url": "/finance/my/"},
+                {"label": "Расходы и подотчёт", "url": "/finance/my/"},
                 {"label": "Сотрудник", "url": ""},
             ],
         )
@@ -115,7 +115,7 @@ class FinanceTopbarRenderedTests(TestCase):
         )
         self.assertContains(
             response,
-            f'href="{reverse("finance_my")}" class="desktop-topbar__crumb">Мои операции</a>',
+            f'href="{reverse("finance_my")}" class="desktop-topbar__crumb">Расходы и подотчёт</a>',
             html=False,
         )
         self.assertContains(

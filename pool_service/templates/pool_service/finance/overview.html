@@ -84,11 +84,11 @@
 
 <div class="owner-dashboard finance-desktop finance-owner-overview">
   <header class="finance-page-header owner-heading mb-4">
-    <div><div class="owner-eyebrow mb-1">Финансы · контур собственника</div><h1 class="h2 mb-1">Группа Аквалайн</h1><div class="text-muted small">Основные финансовые показатели компании: консолидированная экономика и движение денег по действующим активным импортам.</div></div>
+    <div><div class="owner-eyebrow mb-1">Управленческие финансы</div><h1 class="h2 mb-1">Группа Аквалайн</h1><div class="text-muted small">Основные финансовые показатели компании: консолидированная экономика и движение денег по актуальным данным Service2.</div></div>
     <div class="owner-scope">Консолидировано: 4 юрлица</div>
   </header>
 
-  {% if can_refresh_all_onec %}<div class="mb-3"><a class="btn btn-outline-primary" href="{% url 'finance_onec_import_list' %}#update-all">Обновление всех данных из 1С →</a></div>{% endif %}
+  {% if can_access_finance_data %}<div class="mb-3"><a class="btn btn-outline-primary" href="{% url 'finance_data' %}">Данные 1С и обновление →</a></div>{% endif %}
 
   <form method="get" class="finance-filter-card card card-soft p-3 mb-3" id="owner-period-form">
     <div class="d-flex justify-content-between align-items-start gap-3 mb-3"><div><div class="owner-eyebrow">Единый фильтр</div><h2 class="h5 mb-0">Период</h2></div><div class="text-end"><strong>{{ effective_period_label }}</strong><div class="text-muted small">полные календарные месяцы</div></div></div>

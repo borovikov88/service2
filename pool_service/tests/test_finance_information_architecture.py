@@ -92,7 +92,7 @@ class FinanceInformationArchitectureTests(TestCase):
 
         self.assertRedirects(response, reverse("finance_my"), fetch_redirect_response=False)
         self.assertEqual(dashboard.status_code, 200)
-        self.assertContains(dashboard, "Мои операции")
+        self.assertContains(dashboard, "Расходы и подотчёт")
         self.assertNotContains(dashboard, "Валовая прибыль")
 
     @patch("pool_service.finance_views.can_access_finance_data", return_value=True)
@@ -224,7 +224,7 @@ class FinanceInformationArchitectureTests(TestCase):
         labels = {item["label"] for group in navigation for item in group["items"]}
 
         self.assertFalse(groups["analytics"]["items"])
-        self.assertIn("Мои операции", labels)
+        self.assertIn("Расходы и подотчёт", labels)
         self.assertIn("Касса ККМ", labels)
         self.assertIn("Перечисления", labels)
         self.assertNotIn("Касса организации", labels)
@@ -274,9 +274,38 @@ class FinanceInformationArchitectureTests(TestCase):
 
         for label in (
             "Валовая прибыль", "ДДС", "ФОТ", "Контроль себестоимости",
-            "Мои операции", "Касса ККМ", "Перечисления", "Данные 1С",
+            "Расходы и подотчёт", "Касса ККМ", "Перечисления", "Данные 1С",
         ):
             self.assertContains(response, label)
+
+    def test_management_pages_route_updates_through_unified_data_center(self):
+        self.client.force_login(self.management)
+        old_import_url = reverse("finance_onec_import_list")
+        data_url = reverse("finance_data")
+
+        for route_name in (
+            "finance_overview",
+            "finance_onec_profit_dashboard",
+            "finance_onec_cashflow_dashboard",
+            "finance_onec_cost_control",
+        ):
+            with self.subTest(route_name=route_name):
+                response = self.client.get(reverse(route_name))
+                self.assertEqual(response.status_code, 200)
+                self.assertContains(response, f'href="{data_url}"')
+                self.assertNotContains(response, f'href="{old_import_url}"')
+
+    def test_management_pages_hide_import_engine_language(self):
+        self.client.force_login(self.management)
+
+        cashflow = self.client.get(reverse("finance_onec_cashflow_dashboard"))
+        cost_control = self.client.get(reverse("finance_onec_cost_control"))
+
+        self.assertNotContains(cashflow, "Read-only реестр решений по mappings")
+        self.assertNotContains(cashflow, "активных подтверждённых версий")
+        self.assertNotContains(cost_control, "active dataset")
+        self.assertNotContains(cost_control, "Unknown")
+        self.assertContains(cost_control, "Проверенные данные")
 
     @patch("pool_service.finance_views.can_import_gross_profit", return_value=False)
     @patch("pool_service.finance_views.can_view_gross_profit", return_value=True)
