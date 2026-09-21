@@ -1073,6 +1073,18 @@ def _finance_data_run_result(run):
 
 def _finance_data_history(request, organization):
     rows = []
+    linked_created_snapshot_ids = {
+        snapshot_id
+        for snapshot_id in OneCODataSyncRun.objects.filter(
+            organization=organization,
+            mode=OneCODataSyncRun.MODE_AUTO_APPLY,
+            result_summary__payroll_plan_refresh__created=True,
+        ).values_list(
+            "result_summary__payroll_plan_refresh__snapshot_id",
+            flat=True,
+        )
+        if snapshot_id is not None
+    }
     report_labels = {
         REPORT_PROFIT: "Валовая прибыль",
         REPORT_CASHFLOW: "ДДС",
@@ -1088,6 +1100,10 @@ def _finance_data_history(request, organization):
     )
     for run in runs:
         scope = run.sync_scope or {}
+        summary = run.result_summary or {}
+        payroll_plan = summary.get("payroll_plan_refresh")
+        if not isinstance(payroll_plan, dict):
+            payroll_plan = None
         requested = set(run.requested_report_types or [])
         periods = [
             scope.get(report_type) or {}
@@ -1096,27 +1112,56 @@ def _finance_data_history(request, organization):
         starts = [item.get("start") for item in periods if item.get("start")]
         ends = [item.get("end") for item in periods if item.get("end")]
         result_label, result_tone = _finance_data_run_result(run)
-        rows.append({
-            "created_at": run.created_at,
-            "data_label": (
+        error_message = run.error_message
+
+        if payroll_plan:
+            data_label = "Все данные"
+            technical_kind = "Валовая прибыль, ДДС, ФОТ, оклады"
+            if payroll_plan.get("status") == "failed":
+                result_label, result_tone = "Частично выполнено", "warning"
+                payroll_error = payroll_plan.get("error_message") or ""
+                error_message = " · ".join(
+                    item for item in [run.error_message, payroll_error] if item
+                )
+            elif (
+                run.status == OneCODataSyncRun.STATUS_COMPLETED
+                and payroll_plan.get("created")
+            ):
+                result_label, result_tone = "Успешно", "success"
+        else:
+            data_label = (
                 "Валовая прибыль, ДДС, ФОТ"
                 if requested == all_reports
                 else ", ".join(
                     report_labels.get(item, item)
                     for item in run.requested_report_types or []
                 )
-            ),
+            )
+            technical_kind = "Обновление"
+
+        rows.append({
+            "created_at": run.created_at,
+            "data_label": data_label,
             "period_start": min(starts)[:7] if starts else "",
             "period_end": max(ends)[:7] if ends else "",
-            "method": "Автоматически" if scope.get("_schedule_day") else "Вручную",
+            "payroll_period": (
+                (payroll_plan.get("period_month") or "")[:7]
+                if payroll_plan
+                else ""
+            ),
+            "method": (
+                "Автоматически"
+                if scope.get("_schedule_day") or scope.get("_schedule_slot")
+                else "Вручную"
+            ),
             "result_label": result_label,
             "result_tone": result_tone,
             "actor": (
                 run.requested_by.get_full_name()
                 or run.requested_by.username
             ),
-            "error_message": run.error_message,
-            "technical_kind": "Обновление",
+            "error_message": error_message,
+            "technical_kind": technical_kind,
         })
 
     accessible_types = list(_onec_accessible_import_types(request.user, organization))
@@ -1156,6 +1201,7 @@ def _finance_data_history(request, organization):
         })
     plan_snapshots = (
         PayrollPlanSnapshot.objects.filter(organization=organization)
+        .exclude(pk__in=linked_created_snapshot_ids)
         .select_related("fetched_by")[:20]
     )
     for snapshot in plan_snapshots:
@@ -3391,7 +3437,8 @@ def finance_onec_refresh_apply_step(request, run_id):
         return JsonResponse({"error_code": "invalid_cursor", "error": "Некорректная версия шага."}, status=400)
     if expected != int((run.cursor or {}).get("version", 0)):
         return JsonResponse({"error_code": "stale_cursor", "error": "Шаг обновления устарел."}, status=409)
-    if run.status not in OneCODataSyncRun.TERMINAL_STATUSES:
+    was_terminal = run.status in OneCODataSyncRun.TERMINAL_STATUSES
+    if not was_terminal:
         try:
             run = step_unified_sync(
                 run.id, request.user, _onec_sync_report_types(request.user, organization, payroll=True), expected,
@@ -3399,6 +3446,8 @@ def finance_onec_refresh_apply_step(request, run_id):
             )
         except PermissionDenied:
             return JsonResponse({"error_code": "permission_denied", "error": "Недостаточно прав."}, status=403)
+    if not was_terminal and run.status == OneCODataSyncRun.STATUS_COMPLETED:
+        _remember_completed_interactive_run(request, run)
     return JsonResponse(_auto_run_payload(run))
 
 
@@ -3871,6 +3920,119 @@ def finance_payroll_dashboard(request):
     })
 
 
+_FINANCE_ONEC_COMPLETED_RUN_SESSION_KEY = "finance_onec_completed_interactive_run"
+_FINANCE_ONEC_COMPLETED_RUN_MAX_AGE_SECONDS = 600
+
+
+def _remember_completed_interactive_run(request, run):
+    scope = run.sync_scope or {}
+    if (
+        run.status != OneCODataSyncRun.STATUS_COMPLETED
+        or scope.get("_schedule_day")
+        or scope.get("_schedule_slot")
+    ):
+        return
+    request.session[_FINANCE_ONEC_COMPLETED_RUN_SESSION_KEY] = {
+        "run_id": str(run.id),
+        "completed_at": int(timezone.now().timestamp()),
+    }
+    request.session.modified = True
+
+
+def _consume_completed_interactive_run(request, run):
+    marker = request.session.get(_FINANCE_ONEC_COMPLETED_RUN_SESSION_KEY)
+    if not isinstance(marker, dict) or marker.get("run_id") != str(run.id):
+        raise ValidationError(
+            "Этот запуск не был только что завершён в текущей сессии."
+        )
+    try:
+        completed_at = int(marker.get("completed_at"))
+    except (TypeError, ValueError):
+        completed_at = 0
+    age = int(timezone.now().timestamp()) - completed_at
+    if age < 0 or age > _FINANCE_ONEC_COMPLETED_RUN_MAX_AGE_SECONDS:
+        request.session.pop(_FINANCE_ONEC_COMPLETED_RUN_SESSION_KEY, None)
+        request.session.modified = True
+        raise ValidationError(
+            "Срок завершения этого обновления истёк. Запустите обновление заново."
+        )
+    request.session.pop(_FINANCE_ONEC_COMPLETED_RUN_SESSION_KEY, None)
+    request.session.modified = True
+
+
+def _payroll_plan_parent_run(request, organization):
+    raw_run_id = (request.POST.get("sync_run_id") or "").strip()
+    if not raw_run_id:
+        return None
+    try:
+        run_id = uuid.UUID(raw_run_id)
+    except (TypeError, ValueError, AttributeError):
+        raise ValidationError("Некорректный идентификатор обновления 1С.") from None
+
+    allowed = set(_onec_sync_report_types(request.user, organization, payroll=True))
+    required = {REPORT_PROFIT, REPORT_CASHFLOW, REPORT_PAYROLL}
+    if allowed != required:
+        raise PermissionDenied("Недостаточно прав для завершения общего обновления 1С.")
+
+    run = OneCODataSyncRun.objects.filter(
+        pk=run_id,
+        organization=organization,
+        mode=OneCODataSyncRun.MODE_AUTO_APPLY,
+    ).first()
+    scope = (run.sync_scope or {}) if run is not None else {}
+    if (
+        run is None
+        or run.status != OneCODataSyncRun.STATUS_COMPLETED
+        or set(run.requested_report_types or []) != required
+        or scope.get("_schedule_day")
+        or scope.get("_schedule_slot")
+    ):
+        raise ValidationError("Обновление 1С не подходит для привязки окладов.")
+    if isinstance(run.result_summary, dict) and "payroll_plan_refresh" in run.result_summary:
+        raise ValidationError("Оклады уже привязаны к этому обновлению 1С.")
+    _consume_completed_interactive_run(request, run)
+    return run
+
+
+def _record_payroll_plan_run_result(
+    run,
+    *,
+    status,
+    snapshot=None,
+    created=False,
+    error_message="",
+):
+    if run is None:
+        return
+    with transaction.atomic():
+        locked = OneCODataSyncRun.objects.select_for_update().get(pk=run.pk)
+        summary = dict(locked.result_summary or {})
+        # The association is immutable. A replay or concurrent duplicate may
+        # finish its external call, but it must never rewrite historical
+        # ownership of the payroll-plan step.
+        if "payroll_plan_refresh" in summary:
+            return False
+        summary["payroll_plan_refresh"] = {
+            "status": status,
+            "snapshot_id": snapshot.pk if snapshot is not None else None,
+            "created": bool(created),
+            "period_month": (
+                snapshot.period_month.isoformat()
+                if snapshot is not None
+                else None
+            ),
+            "fetched_at": (
+                snapshot.fetched_at.isoformat()
+                if snapshot is not None
+                else None
+            ),
+            "error_message": error_message,
+        }
+        locked.result_summary = summary
+        locked.save(update_fields=["result_summary"])
+        return True
+
+
 @login_required
 @require_POST
 def finance_payroll_plan_refresh(request):
@@ -3879,20 +4041,48 @@ def finance_payroll_plan_refresh(request):
         return denied
     wants_json = request.headers.get("X-Requested-With") == "XMLHttpRequest"
     try:
+        parent_run = _payroll_plan_parent_run(request, organization)
+    except PermissionDenied:
+        if wants_json:
+            return JsonResponse({"ok": False, "error": "Недостаточно прав."}, status=403)
+        return HttpResponseForbidden("Недостаточно прав для завершения обновления 1С.")
+    except ValidationError as exc:
+        if wants_json:
+            return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+        messages.error(request, str(exc))
+        return redirect("finance_payroll_dashboard")
+
+    try:
         snapshot, created = refresh_payroll_plan_snapshot(
             organization,
             request.user,
             as_of=current_payroll_plan_date(),
         )
     except (PayrollPlanSyncError, ValidationError) as exc:
+        _record_payroll_plan_run_result(
+            parent_run,
+            status="failed",
+            error_message=str(exc),
+        )
         if wants_json:
             return JsonResponse({"ok": False, "error": str(exc)}, status=502)
         messages.error(request, str(exc))
     except PermissionDenied:
+        _record_payroll_plan_run_result(
+            parent_run,
+            status="failed",
+            error_message="Недостаточно прав.",
+        )
         if wants_json:
             return JsonResponse({"ok": False, "error": "Недостаточно прав."}, status=403)
         return HttpResponseForbidden("Недостаточно прав для обновления окладов.")
     else:
+        _record_payroll_plan_run_result(
+            parent_run,
+            status="success",
+            snapshot=snapshot,
+            created=created,
+        )
         message = (
             f"Оклады из 1С обновлены за {snapshot.period_month:%m.%Y}."
             if created
