@@ -127,10 +127,13 @@ class EmployeeCompensationMonthTests(TestCase):
         self.assertContains(response, "История зарплаты по месяцам")
         self.assertContains(response, "Компенсация транспорта")
         self.assertContains(response, "Удержания")
+        self.assertContains(response, 'name="expected_period_month"')
+        self.assertContains(response, 'value="2026-09-01"')
         self.assertEqual(response.context["salary"]["total"], Decimal("80500"))
         self.assertEqual(response.context["salary"]["extra_days_count"], Decimal("2"))
 
-    def test_monthly_components_can_be_saved_and_are_audited(self):
+    @patch("pool_service.finance_views.current_payroll_plan_date", return_value=date(2026, 9, 20))
+    def test_monthly_components_can_be_saved_and_are_audited(self, _date):
         self.client.force_login(self.owner)
 
         response = self.client.post(
@@ -139,6 +142,7 @@ class EmployeeCompensationMonthTests(TestCase):
                 args=[self.employee.pk],
             ),
             {
+                "expected_period_month": "2026-09-01",
                 "period_month": "2026-09",
                 "percent_amount": "10000",
                 "bonus_amount": "5000",
@@ -211,7 +215,8 @@ class EmployeeCompensationMonthTests(TestCase):
         self.assertEqual(data["employees"][0]["total"], Decimal("10000"))
         self.assertEqual(data["total"], Decimal("10000"))
 
-    def test_edit_audit_preserves_previous_month_values(self):
+    @patch("pool_service.finance_views.current_payroll_plan_date", return_value=date(2026, 9, 20))
+    def test_edit_audit_preserves_previous_month_values(self, _date):
         compensation = EmployeeCompensationMonth.objects.create(
             organization=self.organization,
             employee=self.employee,
@@ -233,6 +238,7 @@ class EmployeeCompensationMonthTests(TestCase):
                 args=[self.employee.pk],
             ),
             {
+                "expected_period_month": "2026-09-01",
                 "period_month": "2026-09",
                 "percent_amount": "10000",
                 "bonus_amount": "7000",
@@ -258,6 +264,38 @@ class EmployeeCompensationMonthTests(TestCase):
         self.assertIn("note", audit.changed_fields)
         self.assertNotIn("percent_amount", audit.changed_fields)
 
+    @patch("pool_service.finance_views.current_payroll_plan_date", return_value=date(2026, 10, 1))
+    def test_stale_form_is_rejected_after_month_rollover(self, _date):
+        self.client.force_login(self.owner)
+
+        response = self.client.post(
+            reverse(
+                "finance_payroll_employee_compensation_update",
+                args=[self.employee.pk],
+            ),
+            {
+                "expected_period_month": "2026-09-01",
+                "percent_amount": "1000",
+                "bonus_amount": "2000",
+                "extra_days_count": "0",
+                "extra_days_amount": "0",
+                "transport_compensation_amount": "0",
+                "deduction_amount": "0",
+                "note": "Старая форма",
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Месяц зарплаты изменился")
+        self.assertFalse(
+            EmployeeCompensationMonth.objects.filter(
+                organization=self.organization,
+                employee=self.employee,
+                period_month=date(2026, 10, 1),
+            ).exists()
+        )
+
     @patch("pool_service.finance_views.current_payroll_plan_date", return_value=date(2026, 9, 20))
     def test_posted_month_cannot_backdate_current_compensation(self, _date):
         self.client.force_login(self.owner)
@@ -268,6 +306,7 @@ class EmployeeCompensationMonthTests(TestCase):
                 args=[self.employee.pk],
             ),
             {
+                "expected_period_month": "2026-09-01",
                 "period_month": "2026-08",
                 "percent_amount": "1000",
                 "bonus_amount": "2000",
@@ -295,7 +334,8 @@ class EmployeeCompensationMonthTests(TestCase):
             ).exists()
         )
 
-    def test_negative_components_are_rejected(self):
+    @patch("pool_service.finance_views.current_payroll_plan_date", return_value=date(2026, 9, 20))
+    def test_negative_components_are_rejected(self, _date):
         self.client.force_login(self.owner)
 
         response = self.client.post(
@@ -304,6 +344,7 @@ class EmployeeCompensationMonthTests(TestCase):
                 args=[self.employee.pk],
             ),
             {
+                "expected_period_month": "2026-09-01",
                 "period_month": "2026-09",
                 "percent_amount": "-1",
                 "bonus_amount": "0",
