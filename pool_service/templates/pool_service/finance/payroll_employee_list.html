@@ -7,10 +7,9 @@
   <div class="finance-secondary-header d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4">
     <div>
       <h1 class="h3 mb-1">Сотрудники</h1>
-      <div class="text-muted">Единые карточки сотрудников: Service2, 1С и ФОТ.</div>
+      <div class="text-muted">Карточки сотрудников, текущие оклады и кадровая информация.</div>
     </div>
     <div class="d-flex gap-2">
-      <a class="btn btn-outline-secondary" href="{% url 'finance_payroll_employee_mapping' %}">Сопоставление 1С</a>
       <a class="btn btn-outline-secondary" href="{% url 'finance_payroll_dashboard' %}">К ФОТ</a>
     </div>
   </div>
@@ -23,7 +22,6 @@
             <th>Сотрудник</th>
             <th>Подразделение</th>
             <th>Аккаунт Service2</th>
-            <th>1С</th>
             <th class="text-end">Оклад {{ period_month|date:"m.Y" }}</th>
             <th></th>
           </tr>
@@ -43,19 +41,11 @@
                 <span class="text-muted">не привязан</span>
               {% endif %}
             </td>
-            <td>
-              {% if row.onec_employee_ids %}
-                <div>{{ row.onec_employee_ids|length }} ID</div>
-                <div class="small text-muted">{{ row.identities|length }} identity</div>
-              {% else %}
-                <span class="text-muted">без стабильного ID</span>
-              {% endif %}
-            </td>
             <td class="text-end fw-semibold">{{ row.plan.base_salary|money }}</td>
             <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="{% url 'finance_payroll_employee_profile' row.employee.id %}">Карточка</a></td>
           </tr>
         {% empty %}
-          <tr><td colspan="6" class="text-muted text-center py-4">Карточек сотрудников пока нет.</td></tr>
+          <tr><td colspan="5" class="text-muted text-center py-4">Карточек сотрудников пока нет.</td></tr>
         {% endfor %}
         </tbody>
       </table>
