@@ -1,15 +1,15 @@
 {% extends "pool_service/base.html" %}
 {% load finance_tags %}
-{% block title %}Контроль себестоимости 1С{% endblock %}
+{% block title %}Контроль себестоимости{% endblock %}
 {% block content %}
 {% include "pool_service/finance/_desktop_workspace_styles.html" %}
 <div class="finance-desktop">
 <div class="finance-secondary-header d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
   <div>
-    <h1 class="h3 mb-1">Контроль себестоимости 1С</h1>
-    <div class="text-muted">Отчёт показывает товары, которые проданы, но в активных импортированных данных 1С отсутствует себестоимость.</div>
+    <h1 class="h3 mb-1">Контроль себестоимости</h1>
+    <div class="text-muted">Товары, которые проданы, но в актуальных данных отсутствует себестоимость.</div>
   </div>
-  {% if can_import_gross_profit %}<a class="btn btn-outline-secondary" href="{% url 'finance_onec_import_list' %}">Обновить данные</a>{% endif %}
+  {% if can_import_gross_profit %}<a class="btn btn-outline-secondary" href="{% url 'finance_data' %}">Данные 1С</a>{% endif %}
 </div>
 
 <form method="get" class="finance-secondary-card card card-soft p-3 mb-4">
@@ -38,14 +38,14 @@
   <div class="text-muted small mt-2">Пустой период означает все {{ available_months|length }} активных месяцев.</div>
 </form>
 
-<h2 class="h5 mb-3">Проверяемый active dataset</h2>
+<h2 class="h5 mb-3">Проверенные данные</h2>
 <div class="row g-3 mb-4">
   <div class="col-6 col-lg-2"><div class="card card-soft p-3 h-100"><div class="text-muted small">Месяцев</div><div class="fs-4 fw-semibold">{{ dataset_summary.month_count }}</div></div></div>
   <div class="col-6 col-lg-2"><div class="card card-soft p-3 h-100"><div class="text-muted small">Строк</div><div class="fs-4 fw-semibold">{{ dataset_summary.row_count }}</div></div></div>
   <div class="col-6 col-lg-2"><div class="card card-soft p-3 h-100"><div class="text-muted small">Запас</div><div class="fs-4 fw-semibold">{{ dataset_summary.goods_count }}</div></div></div>
   <div class="col-6 col-lg-2"><div class="card card-soft p-3 h-100"><div class="text-muted small">Услуга</div><div class="fs-4 fw-semibold">{{ dataset_summary.service_count }}</div></div></div>
   <div class="col-6 col-lg-2"><div class="card card-soft p-3 h-100"><div class="text-muted small">Работа</div><div class="fs-4 fw-semibold">{{ dataset_summary.work_count }}</div></div></div>
-  <div class="col-6 col-lg-2"><div class="card card-soft p-3 h-100"><div class="text-muted small">Unknown</div><div class="fs-4 fw-semibold">{{ dataset_summary.unknown_count }}</div></div></div>
+  <div class="col-6 col-lg-2"><div class="card card-soft p-3 h-100"><div class="text-muted small">Не определено</div><div class="fs-4 fw-semibold">{{ dataset_summary.unknown_count }}</div></div></div>
 </div>
 
 <h2 class="h5 mb-3">Требует проверки</h2>
@@ -85,7 +85,7 @@
           <td>{% if row.cost is None %}—{% else %}{{ row.cost|money }}{% endif %}</td>
           <td>{{ row.gross_profit|money }}</td>
           <td>{% if row.profitability_percent is None %}—{% else %}{{ row.profitability_percent }}%{% endif %}</td>
-          <td><a class="btn btn-sm btn-outline-secondary" href="{% url 'finance_onec_import_detail' row.import_batch_id %}">Импорт</a></td>
+          <td><a class="btn btn-sm btn-outline-secondary" href="{% url 'finance_onec_import_detail' row.import_batch_id %}">Подробнее</a></td>
         </tr>
         {% empty %}
         <tr><td colspan="10" class="text-center text-muted py-4">Строк, требующих проверки, не найдено.</td></tr>
@@ -103,7 +103,7 @@
 </ul></nav>
 {% endif %}
 
-<div class="finance-secondary-note alert alert-light border mt-4 mb-0">Список является диагностикой для ручной проверки. Импортированные значения не изменяются, корректировки автоматически не создаются.</div>
+<div class="finance-secondary-note alert alert-light border mt-4 mb-0">Список предназначен для ручной проверки. Исходные данные 1С не изменяются, корректировки автоматически не создаются.</div>
 
 </div><!-- /finance-desktop -->
 {% endblock %}
