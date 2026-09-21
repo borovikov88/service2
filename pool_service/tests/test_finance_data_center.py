@@ -8,7 +8,10 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from pool_service.finance_views import _record_payroll_plan_run_result
+from pool_service.finance_views import (
+    _FINANCE_ONEC_COMPLETED_RUN_SESSION_KEY,
+    _record_payroll_plan_run_result,
+)
 from pool_service.models import (
     OneCImportBatch,
     OneCODataSyncRun,
@@ -256,6 +259,14 @@ class FinanceDataCenterTests(TestCase):
             f'action="{reverse("finance_onec_refresh_apply_start")}"',
         )
 
+    def _mark_run_completed_in_session(self, run):
+        session = self.client.session
+        session[_FINANCE_ONEC_COMPLETED_RUN_SESSION_KEY] = {
+            "run_id": str(run.id),
+            "completed_at": int(timezone.now().timestamp()),
+        }
+        session.save()
+
     def _completed_all_data_run(self, **overrides):
         values = {
             "organization": self.organization,
@@ -291,6 +302,7 @@ class FinanceDataCenterTests(TestCase):
         run = self._completed_all_data_run()
         refresh.return_value = (snapshot, True)
         self.client.force_login(self.owner)
+        self._mark_run_completed_in_session(run)
 
         response = self.client.post(
             reverse("finance_payroll_plan_refresh"),
@@ -330,6 +342,7 @@ class FinanceDataCenterTests(TestCase):
         run = self._completed_all_data_run(requested_by=self.owner)
         refresh.return_value = (snapshot, True)
         self.client.force_login(resumer)
+        self._mark_run_completed_in_session(run)
 
         response = self.client.post(
             reverse("finance_payroll_plan_refresh"),
@@ -424,6 +437,123 @@ class FinanceDataCenterTests(TestCase):
         self.assertEqual(
             run.result_summary["payroll_plan_refresh"]["snapshot_id"],
             first.pk,
+        )
+
+    @patch("pool_service.finance_views.refresh_payroll_plan_snapshot")
+    def test_old_completed_run_without_completion_marker_is_rejected(self, refresh):
+        run = self._completed_all_data_run()
+        self.client.force_login(self.owner)
+
+        response = self.client.post(
+            reverse("finance_payroll_plan_refresh"),
+            {"sync_run_id": str(run.id)},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("только что завершён", response.json()["error"])
+        refresh.assert_not_called()
+
+    @patch("pool_service.finance_views.refresh_payroll_plan_snapshot")
+    def test_reposting_step_for_old_completed_run_does_not_arm_payroll_link(self, refresh):
+        run = self._completed_all_data_run(cursor={"version": 4})
+        self.client.force_login(self.owner)
+
+        step_response = self.client.post(
+            reverse("finance_onec_refresh_apply_step", kwargs={"run_id": run.id}),
+            {"cursor": "4"},
+        )
+        self.assertEqual(step_response.status_code, 200)
+        self.assertNotIn(
+            _FINANCE_ONEC_COMPLETED_RUN_SESSION_KEY,
+            self.client.session,
+        )
+
+        response = self.client.post(
+            reverse("finance_payroll_plan_refresh"),
+            {"sync_run_id": str(run.id)},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        refresh.assert_not_called()
+
+    @patch("pool_service.finance_views.refresh_payroll_plan_snapshot")
+    def test_scheduled_run_cannot_be_linked_even_with_session_marker(self, refresh):
+        run = self._completed_all_data_run(
+            sync_scope={
+                "monthly_profit": {"start": "2026-07-01", "end": "2026-09-01"},
+                "cashflow": {"start": "2026-07-01", "end": "2026-09-01"},
+                "payroll_accrual": {"start": "2026-07-01", "end": "2026-09-01"},
+                "_schedule_slot": "2026-09-21T07",
+            }
+        )
+        self.client.force_login(self.owner)
+        self._mark_run_completed_in_session(run)
+
+        response = self.client.post(
+            reverse("finance_payroll_plan_refresh"),
+            {"sync_run_id": str(run.id)},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        refresh.assert_not_called()
+
+    @patch("pool_service.finance_views.refresh_payroll_plan_snapshot")
+    @patch("pool_service.finance_views.step_unified_sync")
+    def test_step_that_completes_run_arms_same_session_for_payroll_link(
+        self, step_sync, refresh
+    ):
+        run = self._completed_all_data_run(
+            status=OneCODataSyncRun.STATUS_RUNNING,
+            cursor={"version": 0},
+        )
+        snapshot = PayrollPlanSnapshot.objects.create(
+            organization=self.organization,
+            period_month=date(2026, 9, 1),
+            source_hash="4" * 64,
+            source_rows=17,
+            source_organization_guids=[],
+            currency_guid=uuid.uuid4(),
+            fetched_by=self.owner,
+        )
+
+        def complete_run(run_id, user, report_types, expected, mode):
+            current = OneCODataSyncRun.objects.get(pk=run_id)
+            current.status = OneCODataSyncRun.STATUS_COMPLETED
+            current.save(update_fields=["status"])
+            return current
+
+        step_sync.side_effect = complete_run
+        refresh.return_value = (snapshot, True)
+        self.client.force_login(self.owner)
+
+        step_response = self.client.post(
+            reverse("finance_onec_refresh_apply_step", kwargs={"run_id": run.id}),
+            {"cursor": "0"},
+        )
+        self.assertEqual(step_response.status_code, 200)
+        self.assertIn(
+            _FINANCE_ONEC_COMPLETED_RUN_SESSION_KEY,
+            self.client.session,
+        )
+
+        payroll_response = self.client.post(
+            reverse("finance_payroll_plan_refresh"),
+            {"sync_run_id": str(run.id)},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(payroll_response.status_code, 200)
+        self.assertNotIn(
+            _FINANCE_ONEC_COMPLETED_RUN_SESSION_KEY,
+            self.client.session,
+        )
+        run.refresh_from_db()
+        self.assertEqual(
+            run.result_summary["payroll_plan_refresh"]["snapshot_id"],
+            snapshot.pk,
         )
 
     @patch("pool_service.finance_views.is_odata_target_organization", return_value=True)
