@@ -465,10 +465,15 @@ class FinanceDataCenterTests(TestCase):
         run = self._completed_all_data_run(cursor={"version": 4})
         self.client.force_login(self.owner)
 
-        step_response = self.client.post(
-            reverse("finance_onec_refresh_apply_step", kwargs={"run_id": run.id}),
-            {"cursor": "4"},
-        )
+        with patch(
+            "pool_service.finance_views._onec_sync_guard",
+            return_value=(self.organization, None),
+        ):
+            step_response = self.client.post(
+                reverse("finance_onec_refresh_apply_step", kwargs={"run_id": run.id}),
+                {"cursor": "4"},
+                HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+            )
         self.assertEqual(
             step_response.status_code,
             200,
@@ -543,10 +548,15 @@ class FinanceDataCenterTests(TestCase):
         refresh.return_value = (snapshot, True)
         self.client.force_login(self.owner)
 
-        step_response = self.client.post(
-            reverse("finance_onec_refresh_apply_step", kwargs={"run_id": run.id}),
-            {"cursor": "0"},
-        )
+        with patch(
+            "pool_service.finance_views._onec_sync_guard",
+            return_value=(self.organization, None),
+        ):
+            step_response = self.client.post(
+                reverse("finance_onec_refresh_apply_step", kwargs={"run_id": run.id}),
+                {"cursor": "0"},
+                HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+            )
         self.assertEqual(
             step_response.status_code,
             200,
