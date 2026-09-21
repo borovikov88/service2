@@ -618,6 +618,88 @@ class FinanceDataCenterTests(TestCase):
         )
 
     @patch("pool_service.finance_views.is_odata_target_organization", return_value=True)
+    def test_unified_history_keeps_finance_range_and_shows_payroll_month(self, _target):
+        snapshot = PayrollPlanSnapshot.objects.create(
+            organization=self.organization,
+            period_month=date(2026, 9, 1),
+            source_hash="5" * 64,
+            source_rows=17,
+            source_organization_guids=[],
+            currency_guid=uuid.uuid4(),
+            fetched_by=self.owner,
+        )
+        self._completed_all_data_run(
+            sync_scope={
+                "monthly_profit": {"start": "2026-07-01", "end": "2026-08-01"},
+                "cashflow": {"start": "2026-07-01", "end": "2026-08-01"},
+                "payroll_accrual": {"start": "2026-07-01", "end": "2026-08-01"},
+            },
+            result_summary={
+                "payroll_plan_refresh": {
+                    "status": "success",
+                    "snapshot_id": snapshot.pk,
+                    "created": True,
+                    "period_month": "2026-09-01",
+                    "fetched_at": snapshot.fetched_at.isoformat(),
+                    "error_message": "",
+                }
+            },
+        )
+        self.client.force_login(self.owner)
+
+        response = self.client.get(reverse("finance_data"))
+
+        row = next(
+            item for item in response.context["update_history"]
+            if item["data_label"] == "Все данные"
+        )
+        self.assertEqual(row["period_start"], "2026-07")
+        self.assertEqual(row["period_end"], "2026-08")
+        self.assertEqual(row["payroll_period"], "2026-09")
+        self.assertContains(response, "Оклады: 2026-09")
+
+    @patch("pool_service.finance_views.is_odata_target_organization", return_value=True)
+    def test_linked_snapshot_stays_hidden_when_parent_run_is_outside_display_limit(self, _target):
+        snapshot = PayrollPlanSnapshot.objects.create(
+            organization=self.organization,
+            period_month=date(2026, 9, 1),
+            source_hash="6" * 64,
+            source_rows=17,
+            source_organization_guids=[],
+            currency_guid=uuid.uuid4(),
+            fetched_by=self.owner,
+        )
+        self._completed_all_data_run(
+            result_summary={
+                "payroll_plan_refresh": {
+                    "status": "success",
+                    "snapshot_id": snapshot.pk,
+                    "created": True,
+                    "period_month": "2026-09-01",
+                    "fetched_at": snapshot.fetched_at.isoformat(),
+                    "error_message": "",
+                }
+            }
+        )
+        for index in range(31):
+            self._completed_all_data_run(
+                sync_scope={
+                    "monthly_profit": {"start": "2026-09-01", "end": "2026-09-01"},
+                    "cashflow": {"start": "2026-09-01", "end": "2026-09-01"},
+                    "payroll_accrual": {"start": "2026-09-01", "end": "2026-09-01"},
+                    "_schedule_slot": f"2026-09-21T{index % 24:02d}-{index}",
+                }
+            )
+        self.client.force_login(self.owner)
+
+        response = self.client.get(reverse("finance_data"))
+
+        rows = response.context["update_history"]
+        self.assertFalse(
+            any(row["data_label"] == "Оклады сотрудников" for row in rows)
+        )
+
+    @patch("pool_service.finance_views.is_odata_target_organization", return_value=True)
     def test_existing_payroll_snapshot_remains_separate_when_run_reuses_it(self, _target):
         snapshot = PayrollPlanSnapshot.objects.create(
             organization=self.organization,
