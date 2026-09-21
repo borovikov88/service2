@@ -278,6 +278,36 @@ class FinanceInformationArchitectureTests(TestCase):
         ):
             self.assertContains(response, label)
 
+    def test_management_pages_route_updates_through_unified_data_center(self):
+        self.client.force_login(self.management)
+        old_import_url = reverse("finance_onec_import_list")
+        data_url = reverse("finance_data")
+
+        for route_name in (
+            "finance_overview",
+            "finance_onec_profit_dashboard",
+            "finance_onec_cashflow_dashboard",
+            "finance_onec_cost_control",
+        ):
+            with self.subTest(route_name=route_name):
+                response = self.client.get(reverse(route_name))
+                self.assertEqual(response.status_code, 200)
+                self.assertContains(response, f'href="{data_url}"')
+                self.assertNotContains(response, f'href="{old_import_url}"')
+
+    def test_management_pages_hide_import_engine_language(self):
+        self.client.force_login(self.management)
+
+        cashflow = self.client.get(reverse("finance_onec_cashflow_dashboard"))
+        cost_control = self.client.get(reverse("finance_onec_cost_control"))
+
+        self.assertNotContains(cashflow, "Read-only реестр решений по mappings")
+        self.assertNotContains(cashflow, "активных подтверждённых версий")
+        self.assertContains(cashflow, "Статьи, требующие классификации")
+        self.assertNotContains(cost_control, "active dataset")
+        self.assertNotContains(cost_control, "Unknown")
+        self.assertContains(cost_control, "Проверенные данные")
+
     @patch("pool_service.finance_views.can_import_gross_profit", return_value=False)
     @patch("pool_service.finance_views.can_view_gross_profit", return_value=True)
     def test_gross_profit_view_uses_view_capability_and_hides_import_action(self, *_mocks):
