@@ -9,6 +9,7 @@ from pool_service.finance_imports.employee_matching import normalize_onec_name
 from pool_service.models import (
     DataAuditLog,
     Employee,
+    EmployeeCompensationMonth,
     EmployeeOneCIdentity,
     OrganizationAccess,
     PayrollPlanItem,
@@ -353,3 +354,59 @@ def employee_current_plan(employee, period_month):
         ),
         "items": current,
     }
+
+def employee_monthly_compensation(employee, period_month):
+    period_month = period_month.replace(day=1)
+    plan = employee_current_plan(employee, period_month)
+    adjustment = EmployeeCompensationMonth.objects.filter(
+        organization=employee.organization,
+        employee=employee,
+        period_month=period_month,
+    ).first()
+    percent_amount = adjustment.percent_amount if adjustment else ZERO
+    bonus_amount = adjustment.bonus_amount if adjustment else ZERO
+    extra_days_count = adjustment.extra_days_count if adjustment else ZERO
+    extra_days_amount = adjustment.extra_days_amount if adjustment else ZERO
+    transport_amount = adjustment.transport_compensation_amount if adjustment else ZERO
+    deduction_amount = adjustment.deduction_amount if adjustment else ZERO
+    total = (
+        plan["base_salary"]
+        + percent_amount
+        + bonus_amount
+        + extra_days_amount
+        + transport_amount
+        - deduction_amount
+    )
+    return {
+        "period_month": period_month,
+        "plan": plan,
+        "adjustment": adjustment,
+        "base_salary": plan["base_salary"],
+        "percent_amount": percent_amount,
+        "bonus_amount": bonus_amount,
+        "extra_days_count": extra_days_count,
+        "extra_days_amount": extra_days_amount,
+        "transport_compensation_amount": transport_amount,
+        "deduction_amount": deduction_amount,
+        "total": total,
+    }
+
+
+def employee_compensation_history(employee, *, current_period=None, limit=24):
+    months = set(
+        EmployeeCompensationMonth.objects.filter(
+            organization=employee.organization,
+            employee=employee,
+        ).values_list("period_month", flat=True)
+    )
+    months.update(
+        PayrollPlanSnapshot.objects.filter(
+            organization=employee.organization,
+            items__employee_identity__employee=employee,
+        ).values_list("period_month", flat=True).distinct()
+    )
+    if current_period is not None:
+        months.add(current_period.replace(day=1))
+    ordered = sorted(months, reverse=True)[:limit]
+    return [employee_monthly_compensation(employee, month) for month in ordered]
+

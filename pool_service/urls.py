@@ -171,6 +171,7 @@ from .finance_views import (
     finance_payroll_employee_map,
     finance_payroll_employee_list,
     finance_payroll_employee_profile,
+    finance_payroll_employee_compensation_update,
 )
 from .finance_position_browser import (
     finance_onec_refresh_apply_step,
@@ -363,6 +364,7 @@ urlpatterns = [
     path("finance/payroll/employees/", finance_payroll_employee_mapping, name="finance_payroll_employee_mapping"),
     path("finance/payroll/staff/", finance_payroll_employee_list, name="finance_payroll_employee_list"),
     path("finance/payroll/staff/<int:employee_id>/", finance_payroll_employee_profile, name="finance_payroll_employee_profile"),
+    path("finance/payroll/staff/<int:employee_id>/compensation/", finance_payroll_employee_compensation_update, name="finance_payroll_employee_compensation_update"),
     path("finance/payroll/employees/<int:identity_id>/map/", finance_payroll_employee_map, name="finance_payroll_employee_map"),
     path("development/tasks/", development_task_list, name="development_task_list"),
     path("development/tasks/new/", development_task_create, name="development_task_create"),

@@ -2501,6 +2501,101 @@ class PayrollPlanItem(models.Model):
             )
 
 
+class EmployeeCompensationMonth(models.Model):
+    """Monthly salary components stored by Service2 for one employee."""
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="employee_compensation_months",
+    )
+    employee = models.ForeignKey(
+        Employee,
+        on_delete=models.PROTECT,
+        related_name="compensation_months",
+    )
+    period_month = models.DateField()
+    percent_amount = models.DecimalField(max_digits=20, decimal_places=2, default=0)
+    bonus_amount = models.DecimalField(max_digits=20, decimal_places=2, default=0)
+    extra_days_count = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+    extra_days_amount = models.DecimalField(max_digits=20, decimal_places=2, default=0)
+    transport_compensation_amount = models.DecimalField(
+        max_digits=20, decimal_places=2, default=0
+    )
+    deduction_amount = models.DecimalField(max_digits=20, decimal_places=2, default=0)
+    note = models.TextField(blank=True)
+    updated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_employee_compensation_months",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-period_month", "employee_id"]
+        indexes = [
+            models.Index(
+                fields=["organization", "period_month"],
+                name="emp_comp_org_month_idx",
+            ),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "employee", "period_month"],
+                name="unique_employee_comp_month",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(percent_amount__gte=0),
+                name="emp_comp_percent_nonneg",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(bonus_amount__gte=0),
+                name="emp_comp_bonus_nonneg",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(extra_days_count__gte=0),
+                name="emp_comp_days_nonneg",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(extra_days_amount__gte=0),
+                name="emp_comp_days_amount_nonneg",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(transport_compensation_amount__gte=0),
+                name="emp_comp_transport_nonneg",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(deduction_amount__gte=0),
+                name="emp_comp_deduction_nonneg",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.employee_id and self.organization_id:
+            if self.employee.organization_id != self.organization_id:
+                raise ValidationError(
+                    {"employee": "Сотрудник относится к другой организации."}
+                )
+        if self.period_month and self.period_month.day != 1:
+            raise ValidationError({"period_month": "Месяц должен начинаться с первого числа."})
+
+    @property
+    def additions_total(self):
+        return (
+            self.percent_amount
+            + self.bonus_amount
+            + self.extra_days_amount
+            + self.transport_compensation_amount
+        )
+
+    def total_with_base(self, base_salary):
+        return base_salary + self.additions_total - self.deduction_amount
+
+
 class CashFlowRow(models.Model):
     import_batch = models.ForeignKey(
         OneCImportBatch, on_delete=models.PROTECT, related_name="cashflow_rows"

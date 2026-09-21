@@ -277,12 +277,14 @@ class EmployeeHRCardTests(TestCase):
         self.assertContains(listing, self.employee.display_name)
         self.assertContains(listing, "60")
         self.assertEqual(profile.status_code, 200)
-        self.assertContains(profile, "Кадровая карточка сотрудника")
+        self.assertContains(profile, "Карточка сотрудника: зарплата, ФОТ и кадровые данные")
         self.assertContains(profile, "15.01.2020")
         self.assertContains(profile, "Оклад")
         self.assertContains(profile, "60")
         self.assertContains(profile, "Отпуска и отгулы")
-        self.assertContains(profile, "Проценты и бонусы")
+        self.assertContains(profile, "Проценты")
+        self.assertContains(profile, "Бонусы")
+        self.assertContains(profile, "История зарплаты по месяцам")
 
     def test_latest_snapshot_without_employee_does_not_resurrect_old_salary(self):
         month = date(2026, 9, 1)

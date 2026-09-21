@@ -71,7 +71,7 @@ class SplitFinanceNavigationTests(TestCase):
         self.assertNotIn("Перечисления", management_labels)
 
         self.assertIn("Мои операции", operations_labels)
-        self.assertIn("ККМ", operations_labels)
+        self.assertIn("Касса ККМ", operations_labels)
         self.assertIn("Перечисления", operations_labels)
         self.assertIn("Касса организации", operations_labels)
         self.assertNotIn("Валовая прибыль", operations_labels)

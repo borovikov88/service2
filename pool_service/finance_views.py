@@ -44,6 +44,7 @@ from pool_service.finance_forms import (
     PayrollUploadForm,
     PayrollConfirmForm,
     EmployeeIdentityMappingForm,
+    EmployeeCompensationMonthForm,
     CashFlowArticleMappingForm,
 )
 from pool_service.models import (
@@ -63,7 +64,9 @@ from pool_service.models import (
     ExpensePeriod,
     ExpenseReceipt,
     Employee,
+    EmployeeCompensationMonth,
     EmployeeOneCIdentity,
+    DataAuditLog,
     OneCImportBatch,
     OneCMonthlyProfit,
     OneCODataSyncRun,
@@ -188,7 +191,11 @@ from pool_service.services.finance import (
     report_expenses,
     user_display_name,
 )
-from pool_service.services.employee_hr import employee_current_plan
+from pool_service.services.employee_hr import (
+    employee_compensation_history,
+    employee_current_plan,
+    employee_monthly_compensation,
+)
 from pool_service.services.cashflow_classification import (
     canonical_article_key,
     save_explicit_cashflow_mapping,
@@ -3992,13 +3999,13 @@ def finance_payroll_employee_profile(request, employee_id):
         organization=organization,
     )
     period_month = current_payroll_plan_date().replace(day=1)
-    plan = employee_current_plan(employee, period_month)
+    salary = employee_monthly_compensation(employee, period_month)
     identities = list(
         employee.onec_identities.select_related("confirmed_by").order_by(
             "raw_name", "id"
         )
     )
-    history = list(
+    payroll_history = list(
         PayrollRow.objects.active_for(
             organization, OneCImportBatch.TYPE_PAYROLL
         )
@@ -4012,14 +4019,142 @@ def finance_payroll_employee_profile(request, employee_id):
         )
         .order_by("-period_month")[:24]
     )
+    compensation_form = EmployeeCompensationMonthForm(
+        instance=salary["adjustment"],
+    )
     return render(request, "pool_service/finance/payroll_employee_profile.html", {
         "employee": employee,
         "identities": identities,
-        "plan": plan,
+        "plan": salary["plan"],
+        "salary": salary,
         "period_month": period_month,
-        "history": history,
+        "compensation_history": employee_compensation_history(
+            employee, current_period=period_month, limit=24
+        ),
+        "payroll_history": payroll_history,
+        "compensation_form": compensation_form,
+        "can_edit_compensation": can_manage_finance(request.user, organization),
         "active_tab": "finance",
     })
+
+
+@login_required
+@require_POST
+def finance_payroll_employee_compensation_update(request, employee_id):
+    organization, denied = _payroll_access(
+        request,
+        lambda user, org: (
+            can_view_employee_hr(user, org)
+            and can_manage_finance(user, org)
+        ),
+    )
+    if denied:
+        return denied
+    employee = get_object_or_404(
+        Employee,
+        pk=employee_id,
+        organization=organization,
+    )
+
+    current_period = current_payroll_plan_date().replace(day=1)
+    expected_raw = (request.POST.get("expected_period_month") or "").strip()
+    try:
+        expected_period = date.fromisoformat(expected_raw)
+    except ValueError:
+        expected_period = None
+    if (
+        expected_period is None
+        or expected_period.day != 1
+        or expected_period != current_period
+    ):
+        messages.error(
+            request,
+            "Месяц зарплаты изменился. Обновите карточку сотрудника и внесите данные заново.",
+        )
+        return redirect("finance_payroll_employee_profile", employee_id=employee.pk)
+
+    form = EmployeeCompensationMonthForm(request.POST)
+    if not form.is_valid():
+        messages.error(
+            request,
+            "Не удалось сохранить составляющие зарплаты. Проверьте значения.",
+        )
+        return redirect("finance_payroll_employee_profile", employee_id=employee.pk)
+
+    def audit_payload(compensation):
+        return {
+            "period_month": compensation.period_month.isoformat(),
+            "percent_amount": f"{compensation.percent_amount:.2f}",
+            "bonus_amount": f"{compensation.bonus_amount:.2f}",
+            "extra_days_count": f"{compensation.extra_days_count:.2f}",
+            "extra_days_amount": f"{compensation.extra_days_amount:.2f}",
+            "transport_compensation_amount": (
+                f"{compensation.transport_compensation_amount:.2f}"
+            ),
+            "deduction_amount": f"{compensation.deduction_amount:.2f}",
+            "note": compensation.note,
+        }
+
+    with transaction.atomic():
+        # Lock the stable employee row first. This serializes all compensation
+        # writes for one employee, including the first insert when there is no
+        # EmployeeCompensationMonth row to lock yet.
+        locked_employee = Employee.objects.select_for_update().get(
+            pk=employee.pk,
+            organization=organization,
+        )
+        instance = (
+            EmployeeCompensationMonth.objects.select_for_update()
+            .filter(
+                organization=organization,
+                employee=locked_employee,
+                period_month=expected_period,
+            )
+            .first()
+        )
+        before = audit_payload(instance) if instance else {}
+
+        compensation = instance or EmployeeCompensationMonth(
+            organization=organization,
+            employee=locked_employee,
+            period_month=expected_period,
+        )
+        for field_name in EmployeeCompensationMonthForm.Meta.fields:
+            setattr(compensation, field_name, form.cleaned_data[field_name])
+        compensation.updated_by = request.user
+        compensation.full_clean()
+        compensation.save()
+
+        after = audit_payload(compensation)
+        changed_fields = (
+            [
+                key
+                for key, value in after.items()
+                if before.get(key) != value
+            ]
+            if instance
+            else list(after.keys())
+        )
+        DataAuditLog.objects.create(
+            entity_type="EmployeeCompensationMonth",
+            entity_id=str(compensation.pk),
+            action=(
+                DataAuditLog.ACTION_UPDATE
+                if instance
+                else DataAuditLog.ACTION_CREATE
+            ),
+            organization=organization,
+            actor=request.user,
+            before=before,
+            after=after,
+            changed_fields=changed_fields,
+        )
+
+    messages.success(
+        request,
+        f"Составляющие зарплаты за {compensation.period_month:%m.%Y} сохранены.",
+    )
+    return redirect("finance_payroll_employee_profile", employee_id=employee.pk)
 
 
 @login_required

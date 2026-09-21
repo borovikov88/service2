@@ -25,6 +25,7 @@ from pool_service.models import (
     Expense,
     ExpenseCategory,
     Employee,
+    EmployeeCompensationMonth,
 )
 from pool_service.services.finance import (
     finance_staff,
@@ -787,6 +788,37 @@ class PayrollConfirmForm(forms.Form):
         error_messages={"required": "Подтвердите, что проверили параметры импорта."},
     )
 
+
+class EmployeeCompensationMonthForm(forms.ModelForm):
+    class Meta:
+        model = EmployeeCompensationMonth
+        fields = [
+            "percent_amount",
+            "bonus_amount",
+            "extra_days_count",
+            "extra_days_amount",
+            "transport_compensation_amount",
+            "deduction_amount",
+            "note",
+        ]
+        labels = {
+            "percent_amount": "Проценты",
+            "bonus_amount": "Бонусы",
+            "extra_days_count": "Доп. дни, дней",
+            "extra_days_amount": "Доп. дни, сумма",
+            "transport_compensation_amount": "Компенсация транспорта",
+            "deduction_amount": "Удержания",
+            "note": "Комментарий",
+        }
+        widgets = {
+            "percent_amount": forms.NumberInput(attrs={"class": "form-control", "step": "0.01", "min": "0"}),
+            "bonus_amount": forms.NumberInput(attrs={"class": "form-control", "step": "0.01", "min": "0"}),
+            "extra_days_count": forms.NumberInput(attrs={"class": "form-control", "step": "0.01", "min": "0"}),
+            "extra_days_amount": forms.NumberInput(attrs={"class": "form-control", "step": "0.01", "min": "0"}),
+            "transport_compensation_amount": forms.NumberInput(attrs={"class": "form-control", "step": "0.01", "min": "0"}),
+            "deduction_amount": forms.NumberInput(attrs={"class": "form-control", "step": "0.01", "min": "0"}),
+            "note": forms.Textarea(attrs={"class": "form-control", "rows": 2}),
+        }
 
 class EmployeeIdentityMappingForm(forms.Form):
     employee = forms.ModelChoiceField(

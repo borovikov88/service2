@@ -225,7 +225,7 @@ class FinanceInformationArchitectureTests(TestCase):
 
         self.assertFalse(groups["analytics"]["items"])
         self.assertIn("Мои операции", labels)
-        self.assertIn("ККМ", labels)
+        self.assertIn("Касса ККМ", labels)
         self.assertIn("Перечисления", labels)
         self.assertNotIn("Касса организации", labels)
 
@@ -274,7 +274,7 @@ class FinanceInformationArchitectureTests(TestCase):
 
         for label in (
             "Валовая прибыль", "ДДС", "ФОТ", "Контроль себестоимости",
-            "Мои операции", "ККМ", "Перечисления", "Данные 1С",
+            "Мои операции", "Касса ККМ", "Перечисления", "Данные 1С",
         ):
             self.assertContains(response, label)
 
