@@ -30,6 +30,7 @@
           <summary class="btn btn-sm btn-outline-primary">Изменить составляющие</summary>
           <form method="post" action="{% url 'finance_payroll_employee_compensation_update' employee.id %}" class="card card-soft p-3 mt-2" style="min-width:min(720px,90vw)">
             {% csrf_token %}
+            <input type="hidden" name="expected_period_month" value="{{ period_month|date:'Y-m-d' }}">
             <div class="small text-muted mb-2">Редактируется текущий месяц: {{ period_month|date:"m.Y" }}</div>
             <div class="row g-2">
               <div class="col-sm-4 col-lg-3"><label class="form-label">{{ compensation_form.percent_amount.label }}</label>{{ compensation_form.percent_amount }}</div>
