@@ -8,6 +8,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
+from pool_service.finance_views import _record_payroll_plan_run_result
 from pool_service.models import (
     OneCImportBatch,
     OneCODataSyncRun,
@@ -304,6 +305,126 @@ class FinanceDataCenterTests(TestCase):
         self.assertEqual(plan_result["snapshot_id"], snapshot.pk)
         self.assertEqual(plan_result["created"], True)
         self.assertEqual(plan_result["period_month"], "2026-09-01")
+
+    @patch("pool_service.finance_views.refresh_payroll_plan_snapshot")
+    def test_authorized_resumer_can_finish_another_users_run(self, refresh):
+        resumer = User.objects.create_user(
+            username="finance-data-resumer",
+            password="password",
+            first_name="Бухгалтер",
+        )
+        OrganizationAccess.objects.create(
+            organization=self.organization,
+            user=resumer,
+            role="accountant",
+        )
+        snapshot = PayrollPlanSnapshot.objects.create(
+            organization=self.organization,
+            period_month=date(2026, 9, 1),
+            source_hash="f" * 64,
+            source_rows=17,
+            source_organization_guids=[],
+            currency_guid=uuid.uuid4(),
+            fetched_by=resumer,
+        )
+        run = self._completed_all_data_run(requested_by=self.owner)
+        refresh.return_value = (snapshot, True)
+        self.client.force_login(resumer)
+
+        response = self.client.post(
+            reverse("finance_payroll_plan_refresh"),
+            {"sync_run_id": str(run.id)},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        run.refresh_from_db()
+        self.assertEqual(
+            run.result_summary["payroll_plan_refresh"]["snapshot_id"],
+            snapshot.pk,
+        )
+
+    @patch("pool_service.finance_views.refresh_payroll_plan_snapshot")
+    def test_completed_run_cannot_be_relinked_to_later_snapshot(self, refresh):
+        original = PayrollPlanSnapshot.objects.create(
+            organization=self.organization,
+            period_month=date(2026, 9, 1),
+            source_hash="1" * 64,
+            source_rows=17,
+            source_organization_guids=[],
+            currency_guid=uuid.uuid4(),
+            fetched_by=self.owner,
+        )
+        run = self._completed_all_data_run(
+            result_summary={
+                "payroll_plan_refresh": {
+                    "status": "success",
+                    "snapshot_id": original.pk,
+                    "created": True,
+                    "period_month": "2026-09-01",
+                    "fetched_at": original.fetched_at.isoformat(),
+                    "error_message": "",
+                }
+            }
+        )
+        self.client.force_login(self.owner)
+
+        response = self.client.post(
+            reverse("finance_payroll_plan_refresh"),
+            {"sync_run_id": str(run.id)},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("уже привязаны", response.json()["error"])
+        refresh.assert_not_called()
+        run.refresh_from_db()
+        self.assertEqual(
+            run.result_summary["payroll_plan_refresh"]["snapshot_id"],
+            original.pk,
+        )
+
+    def test_payroll_run_result_is_immutable_under_duplicate_recording(self):
+        first = PayrollPlanSnapshot.objects.create(
+            organization=self.organization,
+            period_month=date(2026, 9, 1),
+            source_hash="2" * 64,
+            source_rows=17,
+            source_organization_guids=[],
+            currency_guid=uuid.uuid4(),
+            fetched_by=self.owner,
+        )
+        second = PayrollPlanSnapshot.objects.create(
+            organization=self.organization,
+            period_month=date(2026, 9, 1),
+            source_hash="3" * 64,
+            source_rows=17,
+            source_organization_guids=[],
+            currency_guid=uuid.uuid4(),
+            fetched_by=self.owner,
+        )
+        run = self._completed_all_data_run()
+
+        first_write = _record_payroll_plan_run_result(
+            run,
+            status="success",
+            snapshot=first,
+            created=True,
+        )
+        second_write = _record_payroll_plan_run_result(
+            run,
+            status="success",
+            snapshot=second,
+            created=True,
+        )
+
+        self.assertTrue(first_write)
+        self.assertFalse(second_write)
+        run.refresh_from_db()
+        self.assertEqual(
+            run.result_summary["payroll_plan_refresh"]["snapshot_id"],
+            first.pk,
+        )
 
     @patch("pool_service.finance_views.is_odata_target_organization", return_value=True)
     def test_history_combines_created_payroll_snapshot_with_parent_run(self, _target):
