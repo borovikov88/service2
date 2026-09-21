@@ -4,13 +4,16 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.contrib.sessions.backends.db import SessionStore
+from django.test import RequestFactory, TestCase
 from django.urls import reverse
 from django.utils import timezone
 
 from pool_service.finance_views import (
     _FINANCE_ONEC_COMPLETED_RUN_SESSION_KEY,
     _record_payroll_plan_run_result,
+    finance_onec_refresh_apply_step,
+    finance_payroll_plan_refresh,
 )
 from pool_service.models import (
     OneCImportBatch,
@@ -465,15 +468,19 @@ class FinanceDataCenterTests(TestCase):
         run = self._completed_all_data_run(cursor={"version": 4})
         self.client.force_login(self.owner)
 
+        session = SessionStore()
+        step_request = RequestFactory().post(
+            reverse("finance_onec_refresh_apply_step", kwargs={"run_id": run.id}),
+            {"cursor": "4"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+        step_request.user = self.owner
+        step_request.session = session
         with patch(
             "pool_service.finance_views._onec_sync_guard",
             return_value=(self.organization, None),
         ):
-            step_response = self.client.post(
-                reverse("finance_onec_refresh_apply_step", kwargs={"run_id": run.id}),
-                {"cursor": "4"},
-                HTTP_X_REQUESTED_WITH="XMLHttpRequest",
-            )
+            step_response = finance_onec_refresh_apply_step(step_request, run.id)
         self.assertEqual(
             step_response.status_code,
             200,
@@ -481,14 +488,17 @@ class FinanceDataCenterTests(TestCase):
         )
         self.assertNotIn(
             _FINANCE_ONEC_COMPLETED_RUN_SESSION_KEY,
-            self.client.session,
+            session,
         )
 
-        response = self.client.post(
+        payroll_request = RequestFactory().post(
             reverse("finance_payroll_plan_refresh"),
             {"sync_run_id": str(run.id)},
             HTTP_X_REQUESTED_WITH="XMLHttpRequest",
         )
+        payroll_request.user = self.owner
+        payroll_request.session = session
+        response = finance_payroll_plan_refresh(payroll_request)
 
         self.assertEqual(response.status_code, 400)
         refresh.assert_not_called()
@@ -548,15 +558,19 @@ class FinanceDataCenterTests(TestCase):
         refresh.return_value = (snapshot, True)
         self.client.force_login(self.owner)
 
+        session = SessionStore()
+        step_request = RequestFactory().post(
+            reverse("finance_onec_refresh_apply_step", kwargs={"run_id": run.id}),
+            {"cursor": "0"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+        step_request.user = self.owner
+        step_request.session = session
         with patch(
             "pool_service.finance_views._onec_sync_guard",
             return_value=(self.organization, None),
         ):
-            step_response = self.client.post(
-                reverse("finance_onec_refresh_apply_step", kwargs={"run_id": run.id}),
-                {"cursor": "0"},
-                HTTP_X_REQUESTED_WITH="XMLHttpRequest",
-            )
+            step_response = finance_onec_refresh_apply_step(step_request, run.id)
         self.assertEqual(
             step_response.status_code,
             200,
@@ -564,19 +578,22 @@ class FinanceDataCenterTests(TestCase):
         )
         self.assertIn(
             _FINANCE_ONEC_COMPLETED_RUN_SESSION_KEY,
-            self.client.session,
+            session,
         )
 
-        payroll_response = self.client.post(
+        payroll_request = RequestFactory().post(
             reverse("finance_payroll_plan_refresh"),
             {"sync_run_id": str(run.id)},
             HTTP_X_REQUESTED_WITH="XMLHttpRequest",
         )
+        payroll_request.user = self.owner
+        payroll_request.session = session
+        payroll_response = finance_payroll_plan_refresh(payroll_request)
 
         self.assertEqual(payroll_response.status_code, 200)
         self.assertNotIn(
             _FINANCE_ONEC_COMPLETED_RUN_SESSION_KEY,
-            self.client.session,
+            session,
         )
         run.refresh_from_db()
         self.assertEqual(
