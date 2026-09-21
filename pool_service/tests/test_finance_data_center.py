@@ -463,7 +463,11 @@ class FinanceDataCenterTests(TestCase):
             reverse("finance_onec_refresh_apply_step", kwargs={"run_id": run.id}),
             {"cursor": "4"},
         )
-        self.assertEqual(step_response.status_code, 200)
+        self.assertEqual(
+            step_response.status_code,
+            200,
+            step_response.content.decode("utf-8", errors="replace"),
+        )
         self.assertNotIn(
             _FINANCE_ONEC_COMPLETED_RUN_SESSION_KEY,
             self.client.session,
@@ -533,7 +537,11 @@ class FinanceDataCenterTests(TestCase):
             reverse("finance_onec_refresh_apply_step", kwargs={"run_id": run.id}),
             {"cursor": "0"},
         )
-        self.assertEqual(step_response.status_code, 200)
+        self.assertEqual(
+            step_response.status_code,
+            200,
+            step_response.content.decode("utf-8", errors="replace"),
+        )
         self.assertIn(
             _FINANCE_ONEC_COMPLETED_RUN_SESSION_KEY,
             self.client.session,
