@@ -185,7 +185,10 @@ class FinanceDataCenterTests(TestCase):
             response,
             reverse("finance_onec_refresh_apply_step", kwargs={"run_id": run.id}),
         )
-        self.assertNotContains(response, 'data-refresh-start')
+        self.assertNotContains(
+            response,
+            f'action="{reverse("finance_onec_refresh_apply_start")}"',
+        )
 
     @patch(
         "pool_service.finance_views._finance_data_default_period",
