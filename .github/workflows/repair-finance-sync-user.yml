@@ -1,0 +1,106 @@
+name: Repair production finance sync user
+
+on:
+  push:
+    branches:
+      - diag/finance-sync-readonly-20260922
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    name: Reactivate configured finance sync service user
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_repair
+          chmod 600 ~/.ssh/service2_repair
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          ssh-keygen -y -f ~/.ssh/service2_repair >/dev/null
+          PORT="${DEPLOY_PORT:-22}"
+          [[ "$PORT" =~ ^[0-9]+$ ]]
+          HOST_LOOKUP="$DEPLOY_HOST"
+          if [[ "$PORT" != "22" ]]; then HOST_LOOKUP="[$DEPLOY_HOST]:$PORT"; fi
+          ssh-keygen -F "$HOST_LOOKUP" -f ~/.ssh/known_hosts >/dev/null
+
+      - name: Reactivate exact configured service user
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          printf -v REMOTE_COMMAND 'cd %q && ../venv/bin/python -B manage.py shell' "$DEPLOY_APP_PATH"
+          cat <<'PY' | ssh -i ~/.ssh/service2_repair \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
+          from django.contrib.auth import get_user_model
+          from django.db import transaction
+          from pool_service.finance_imports.odata_daily_sync import daily_config
+          from pool_service.models import DataAuditLog, Employee, Organization, OrganizationAccess
+
+          cfg = daily_config()
+          if cfg.user_id != 41:
+              raise SystemExit("REFUSING: configured sync user changed")
+          org = Organization.objects.get(pk=cfg.organization_id)
+
+          with transaction.atomic():
+              User = get_user_model()
+              user = User.objects.select_for_update().get(pk=41)
+              access = OrganizationAccess.objects.filter(
+                  organization=org, user=user, role="accountant"
+              ).first()
+              if access is None:
+                  raise SystemExit("REFUSING: expected accountant access missing")
+              if Employee.objects.filter(user=user).exists():
+                  raise SystemExit("REFUSING: configured sync user is linked to an employee")
+              if not user.username.lower().startswith("job@"):
+                  raise SystemExit("REFUSING: configured sync user is not the expected service identity")
+              if user.is_active:
+                  print("FINANCE_SYNC_USER_ALREADY_ACTIVE")
+              else:
+                  before = {"is_active": False}
+                  user.is_active = True
+                  user.save(update_fields=["is_active"])
+                  DataAuditLog.objects.create(
+                      entity_type="User",
+                      entity_id=str(user.pk),
+                      action=DataAuditLog.ACTION_UPDATE,
+                      organization=org,
+                      actor=None,
+                      before=before,
+                      after={"is_active": True, "reason": "restore_finance_sync_service_user"},
+                      changed_fields=["is_active"],
+                  )
+                  print("FINANCE_SYNC_USER_REACTIVATED")
+          PY
+
+      - name: Verify finance sync configuration read-only
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          printf -v REMOTE_COMMAND \
+            'cd %q && ../venv/bin/python -B manage.py sync_onec_finance --check' \
+            "$DEPLOY_APP_PATH"
+          ssh -i ~/.ssh/service2_repair \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
