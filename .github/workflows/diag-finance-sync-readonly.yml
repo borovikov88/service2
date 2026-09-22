@@ -1,0 +1,107 @@
+name: Diagnose finance sync production
+
+on:
+  push:
+    branches:
+      - diag/finance-sync-readonly-20260922
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Read-only finance sync diagnosis
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_diag
+          chmod 600 ~/.ssh/service2_diag
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          ssh-keygen -y -f ~/.ssh/service2_diag >/dev/null
+          PORT="${DEPLOY_PORT:-22}"
+          [[ "$PORT" =~ ^[0-9]+$ ]]
+          HOST_LOOKUP="$DEPLOY_HOST"
+          if [[ "$PORT" != "22" ]]; then HOST_LOOKUP="[$DEPLOY_HOST]:$PORT"; fi
+          ssh-keygen -F "$HOST_LOOKUP" -f ~/.ssh/known_hosts >/dev/null
+
+      - name: Run read-only finance sync checks
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          printf -v REMOTE_COMMAND \
+            'cd %q && ../venv/bin/python -B manage.py shell -c %q' \
+            "$DEPLOY_APP_PATH" \
+            'from django.conf import settings
+from django.contrib.auth import get_user_model
+from pool_service.models import Organization
+from pool_service.services.permissions import company_has_access
+from pool_service.finance_imports.odata_daily_sync import daily_config
+from pool_service.finance_imports.odata_unified_sync import SUPPORTED_REPORT_TYPES, _has_report_permission
+from pool_service.finance_imports.odata_payroll_drafts import auto_coverage_config
+from pool_service.finance_imports.odata_profit_drafts import config_from_settings, is_odata_target_organization
+from pool_service.finance_imports.odata_profit import validate_config
+from pool_service.finance_imports.odata_finance_position import calendar_timezone
+
+def emit(name, ok, detail=""):
+    print("DIAG_%s=%s%s" % (name, "OK" if ok else "FAIL", (":" + detail) if detail else ""))
+
+try:
+    cfg = daily_config()
+    emit("DAILY_CONFIG", True)
+except Exception as exc:
+    emit("DAILY_CONFIG", False, type(exc).__name__)
+    raise SystemExit(0)
+
+org = Organization.objects.filter(pk=cfg.organization_id).first()
+emit("ORGANIZATION_EXISTS", org is not None)
+if org is None:
+    raise SystemExit(0)
+
+emit("COMPANY_ACCESS", company_has_access(org))
+
+user = get_user_model().objects.filter(pk=cfg.user_id, is_active=True).first()
+emit("SYNC_USER_ACTIVE", user is not None)
+if user is not None:
+    emit("REPORT_PERMISSIONS", all(_has_report_permission(user, org, item) for item in SUPPORTED_REPORT_TYPES))
+
+try:
+    emit("ODATA_TARGET", is_odata_target_organization(org))
+except Exception as exc:
+    emit("ODATA_TARGET", False, type(exc).__name__)
+
+try:
+    auto_coverage_config()
+    emit("PAYROLL_COVERAGE", True)
+except Exception as exc:
+    emit("PAYROLL_COVERAGE", False, type(exc).__name__)
+
+try:
+    validate_config(config_from_settings())
+    emit("ODATA_CONFIG", True)
+except Exception as exc:
+    emit("ODATA_CONFIG", False, type(exc).__name__)
+
+try:
+    calendar_timezone()
+    emit("CALENDAR_TIMEZONE", True)
+except Exception as exc:
+    emit("CALENDAR_TIMEZONE", False, type(exc).__name__)'
+          ssh -i ~/.ssh/service2_diag \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
