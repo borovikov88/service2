@@ -94,6 +94,36 @@ jobs:
               if all(_has_report_permission(candidate, org, item) for item in SUPPORTED_REPORT_TYPES):
                   candidate_ids.append(candidate.pk)
           print("DIAG_ELIGIBLE_SYNC_USER_IDS=" + ",".join(str(item) for item in sorted(set(candidate_ids))))
+          if configured_user is not None:
+              configured_access = OrganizationAccess.objects.filter(
+                  organization=org, user=configured_user
+              ).first()
+              print(
+                  "DIAG_CONFIGURED_SYNC_USER="
+                  + "|".join([
+                      str(configured_user.pk),
+                      configured_user.username or "",
+                      configured_user.first_name or "",
+                      configured_user.last_name or "",
+                      (configured_access.role if configured_access else ""),
+                      ("active" if configured_user.is_active else "inactive"),
+                  ])
+              )
+          for candidate_id in sorted(set(candidate_ids)):
+              candidate = get_user_model().objects.get(pk=candidate_id)
+              access = OrganizationAccess.objects.filter(
+                  organization=org, user=candidate
+              ).first()
+              print(
+                  "DIAG_ELIGIBLE_SYNC_USER="
+                  + "|".join([
+                      str(candidate.pk),
+                      candidate.username or "",
+                      candidate.first_name or "",
+                      candidate.last_name or "",
+                      (access.role if access else ""),
+                  ])
+              )
 
           try:
               emit("ODATA_TARGET", is_odata_target_organization(org))
