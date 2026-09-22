@@ -125,6 +125,35 @@ jobs:
                   ])
               )
 
+          from pool_service.models import DataAuditLog
+          if configured_user is not None:
+              print(
+                  "DIAG_CONFIGURED_USER_META="
+                  + "|".join([
+                      ("staff" if configured_user.is_staff else "not_staff"),
+                      ("superuser" if configured_user.is_superuser else "not_superuser"),
+                      ("has_password" if configured_user.has_usable_password() else "no_password"),
+                      ("last_login=" + (configured_user.last_login.isoformat() if configured_user.last_login else "none")),
+                      ("joined=" + configured_user.date_joined.isoformat()),
+                  ])
+              )
+              audit_rows = DataAuditLog.objects.filter(
+                  entity_type="User",
+                  entity_id=str(configured_user.pk),
+              ).order_by("-created_at")[:10]
+              for row in audit_rows:
+                  print(
+                      "DIAG_CONFIGURED_USER_AUDIT="
+                      + "|".join([
+                          row.created_at.isoformat(),
+                          row.action or "",
+                          ",".join(row.changed_fields or []),
+                          str((row.before or {}).get("is_active", "")),
+                          str((row.after or {}).get("is_active", "")),
+                          str(row.actor_id or ""),
+                      ])
+                  )
+
           try:
               emit("ODATA_TARGET", is_odata_target_organization(org))
           except Exception as exc:
