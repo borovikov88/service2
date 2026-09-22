@@ -76,9 +76,24 @@ jobs:
           emit("COMPANY_ACCESS", company_has_access(org))
 
           user = get_user_model().objects.filter(pk=cfg.user_id, is_active=True).first()
-          emit("SYNC_USER_ACTIVE", user is not None)
-          if user is not None:
-              emit("REPORT_PERMISSIONS", all(_has_report_permission(user, org, item) for item in SUPPORTED_REPORT_TYPES))
+          all_users = get_user_model().objects.filter(pk=cfg.user_id)
+          emit("SYNC_USER_EXISTS", all_users.exists())
+          configured_user = all_users.first()
+          emit("SYNC_USER_ACTIVE", bool(configured_user and configured_user.is_active))
+          if configured_user is not None:
+              emit("REPORT_PERMISSIONS", all(_has_report_permission(configured_user, org, item) for item in SUPPORTED_REPORT_TYPES))
+
+          from pool_service.models import OrganizationAccess
+          candidate_ids = []
+          for access in OrganizationAccess.objects.filter(
+              organization=org,
+              role__in=["owner", "admin", "accountant"],
+              user__is_active=True,
+          ).select_related("user").order_by("user_id"):
+              candidate = access.user
+              if all(_has_report_permission(candidate, org, item) for item in SUPPORTED_REPORT_TYPES):
+                  candidate_ids.append(candidate.pk)
+          print("DIAG_ELIGIBLE_SYNC_USER_IDS=" + ",".join(str(item) for item in sorted(set(candidate_ids))))
 
           try:
               emit("ODATA_TARGET", is_odata_target_organization(org))
