@@ -154,6 +154,23 @@ jobs:
                       ])
                   )
 
+          from pool_service.models import Employee
+          if configured_user is not None:
+              employees = Employee.objects.filter(user=configured_user).order_by("pk")
+              print("DIAG_CONFIGURED_USER_EMPLOYEE_COUNT=" + str(employees.count()))
+              for employee in employees:
+                  print(
+                      "DIAG_CONFIGURED_USER_EMPLOYEE="
+                      + "|".join([
+                          str(employee.pk),
+                          str(employee.organization_id),
+                          employee.display_name or "",
+                          employee.first_name or "",
+                          employee.last_name or "",
+                          ("active" if employee.is_active else "inactive"),
+                      ])
+                  )
+
           try:
               emit("ODATA_TARGET", is_odata_target_organization(org))
           except Exception as exc:
