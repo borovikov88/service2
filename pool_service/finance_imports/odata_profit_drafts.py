@@ -1164,9 +1164,19 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
     scope_months = _month_scope(start_month, end_month)
     config = validate_config(config or config_from_settings())
     client = opener or build_opener(NoRedirectHandler())
-    rows, page_count = read_profit_rows(
+    rows, sales_page_count = read_profit_rows(
         config, start_month, end_month, opener=client
     )
+    direct_rows, direct_page_count = read_direct_order_expense_rows(
+        config, start_month, end_month, opener=client
+    )
+    page_count = sales_page_count + direct_page_count
+    if len(rows) + len(direct_rows) > config.max_rows:
+        raise ODataDraftError("OData response exceeded the configured row limit")
+    sales_identities = {row.identity for row in rows}
+    if any(row.identity in sales_identities for row in direct_rows):
+        raise ODataDraftError("OData sources contain a duplicate source identity")
+
     required = {
         "nomenclature": {row.nomenclature_guid for row in rows},
         "customer": {row.customer_guid for row in rows if row.customer_guid != ZERO_GUID},
@@ -1174,6 +1184,17 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
     }
     try:
         reference_page_budget = {"used": 0}
+        direct_documents = _read_direct_expense_documents(
+            config,
+            direct_rows,
+            opener=client,
+            page_budget=reference_page_budget,
+        )
+        direct_customers, direct_responsibles = _direct_expense_reference_guids(
+            direct_rows, direct_documents
+        )
+        required["customer"].update(direct_customers)
+        required["responsible"].update(direct_responsibles)
         references = {
             kind: _read_reference_map(
                 config, kind, guids, opener=client,
@@ -1187,7 +1208,11 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
             opener=client,
             page_budget=reference_page_budget,
         )
+        documents.update(direct_documents)
         normalized = _enrich_rows(rows, references, documents, organization.pk)
+        normalized.extend(_enrich_direct_expense_rows(
+            direct_rows, references, documents, organization.pk
+        ))
     except ODataPreviewError as exc:
         safe_message = str(exc)[:ERROR_MESSAGE_MAX_LENGTH]
         batch = _failed_mapping_batch(
