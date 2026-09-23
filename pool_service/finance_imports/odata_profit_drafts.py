@@ -1254,7 +1254,11 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
     page_count = sales_page_count + direct_page_count
     if len(rows) + len(direct_rows) > config.max_rows:
         raise ODataDraftError("OData response exceeded the configured row limit")
-    sales_identities = {row.identity for row in rows}
+    sales_identities = {
+        (row.recorder, row.line_number)
+        for row in rows
+        if hasattr(row, "recorder") and hasattr(row, "line_number")
+    }
     if any(row.identity in sales_identities for row in direct_rows):
         raise ODataDraftError("OData sources contain a duplicate source identity")
 
