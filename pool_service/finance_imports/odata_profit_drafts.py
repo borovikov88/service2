@@ -245,10 +245,16 @@ def _read_reference_map(
     return found
 
 
-def _reference_lookup_kwargs(kind, *, opener, page_budget):
-    """Keep manual drafts and unified sync on one historical-reference policy."""
+def _reference_lookup_kwargs(
+    kind,
+    *,
+    opener,
+    page_budget,
+    allow_deleted_nomenclature=False,
+):
+    """Share the historical-customer policy without changing nomenclature rules."""
     kwargs = {"opener": opener, "page_budget": page_budget}
-    if kind == "nomenclature":
+    if kind == "nomenclature" and allow_deleted_nomenclature:
         kwargs["allow_deleted_nomenclature"] = True
     elif kind == "customer":
         kwargs["allow_deleted_customer"] = True
