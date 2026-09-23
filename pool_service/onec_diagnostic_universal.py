@@ -120,13 +120,13 @@ def _normalize_filters(
             clauses.append("(" + " or ".join(
                 f"{field} eq {literal}" for literal in literals
             ) + ")")
-            if field == "Ref_Key" or field.endswith("_Key"):
+            if field == "Ref_Key":
                 key_anchor = True
             continue
 
         literal = _odata_literal(declared, value)
         clauses.append(f"{field} {op} {literal}")
-        if op == "eq" and (field == "Ref_Key" or field.endswith("_Key")):
+        if op == "eq" and field == "Ref_Key":
             key_anchor = True
 
     return clauses, key_anchor
