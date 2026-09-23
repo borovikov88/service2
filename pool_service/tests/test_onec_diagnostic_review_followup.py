@@ -95,5 +95,8 @@ class OneCDiagnosticReviewFollowupTests(TestCase):
         owner = User.objects.create_user(username="diag-inactive-owner", is_active=False)
         OrganizationAccess.objects.create(user=owner, organization=organization, role="owner")
 
-        with self.settings(ONEC_ODATA_TARGET_ORGANIZATION_ID=organization.pk):
+        with self.settings(
+            ONEC_ODATA_TARGET_ORGANIZATION_ID=organization.pk,
+            ADVISOR_ONEC_DIAGNOSTIC_MCP_ALLOWED_USER_IDS=(owner.pk,),
+        ):
             self.assertFalse(diagnostic.can_access_diagnostic_mcp(owner, organization))

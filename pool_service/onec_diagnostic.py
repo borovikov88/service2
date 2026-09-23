@@ -52,7 +52,7 @@ MAX_SALES_ROWS = 100000
 NOMENCLATURE_ENTITY = "Catalog_Номенклатура"
 SALES_ENTITY = "AccumulationRegister_Продажи_RecordType"
 
-DIAGNOSTIC_ACCESS_ROLES = frozenset({"owner", "accountant"})
+DIAGNOSTIC_ACCESS_ROLES = frozenset({"owner", "admin", "accountant"})
 
 EDM_NAMESPACES = {
     "http://schemas.microsoft.com/ado/2006/04/edm",
@@ -197,8 +197,22 @@ def _target_organization_id() -> int | None:
     return value if value > 0 else None
 
 
+def _diagnostic_allowed_user_ids() -> frozenset[int]:
+    """Return the explicit human-user allowlist, failing closed on bad values."""
+    raw = getattr(settings, "ADVISOR_ONEC_DIAGNOSTIC_MCP_ALLOWED_USER_IDS", ())
+    if isinstance(raw, (str, bytes)):
+        raw = [item.strip() for item in str(raw).split(",") if item.strip()]
+    try:
+        values = frozenset(int(value) for value in raw)
+    except (TypeError, ValueError):
+        return frozenset()
+    if any(value <= 0 for value in values):
+        return frozenset()
+    return values
+
+
 def can_access_diagnostic_mcp(user, organization) -> bool:
-    """Apply the target-scoped management policy for the Diagnostic MCP."""
+    """Apply the target-scoped and explicitly allowlisted Diagnostic policy."""
     if (
         not user
         or not getattr(user, "is_authenticated", False)
@@ -208,6 +222,9 @@ def can_access_diagnostic_mcp(user, organization) -> bool:
         return False
     target_id = _target_organization_id()
     if target_id is None or getattr(organization, "pk", None) != target_id:
+        return False
+    allowed_user_ids = _diagnostic_allowed_user_ids()
+    if getattr(user, "pk", None) not in allowed_user_ids:
         return False
     if getattr(user, "is_superuser", False):
         return True
