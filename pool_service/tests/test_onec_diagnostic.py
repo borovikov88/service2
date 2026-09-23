@@ -402,7 +402,7 @@ class OneCDiagnosticTests(TestCase):
         with self.settings(ONEC_ODATA_TARGET_ORGANIZATION_ID=target.pk):
             self.assertTrue(diagnostic.can_access_diagnostic_mcp(owner, target))
             self.assertTrue(diagnostic.can_access_diagnostic_mcp(accountant, target))
-            self.assertTrue(diagnostic.can_access_diagnostic_mcp(admin, target))
+            self.assertFalse(diagnostic.can_access_diagnostic_mcp(admin, target))
             self.assertTrue(diagnostic.can_access_diagnostic_mcp(superuser, target))
             self.assertFalse(diagnostic.can_access_diagnostic_mcp(manager, target))
             self.assertFalse(diagnostic.can_access_diagnostic_mcp(service, target))
