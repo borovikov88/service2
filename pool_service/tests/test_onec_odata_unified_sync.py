@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from decimal import Decimal
 from tempfile import TemporaryDirectory
 from pathlib import Path
 from types import SimpleNamespace
