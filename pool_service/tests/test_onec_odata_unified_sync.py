@@ -42,6 +42,7 @@ from pool_service.models import (
 from pool_service.tests.test_onec_odata_profit_preview import FakeOpener
 from pool_service.tests.test_onec_odata_profit_drafts import (
     CUSTOMER,
+    DIRECT_RECEIPT,
     ITEM,
     RESPONSIBLE,
     direct_expense_row,
