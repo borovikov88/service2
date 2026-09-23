@@ -15,7 +15,7 @@ METADATA = """<?xml version="1.0" encoding="utf-8"?>
 <edmx:Edmx xmlns:edmx="http://schemas.microsoft.com/ado/2007/06/edmx"><edmx:DataServices>
 <Schema xmlns="http://schemas.microsoft.com/ado/2008/09/edm" Namespace="S">
 <EntityType Name="N"><Property Name="Ref_Key" Type="Edm.Guid"/><Property Name="Code" Type="Edm.String"/><Property Name="Description" Type="Edm.String"/><Property Name="DeletionMark" Type="Edm.Boolean"/></EntityType>
-<EntityType Name="P"><Property Name="Period" Type="Edm.DateTime"/><Property Name="Active" Type="Edm.Boolean"/><Property Name="Номенклатура_Key" Type="Edm.Guid"/><Property Name="Организация_Key" Type="Edm.Guid"/><Property Name="Количество" Type="Edm.Decimal"/><Property Name="Сумма" Type="Edm.Decimal"/></EntityType>
+<EntityType Name="P"><Property Name="Period" Type="Edm.DateTime"/><Property Name="Active" Type="Edm.Boolean"/><Property Name="Номенклатура_Key" Type="Edm.Guid"/><Property Name="Организация_Key" Type="Edm.Guid"/><Property Name="Количество" Type="Edm.Double"/><Property Name="Сумма" Type="Edm.Double"/></EntityType>
 <EntityContainer Name="C"><EntitySet Name="Catalog_Номенклатура" EntityType="S.N"/><EntitySet Name="AccumulationRegister_Продажи_RecordType" EntityType="S.P"/></EntityContainer>
 </Schema></edmx:DataServices></edmx:Edmx>""".encode()
 
