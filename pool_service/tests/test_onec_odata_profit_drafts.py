@@ -39,6 +39,10 @@ ITEM = "33333333-3333-3333-3333-333333333333"
 CUSTOMER = "44444444-4444-4444-4444-444444444444"
 RECORDER = "55555555-5555-5555-5555-555555555555"
 RESPONSIBLE = "66666666-6666-6666-6666-666666666666"
+DIRECT_RECEIPT = "77777777-7777-4777-8777-777777777777"
+CUSTOMER_ORDER = "88888888-8888-4888-8888-888888888888"
+DIRECT_ACCOUNT = "99999999-9999-4999-8999-999999999999"
+DIRECT_OPERATION = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 BASE_URL = "https://fresh.example/odata/standard.odata/"
 RECORDER_TYPE = "StandardODATA.Document_РасходнаяНакладная"
 
@@ -106,6 +110,44 @@ def document_payload(
             "Заказ_Type": "StandardODATA.Document_ЗаказПокупателя",
         })
     return {"value": [row]}
+
+
+def direct_expense_row(line, amount):
+    return {
+        "Recorder": DIRECT_RECEIPT,
+        "Recorder_Type": "StandardODATA.Document_ПриходнаяНакладная",
+        "LineNumber": line,
+        "Period": "2026-05-15T10:00:00+03:00",
+        "Active": True,
+        "Организация_Key": ORG,
+        "ЗаказПокупателя_Key": CUSTOMER_ORDER,
+        "СодержаниеПроводки": "Прочие расходы",
+        "СуммаРасходов": amount,
+        "СчетУчета_Key": DIRECT_ACCOUNT,
+        "ХозяйственнаяОперация_Key": DIRECT_OPERATION,
+    }
+
+
+def direct_order_document_payload():
+    return {
+        "value": [{
+            "Ref_Key": CUSTOMER_ORDER,
+            "Number": "НФНФ-000114",
+            "Date": "2026-05-01T12:00:00+03:00",
+            "Контрагент_Key": CUSTOMER,
+            "Ответственный_Key": RESPONSIBLE,
+        }]
+    }
+
+
+def direct_receipt_document_payload():
+    return {
+        "value": [{
+            "Ref_Key": DIRECT_RECEIPT,
+            "Number": "НФНФ-000310",
+            "Date": "2026-05-15T10:00:00+03:00",
+        }]
+    }
 
 
 def successful_opener(rows):
@@ -211,6 +253,91 @@ class ODataProfitDraftTests(TestCase):
             "2026-05", "2026-05", self.organization, self.user,
             config=config(organization_guids=allowed), opener=opener,
         )
+
+    def test_direct_receipt_expenses_reduce_order_profit_and_confirm_exact_snapshot(self):
+        sale = profit_row(
+            revenue="94494.00",
+            cost="29696.64",
+        )
+        opener = FakeOpener(
+            {"value": [sale]},
+            {"value": [
+                direct_expense_row(10, "25000.00"),
+                direct_expense_row(11, "5000.00"),
+            ]},
+            direct_order_document_payload(),
+            direct_receipt_document_payload(),
+            reference_payload(
+                ITEM, "Товар из 1С", article="A-1", nomenclature_type="Запас"
+            ),
+            reference_payload(CUSTOMER, "Клиент заказа №114"),
+            reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
+            document_payload(number="НФНФ-000335"),
+        )
+
+        batch = self.create_draft(rows=[sale], opener=opener)
+        self.assertFalse(
+            OneCMonthlyProfit.objects.filter(import_batch=batch).exists()
+        )
+
+        with batch.stored_file.open("rb") as source:
+            snapshot = json.loads(source.read().decode("utf-8"))
+        self.assertEqual(len(snapshot["rows"]), 3)
+        direct_rows = [
+            row for row in snapshot["rows"]
+            if row["source_data"].get("row_kind") == "direct_order_expense"
+        ]
+        self.assertEqual(len(direct_rows), 2)
+        self.assertEqual(
+            {row["cost"] for row in direct_rows},
+            {"25000.00", "5000.00"},
+        )
+        self.assertTrue(all(row["revenue"] == "0.00" for row in direct_rows))
+        self.assertTrue(
+            all(row["customer_name"] == "Клиент заказа №114" for row in direct_rows)
+        )
+        self.assertTrue(
+            all(
+                row["manager_name"] == "Ответственный заказа №114"
+                for row in direct_rows
+            )
+        )
+        self.assertTrue(
+            all(
+                row["document_name"]
+                == "Приходная накладная №НФНФ-000310 от 15.05.2026"
+                for row in direct_rows
+            )
+        )
+        self.assertTrue(
+            all(
+                row["source_data"]["resolved_order_number"] == "НФНФ-000114"
+                for row in direct_rows
+            )
+        )
+
+        confirmed = confirm_odata_profit(
+            batch.id,
+            self.organization,
+            self.user,
+            config=config(),
+        )
+        self.assertEqual(confirmed.status, OneCImportBatch.STATUS_CONFIRMED)
+        imported = list(
+            OneCMonthlyProfit.objects.filter(import_batch=batch)
+            .order_by("source_row_number")
+        )
+        self.assertEqual(len(imported), 3)
+        total_revenue = sum(
+            (row.revenue for row in imported), Decimal("0")
+        )
+        total_cost = sum((row.cost for row in imported), Decimal("0"))
+        total_profit = sum(
+            (row.gross_profit for row in imported), Decimal("0")
+        )
+        self.assertEqual(total_revenue, Decimal("94494.00"))
+        self.assertEqual(total_cost, Decimal("59696.64"))
+        self.assertEqual(total_profit, Decimal("34797.36"))
 
     def test_draft_saves_private_snapshot_and_no_profit_rows_or_activation(self):
         batch = self.create_draft()
