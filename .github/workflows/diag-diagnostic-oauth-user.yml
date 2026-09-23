@@ -127,6 +127,7 @@ jobs:
               secure=True,
           )
           request.user = human
+          request.session = {}
           response = shared_oauth_authorize(request)
           print("DIAG_OAUTH_PAGE_STATUS=" + str(response.status_code))
           print(
