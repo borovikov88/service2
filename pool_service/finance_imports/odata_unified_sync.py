@@ -678,46 +678,45 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
     references = {}
     for kind, stage in (
         ("nomenclature", STAGE_PROFIT_NOMENCLATURE_LOOKUP),
+        ("customer", STAGE_PROFIT_CUSTOMER_LOOKUP),
         ("responsible", STAGE_PROFIT_RESPONSIBLE_LOOKUP),
     ):
         try:
-            references[kind] = _read_reference_map(
-                config,
-                kind,
-                required[kind],
-                **_reference_lookup_kwargs(
-                    kind,
+            if kind == "customer":
+                references[kind] = _read_profit_customer_references(
+                    config,
+                    sales_customers,
+                    direct_customers,
                     opener=opener,
                     page_budget=budget,
-                    allow_deleted_nomenclature=True,
-                ),
-            )
+                    allow_deleted_sales_customers=True,
+                )
+            else:
+                references[kind] = _read_reference_map(
+                    config,
+                    kind,
+                    required[kind],
+                    **_reference_lookup_kwargs(
+                        kind,
+                        opener=opener,
+                        page_budget=budget,
+                        allow_deleted_nomenclature=True,
+                    ),
+                )
         except Exception as exc:
-            error_reason = (
-                _profit_nomenclature_error_reason(exc)
-                if stage == STAGE_PROFIT_NOMENCLATURE_LOOKUP
-                else _profit_customer_error_reason(exc)
-            )
+            error_reason = None
+            if stage == STAGE_PROFIT_NOMENCLATURE_LOOKUP:
+                error_reason = _profit_nomenclature_error_reason(exc)
+            elif stage in {
+                STAGE_PROFIT_CUSTOMER_LOOKUP,
+                STAGE_PROFIT_RESPONSIBLE_LOOKUP,
+            }:
+                error_reason = _profit_customer_error_reason(exc)
             _raise_stage_error(
                 stage,
                 exc,
                 error_reason=error_reason,
             )
-    try:
-        references["customer"] = _read_profit_customer_references(
-            config,
-            sales_customers,
-            direct_customers,
-            opener=opener,
-            page_budget=budget,
-            allow_deleted_sales_customers=True,
-        )
-    except Exception as exc:
-        _raise_stage_error(
-            STAGE_PROFIT_CUSTOMER_LOOKUP,
-            exc,
-            error_reason=_profit_customer_error_reason(exc),
-        )
     try:
         documents = _read_profit_documents(
             config, rows, opener=opener, page_budget=budget
