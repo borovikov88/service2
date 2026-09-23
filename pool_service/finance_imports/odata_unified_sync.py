@@ -689,6 +689,7 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
                     kind,
                     opener=opener,
                     page_budget=budget,
+                    allow_deleted_nomenclature=True,
                 ),
             )
         except Exception as exc:
