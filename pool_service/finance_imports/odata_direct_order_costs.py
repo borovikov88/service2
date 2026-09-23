@@ -121,8 +121,11 @@ def _parse_row(raw, start: date, end_exclusive: date, allowed_organizations):
         field="Direct expense Recorder_Type",
         allowed_types={RECORDER_TYPE},
     )
+    raw_order = raw.get("ЗаказПокупателя_Key")
+    if raw_order in (None, "", ZERO_GUID):
+        return None
     order_guid = normalize_guid(
-        raw.get("ЗаказПокупателя_Key"), field="ЗаказПокупателя_Key"
+        raw_order, field="ЗаказПокупателя_Key"
     )
     amount = _decimal(raw.get("СуммаРасходов"), field="СуммаРасходов")
     if amount == 0:
