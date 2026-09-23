@@ -1,0 +1,86 @@
+name: Diagnose name repair target
+
+on:
+  push:
+    branches:
+      - diag/name-repair-target-20260923
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Read-only name repair target diagnosis
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_diag_name
+          chmod 600 ~/.ssh/service2_diag_name
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          ssh-keygen -y -f ~/.ssh/service2_diag_name >/dev/null
+          PORT="${DEPLOY_PORT:-22}"
+          [[ "$PORT" =~ ^[0-9]+$ ]]
+          HOST_LOOKUP="$DEPLOY_HOST"
+          if [[ "$PORT" != "22" ]]; then HOST_LOOKUP="[$DEPLOY_HOST]:$PORT"; fi
+          ssh-keygen -F "$HOST_LOOKUP" -f ~/.ssh/known_hosts >/dev/null
+
+      - name: Find exact Service2 target read-only
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          printf -v REMOTE_COMMAND 'cd %q && ../venv/bin/python -B manage.py shell' "$DEPLOY_APP_PATH"
+          cat <<'PY' | ssh -i ~/.ssh/service2_diag_name \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
+          from django.db.models import Q
+          from pool_service.models import Employee
+
+          matches = (
+              Employee.objects.select_related("user", "organization")
+              .filter(
+                  Q(display_name__icontains="Крафт")
+                  | Q(display_name__icontains="Дарья")
+                  | Q(first_name__icontains="Дарья")
+                  | Q(last_name__icontains="Крафт")
+                  | Q(user__first_name__icontains="Дарья")
+                  | Q(user__last_name__icontains="Крафт")
+                  | Q(user__first_name__icontains="Крафт")
+                  | Q(user__last_name__icontains="Дарья")
+              )
+              .order_by("organization_id", "pk")
+          )
+          print("DIAG_MATCH_COUNT=" + str(matches.count()))
+          for employee in matches:
+              user = employee.user
+              print(
+                  "DIAG_NAME_TARGET="
+                  + "|".join([
+                      str(employee.organization_id),
+                      str(user.pk if user else ""),
+                      str(employee.pk),
+                      employee.display_name or "",
+                      employee.first_name or "",
+                      employee.last_name or "",
+                      (user.first_name if user else "") or "",
+                      (user.last_name if user else "") or "",
+                      ("employee_active" if employee.is_active else "employee_inactive"),
+                      ("user_active" if user and user.is_active else "user_inactive"),
+                  ])
+              )
+          PY
