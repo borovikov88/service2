@@ -22,11 +22,17 @@ METADATA = '''<?xml version="1.0" encoding="utf-8"?>
         <Property Name="DeletionMark" Type="Edm.Boolean" />
       </EntityType>
       <EntityType Name="RegisterRow">
+        <Property Name="Ref_Key" Type="Edm.Guid" />
         <Property Name="Period" Type="Edm.DateTime" />
         <Property Name="Active" Type="Edm.Boolean" />
         <Property Name="Nomenclature_Key" Type="Edm.Guid" />
         <Property Name="Organisation_Key" Type="Edm.Guid" />
         <Property Name="Amount" Type="Edm.Double" />
+      </EntityType>
+      <EntityType Name="DocumentHeader">
+        <Property Name="Ref_Key" Type="Edm.Guid" />
+        <Property Name="Организация_Key" Type="Edm.Guid" />
+        <Property Name="DeletionMark" Type="Edm.Boolean" />
       </EntityType>
       <EntityType Name="ScopedRegisterRow">
         <Property Name="Period" Type="Edm.DateTime" />
@@ -37,6 +43,7 @@ METADATA = '''<?xml version="1.0" encoding="utf-8"?>
       </EntityType>
       <EntityContainer Name="Container">
         <EntitySet Name="Catalog_Test" EntityType="Test.CatalogItem" />
+        <EntitySet Name="Document_Test" EntityType="Test.DocumentHeader" />
         <EntitySet Name="Document_Test_Items" EntityType="Test.RegisterRow" />
         <EntitySet Name="AccumulationRegister_Test" EntityType="Test.ScopedRegisterRow" />
       </EntityContainer>
@@ -69,6 +76,18 @@ class RecordingOpener:
     def open(self, request, timeout=None):
         self.urls.append(request.full_url)
         return FakeResponse(self.payload)
+
+
+class SequencedOpener:
+    def __init__(self, payloads):
+        self.payloads = list(payloads)
+        self.urls = []
+
+    def open(self, request, timeout=None):
+        self.urls.append(request.full_url)
+        if not self.payloads:
+            raise AssertionError("unexpected extra request")
+        return FakeResponse(self.payloads.pop(0))
 
 
 class UniversalDiagnosticPolicyTests(TestCase):
@@ -165,6 +184,104 @@ class UniversalDiagnosticPolicyTests(TestCase):
                 metadata_raw=METADATA,
             )
         self.assertEqual(error.exception.code, "KEY_ANCHOR_REQUIRED")
+
+    def test_unscoped_document_part_requires_ref_key_not_arbitrary_key(self):
+        with self.assertRaises(base.OneCDiagnosticError) as error:
+            universal.query_1c_rows(
+                self.config(),
+                "Document_Test_Items",
+                fields=["Period"],
+                filters=[
+                    {"field": "Nomenclature_Key", "op": "eq", "value": ITEM}
+                ],
+                metadata_raw=METADATA,
+            )
+        self.assertEqual(error.exception.code, "KEY_ANCHOR_REQUIRED")
+
+    def test_unscoped_document_part_verifies_parent_organization(self):
+        opener = SequencedOpener([
+            {
+                "value": [
+                    {"Ref_Key": ITEM, "Организация_Key": ORG}
+                ]
+            },
+            {
+                "value": [{
+                    "Ref_Key": ITEM,
+                    "Period": "2026-09-01T10:00:00",
+                    "Active": True,
+                    "Nomenclature_Key": OTHER_ORG,
+                    "Organisation_Key": OTHER_ORG,
+                    "Amount": 12.5,
+                }]
+            },
+        ])
+        result = universal.query_1c_rows(
+            self.config(),
+            "Document_Test_Items",
+            fields=["Period", "Amount"],
+            filters=[{"field": "Ref_Key", "op": "eq", "value": ITEM}],
+            opener=opener,
+            metadata_raw=METADATA,
+        )
+        self.assertTrue(result["organization_scope_enforced"])
+        self.assertEqual(
+            result["rows"],
+            [{"Period": "2026-09-01T10:00:00", "Amount": "12.5"}],
+        )
+        self.assertEqual(len(opener.urls), 2)
+        parent_url = unquote(opener.urls[0])
+        self.assertIn("Document_Test?", parent_url)
+        self.assertIn("Ref_Key eq guid", parent_url)
+        self.assertIn("Организация_Key eq guid", parent_url)
+        child_url = unquote(opener.urls[1])
+        self.assertIn("Document_Test_Items?", child_url)
+
+    def test_unscoped_document_part_denies_unowned_parent(self):
+        opener = SequencedOpener([{"value": []}])
+        with self.assertRaises(base.OneCDiagnosticError) as error:
+            universal.query_1c_rows(
+                self.config(),
+                "Document_Test_Items",
+                fields=["Period"],
+                filters=[{"field": "Ref_Key", "op": "eq", "value": ITEM}],
+                opener=opener,
+                metadata_raw=METADATA,
+            )
+        self.assertEqual(
+            error.exception.code,
+            "PARENT_ORGANIZATION_SCOPE_VIOLATION",
+        )
+        self.assertEqual(len(opener.urls), 1)
+
+    def test_unscoped_document_part_revalidates_child_ref_key(self):
+        foreign_ref = "50000000-0000-4000-8000-000000000005"
+        opener = SequencedOpener([
+            {"value": [{"Ref_Key": ITEM, "Организация_Key": ORG}]},
+            {
+                "value": [{
+                    "Ref_Key": foreign_ref,
+                    "Period": "2026-09-01T10:00:00",
+                    "Active": True,
+                    "Nomenclature_Key": OTHER_ORG,
+                    "Organisation_Key": OTHER_ORG,
+                    "Amount": 12.5,
+                }]
+            },
+        ])
+        with self.assertRaises(base.OneCDiagnosticError) as error:
+            universal.query_1c_rows(
+                self.config(),
+                "Document_Test_Items",
+                fields=["Period"],
+                filters=[{"field": "Ref_Key", "op": "eq", "value": ITEM}],
+                opener=opener,
+                metadata_raw=METADATA,
+            )
+        self.assertEqual(
+            error.exception.code,
+            "PARENT_ORGANIZATION_SCOPE_VIOLATION",
+        )
 
     def test_scoped_register_injects_org_active_and_revalidates_rows(self):
         opener = RecordingOpener({
