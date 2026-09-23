@@ -165,7 +165,7 @@ class OneCDiagnosticMcpTests(TestCase):
 
     def test_anonymous_tools_call_returns_oauth_challenge_without_dispatch(self):
         with patch(
-            "pool_service.onec_diagnostic_mcp_views.onec_diagnostic.list_entities"
+            "pool_service.onec_diagnostic_mcp_views.onec_diagnostic.describe_metadata"
         ) as reader:
             response = self.client.post(
                 reverse("onec_diagnostic_mcp"),
