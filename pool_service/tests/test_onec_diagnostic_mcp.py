@@ -152,7 +152,7 @@ class OneCDiagnosticMcpTests(TestCase):
             **headers,
         )
 
-    def test_bearer_challenge_precedes_body_parsing(self):
+    def test_malformed_anonymous_request_is_rejected_before_dispatch(self):
         response = self.client.post(
             reverse("onec_diagnostic_mcp"),
             data=b"not-json",
@@ -160,12 +160,40 @@ class OneCDiagnosticMcpTests(TestCase):
             HTTP_ACCEPT="application/json",
             HTTP_ORIGIN="https://chatgpt.com",
         )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"]["code"], -32700)
+
+    def test_anonymous_tools_call_requires_bearer(self):
+        response = self.client.post(
+            reverse("onec_diagnostic_mcp"),
+            data=json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "list_1c_entities",
+                    "arguments": {"query": "test", "limit": 1},
+                },
+            }),
+            content_type="application/json",
+            HTTP_ACCEPT="application/json",
+            HTTP_MCP_PROTOCOL_VERSION=MCP_PROTOCOL_VERSION,
+            HTTP_ORIGIN="https://chatgpt.com",
+        )
         self.assertEqual(response.status_code, 401)
         self.assertIn("onec.diagnostic.read", response["WWW-Authenticate"])
 
     def test_cross_resource_tokens_are_isolated(self):
         response = self._post_mcp(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "list_1c_entities",
+                    "arguments": {"query": "test", "limit": 1},
+                },
+            },
             token=self.raw_finance_token,
         )
         self.assertEqual(response.status_code, 401)
@@ -182,8 +210,15 @@ class OneCDiagnosticMcpTests(TestCase):
         self.assertEqual(response.status_code, 401)
 
     def test_tools_list_exposes_exact_read_only_surface(self):
-        response = self._post_mcp(
-            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+        response = self.client.post(
+            reverse("onec_diagnostic_mcp"),
+            data=json.dumps(
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+            ),
+            content_type="application/json",
+            HTTP_ACCEPT="application/json",
+            HTTP_MCP_PROTOCOL_VERSION=MCP_PROTOCOL_VERSION,
+            HTTP_ORIGIN="https://chatgpt.com",
         )
         self.assertEqual(response.status_code, 200)
         tools = response.json()["result"]["tools"]
