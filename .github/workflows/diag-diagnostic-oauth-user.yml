@@ -80,4 +80,20 @@ jobs:
                       ("diagnostic_allowed" if can_access_diagnostic_mcp(user, org) else "diagnostic_denied"),
                   ])
               )
+          print("DIAG_MANAGEMENT_ACCESS_BEGIN")
+          for access in (
+              OrganizationAccess.objects
+              .filter(organization=org, role__in=["owner", "admin", "accountant"])
+              .select_related("user")
+              .order_by("role", "user_id")
+          ):
+              print(
+                  "DIAG_MANAGEMENT_ACCESS="
+                  + "|".join([
+                      str(access.user_id),
+                      access.user.get_full_name() or access.user.username,
+                      access.role,
+                      ("active" if access.user.is_active else "inactive"),
+                  ])
+              )
           PY
