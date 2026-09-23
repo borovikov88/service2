@@ -22,6 +22,7 @@ from pool_service.models import (
     Organization,
     OrganizationAccess,
 )
+from pool_service.onec_diagnostic import OneCDiagnosticError
 from pool_service.onec_diagnostic_mcp_auth import (
     DIAGNOSTIC_READ_SCOPE,
     authenticate_bearer_header,
@@ -407,3 +408,106 @@ class OneCDiagnosticMcpTests(TestCase):
         response = self.client.get(reverse("onec_diagnostic_mcp"), HTTP_ORIGIN="https://chatgpt.com")
         self.assertEqual(response.status_code, 405)
         self.assertEqual(response["Allow"], "POST, OPTIONS")
+
+
+    def test_query_tool_delegates_only_structured_arguments(self):
+        result = {
+            "kind": "onec_query_rows",
+            "entity_set": "Catalog_Test",
+            "row_count": 1,
+            "rows": [{"Description": "Test"}],
+            "complete": True,
+            "truncated": False,
+        }
+        arguments = {
+            "entity_set": "Catalog_Test",
+            "fields": ["Description"],
+            "filters": [{"field": "Description", "op": "contains", "value": "Test"}],
+            "limit": 25,
+            "include_deleted": False,
+            "include_inactive": False,
+            "order_by": [{"field": "Description", "direction": "asc"}],
+        }
+        with patch(
+            "pool_service.onec_diagnostic_mcp_views.onec_diagnostic_universal.query_1c_rows",
+            return_value=result,
+        ) as query:
+            response = self._post_mcp({
+                "jsonrpc": "2.0",
+                "id": 40,
+                "method": "tools/call",
+                "params": {"name": "query_1c_rows", "arguments": arguments},
+            })
+        payload = response.json()["result"]
+        self.assertFalse(payload["isError"])
+        query.assert_called_once()
+        kwargs = query.call_args.kwargs
+        self.assertEqual(kwargs["fields"], ["Description"])
+        self.assertEqual(kwargs["filters"], arguments["filters"])
+        self.assertEqual(kwargs["limit"], 25)
+        self.assertEqual(kwargs["order_by"], arguments["order_by"])
+
+        for forbidden in (
+            "url", "$filter", "$select", "$orderby", "$expand",
+            "nextLink", "organization_guid", "method", "credentials",
+        ):
+            with self.subTest(forbidden=forbidden), patch(
+                "pool_service.onec_diagnostic_mcp_views.onec_diagnostic_universal.query_1c_rows"
+            ) as denied:
+                bad = dict(arguments)
+                bad[forbidden] = "unsafe"
+                response = self._post_mcp({
+                    "jsonrpc": "2.0",
+                    "id": 41,
+                    "method": "tools/call",
+                    "params": {"name": "query_1c_rows", "arguments": bad},
+                })
+                self.assertTrue(response.json()["result"]["isError"])
+                denied.assert_not_called()
+
+    def test_query_error_exposes_only_fixed_error_code(self):
+        secret = "private-filter-value"
+        with patch(
+            "pool_service.onec_diagnostic_mcp_views.onec_diagnostic_universal.query_1c_rows",
+            side_effect=OneCDiagnosticError("FIELD_NOT_PUBLISHED"),
+        ):
+            response = self._post_mcp({
+                "jsonrpc": "2.0",
+                "id": 42,
+                "method": "tools/call",
+                "params": {
+                    "name": "query_1c_rows",
+                    "arguments": {
+                        "entity_set": "Catalog_Test",
+                        "fields": ["Description"],
+                        "filters": [
+                            {"field": "Description", "op": "contains", "value": secret}
+                        ],
+                    },
+                },
+            })
+        result = response.json()["result"]
+        self.assertTrue(result["isError"])
+        self.assertEqual(
+            result["structuredContent"],
+            {"error_code": "FIELD_NOT_PUBLISHED"},
+        )
+        serialized = json.dumps(result, ensure_ascii=False)
+        self.assertIn("FIELD_NOT_PUBLISHED", serialized)
+        self.assertNotIn(secret, serialized)
+
+    def test_role_change_invalidates_existing_diagnostic_token(self):
+        token = self._create_access_token(
+            resource=DIAGNOSTIC_RESOURCE,
+            scope=DIAGNOSTIC_READ_SCOPE,
+            authorized_by=self.accountant,
+        )
+        OrganizationAccess.objects.filter(
+            user=self.accountant,
+            organization=self.organization,
+        ).update(role="admin")
+        response = self._post_mcp(
+            {"jsonrpc": "2.0", "id": 43, "method": "tools/list", "params": {}},
+            token=token,
+        )
+        self.assertEqual(response.status_code, 401)
