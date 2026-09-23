@@ -15,6 +15,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from pool_service.finance_imports.odata_profit import ODataConfig, ODataPreviewError
+from pool_service.finance_imports.odata_direct_order_costs import read_direct_order_expense_rows
 from pool_service.finance_imports.odata_unified_sync import (
     REPORT_CASHFLOW,
     REPORT_PROFIT,
@@ -139,6 +140,12 @@ class UnifiedSyncTests(TestCase):
         OrganizationAccess.objects.create(
             organization=self.organization, user=self.user, role="owner"
         )
+        self.direct_expense_reader_patch = patch(
+            "pool_service.finance_imports.odata_unified_sync.read_direct_order_expense_rows",
+            return_value=([], 0),
+        )
+        self.direct_expense_reader_patch.start()
+        self.addCleanup(self.direct_expense_reader_patch.stop)
 
     def active_profit(self, month=date(2025, 5, 1), revenue="100.00"):
         batch = OneCImportBatch.objects.create(
@@ -195,13 +202,17 @@ class UnifiedSyncTests(TestCase):
             document_payload(number="НФНФ-000335"),
         )
 
-        rows, pages = _collect_profit_chunk(
-            "2026-05-01",
-            "2026-05-31",
-            config=config(),
-            opener=opener,
-            organization_id=self.organization.pk,
-        )
+        with patch(
+            "pool_service.finance_imports.odata_unified_sync.read_direct_order_expense_rows",
+            side_effect=read_direct_order_expense_rows,
+        ):
+            rows, pages = _collect_profit_chunk(
+                "2026-05-01",
+                "2026-05-31",
+                config=config(),
+                opener=opener,
+                organization_id=self.organization.pk,
+            )
 
         self.assertEqual(pages, 2)
         self.assertEqual(len(rows), 3)
