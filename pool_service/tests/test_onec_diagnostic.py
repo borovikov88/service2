@@ -388,6 +388,7 @@ class OneCDiagnosticTests(TestCase):
         manager = User.objects.create_user(username="diag-manager")
         service = User.objects.create_user(username="diag-service")
         installer = User.objects.create_user(username="diag-installer")
+        service_account = User.objects.create_user(username="diag-service-account")
         other_owner = User.objects.create_user(username="diag-other-owner")
         outsider = User.objects.create_user(username="diag-outsider")
         superuser = User.objects.create_superuser(username="diag-super", password="pass")
@@ -397,13 +398,23 @@ class OneCDiagnosticTests(TestCase):
         OrganizationAccess.objects.create(user=manager, organization=target, role="manager")
         OrganizationAccess.objects.create(user=service, organization=target, role="service")
         OrganizationAccess.objects.create(user=installer, organization=target, role="installer")
+        OrganizationAccess.objects.create(user=service_account, organization=target, role="accountant")
         OrganizationAccess.objects.create(user=other_owner, organization=other, role="owner")
 
-        with self.settings(ONEC_ODATA_TARGET_ORGANIZATION_ID=target.pk):
+        with self.settings(
+            ONEC_ODATA_TARGET_ORGANIZATION_ID=target.pk,
+            ADVISOR_ONEC_DIAGNOSTIC_MCP_ALLOWED_USER_IDS=(
+                owner.pk,
+                accountant.pk,
+                admin.pk,
+                superuser.pk,
+            ),
+        ):
             self.assertTrue(diagnostic.can_access_diagnostic_mcp(owner, target))
             self.assertTrue(diagnostic.can_access_diagnostic_mcp(accountant, target))
-            self.assertFalse(diagnostic.can_access_diagnostic_mcp(admin, target))
+            self.assertTrue(diagnostic.can_access_diagnostic_mcp(admin, target))
             self.assertTrue(diagnostic.can_access_diagnostic_mcp(superuser, target))
+            self.assertFalse(diagnostic.can_access_diagnostic_mcp(service_account, target))
             self.assertFalse(diagnostic.can_access_diagnostic_mcp(manager, target))
             self.assertFalse(diagnostic.can_access_diagnostic_mcp(service, target))
             self.assertFalse(diagnostic.can_access_diagnostic_mcp(installer, target))
@@ -421,5 +432,19 @@ class OneCDiagnosticTests(TestCase):
 
         for value in (None, "", "bad", 0, -1, True):
             with self.subTest(value=value):
-                with self.settings(ONEC_ODATA_TARGET_ORGANIZATION_ID=value):
+                with self.settings(
+                    ONEC_ODATA_TARGET_ORGANIZATION_ID=value,
+                    ADVISOR_ONEC_DIAGNOSTIC_MCP_ALLOWED_USER_IDS=(owner.pk,),
+                ):
                     self.assertFalse(diagnostic.can_access_diagnostic_mcp(owner, organization))
+
+    def test_diagnostic_access_fails_closed_without_explicit_user_allowlist(self):
+        organization = Organization.objects.create(name="Diagnostic No Allowlist Org")
+        owner = User.objects.create_user(username="diag-no-allowlist-owner")
+        OrganizationAccess.objects.create(user=owner, organization=organization, role="owner")
+
+        with self.settings(
+            ONEC_ODATA_TARGET_ORGANIZATION_ID=organization.pk,
+            ADVISOR_ONEC_DIAGNOSTIC_MCP_ALLOWED_USER_IDS=(),
+        ):
+            self.assertFalse(diagnostic.can_access_diagnostic_mcp(owner, organization))
