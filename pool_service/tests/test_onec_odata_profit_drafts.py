@@ -269,6 +269,7 @@ class ODataProfitDraftTests(TestCase):
         revenue="94494.00",
         customer_deleted=False,
         order_organization=ORG,
+        receipt_available=True,
     ):
         sale = profit_row(revenue=revenue, cost="29696.64")
         opener = FakeOpener(
@@ -280,7 +281,11 @@ class ODataProfitDraftTests(TestCase):
             direct_order_document_payload(
                 organization=order_organization,
             ),
-            direct_receipt_document_payload(),
+            (
+                direct_receipt_document_payload()
+                if receipt_available
+                else {"value": []}
+            ),
             reference_payload(
                 ITEM,
                 "Товар из 1С",
@@ -368,6 +373,12 @@ class ODataProfitDraftTests(TestCase):
         )
         self.assertTrue(
             all(
+                row["source_data"]["direct_expense_receipt_resolved"] is True
+                for row in direct_rows
+            )
+        )
+        self.assertTrue(
+            all(
                 row["source_data"]["direct_expense_order_guid"]
                 == CUSTOMER_ORDER
                 for row in direct_rows
@@ -409,6 +420,53 @@ class ODataProfitDraftTests(TestCase):
         self.assertEqual(total_revenue, Decimal("94494.00"))
         self.assertEqual(total_cost, Decimal("59696.64"))
         self.assertEqual(total_profit, Decimal("34797.36"))
+
+    def test_direct_cost_keeps_row_when_receipt_metadata_is_missing(self):
+        batch = self.create_direct_cost_draft(
+            revenue="94499.00",
+            receipt_available=False,
+        )
+        with batch.stored_file.open("rb") as source:
+            snapshot = json.loads(source.read().decode("utf-8"))
+        direct = [
+            row for row in snapshot["rows"]
+            if row["source_data"].get("row_kind")
+            == "direct_order_expense"
+        ]
+        self.assertEqual(len(direct), 2)
+        expected_display = (
+            f"Приходная накладная 1С {DIRECT_RECEIPT} "
+            "от 15.05.2026"
+        )
+        self.assertTrue(
+            all(row["document_name"] == expected_display for row in direct)
+        )
+        self.assertTrue(
+            all(
+                row["source_data"]["direct_expense_receipt_resolved"] is False
+                and row["source_data"]["document_number"] is None
+                and row["source_data"]["document_date"] is None
+                and row["source_data"]["document_group_number"] is None
+                and row["source_data"]["document_group_date"] is None
+                for row in direct
+            )
+        )
+        confirmed = confirm_odata_profit(
+            batch.id,
+            self.organization,
+            self.user,
+            config=config(),
+        )
+        self.assertEqual(confirmed.status, OneCImportBatch.STATUS_CONFIRMED)
+        imported_direct = OneCMonthlyProfit.objects.filter(
+            import_batch=batch,
+            source_recorder=DIRECT_RECEIPT,
+        )
+        self.assertEqual(imported_direct.count(), 2)
+        self.assertEqual(
+            sum((row.cost for row in imported_direct), Decimal("0")),
+            Decimal("30000.00"),
+        )
 
     def test_direct_cost_rejects_customer_order_from_other_organization(self):
         with self.assertRaisesRegex(
