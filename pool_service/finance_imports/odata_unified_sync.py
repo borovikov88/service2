@@ -51,6 +51,7 @@ from .odata_profit_drafts import (
     _read_direct_expense_documents,
     _read_profit_documents,
     _read_reference_map,
+    _reference_lookup_kwargs,
     _read_snapshot as read_profit_snapshot,
     _save_batch_snapshot,
     _bulk_create_monthly_rows,
@@ -680,16 +681,15 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
         ("responsible", STAGE_PROFIT_RESPONSIBLE_LOOKUP),
     ):
         try:
-            lookup_kwargs = {"opener": opener, "page_budget": budget}
-            if kind == "nomenclature":
-                lookup_kwargs["allow_deleted_nomenclature"] = True
-            elif kind == "customer":
-                lookup_kwargs["allow_deleted_customer"] = True
             references[kind] = _read_reference_map(
                 config,
                 kind,
                 required[kind],
-                **lookup_kwargs,
+                **_reference_lookup_kwargs(
+                    kind,
+                    opener=opener,
+                    page_budget=budget,
+                ),
             )
         except Exception as exc:
             error_reason = None
