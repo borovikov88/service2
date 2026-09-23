@@ -80,7 +80,7 @@ Relax the organization rule:
 
 1. If an entity has `Организация_Key: Edm.Guid`, automatically inject the configured allowed organization GUID clause and revalidate every returned row when that field is selected for transport. Return `organization_scope_enforced: true`.
 2. If an entity has no `Организация_Key`, do not reject solely for that reason. Allow read-only access when the caller supplied at least one meaningful server-validated filter. Return `organization_scope_enforced: false`.
-3. For unscoped non-catalog entities (for example document tabular parts), require at least one key anchor filter (`Ref_Key` or any `*_Key`) using `eq` or `in`. This avoids broad table scans while allowing investigation of a known document/item.
+3. An unscoped non-catalog entity is not authorized merely because it has a key filter. For a published document tabular part, require a `Ref_Key` `eq`/`in` anchor, infer the longest published organization-scoped parent `Document_*`, verify every anchored parent document against the configured allowed organization(s), and revalidate every returned child `Ref_Key`. If that parent ownership cannot be proven, fail closed. Other unscoped non-catalog entities remain denied.
 4. Catalog entities may be searched by `contains`/`startswith` on normal scalar text fields such as Description/Code/НаименованиеПолное.
 
 ### Automatic business hygiene
@@ -130,7 +130,7 @@ Add focused tests for:
 - OAuth principal organization scope still mandatory;
 - catalog without `Организация_Key` can be searched with `contains` and apostrophes are escaped;
 - organization-scoped register automatically injects/revalidates organization scope;
-- unscoped document tabular part requires Ref_Key/*_Key anchor;
+- unscoped document tabular part requires a parent `Ref_Key` anchor and server-side verification that every parent document belongs to an allowed organization; arbitrary `*_Key` anchors are insufficient;
 - `contains`, `startswith`, `in` type validation and injection resistance;
 - `DeletionMark=false` and `Active=true` automatic default filters plus explicit include flags;
 - sensitive fields and non-primitive fields still denied;
