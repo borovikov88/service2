@@ -120,7 +120,12 @@ jobs:
               "code_challenge_method": "S256",
               "resource": resource_url(),
           }
-          request = RequestFactory().get("/oauth/1c/authorize", params)
+          request = RequestFactory().get(
+              "/oauth/1c/authorize",
+              params,
+              HTTP_HOST="service2.aqualine22.ru",
+              secure=True,
+          )
           request.user = human
           response = shared_oauth_authorize(request)
           print("DIAG_OAUTH_PAGE_STATUS=" + str(response.status_code))
