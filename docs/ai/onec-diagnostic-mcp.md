@@ -12,8 +12,8 @@ Data path:
 
 - HTTP endpoint: `/mcp/1c`.
 - OAuth scope: `onec.diagnostic.read`.
-- Only an authenticated Service2 user with `owner` or `accountant` access to `ONEC_ODATA_TARGET_ORGANIZATION_ID` may authorize a Diagnostic MCP grant.
-- `admin`, `manager`, `service`, `installer` and all other roles are denied unless a later reviewed policy explicitly grants a narrower capability.
+- Only an authenticated Service2 user explicitly listed in `ADVISOR_ONEC_DIAGNOSTIC_MCP_ALLOWED_USER_IDS` may authorize a Diagnostic MCP grant.
+- That allowlisted user must also have `owner`, `admin`, or `accountant` access to `ONEC_ODATA_TARGET_ORGANIZATION_ID` (or be an explicitly allowlisted active superuser); `manager`, `service`, `installer`, other-org users, and all non-allowlisted users are denied.
 - Finance MCP tokens must never authorize Diagnostic MCP calls; Diagnostic MCP tokens must never authorize Finance MCP calls.
 - Reuse the already proven MCP OAuth client/principal/token storage only as transport infrastructure. Diagnostic authorization creates a separate grant and separate access/refresh token records with the Diagnostic resource and scope. Audience/resource and scope must be checked on every bearer authentication.
 - Never accept credentials, bearer tokens or organization scope from MCP tool arguments.
@@ -93,7 +93,7 @@ Diagnostic tool calls need a dedicated persistent audit event. Store metadata on
 
 1. Diagnostic resource accepts only a valid `onec.diagnostic.read` token with matching audience/resource.
 2. `finance.read` token is rejected by `/mcp/1c` and Diagnostic token is rejected by `/mcp/finance`.
-3. Authorization is denied unless the authorizing Service2 user is `owner` or `accountant` of `ONEC_ODATA_TARGET_ORGANIZATION_ID`.
+3. Authorization is denied unless the Service2 user is explicitly allowlisted and has an allowed target-organization role (`owner`, `admin`, or `accountant`), with the explicitly allowlisted active-superuser exception described above.
 4. Origin, content type, Accept, request byte limit, protocol version and JSON-RPC validation match Finance MCP hardening.
 5. `tools/list` contains only read-only Diagnostic tools.
 6. Tool arguments cannot inject raw `$filter`, URL, credentials, organization GUID or unsupported fields.
