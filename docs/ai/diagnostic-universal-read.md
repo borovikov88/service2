@@ -22,6 +22,14 @@ Service2 Diagnostic and the normal Service2 application are separate contracts:
 
 ## Access model
 
+Diagnostic access is two-factor at the application-policy level:
+
+- the active Service2 user must be explicitly listed in `ADVISOR_ONEC_DIAGNOSTIC_MCP_ALLOWED_USER_IDS`;
+- the same user must still have a target-organization management role allowed for Diagnostic (`owner`, `admin`, or `accountant`), unless the explicitly allowlisted user is a superuser;
+- inactive users, users outside the explicit allowlist, users for another organization, and technical/service identities not explicitly allowlisted are denied;
+- an empty or invalid allowlist fails closed.
+
+
 Keep authentication strong while relaxing read policy:
 
 - OAuth Bearer remains mandatory for `tools/call`;
