@@ -43,6 +43,7 @@ from pool_service.tests.test_onec_odata_profit_preview import FakeOpener
 from pool_service.tests.test_onec_odata_profit_drafts import (
     CUSTOMER,
     DIRECT_RECEIPT,
+    ErrorOnNthOpen,
     ITEM,
     RESPONSIBLE,
     direct_expense_row,
@@ -284,6 +285,59 @@ class UnifiedSyncTests(TestCase):
         self.assertTrue(
             all(row["document_name"] == expected_display for row in direct)
         )
+        self.assertTrue(
+            all(
+                row["source_data"]["direct_expense_receipt_resolved"] is False
+                for row in direct
+            )
+        )
+        self.assertEqual(
+            sum(Decimal(row["cost"]) for row in direct),
+            Decimal("30000.00"),
+        )
+
+    def test_unified_direct_cost_falls_back_on_receipt_transport_failure(self):
+        sale = raw_profit_row(
+            revenue="94500.00",
+            cost="29696.64",
+        )
+        opener = ErrorOnNthOpen(
+            {"value": [sale]},
+            {"value": [
+                direct_expense_row(10, "25000.00"),
+                direct_expense_row(11, "5000.00"),
+            ]},
+            direct_order_document_payload(),
+            reference_payload(
+                ITEM,
+                "Товар из 1С",
+                article="A-1",
+                nomenclature_type="Запас",
+            ),
+            reference_payload(CUSTOMER, "Клиент заказа №114"),
+            reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
+            document_payload(number="НФНФ-000335"),
+            error_at=4,
+        )
+
+        with patch(
+            "pool_service.finance_imports.odata_unified_sync.read_direct_order_expense_rows",
+            side_effect=read_direct_order_expense_rows,
+        ):
+            rows, _ = _collect_profit_chunk(
+                "2026-05-01",
+                "2026-05-31",
+                config=config(),
+                opener=opener,
+                organization_id=self.organization.pk,
+            )
+
+        direct = [
+            row for row in rows
+            if row["source_data"].get("row_kind")
+            == "direct_order_expense"
+        ]
+        self.assertEqual(len(direct), 2)
         self.assertTrue(
             all(
                 row["source_data"]["direct_expense_receipt_resolved"] is False
