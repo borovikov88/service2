@@ -267,16 +267,26 @@ def _read_profit_customer_references(
     page_budget,
     allow_deleted_sales_customers,
 ):
-    """Resolve sale/direct customers with an explicit historical policy."""
+    """Resolve customer references under one explicit historical policy."""
     sales_guids = set(sales_guids)
     direct_guids = set(direct_guids)
+    if allow_deleted_sales_customers:
+        return _read_reference_map(
+            config,
+            "customer",
+            sales_guids | direct_guids,
+            opener=opener,
+            page_budget=page_budget,
+            allow_deleted_customer=True,
+        )
+
     found = _read_reference_map(
         config,
         "customer",
         sales_guids,
         opener=opener,
         page_budget=page_budget,
-        allow_deleted_customer=allow_deleted_sales_customers,
+        allow_deleted_customer=False,
     )
     direct_only = direct_guids - sales_guids
     if direct_only:
@@ -1367,19 +1377,17 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
             direct_rows, direct_documents
         )
         required["responsible"].update(direct_responsibles)
-        references = {
-            kind: _read_reference_map(
-                config,
-                kind,
-                guids,
-                **_reference_lookup_kwargs(
-                    kind,
-                    opener=client,
-                    page_budget=reference_page_budget,
-                ),
-            )
-            for kind, guids in required.items()
-        }
+        references = {}
+        references["nomenclature"] = _read_reference_map(
+            config,
+            "nomenclature",
+            required["nomenclature"],
+            **_reference_lookup_kwargs(
+                "nomenclature",
+                opener=client,
+                page_budget=reference_page_budget,
+            ),
+        )
         references["customer"] = _read_profit_customer_references(
             config,
             sales_customers,
@@ -1387,6 +1395,16 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
             opener=client,
             page_budget=reference_page_budget,
             allow_deleted_sales_customers=True,
+        )
+        references["responsible"] = _read_reference_map(
+            config,
+            "responsible",
+            required["responsible"],
+            **_reference_lookup_kwargs(
+                "responsible",
+                opener=client,
+                page_budget=reference_page_budget,
+            ),
         )
         documents = _read_profit_documents(
             config,
