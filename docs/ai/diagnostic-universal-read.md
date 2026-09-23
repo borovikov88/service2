@@ -2,7 +2,7 @@
 
 ## Goal
 
-Turn the Diagnostic MCP from a set of one-off tools into a small reusable read-only investigation surface for the owner/accountant. ChatGPT should be able to answer new operational questions by composing metadata search + safe row queries, without adding a new server action for every business question.
+Turn the Diagnostic MCP from a set of one-off tools into a small reusable read-only investigation surface for explicitly allowlisted management users. ChatGPT should be able to answer new operational questions by composing metadata search + safe row queries, without adding a new server action for every business question.
 
 Examples that must become possible without another release:
 
@@ -15,7 +15,7 @@ Examples that must become possible without another release:
 
 Service2 Diagnostic and the normal Service2 application are separate contracts:
 
-- Diagnostic is an owner/accountant investigation surface over live 1C and remains read-only.
+- Diagnostic is an explicitly allowlisted management-user investigation surface over live 1C and remains read-only.
 - Normal Service2 imports must read and validate every 1C relationship required by their own business logic; they must not call Diagnostic or depend on Diagnostic tools at runtime.
 - Diagnostic may be used during development or incident investigation to understand live 1C structures and movements, but that knowledge must be implemented in the Service2 importer itself when it becomes production logic.
 - Future employee-facing AI access should be built on Service2 data and Service2 server-side permissions. Expanded Diagnostic access is not the employee AI gateway and must not be broadened for that purpose.
@@ -35,8 +35,8 @@ Keep authentication strong while relaxing read policy:
 - OAuth Bearer remains mandatory for `tools/call`;
 - target organization/principal scope remains mandatory;
 - active superuser is allowed for the configured target organization;
-- explicit target-org roles allowed: `owner`, `accountant` only;
-- `admin`, `manager`, `service`, `installer`, outsiders and other-org users are denied;
+- explicit target-org roles allowed after user allowlist membership: `owner`, `admin`, `accountant`;
+- `manager`, `service`, `installer`, outsiders, other-org users, and any non-allowlisted user are denied;
 - no 1C write/import actions are added;
 - transport remains HTTPS GET-only, no redirects, same-origin pagination only, server-held credentials only;
 - audit remains metadata-only and must not log row/filter values, tokens or credentials.
@@ -134,7 +134,7 @@ Do not silently weaken `read_1c_rows` semantics in a way that breaks existing ca
 Add focused tests for:
 
 - `get_1c_nomenclature_sales` accepts live `Edm.Double` quantity/sum contract and still requires `Active: Edm.Boolean`;
-- owner/accountant allowed; admin/manager/service/installer/outsider/other-org denied; active target superuser allowed;
+- explicitly allowlisted owner/admin/accountant allowed; non-allowlisted users and manager/service/installer/outsider/other-org denied; an active target superuser is allowed only when explicitly allowlisted;
 - OAuth principal organization scope still mandatory;
 - catalog without `Организация_Key` can be searched with `contains` and apostrophes are escaped;
 - organization-scoped register automatically injects/revalidates organization scope;
