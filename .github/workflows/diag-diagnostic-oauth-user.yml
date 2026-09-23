@@ -1,0 +1,83 @@
+name: Diagnose Diagnostic OAuth user
+
+on:
+  push:
+    branches:
+      - diag/diagnostic-oauth-user-20260923
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Read-only Diagnostic OAuth user check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_diag_oauth
+          chmod 600 ~/.ssh/service2_diag_oauth
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          ssh-keygen -y -f ~/.ssh/service2_diag_oauth >/dev/null
+          PORT="${DEPLOY_PORT:-22}"
+          HOST_LOOKUP="$DEPLOY_HOST"
+          if [[ "$PORT" != "22" ]]; then HOST_LOOKUP="[$DEPLOY_HOST]:$PORT"; fi
+          ssh-keygen -F "$HOST_LOOKUP" -f ~/.ssh/known_hosts >/dev/null
+
+      - name: Inspect Diagnostic access read-only
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          printf -v REMOTE_COMMAND 'cd %q && ../venv/bin/python -B manage.py shell' "$DEPLOY_APP_PATH"
+          cat <<'PY' | ssh -i ~/.ssh/service2_diag_oauth \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
+          from django.contrib.auth import get_user_model
+          from django.db.models import Q
+          from pool_service.models import Organization, OrganizationAccess
+          from pool_service.onec_diagnostic import can_access_diagnostic_mcp
+
+          org = Organization.objects.get(pk=1)
+          users = (
+              get_user_model().objects
+              .filter(
+                  Q(first_name__icontains="Александр")
+                  | Q(last_name__icontains="Боровиков")
+                  | Q(username__icontains="borovikov")
+              )
+              .order_by("pk")
+          )
+          print("DIAG_USER_COUNT=" + str(users.count()))
+          for user in users:
+              access = OrganizationAccess.objects.filter(
+                  organization=org, user=user
+              ).first()
+              print(
+                  "DIAG_USER="
+                  + "|".join([
+                      str(user.pk),
+                      user.username or "",
+                      user.first_name or "",
+                      user.last_name or "",
+                      ("active" if user.is_active else "inactive"),
+                      ("superuser" if user.is_superuser else "not_superuser"),
+                      (access.role if access else "no_access"),
+                      ("diagnostic_allowed" if can_access_diagnostic_mcp(user, org) else "diagnostic_denied"),
+                  ])
+              )
+          PY
