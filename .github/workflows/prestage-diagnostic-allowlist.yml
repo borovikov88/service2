@@ -42,25 +42,28 @@ jobs:
         run: |
           set -Eeuo pipefail
           PORT="${DEPLOY_PORT:-22}"
-          printf -v REMOTE_COMMAND 'cd %q && ../venv/bin/python -B -c %q' "$DEPLOY_APP_PATH" 'from pathlib import Path
-p=Path(".env")
-if not p.is_file() or p.is_symlink():
-    raise SystemExit("invalid .env")
-key="ADVISOR_ONEC_DIAGNOSTIC_MCP_ALLOWED_USER_IDS"
-value="5,46"
-lines=p.read_text(encoding="utf-8").splitlines()
-out=[]
-seen=False
-for line in lines:
-    if line.startswith(key+"="):
-        out.append(key+"="+value)
-        seen=True
-    else:
-        out.append(line)
-if not seen:
-    out.append(key+"="+value)
-p.write_text("\n".join(out)+"\n", encoding="utf-8")
-print("DIAGNOSTIC_ALLOWLIST_PRESTAGED")'
-          ssh -i ~/.ssh/service2_diag_allowlist \
+          printf -v REMOTE_COMMAND 'cd %q && ../venv/bin/python -B -' "$DEPLOY_APP_PATH"
+          cat <<'PY' | ssh -i ~/.ssh/service2_diag_allowlist \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
+          from pathlib import Path
+
+          path = Path(".env")
+          if not path.is_file() or path.is_symlink():
+              raise SystemExit("invalid .env")
+          key = "ADVISOR_ONEC_DIAGNOSTIC_MCP_ALLOWED_USER_IDS"
+          value = "5,46"
+          lines = path.read_text(encoding="utf-8").splitlines()
+          output = []
+          seen = False
+          for line in lines:
+              if line.startswith(key + "="):
+                  output.append(key + "=" + value)
+                  seen = True
+              else:
+                  output.append(line)
+          if not seen:
+              output.append(key + "=" + value)
+          path.write_text("\n".join(output) + "\n", encoding="utf-8")
+          print("DIAGNOSTIC_ALLOWLIST_PRESTAGED")
+          PY
