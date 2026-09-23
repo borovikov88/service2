@@ -90,7 +90,8 @@ DOCUMENTS = {
     "Document_ЗаказПокупателя": {
         "label": "Заказ покупателя",
         "fields": (
-            "Ref_Key", "Number", "Date", "Контрагент_Key", "Ответственный_Key"
+            "Ref_Key", "Number", "Date", "Организация_Key",
+            "Контрагент_Key", "Ответственный_Key"
         ),
     },
     "Document_ПриходнаяНакладная": {
@@ -321,6 +322,12 @@ def _read_document_entities(
                         "date": _document_date(raw.get("Date")),
                     }
                     if entity_type == ORDER_TYPE:
+                        raw_organization = raw.get("Организация_Key")
+                        if raw_organization not in (None, ""):
+                            item["organization_guid"] = normalize_guid(
+                                raw_organization,
+                                field="Order Организация_Key",
+                            )
                         raw_customer = raw.get("Контрагент_Key")
                         if raw_customer not in (None, ""):
                             item["customer_guid"] = normalize_guid(
@@ -421,21 +428,29 @@ def _read_direct_expense_documents(
     return documents
 
 
+def _direct_expense_order(row, documents):
+    order = documents.get((ORDER_TYPE, row.order_guid))
+    if order is None:
+        raise ODataPreviewError(
+            "Direct expense customer order is missing or unavailable"
+        )
+    if order.get("organization_guid") != row.organization_guid:
+        raise ODataPreviewError(
+            "Direct expense customer order organization does not match movement"
+        )
+    if not order.get("customer_guid"):
+        raise ODataPreviewError(
+            "Direct expense customer order has no customer"
+        )
+    return order
+
+
 def _direct_expense_reference_guids(rows, documents):
     customers = set()
     responsibles = set()
     for row in rows:
-        order = documents.get((ORDER_TYPE, row.order_guid))
-        if order is None:
-            raise ODataPreviewError(
-                "Direct expense customer order is missing or unavailable"
-            )
-        customer_guid = order.get("customer_guid")
-        if not customer_guid:
-            raise ODataPreviewError(
-                "Direct expense customer order has no customer"
-            )
-        customers.add(customer_guid)
+        order = _direct_expense_order(row, documents)
+        customers.add(order["customer_guid"])
         responsible = order.get("responsible_guid")
         if responsible and responsible != ZERO_GUID:
             responsibles.add(responsible)
@@ -451,7 +466,7 @@ def _enrich_direct_expense_rows(
     normalized = []
     for row in rows:
         receipt = documents[(DIRECT_EXPENSE_RECORDER_TYPE, row.recorder)]
-        order = documents[(ORDER_TYPE, row.order_guid)]
+        order = _direct_expense_order(row, documents)
         customer = references["customer"][order["customer_guid"]]["description"]
         responsible_guid = order.get("responsible_guid") or ZERO_GUID
         manager = (
