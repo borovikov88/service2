@@ -234,6 +234,66 @@ class UnifiedSyncTests(TestCase):
             all(row["customer_name"] == "Клиент заказа №114" for row in direct)
         )
 
+    def test_unified_direct_cost_keeps_missing_receipt_metadata(self):
+        sale = raw_profit_row(
+            revenue="94499.00",
+            cost="29696.64",
+        )
+        opener = FakeOpener(
+            {"value": [sale]},
+            {"value": [
+                direct_expense_row(10, "25000.00"),
+                direct_expense_row(11, "5000.00"),
+            ]},
+            direct_order_document_payload(),
+            {"value": []},
+            reference_payload(
+                ITEM,
+                "Товар из 1С",
+                article="A-1",
+                nomenclature_type="Запас",
+            ),
+            reference_payload(CUSTOMER, "Клиент заказа №114"),
+            reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
+            document_payload(number="НФНФ-000335"),
+        )
+
+        with patch(
+            "pool_service.finance_imports.odata_unified_sync.read_direct_order_expense_rows",
+            side_effect=read_direct_order_expense_rows,
+        ):
+            rows, _ = _collect_profit_chunk(
+                "2026-05-01",
+                "2026-05-31",
+                config=config(),
+                opener=opener,
+                organization_id=self.organization.pk,
+            )
+
+        direct = [
+            row for row in rows
+            if row["source_data"].get("row_kind")
+            == "direct_order_expense"
+        ]
+        self.assertEqual(len(direct), 2)
+        expected_display = (
+            f"Приходная накладная 1С {DIRECT_RECEIPT} "
+            "от 15.05.2026"
+        )
+        self.assertTrue(
+            all(row["document_name"] == expected_display for row in direct)
+        )
+        self.assertTrue(
+            all(
+                row["source_data"]["direct_expense_receipt_resolved"] is False
+                for row in direct
+            )
+        )
+        self.assertEqual(
+            sum(Decimal(row["cost"]) for row in direct),
+            Decimal("30000.00"),
+        )
+
     def test_unified_direct_cost_accepts_historical_deleted_customer(self):
         sale = raw_profit_row(
             revenue="94497.00",
