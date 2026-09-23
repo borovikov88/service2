@@ -265,7 +265,10 @@ def query_1c_rows(
     pagination_limited = False
     try:
         for raw_rows, _page_count in base._bounded_odata_pages(
-            config, initial_url, opener=opener, max_pages=MAX_QUERY_PAGES
+            config,
+            initial_url,
+            opener=opener,
+            max_pages=min(config.max_pages, MAX_QUERY_PAGES),
         ):
             for raw_row in raw_rows:
                 if not isinstance(raw_row, dict):
