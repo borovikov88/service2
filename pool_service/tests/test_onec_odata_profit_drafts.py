@@ -44,6 +44,7 @@ DIRECT_RECEIPT = "77777777-7777-4777-8777-777777777777"
 CUSTOMER_ORDER = "88888888-8888-4888-8888-888888888888"
 DIRECT_ACCOUNT = "99999999-9999-4999-8999-999999999999"
 DIRECT_OPERATION = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+OTHER_ORG = "22222222-2222-4222-8222-222222222222"
 BASE_URL = "https://fresh.example/odata/standard.odata/"
 RECORDER_TYPE = "StandardODATA.Document_РасходнаяНакладная"
 
@@ -129,12 +130,13 @@ def direct_expense_row(line, amount):
     }
 
 
-def direct_order_document_payload():
+def direct_order_document_payload(*, organization=ORG):
     return {
         "value": [{
             "Ref_Key": CUSTOMER_ORDER,
             "Number": "НФНФ-000114",
             "Date": "2026-05-01T12:00:00+03:00",
+            "Организация_Key": organization,
             "Контрагент_Key": CUSTOMER,
             "Ответственный_Key": RESPONSIBLE,
         }]
@@ -266,6 +268,7 @@ class ODataProfitDraftTests(TestCase):
         *,
         revenue="94494.00",
         customer_deleted=False,
+        order_organization=ORG,
     ):
         sale = profit_row(revenue=revenue, cost="29696.64")
         opener = FakeOpener(
@@ -274,7 +277,9 @@ class ODataProfitDraftTests(TestCase):
                 direct_expense_row(10, "25000.00"),
                 direct_expense_row(11, "5000.00"),
             ]},
-            direct_order_document_payload(),
+            direct_order_document_payload(
+                organization=order_organization,
+            ),
             direct_receipt_document_payload(),
             reference_payload(
                 ITEM,
@@ -404,6 +409,16 @@ class ODataProfitDraftTests(TestCase):
         self.assertEqual(total_revenue, Decimal("94494.00"))
         self.assertEqual(total_cost, Decimal("59696.64"))
         self.assertEqual(total_profit, Decimal("34797.36"))
+
+    def test_direct_cost_rejects_customer_order_from_other_organization(self):
+        with self.assertRaisesRegex(
+            ODataDraftError,
+            "organization does not match movement",
+        ):
+            self.create_direct_cost_draft(
+                revenue="94498.00",
+                order_organization=OTHER_ORG,
+            )
 
     def test_confirmation_rejects_forged_direct_order_attribution_with_new_checksum(self):
         batch = self.create_direct_cost_draft(revenue="94495.00")
