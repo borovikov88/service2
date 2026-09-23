@@ -425,13 +425,18 @@ def _read_direct_expense_documents(
         page_budget=page_budget,
         require_all=True,
     )
-    documents.update(_read_document_entities(
-        config,
-        receipt_refs,
-        opener=opener,
-        page_budget=page_budget,
-        require_all=False,
-    ))
+    try:
+        documents.update(_read_document_entities(
+            config,
+            receipt_refs,
+            opener=opener,
+            page_budget=page_budget,
+            require_all=False,
+        ))
+    except ODataPreviewError:
+        # Receipt metadata is optional. The movement recorder GUID and date
+        # remain available for a deterministic audit/display fallback.
+        pass
     return documents
 
 
