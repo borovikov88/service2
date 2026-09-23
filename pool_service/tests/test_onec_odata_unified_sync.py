@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import date, timedelta
 from decimal import Decimal
 from tempfile import TemporaryDirectory
@@ -407,6 +408,29 @@ class UnifiedSyncTests(TestCase):
         drafts = OneCImportBatch.objects.filter(status="previewed")
         self.assertEqual(drafts.count(), 1)
         self.assertEqual(drafts.get().period_first, date(2025, 5, 1))
+
+    def test_profit_fingerprint_changes_when_direct_order_changes(self):
+        month = date(2025, 5, 1)
+        first = profit_row()
+        first["source_data"]["row_kind"] = "direct_order_expense"
+        first["source_data"]["direct_expense_order_guid"] = (
+            "88888888-8888-4888-8888-888888888888"
+        )
+        first["source_data"]["resolved_order_guid"] = (
+            "88888888-8888-4888-8888-888888888888"
+        )
+        second = deepcopy(first)
+        second["source_data"]["direct_expense_order_guid"] = (
+            "99999999-9999-4999-8999-999999999999"
+        )
+        second["source_data"]["resolved_order_guid"] = (
+            "99999999-9999-4999-8999-999999999999"
+        )
+
+        self.assertNotEqual(
+            month_fingerprint(REPORT_PROFIT, month, [first]),
+            month_fingerprint(REPORT_PROFIT, month, [second]),
+        )
 
     def test_month_fingerprint_is_order_independent(self):
         one = cashflow_row()
