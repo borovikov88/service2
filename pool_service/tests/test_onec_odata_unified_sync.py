@@ -17,6 +17,7 @@ from pool_service.finance_imports.odata_profit import ODataConfig, ODataPreviewE
 from pool_service.finance_imports.odata_unified_sync import (
     REPORT_CASHFLOW,
     REPORT_PROFIT,
+    _collect_profit_chunk,
     _confirmed_candidate,
     month_fingerprint,
     _claim_step,
@@ -36,6 +37,17 @@ from pool_service.models import (
     cashflow_source_identity,
 )
 from pool_service.tests.test_onec_odata_profit_preview import FakeOpener
+from pool_service.tests.test_onec_odata_profit_drafts import (
+    CUSTOMER,
+    ITEM,
+    RESPONSIBLE,
+    direct_expense_row,
+    direct_order_document_payload,
+    direct_receipt_document_payload,
+    document_payload,
+    profit_row as raw_profit_row,
+    reference_payload,
+)
 
 
 ORG_GUID = "11111111-1111-1111-1111-111111111111"
@@ -160,6 +172,54 @@ class UnifiedSyncTests(TestCase):
             return_value=(rows, 1),
         ):
             return step_unified_sync(run.id, self.user, [REPORT_PROFIT], 0, config=config())
+
+    def test_profit_collector_includes_direct_order_costs(self):
+        sale = raw_profit_row(
+            revenue="94494.00",
+            cost="29696.64",
+        )
+        opener = FakeOpener(
+            {"value": [sale]},
+            {"value": [
+                direct_expense_row(10, "25000.00"),
+                direct_expense_row(11, "5000.00"),
+            ]},
+            direct_order_document_payload(),
+            direct_receipt_document_payload(),
+            reference_payload(
+                ITEM, "Товар из 1С", article="A-1", nomenclature_type="Запас"
+            ),
+            reference_payload(CUSTOMER, "Клиент заказа №114"),
+            reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
+            document_payload(number="НФНФ-000335"),
+        )
+
+        rows, pages = _collect_profit_chunk(
+            "2026-05-01",
+            "2026-05-31",
+            config=config(),
+            opener=opener,
+            organization_id=self.organization.pk,
+        )
+
+        self.assertEqual(pages, 2)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(
+            sum(Decimal(row["revenue"]) for row in rows),
+            Decimal("94494.00"),
+        )
+        self.assertEqual(
+            sum(Decimal(row["cost"]) for row in rows),
+            Decimal("59696.64"),
+        )
+        direct = [
+            row for row in rows
+            if row["source_data"].get("row_kind") == "direct_order_expense"
+        ]
+        self.assertEqual(len(direct), 2)
+        self.assertTrue(
+            all(row["customer_name"] == "Клиент заказа №114" for row in direct)
+        )
 
     def test_changed_old_month_creates_only_preview_without_activation(self):
         old, _ = self.active_profit()
