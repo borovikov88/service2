@@ -404,7 +404,7 @@ def _tool_dispatch(name, arguments):
         ):
             raise DiagnosticToolValidationError("Некорректные structured arguments.")
         return onec_diagnostic_universal.query_1c_rows(
-            config,
+            onec_diagnostic_universal.config_from_settings(),
             entity_set,
             fields=fields,
             filters=filters,
