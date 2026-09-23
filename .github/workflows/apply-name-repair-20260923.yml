@@ -1,0 +1,97 @@
+name: Apply verified name repair
+
+on:
+  push:
+    branches:
+      - ops/apply-name-repair-20260923
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    name: Dry-run and apply exact Service2 name repair
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_name_repair
+          chmod 600 ~/.ssh/service2_name_repair
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          ssh-keygen -y -f ~/.ssh/service2_name_repair >/dev/null
+          PORT="${DEPLOY_PORT:-22}"
+          [[ "$PORT" =~ ^[0-9]+$ ]]
+          HOST_LOOKUP="$DEPLOY_HOST"
+          if [[ "$PORT" != "22" ]]; then HOST_LOOKUP="[$DEPLOY_HOST]:$PORT"; fi
+          ssh-keygen -F "$HOST_LOOKUP" -f ~/.ssh/known_hosts >/dev/null
+
+      - name: Verify deployed commit and dry-run exact target
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          printf -v REMOTE_COMMAND \
+            'set -Eeuo pipefail; cd %q; test "$(git rev-parse HEAD)" = %q; ../venv/bin/python -B manage.py repair_two_part_user_name_order --organization-id 1 --user-id 48 --employee-id 10' \
+            "$DEPLOY_APP_PATH" "483da49a258d1c2eddd685eea5105d26b14fda87"
+          ssh -i ~/.ssh/service2_name_repair \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
+
+      - name: Apply exact target once
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          printf -v REMOTE_COMMAND \
+            'set -Eeuo pipefail; cd %q; test "$(git rev-parse HEAD)" = %q; ../venv/bin/python -B manage.py repair_two_part_user_name_order --organization-id 1 --user-id 48 --employee-id 10 --repair-key nr-20260923-01 --apply' \
+            "$DEPLOY_APP_PATH" "483da49a258d1c2eddd685eea5105d26b14fda87"
+          ssh -i ~/.ssh/service2_name_repair \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
+
+      - name: Verify stored names read-only
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          printf -v REMOTE_COMMAND 'cd %q && ../venv/bin/python -B manage.py shell' "$DEPLOY_APP_PATH"
+          cat <<'PY' | ssh -i ~/.ssh/service2_name_repair \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
+          from django.contrib.auth import get_user_model
+          from pool_service.models import Employee
+          user = get_user_model().objects.get(pk=48)
+          employee = Employee.objects.get(pk=10, organization_id=1, user_id=48)
+          print("VERIFY_USER_FIRST_NAME=" + user.first_name)
+          print("VERIFY_USER_LAST_NAME=" + user.last_name)
+          print("VERIFY_EMPLOYEE_DISPLAY_NAME=" + employee.display_name)
+          print("VERIFY_EMPLOYEE_FIRST_NAME=" + (employee.first_name or ""))
+          print("VERIFY_EMPLOYEE_LAST_NAME=" + (employee.last_name or ""))
+          if (user.first_name, user.last_name) != ("Дарья", "Крафт"):
+              raise SystemExit("VERIFY_FAILED_USER_NAME")
+          if (employee.first_name, employee.last_name) != ("Дарья", "Крафт"):
+              raise SystemExit("VERIFY_FAILED_EMPLOYEE_NAME")
+          print("NAME_REPAIR_VERIFY_OK")
+          PY
