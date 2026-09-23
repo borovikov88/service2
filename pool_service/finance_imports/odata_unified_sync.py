@@ -49,7 +49,6 @@ from .odata_profit_drafts import (
     _enrich_rows,
     _preview_metadata as profit_preview_metadata,
     _read_direct_expense_documents,
-    _read_profit_customer_references,
     _read_profit_documents,
     _read_reference_map,
     _reference_lookup_kwargs,
@@ -656,18 +655,18 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
         direct_customers, direct_responsibles = _direct_expense_reference_guids(
             direct_rows, direct_documents
         )
-        sales_customers = {
-            guid for row in rows
-            if (
-                guid := _profit_reference_guid(
-                    row.customer_guid, allow_zero=True
-                )
-            )
-        }
         required = {
             "nomenclature": {
                 _profit_reference_guid(row.nomenclature_guid) for row in rows
             },
+            "customer": {
+                guid for row in rows
+                if (
+                    guid := _profit_reference_guid(
+                        row.customer_guid, allow_zero=True
+                    )
+                )
+            } | direct_customers,
             "responsible": {
                 _profit_reference_guid(row.responsible_guid) for row in rows
             } | direct_responsibles,
@@ -682,27 +681,17 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
         ("responsible", STAGE_PROFIT_RESPONSIBLE_LOOKUP),
     ):
         try:
-            if kind == "customer":
-                references[kind] = _read_profit_customer_references(
-                    config,
-                    sales_customers,
-                    direct_customers,
+            references[kind] = _read_reference_map(
+                config,
+                kind,
+                required[kind],
+                **_reference_lookup_kwargs(
+                    kind,
                     opener=opener,
                     page_budget=budget,
-                    allow_deleted_sales_customers=True,
-                )
-            else:
-                references[kind] = _read_reference_map(
-                    config,
-                    kind,
-                    required[kind],
-                    **_reference_lookup_kwargs(
-                        kind,
-                        opener=opener,
-                        page_budget=budget,
-                        allow_deleted_nomenclature=True,
-                    ),
-                )
+                    allow_deleted_nomenclature=True,
+                ),
+            )
         except Exception as exc:
             error_reason = None
             if stage == STAGE_PROFIT_NOMENCLATURE_LOOKUP:
