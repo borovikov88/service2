@@ -252,13 +252,44 @@ def _reference_lookup_kwargs(
     page_budget,
     allow_deleted_nomenclature=False,
 ):
-    """Share the historical-customer policy without changing nomenclature rules."""
     kwargs = {"opener": opener, "page_budget": page_budget}
     if kind == "nomenclature" and allow_deleted_nomenclature:
         kwargs["allow_deleted_nomenclature"] = True
-    elif kind == "customer":
-        kwargs["allow_deleted_customer"] = True
     return kwargs
+
+
+def _read_profit_customer_references(
+    config,
+    sales_guids,
+    direct_guids,
+    *,
+    opener,
+    page_budget,
+    allow_deleted_sales_customers,
+):
+    """Resolve sale/direct customers with an explicit historical policy."""
+    sales_guids = set(sales_guids)
+    direct_guids = set(direct_guids)
+    found = _read_reference_map(
+        config,
+        "customer",
+        sales_guids,
+        opener=opener,
+        page_budget=page_budget,
+        allow_deleted_customer=allow_deleted_sales_customers,
+    )
+    direct_only = direct_guids - sales_guids
+    if direct_only:
+        direct_found = _read_reference_map(
+            config,
+            "customer",
+            direct_only,
+            opener=opener,
+            page_budget=page_budget,
+            allow_deleted_customer=True,
+        )
+        found.update(direct_found)
+    return found
 
 
 def _document_date(value):
@@ -1317,9 +1348,11 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
     if any(row.identity in sales_identities for row in direct_rows):
         raise ODataDraftError("OData sources contain a duplicate source identity")
 
+    sales_customers = {
+        row.customer_guid for row in rows if row.customer_guid != ZERO_GUID
+    }
     required = {
         "nomenclature": {row.nomenclature_guid for row in rows},
-        "customer": {row.customer_guid for row in rows if row.customer_guid != ZERO_GUID},
         "responsible": {row.responsible_guid for row in rows},
     }
     try:
@@ -1333,7 +1366,6 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
         direct_customers, direct_responsibles = _direct_expense_reference_guids(
             direct_rows, direct_documents
         )
-        required["customer"].update(direct_customers)
         required["responsible"].update(direct_responsibles)
         references = {
             kind: _read_reference_map(
@@ -1348,6 +1380,14 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
             )
             for kind, guids in required.items()
         }
+        references["customer"] = _read_profit_customer_references(
+            config,
+            sales_customers,
+            direct_customers,
+            opener=client,
+            page_budget=reference_page_budget,
+            allow_deleted_sales_customers=False,
+        )
         documents = _read_profit_documents(
             config,
             rows,
