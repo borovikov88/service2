@@ -854,6 +854,10 @@ def _validate_snapshot(payload, config, *, organization_id):
             raise ValidationError("OData snapshot display field is too long.")
         if source_data.get("source") != "odata":
             raise ValidationError("OData snapshot audit source is invalid.")
+        row_kind = source_data.get("row_kind")
+        if row_kind not in (None, "direct_order_expense"):
+            raise ValidationError("OData snapshot row kind is invalid.")
+        is_direct_expense = row_kind == "direct_order_expense"
         try:
             audit_recorder = str(UUID(str(source_data.get("recorder")))).lower()
             audit_line = int(source_data.get("line_number"))
@@ -876,6 +880,13 @@ def _validate_snapshot(payload, config, *, organization_id):
         recorder_type = _snapshot_document_type(
             source_data.get("recorder_type"), field="Snapshot Recorder_Type"
         )
+        if is_direct_expense:
+            if recorder_type != DIRECT_EXPENSE_RECORDER_TYPE:
+                raise ValidationError(
+                    "Direct expense snapshot recorder type is invalid."
+                )
+        elif recorder_type not in PROFIT_RECORDER_TYPES:
+            raise ValidationError("OData snapshot recorder type is invalid.")
         document_guid = source_data.get("document_guid")
         document_type = source_data.get("document_type")
         if document_guid is None:
@@ -914,7 +925,10 @@ def _validate_snapshot(payload, config, *, organization_id):
             or document != document_display
         ):
             raise ValidationError("OData snapshot document display is invalid.")
-        known_recorder = recorder_type in PROFIT_RECORDER_TYPES
+        known_recorder = (
+            recorder_type in PROFIT_RECORDER_TYPES
+            or (is_direct_expense and recorder_type == DIRECT_EXPENSE_RECORDER_TYPE)
+        )
         document_number = source_data.get("document_number")
         document_date_value = source_data.get("document_date")
         group_number = source_data.get("document_group_number")
@@ -1003,11 +1017,64 @@ def _validate_snapshot(payload, config, *, organization_id):
                 "date": order_date,
             }):
                 raise ValidationError("OData snapshot resolved order display is invalid.")
-        normalize_guid(source_data.get("nomenclature_guid"), field="Snapshot nomenclature")
-        normalize_guid(
-            source_data.get("customer_guid"), field="Snapshot customer", allow_zero=True
+        if is_direct_expense and not all(value is not None for value in order_values):
+            raise ValidationError("Direct expense snapshot requires a resolved order.")
+        nomenclature_guid = normalize_guid(
+            source_data.get("nomenclature_guid"),
+            field="Snapshot nomenclature",
+            allow_zero=is_direct_expense,
         )
-        normalize_guid(source_data.get("responsible_guid"), field="Snapshot responsible")
+        if is_direct_expense and nomenclature_guid != ZERO_GUID:
+            raise ValidationError(
+                "Direct expense snapshot nomenclature identity is invalid."
+            )
+        customer_guid = normalize_guid(
+            source_data.get("customer_guid"),
+            field="Snapshot customer",
+            allow_zero=not is_direct_expense,
+        )
+        responsible_guid = normalize_guid(
+            source_data.get("responsible_guid"),
+            field="Snapshot responsible",
+            allow_zero=is_direct_expense,
+        )
+        if is_direct_expense:
+            if raw.get("nomenclature") != DIRECT_EXPENSE_NOMENCLATURE:
+                raise ValidationError(
+                    "Direct expense snapshot nomenclature label is invalid."
+                )
+            if nomenclature_type != DIRECT_EXPENSE_NOMENCLATURE_TYPE:
+                raise ValidationError(
+                    "Direct expense snapshot nomenclature type is invalid."
+                )
+            if article:
+                raise ValidationError(
+                    "Direct expense snapshot article must be empty."
+                )
+            content_value = source_data.get("direct_expense_content")
+            if not isinstance(content_value, str) or len(content_value) > 500:
+                raise ValidationError(
+                    "Direct expense snapshot content is invalid."
+                )
+            for field_name in (
+                "direct_expense_account_guid",
+                "direct_expense_operation_guid",
+            ):
+                value = source_data.get(field_name)
+                if value is not None:
+                    normalize_guid(value, field=f"Snapshot {field_name}")
+        else:
+            if any(
+                key in source_data
+                for key in (
+                    "direct_expense_content",
+                    "direct_expense_account_guid",
+                    "direct_expense_operation_guid",
+                )
+            ):
+                raise ValidationError(
+                    "Normal profit snapshot contains direct expense audit fields."
+                )
         quantity = _decimal_from_snapshot(raw.get("quantity"), "quantity")
         revenue = _decimal_from_snapshot(raw.get("revenue"), "revenue")
         cost = _decimal_from_snapshot(raw.get("cost"), "cost")
@@ -1027,6 +1094,11 @@ def _validate_snapshot(payload, config, *, organization_id):
             _validate_decimal_shape(value, field, decimal_places=2, integer_places=18)
         if gross_profit != revenue - cost or analytical_profit != gross_profit:
             raise ValidationError("OData snapshot profit values are inconsistent.")
+        if is_direct_expense:
+            if quantity != 0 or revenue != 0 or vat != 0 or cost == 0:
+                raise ValidationError(
+                    "Direct expense snapshot values are inconsistent."
+                )
         expected_profitability = calculate_profitability(gross_profit, revenue)
         if profitability != expected_profitability:
             raise ValidationError("OData snapshot profitability is inconsistent.")
