@@ -23,6 +23,11 @@ from pool_service.models import (
     Organization,
     onec_monthly_profit_source_identity,
 )
+from .odata_direct_order_costs import (
+    RECORDER_TYPE as DIRECT_EXPENSE_RECORDER_TYPE,
+    DirectOrderExpenseRow,
+    read_direct_order_expense_rows,
+)
 from .odata_profit import (
     NoRedirectHandler,
     ODataConfig,
@@ -84,12 +89,21 @@ DOCUMENTS = {
     },
     "Document_ЗаказПокупателя": {
         "label": "Заказ покупателя",
+        "fields": (
+            "Ref_Key", "Number", "Date", "Контрагент_Key", "Ответственный_Key"
+        ),
+    },
+    "Document_ПриходнаяНакладная": {
+        "label": "Приходная накладная",
         "fields": ("Ref_Key", "Number", "Date"),
     },
 }
 RETAIL_REPORT_TYPE = "Document_ОтчетОРозничныхПродажах"
 RETAIL_CHECK_TYPE = "Document_ЧекККМ"
 ORDER_TYPE = "Document_ЗаказПокупателя"
+DIRECT_EXPENSE_NOMENCLATURE = "Прямые расходы по заказу"
+DIRECT_EXPENSE_NOMENCLATURE_TYPE = "Прямые расходы"
+ALLOWED_DOCUMENT_TYPES = PROFIT_DOCUMENT_TYPES | {DIRECT_EXPENSE_RECORDER_TYPE}
 
 
 class ODataDraftError(ValidationError):
@@ -250,7 +264,7 @@ def _read_document_entities(
 ):
     by_type = defaultdict(set)
     for entity_type, guid in refs:
-        if entity_type not in DOCUMENTS or entity_type not in PROFIT_DOCUMENT_TYPES:
+        if entity_type not in DOCUMENTS or entity_type not in ALLOWED_DOCUMENT_TYPES:
             raise ODataPreviewError("1C document type is not allowed")
         by_type[entity_type].add(guid)
     documents = {}
@@ -290,6 +304,16 @@ def _read_document_entities(
                         "number": number.strip(),
                         "date": _document_date(raw.get("Date")),
                     }
+                    if entity_type == ORDER_TYPE:
+                        item["customer_guid"] = normalize_guid(
+                            raw.get("Контрагент_Key"),
+                            field="Order Контрагент_Key",
+                        )
+                        item["responsible_guid"] = normalize_guid(
+                            raw.get("Ответственный_Key"),
+                            field="Order Ответственный_Key",
+                            allow_zero=True,
+                        )
                     if entity_type == "Document_РасходнаяНакладная":
                         raw_order = raw.get("Заказ")
                         raw_order_type = raw.get("Заказ_Type")
@@ -350,6 +374,136 @@ def _read_profit_documents(config, rows, *, opener, page_budget):
             require_all=False,
         ))
     return documents
+
+
+def _read_direct_expense_documents(
+    config,
+    rows,
+    *,
+    opener,
+    page_budget,
+):
+    receipt_refs = {
+        (DIRECT_EXPENSE_RECORDER_TYPE, row.recorder)
+        for row in rows
+    }
+    order_refs = {
+        (ORDER_TYPE, row.order_guid)
+        for row in rows
+    }
+    documents = _read_document_entities(
+        config,
+        receipt_refs | order_refs,
+        opener=opener,
+        page_budget=page_budget,
+        require_all=True,
+    )
+    return documents
+
+
+def _direct_expense_reference_guids(rows, documents):
+    customers = set()
+    responsibles = set()
+    for row in rows:
+        order = documents.get((ORDER_TYPE, row.order_guid))
+        if order is None:
+            raise ODataPreviewError(
+                "Direct expense customer order is missing or unavailable"
+            )
+        customers.add(order["customer_guid"])
+        responsible = order.get("responsible_guid")
+        if responsible and responsible != ZERO_GUID:
+            responsibles.add(responsible)
+    return customers, responsibles
+
+
+def _enrich_direct_expense_rows(
+    rows,
+    references,
+    documents,
+    organization_id,
+):
+    normalized = []
+    for row in rows:
+        receipt = documents[(DIRECT_EXPENSE_RECORDER_TYPE, row.recorder)]
+        order = documents[(ORDER_TYPE, row.order_guid)]
+        customer = references["customer"][order["customer_guid"]]["description"]
+        responsible_guid = order.get("responsible_guid") or ZERO_GUID
+        manager = (
+            references["responsible"][responsible_guid]["description"]
+            if responsible_guid != ZERO_GUID
+            else "Без ответственного"
+        )
+        cost = row.amount.quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+        gross_profit = -cost
+        receipt_display = _document_display(
+            DIRECT_EXPENSE_RECORDER_TYPE, receipt
+        )
+        order_display = _document_display(ORDER_TYPE, order)
+        period_month = row.source_date.replace(day=1)
+        source_identity = onec_monthly_profit_source_identity(
+            period_month=period_month,
+            source_row_number=row.line_number,
+            source_recorder=row.recorder,
+        )
+        normalized.append({
+            "period_month": period_month.isoformat(),
+            "source_recorder": row.recorder,
+            "source_row_number": row.line_number,
+            "source_identity": source_identity,
+            "manager_name": manager,
+            "customer_name": customer,
+            "document_name": receipt_display,
+            "nomenclature": DIRECT_EXPENSE_NOMENCLATURE,
+            "article": "",
+            "nomenclature_type": DIRECT_EXPENSE_NOMENCLATURE_TYPE,
+            "quantity": "0.000000",
+            "revenue": "0.00",
+            "cost": format(cost, "f"),
+            "gross_profit": format(gross_profit, "f"),
+            "calculated_cost": None,
+            "cost_source": OneCMonthlyProfit.COST_SOURCE_ACTUAL,
+            "cost_calculation_method": "",
+            "cost_calculation_ratio": None,
+            "analytical_gross_profit": format(gross_profit, "f"),
+            "profitability_percent": None,
+            "source_data": {
+                "source": "odata",
+                "row_kind": "direct_order_expense",
+                "recorder": row.recorder,
+                "recorder_type": row.recorder_type,
+                "line_number": row.line_number,
+                "period": row.source_period,
+                "source_date": row.source_date.isoformat(),
+                "organization_guid": row.organization_guid,
+                "nomenclature_guid": ZERO_GUID,
+                "nomenclature_type": DIRECT_EXPENSE_NOMENCLATURE_TYPE,
+                "customer_guid": order["customer_guid"],
+                "responsible_guid": responsible_guid,
+                "vat": "0.00",
+                "document_guid": None,
+                "document_type": None,
+                "document_group_recorder": row.recorder,
+                "document_group_recorder_type": row.recorder_type,
+                "document_group_key": _group_key(
+                    organization_id, row.recorder_type, row.recorder
+                ),
+                "document_display": receipt_display,
+                "document_number": receipt["number"],
+                "document_date": receipt["date"].isoformat(),
+                "document_group_number": receipt["number"],
+                "document_group_date": receipt["date"].isoformat(),
+                "resolved_order_guid": row.order_guid,
+                "resolved_order_type": ORDER_TYPE,
+                "resolved_order_number": order["number"],
+                "resolved_order_date": order["date"].isoformat(),
+                "resolved_order_display": order_display,
+                "direct_expense_content": row.content,
+                "direct_expense_account_guid": row.account_guid,
+                "direct_expense_operation_guid": row.operation_guid,
+            },
+        })
+    return normalized
 
 
 def _document_display(entity_type, document):
