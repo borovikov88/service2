@@ -261,6 +261,41 @@ class ODataProfitDraftTests(TestCase):
             config=config(organization_guids=allowed), opener=opener,
         )
 
+    def create_direct_cost_draft(
+        self,
+        *,
+        revenue="94494.00",
+        customer_deleted=False,
+    ):
+        sale = profit_row(revenue=revenue, cost="29696.64")
+        opener = FakeOpener(
+            {"value": [sale]},
+            {"value": [
+                direct_expense_row(10, "25000.00"),
+                direct_expense_row(11, "5000.00"),
+            ]},
+            direct_order_document_payload(),
+            direct_receipt_document_payload(),
+            reference_payload(
+                ITEM,
+                "Товар из 1С",
+                article="A-1",
+                nomenclature_type="Запас",
+            ),
+            reference_payload(
+                CUSTOMER,
+                "Клиент заказа №114",
+                deletion_mark=customer_deleted,
+            ),
+            reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
+            document_payload(number="НФНФ-000335"),
+        )
+        with patch(
+            "pool_service.finance_imports.odata_profit_drafts.read_direct_order_expense_rows",
+            side_effect=read_direct_order_expense_rows,
+        ):
+            return self.create_draft(rows=[sale], opener=opener)
+
     def test_direct_receipt_expenses_reduce_order_profit_and_confirm_exact_snapshot(self):
         sale = profit_row(
             revenue="94494.00",
@@ -326,6 +361,26 @@ class ODataProfitDraftTests(TestCase):
                 for row in direct_rows
             )
         )
+        self.assertTrue(
+            all(
+                row["source_data"]["direct_expense_order_guid"]
+                == CUSTOMER_ORDER
+                for row in direct_rows
+            )
+        )
+        self.assertTrue(
+            all(
+                row["source_data"]["resolved_order_customer_guid"]
+                == CUSTOMER
+                and row["source_data"]["resolved_order_customer_name"]
+                == "Клиент заказа №114"
+                and row["source_data"]["resolved_order_responsible_guid"]
+                == RESPONSIBLE
+                and row["source_data"]["resolved_order_responsible_name"]
+                == "Ответственный заказа №114"
+                for row in direct_rows
+            )
+        )
 
         confirmed = confirm_odata_profit(
             batch.id,
@@ -349,6 +404,54 @@ class ODataProfitDraftTests(TestCase):
         self.assertEqual(total_revenue, Decimal("94494.00"))
         self.assertEqual(total_cost, Decimal("59696.64"))
         self.assertEqual(total_profit, Decimal("34797.36"))
+
+    def test_confirmation_rejects_forged_direct_order_attribution_with_new_checksum(self):
+        batch = self.create_direct_cost_draft(revenue="94495.00")
+
+        def forge(snapshot):
+            direct = next(
+                row for row in snapshot["rows"]
+                if row["source_data"].get("row_kind")
+                == "direct_order_expense"
+            )
+            direct["source_data"]["resolved_order_guid"] = DIRECT_ACCOUNT
+            direct["source_data"]["customer_guid"] = DIRECT_OPERATION
+            direct["customer_name"] = "Подменённый клиент"
+            direct["source_data"]["responsible_guid"] = DIRECT_ACCOUNT
+            direct["manager_name"] = "Подменённый ответственный"
+
+        self.rewrite_snapshot(batch, forge)
+        with self.assertRaisesRegex(ValidationError, "order attribution"):
+            confirm_odata_profit(
+                batch.id,
+                self.organization,
+                self.user,
+                config=config(),
+            )
+        self.assertFalse(
+            OneCMonthlyProfit.objects.filter(import_batch=batch).exists()
+        )
+        self.assertFalse(OneCReportPeriodState.objects.exists())
+
+    def test_manual_direct_cost_draft_accepts_historical_deleted_customer(self):
+        batch = self.create_direct_cost_draft(
+            revenue="94496.00",
+            customer_deleted=True,
+        )
+        with batch.stored_file.open("rb") as source:
+            snapshot = json.loads(source.read().decode("utf-8"))
+        direct = [
+            row for row in snapshot["rows"]
+            if row["source_data"].get("row_kind")
+            == "direct_order_expense"
+        ]
+        self.assertEqual(len(direct), 2)
+        self.assertTrue(
+            all(
+                row["customer_name"] == "Клиент заказа №114"
+                for row in direct
+            )
+        )
 
     def test_draft_saves_private_snapshot_and_no_profit_rows_or_activation(self):
         batch = self.create_draft()
