@@ -623,7 +623,11 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
             raise ODataPreviewError(
                 "OData response exceeded the configured row limit"
             )
-        sales_identities = {row.identity for row in rows}
+        sales_identities = {
+            (row.recorder, row.line_number)
+            for row in rows
+            if hasattr(row, "recorder") and hasattr(row, "line_number")
+        }
         if any(row.identity in sales_identities for row in direct_rows):
             raise ODataPreviewError(
                 "OData sources contain a duplicate source identity"
