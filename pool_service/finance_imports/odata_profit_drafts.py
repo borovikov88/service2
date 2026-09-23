@@ -889,13 +889,13 @@ def _validate_snapshot(payload, config, *, organization_id):
         recorder_type = _snapshot_document_type(
             source_data.get("recorder_type"), field="Snapshot Recorder_Type"
         )
-        if is_direct_expense:
-            if recorder_type != DIRECT_EXPENSE_RECORDER_TYPE:
-                raise ValidationError(
-                    "Direct expense snapshot recorder type is invalid."
-                )
-        elif recorder_type not in PROFIT_RECORDER_TYPES:
-            raise ValidationError("OData snapshot recorder type is invalid.")
+        if (
+            is_direct_expense
+            and recorder_type != DIRECT_EXPENSE_RECORDER_TYPE
+        ):
+            raise ValidationError(
+                "Direct expense snapshot recorder type is invalid."
+            )
         document_guid = source_data.get("document_guid")
         document_type = source_data.get("document_type")
         if document_guid is None:
