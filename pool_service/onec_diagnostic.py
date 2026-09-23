@@ -52,7 +52,7 @@ MAX_SALES_ROWS = 100000
 NOMENCLATURE_ENTITY = "Catalog_Номенклатура"
 SALES_ENTITY = "AccumulationRegister_Продажи_RecordType"
 
-DIAGNOSTIC_ACCESS_ROLES = frozenset({"owner", "admin", "accountant"})
+DIAGNOSTIC_ACCESS_ROLES = frozenset({"owner", "accountant"})
 
 EDM_NAMESPACES = {
     "http://schemas.microsoft.com/ado/2006/04/edm",
@@ -721,8 +721,18 @@ def _sales_schema(index, entity_name, expected):
     if schema is None:
         raise OneCDiagnosticError("SALES_ENTITY_NOT_PUBLISHED")
     types = schema.field_types
-    if any(types.get(name) != declared for name, declared in expected.items()):
-        raise OneCDiagnosticError("SALES_SCHEMA_MISMATCH")
+    for name, declared in expected.items():
+        actual = types.get(name)
+        if (
+            entity_name == SALES_ENTITY
+            and name in {"Количество", "Сумма"}
+            and declared == "Edm.Decimal"
+        ):
+            if actual not in {"Edm.Decimal", "Edm.Double"}:
+                raise OneCDiagnosticError("SALES_SCHEMA_MISMATCH")
+            continue
+        if actual != declared:
+            raise OneCDiagnosticError("SALES_SCHEMA_MISMATCH")
 
 
 def _sales_date(value, code):
