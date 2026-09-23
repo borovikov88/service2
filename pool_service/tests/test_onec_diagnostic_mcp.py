@@ -554,7 +554,7 @@ class OneCDiagnosticMcpTests(TestCase):
         OrganizationAccess.objects.filter(
             user=self.accountant,
             organization=self.organization,
-        ).update(role="admin")
+        ).update(role="manager")
         response = self._post_mcp(
             {"jsonrpc": "2.0", "id": 43, "method": "tools/list", "params": {}},
             token=token,
