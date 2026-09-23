@@ -16,6 +16,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from pool_service.finance_imports.odata_profit import ODataConfig, ODataPreviewError
+from pool_service.finance_imports.odata_direct_order_costs import read_direct_order_expense_rows
 from pool_service.finance_forms import ODataProfitDraftForm
 from pool_service.finance_imports.odata_profit_drafts import (
     ODataDraftError,
@@ -180,6 +181,12 @@ class ODataProfitDraftTests(TestCase):
             user=self.user, organization=self.organization, role="owner"
         )
         self.client.force_login(self.user)
+        self.direct_expense_reader_patch = patch(
+            "pool_service.finance_imports.odata_profit_drafts.read_direct_order_expense_rows",
+            return_value=([], 0),
+        )
+        self.direct_expense_reader_patch.start()
+        self.addCleanup(self.direct_expense_reader_patch.stop)
 
     def create_draft(self, rows=None, opener=None):
         rows = [profit_row()] if rows is None else rows
@@ -275,7 +282,11 @@ class ODataProfitDraftTests(TestCase):
             document_payload(number="НФНФ-000335"),
         )
 
-        batch = self.create_draft(rows=[sale], opener=opener)
+        with patch(
+            "pool_service.finance_imports.odata_profit_drafts.read_direct_order_expense_rows",
+            side_effect=read_direct_order_expense_rows,
+        ):
+            batch = self.create_draft(rows=[sale], opener=opener)
         self.assertFalse(
             OneCMonthlyProfit.objects.filter(import_batch=batch).exists()
         )
