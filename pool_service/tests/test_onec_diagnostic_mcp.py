@@ -83,7 +83,11 @@ class OneCDiagnosticMcpTests(TestCase):
         ):
             OrganizationAccess.objects.create(user=user, organization=self.organization, role=role)
         self.target_override = override_settings(
-            ONEC_ODATA_TARGET_ORGANIZATION_ID=self.organization.pk
+            ONEC_ODATA_TARGET_ORGANIZATION_ID=self.organization.pk,
+            ADVISOR_ONEC_DIAGNOSTIC_MCP_ALLOWED_USER_IDS=(
+                self.owner.pk,
+                self.accountant.pk,
+            ),
         )
         self.target_override.enable()
         self.addCleanup(self.target_override.disable)
