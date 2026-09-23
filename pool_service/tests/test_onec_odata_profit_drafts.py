@@ -820,20 +820,26 @@ class ODataProfitDraftTests(TestCase):
         self.assertEqual(OneCMonthlyProfit.objects.count(), 0)
         self.assertEqual(OneCReportPeriodState.objects.count(), 0)
 
-    def test_deleted_customer_reference_blocks_draft(self):
-        with self.assertRaises(ODataDraftError) as caught:
-            self.create_draft(opener=FakeOpener(
-                {"value": [profit_row()]},
-                reference_payload(ITEM, "Товар", article="A"),
-                reference_payload(CUSTOMER, "Удалённый покупатель", deletion_mark=True),
-            ))
-        self.assertEqual(caught.exception.messages, [
-            "1C reference is deleted or has an invalid deletion mark",
-        ])
-        self.assertEqual(caught.exception.batch.status, OneCImportBatch.STATUS_FAILED)
-        self.assertEqual(OneCImportBatch.objects.filter(status=OneCImportBatch.STATUS_PREVIEWED).count(), 0)
+    def test_historical_deleted_customer_reference_is_allowed(self):
+        batch = self.create_draft(opener=FakeOpener(
+            {"value": [profit_row()]},
+            reference_payload(ITEM, "Товар", article="A"),
+            reference_payload(
+                CUSTOMER,
+                "Удалённый покупатель",
+                deletion_mark=True,
+            ),
+            reference_payload(RESPONSIBLE, "Ответственный"),
+            document_payload(),
+        ))
+        self.assertEqual(batch.status, OneCImportBatch.STATUS_PREVIEWED)
+        with batch.stored_file.open("rb") as source:
+            snapshot = json.loads(source.read().decode("utf-8"))
+        self.assertEqual(
+            snapshot["rows"][0]["customer_name"],
+            "Удалённый покупатель",
+        )
         self.assertEqual(OneCMonthlyProfit.objects.count(), 0)
-        self.assertEqual(OneCReportPeriodState.objects.count(), 0)
 
     def test_deleted_responsible_reference_blocks_draft(self):
         self._assert_deleted_reference_fails(FakeOpener(
