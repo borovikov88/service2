@@ -1386,7 +1386,7 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
             direct_customers,
             opener=client,
             page_budget=reference_page_budget,
-            allow_deleted_sales_customers=False,
+            allow_deleted_sales_customers=True,
         )
         documents = _read_profit_documents(
             config,
