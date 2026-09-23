@@ -420,11 +420,18 @@ def _read_direct_expense_documents(
     }
     documents = _read_document_entities(
         config,
-        receipt_refs | order_refs,
+        order_refs,
         opener=opener,
         page_budget=page_budget,
         require_all=True,
     )
+    documents.update(_read_document_entities(
+        config,
+        receipt_refs,
+        opener=opener,
+        page_budget=page_budget,
+        require_all=False,
+    ))
     return documents
 
 
@@ -465,7 +472,7 @@ def _enrich_direct_expense_rows(
 ):
     normalized = []
     for row in rows:
-        receipt = documents[(DIRECT_EXPENSE_RECORDER_TYPE, row.recorder)]
+        receipt = documents.get((DIRECT_EXPENSE_RECORDER_TYPE, row.recorder))
         order = _direct_expense_order(row, documents)
         customer = references["customer"][order["customer_guid"]]["description"]
         responsible_guid = order.get("responsible_guid") or ZERO_GUID
@@ -476,8 +483,13 @@ def _enrich_direct_expense_rows(
         )
         cost = row.amount.quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
         gross_profit = -cost
-        receipt_display = _document_display(
-            DIRECT_EXPENSE_RECORDER_TYPE, receipt
+        receipt_resolved = receipt is not None
+        receipt_display = (
+            _document_display(DIRECT_EXPENSE_RECORDER_TYPE, receipt)
+            if receipt_resolved
+            else _direct_expense_receipt_fallback_display(
+                row.recorder, row.source_date
+            )
         )
         order_display = _document_display(ORDER_TYPE, order)
         period_month = row.source_date.replace(day=1)
@@ -529,10 +541,19 @@ def _enrich_direct_expense_rows(
                     organization_id, row.recorder_type, row.recorder
                 ),
                 "document_display": receipt_display,
-                "document_number": receipt["number"],
-                "document_date": receipt["date"].isoformat(),
-                "document_group_number": receipt["number"],
-                "document_group_date": receipt["date"].isoformat(),
+                "document_number": (
+                    receipt["number"] if receipt_resolved else None
+                ),
+                "document_date": (
+                    receipt["date"].isoformat() if receipt_resolved else None
+                ),
+                "document_group_number": (
+                    receipt["number"] if receipt_resolved else None
+                ),
+                "document_group_date": (
+                    receipt["date"].isoformat() if receipt_resolved else None
+                ),
+                "direct_expense_receipt_resolved": receipt_resolved,
                 "direct_expense_order_guid": row.order_guid,
                 "resolved_order_guid": row.order_guid,
                 "resolved_order_type": ORDER_TYPE,
@@ -549,6 +570,13 @@ def _enrich_direct_expense_rows(
             },
         })
     return normalized
+
+
+def _direct_expense_receipt_fallback_display(recorder, source_date):
+    return (
+        f"Приходная накладная 1С {recorder} "
+        f"от {source_date:%d.%m.%Y}"
+    )
 
 
 def _document_display(entity_type, document):
@@ -978,7 +1006,32 @@ def _validate_snapshot(payload, config, *, organization_id):
         document_date_value = source_data.get("document_date")
         group_number = source_data.get("document_group_number")
         group_date_value = source_data.get("document_group_date")
-        if known_recorder:
+        direct_receipt_resolved = (
+            source_data.get("direct_expense_receipt_resolved")
+            if is_direct_expense
+            else None
+        )
+        if is_direct_expense and not isinstance(direct_receipt_resolved, bool):
+            raise ValidationError(
+                "Direct expense snapshot receipt state is invalid."
+            )
+        if is_direct_expense and not direct_receipt_resolved:
+            if any(value is not None for value in (
+                document_number,
+                document_date_value,
+                group_number,
+                group_date_value,
+            )):
+                raise ValidationError(
+                    "Direct expense snapshot unresolved receipt metadata is invalid."
+                )
+            if document_display != _direct_expense_receipt_fallback_display(
+                recorder, source_date
+            ):
+                raise ValidationError(
+                    "Direct expense snapshot receipt fallback is invalid."
+                )
+        elif known_recorder:
             if not isinstance(document_number, str) or not document_number.strip():
                 raise ValidationError("OData snapshot document number is invalid.")
             if len(document_number) > 100:
@@ -1141,6 +1194,7 @@ def _validate_snapshot(payload, config, *, organization_id):
             if any(
                 key in source_data
                 for key in (
+                    "direct_expense_receipt_resolved",
                     "direct_expense_order_guid",
                     "resolved_order_customer_guid",
                     "resolved_order_customer_name",
