@@ -245,6 +245,16 @@ def _read_reference_map(
     return found
 
 
+def _reference_lookup_kwargs(kind, *, opener, page_budget):
+    """Keep manual drafts and unified sync on one historical-reference policy."""
+    kwargs = {"opener": opener, "page_budget": page_budget}
+    if kind == "nomenclature":
+        kwargs["allow_deleted_nomenclature"] = True
+    elif kind == "customer":
+        kwargs["allow_deleted_customer"] = True
+    return kwargs
+
+
 def _document_date(value):
     if not isinstance(value, str) or len(value) > 80:
         raise ODataPreviewError("1C document date is invalid")
@@ -502,11 +512,16 @@ def _enrich_direct_expense_rows(
                 "document_date": receipt["date"].isoformat(),
                 "document_group_number": receipt["number"],
                 "document_group_date": receipt["date"].isoformat(),
+                "direct_expense_order_guid": row.order_guid,
                 "resolved_order_guid": row.order_guid,
                 "resolved_order_type": ORDER_TYPE,
                 "resolved_order_number": order["number"],
                 "resolved_order_date": order["date"].isoformat(),
                 "resolved_order_display": order_display,
+                "resolved_order_customer_guid": order["customer_guid"],
+                "resolved_order_customer_name": customer,
+                "resolved_order_responsible_guid": responsible_guid,
+                "resolved_order_responsible_name": manager,
                 "direct_expense_content": row.content,
                 "direct_expense_account_guid": row.account_guid,
                 "direct_expense_operation_guid": row.operation_guid,
@@ -1008,7 +1023,9 @@ def _validate_snapshot(payload, config, *, organization_id):
             if any(value is None for value in order_values):
                 raise ValidationError("OData snapshot resolved order is incomplete.")
             order_guid, order_type, order_number, order_date_value, order_display = order_values
-            normalize_guid(order_guid, field="Snapshot resolved order GUID")
+            normalized_order_guid = normalize_guid(
+                order_guid, field="Snapshot resolved order GUID"
+            )
             if _snapshot_document_type(
                 order_type,
                 field="Snapshot resolved order type",
@@ -1048,6 +1065,33 @@ def _validate_snapshot(payload, config, *, organization_id):
             allow_zero=is_direct_expense,
         )
         if is_direct_expense:
+            direct_order_guid = normalize_guid(
+                source_data.get("direct_expense_order_guid"),
+                field="Snapshot direct expense order GUID",
+            )
+            if direct_order_guid != normalized_order_guid:
+                raise ValidationError(
+                    "Direct expense snapshot order attribution is inconsistent."
+                )
+            resolved_customer_guid = normalize_guid(
+                source_data.get("resolved_order_customer_guid"),
+                field="Snapshot resolved order customer",
+            )
+            resolved_responsible_guid = normalize_guid(
+                source_data.get("resolved_order_responsible_guid"),
+                field="Snapshot resolved order responsible",
+                allow_zero=True,
+            )
+            if (
+                resolved_customer_guid != customer_guid
+                or resolved_responsible_guid != responsible_guid
+                or source_data.get("resolved_order_customer_name") != customer
+                or source_data.get("resolved_order_responsible_name")
+                != raw.get("manager_name")
+            ):
+                raise ValidationError(
+                    "Direct expense snapshot order attribution is inconsistent."
+                )
             if raw.get("nomenclature") != DIRECT_EXPENSE_NOMENCLATURE:
                 raise ValidationError(
                     "Direct expense snapshot nomenclature label is invalid."
@@ -1076,6 +1120,11 @@ def _validate_snapshot(payload, config, *, organization_id):
             if any(
                 key in source_data
                 for key in (
+                    "direct_expense_order_guid",
+                    "resolved_order_customer_guid",
+                    "resolved_order_customer_name",
+                    "resolved_order_responsible_guid",
+                    "resolved_order_responsible_name",
                     "direct_expense_content",
                     "direct_expense_account_guid",
                     "direct_expense_operation_guid",
@@ -1282,8 +1331,14 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
         required["responsible"].update(direct_responsibles)
         references = {
             kind: _read_reference_map(
-                config, kind, guids, opener=client,
-                page_budget=reference_page_budget,
+                config,
+                kind,
+                guids,
+                **_reference_lookup_kwargs(
+                    kind,
+                    opener=client,
+                    page_budget=reference_page_budget,
+                ),
             )
             for kind, guids in required.items()
         }
