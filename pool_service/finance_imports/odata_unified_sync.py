@@ -557,6 +557,9 @@ def _decimal(value):
 
 def _canonical_profit(row):
     get = row.get if isinstance(row, dict) else lambda key, default=None: getattr(row, key, default)
+    source_data = get("source_data", {}) or {}
+    if not isinstance(source_data, dict):
+        source_data = {}
     return {
         "source_identity": get("source_identity"),
         "period_month": get("period_month").isoformat() if isinstance(get("period_month"), date) else get("period_month"),
@@ -570,6 +573,11 @@ def _canonical_profit(row):
         "cost_calculation_ratio": _decimal(get("cost_calculation_ratio")),
         "analytical_gross_profit": _decimal(get("analytical_gross_profit")),
         "profitability_percent": _decimal(get("profitability_percent")),
+        "row_kind": source_data.get("row_kind", ""),
+        "direct_expense_order_guid": source_data.get(
+            "direct_expense_order_guid", ""
+        ),
+        "resolved_order_guid": source_data.get("resolved_order_guid", ""),
     }
 
 
