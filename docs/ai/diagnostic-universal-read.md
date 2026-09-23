@@ -11,6 +11,15 @@ Examples that must become possible without another release:
 - inspect a document or document tabular part by a known Ref_Key;
 - resolve batches of GUID references back to catalog rows.
 
+## Separation from Service2 application
+
+Service2 Diagnostic and the normal Service2 application are separate contracts:
+
+- Diagnostic is an owner/accountant investigation surface over live 1C and remains read-only.
+- Normal Service2 imports must read and validate every 1C relationship required by their own business logic; they must not call Diagnostic or depend on Diagnostic tools at runtime.
+- Diagnostic may be used during development or incident investigation to understand live 1C structures and movements, but that knowledge must be implemented in the Service2 importer itself when it becomes production logic.
+- Future employee-facing AI access should be built on Service2 data and Service2 server-side permissions. Expanded Diagnostic access is not the employee AI gateway and must not be broadened for that purpose.
+
 ## Access model
 
 Keep authentication strong while relaxing read policy:
