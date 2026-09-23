@@ -6,6 +6,7 @@ import inspect
 import json
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
+from urllib.error import URLError
 
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
@@ -151,6 +152,18 @@ def direct_receipt_document_payload():
             "Date": "2026-05-15T10:00:00+03:00",
         }]
     }
+
+
+class ErrorOnNthOpen(FakeOpener):
+    def __init__(self, *payloads, error_at):
+        super().__init__(*payloads)
+        self.error_at = error_at
+
+    def open(self, request, timeout):
+        if len(self.requests) + 1 == self.error_at:
+            self.requests.append((request, timeout))
+            raise URLError("simulated optional receipt transport failure")
+        return super().open(request, timeout)
 
 
 def successful_opener(rows):
@@ -465,6 +478,67 @@ class ODataProfitDraftTests(TestCase):
         self.assertEqual(imported_direct.count(), 2)
         self.assertEqual(
             sum((row.cost for row in imported_direct), Decimal("0")),
+            Decimal("30000.00"),
+        )
+
+    def test_direct_cost_falls_back_when_receipt_lookup_transport_fails(self):
+        sale = profit_row(revenue="94500.00", cost="29696.64")
+        opener = ErrorOnNthOpen(
+            {"value": [sale]},
+            {"value": [
+                direct_expense_row(10, "25000.00"),
+                direct_expense_row(11, "5000.00"),
+            ]},
+            direct_order_document_payload(),
+            reference_payload(
+                ITEM,
+                "Товар из 1С",
+                article="A-1",
+                nomenclature_type="Запас",
+            ),
+            reference_payload(CUSTOMER, "Клиент заказа №114"),
+            reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
+            document_payload(number="НФНФ-000335"),
+            error_at=4,
+        )
+        with patch(
+            "pool_service.finance_imports.odata_profit_drafts.read_direct_order_expense_rows",
+            side_effect=read_direct_order_expense_rows,
+        ):
+            batch = self.create_draft(rows=[sale], opener=opener)
+
+        with batch.stored_file.open("rb") as source:
+            snapshot = json.loads(source.read().decode("utf-8"))
+        direct = [
+            row for row in snapshot["rows"]
+            if row["source_data"].get("row_kind")
+            == "direct_order_expense"
+        ]
+        self.assertEqual(len(direct), 2)
+        self.assertTrue(
+            all(
+                row["source_data"]["direct_expense_receipt_resolved"] is False
+                for row in direct
+            )
+        )
+        confirmed = confirm_odata_profit(
+            batch.id,
+            self.organization,
+            self.user,
+            config=config(),
+        )
+        self.assertEqual(confirmed.status, OneCImportBatch.STATUS_CONFIRMED)
+        self.assertEqual(
+            sum(
+                (
+                    row.cost
+                    for row in OneCMonthlyProfit.objects.filter(
+                        import_batch=batch,
+                        source_recorder=DIRECT_RECEIPT,
+                    )
+                ),
+                Decimal("0"),
+            ),
             Decimal("30000.00"),
         )
 
