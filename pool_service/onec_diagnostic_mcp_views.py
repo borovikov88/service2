@@ -481,10 +481,6 @@ def onec_diagnostic_mcp(request):
         response = _mcp_empty(status=405, protocol_version=protocol_version)
         response["Allow"] = "POST, OPTIONS"
         return response
-    try:
-        authenticated = authenticate_bearer_header(request.headers.get("Authorization"))
-    except OneCDiagnosticMcpOAuthError as exc:
-        return _authorization_error_response(exc, protocol_version=protocol_version)
     payload, error_response = _require_json_mcp_request(request, protocol_version=protocol_version)
     if error_response is not None:
         return error_response
@@ -496,6 +492,16 @@ def onec_diagnostic_mcp(request):
             protocol_version=protocol_version,
         )
     method = payload["method"]
+    authenticated = None
+    if method != "tools/list":
+        try:
+            authenticated = authenticate_bearer_header(
+                request.headers.get("Authorization")
+            )
+        except OneCDiagnosticMcpOAuthError as exc:
+            return _authorization_error_response(
+                exc, protocol_version=protocol_version
+            )
     if method == "notifications/initialized":
         if "id" in payload:
             return _mcp_response(
