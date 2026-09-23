@@ -20,6 +20,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from pool_service import onec_diagnostic
+from pool_service import onec_diagnostic_universal
 from pool_service.onec_diagnostic import OneCDiagnosticError
 from pool_service.onec_diagnostic_mcp_auth import (
     DIAGNOSTIC_READ_SCOPE,
@@ -48,6 +49,7 @@ TOOL_NAMES = (
     "get_1c_entity_schema",
     "read_1c_rows",
     "get_1c_nomenclature_sales",
+    "query_1c_rows",
 )
 
 
@@ -222,6 +224,28 @@ def _tool_definitions():
         "required": ["field", "op", "value"],
         "additionalProperties": False,
     }
+    query_filter_item = {
+        "type": "object",
+        "properties": {
+            "field": field_name,
+            "op": {
+                "type": "string",
+                "enum": sorted(onec_diagnostic_universal.QUERY_FILTER_OPERATORS),
+            },
+            "value": {},
+        },
+        "required": ["field", "op", "value"],
+        "additionalProperties": False,
+    }
+    order_item = {
+        "type": "object",
+        "properties": {
+            "field": field_name,
+            "direction": {"type": "string", "enum": ["asc", "desc"]},
+        },
+        "required": ["field", "direction"],
+        "additionalProperties": False,
+    }
     return [
         _tool_definition(
             "list_1c_entities",
@@ -273,6 +297,41 @@ def _tool_definitions():
             },
             required=("query", "start_date", "end_date"),
         ),
+        _tool_definition(
+            "query_1c_rows",
+            (
+                "Runs a reusable metadata-driven read-only 1C query using only "
+                "structured fields, filters and ordering. No raw OData is accepted."
+            ),
+            {
+                "entity_set": {"type": "string", "minLength": 1, "maxLength": 300},
+                "fields": {
+                    "type": "array",
+                    "items": field_name,
+                    "minItems": 1,
+                    "maxItems": onec_diagnostic.MAX_READ_FIELDS,
+                },
+                "filters": {
+                    "type": "array",
+                    "items": query_filter_item,
+                    "minItems": 1,
+                    "maxItems": onec_diagnostic.MAX_READ_FILTERS,
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": onec_diagnostic_universal.MAX_QUERY_ROWS,
+                },
+                "include_deleted": {"type": "boolean"},
+                "include_inactive": {"type": "boolean"},
+                "order_by": {
+                    "type": "array",
+                    "items": order_item,
+                    "maxItems": onec_diagnostic_universal.MAX_QUERY_ORDER_FIELDS,
+                },
+            },
+            required=("entity_set", "fields", "filters"),
+        ),
     ]
 
 
@@ -321,6 +380,38 @@ def _tool_dispatch(name, arguments):
             query=arguments["query"],
             start_date=arguments["start_date"],
             end_date=arguments["end_date"],
+        )
+    if name == "query_1c_rows":
+        _reject_unknown_arguments(
+            arguments,
+            {
+                "entity_set",
+                "fields",
+                "filters",
+                "limit",
+                "include_deleted",
+                "include_inactive",
+                "order_by",
+            },
+        )
+        entity_set = arguments.get("entity_set")
+        fields = arguments.get("fields")
+        filters = arguments.get("filters")
+        if (
+            not isinstance(entity_set, str)
+            or not isinstance(fields, list)
+            or not isinstance(filters, list)
+        ):
+            raise DiagnosticToolValidationError("Некорректные structured arguments.")
+        return onec_diagnostic_universal.query_1c_rows(
+            config,
+            entity_set,
+            fields=fields,
+            filters=filters,
+            limit=arguments.get("limit", 100),
+            include_deleted=arguments.get("include_deleted", False),
+            include_inactive=arguments.get("include_inactive", False),
+            order_by=arguments.get("order_by"),
         )
     raise DiagnosticToolValidationError("Неизвестный инструмент.")
 
@@ -478,11 +569,24 @@ def onec_diagnostic_mcp(request):
             response_bytes=response_bytes,
             required=True,
         )
-    except (DiagnosticToolValidationError, OneCDiagnosticError):
+    except DiagnosticToolValidationError:
         _audit(authenticated, name=name, arguments=arguments, result="denied", started=started)
         return _mcp_response(
             _jsonrpc_result(request_id, {
                 "content": [{"type": "text", "text": "Запрос отклонён серверной политикой Diagnostic MCP."}],
+                "isError": True,
+            }),
+            protocol_version=protocol_version,
+        )
+    except OneCDiagnosticError as exc:
+        _audit(authenticated, name=name, arguments=arguments, result="denied", started=started)
+        return _mcp_response(
+            _jsonrpc_result(request_id, {
+                "content": [{
+                    "type": "text",
+                    "text": f"Diagnostic MCP отклонил запрос. Код: {exc.code}.",
+                }],
+                "structuredContent": {"error_code": exc.code},
                 "isError": True,
             }),
             protocol_version=protocol_version,
