@@ -1,0 +1,66 @@
+name: Prestage Diagnostic OAuth allowlist
+
+on:
+  push:
+    branches:
+      - ops/prestage-diagnostic-allowlist-20260923
+
+permissions:
+  contents: read
+
+jobs:
+  prestage:
+    name: Set production Diagnostic allowed users
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_diag_allowlist
+          chmod 600 ~/.ssh/service2_diag_allowlist
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          PORT="${DEPLOY_PORT:-22}"
+          HOST_LOOKUP="$DEPLOY_HOST"
+          if [[ "$PORT" != "22" ]]; then HOST_LOOKUP="[$DEPLOY_HOST]:$PORT"; fi
+          ssh-keygen -F "$HOST_LOOKUP" -f ~/.ssh/known_hosts >/dev/null
+
+      - name: Write Diagnostic allowlist without exposing env
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          printf -v REMOTE_COMMAND 'cd %q && ../venv/bin/python -B -c %q' "$DEPLOY_APP_PATH" 'from pathlib import Path
+p=Path(".env")
+if not p.is_file() or p.is_symlink():
+    raise SystemExit("invalid .env")
+key="ADVISOR_ONEC_DIAGNOSTIC_MCP_ALLOWED_USER_IDS"
+value="5,46"
+lines=p.read_text(encoding="utf-8").splitlines()
+out=[]
+seen=False
+for line in lines:
+    if line.startswith(key+"="):
+        out.append(key+"="+value)
+        seen=True
+    else:
+        out.append(line)
+if not seen:
+    out.append(key+"="+value)
+p.write_text("\n".join(out)+"\n", encoding="utf-8")
+print("DIAGNOSTIC_ALLOWLIST_PRESTAGED")'
+          ssh -i ~/.ssh/service2_diag_allowlist \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
