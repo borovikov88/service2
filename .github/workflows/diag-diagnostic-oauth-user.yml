@@ -80,6 +80,58 @@ jobs:
                       ("diagnostic_allowed" if can_access_diagnostic_mcp(user, org) else "diagnostic_denied"),
                   ])
               )
+          from django.test import RequestFactory
+          from pool_service.mcp_oauth_shared import shared_oauth_authorize
+          from pool_service.models import FinanceMcpClient
+          from pool_service.onec_diagnostic_mcp_auth import (
+              DIAGNOSTIC_READ_SCOPE,
+              resource_url,
+          )
+
+          human = get_user_model().objects.get(pk=5)
+          client = (
+              FinanceMcpClient.objects
+              .filter(
+                  principal__organization_scopes__organization=org,
+                  revoked_at__isnull=True,
+              )
+              .order_by("pk")
+              .first()
+          )
+          if client is None:
+              raise SystemExit("DIAG_OAUTH_CLIENT_MISSING")
+          redirect_uri = next(
+              (
+                  value
+                  for value in (client.redirect_uris or [])
+                  if isinstance(value, str) and value.startswith("https://chatgpt.com/")
+              ),
+              None,
+          )
+          if redirect_uri is None:
+              raise SystemExit("DIAG_OAUTH_REDIRECT_MISSING")
+          params = {
+              "response_type": "code",
+              "client_id": client.client_id,
+              "redirect_uri": redirect_uri,
+              "scope": DIAGNOSTIC_READ_SCOPE,
+              "state": "diagnostic-production-smoke",
+              "code_challenge": "A" * 43,
+              "code_challenge_method": "S256",
+              "resource": resource_url(),
+          }
+          request = RequestFactory().get("/oauth/1c/authorize", params)
+          request.user = human
+          response = shared_oauth_authorize(request)
+          print("DIAG_OAUTH_PAGE_STATUS=" + str(response.status_code))
+          print(
+              "DIAG_OAUTH_PAGE_HAS_APPROVE="
+              + ("yes" if "Разрешить чтение".encode("utf-8") in response.content else "no")
+          )
+          if response.status_code != 200:
+              print("DIAG_OAUTH_PAGE_LOCATION=" + response.get("Location", ""))
+              raise SystemExit("DIAG_OAUTH_PAGE_NOT_RENDERED")
+
           print("DIAG_MANAGEMENT_ACCESS_BEGIN")
           for access in (
               OrganizationAccess.objects
