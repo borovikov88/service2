@@ -305,15 +305,19 @@ def _read_document_entities(
                         "date": _document_date(raw.get("Date")),
                     }
                     if entity_type == ORDER_TYPE:
-                        item["customer_guid"] = normalize_guid(
-                            raw.get("Контрагент_Key"),
-                            field="Order Контрагент_Key",
-                        )
-                        item["responsible_guid"] = normalize_guid(
-                            raw.get("Ответственный_Key"),
-                            field="Order Ответственный_Key",
-                            allow_zero=True,
-                        )
+                        raw_customer = raw.get("Контрагент_Key")
+                        if raw_customer not in (None, ""):
+                            item["customer_guid"] = normalize_guid(
+                                raw_customer,
+                                field="Order Контрагент_Key",
+                            )
+                        raw_responsible = raw.get("Ответственный_Key")
+                        if raw_responsible not in (None, ""):
+                            item["responsible_guid"] = normalize_guid(
+                                raw_responsible,
+                                field="Order Ответственный_Key",
+                                allow_zero=True,
+                            )
                     if entity_type == "Document_РасходнаяНакладная":
                         raw_order = raw.get("Заказ")
                         raw_order_type = raw.get("Заказ_Type")
@@ -410,7 +414,12 @@ def _direct_expense_reference_guids(rows, documents):
             raise ODataPreviewError(
                 "Direct expense customer order is missing or unavailable"
             )
-        customers.add(order["customer_guid"])
+        customer_guid = order.get("customer_guid")
+        if not customer_guid:
+            raise ODataPreviewError(
+                "Direct expense customer order has no customer"
+            )
+        customers.add(customer_guid)
         responsible = order.get("responsible_guid")
         if responsible and responsible != ZERO_GUID:
             responsibles.add(responsible)
