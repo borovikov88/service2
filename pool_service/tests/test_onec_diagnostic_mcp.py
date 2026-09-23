@@ -160,28 +160,38 @@ class OneCDiagnosticMcpTests(TestCase):
             HTTP_ACCEPT="application/json",
             HTTP_ORIGIN="https://chatgpt.com",
         )
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["error"]["code"], -32700)
-
-    def test_anonymous_tools_call_requires_bearer(self):
-        response = self.client.post(
-            reverse("onec_diagnostic_mcp"),
-            data=json.dumps({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "list_1c_entities",
-                    "arguments": {"query": "test", "limit": 1},
-                },
-            }),
-            content_type="application/json",
-            HTTP_ACCEPT="application/json",
-            HTTP_MCP_PROTOCOL_VERSION=MCP_PROTOCOL_VERSION,
-            HTTP_ORIGIN="https://chatgpt.com",
-        )
         self.assertEqual(response.status_code, 401)
         self.assertIn("onec.diagnostic.read", response["WWW-Authenticate"])
+
+    def test_anonymous_tools_call_returns_oauth_challenge_without_dispatch(self):
+        with patch(
+            "pool_service.onec_diagnostic_mcp_views.onec_diagnostic.list_entities"
+        ) as reader:
+            response = self.client.post(
+                reverse("onec_diagnostic_mcp"),
+                data=json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "list_1c_entities",
+                        "arguments": {"query": "test", "limit": 1},
+                    },
+                }),
+                content_type="application/json",
+                HTTP_ACCEPT="application/json",
+                HTTP_MCP_PROTOCOL_VERSION=MCP_PROTOCOL_VERSION,
+                HTTP_ORIGIN="https://chatgpt.com",
+            )
+        self.assertEqual(response.status_code, 200)
+        result = response.json()["result"]
+        self.assertTrue(result["isError"])
+        self.assertIn("mcp/www_authenticate", result["_meta"])
+        self.assertIn(
+            "onec.diagnostic.read",
+            result["_meta"]["mcp/www_authenticate"][0],
+        )
+        reader.assert_not_called()
 
     def test_cross_resource_tokens_are_isolated(self):
         response = self._post_mcp(
