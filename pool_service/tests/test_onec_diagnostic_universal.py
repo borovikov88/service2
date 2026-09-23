@@ -83,6 +83,22 @@ class UniversalDiagnosticPolicyTests(TestCase):
             max_rows=50,
         )
 
+    def test_universal_config_preserves_its_own_page_budget(self):
+        with self.settings(
+            ONEC_ODATA_BASE_URL="https://1c.example.test/odata/standard.odata/",
+            ONEC_ODATA_USERNAME="reader",
+            ONEC_ODATA_PASSWORD="secret",
+            ONEC_ODATA_ORGANIZATION_GUIDS=(ORG,),
+            ONEC_ODATA_TIMEOUT_SECONDS=5,
+            ONEC_ODATA_MAX_PAGES=100,
+            ONEC_ODATA_MAX_ROWS=50,
+        ):
+            legacy = base.config_from_settings()
+            query = universal.config_from_settings()
+
+        self.assertEqual(legacy.max_pages, base.MAX_READ_PAGES)
+        self.assertEqual(query.max_pages, universal.MAX_QUERY_PAGES)
+
     def test_structured_contains_escapes_apostrophe_and_in_sets_key_anchor(self):
         fields = {"Description": "Edm.String", "Ref_Key": "Edm.Guid"}
         clauses, anchor = universal._normalize_filters(
