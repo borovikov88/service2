@@ -7,10 +7,13 @@ surface; it never adds a write/import path or accepts raw OData fragments.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, time
 from typing import Iterable, Mapping
 from urllib.parse import quote
 from uuid import UUID
+
+from django.conf import settings
 
 from pool_service import onec_diagnostic as base
 
@@ -157,6 +160,15 @@ def _normalize_order_by(
             raise base.OneCDiagnosticError("INVALID_ORDER_DIRECTION")
         result.append(f"{field} {direction}")
     return result
+
+
+def config_from_settings():
+    """Use the Diagnostic connection while preserving the universal page budget."""
+    legacy = base.config_from_settings()
+    return replace(
+        legacy,
+        max_pages=min(int(settings.ONEC_ODATA_MAX_PAGES), MAX_QUERY_PAGES),
+    )
 
 
 def query_1c_rows(
@@ -325,5 +337,6 @@ __all__ = [
     "MAX_QUERY_ORDER_FIELDS",
     "MAX_QUERY_ROWS",
     "QUERY_FILTER_OPERATORS",
+    "config_from_settings",
     "query_1c_rows",
 ]
