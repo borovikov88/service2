@@ -50,6 +50,29 @@ def _env_int(name, default, *, minimum, maximum):
         raise ImproperlyConfigured(f"{name} must be between {minimum} and {maximum}")
     return value
 
+
+def _env_positive_int_tuple(name):
+    raw_value = os.getenv(name, "")
+    if not raw_value.strip():
+        return ()
+    values = []
+    for part in raw_value.split(","):
+        item = part.strip()
+        if not item:
+            continue
+        try:
+            value = int(item)
+        except ValueError as exc:
+            raise ImproperlyConfigured(
+                f"{name} must be a comma-separated list of positive integers"
+            ) from exc
+        if value <= 0:
+            raise ImproperlyConfigured(
+                f"{name} must contain only positive integers"
+            )
+        values.append(value)
+    return tuple(dict.fromkeys(values))
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
 
@@ -132,6 +155,9 @@ ONEC_FINANCE_DAILY_TIME = os.getenv("ONEC_FINANCE_DAILY_TIME", "06:00")
 ONEC_FINANCE_TIME_ZONE = os.getenv("ONEC_FINANCE_TIME_ZONE", "Asia/Barnaul")
 ONEC_FINANCE_LOOKBACK_MONTHS = os.getenv("ONEC_FINANCE_LOOKBACK_MONTHS", "3")
 ONEC_ODATA_TARGET_ORGANIZATION_ID = os.getenv("ONEC_ODATA_TARGET_ORGANIZATION_ID", "")
+ADVISOR_ONEC_DIAGNOSTIC_MCP_ALLOWED_USER_IDS = _env_positive_int_tuple(
+    "ADVISOR_ONEC_DIAGNOSTIC_MCP_ALLOWED_USER_IDS"
+)
 ONEC_ODATA_TIMEOUT_SECONDS = os.getenv("ONEC_ODATA_TIMEOUT_SECONDS", "15")
 ONEC_ODATA_MAX_PAGES = os.getenv("ONEC_ODATA_MAX_PAGES", "100")
 ONEC_ODATA_MAX_ROWS = os.getenv("ONEC_ODATA_MAX_ROWS", "100000")
