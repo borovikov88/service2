@@ -132,6 +132,124 @@ def _normalize_filters(
     return clauses, key_anchor
 
 
+
+def _ref_key_anchor_values(filters, field_types, *, entity_set: str) -> set[str]:
+    """Return the validated parent-document Ref_Key anchor values, if any."""
+    if field_types.get("Ref_Key") != "Edm.Guid":
+        return set()
+    for item in filters:
+        if not isinstance(item, Mapping) or item.get("field") != "Ref_Key":
+            continue
+        op = item.get("op")
+        if op == "eq":
+            values = [item.get("value")]
+        elif op == "in":
+            raw_values = item.get("value")
+            if isinstance(raw_values, (str, bytes)):
+                return set()
+            try:
+                values = list(raw_values)
+            except TypeError:
+                return set()
+        else:
+            continue
+        result = set()
+        for value in values:
+            try:
+                result.add(str(UUID(str(value))).lower())
+            except (TypeError, ValueError, AttributeError) as exc:
+                raise base.OneCDiagnosticError("INVALID_FILTER_VALUE") from exc
+        return result
+    return set()
+
+
+def _document_parent_entity(index, entity_set: str):
+    """Find the longest organization-scoped Document_ parent for a tabular part."""
+    if not entity_set.startswith("Document_"):
+        return None
+    candidates = []
+    for name, schema in index.items():
+        if (
+            name == entity_set
+            or not name.startswith("Document_")
+            or not entity_set.startswith(name + "_")
+        ):
+            continue
+        field_types = schema.field_types
+        if (
+            field_types.get("Ref_Key") == "Edm.Guid"
+            and field_types.get("Организация_Key") == "Edm.Guid"
+        ):
+            candidates.append(name)
+    return max(candidates, key=len) if candidates else None
+
+
+def _validate_parent_document_scope(
+    config,
+    index,
+    entity_set: str,
+    ref_keys: set[str],
+    *,
+    opener=None,
+) -> set[str]:
+    """Prove every child Ref_Key belongs to an allowed-organization document."""
+    if not ref_keys:
+        raise base.OneCDiagnosticError("KEY_ANCHOR_REQUIRED")
+    parent_entity = _document_parent_entity(index, entity_set)
+    if parent_entity is None:
+        raise base.OneCDiagnosticError("ORGANIZATION_SCOPE_UNAVAILABLE")
+
+    allowed_organizations = {
+        str(UUID(value)).lower() for value in config.organization_guids
+    }
+    key_clause = " or ".join(
+        f"Ref_Key eq guid'{value}'" for value in sorted(ref_keys)
+    )
+    organization_clause = " or ".join(
+        f"Организация_Key eq guid'{value}'"
+        for value in sorted(allowed_organizations)
+    )
+    expression = f"({key_clause}) and ({organization_clause})"
+    parent_url = (
+        f"{config.base_url}{quote(parent_entity, safe='')}?"
+        f"$select={quote('Ref_Key,Организация_Key')}&"
+        f"$filter={quote(expression)}&$top={len(ref_keys) + 1}"
+    )
+
+    found: set[str] = set()
+    for raw_rows, _page_count in base._bounded_odata_pages(
+        config,
+        parent_url,
+        opener=opener,
+        max_pages=min(config.max_pages, MAX_QUERY_PAGES),
+    ):
+        for raw_row in raw_rows:
+            if not isinstance(raw_row, dict):
+                raise base.OneCDiagnosticError("INVALID_ODATA_ROW")
+            try:
+                ref_key = str(UUID(str(raw_row.get("Ref_Key")))).lower()
+                organization = str(
+                    UUID(str(raw_row.get("Организация_Key")))
+                ).lower()
+            except (TypeError, ValueError, AttributeError) as exc:
+                raise base.OneCDiagnosticError(
+                    "PARENT_ORGANIZATION_SCOPE_INVALID"
+                ) from exc
+            if ref_key not in ref_keys or organization not in allowed_organizations:
+                raise base.OneCDiagnosticError(
+                    "PARENT_ORGANIZATION_SCOPE_VIOLATION"
+                )
+            if ref_key in found:
+                raise base.OneCDiagnosticError(
+                    "PARENT_ORGANIZATION_SCOPE_VIOLATION"
+                )
+            found.add(ref_key)
+
+    if found != ref_keys:
+        raise base.OneCDiagnosticError("PARENT_ORGANIZATION_SCOPE_VIOLATION")
+    return found
+
+
 def _normalize_order_by(
     order_by,
     field_types: Mapping[str, str],
@@ -200,7 +318,8 @@ def query_1c_rows(
         raise base.OneCDiagnosticError("INVALID_INCLUDE_FLAG")
 
     raw = metadata_raw if metadata_raw is not None else base.fetch_metadata(config, opener=opener)
-    schema = base.parse_metadata(raw).get(entity_set)
+    index = base.parse_metadata(raw)
+    schema = index.get(entity_set)
     if schema is None:
         raise base.OneCDiagnosticError("ENTITY_SET_NOT_PUBLISHED")
     field_types = schema.field_types
@@ -218,8 +337,15 @@ def query_1c_rows(
         for name in requested_fields
     ]
 
-    clauses, key_anchor = _normalize_filters(
-        filters, field_types, entity_set=entity_set
+    if isinstance(filters, (str, bytes)):
+        raise base.OneCDiagnosticError("INVALID_FILTER")
+    try:
+        filter_items = list(filters)
+    except TypeError as exc:
+        raise base.OneCDiagnosticError("INVALID_FILTER") from exc
+
+    clauses, _key_anchor = _normalize_filters(
+        filter_items, field_types, entity_set=entity_set
     )
     ordering = _normalize_order_by(
         order_by, field_types, entity_set=entity_set
@@ -229,8 +355,20 @@ def query_1c_rows(
     if organization_present and field_types["Организация_Key"] != "Edm.Guid":
         raise base.OneCDiagnosticError("ORGANIZATION_SCOPE_INVALID")
     organization_scoped = organization_present
-    if not organization_scoped and not entity_set.startswith("Catalog_") and not key_anchor:
-        raise base.OneCDiagnosticError("KEY_ANCHOR_REQUIRED")
+    parent_scoped = False
+    verified_parent_refs: set[str] = set()
+    if not organization_scoped and not entity_set.startswith("Catalog_"):
+        ref_keys = _ref_key_anchor_values(
+            filter_items, field_types, entity_set=entity_set
+        )
+        verified_parent_refs = _validate_parent_document_scope(
+            config,
+            index,
+            entity_set,
+            ref_keys,
+            opener=opener,
+        )
+        parent_scoped = True
 
     transport_fields = list(requested_fields)
     allowed_organizations: set[str] = set()
@@ -244,6 +382,8 @@ def query_1c_rows(
         ) + ")")
         if "Организация_Key" not in transport_fields:
             transport_fields.append("Организация_Key")
+    if parent_scoped and "Ref_Key" not in transport_fields:
+        transport_fields.append("Ref_Key")
 
     deleted_rows_excluded = (
         field_types.get("DeletionMark") == "Edm.Boolean" and not include_deleted
@@ -292,6 +432,17 @@ def query_1c_rows(
                         raise base.OneCDiagnosticError("INVALID_ORGANIZATION_SCOPE") from exc
                     if organization not in allowed_organizations:
                         raise base.OneCDiagnosticError("ORGANIZATION_SCOPE_VIOLATION")
+                if parent_scoped:
+                    try:
+                        child_ref = str(UUID(str(raw_row.get("Ref_Key")))).lower()
+                    except (TypeError, ValueError, AttributeError) as exc:
+                        raise base.OneCDiagnosticError(
+                            "PARENT_ORGANIZATION_SCOPE_INVALID"
+                        ) from exc
+                    if child_ref not in verified_parent_refs:
+                        raise base.OneCDiagnosticError(
+                            "PARENT_ORGANIZATION_SCOPE_VIOLATION"
+                        )
                 if deleted_rows_excluded and raw_row.get("DeletionMark") is not False:
                     raise base.OneCDiagnosticError("DELETION_SCOPE_VIOLATION")
                 if inactive_rows_excluded and raw_row.get("Active") is not True:
@@ -320,7 +471,7 @@ def query_1c_rows(
         "limit": limit,
         "complete": not truncated,
         "truncated": truncated,
-        "organization_scope_enforced": organization_scoped,
+        "organization_scope_enforced": organization_scoped or parent_scoped,
         "deleted_rows_excluded": deleted_rows_excluded,
         "inactive_rows_excluded": inactive_rows_excluded,
         "sensitive_personal_security_fields_denied": True,
