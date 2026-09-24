@@ -36,6 +36,7 @@ from .odata_profit import (
     PROFIT_RECORDER_TYPES,
     ProfitRow,
     ZERO_GUID,
+    _decimal,
     normalize_document_type,
     normalize_guid,
     parse_month,
@@ -104,6 +105,16 @@ RETAIL_CHECK_TYPE = "Document_ЧекККМ"
 ORDER_TYPE = "Document_ЗаказПокупателя"
 DIRECT_EXPENSE_NOMENCLATURE = "Прямые расходы по заказу"
 DIRECT_EXPENSE_NOMENCLATURE_TYPE = "Прямые расходы"
+DIRECT_EXPENSE_LINES_ENTITY = "Document_ПриходнаяНакладная_Расходы"
+DIRECT_EXPENSE_LINE_FIELDS = (
+    "Ref_Key",
+    "LineNumber",
+    "Номенклатура_Key",
+    "Заказ_Key",
+    "Содержание",
+    "Сумма",
+    "Всего",
+)
 ALLOWED_DOCUMENT_TYPES = PROFIT_DOCUMENT_TYPES | {DIRECT_EXPENSE_RECORDER_TYPE}
 
 
@@ -401,6 +412,138 @@ def _read_profit_documents(config, rows, *, opener, page_budget):
             require_all=False,
         ))
     return documents
+
+
+def _direct_expense_lines_url(config, receipt_guids):
+    expression = " or ".join(
+        f"Ref_Key eq guid'{guid}'" for guid in receipt_guids
+    )
+    return (
+        f"{config.base_url}{quote(DIRECT_EXPENSE_LINES_ENTITY, safe='')}?"
+        f"$select={quote(','.join(DIRECT_EXPENSE_LINE_FIELDS))}"
+        f"&$filter={quote(expression)}"
+    )
+
+
+def _strict_nonnegative_line_number(value, *, field):
+    if isinstance(value, (float, bool)) or value is None:
+        raise ODataPreviewError(f"{field} must be a non-negative integer")
+    try:
+        decimal_value = Decimal(str(value))
+        integer_value = int(decimal_value)
+    except (InvalidOperation, ValueError, TypeError, OverflowError) as exc:
+        raise ODataPreviewError(
+            f"{field} must be a non-negative integer"
+        ) from exc
+    if (
+        not decimal_value.is_finite()
+        or decimal_value != Decimal(integer_value)
+        or integer_value < 0
+    ):
+        raise ODataPreviewError(f"{field} must be a non-negative integer")
+    return integer_value
+
+
+def _read_direct_expense_lines(
+    config,
+    rows,
+    *,
+    opener,
+    page_budget,
+):
+    """Resolve exact receipt expense rows backing direct-order movements."""
+    expected = {row.identity: row for row in rows}
+    if not expected:
+        return {}
+
+    resolved = {}
+    receipt_guids = sorted({row.recorder for row in rows})
+    for batch_guids in _chunks(receipt_guids):
+        url = _direct_expense_lines_url(config, batch_guids)
+        for raw_rows, _ in read_odata_pages(config, url, opener=opener):
+            page_budget["used"] += 1
+            if page_budget["used"] > config.max_pages:
+                raise ODataPreviewError(
+                    "1C direct expense line lookups exceeded the page limit"
+                )
+            for raw in raw_rows:
+                if not isinstance(raw, dict):
+                    raise ODataPreviewError(
+                        "1C direct expense line must be an object"
+                    )
+                recorder = normalize_guid(
+                    raw.get("Ref_Key"), field="Direct expense line Ref_Key"
+                )
+                if recorder not in batch_guids:
+                    raise ODataPreviewError(
+                        "1C direct expense line lookup returned an unexpected receipt"
+                    )
+                line_number = _strict_nonnegative_line_number(
+                    raw.get("LineNumber"),
+                    field="Direct expense receipt LineNumber",
+                )
+                identity = recorder, line_number
+                movement = expected.get(identity)
+                if movement is None:
+                    # A receipt can contain unrelated expense rows. Only rows
+                    # represented by the validated direct-order register are relevant.
+                    continue
+                if identity in resolved:
+                    raise ODataPreviewError(
+                        "1C direct expense receipt contains a duplicate line identity"
+                    )
+
+                nomenclature_guid = normalize_guid(
+                    raw.get("Номенклатура_Key"),
+                    field="Direct expense line Номенклатура_Key",
+                )
+                order_guid = normalize_guid(
+                    raw.get("Заказ_Key"),
+                    field="Direct expense line Заказ_Key",
+                )
+                if order_guid != movement.order_guid:
+                    raise ODataPreviewError(
+                        "Direct expense receipt line order does not match movement"
+                    )
+
+                line_sum = _decimal(
+                    raw.get("Сумма"), field="Direct expense line Сумма"
+                )
+                line_total = _decimal(
+                    raw.get("Всего"), field="Direct expense line Всего"
+                )
+                movement_amount = movement.amount.quantize(
+                    MONEY_QUANTUM, rounding=ROUND_HALF_UP
+                )
+                candidates = {
+                    line_sum.quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP),
+                    line_total.quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP),
+                }
+                if movement_amount not in candidates:
+                    raise ODataPreviewError(
+                        "Direct expense receipt line amount does not match movement"
+                    )
+
+                line_content = raw.get("Содержание")
+                if line_content is None:
+                    line_content = ""
+                if not isinstance(line_content, str) or len(line_content) > 500:
+                    raise ODataPreviewError(
+                        "Direct expense receipt line content is invalid"
+                    )
+                resolved[identity] = {
+                    "nomenclature_guid": nomenclature_guid,
+                    "order_guid": order_guid,
+                    "content": line_content.strip(),
+                    "amount": movement_amount,
+                }
+
+    missing = set(expected) - set(resolved)
+    if missing:
+        raise ODataPreviewError(
+            "Direct expense receipt line is missing or unavailable"
+        )
+    return resolved
 
 
 def _read_direct_expense_documents(
