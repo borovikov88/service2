@@ -472,6 +472,8 @@ def _document_display_metadata(row, document_name, is_validated):
 
 
 _DIRECT_EXPENSE_ROW_KIND = "direct_order_expense"
+_ORDER_TYPE = "Document_ЗаказПокупателя"
+_ORDER_LABEL = "Заказ покупателя"
 
 
 def _row_source_data(row):
@@ -480,6 +482,58 @@ def _row_source_data(row):
 
 def _is_direct_expense_row(row):
     return _row_source_data(row).get("row_kind") == _DIRECT_EXPENSE_ROW_KIND
+
+
+def _resolved_order_group(row):
+    """Return validated customer-order metadata for presentation grouping."""
+    source_data = _row_source_data(row)
+    batch = row.import_batch
+    if (
+        batch.source_type != OneCImportBatch.SOURCE_ODATA
+        or batch.import_type != OneCImportBatch.TYPE_MONTHLY_PROFIT
+        or batch.parser_version != "odata-2"
+        or batch.status != OneCImportBatch.STATUS_CONFIRMED
+        or batch.organization_id != row.organization_id
+        or source_data.get("source") != "odata"
+    ):
+        return None
+
+    order_guid = _guid(source_data.get("resolved_order_guid"))
+    order_type = source_data.get("resolved_order_type")
+    order_number = source_data.get("resolved_order_number")
+    order_display = source_data.get("resolved_order_display")
+    if (
+        order_guid is None
+        or order_type != _ORDER_TYPE
+        or not isinstance(order_number, str)
+        or not order_number.strip()
+        or len(order_number) > 100
+        or not isinstance(order_display, str)
+        or not order_display.strip()
+    ):
+        return None
+    try:
+        order_date = date.fromisoformat(source_data.get("resolved_order_date"))
+    except (TypeError, ValueError):
+        return None
+
+    order_number = order_number.strip()
+    expected_display = (
+        f"{_ORDER_LABEL} №{order_number} от {order_date:%d.%m.%Y}"
+    )
+    if order_display != expected_display:
+        return None
+    if _is_direct_expense_row(row):
+        if _guid(source_data.get("direct_expense_order_guid")) != order_guid:
+            return None
+
+    return {
+        "guid": order_guid,
+        "display": order_display,
+        "label": _ORDER_LABEL,
+        "number": order_number,
+        "date": order_date,
+    }
 
 
 def _decorate_presentation_row(row):
@@ -499,7 +553,7 @@ def _decorate_presentation_row(row):
             and content.strip()
         ):
             row.dashboard_display_nomenclature = content.strip()
-        row.dashboard_display_type = "Прямой расход по заказу"
+        row.dashboard_display_type = "Прямые затраты"
         row.dashboard_direct_expense_amount = row.dashboard_analytical_cost
     return row
 
@@ -633,45 +687,121 @@ def customer_breakdown(rows):
             "rows": [], "documents": {},
         })
         customer["rows"].append(row)
+
         document_key, document_name, can_collapse = _document_group(row)
-        document = customer["documents"].setdefault(document_key, {
+        order = _resolved_order_group(row)
+        if order is not None:
+            presentation_key = ("order", order["guid"])
+            document = customer["documents"].setdefault(presentation_key, {
+                "name": order["display"],
+                "rows": [],
+                "subdocuments": {},
+                "is_order_group": True,
+                "order": order,
+            })
+        else:
+            presentation_key = document_key
+            document = customer["documents"].setdefault(presentation_key, {
+                "name": document_name,
+                "rows": [],
+                "subdocuments": {},
+                "is_order_group": False,
+                "order": None,
+            })
+
+        document["rows"].append(row)
+        subdocument = document["subdocuments"].setdefault(document_key, {
             "name": document_name,
             "rows": [],
             "can_collapse": can_collapse,
         })
-        document["can_collapse"] = document["can_collapse"] and can_collapse
-        document["rows"].append(row)
+        subdocument["can_collapse"] = (
+            subdocument["can_collapse"] and can_collapse
+        )
+        subdocument["rows"].append(row)
+
     result = []
     for customer in grouped.values():
         totals = summarize(customer["rows"])
         documents = []
         for document in customer["documents"].values():
             document_rows = document["rows"]
-            document_metadata = _document_display_metadata(
-                document_rows[0], document["name"], document["can_collapse"]
-            )
             document_totals = summarize(document_rows)
-            is_direct_expense_document = bool(document_rows) and all(
-                _is_direct_expense_row(row) for row in document_rows
+
+            presentation_rows = []
+            for subdocument in document["subdocuments"].values():
+                subdocument_rows = subdocument["rows"]
+                if subdocument["can_collapse"]:
+                    presentation_rows.extend(_presentation_rows(subdocument_rows))
+                else:
+                    presentation_rows.extend(
+                        _decorate_presentation_row(row)
+                        for row in subdocument_rows
+                    )
+            presentation_rows.sort(key=lambda row: (
+                row.dashboard_is_direct_expense,
+                row.period_month,
+                (row.dashboard_display_nomenclature or "").casefold(),
+                row.pk,
+            ))
+
+            order = document["order"]
+            if order is not None:
+                document_metadata = {
+                    "label": order["label"],
+                    "number": order["number"],
+                    "date": order["date"],
+                }
+            else:
+                first_subdocument = next(iter(document["subdocuments"].values()))
+                document_metadata = _document_display_metadata(
+                    first_subdocument["rows"][0],
+                    document["name"],
+                    first_subdocument["can_collapse"],
+                )
+
+            direct_expense_rows = [
+                row for row in document_rows if _is_direct_expense_row(row)
+            ]
+            direct_expense_total = sum(
+                (
+                    row.dashboard_analytical_cost or Decimal("0")
+                    for row in direct_expense_rows
+                ),
+                Decimal("0"),
             )
-            presentation_rows = (
-                _presentation_rows(document_rows)
-                if document["can_collapse"]
-                else [_decorate_presentation_row(row) for row in document_rows]
+            is_direct_expense_document = (
+                bool(document_rows)
+                and len(direct_expense_rows) == len(document_rows)
             )
+            source_documents = sorted({
+                row.document_name.strip()
+                for row in document_rows
+                if row.document_name and row.document_name.strip() != document["name"]
+            }, key=str.casefold)
+
             documents.append({
                 "name": document["name"],
                 **document_metadata,
-                "managers": sorted({row.manager_name for row in document_rows if row.manager_name}),
+                "managers": sorted({
+                    row.manager_name for row in document_rows if row.manager_name
+                }),
                 "rows": presentation_rows,
                 "source_row_count": len(document_rows),
+                "is_order_group": document["is_order_group"],
                 "is_direct_expense_document": is_direct_expense_document,
+                "has_direct_expenses": bool(direct_expense_rows),
                 "direct_expense_total": (
-                    document_totals["cost"] if is_direct_expense_document else None
+                    direct_expense_total if direct_expense_rows else None
                 ),
+                "source_documents": source_documents,
                 **document_totals,
             })
-        documents.sort(key=lambda item: (-item["revenue"], item["name"].casefold()))
+        documents.sort(key=lambda item: (
+            not item["is_order_group"],
+            -item["revenue"],
+            item["name"].casefold(),
+        ))
         result.append({**customer, **totals, "documents": documents})
     result.sort(key=lambda item: (-item["revenue"], item["name"].casefold()))
     return result
