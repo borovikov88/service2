@@ -42,6 +42,7 @@ from pool_service.models import (
 from pool_service.tests.test_onec_odata_profit_preview import FakeOpener
 from pool_service.tests.test_onec_odata_profit_drafts import (
     CUSTOMER,
+    CUSTOMER_ORDER,
     DIRECT_RECEIPT,
     ErrorOnNthOpen,
     ITEM,
@@ -1070,6 +1071,64 @@ class UnifiedSyncTests(TestCase):
                 self.assertEqual(failed.cursor["index"], 0)
                 self.assertIsNone(failed.lease_token)
                 self.assertFalse(OneCImportBatch.objects.exists())
+
+    def test_unified_sync_rejects_sales_order_from_other_organization(self):
+        run, _ = start_unified_sync(
+            self.organization,
+            self.user,
+            [REPORT_PROFIT],
+            today=date(2025, 5, 1),
+        )
+        row = self._profit_odata_row()
+        opener = FakeOpener(
+            {"value": [row]},
+            self._reference_payload(
+                "33333333-3333-3333-3333-333333333333",
+                "Товар",
+                article="A-1",
+                nomenclature_type="Запас",
+            ),
+            self._reference_payload(
+                "44444444-4444-4444-4444-444444444444",
+                "Покупатель",
+            ),
+            self._reference_payload(
+                "66666666-6666-6666-6666-666666666666",
+                "Ответственный",
+            ),
+            document_payload(
+                RECORDER,
+                number="РН-000001",
+                value_date="2025-05-15T10:00:00+03:00",
+                order=CUSTOMER_ORDER,
+            ),
+            direct_order_document_payload(
+                organization="22222222-2222-4222-8222-222222222222"
+            ),
+        )
+
+        failed = step_unified_sync(
+            run.id,
+            self.user,
+            [REPORT_PROFIT],
+            0,
+            config=config(),
+            opener=opener,
+        )
+
+        item = failed.result_summary[REPORT_PROFIT]
+        self.assertEqual(item["status"], "retryable_error")
+        self.assertEqual(item["error_stage"], "profit_enrichment")
+        self.assertEqual(item["error_code"], "profit_enrichment_failed")
+        self.assertEqual(
+            item["error"],
+            "Не удалось проверить данные 1С. Продолжите проверку позже.",
+        )
+        self.assertEqual(failed.cursor["index"], 0)
+        self.assertIsNone(failed.lease_token)
+        self.assertFalse(
+            OneCImportBatch.objects.filter(status="previewed").exists()
+        )
 
     def test_profit_customer_lookup_odata_errors_have_safe_allowlisted_reasons(self):
         cases = (
