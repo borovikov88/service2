@@ -1110,6 +1110,7 @@ def _validate_snapshot(payload, config, *, organization_id):
         if row_kind not in (None, "direct_order_expense"):
             raise ValidationError("OData snapshot row kind is invalid.")
         is_direct_expense = row_kind == "direct_order_expense"
+        direct_line_amount = None
         try:
             audit_recorder = str(UUID(str(source_data.get("recorder")))).lower()
             raw_audit_line = source_data.get("line_number")
@@ -1314,12 +1315,7 @@ def _validate_snapshot(payload, config, *, organization_id):
         nomenclature_guid = normalize_guid(
             source_data.get("nomenclature_guid"),
             field="Snapshot nomenclature",
-            allow_zero=is_direct_expense,
         )
-        if is_direct_expense and nomenclature_guid != ZERO_GUID:
-            raise ValidationError(
-                "Direct expense snapshot nomenclature identity is invalid."
-            )
         customer_guid = normalize_guid(
             source_data.get("customer_guid"),
             field="Snapshot customer",
@@ -1358,17 +1354,36 @@ def _validate_snapshot(payload, config, *, organization_id):
                 raise ValidationError(
                     "Direct expense snapshot order attribution is inconsistent."
                 )
-            if raw.get("nomenclature") != DIRECT_EXPENSE_NOMENCLATURE:
+            line_nomenclature_guid = normalize_guid(
+                source_data.get("direct_expense_line_nomenclature_guid"),
+                field="Snapshot direct expense line nomenclature",
+            )
+            line_name = source_data.get("direct_expense_line_name")
+            line_article = source_data.get("direct_expense_line_article")
+            line_content = source_data.get("direct_expense_line_content")
+            if (
+                line_nomenclature_guid != nomenclature_guid
+                or not isinstance(line_name, str)
+                or not line_name.strip()
+                or len(line_name) > 500
+                or line_name != raw.get("nomenclature")
+                or not isinstance(line_article, str)
+                or len(line_article) > 120
+                or line_article != article
+                or not isinstance(line_content, str)
+                or len(line_content) > 500
+            ):
                 raise ValidationError(
-                    "Direct expense snapshot nomenclature label is invalid."
+                    "Direct expense snapshot receipt line is inconsistent."
                 )
+            _reject_guid_label(line_name)
+            direct_line_amount = _decimal_from_snapshot(
+                source_data.get("direct_expense_line_amount"),
+                "direct expense line amount",
+            )
             if nomenclature_type != DIRECT_EXPENSE_NOMENCLATURE_TYPE:
                 raise ValidationError(
                     "Direct expense snapshot nomenclature type is invalid."
-                )
-            if article:
-                raise ValidationError(
-                    "Direct expense snapshot article must be empty."
                 )
             content_value = source_data.get("direct_expense_content")
             if not isinstance(content_value, str) or len(content_value) > 500:
@@ -1393,6 +1408,11 @@ def _validate_snapshot(payload, config, *, organization_id):
                     "resolved_order_responsible_guid",
                     "resolved_order_responsible_name",
                     "direct_expense_content",
+                    "direct_expense_line_nomenclature_guid",
+                    "direct_expense_line_name",
+                    "direct_expense_line_article",
+                    "direct_expense_line_content",
+                    "direct_expense_line_amount",
                     "direct_expense_account_guid",
                     "direct_expense_operation_guid",
                 )
@@ -1403,6 +1423,10 @@ def _validate_snapshot(payload, config, *, organization_id):
         quantity = _decimal_from_snapshot(raw.get("quantity"), "quantity")
         revenue = _decimal_from_snapshot(raw.get("revenue"), "revenue")
         cost = _decimal_from_snapshot(raw.get("cost"), "cost")
+        if is_direct_expense and direct_line_amount != cost:
+            raise ValidationError(
+                "Direct expense snapshot receipt line amount is inconsistent."
+            )
         gross_profit = _decimal_from_snapshot(raw.get("gross_profit"), "gross_profit")
         analytical_profit = _decimal_from_snapshot(
             raw.get("analytical_gross_profit"), "analytical_gross_profit"
