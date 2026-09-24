@@ -500,11 +500,17 @@ def _resolved_order_group(row):
 
     order_guid = _guid(source_data.get("resolved_order_guid"))
     order_type = source_data.get("resolved_order_type")
+    source_organization_guid = _guid(source_data.get("organization_guid"))
+    order_organization_guid = _guid(
+        source_data.get("resolved_order_organization_guid")
+    )
     order_number = source_data.get("resolved_order_number")
     order_display = source_data.get("resolved_order_display")
     if (
         order_guid is None
         or order_type != _ORDER_TYPE
+        or source_organization_guid is None
+        or order_organization_guid != source_organization_guid
         or not isinstance(order_number, str)
         or not order_number.strip()
         or len(order_number) > 100
@@ -523,9 +529,26 @@ def _resolved_order_group(row):
     )
     if order_display != expected_display:
         return None
+    order_customer_name = None
     if _is_direct_expense_row(row):
         if _guid(source_data.get("direct_expense_order_guid")) != order_guid:
             return None
+        resolved_customer_guid = _guid(
+            source_data.get("resolved_order_customer_guid")
+        )
+        source_customer_guid = _guid(source_data.get("customer_guid"))
+        resolved_customer_name = source_data.get(
+            "resolved_order_customer_name"
+        )
+        if (
+            resolved_customer_guid is None
+            or resolved_customer_guid != source_customer_guid
+            or not isinstance(resolved_customer_name, str)
+            or not resolved_customer_name.strip()
+            or resolved_customer_name != row.customer_name
+        ):
+            return None
+        order_customer_name = resolved_customer_name.strip()
 
     return {
         "guid": order_guid,
@@ -533,6 +556,7 @@ def _resolved_order_group(row):
         "label": _ORDER_LABEL,
         "number": order_number,
         "date": order_date,
+        "customer_name": order_customer_name,
     }
 
 
@@ -678,38 +702,66 @@ def _presentation_rows(document_rows):
     return [_decorate_presentation_row(row) for row in result]
 
 
-def customer_breakdown(rows):
-    grouped = {}
-    for row in rows:
-        key = _customer_key(row.customer_name)
-        customer = grouped.setdefault(key, {
-            "name": re.sub(r"\s+", " ", row.customer_name.strip()) if key else "Покупатель не указан",
-            "rows": [], "documents": {},
-        })
-        customer["rows"].append(row)
+def _display_customer_name(value):
+    normalized = re.sub(r"\s+", " ", (value or "").strip())
+    return normalized or "Покупатель не указан"
 
+
+def _order_group_customer_name(document):
+    validated = document.get("order_customer_names") or []
+    if validated:
+        validated.sort(
+            key=lambda item: (item[0] or date.min, item[1] or 0),
+            reverse=True,
+        )
+        return validated[0][2]
+
+    rows = sorted(
+        document["rows"],
+        key=lambda row: (row.period_month or date.min, row.pk or 0),
+        reverse=True,
+    )
+    names = [_display_customer_name(row.customer_name) for row in rows]
+    for name in names:
+        if _customer_key(name) not in {"", "без контрагента"}:
+            return name
+    return names[0] if names else "Покупатель не указан"
+
+
+def customer_breakdown(rows):
+    # Build validated order groups before customer buckets. This guarantees
+    # one order -> one presentation table even when source sale movements have
+    # a missing/different register customer while direct costs use the order
+    # customer resolved from 1C.
+    presentation_groups = {}
+    for row in rows:
         document_key, document_name, can_collapse = _document_group(row)
         order = _resolved_order_group(row)
         if order is not None:
-            presentation_key = ("order", order["guid"])
-            document = customer["documents"].setdefault(presentation_key, {
-                "name": order["display"],
-                "rows": [],
-                "subdocuments": {},
-                "is_order_group": True,
-                "order": order,
-            })
+            presentation_key = ("order", row.organization_id, order["guid"])
         else:
-            presentation_key = document_key
-            document = customer["documents"].setdefault(presentation_key, {
-                "name": document_name,
-                "rows": [],
-                "subdocuments": {},
-                "is_order_group": False,
-                "order": None,
-            })
+            presentation_key = (
+                "document",
+                _customer_key(row.customer_name),
+                document_key,
+            )
 
+        document = presentation_groups.setdefault(presentation_key, {
+            "presentation_key": presentation_key,
+            "name": order["display"] if order is not None else document_name,
+            "rows": [],
+            "subdocuments": {},
+            "is_order_group": order is not None,
+            "order": order,
+            "fallback_customer_name": _display_customer_name(row.customer_name),
+            "order_customer_names": [],
+        })
         document["rows"].append(row)
+        if order is not None and order.get("customer_name"):
+            document["order_customer_names"].append(
+                (row.period_month, row.pk, order["customer_name"])
+            )
+
         subdocument = document["subdocuments"].setdefault(document_key, {
             "name": document_name,
             "rows": [],
@@ -719,6 +771,22 @@ def customer_breakdown(rows):
             subdocument["can_collapse"] and can_collapse
         )
         subdocument["rows"].append(row)
+
+    grouped = {}
+    for document in presentation_groups.values():
+        customer_name = (
+            _order_group_customer_name(document)
+            if document["is_order_group"]
+            else document["fallback_customer_name"]
+        )
+        key = _customer_key(customer_name)
+        customer = grouped.setdefault(key, {
+            "name": customer_name if key else "Покупатель не указан",
+            "rows": [],
+            "documents": {},
+        })
+        customer["rows"].extend(document["rows"])
+        customer["documents"][document["presentation_key"]] = document
 
     result = []
     for customer in grouped.values():
