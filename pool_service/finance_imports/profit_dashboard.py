@@ -643,17 +643,26 @@ def customer_breakdown(rows):
             document_metadata = _document_display_metadata(
                 document_rows[0], document["name"], document["can_collapse"]
             )
+            document_totals = summarize(document_rows)
+            is_direct_expense_document = bool(document_rows) and all(
+                _is_direct_expense_row(row) for row in document_rows
+            )
+            presentation_rows = (
+                _presentation_rows(document_rows)
+                if document["can_collapse"]
+                else [_decorate_presentation_row(row) for row in document_rows]
+            )
             documents.append({
                 "name": document["name"],
                 **document_metadata,
                 "managers": sorted({row.manager_name for row in document_rows if row.manager_name}),
-                "rows": (
-                    _presentation_rows(document_rows)
-                    if document["can_collapse"]
-                    else document_rows
-                ),
+                "rows": presentation_rows,
                 "source_row_count": len(document_rows),
-                **summarize(document_rows),
+                "is_direct_expense_document": is_direct_expense_document,
+                "direct_expense_total": (
+                    document_totals["cost"] if is_direct_expense_document else None
+                ),
+                **document_totals,
             })
         documents.sort(key=lambda item: (-item["revenue"], item["name"].casefold()))
         result.append({**customer, **totals, "documents": documents})
