@@ -534,6 +534,9 @@ class UnifiedSyncTests(TestCase):
             "resolved_order_customer_guid": "44444444-4444-4444-8444-444444444444",
             "resolved_order_responsible_guid": "66666666-6666-4666-8666-666666666666",
             "organization_guid": "11111111-1111-4111-8111-111111111111",
+            "direct_expense_content": "Прямые расходы по объекту",
+            "direct_expense_account_guid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "direct_expense_operation_guid": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         })
         baseline = month_fingerprint(REPORT_PROFIT, month, [first])
 
@@ -560,11 +563,29 @@ class UnifiedSyncTests(TestCase):
             "22222222-2222-4222-8222-222222222222"
         )
 
+        changed_content = deepcopy(first)
+        changed_content["source_data"]["direct_expense_content"] = (
+            "Исправленные прямые расходы по объекту"
+        )
+
+        changed_account = deepcopy(first)
+        changed_account["source_data"]["direct_expense_account_guid"] = (
+            "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        )
+
+        changed_operation = deepcopy(first)
+        changed_operation["source_data"]["direct_expense_operation_guid"] = (
+            "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        )
+
         for changed in (
             changed_order,
             changed_customer,
             changed_responsible,
             changed_organization,
+            changed_content,
+            changed_account,
+            changed_operation,
         ):
             with self.subTest(source_data=changed["source_data"]):
                 self.assertNotEqual(
