@@ -196,7 +196,7 @@
               <tbody>
                 {% for row in document.rows %}
                 <tr class="profit-document-line{% if row.dashboard_is_direct_expense %} profit-direct-expense-row{% endif %}">
-                  <td data-label="Номенклатура / затрата">
+                  <td data-label="Номенклатура">
                     <span class="profit-line-title">{{ row.dashboard_display_nomenclature }}</span>
                     {% if row.dashboard_is_direct_expense %}
                       <span class="profit-line-meta">Прямые затраты{% if row.document_name %} · {{ row.document_name }}{% endif %}</span>
@@ -211,7 +211,7 @@
                   <td class="text-end" data-label="Выручка">{% if row.dashboard_is_direct_expense %}—{% else %}{{ row.dashboard_revenue|money }}{% endif %}</td>
                   <td class="text-end" data-label="Себестоимость">
                     {% if row.dashboard_analytical_cost != None %}{{ row.dashboard_analytical_cost|money }}{% else %}—{% endif %}
-                    {% if row.dashboard_cost_is_calculated %}<span class="profit-line-meta">1С: {{ row.cost|money }} · расчётная {{ row.dashboard_period_cost_ratio|ratio_percent }}%</span>{% endif %}
+                    {% if row.dashboard_cost_is_calculated %}<span class="profit-line-meta">Исходная себестоимость 1С: {{ row.cost|money }}</span><span class="profit-line-meta">Расчётная · {{ row.dashboard_period_cost_ratio|ratio_percent }}%</span>{% endif %}
                   </td>
                   <td class="text-end {% if row.dashboard_gross_profit < 0 %}text-danger fw-semibold{% elif row.dashboard_gross_profit > 0 %}text-success{% endif %}" data-label="Валовая прибыль">{% if row.dashboard_gross_profit != None %}{{ row.dashboard_gross_profit|money }}{% else %}—{% endif %}</td>
                 </tr>
@@ -235,7 +235,7 @@
               {% else %}
               <div class="profit-mobile-line__metric" data-profit-mobile-field="quantity"><dt>Кол-во</dt><dd>{{ row.quantity|default_if_none:"—" }}</dd></div>
               <div class="profit-mobile-line__metric" data-profit-mobile-field="price"><dt>Цена</dt><dd>{% if row.dashboard_unit_price != None %}{{ row.dashboard_unit_price|money }}{% else %}—{% endif %}</dd></div>
-              <div class="profit-mobile-line__metric" data-profit-mobile-field="revenue"><dt>Выручка</dt><dd>{{ row.dashboard_revenue|money }}</dd></div>
+              <div class="profit-mobile-line__metric" data-profit-mobile-field="revenue"><dt>Стоимость</dt><dd>{{ row.dashboard_revenue|money }}</dd></div>
               <div class="profit-mobile-line__metric" data-profit-mobile-field="cost"><dt>Себестоимость</dt><dd>{% if row.dashboard_analytical_cost != None %}{{ row.dashboard_analytical_cost|money }}{% else %}—{% endif %}</dd></div>
               <div class="profit-mobile-line__metric profit-mobile-line__metric--profit" data-profit-mobile-field="gross-profit"><dt>Валовая прибыль</dt><dd class="{% if row.dashboard_gross_profit < 0 %}text-danger{% elif row.dashboard_gross_profit > 0 %}text-success{% endif %}">{% if row.dashboard_gross_profit != None %}{{ row.dashboard_gross_profit|money }}{% else %}—{% endif %}</dd></div>
               {% endif %}
