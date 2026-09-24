@@ -195,7 +195,7 @@
               </thead>
               <tbody>
                 {% for row in document.rows %}
-                <tr class="profit-document-line{% if row.dashboard_is_direct_expense %} profit-direct-expense-row{% endif %}">
+                <tr class="profit-document-line{% if row.dashboard_is_direct_expense %} profit-direct-expense-row{% endif %}" data-profit-row-kind="{% if row.dashboard_is_direct_expense %}direct-expense{% else %}item{% endif %}">
                   <td data-label="Номенклатура">
                     <span class="profit-line-title">{{ row.dashboard_display_nomenclature }}</span>
                     {% if row.dashboard_is_direct_expense %}
@@ -211,7 +211,7 @@
                   <td class="text-end" data-label="Выручка">{% if row.dashboard_is_direct_expense %}—{% else %}{{ row.dashboard_revenue|money }}{% endif %}</td>
                   <td class="text-end" data-label="Себестоимость">
                     {% if row.dashboard_analytical_cost != None %}{{ row.dashboard_analytical_cost|money }}{% else %}—{% endif %}
-                    {% if row.dashboard_cost_is_calculated %}<span class="profit-line-meta">Исходная себестоимость 1С: {{ row.cost|money }}</span><span class="profit-line-meta">Расчётная · {{ row.dashboard_period_cost_ratio|ratio_percent }}%</span>{% endif %}
+                    {% if row.dashboard_cost_is_calculated %}<span class="profit-line-meta">Исходная себестоимость 1С: {{ row.cost|money }}</span><span class="profit-line-meta">Расчётная · {{ row.dashboard_period_cost_ratio|ratio_percent }}% месяца импорта</span>{% endif %}
                   </td>
                   <td class="text-end {% if row.dashboard_gross_profit < 0 %}text-danger fw-semibold{% elif row.dashboard_gross_profit > 0 %}text-success{% endif %}" data-label="Валовая прибыль">{% if row.dashboard_gross_profit != None %}{{ row.dashboard_gross_profit|money }}{% else %}—{% endif %}</td>
                 </tr>
