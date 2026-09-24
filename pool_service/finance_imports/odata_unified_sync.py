@@ -38,15 +38,20 @@ from .odata_cashflow_drafts import (
     _save_snapshot as save_cashflow_snapshot,
     _validate_snapshot as validate_cashflow_snapshot,
 )
+from .odata_direct_order_costs import read_direct_order_expense_rows
 from .odata_profit import NoRedirectHandler, ODataPreviewError, read_profit_rows, validate_config
 from .odata_profit_drafts import (
     PARSER_VERSION as PROFIT_PARSER_VERSION,
     SNAPSHOT_SCHEMA as PROFIT_SCHEMA,
     _audit as profit_audit,
+    _direct_expense_reference_guids,
+    _enrich_direct_expense_rows,
     _enrich_rows,
     _preview_metadata as profit_preview_metadata,
+    _read_direct_expense_documents,
     _read_profit_documents,
     _read_reference_map,
+    _reference_lookup_kwargs,
     _read_snapshot as read_profit_snapshot,
     _save_batch_snapshot,
     _bulk_create_monthly_rows,
@@ -552,6 +557,9 @@ def _decimal(value):
 
 def _canonical_profit(row):
     get = row.get if isinstance(row, dict) else lambda key, default=None: getattr(row, key, default)
+    source_data = get("source_data", {}) or {}
+    if not isinstance(source_data, dict):
+        source_data = {}
     return {
         "source_identity": get("source_identity"),
         "period_month": get("period_month").isoformat() if isinstance(get("period_month"), date) else get("period_month"),
@@ -565,6 +573,45 @@ def _canonical_profit(row):
         "cost_calculation_ratio": _decimal(get("cost_calculation_ratio")),
         "analytical_gross_profit": _decimal(get("analytical_gross_profit")),
         "profitability_percent": _decimal(get("profitability_percent")),
+        "row_kind": source_data.get("row_kind", ""),
+        "direct_expense_order_guid": source_data.get(
+            "direct_expense_order_guid", ""
+        ),
+        "resolved_order_guid": source_data.get("resolved_order_guid", ""),
+        "resolved_order_customer_guid": source_data.get(
+            "resolved_order_customer_guid", ""
+        ),
+        "resolved_order_responsible_guid": source_data.get(
+            "resolved_order_responsible_guid", ""
+        ),
+        "organization_guid": (
+            source_data.get("organization_guid", "")
+            if source_data.get("row_kind") == "direct_order_expense"
+            else ""
+        ),
+        "direct_expense_content": (
+            source_data.get("direct_expense_content", "")
+            if source_data.get("row_kind") == "direct_order_expense"
+            else ""
+        ),
+        "direct_expense_account_guid": (
+            source_data.get("direct_expense_account_guid", "")
+            if source_data.get("row_kind") == "direct_order_expense"
+            else ""
+        ),
+        "direct_expense_operation_guid": (
+            source_data.get("direct_expense_operation_guid", "")
+            if source_data.get("row_kind") == "direct_order_expense"
+            else ""
+        ),
+        # Direct-expense source_data is the validated persisted audit payload.
+        # Hash it as a whole so corrections to any stored order/receipt/audit
+        # metadata cannot be treated as an unchanged month.
+        "direct_expense_source_data": (
+            source_data
+            if source_data.get("row_kind") == "direct_order_expense"
+            else {}
+        ),
     }
 
 
@@ -608,22 +655,67 @@ def _profit_reference_guid(value, *, allow_zero=False):
 
 def _collect_profit_chunk(start, end, *, config, opener, organization_id):
     try:
-        rows, pages = read_profit_rows(config, start[:7], end[:7], opener=opener)
+        rows, sales_pages = read_profit_rows(
+            config, start[:7], end[:7], opener=opener
+        )
+        direct_rows, direct_pages = read_direct_order_expense_rows(
+            config, start[:7], end[:7], opener=opener
+        )
+        pages = sales_pages + direct_pages
+        if len(rows) + len(direct_rows) > config.max_rows:
+            raise ODataPreviewError(
+                "OData response exceeded the configured row limit"
+            )
+        sales_identities = {
+            (row.recorder, row.line_number)
+            for row in rows
+            if hasattr(row, "recorder") and hasattr(row, "line_number")
+        }
+        if any(row.identity in sales_identities for row in direct_rows):
+            raise ODataPreviewError(
+                "OData sources contain a duplicate source identity"
+            )
     except Exception as exc:
         _raise_stage_error(STAGE_PROFIT_READ, exc)
+
+    budget = {"used": 0}
     try:
+        direct_documents = _read_direct_expense_documents(
+            config,
+            direct_rows,
+            opener=opener,
+            page_budget=budget,
+        )
+    except Exception as exc:
+        _raise_stage_error(
+            STAGE_PROFIT_DOCUMENT_LOOKUP,
+            exc,
+            error_reason=_profit_document_error_reason(exc),
+        )
+
+    try:
+        direct_customers, direct_responsibles = _direct_expense_reference_guids(
+            direct_rows, direct_documents
+        )
         required = {
-            "nomenclature": {_profit_reference_guid(row.nomenclature_guid) for row in rows},
+            "nomenclature": {
+                _profit_reference_guid(row.nomenclature_guid) for row in rows
+            },
             "customer": {
                 guid for row in rows
-                if (guid := _profit_reference_guid(row.customer_guid, allow_zero=True))
-            },
-            "responsible": {_profit_reference_guid(row.responsible_guid) for row in rows},
+                if (
+                    guid := _profit_reference_guid(
+                        row.customer_guid, allow_zero=True
+                    )
+                )
+            } | direct_customers,
+            "responsible": {
+                _profit_reference_guid(row.responsible_guid) for row in rows
+            } | direct_responsibles,
         }
     except Exception as exc:
         _raise_stage_error(STAGE_PROFIT_REFERENCE_GUID_VALIDATION, exc)
 
-    budget = {"used": 0}
     references = {}
     for kind, stage in (
         ("nomenclature", STAGE_PROFIT_NOMENCLATURE_LOOKUP),
@@ -631,16 +723,16 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
         ("responsible", STAGE_PROFIT_RESPONSIBLE_LOOKUP),
     ):
         try:
-            lookup_kwargs = {"opener": opener, "page_budget": budget}
-            if kind == "nomenclature":
-                lookup_kwargs["allow_deleted_nomenclature"] = True
-            elif kind == "customer":
-                lookup_kwargs["allow_deleted_customer"] = True
             references[kind] = _read_reference_map(
                 config,
                 kind,
                 required[kind],
-                **lookup_kwargs,
+                **_reference_lookup_kwargs(
+                    kind,
+                    opener=opener,
+                    page_budget=budget,
+                    allow_deleted_nomenclature=True,
+                ),
             )
         except Exception as exc:
             error_reason = None
@@ -660,6 +752,7 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
         documents = _read_profit_documents(
             config, rows, opener=opener, page_budget=budget
         )
+        documents.update(direct_documents)
     except Exception as exc:
         _raise_stage_error(
             STAGE_PROFIT_DOCUMENT_LOOKUP,
@@ -667,7 +760,13 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
             error_reason=_profit_document_error_reason(exc),
         )
     try:
-        return _enrich_rows(rows, references, documents, organization_id), pages
+        normalized = _enrich_rows(
+            rows, references, documents, organization_id
+        )
+        normalized.extend(_enrich_direct_expense_rows(
+            direct_rows, references, documents, organization_id
+        ))
+        return normalized, pages
     except Exception as exc:
         _raise_stage_error(STAGE_PROFIT_ENRICHMENT, exc)
 

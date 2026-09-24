@@ -23,6 +23,11 @@ from pool_service.models import (
     Organization,
     onec_monthly_profit_source_identity,
 )
+from .odata_direct_order_costs import (
+    RECORDER_TYPE as DIRECT_EXPENSE_RECORDER_TYPE,
+    DirectOrderExpenseRow,
+    read_direct_order_expense_rows,
+)
 from .odata_profit import (
     NoRedirectHandler,
     ODataConfig,
@@ -84,12 +89,22 @@ DOCUMENTS = {
     },
     "Document_ЗаказПокупателя": {
         "label": "Заказ покупателя",
+        "fields": (
+            "Ref_Key", "Number", "Date", "Организация_Key",
+            "Контрагент_Key", "Ответственный_Key"
+        ),
+    },
+    "Document_ПриходнаяНакладная": {
+        "label": "Приходная накладная",
         "fields": ("Ref_Key", "Number", "Date"),
     },
 }
 RETAIL_REPORT_TYPE = "Document_ОтчетОРозничныхПродажах"
 RETAIL_CHECK_TYPE = "Document_ЧекККМ"
 ORDER_TYPE = "Document_ЗаказПокупателя"
+DIRECT_EXPENSE_NOMENCLATURE = "Прямые расходы по заказу"
+DIRECT_EXPENSE_NOMENCLATURE_TYPE = "Прямые расходы"
+ALLOWED_DOCUMENT_TYPES = PROFIT_DOCUMENT_TYPES | {DIRECT_EXPENSE_RECORDER_TYPE}
 
 
 class ODataDraftError(ValidationError):
@@ -231,6 +246,22 @@ def _read_reference_map(
     return found
 
 
+def _reference_lookup_kwargs(
+    kind,
+    *,
+    opener,
+    page_budget,
+    allow_deleted_nomenclature=False,
+):
+    """Keep reference lookup order stable while sharing customer history policy."""
+    kwargs = {"opener": opener, "page_budget": page_budget}
+    if kind == "nomenclature" and allow_deleted_nomenclature:
+        kwargs["allow_deleted_nomenclature"] = True
+    elif kind == "customer":
+        kwargs["allow_deleted_customer"] = True
+    return kwargs
+
+
 def _document_date(value):
     if not isinstance(value, str) or len(value) > 80:
         raise ODataPreviewError("1C document date is invalid")
@@ -250,7 +281,7 @@ def _read_document_entities(
 ):
     by_type = defaultdict(set)
     for entity_type, guid in refs:
-        if entity_type not in DOCUMENTS or entity_type not in PROFIT_DOCUMENT_TYPES:
+        if entity_type not in DOCUMENTS or entity_type not in ALLOWED_DOCUMENT_TYPES:
             raise ODataPreviewError("1C document type is not allowed")
         by_type[entity_type].add(guid)
     documents = {}
@@ -290,6 +321,26 @@ def _read_document_entities(
                         "number": number.strip(),
                         "date": _document_date(raw.get("Date")),
                     }
+                    if entity_type == ORDER_TYPE:
+                        raw_organization = raw.get("Организация_Key")
+                        if raw_organization not in (None, ""):
+                            item["organization_guid"] = normalize_guid(
+                                raw_organization,
+                                field="Order Организация_Key",
+                            )
+                        raw_customer = raw.get("Контрагент_Key")
+                        if raw_customer not in (None, ""):
+                            item["customer_guid"] = normalize_guid(
+                                raw_customer,
+                                field="Order Контрагент_Key",
+                            )
+                        raw_responsible = raw.get("Ответственный_Key")
+                        if raw_responsible not in (None, ""):
+                            item["responsible_guid"] = normalize_guid(
+                                raw_responsible,
+                                field="Order Ответственный_Key",
+                                allow_zero=True,
+                            )
                     if entity_type == "Document_РасходнаяНакладная":
                         raw_order = raw.get("Заказ")
                         raw_order_type = raw.get("Заказ_Type")
@@ -350,6 +401,190 @@ def _read_profit_documents(config, rows, *, opener, page_budget):
             require_all=False,
         ))
     return documents
+
+
+def _read_direct_expense_documents(
+    config,
+    rows,
+    *,
+    opener,
+    page_budget,
+):
+    receipt_refs = {
+        (DIRECT_EXPENSE_RECORDER_TYPE, row.recorder)
+        for row in rows
+    }
+    order_refs = {
+        (ORDER_TYPE, row.order_guid)
+        for row in rows
+    }
+    documents = _read_document_entities(
+        config,
+        order_refs,
+        opener=opener,
+        page_budget=page_budget,
+        require_all=True,
+    )
+    try:
+        # Receipt metadata is optional and must never consume the shared
+        # mandatory enrichment budget (order/customer/responsible/sales docs).
+        receipt_page_budget = {"used": 0}
+        documents.update(_read_document_entities(
+            config,
+            receipt_refs,
+            opener=opener,
+            page_budget=receipt_page_budget,
+            require_all=False,
+        ))
+    except ODataPreviewError:
+        # Receipt metadata is optional. The movement recorder GUID and date
+        # remain available for a deterministic audit/display fallback.
+        pass
+    return documents
+
+
+def _direct_expense_order(row, documents):
+    order = documents.get((ORDER_TYPE, row.order_guid))
+    if order is None:
+        raise ODataPreviewError(
+            "Direct expense customer order is missing or unavailable"
+        )
+    if order.get("organization_guid") != row.organization_guid:
+        raise ODataPreviewError(
+            "Direct expense customer order organization does not match movement"
+        )
+    if not order.get("customer_guid"):
+        raise ODataPreviewError(
+            "Direct expense customer order has no customer"
+        )
+    return order
+
+
+def _direct_expense_reference_guids(rows, documents):
+    customers = set()
+    responsibles = set()
+    for row in rows:
+        order = _direct_expense_order(row, documents)
+        customers.add(order["customer_guid"])
+        responsible = order.get("responsible_guid")
+        if responsible and responsible != ZERO_GUID:
+            responsibles.add(responsible)
+    return customers, responsibles
+
+
+def _enrich_direct_expense_rows(
+    rows,
+    references,
+    documents,
+    organization_id,
+):
+    normalized = []
+    for row in rows:
+        receipt = documents.get((DIRECT_EXPENSE_RECORDER_TYPE, row.recorder))
+        order = _direct_expense_order(row, documents)
+        customer = references["customer"][order["customer_guid"]]["description"]
+        responsible_guid = order.get("responsible_guid") or ZERO_GUID
+        manager = (
+            references["responsible"][responsible_guid]["description"]
+            if responsible_guid != ZERO_GUID
+            else "Без ответственного"
+        )
+        cost = row.amount.quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+        gross_profit = -cost
+        receipt_resolved = receipt is not None
+        receipt_display = (
+            _document_display(DIRECT_EXPENSE_RECORDER_TYPE, receipt)
+            if receipt_resolved
+            else _direct_expense_receipt_fallback_display(
+                row.recorder, row.source_date
+            )
+        )
+        order_display = _document_display(ORDER_TYPE, order)
+        period_month = row.source_date.replace(day=1)
+        source_identity = onec_monthly_profit_source_identity(
+            period_month=period_month,
+            source_row_number=row.line_number,
+            source_recorder=row.recorder,
+        )
+        normalized.append({
+            "period_month": period_month.isoformat(),
+            "source_recorder": row.recorder,
+            "source_row_number": row.line_number,
+            "source_identity": source_identity,
+            "manager_name": manager,
+            "customer_name": customer,
+            "document_name": receipt_display,
+            "nomenclature": DIRECT_EXPENSE_NOMENCLATURE,
+            "article": "",
+            "nomenclature_type": DIRECT_EXPENSE_NOMENCLATURE_TYPE,
+            "quantity": "0.000000",
+            "revenue": "0.00",
+            "cost": format(cost, "f"),
+            "gross_profit": format(gross_profit, "f"),
+            "calculated_cost": None,
+            "cost_source": OneCMonthlyProfit.COST_SOURCE_ACTUAL,
+            "cost_calculation_method": "",
+            "cost_calculation_ratio": None,
+            "analytical_gross_profit": format(gross_profit, "f"),
+            "profitability_percent": None,
+            "source_data": {
+                "source": "odata",
+                "row_kind": "direct_order_expense",
+                "recorder": row.recorder,
+                "recorder_type": row.recorder_type,
+                "line_number": row.line_number,
+                "period": row.source_period,
+                "source_date": row.source_date.isoformat(),
+                "organization_guid": row.organization_guid,
+                "nomenclature_guid": ZERO_GUID,
+                "nomenclature_type": DIRECT_EXPENSE_NOMENCLATURE_TYPE,
+                "customer_guid": order["customer_guid"],
+                "responsible_guid": responsible_guid,
+                "vat": "0.00",
+                "document_guid": None,
+                "document_type": None,
+                "document_group_recorder": row.recorder,
+                "document_group_recorder_type": row.recorder_type,
+                "document_group_key": _group_key(
+                    organization_id, row.recorder_type, row.recorder
+                ),
+                "document_display": receipt_display,
+                "document_number": (
+                    receipt["number"] if receipt_resolved else None
+                ),
+                "document_date": (
+                    receipt["date"].isoformat() if receipt_resolved else None
+                ),
+                "document_group_number": (
+                    receipt["number"] if receipt_resolved else None
+                ),
+                "document_group_date": (
+                    receipt["date"].isoformat() if receipt_resolved else None
+                ),
+                "direct_expense_receipt_resolved": receipt_resolved,
+                "direct_expense_order_guid": row.order_guid,
+                "resolved_order_guid": row.order_guid,
+                "resolved_order_type": ORDER_TYPE,
+                "resolved_order_number": order["number"],
+                "resolved_order_date": order["date"].isoformat(),
+                "resolved_order_display": order_display,
+                "resolved_order_customer_guid": order["customer_guid"],
+                "resolved_order_customer_name": customer,
+                "resolved_order_responsible_guid": responsible_guid,
+                "resolved_order_responsible_name": manager,
+                "direct_expense_content": row.content,
+                "direct_expense_account_guid": row.account_guid,
+                "direct_expense_operation_guid": row.operation_guid,
+            },
+        })
+    return normalized
+
+
+def _direct_expense_receipt_fallback_display(recorder, source_date):
+    return (
+        f"Приходная накладная 1С {recorder} "
+        f"от {source_date:%d.%m.%Y}"
+    )
 
 
 def _document_display(entity_type, document):
@@ -646,9 +881,19 @@ def _validate_snapshot(payload, config, *, organization_id):
             raise ValidationError("OData snapshot row is invalid.")
         try:
             recorder = str(UUID(str(raw.get("source_recorder")))).lower()
-            line = int(raw.get("source_row_number"))
+            raw_line = raw.get("source_row_number")
+            line_decimal = Decimal(str(raw_line))
+            line = int(line_decimal)
+            if isinstance(raw_line, bool) or line_decimal != Decimal(line):
+                raise ValueError
             period = date.fromisoformat(raw.get("period_month"))
-        except (ValueError, TypeError, AttributeError) as exc:
+        except (
+            ValueError,
+            TypeError,
+            AttributeError,
+            InvalidOperation,
+            OverflowError,
+        ) as exc:
             raise ValidationError("OData snapshot identity or period is invalid.") from exc
         if line < 0 or line > 2147483647 or period.day != 1 or not start <= period <= end:
             raise ValidationError("OData snapshot row is outside its period.")
@@ -700,9 +945,20 @@ def _validate_snapshot(payload, config, *, organization_id):
             raise ValidationError("OData snapshot display field is too long.")
         if source_data.get("source") != "odata":
             raise ValidationError("OData snapshot audit source is invalid.")
+        row_kind = source_data.get("row_kind")
+        if row_kind not in (None, "direct_order_expense"):
+            raise ValidationError("OData snapshot row kind is invalid.")
+        is_direct_expense = row_kind == "direct_order_expense"
         try:
             audit_recorder = str(UUID(str(source_data.get("recorder")))).lower()
-            audit_line = int(source_data.get("line_number"))
+            raw_audit_line = source_data.get("line_number")
+            audit_line_decimal = Decimal(str(raw_audit_line))
+            audit_line = int(audit_line_decimal)
+            if (
+                isinstance(raw_audit_line, bool)
+                or audit_line_decimal != Decimal(audit_line)
+            ):
+                raise ValueError
             source_date = date.fromisoformat(source_data.get("source_date"))
             source_period_value = source_data.get("period")
             if not isinstance(source_period_value, str) or len(source_period_value) > 80:
@@ -710,7 +966,13 @@ def _validate_snapshot(payload, config, *, organization_id):
             source_period_date = datetime.fromisoformat(
                 source_period_value.replace("Z", "+00:00")
             ).date()
-        except (ValueError, TypeError, AttributeError) as exc:
+        except (
+            ValueError,
+            TypeError,
+            AttributeError,
+            InvalidOperation,
+            OverflowError,
+        ) as exc:
             raise ValidationError("OData snapshot audit identity is invalid.") from exc
         if (
             audit_recorder != recorder
@@ -722,6 +984,13 @@ def _validate_snapshot(payload, config, *, organization_id):
         recorder_type = _snapshot_document_type(
             source_data.get("recorder_type"), field="Snapshot Recorder_Type"
         )
+        if (
+            is_direct_expense
+            and recorder_type != DIRECT_EXPENSE_RECORDER_TYPE
+        ):
+            raise ValidationError(
+                "Direct expense snapshot recorder type is invalid."
+            )
         document_guid = source_data.get("document_guid")
         document_type = source_data.get("document_type")
         if document_guid is None:
@@ -760,12 +1029,40 @@ def _validate_snapshot(payload, config, *, organization_id):
             or document != document_display
         ):
             raise ValidationError("OData snapshot document display is invalid.")
-        known_recorder = recorder_type in PROFIT_RECORDER_TYPES
+        known_recorder = (
+            recorder_type in PROFIT_RECORDER_TYPES
+            or (is_direct_expense and recorder_type == DIRECT_EXPENSE_RECORDER_TYPE)
+        )
         document_number = source_data.get("document_number")
         document_date_value = source_data.get("document_date")
         group_number = source_data.get("document_group_number")
         group_date_value = source_data.get("document_group_date")
-        if known_recorder:
+        direct_receipt_resolved = (
+            source_data.get("direct_expense_receipt_resolved")
+            if is_direct_expense
+            else None
+        )
+        if is_direct_expense and not isinstance(direct_receipt_resolved, bool):
+            raise ValidationError(
+                "Direct expense snapshot receipt state is invalid."
+            )
+        if is_direct_expense and not direct_receipt_resolved:
+            if any(value is not None for value in (
+                document_number,
+                document_date_value,
+                group_number,
+                group_date_value,
+            )):
+                raise ValidationError(
+                    "Direct expense snapshot unresolved receipt metadata is invalid."
+                )
+            if document_display != _direct_expense_receipt_fallback_display(
+                recorder, source_date
+            ):
+                raise ValidationError(
+                    "Direct expense snapshot receipt fallback is invalid."
+                )
+        elif known_recorder:
             if not isinstance(document_number, str) or not document_number.strip():
                 raise ValidationError("OData snapshot document number is invalid.")
             if len(document_number) > 100:
@@ -831,7 +1128,9 @@ def _validate_snapshot(payload, config, *, organization_id):
             if any(value is None for value in order_values):
                 raise ValidationError("OData snapshot resolved order is incomplete.")
             order_guid, order_type, order_number, order_date_value, order_display = order_values
-            normalize_guid(order_guid, field="Snapshot resolved order GUID")
+            normalized_order_guid = normalize_guid(
+                order_guid, field="Snapshot resolved order GUID"
+            )
             if _snapshot_document_type(
                 order_type,
                 field="Snapshot resolved order type",
@@ -849,11 +1148,97 @@ def _validate_snapshot(payload, config, *, organization_id):
                 "date": order_date,
             }):
                 raise ValidationError("OData snapshot resolved order display is invalid.")
-        normalize_guid(source_data.get("nomenclature_guid"), field="Snapshot nomenclature")
-        normalize_guid(
-            source_data.get("customer_guid"), field="Snapshot customer", allow_zero=True
+        if is_direct_expense and not all(value is not None for value in order_values):
+            raise ValidationError("Direct expense snapshot requires a resolved order.")
+        nomenclature_guid = normalize_guid(
+            source_data.get("nomenclature_guid"),
+            field="Snapshot nomenclature",
+            allow_zero=is_direct_expense,
         )
-        normalize_guid(source_data.get("responsible_guid"), field="Snapshot responsible")
+        if is_direct_expense and nomenclature_guid != ZERO_GUID:
+            raise ValidationError(
+                "Direct expense snapshot nomenclature identity is invalid."
+            )
+        customer_guid = normalize_guid(
+            source_data.get("customer_guid"),
+            field="Snapshot customer",
+            allow_zero=not is_direct_expense,
+        )
+        responsible_guid = normalize_guid(
+            source_data.get("responsible_guid"),
+            field="Snapshot responsible",
+            allow_zero=is_direct_expense,
+        )
+        if is_direct_expense:
+            direct_order_guid = normalize_guid(
+                source_data.get("direct_expense_order_guid"),
+                field="Snapshot direct expense order GUID",
+            )
+            if direct_order_guid != normalized_order_guid:
+                raise ValidationError(
+                    "Direct expense snapshot order attribution is inconsistent."
+                )
+            resolved_customer_guid = normalize_guid(
+                source_data.get("resolved_order_customer_guid"),
+                field="Snapshot resolved order customer",
+            )
+            resolved_responsible_guid = normalize_guid(
+                source_data.get("resolved_order_responsible_guid"),
+                field="Snapshot resolved order responsible",
+                allow_zero=True,
+            )
+            if (
+                resolved_customer_guid != customer_guid
+                or resolved_responsible_guid != responsible_guid
+                or source_data.get("resolved_order_customer_name") != customer
+                or source_data.get("resolved_order_responsible_name")
+                != raw.get("manager_name")
+            ):
+                raise ValidationError(
+                    "Direct expense snapshot order attribution is inconsistent."
+                )
+            if raw.get("nomenclature") != DIRECT_EXPENSE_NOMENCLATURE:
+                raise ValidationError(
+                    "Direct expense snapshot nomenclature label is invalid."
+                )
+            if nomenclature_type != DIRECT_EXPENSE_NOMENCLATURE_TYPE:
+                raise ValidationError(
+                    "Direct expense snapshot nomenclature type is invalid."
+                )
+            if article:
+                raise ValidationError(
+                    "Direct expense snapshot article must be empty."
+                )
+            content_value = source_data.get("direct_expense_content")
+            if not isinstance(content_value, str) or len(content_value) > 500:
+                raise ValidationError(
+                    "Direct expense snapshot content is invalid."
+                )
+            for field_name in (
+                "direct_expense_account_guid",
+                "direct_expense_operation_guid",
+            ):
+                value = source_data.get(field_name)
+                if value is not None:
+                    normalize_guid(value, field=f"Snapshot {field_name}")
+        else:
+            if any(
+                key in source_data
+                for key in (
+                    "direct_expense_receipt_resolved",
+                    "direct_expense_order_guid",
+                    "resolved_order_customer_guid",
+                    "resolved_order_customer_name",
+                    "resolved_order_responsible_guid",
+                    "resolved_order_responsible_name",
+                    "direct_expense_content",
+                    "direct_expense_account_guid",
+                    "direct_expense_operation_guid",
+                )
+            ):
+                raise ValidationError(
+                    "Normal profit snapshot contains direct expense audit fields."
+                )
         quantity = _decimal_from_snapshot(raw.get("quantity"), "quantity")
         revenue = _decimal_from_snapshot(raw.get("revenue"), "revenue")
         cost = _decimal_from_snapshot(raw.get("cost"), "cost")
@@ -873,6 +1258,11 @@ def _validate_snapshot(payload, config, *, organization_id):
             _validate_decimal_shape(value, field, decimal_places=2, integer_places=18)
         if gross_profit != revenue - cost or analytical_profit != gross_profit:
             raise ValidationError("OData snapshot profit values are inconsistent.")
+        if is_direct_expense:
+            if quantity != 0 or revenue != 0 or vat != 0 or cost == 0:
+                raise ValidationError(
+                    "Direct expense snapshot values are inconsistent."
+                )
         expected_profitability = calculate_profitability(gross_profit, revenue)
         if profitability != expected_profitability:
             raise ValidationError("OData snapshot profitability is inconsistent.")
@@ -1010,20 +1400,55 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
     scope_months = _month_scope(start_month, end_month)
     config = validate_config(config or config_from_settings())
     client = opener or build_opener(NoRedirectHandler())
-    rows, page_count = read_profit_rows(
+    rows, sales_page_count = read_profit_rows(
         config, start_month, end_month, opener=client
     )
+    direct_rows, direct_page_count = read_direct_order_expense_rows(
+        config, start_month, end_month, opener=client
+    )
+    page_count = sales_page_count + direct_page_count
+    if len(rows) + len(direct_rows) > config.max_rows:
+        raise ODataDraftError("OData response exceeded the configured row limit")
+    sales_identities = {
+        (row.recorder, row.line_number)
+        for row in rows
+        if hasattr(row, "recorder") and hasattr(row, "line_number")
+    }
+    if any(row.identity in sales_identities for row in direct_rows):
+        raise ODataDraftError("OData sources contain a duplicate source identity")
+
     required = {
         "nomenclature": {row.nomenclature_guid for row in rows},
-        "customer": {row.customer_guid for row in rows if row.customer_guid != ZERO_GUID},
+        "customer": {
+            row.customer_guid
+            for row in rows
+            if row.customer_guid != ZERO_GUID
+        },
         "responsible": {row.responsible_guid for row in rows},
     }
     try:
         reference_page_budget = {"used": 0}
+        direct_documents = _read_direct_expense_documents(
+            config,
+            direct_rows,
+            opener=client,
+            page_budget=reference_page_budget,
+        )
+        direct_customers, direct_responsibles = _direct_expense_reference_guids(
+            direct_rows, direct_documents
+        )
+        required["customer"].update(direct_customers)
+        required["responsible"].update(direct_responsibles)
         references = {
             kind: _read_reference_map(
-                config, kind, guids, opener=client,
-                page_budget=reference_page_budget,
+                config,
+                kind,
+                guids,
+                **_reference_lookup_kwargs(
+                    kind,
+                    opener=client,
+                    page_budget=reference_page_budget,
+                ),
             )
             for kind, guids in required.items()
         }
@@ -1033,7 +1458,11 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
             opener=client,
             page_budget=reference_page_budget,
         )
+        documents.update(direct_documents)
         normalized = _enrich_rows(rows, references, documents, organization.pk)
+        normalized.extend(_enrich_direct_expense_rows(
+            direct_rows, references, documents, organization.pk
+        ))
     except ODataPreviewError as exc:
         safe_message = str(exc)[:ERROR_MESSAGE_MAX_LENGTH]
         batch = _failed_mapping_batch(

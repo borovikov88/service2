@@ -1,4 +1,6 @@
+from copy import deepcopy
 from datetime import date, timedelta
+from decimal import Decimal
 from tempfile import TemporaryDirectory
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,9 +16,11 @@ from django.urls import reverse
 from django.utils import timezone
 
 from pool_service.finance_imports.odata_profit import ODataConfig, ODataPreviewError
+from pool_service.finance_imports.odata_direct_order_costs import read_direct_order_expense_rows
 from pool_service.finance_imports.odata_unified_sync import (
     REPORT_CASHFLOW,
     REPORT_PROFIT,
+    _collect_profit_chunk,
     _confirmed_candidate,
     month_fingerprint,
     _claim_step,
@@ -36,6 +40,19 @@ from pool_service.models import (
     cashflow_source_identity,
 )
 from pool_service.tests.test_onec_odata_profit_preview import FakeOpener
+from pool_service.tests.test_onec_odata_profit_drafts import (
+    CUSTOMER,
+    DIRECT_RECEIPT,
+    ErrorOnNthOpen,
+    ITEM,
+    RESPONSIBLE,
+    direct_expense_row,
+    direct_order_document_payload,
+    direct_receipt_document_payload,
+    document_payload,
+    profit_row as raw_profit_row,
+    reference_payload,
+)
 
 
 ORG_GUID = "11111111-1111-1111-1111-111111111111"
@@ -126,6 +143,12 @@ class UnifiedSyncTests(TestCase):
         OrganizationAccess.objects.create(
             organization=self.organization, user=self.user, role="owner"
         )
+        self.direct_expense_reader_patch = patch(
+            "pool_service.finance_imports.odata_unified_sync.read_direct_order_expense_rows",
+            return_value=([], 0),
+        )
+        self.direct_expense_reader_patch.start()
+        self.addCleanup(self.direct_expense_reader_patch.stop)
 
     def active_profit(self, month=date(2025, 5, 1), revenue="100.00"):
         batch = OneCImportBatch.objects.create(
@@ -160,6 +183,224 @@ class UnifiedSyncTests(TestCase):
             return_value=(rows, 1),
         ):
             return step_unified_sync(run.id, self.user, [REPORT_PROFIT], 0, config=config())
+
+    def test_profit_collector_includes_direct_order_costs(self):
+        sale = raw_profit_row(
+            revenue="94494.00",
+            cost="29696.64",
+        )
+        opener = FakeOpener(
+            {"value": [sale]},
+            {"value": [
+                direct_expense_row(10, "25000.00"),
+                direct_expense_row(11, "5000.00"),
+            ]},
+            direct_order_document_payload(),
+            direct_receipt_document_payload(),
+            reference_payload(
+                ITEM, "Товар из 1С", article="A-1", nomenclature_type="Запас"
+            ),
+            reference_payload(CUSTOMER, "Клиент заказа №114"),
+            reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
+            document_payload(number="НФНФ-000335"),
+        )
+
+        with patch(
+            "pool_service.finance_imports.odata_unified_sync.read_direct_order_expense_rows",
+            side_effect=read_direct_order_expense_rows,
+        ):
+            rows, pages = _collect_profit_chunk(
+                "2026-05-01",
+                "2026-05-31",
+                config=config(),
+                opener=opener,
+                organization_id=self.organization.pk,
+            )
+
+        self.assertEqual(pages, 2)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(
+            sum(Decimal(row["revenue"]) for row in rows),
+            Decimal("94494.00"),
+        )
+        self.assertEqual(
+            sum(Decimal(row["cost"]) for row in rows),
+            Decimal("59696.64"),
+        )
+        direct = [
+            row for row in rows
+            if row["source_data"].get("row_kind") == "direct_order_expense"
+        ]
+        self.assertEqual(len(direct), 2)
+        self.assertTrue(
+            all(row["customer_name"] == "Клиент заказа №114" for row in direct)
+        )
+
+    def test_unified_direct_cost_keeps_missing_receipt_metadata(self):
+        sale = raw_profit_row(
+            revenue="94499.00",
+            cost="29696.64",
+        )
+        opener = FakeOpener(
+            {"value": [sale]},
+            {"value": [
+                direct_expense_row(10, "25000.00"),
+                direct_expense_row(11, "5000.00"),
+            ]},
+            direct_order_document_payload(),
+            {"value": []},
+            reference_payload(
+                ITEM,
+                "Товар из 1С",
+                article="A-1",
+                nomenclature_type="Запас",
+            ),
+            reference_payload(CUSTOMER, "Клиент заказа №114"),
+            reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
+            document_payload(number="НФНФ-000335"),
+        )
+
+        with patch(
+            "pool_service.finance_imports.odata_unified_sync.read_direct_order_expense_rows",
+            side_effect=read_direct_order_expense_rows,
+        ):
+            rows, _ = _collect_profit_chunk(
+                "2026-05-01",
+                "2026-05-31",
+                config=config(),
+                opener=opener,
+                organization_id=self.organization.pk,
+            )
+
+        direct = [
+            row for row in rows
+            if row["source_data"].get("row_kind")
+            == "direct_order_expense"
+        ]
+        self.assertEqual(len(direct), 2)
+        expected_display = (
+            f"Приходная накладная 1С {DIRECT_RECEIPT} "
+            "от 15.05.2026"
+        )
+        self.assertTrue(
+            all(row["document_name"] == expected_display for row in direct)
+        )
+        self.assertTrue(
+            all(
+                row["source_data"]["direct_expense_receipt_resolved"] is False
+                for row in direct
+            )
+        )
+        self.assertEqual(
+            sum(Decimal(row["cost"]) for row in direct),
+            Decimal("30000.00"),
+        )
+
+    def test_unified_direct_cost_falls_back_on_receipt_transport_failure(self):
+        sale = raw_profit_row(
+            revenue="94500.00",
+            cost="29696.64",
+        )
+        opener = ErrorOnNthOpen(
+            {"value": [sale]},
+            {"value": [
+                direct_expense_row(10, "25000.00"),
+                direct_expense_row(11, "5000.00"),
+            ]},
+            direct_order_document_payload(),
+            reference_payload(
+                ITEM,
+                "Товар из 1С",
+                article="A-1",
+                nomenclature_type="Запас",
+            ),
+            reference_payload(CUSTOMER, "Клиент заказа №114"),
+            reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
+            document_payload(number="НФНФ-000335"),
+            error_at=4,
+        )
+
+        with patch(
+            "pool_service.finance_imports.odata_unified_sync.read_direct_order_expense_rows",
+            side_effect=read_direct_order_expense_rows,
+        ):
+            rows, _ = _collect_profit_chunk(
+                "2026-05-01",
+                "2026-05-31",
+                config=config(),
+                opener=opener,
+                organization_id=self.organization.pk,
+            )
+
+        direct = [
+            row for row in rows
+            if row["source_data"].get("row_kind")
+            == "direct_order_expense"
+        ]
+        self.assertEqual(len(direct), 2)
+        self.assertTrue(
+            all(
+                row["source_data"]["direct_expense_receipt_resolved"] is False
+                for row in direct
+            )
+        )
+        self.assertEqual(
+            sum(Decimal(row["cost"]) for row in direct),
+            Decimal("30000.00"),
+        )
+
+    def test_unified_direct_cost_accepts_historical_deleted_customer(self):
+        sale = raw_profit_row(
+            revenue="94497.00",
+            cost="29696.64",
+        )
+        opener = FakeOpener(
+            {"value": [sale]},
+            {"value": [
+                direct_expense_row(10, "25000.00"),
+                direct_expense_row(11, "5000.00"),
+            ]},
+            direct_order_document_payload(),
+            direct_receipt_document_payload(),
+            reference_payload(
+                ITEM,
+                "Товар из 1С",
+                article="A-1",
+                nomenclature_type="Запас",
+            ),
+            reference_payload(
+                CUSTOMER,
+                "Клиент заказа №114",
+                deletion_mark=True,
+            ),
+            reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
+            document_payload(number="НФНФ-000335"),
+        )
+
+        with patch(
+            "pool_service.finance_imports.odata_unified_sync.read_direct_order_expense_rows",
+            side_effect=read_direct_order_expense_rows,
+        ):
+            rows, _ = _collect_profit_chunk(
+                "2026-05-01",
+                "2026-05-31",
+                config=config(),
+                opener=opener,
+                organization_id=self.organization.pk,
+            )
+
+        direct = [
+            row for row in rows
+            if row["source_data"].get("row_kind")
+            == "direct_order_expense"
+        ]
+        self.assertEqual(len(direct), 2)
+        self.assertTrue(
+            all(
+                row["customer_name"] == "Клиент заказа №114"
+                for row in direct
+            )
+        )
 
     def test_changed_old_month_creates_only_preview_without_activation(self):
         old, _ = self.active_profit()
@@ -282,6 +523,92 @@ class UnifiedSyncTests(TestCase):
         drafts = OneCImportBatch.objects.filter(status="previewed")
         self.assertEqual(drafts.count(), 1)
         self.assertEqual(drafts.get().period_first, date(2025, 5, 1))
+
+    def test_profit_fingerprint_changes_when_direct_attribution_changes(self):
+        month = date(2025, 5, 1)
+        first = profit_row()
+        first["source_data"].update({
+            "row_kind": "direct_order_expense",
+            "direct_expense_order_guid": "88888888-8888-4888-8888-888888888888",
+            "resolved_order_guid": "88888888-8888-4888-8888-888888888888",
+            "resolved_order_customer_guid": "44444444-4444-4444-8444-444444444444",
+            "resolved_order_responsible_guid": "66666666-6666-4666-8666-666666666666",
+            "resolved_order_number": "НФНФ-000114",
+            "resolved_order_date": "2026-09-01",
+            "resolved_order_display": "Заказ покупателя №НФНФ-000114 от 01.09.2026",
+            "organization_guid": "11111111-1111-4111-8111-111111111111",
+            "direct_expense_content": "Прямые расходы по объекту",
+            "direct_expense_account_guid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "direct_expense_operation_guid": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        })
+        baseline = month_fingerprint(REPORT_PROFIT, month, [first])
+
+        changed_order = deepcopy(first)
+        changed_order["source_data"]["direct_expense_order_guid"] = (
+            "99999999-9999-4999-8999-999999999999"
+        )
+        changed_order["source_data"]["resolved_order_guid"] = (
+            "99999999-9999-4999-8999-999999999999"
+        )
+
+        changed_customer = deepcopy(first)
+        changed_customer["source_data"]["resolved_order_customer_guid"] = (
+            "55555555-5555-4555-8555-555555555555"
+        )
+
+        changed_responsible = deepcopy(first)
+        changed_responsible["source_data"]["resolved_order_responsible_guid"] = (
+            "77777777-7777-4777-8777-777777777777"
+        )
+
+        changed_organization = deepcopy(first)
+        changed_organization["source_data"]["organization_guid"] = (
+            "22222222-2222-4222-8222-222222222222"
+        )
+
+        changed_content = deepcopy(first)
+        changed_content["source_data"]["direct_expense_content"] = (
+            "Исправленные прямые расходы по объекту"
+        )
+
+        changed_account = deepcopy(first)
+        changed_account["source_data"]["direct_expense_account_guid"] = (
+            "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        )
+
+        changed_operation = deepcopy(first)
+        changed_operation["source_data"]["direct_expense_operation_guid"] = (
+            "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        )
+
+        changed_order_number = deepcopy(first)
+        changed_order_number["source_data"]["resolved_order_number"] = "НФНФ-000115"
+
+        changed_order_date = deepcopy(first)
+        changed_order_date["source_data"]["resolved_order_date"] = "2026-09-02"
+
+        changed_order_display = deepcopy(first)
+        changed_order_display["source_data"]["resolved_order_display"] = (
+            "Заказ покупателя №НФНФ-000114 от 02.09.2026"
+        )
+
+        for changed in (
+            changed_order,
+            changed_customer,
+            changed_responsible,
+            changed_organization,
+            changed_content,
+            changed_account,
+            changed_operation,
+            changed_order_number,
+            changed_order_date,
+            changed_order_display,
+        ):
+            with self.subTest(source_data=changed["source_data"]):
+                self.assertNotEqual(
+                    baseline,
+                    month_fingerprint(REPORT_PROFIT, month, [changed]),
+                )
 
     def test_month_fingerprint_is_order_independent(self):
         one = cashflow_row()
