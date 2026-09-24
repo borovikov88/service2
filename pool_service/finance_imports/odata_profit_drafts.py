@@ -426,11 +426,14 @@ def _read_direct_expense_documents(
         require_all=True,
     )
     try:
+        # Receipt metadata is optional and must never consume the shared
+        # mandatory enrichment budget (order/customer/responsible/sales docs).
+        receipt_page_budget = {"used": 0}
         documents.update(_read_document_entities(
             config,
             receipt_refs,
             opener=opener,
-            page_budget=page_budget,
+            page_budget=receipt_page_budget,
             require_all=False,
         ))
     except ODataPreviewError:
