@@ -49,6 +49,7 @@ from .odata_profit_drafts import (
     _enrich_rows,
     _preview_metadata as profit_preview_metadata,
     _read_direct_expense_documents,
+    _read_direct_expense_lines,
     _read_profit_documents,
     _read_reference_map,
     _reference_lookup_kwargs,
@@ -686,6 +687,12 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
             opener=opener,
             page_budget=budget,
         )
+        direct_lines = _read_direct_expense_lines(
+            config,
+            direct_rows,
+            opener=opener,
+            page_budget=budget,
+        )
     except Exception as exc:
         _raise_stage_error(
             STAGE_PROFIT_DOCUMENT_LOOKUP,
@@ -700,6 +707,14 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
         required = {
             "nomenclature": {
                 _profit_reference_guid(row.nomenclature_guid) for row in rows
+            } | {
+                guid
+                for line in direct_lines.values()
+                if (
+                    guid := _profit_reference_guid(
+                        line["nomenclature_guid"], allow_zero=True
+                    )
+                )
             },
             "customer": {
                 guid for row in rows
@@ -764,7 +779,11 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
             rows, references, documents, organization_id
         )
         normalized.extend(_enrich_direct_expense_rows(
-            direct_rows, references, documents, organization_id
+            direct_rows,
+            references,
+            documents,
+            direct_lines,
+            organization_id,
         ))
         return normalized, pages
     except Exception as exc:
