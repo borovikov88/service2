@@ -881,9 +881,19 @@ def _validate_snapshot(payload, config, *, organization_id):
             raise ValidationError("OData snapshot row is invalid.")
         try:
             recorder = str(UUID(str(raw.get("source_recorder")))).lower()
-            line = int(raw.get("source_row_number"))
+            raw_line = raw.get("source_row_number")
+            line_decimal = Decimal(str(raw_line))
+            line = int(line_decimal)
+            if isinstance(raw_line, bool) or line_decimal != Decimal(line):
+                raise ValueError
             period = date.fromisoformat(raw.get("period_month"))
-        except (ValueError, TypeError, AttributeError) as exc:
+        except (
+            ValueError,
+            TypeError,
+            AttributeError,
+            InvalidOperation,
+            OverflowError,
+        ) as exc:
             raise ValidationError("OData snapshot identity or period is invalid.") from exc
         if line < 0 or line > 2147483647 or period.day != 1 or not start <= period <= end:
             raise ValidationError("OData snapshot row is outside its period.")
@@ -941,7 +951,14 @@ def _validate_snapshot(payload, config, *, organization_id):
         is_direct_expense = row_kind == "direct_order_expense"
         try:
             audit_recorder = str(UUID(str(source_data.get("recorder")))).lower()
-            audit_line = int(source_data.get("line_number"))
+            raw_audit_line = source_data.get("line_number")
+            audit_line_decimal = Decimal(str(raw_audit_line))
+            audit_line = int(audit_line_decimal)
+            if (
+                isinstance(raw_audit_line, bool)
+                or audit_line_decimal != Decimal(audit_line)
+            ):
+                raise ValueError
             source_date = date.fromisoformat(source_data.get("source_date"))
             source_period_value = source_data.get("period")
             if not isinstance(source_period_value, str) or len(source_period_value) > 80:
@@ -949,7 +966,13 @@ def _validate_snapshot(payload, config, *, organization_id):
             source_period_date = datetime.fromisoformat(
                 source_period_value.replace("Z", "+00:00")
             ).date()
-        except (ValueError, TypeError, AttributeError) as exc:
+        except (
+            ValueError,
+            TypeError,
+            AttributeError,
+            InvalidOperation,
+            OverflowError,
+        ) as exc:
             raise ValidationError("OData snapshot audit identity is invalid.") from exc
         if (
             audit_recorder != recorder
