@@ -601,6 +601,32 @@ class ODataProfitDraftTests(TestCase):
                 order_organization=OTHER_ORG,
             )
 
+    def test_confirmation_rejects_fractional_direct_snapshot_line_numbers(self):
+        batch = self.create_direct_cost_draft(revenue="94495.50")
+
+        def forge(snapshot):
+            direct = next(
+                row for row in snapshot["rows"]
+                if row["source_data"].get("row_kind")
+                == "direct_order_expense"
+                and row["source_row_number"] == 10
+            )
+            direct["source_row_number"] = 10.5
+            direct["source_data"]["line_number"] = 10.5
+
+        self.rewrite_snapshot(batch, forge)
+        with self.assertRaisesRegex(ValidationError, "identity"):
+            confirm_odata_profit(
+                batch.id,
+                self.organization,
+                self.user,
+                config=config(),
+            )
+        self.assertFalse(
+            OneCMonthlyProfit.objects.filter(import_batch=batch).exists()
+        )
+        self.assertFalse(OneCReportPeriodState.objects.exists())
+
     def test_confirmation_rejects_forged_direct_order_attribution_with_new_checksum(self):
         batch = self.create_direct_cost_draft(revenue="94495.00")
 
