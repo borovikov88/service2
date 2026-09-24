@@ -102,6 +102,10 @@ class DirectOrderExpenseReaderTests(SimpleTestCase):
         with self.assertRaises(ODataPreviewError):
             self.read([expense_row(organization=ORG_B)])
 
+    def test_fractional_decimal_line_number_fails_closed(self):
+        with self.assertRaises(ODataPreviewError):
+            self.read([expense_row(Decimal("1.5"))])
+
     def test_duplicate_identity_fails_closed(self):
         with self.assertRaises(ODataPreviewError):
             self.read([expense_row(1), expense_row(1)])
