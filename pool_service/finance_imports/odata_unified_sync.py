@@ -604,6 +604,14 @@ def _canonical_profit(row):
             if source_data.get("row_kind") == "direct_order_expense"
             else ""
         ),
+        # Direct-expense source_data is the validated persisted audit payload.
+        # Hash it as a whole so corrections to any stored order/receipt/audit
+        # metadata cannot be treated as an unchanged month.
+        "direct_expense_source_data": (
+            source_data
+            if source_data.get("row_kind") == "direct_order_expense"
+            else {}
+        ),
     }
 
 
