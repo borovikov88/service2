@@ -46,7 +46,9 @@ from pool_service.tests.test_onec_odata_profit_drafts import (
     ErrorOnNthOpen,
     ITEM,
     RESPONSIBLE,
+    direct_expense_line_payload,
     direct_expense_row,
+    direct_nomenclature_reference_payload,
     direct_order_document_payload,
     direct_receipt_document_payload,
     document_payload,
@@ -197,9 +199,8 @@ class UnifiedSyncTests(TestCase):
             ]},
             direct_order_document_payload(),
             direct_receipt_document_payload(),
-            reference_payload(
-                ITEM, "Товар из 1С", article="A-1", nomenclature_type="Запас"
-            ),
+            direct_expense_line_payload(),
+            direct_nomenclature_reference_payload(),
             reference_payload(CUSTOMER, "Клиент заказа №114"),
             reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
             document_payload(number="НФНФ-000335"),
@@ -235,6 +236,10 @@ class UnifiedSyncTests(TestCase):
         self.assertTrue(
             all(row["customer_name"] == "Клиент заказа №114" for row in direct)
         )
+        self.assertEqual(
+            {row["nomenclature"] for row in direct},
+            {"Монтаж оборудования", "Транспортные расходы"},
+        )
 
     def test_unified_direct_cost_keeps_missing_receipt_metadata(self):
         sale = raw_profit_row(
@@ -249,12 +254,8 @@ class UnifiedSyncTests(TestCase):
             ]},
             direct_order_document_payload(),
             {"value": []},
-            reference_payload(
-                ITEM,
-                "Товар из 1С",
-                article="A-1",
-                nomenclature_type="Запас",
-            ),
+            direct_expense_line_payload(),
+            direct_nomenclature_reference_payload(),
             reference_payload(CUSTOMER, "Клиент заказа №114"),
             reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
             document_payload(number="НФНФ-000335"),
@@ -308,12 +309,8 @@ class UnifiedSyncTests(TestCase):
                 direct_expense_row(11, "5000.00"),
             ]},
             direct_order_document_payload(),
-            reference_payload(
-                ITEM,
-                "Товар из 1С",
-                article="A-1",
-                nomenclature_type="Запас",
-            ),
+            direct_expense_line_payload(),
+            direct_nomenclature_reference_payload(),
             reference_payload(CUSTOMER, "Клиент заказа №114"),
             reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
             document_payload(number="НФНФ-000335"),
@@ -362,12 +359,8 @@ class UnifiedSyncTests(TestCase):
             ]},
             direct_order_document_payload(),
             direct_receipt_document_payload(),
-            reference_payload(
-                ITEM,
-                "Товар из 1С",
-                article="A-1",
-                nomenclature_type="Запас",
-            ),
+            direct_expense_line_payload(),
+            direct_nomenclature_reference_payload(),
             reference_payload(
                 CUSTOMER,
                 "Клиент заказа №114",
