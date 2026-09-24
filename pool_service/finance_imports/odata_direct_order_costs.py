@@ -107,11 +107,17 @@ def _parse_row(raw, start: date, end_exclusive: date, allowed_organizations):
             "Direct expense OData returned an organization outside the allowlist"
         )
 
+    raw_line_number = raw.get("LineNumber")
     try:
-        line_number = int(raw.get("LineNumber"))
-    except (TypeError, ValueError) as exc:
+        line_number = int(raw_line_number)
+        line_number_decimal = Decimal(str(raw_line_number))
+    except (TypeError, ValueError, ArithmeticError) as exc:
         raise ODataPreviewError("Direct expense LineNumber must be an integer") from exc
-    if isinstance(raw.get("LineNumber"), (float, bool)) or line_number < 0:
+    if (
+        isinstance(raw_line_number, (float, bool))
+        or line_number < 0
+        or line_number_decimal != Decimal(line_number)
+    ):
         raise ODataPreviewError(
             "Direct expense LineNumber must be a non-negative integer"
         )
