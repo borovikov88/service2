@@ -542,6 +542,55 @@ class ODataProfitDraftTests(TestCase):
             Decimal("30000.00"),
         )
 
+
+    def test_optional_receipt_lookup_does_not_consume_mandatory_page_budget(self):
+        sale = profit_row(revenue="94501.00", cost="29696.64")
+        opener = FakeOpener(
+            {"value": [sale]},
+            {"value": [
+                direct_expense_row(10, "25000.00"),
+                direct_expense_row(11, "5000.00"),
+            ]},
+            direct_order_document_payload(),
+            direct_receipt_document_payload(),
+            reference_payload(
+                ITEM,
+                "Товар из 1С",
+                article="A-1",
+                nomenclature_type="Запас",
+            ),
+            reference_payload(CUSTOMER, "Клиент заказа №114"),
+            reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
+            document_payload(number="НФНФ-000335"),
+        )
+        with patch(
+            "pool_service.finance_imports.odata_profit_drafts.read_direct_order_expense_rows",
+            side_effect=read_direct_order_expense_rows,
+        ):
+            batch = create_odata_profit_draft(
+                "2026-05",
+                "2026-05",
+                self.organization,
+                self.user,
+                config=config(max_pages=5),
+                opener=opener,
+            )
+
+        self.assertEqual(batch.status, OneCImportBatch.STATUS_PREVIEWED)
+        with batch.stored_file.open("rb") as source:
+            snapshot = json.loads(source.read().decode("utf-8"))
+        direct = [
+            row for row in snapshot["rows"]
+            if row["source_data"].get("row_kind") == "direct_order_expense"
+        ]
+        self.assertEqual(len(direct), 2)
+        self.assertTrue(
+            all(
+                row["source_data"]["direct_expense_receipt_resolved"] is True
+                for row in direct
+            )
+        )
+
     def test_direct_cost_rejects_customer_order_from_other_organization(self):
         with self.assertRaisesRegex(
             ODataDraftError,
