@@ -496,6 +496,7 @@ def _read_direct_expense_lines(
                 nomenclature_guid = normalize_guid(
                     raw.get("Номенклатура_Key"),
                     field="Direct expense line Номенклатура_Key",
+                    allow_zero=True,
                 )
                 order_guid = normalize_guid(
                     raw.get("Заказ_Key"),
@@ -531,10 +532,15 @@ def _read_direct_expense_lines(
                     raise ODataPreviewError(
                         "Direct expense receipt line content is invalid"
                     )
+                line_content = line_content.strip()
+                if nomenclature_guid == ZERO_GUID and not line_content:
+                    raise ODataPreviewError(
+                        "Direct expense receipt line has no readable description"
+                    )
                 resolved[identity] = {
                     "nomenclature_guid": nomenclature_guid,
                     "order_guid": order_guid,
-                    "content": line_content.strip(),
+                    "content": line_content,
                     "amount": movement_amount,
                 }
 
@@ -631,9 +637,15 @@ def _enrich_direct_expense_rows(
             raise ODataPreviewError(
                 "Direct expense receipt line is missing during enrichment"
             )
-        line_nomenclature = references["nomenclature"][
-            direct_line["nomenclature_guid"]
-        ]
+        if direct_line["nomenclature_guid"] == ZERO_GUID:
+            line_nomenclature = {
+                "description": direct_line["content"],
+                "article": "",
+            }
+        else:
+            line_nomenclature = references["nomenclature"][
+                direct_line["nomenclature_guid"]
+            ]
         customer = references["customer"][order["customer_guid"]]["description"]
         responsible_guid = order.get("responsible_guid") or ZERO_GUID
         manager = (
@@ -1315,6 +1327,7 @@ def _validate_snapshot(payload, config, *, organization_id):
         nomenclature_guid = normalize_guid(
             source_data.get("nomenclature_guid"),
             field="Snapshot nomenclature",
+            allow_zero=is_direct_expense,
         )
         customer_guid = normalize_guid(
             source_data.get("customer_guid"),
@@ -1357,6 +1370,7 @@ def _validate_snapshot(payload, config, *, organization_id):
             line_nomenclature_guid = normalize_guid(
                 source_data.get("direct_expense_line_nomenclature_guid"),
                 field="Snapshot direct expense line nomenclature",
+                allow_zero=True,
             )
             line_name = source_data.get("direct_expense_line_name")
             line_article = source_data.get("direct_expense_line_article")
@@ -1629,7 +1643,9 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
             direct_rows, direct_documents
         )
         required["nomenclature"].update(
-            line["nomenclature_guid"] for line in direct_lines.values()
+            line["nomenclature_guid"]
+            for line in direct_lines.values()
+            if line["nomenclature_guid"] != ZERO_GUID
         )
         required["customer"].update(direct_customers)
         required["responsible"].update(direct_responsibles)
