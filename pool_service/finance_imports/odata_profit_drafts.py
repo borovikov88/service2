@@ -735,6 +735,7 @@ def _enrich_direct_expense_rows(
                 "direct_expense_order_guid": row.order_guid,
                 "resolved_order_guid": row.order_guid,
                 "resolved_order_type": ORDER_TYPE,
+                "resolved_order_organization_guid": order["organization_guid"],
                 "resolved_order_number": order["number"],
                 "resolved_order_date": order["date"].isoformat(),
                 "resolved_order_display": order_display,
@@ -972,9 +973,14 @@ def _enrich_rows(rows, references, documents, organization_id):
         order_ref = primary_document.get("order_ref") if primary_document else None
         if order_ref and order_ref in documents:
             order_document = documents[order_ref]
+            if order_document.get("organization_guid") != row.organization_guid:
+                raise ODataPreviewError(
+                    "Sales customer order organization does not match movement"
+                )
             normalized[-1]["source_data"].update({
                 "resolved_order_guid": order_ref[1],
                 "resolved_order_type": order_ref[0],
+                "resolved_order_organization_guid": order_document["organization_guid"],
                 "resolved_order_number": order_document["number"],
                 "resolved_order_date": order_document["date"].isoformat(),
                 "resolved_order_display": _document_display(
@@ -1301,16 +1307,32 @@ def _validate_snapshot(payload, config, *, organization_id):
         )):
             raise ValidationError("OData snapshot unsupported document was enriched.")
         order_values = tuple(source_data.get(name) for name in (
-            "resolved_order_guid", "resolved_order_type", "resolved_order_number",
+            "resolved_order_guid", "resolved_order_type",
+            "resolved_order_organization_guid", "resolved_order_number",
             "resolved_order_date", "resolved_order_display",
         ))
         if any(value is not None for value in order_values):
             if any(value is None for value in order_values):
                 raise ValidationError("OData snapshot resolved order is incomplete.")
-            order_guid, order_type, order_number, order_date_value, order_display = order_values
+            (
+                order_guid,
+                order_type,
+                order_organization_guid,
+                order_number,
+                order_date_value,
+                order_display,
+            ) = order_values
             normalized_order_guid = normalize_guid(
                 order_guid, field="Snapshot resolved order GUID"
             )
+            normalized_order_organization_guid = normalize_guid(
+                order_organization_guid,
+                field="Snapshot resolved order organization",
+            )
+            if normalized_order_organization_guid != source_org:
+                raise ValidationError(
+                    "OData snapshot resolved order organization is inconsistent."
+                )
             if _snapshot_document_type(
                 order_type,
                 field="Snapshot resolved order type",
