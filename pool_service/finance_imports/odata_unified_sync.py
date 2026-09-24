@@ -578,6 +578,17 @@ def _canonical_profit(row):
             "direct_expense_order_guid", ""
         ),
         "resolved_order_guid": source_data.get("resolved_order_guid", ""),
+        "resolved_order_customer_guid": source_data.get(
+            "resolved_order_customer_guid", ""
+        ),
+        "resolved_order_responsible_guid": source_data.get(
+            "resolved_order_responsible_guid", ""
+        ),
+        "organization_guid": (
+            source_data.get("organization_guid", "")
+            if source_data.get("row_kind") == "direct_order_expense"
+            else ""
+        ),
     }
 
 
