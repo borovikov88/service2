@@ -535,19 +535,16 @@ class ProfitDashboardTests(TestCase):
         self.assertEqual(document["cost"], Decimal("40"))
         self.assertEqual(document["gross_profit"], Decimal("60"))
 
-    def test_direct_expense_rows_show_1c_content_and_expense_amount(self):
+    def test_direct_expense_rows_show_receipt_line_names_and_expense_amount(self):
         document_name = "Приходная накладная №НФНФ-000310 от 01.09.2026"
-        for index, (content, cost) in enumerate(
-            (
-                ("Теплообменник для объекта", "25000"),
-                ("Доставка оборудования", "5000"),
-            ),
-            start=1,
+        for line_name, cost in (
+            ("Монтаж оборудования", "25000"),
+            ("Транспортные расходы", "5000"),
         ):
             self.add_row(
                 date(2026, 9, 1),
-                name="Прямые расходы по заказу",
-                kind="Прямые расходы по заказу",
+                name=line_name,
+                kind="Прямые расходы",
                 revenue="0",
                 cost=cost,
                 customer="Клиент",
@@ -556,7 +553,8 @@ class ProfitDashboardTests(TestCase):
                 quantity="0",
                 source_data={
                     "row_kind": "direct_order_expense",
-                    "direct_expense_content": content,
+                    "direct_expense_content": "Прочие расходы",
+                    "direct_expense_line_name": line_name,
                 },
             )
 
@@ -569,7 +567,7 @@ class ProfitDashboardTests(TestCase):
         self.assertEqual(document["direct_expense_total"], Decimal("30000"))
         self.assertEqual(
             [row.dashboard_display_nomenclature for row in document["rows"]],
-            ["Теплообменник для объекта", "Доставка оборудования"],
+            ["Монтаж оборудования", "Транспортные расходы"],
         )
         self.assertEqual(
             [row.dashboard_direct_expense_amount for row in document["rows"]],
@@ -580,12 +578,13 @@ class ProfitDashboardTests(TestCase):
             "period": "custom", "start": "2026-09", "end": "2026-09",
         })
         self.assertContains(response, "Итого прямых расходов")
-        self.assertContains(response, "Теплообменник для объекта")
-        self.assertContains(response, "Доставка оборудования")
+        self.assertContains(response, "Монтаж оборудования")
+        self.assertContains(response, "Транспортные расходы")
         self.assertContains(
             response, 'data-profit-mobile-field="direct-expense"', count=2
         )
         self.assertNotContains(response, "Прямые расходы по заказу")
+        self.assertNotContains(response, "Прочие расходы")
 
     def test_presentation_keeps_movements_separate_when_quantities_conflict(self):
         recorder = "11111111-1111-4111-8111-111111111111"
