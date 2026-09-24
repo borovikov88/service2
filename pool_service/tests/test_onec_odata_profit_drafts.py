@@ -935,6 +935,54 @@ class ODataProfitDraftTests(TestCase):
             saved_rows = json.loads(source.read().decode("utf-8"))["rows"]
         self.assertEqual(len({row["source_data"]["document_group_key"] for row in saved_rows}), 3)
 
+    def test_sale_order_persists_validated_source_organization(self):
+        rows = [profit_row(line=1)]
+        opener = FakeOpener(
+            {"value": rows},
+            reference_payload(ITEM, "Товар", article="A"),
+            reference_payload(CUSTOMER, "Покупатель"),
+            reference_payload(RESPONSIBLE, "Ответственный"),
+            document_payload(
+                RECORDER,
+                number="РН-1",
+                order=CUSTOMER_ORDER,
+            ),
+            direct_order_document_payload(organization=ORG),
+        )
+
+        batch = self.create_draft(rows=rows, opener=opener)
+        with batch.stored_file.open("rb") as source:
+            saved = json.loads(source.read().decode("utf-8"))["rows"][0]
+        self.assertEqual(
+            saved["source_data"]["resolved_order_organization_guid"],
+            ORG,
+        )
+        self.assertEqual(
+            saved["source_data"]["resolved_order_guid"],
+            CUSTOMER_ORDER,
+        )
+
+    def test_sale_rejects_customer_order_from_other_organization(self):
+        rows = [profit_row(line=1)]
+        opener = FakeOpener(
+            {"value": rows},
+            reference_payload(ITEM, "Товар", article="A"),
+            reference_payload(CUSTOMER, "Покупатель"),
+            reference_payload(RESPONSIBLE, "Ответственный"),
+            document_payload(
+                RECORDER,
+                number="РН-1",
+                order=CUSTOMER_ORDER,
+            ),
+            direct_order_document_payload(organization=OTHER_ORG),
+        )
+
+        with self.assertRaisesRegex(
+            ODataDraftError,
+            "Sales customer order organization does not match movement",
+        ):
+            self.create_draft(rows=rows, opener=opener)
+
     def test_unresolved_shared_order_never_becomes_group_key(self):
         second = "77777777-7777-4777-8777-777777777777"
         missing_order = "99999999-9999-4999-8999-999999999999"
