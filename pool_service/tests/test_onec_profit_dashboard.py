@@ -692,10 +692,7 @@ class ProfitDashboardTests(TestCase):
         self.assertContains(response, "№НФНФ-000114")
         self.assertContains(response, "profit-order-table")
         self.assertContains(
-            response,
-            '<tr class="profit-document-line profit-direct-expense-row">',
-            count=2,
-            html=True,
+            response, 'data-profit-row-kind="direct-expense"', count=2
         )
         self.assertContains(response, "Монтаж оборудования")
         self.assertContains(response, "Транспортные расходы")
