@@ -533,6 +533,9 @@ class UnifiedSyncTests(TestCase):
             "resolved_order_guid": "88888888-8888-4888-8888-888888888888",
             "resolved_order_customer_guid": "44444444-4444-4444-8444-444444444444",
             "resolved_order_responsible_guid": "66666666-6666-4666-8666-666666666666",
+            "resolved_order_number": "НФНФ-000114",
+            "resolved_order_date": "2026-09-01",
+            "resolved_order_display": "Заказ покупателя №НФНФ-000114 от 01.09.2026",
             "organization_guid": "11111111-1111-4111-8111-111111111111",
             "direct_expense_content": "Прямые расходы по объекту",
             "direct_expense_account_guid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -578,6 +581,17 @@ class UnifiedSyncTests(TestCase):
             "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
         )
 
+        changed_order_number = deepcopy(first)
+        changed_order_number["source_data"]["resolved_order_number"] = "НФНФ-000115"
+
+        changed_order_date = deepcopy(first)
+        changed_order_date["source_data"]["resolved_order_date"] = "2026-09-02"
+
+        changed_order_display = deepcopy(first)
+        changed_order_display["source_data"]["resolved_order_display"] = (
+            "Заказ покупателя №НФНФ-000114 от 02.09.2026"
+        )
+
         for changed in (
             changed_order,
             changed_customer,
@@ -586,6 +600,9 @@ class UnifiedSyncTests(TestCase):
             changed_content,
             changed_account,
             changed_operation,
+            changed_order_number,
+            changed_order_date,
+            changed_order_display,
         ):
             with self.subTest(source_data=changed["source_data"]):
                 self.assertNotEqual(
