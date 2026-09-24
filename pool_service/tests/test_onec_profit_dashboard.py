@@ -610,6 +610,7 @@ class ProfitDashboardTests(TestCase):
                 "period": "2026-09-01T10:00:00+03:00",
                 "source_date": "2026-09-01",
                 "organization_guid": "22222222-2222-4222-8222-222222222222",
+                "resolved_order_organization_guid": "22222222-2222-4222-8222-222222222222",
                 "document_guid": sale_recorder,
                 "document_type": "Document_РасходнаяНакладная",
                 "document_number": "НФНФ-000335",
@@ -629,13 +630,13 @@ class ProfitDashboardTests(TestCase):
 
         self.add_row(
             date(2026, 9, 1), name="Теплообменник", revenue="100", cost="0",
-            customer="Клиент заказа", manager="Менеджер",
+            customer="Без контрагента", manager="Менеджер",
             document=sale_display, source_data=sale_source_data(1),
             source_recorder=sale_recorder, article="A-ORDER", quantity="1",
         )
         self.add_row(
             date(2026, 9, 1), name="Теплообменник", revenue="0", cost="40",
-            customer="Клиент заказа", manager="Менеджер",
+            customer="Без контрагента", manager="Менеджер",
             document=sale_display, source_data=sale_source_data(2),
             source_recorder=sale_recorder, article="A-ORDER", quantity="1",
         )
@@ -653,9 +654,14 @@ class ProfitDashboardTests(TestCase):
                 source_data={
                     "source": "odata",
                     "row_kind": "direct_order_expense",
+                    "organization_guid": "22222222-2222-4222-8222-222222222222",
+                    "customer_guid": "44444444-4444-4444-8444-444444444444",
                     "direct_expense_order_guid": order_guid,
                     "resolved_order_guid": order_guid,
                     "resolved_order_type": "Document_ЗаказПокупателя",
+                    "resolved_order_organization_guid": "22222222-2222-4222-8222-222222222222",
+                    "resolved_order_customer_guid": "44444444-4444-4444-8444-444444444444",
+                    "resolved_order_customer_name": "Клиент заказа",
                     "resolved_order_number": order_number,
                     "resolved_order_date": "2026-07-01",
                     "resolved_order_display": order_display,
@@ -669,6 +675,8 @@ class ProfitDashboardTests(TestCase):
         data = dashboard_data(self.organization, resolve_period({
             "period": "custom", "start": "2026-09", "end": "2026-09",
         }, today=date(2026, 9, 9)))
+        self.assertEqual(len(data["customers"]), 1)
+        self.assertEqual(data["customers"][0]["name"], "Клиент заказа")
         order = data["customers"][0]["documents"][0]
 
         self.assertTrue(order["is_order_group"])
