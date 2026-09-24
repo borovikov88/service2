@@ -524,28 +524,53 @@ class UnifiedSyncTests(TestCase):
         self.assertEqual(drafts.count(), 1)
         self.assertEqual(drafts.get().period_first, date(2025, 5, 1))
 
-    def test_profit_fingerprint_changes_when_direct_order_changes(self):
+    def test_profit_fingerprint_changes_when_direct_attribution_changes(self):
         month = date(2025, 5, 1)
         first = profit_row()
-        first["source_data"]["row_kind"] = "direct_order_expense"
-        first["source_data"]["direct_expense_order_guid"] = (
-            "88888888-8888-4888-8888-888888888888"
-        )
-        first["source_data"]["resolved_order_guid"] = (
-            "88888888-8888-4888-8888-888888888888"
-        )
-        second = deepcopy(first)
-        second["source_data"]["direct_expense_order_guid"] = (
+        first["source_data"].update({
+            "row_kind": "direct_order_expense",
+            "direct_expense_order_guid": "88888888-8888-4888-8888-888888888888",
+            "resolved_order_guid": "88888888-8888-4888-8888-888888888888",
+            "resolved_order_customer_guid": "44444444-4444-4444-8444-444444444444",
+            "resolved_order_responsible_guid": "66666666-6666-4666-8666-666666666666",
+            "organization_guid": "11111111-1111-4111-8111-111111111111",
+        })
+        baseline = month_fingerprint(REPORT_PROFIT, month, [first])
+
+        changed_order = deepcopy(first)
+        changed_order["source_data"]["direct_expense_order_guid"] = (
             "99999999-9999-4999-8999-999999999999"
         )
-        second["source_data"]["resolved_order_guid"] = (
+        changed_order["source_data"]["resolved_order_guid"] = (
             "99999999-9999-4999-8999-999999999999"
         )
 
-        self.assertNotEqual(
-            month_fingerprint(REPORT_PROFIT, month, [first]),
-            month_fingerprint(REPORT_PROFIT, month, [second]),
+        changed_customer = deepcopy(first)
+        changed_customer["source_data"]["resolved_order_customer_guid"] = (
+            "55555555-5555-4555-8555-555555555555"
         )
+
+        changed_responsible = deepcopy(first)
+        changed_responsible["source_data"]["resolved_order_responsible_guid"] = (
+            "77777777-7777-4777-8777-777777777777"
+        )
+
+        changed_organization = deepcopy(first)
+        changed_organization["source_data"]["organization_guid"] = (
+            "22222222-2222-4222-8222-222222222222"
+        )
+
+        for changed in (
+            changed_order,
+            changed_customer,
+            changed_responsible,
+            changed_organization,
+        ):
+            with self.subTest(source_data=changed["source_data"]):
+                self.assertNotEqual(
+                    baseline,
+                    month_fingerprint(REPORT_PROFIT, month, [changed]),
+                )
 
     def test_month_fingerprint_is_order_independent(self):
         one = cashflow_row()
