@@ -340,6 +340,8 @@ class ODataProfitDraftTests(TestCase):
         customer_deleted=False,
         order_organization=ORG,
         receipt_available=True,
+        line_order=CUSTOMER_ORDER,
+        first_line_amount="25000.00",
     ):
         sale = profit_row(revenue=revenue, cost="29696.64")
         opener = FakeOpener(
@@ -356,7 +358,10 @@ class ODataProfitDraftTests(TestCase):
                 if receipt_available
                 else {"value": []}
             ),
-            direct_expense_line_payload(),
+            direct_expense_line_payload(
+                order=line_order,
+                first_amount=first_line_amount,
+            ),
             direct_nomenclature_reference_payload(),
             reference_payload(
                 CUSTOMER,
@@ -652,6 +657,26 @@ class ODataProfitDraftTests(TestCase):
                 for row in direct
             )
         )
+
+    def test_direct_cost_rejects_receipt_line_for_other_order(self):
+        with self.assertRaisesRegex(
+            ODataDraftError,
+            "receipt line order does not match movement",
+        ):
+            self.create_direct_cost_draft(
+                revenue="94497.00",
+                line_order=DIRECT_ACCOUNT,
+            )
+
+    def test_direct_cost_rejects_receipt_line_amount_mismatch(self):
+        with self.assertRaisesRegex(
+            ODataDraftError,
+            "receipt line amount does not match movement",
+        ):
+            self.create_direct_cost_draft(
+                revenue="94497.50",
+                first_line_amount="24999.00",
+            )
 
     def test_direct_cost_rejects_customer_order_from_other_organization(self):
         with self.assertRaisesRegex(
