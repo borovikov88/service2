@@ -45,6 +45,8 @@ DIRECT_RECEIPT = "77777777-7777-4777-8777-777777777777"
 CUSTOMER_ORDER = "88888888-8888-4888-8888-888888888888"
 DIRECT_ACCOUNT = "99999999-9999-4999-8999-999999999999"
 DIRECT_OPERATION = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+DIRECT_ITEM_MOUNTING = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+DIRECT_ITEM_TRANSPORT = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 OTHER_ORG = "22222222-2222-4222-8222-222222222222"
 BASE_URL = "https://fresh.example/odata/standard.odata/"
 RECORDER_TYPE = "StandardODATA.Document_РасходнаяНакладная"
@@ -128,6 +130,61 @@ def direct_expense_row(line, amount):
         "СуммаРасходов": amount,
         "СчетУчета_Key": DIRECT_ACCOUNT,
         "ХозяйственнаяОперация_Key": DIRECT_OPERATION,
+    }
+
+
+def direct_expense_line_payload(
+    *,
+    order=CUSTOMER_ORDER,
+    first_amount="25000.00",
+    second_amount="5000.00",
+):
+    return {
+        "value": [
+            {
+                "Ref_Key": DIRECT_RECEIPT,
+                "LineNumber": 10,
+                "Номенклатура_Key": DIRECT_ITEM_MOUNTING,
+                "Заказ_Key": order,
+                "Содержание": "",
+                "Сумма": first_amount,
+                "Всего": first_amount,
+            },
+            {
+                "Ref_Key": DIRECT_RECEIPT,
+                "LineNumber": 11,
+                "Номенклатура_Key": DIRECT_ITEM_TRANSPORT,
+                "Заказ_Key": order,
+                "Содержание": "",
+                "Сумма": second_amount,
+                "Всего": second_amount,
+            },
+        ]
+    }
+
+
+def direct_nomenclature_reference_payload():
+    return {
+        "value": [
+            reference_payload(
+                ITEM,
+                "Товар из 1С",
+                article="A-1",
+                nomenclature_type="Запас",
+            )["value"][0],
+            reference_payload(
+                DIRECT_ITEM_MOUNTING,
+                "Монтаж оборудования",
+                article="",
+                nomenclature_type="Услуга",
+            )["value"][0],
+            reference_payload(
+                DIRECT_ITEM_TRANSPORT,
+                "Транспортные расходы",
+                article="",
+                nomenclature_type="Услуга",
+            )["value"][0],
+        ]
     }
 
 
@@ -299,12 +356,8 @@ class ODataProfitDraftTests(TestCase):
                 if receipt_available
                 else {"value": []}
             ),
-            reference_payload(
-                ITEM,
-                "Товар из 1С",
-                article="A-1",
-                nomenclature_type="Запас",
-            ),
+            direct_expense_line_payload(),
+            direct_nomenclature_reference_payload(),
             reference_payload(
                 CUSTOMER,
                 "Клиент заказа №114",
@@ -332,9 +385,8 @@ class ODataProfitDraftTests(TestCase):
             ]},
             direct_order_document_payload(),
             direct_receipt_document_payload(),
-            reference_payload(
-                ITEM, "Товар из 1С", article="A-1", nomenclature_type="Запас"
-            ),
+            direct_expense_line_payload(),
+            direct_nomenclature_reference_payload(),
             reference_payload(CUSTOMER, "Клиент заказа №114"),
             reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
             document_payload(number="НФНФ-000335"),
@@ -360,6 +412,24 @@ class ODataProfitDraftTests(TestCase):
         self.assertEqual(
             {row["cost"] for row in direct_rows},
             {"25000.00", "5000.00"},
+        )
+        self.assertEqual(
+            {row["nomenclature"] for row in direct_rows},
+            {"Монтаж оборудования", "Транспортные расходы"},
+        )
+        self.assertEqual(
+            {
+                row["source_data"]["direct_expense_line_name"]
+                for row in direct_rows
+            },
+            {"Монтаж оборудования", "Транспортные расходы"},
+        )
+        self.assertEqual(
+            {
+                row["source_data"]["direct_expense_line_nomenclature_guid"]
+                for row in direct_rows
+            },
+            {DIRECT_ITEM_MOUNTING, DIRECT_ITEM_TRANSPORT},
         )
         self.assertTrue(all(row["revenue"] == "0.00" for row in direct_rows))
         self.assertTrue(
@@ -490,12 +560,8 @@ class ODataProfitDraftTests(TestCase):
                 direct_expense_row(11, "5000.00"),
             ]},
             direct_order_document_payload(),
-            reference_payload(
-                ITEM,
-                "Товар из 1С",
-                article="A-1",
-                nomenclature_type="Запас",
-            ),
+            direct_expense_line_payload(),
+            direct_nomenclature_reference_payload(),
             reference_payload(CUSTOMER, "Клиент заказа №114"),
             reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
             document_payload(number="НФНФ-000335"),
@@ -553,12 +619,8 @@ class ODataProfitDraftTests(TestCase):
             ]},
             direct_order_document_payload(),
             direct_receipt_document_payload(),
-            reference_payload(
-                ITEM,
-                "Товар из 1С",
-                article="A-1",
-                nomenclature_type="Запас",
-            ),
+            direct_expense_line_payload(),
+            direct_nomenclature_reference_payload(),
             reference_payload(CUSTOMER, "Клиент заказа №114"),
             reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
             document_payload(number="НФНФ-000335"),
@@ -572,7 +634,7 @@ class ODataProfitDraftTests(TestCase):
                 "2026-05",
                 self.organization,
                 self.user,
-                config=config(max_pages=5),
+                config=config(max_pages=6),
                 opener=opener,
             )
 
