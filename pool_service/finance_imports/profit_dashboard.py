@@ -489,8 +489,15 @@ def _decorate_presentation_row(row):
     row.dashboard_display_type = row.nomenclature_type
     row.dashboard_direct_expense_amount = None
     if row.dashboard_is_direct_expense:
+        line_name = source_data.get("direct_expense_line_name")
         content = source_data.get("direct_expense_content")
-        if isinstance(content, str) and content.strip():
+        if isinstance(line_name, str) and line_name.strip():
+            row.dashboard_display_nomenclature = line_name.strip()
+        elif (
+            row.nomenclature == "Прямые расходы по заказу"
+            and isinstance(content, str)
+            and content.strip()
+        ):
             row.dashboard_display_nomenclature = content.strip()
         row.dashboard_display_type = "Прямой расход по заказу"
         row.dashboard_direct_expense_amount = row.dashboard_analytical_cost
