@@ -468,6 +468,125 @@ class ProfitDashboardTests(TestCase):
                 response, f'data-profit-mobile-field="{absent_field}"'
             )
 
+    def test_presentation_collapses_one_revenue_with_multiple_cost_movements(self):
+        recorder = "11111111-1111-4111-8111-111111111111"
+        display = "Расходная накладная №РН-43 от 01.09.2026"
+        group_key = (
+            f"odata-document:{self.organization.pk}:"
+            f"Document_РасходнаяНакладная:{recorder}"
+        )
+        self.batch.source_type = OneCImportBatch.SOURCE_ODATA
+        self.batch.parser_version = "odata-2"
+        self.batch.save(update_fields=["source_type", "parser_version"])
+
+        def source_data(line_number):
+            return {
+                "source": "odata",
+                "recorder": recorder,
+                "recorder_type": "Document_РасходнаяНакладная",
+                "line_number": line_number,
+                "period": "2026-09-01T10:00:00+03:00",
+                "source_date": "2026-09-01",
+                "organization_guid": "22222222-2222-4222-8222-222222222222",
+                "document_guid": recorder,
+                "document_type": "Document_РасходнаяНакладная",
+                "document_number": "РН-43",
+                "document_date": "2026-09-01",
+                "document_group_recorder": recorder,
+                "document_group_recorder_type": "Document_РасходнаяНакладная",
+                "document_group_key": group_key,
+                "document_group_number": "РН-43",
+                "document_group_date": "2026-09-01",
+                "document_display": display,
+            }
+
+        for line_number, revenue, cost in (
+            (1, "100", "0"),
+            (2, "0", "25"),
+            (3, "0", "15"),
+        ):
+            self.add_row(
+                date(2026, 9, 1),
+                revenue=revenue,
+                cost=cost,
+                customer="Клиент",
+                document=display,
+                source_data=source_data(line_number),
+                source_recorder=recorder,
+                article="A-MULTI",
+                quantity="2",
+            )
+
+        data = dashboard_data(self.organization, resolve_period({
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        }, today=date(2026, 9, 9)))
+        document = data["customers"][0]["documents"][0]
+
+        self.assertEqual(document["source_row_count"], 3)
+        self.assertEqual(len(document["rows"]), 1)
+        self.assertEqual(document["rows"][0].dashboard_revenue, Decimal("100"))
+        self.assertEqual(
+            document["rows"][0].dashboard_analytical_cost, Decimal("40")
+        )
+        self.assertEqual(
+            document["rows"][0].dashboard_gross_profit, Decimal("60")
+        )
+        self.assertEqual(document["revenue"], Decimal("100"))
+        self.assertEqual(document["cost"], Decimal("40"))
+        self.assertEqual(document["gross_profit"], Decimal("60"))
+
+    def test_direct_expense_rows_show_1c_content_and_expense_amount(self):
+        document_name = "Приходная накладная №НФНФ-000310 от 01.09.2026"
+        for index, (content, cost) in enumerate(
+            (
+                ("Теплообменник для объекта", "25000"),
+                ("Доставка оборудования", "5000"),
+            ),
+            start=1,
+        ):
+            self.add_row(
+                date(2026, 9, 1),
+                name="Прямые расходы по заказу",
+                kind="Прямые расходы по заказу",
+                revenue="0",
+                cost=cost,
+                customer="Клиент",
+                manager="Менеджер",
+                document=document_name,
+                quantity="0",
+                source_data={
+                    "row_kind": "direct_order_expense",
+                    "direct_expense_content": content,
+                },
+            )
+
+        data = dashboard_data(self.organization, resolve_period({
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        }, today=date(2026, 9, 9)))
+        document = data["customers"][0]["documents"][0]
+
+        self.assertTrue(document["is_direct_expense_document"])
+        self.assertEqual(document["direct_expense_total"], Decimal("30000"))
+        self.assertEqual(
+            [row.dashboard_display_nomenclature for row in document["rows"]],
+            ["Теплообменник для объекта", "Доставка оборудования"],
+        )
+        self.assertEqual(
+            [row.dashboard_direct_expense_amount for row in document["rows"]],
+            [Decimal("25000"), Decimal("5000")],
+        )
+
+        response = self.client.get(reverse("finance_onec_profit_dashboard"), {
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        })
+        self.assertContains(response, "Итого прямых расходов")
+        self.assertContains(response, "Теплообменник для объекта")
+        self.assertContains(response, "Доставка оборудования")
+        self.assertContains(
+            response, 'data-profit-mobile-field="direct-expense"', count=2
+        )
+        self.assertNotContains(response, "Прямые расходы по заказу")
+
     def test_presentation_keeps_movements_separate_when_quantities_conflict(self):
         recorder = "11111111-1111-4111-8111-111111111111"
         display = "Расходная накладная №1 от 01.09.2026"
