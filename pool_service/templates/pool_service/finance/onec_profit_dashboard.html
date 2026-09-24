@@ -41,25 +41,53 @@
             {% if document.managers %}<div class="small text-muted">Менеджер: {{ document.managers|join:", " }}</div>{% endif %}
           </div>
           <div class="small text-end profit-document-totals">
+            {% if document.is_direct_expense_document %}
+            <span class="profit-document-total"><span>Итого прямых расходов</span><strong class="text-danger">{{ document.direct_expense_total|money }}</strong></span>
+            {% else %}
             <span class="profit-document-total"><span>Выручка</span><strong>{{ document.revenue|money }}</strong></span>
             <span class="profit-document-total"><span>Себестоимость</span><strong>{{ document.cost|money }}</strong></span>
             <span class="profit-document-total"><span>Прибыль</span><strong class="{% if document.gross_profit < 0 %}text-danger{% elif document.gross_profit > 0 %}text-success{% endif %}">{{ document.gross_profit|money }}</strong></span>
+            {% endif %}
           </div>
         </header>
         <div class="profit-document-desktop-lines">
           <div class="table-responsive profit-document-lines" aria-label="Строки документа {{ document.name }}">
+            {% if document.is_direct_expense_document %}
+            <table class="table table-sm mb-0 profit-document-table">
+              <thead><tr><th>Период</th><th>Строка расхода</th><th class="text-end">Расход</th></tr></thead>
+              <tbody>
+                {% for row in document.rows %}
+                <tr class="profit-document-line">
+                  <td data-label="Период">{{ row.period_month|date:"m.Y" }}</td>
+                  <td data-label="Строка расхода">{{ row.dashboard_display_nomenclature }}</td>
+                  <td class="text-end fw-semibold" data-label="Расход">{{ row.dashboard_direct_expense_amount|money }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+            {% else %}
             <table class="table table-sm mb-0 profit-document-table">
               <thead><tr><th>Период</th><th>Номенклатура</th><th>Артикул</th><th>Тип</th><th class="text-end">Количество</th><th class="text-end">Выручка</th><th class="text-end">Исходная себестоимость 1С</th><th class="text-end">Аналитическая себестоимость</th><th class="text-end">Валовая прибыль</th><th>Признак</th></tr></thead>
-              <tbody>{% for row in document.rows %}<tr class="profit-document-line"><td data-label="Период">{{ row.period_month|date:"m.Y" }}</td><td data-label="Номенклатура">{{ row.nomenclature }}</td><td data-label="Артикул">{{ row.article|default:"—" }}</td><td data-label="Тип">{{ row.nomenclature_type|default:"—" }}</td><td class="text-end" data-label="Количество">{{ row.quantity|default:"—" }}</td><td class="text-end" data-label="Выручка">{{ row.dashboard_revenue|money }}</td><td class="text-end" data-label="Исходная себестоимость 1С">{{ row.cost|money }}</td><td class="text-end" data-label="Аналитическая себестоимость">{{ row.dashboard_analytical_cost|money }}</td><td class="text-end {% if row.dashboard_gross_profit < 0 %}text-danger fw-semibold{% endif %}" data-label="Валовая прибыль">{{ row.dashboard_gross_profit|money }}</td><td data-label="Признак">{% if row.dashboard_cost_is_calculated %}<span class="badge text-bg-warning" title="Сохранённый коэффициент товаров с фактической себестоимостью месяца импорта">Расчётная · {{ row.dashboard_period_cost_ratio|ratio_percent }}%</span>{% else %}—{% endif %}</td></tr>{% endfor %}</tbody>
+              <tbody>{% for row in document.rows %}<tr class="profit-document-line"><td data-label="Период">{{ row.period_month|date:"m.Y" }}</td><td data-label="Номенклатура">{{ row.dashboard_display_nomenclature }}</td><td data-label="Артикул">{{ row.article|default:"—" }}</td><td data-label="Тип">{{ row.dashboard_display_type|default:"—" }}</td><td class="text-end" data-label="Количество">{{ row.quantity|default:"—" }}</td><td class="text-end" data-label="Выручка">{{ row.dashboard_revenue|money }}</td><td class="text-end" data-label="Исходная себестоимость 1С">{{ row.cost|money }}</td><td class="text-end" data-label="Аналитическая себестоимость">{{ row.dashboard_analytical_cost|money }}</td><td class="text-end {% if row.dashboard_gross_profit < 0 %}text-danger fw-semibold{% endif %}" data-label="Валовая прибыль">{{ row.dashboard_gross_profit|money }}</td><td data-label="Признак">{% if row.dashboard_cost_is_calculated %}<span class="badge text-bg-warning" title="Сохранённый коэффициент товаров с фактической себестоимостью месяца импорта">Расчётная · {{ row.dashboard_period_cost_ratio|ratio_percent }}%</span>{% else %}—{% endif %}</td></tr>{% endfor %}</tbody>
             </table>
+            {% endif %}
           </div>
         </div>
         <div class="profit-document-mobile-lines" aria-label="Строки документа {{ document.name }}">
           {% for row in document.rows %}
           <article class="profit-mobile-line">
+            {% if row.dashboard_is_direct_expense %}
+            <div class="profit-mobile-line__identity">
+              <span class="profit-mobile-line__article">Прямой расход</span>
+              <strong>{{ row.dashboard_display_nomenclature }}</strong>
+            </div>
+            <dl class="profit-mobile-line__metrics">
+              <div class="profit-mobile-line__metric profit-mobile-line__metric--profit" data-profit-mobile-field="direct-expense"><dt>Расход</dt><dd>{{ row.dashboard_direct_expense_amount|money }}</dd></div>
+            </dl>
+            {% else %}
             <div class="profit-mobile-line__identity">
               <span class="profit-mobile-line__article">Арт. {{ row.article|default:"—" }}</span>
-              <strong>{{ row.nomenclature }}</strong>
+              <strong>{{ row.dashboard_display_nomenclature }}</strong>
             </div>
             <dl class="profit-mobile-line__metrics">
               <div class="profit-mobile-line__metric" data-profit-mobile-field="quantity"><dt>Кол-во</dt><dd>{{ row.quantity|default_if_none:"—" }}</dd></div>
@@ -68,6 +96,7 @@
               <div class="profit-mobile-line__metric" data-profit-mobile-field="cost"><dt>Себестоимость</dt><dd>{% if row.dashboard_analytical_cost != None %}{{ row.dashboard_analytical_cost|money }}{% else %}—{% endif %}</dd></div>
               <div class="profit-mobile-line__metric profit-mobile-line__metric--profit" data-profit-mobile-field="gross-profit"><dt>Прибыль</dt><dd class="{% if row.dashboard_gross_profit < 0 %}text-danger{% elif row.dashboard_gross_profit > 0 %}text-success{% endif %}">{% if row.dashboard_gross_profit != None %}{{ row.dashboard_gross_profit|money }}{% else %}—{% endif %}</dd></div>
             </dl>
+            {% endif %}
           </article>
           {% endfor %}
         </div>
