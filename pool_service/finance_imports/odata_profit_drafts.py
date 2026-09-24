@@ -619,12 +619,21 @@ def _enrich_direct_expense_rows(
     rows,
     references,
     documents,
+    direct_lines,
     organization_id,
 ):
     normalized = []
     for row in rows:
         receipt = documents.get((DIRECT_EXPENSE_RECORDER_TYPE, row.recorder))
         order = _direct_expense_order(row, documents)
+        direct_line = direct_lines.get(row.identity)
+        if direct_line is None:
+            raise ODataPreviewError(
+                "Direct expense receipt line is missing during enrichment"
+            )
+        line_nomenclature = references["nomenclature"][
+            direct_line["nomenclature_guid"]
+        ]
         customer = references["customer"][order["customer_guid"]]["description"]
         responsible_guid = order.get("responsible_guid") or ZERO_GUID
         manager = (
@@ -657,8 +666,8 @@ def _enrich_direct_expense_rows(
             "manager_name": manager,
             "customer_name": customer,
             "document_name": receipt_display,
-            "nomenclature": DIRECT_EXPENSE_NOMENCLATURE,
-            "article": "",
+            "nomenclature": line_nomenclature["description"],
+            "article": line_nomenclature["article"],
             "nomenclature_type": DIRECT_EXPENSE_NOMENCLATURE_TYPE,
             "quantity": "0.000000",
             "revenue": "0.00",
@@ -679,7 +688,7 @@ def _enrich_direct_expense_rows(
                 "period": row.source_period,
                 "source_date": row.source_date.isoformat(),
                 "organization_guid": row.organization_guid,
-                "nomenclature_guid": ZERO_GUID,
+                "nomenclature_guid": direct_line["nomenclature_guid"],
                 "nomenclature_type": DIRECT_EXPENSE_NOMENCLATURE_TYPE,
                 "customer_guid": order["customer_guid"],
                 "responsible_guid": responsible_guid,
@@ -716,6 +725,15 @@ def _enrich_direct_expense_rows(
                 "resolved_order_responsible_guid": responsible_guid,
                 "resolved_order_responsible_name": manager,
                 "direct_expense_content": row.content,
+                "direct_expense_line_nomenclature_guid": direct_line[
+                    "nomenclature_guid"
+                ],
+                "direct_expense_line_name": line_nomenclature["description"],
+                "direct_expense_line_article": line_nomenclature["article"],
+                "direct_expense_line_content": direct_line["content"],
+                "direct_expense_line_amount": format(
+                    direct_line["amount"], "f"
+                ),
                 "direct_expense_account_guid": row.account_guid,
                 "direct_expense_operation_guid": row.operation_guid,
             },
@@ -1577,8 +1595,17 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
             opener=client,
             page_budget=reference_page_budget,
         )
+        direct_lines = _read_direct_expense_lines(
+            config,
+            direct_rows,
+            opener=client,
+            page_budget=reference_page_budget,
+        )
         direct_customers, direct_responsibles = _direct_expense_reference_guids(
             direct_rows, direct_documents
+        )
+        required["nomenclature"].update(
+            line["nomenclature_guid"] for line in direct_lines.values()
         )
         required["customer"].update(direct_customers)
         required["responsible"].update(direct_responsibles)
@@ -1604,7 +1631,11 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
         documents.update(direct_documents)
         normalized = _enrich_rows(rows, references, documents, organization.pk)
         normalized.extend(_enrich_direct_expense_rows(
-            direct_rows, references, documents, organization.pk
+            direct_rows,
+            references,
+            documents,
+            direct_lines,
+            organization.pk,
         ))
     except ODataPreviewError as exc:
         safe_message = str(exc)[:ERROR_MESSAGE_MAX_LENGTH]
