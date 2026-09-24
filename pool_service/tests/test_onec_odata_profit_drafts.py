@@ -16,7 +16,11 @@ from django.test import TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from pool_service.finance_imports.odata_profit import ODataConfig, ODataPreviewError
+from pool_service.finance_imports.odata_profit import (
+    ODataConfig,
+    ODataPreviewError,
+    ZERO_GUID,
+)
 from pool_service.finance_imports.odata_direct_order_costs import read_direct_order_expense_rows
 from pool_service.finance_forms import ODataProfitDraftForm
 from pool_service.finance_imports.odata_profit_drafts import (
@@ -676,6 +680,82 @@ class ODataProfitDraftTests(TestCase):
             self.create_direct_cost_draft(
                 revenue="94497.50",
                 first_line_amount="24999.00",
+            )
+
+    def test_direct_cost_receipt_scan_respects_configured_row_limit(self):
+        sale = profit_row(revenue="94497.25", cost="29696.64")
+        direct_lines = direct_expense_line_payload()["value"] + [
+            {
+                "Ref_Key": DIRECT_RECEIPT,
+                "LineNumber": 90,
+                "Номенклатура_Key": DIRECT_ITEM_MOUNTING,
+                "Заказ_Key": CUSTOMER_ORDER,
+                "Содержание": "",
+                "Сумма": "1.00",
+                "Всего": "1.00",
+            },
+            {
+                "Ref_Key": DIRECT_RECEIPT,
+                "LineNumber": 91,
+                "Номенклатура_Key": DIRECT_ITEM_TRANSPORT,
+                "Заказ_Key": CUSTOMER_ORDER,
+                "Содержание": "",
+                "Сумма": "1.00",
+                "Всего": "1.00",
+            },
+        ]
+        opener = FakeOpener(
+            {"value": [sale]},
+            {"value": [
+                direct_expense_row(10, "25000.00"),
+                direct_expense_row(11, "5000.00"),
+            ]},
+            direct_order_document_payload(),
+            direct_receipt_document_payload(),
+            {"value": direct_lines},
+        )
+
+        with patch(
+            "pool_service.finance_imports.odata_profit_drafts."
+            "read_direct_order_expense_rows",
+            side_effect=read_direct_order_expense_rows,
+        ):
+            with self.assertRaisesRegex(ODataDraftError, "row limit"):
+                create_odata_profit_draft(
+                    "2026-05",
+                    "2026-05",
+                    self.organization,
+                    self.user,
+                    config=config(max_rows=3),
+                    opener=opener,
+                )
+
+    def test_confirmation_binds_text_only_direct_name_to_receipt_content(self):
+        batch = self.create_direct_cost_draft(revenue="94497.75")
+
+        def forge(snapshot):
+            direct = next(
+                row for row in snapshot["rows"]
+                if row["source_data"].get("row_kind")
+                == "direct_order_expense"
+                and row["source_row_number"] == 10
+            )
+            source_data = direct["source_data"]
+            source_data["nomenclature_guid"] = ZERO_GUID
+            source_data["direct_expense_line_nomenclature_guid"] = ZERO_GUID
+            source_data["direct_expense_line_content"] = "Текстовая услуга"
+            source_data["direct_expense_line_name"] = "Поддельное название"
+            source_data["direct_expense_line_article"] = ""
+            direct["nomenclature"] = "Поддельное название"
+            direct["article"] = ""
+
+        self.rewrite_snapshot(batch, forge)
+        with self.assertRaisesRegex(ValidationError, "text-only"):
+            confirm_odata_profit(
+                batch.id,
+                self.organization,
+                self.user,
+                config=config(),
             )
 
     def test_direct_cost_rejects_customer_order_from_other_organization(self):
