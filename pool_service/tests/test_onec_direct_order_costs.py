@@ -104,7 +104,8 @@ class DirectOrderExpenseReaderTests(SimpleTestCase):
 
     def test_fractional_decimal_line_number_fails_closed(self):
         with self.assertRaises(ODataPreviewError):
-            self.read([expense_row(Decimal("1.5"))])
+            # JSON wire value 1.5 is parsed by the OData decoder as Decimal.
+            self.read([expense_row(1.5)])
 
     def test_duplicate_identity_fails_closed(self):
         with self.assertRaises(ODataPreviewError):
