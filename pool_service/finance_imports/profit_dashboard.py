@@ -471,35 +471,83 @@ def _document_display_metadata(row, document_name, is_validated):
     return {"label": label, "number": number.strip(), "date": document_date}
 
 
-def _compatible_display_quantity(revenue_row, cost_row):
+_DIRECT_EXPENSE_ROW_KIND = "direct_order_expense"
+
+
+def _row_source_data(row):
+    return row.source_data if isinstance(row.source_data, dict) else {}
+
+
+def _is_direct_expense_row(row):
+    return _row_source_data(row).get("row_kind") == _DIRECT_EXPENSE_ROW_KIND
+
+
+def _decorate_presentation_row(row):
+    source_data = _row_source_data(row)
+    row.dashboard_is_direct_expense = _is_direct_expense_row(row)
+    row.dashboard_display_nomenclature = row.nomenclature
+    row.dashboard_display_type = row.nomenclature_type
+    row.dashboard_direct_expense_amount = None
+    if row.dashboard_is_direct_expense:
+        content = source_data.get("direct_expense_content")
+        if isinstance(content, str) and content.strip():
+            row.dashboard_display_nomenclature = content.strip()
+        row.dashboard_display_type = "Прямой расход по заказу"
+        row.dashboard_direct_expense_amount = row.dashboard_analytical_cost
+    return row
+
+
+def _presentation_item_key(row):
+    source_data = _row_source_data(row)
+    nomenclature_guid = _guid(source_data.get("nomenclature_guid"))
+    item_identity = (
+        ("guid", nomenclature_guid)
+        if nomenclature_guid
+        else (
+            "text",
+            (row.nomenclature or "").strip().casefold(),
+            (row.article or "").strip().casefold(),
+        )
+    )
+    return (
+        row.period_month,
+        source_data.get("source_date"),
+        item_identity,
+        row.nomenclature_type,
+        row.manager_name,
+    )
+
+
+def _display_quantity_for_movements(revenue_row, cost_rows):
     revenue_quantity = revenue_row.quantity
-    cost_quantity = cost_row.quantity
-    if revenue_quantity in (None, 0):
-        return cost_quantity
-    if cost_quantity in (None, 0):
-        return revenue_quantity
-    if revenue_quantity == cost_quantity or revenue_quantity == -cost_quantity:
-        return revenue_quantity
-    return None
+    cost_quantities = [
+        row.quantity for row in cost_rows if row.quantity not in (None, 0)
+    ]
+    if revenue_quantity not in (None, 0):
+        compatible = all(
+            quantity in {revenue_quantity, -revenue_quantity}
+            for quantity in cost_quantities
+        )
+        return compatible, revenue_quantity
+    if not cost_quantities:
+        return True, revenue_quantity
+    quantity = cost_quantities[0]
+    compatible = all(
+        candidate in {quantity, -quantity}
+        for candidate in cost_quantities[1:]
+    )
+    return compatible, quantity
 
 
 def _presentation_rows(document_rows):
-    """Join only an unambiguous revenue/cost movement pair for display."""
+    """Collapse accounting revenue/cost movements into one business line for display."""
     buckets = {}
     order = []
     for row in document_rows:
-        source_data = row.source_data if isinstance(row.source_data, dict) else {}
-        key = (
-            row.period_month,
-            source_data.get("source_date"),
-            row.nomenclature,
-            row.article,
-            row.nomenclature_type,
-            row.manager_name,
-            row.cost_source,
-            row.cost_calculation_method,
-            row.cost_calculation_ratio,
-        )
+        if _is_direct_expense_row(row):
+            key = ("direct-expense", row.source_identity or row.pk)
+        else:
+            key = ("business-line",) + _presentation_item_key(row)
         if key not in buckets:
             buckets[key] = []
             order.append(key)
@@ -508,7 +556,7 @@ def _presentation_rows(document_rows):
     result = []
     for key in order:
         rows = buckets[key]
-        if len(rows) != 2:
+        if key[0] == "direct-expense" or len(rows) < 2:
             result.extend(rows)
             continue
         revenue_rows = [
@@ -521,41 +569,52 @@ def _presentation_rows(document_rows):
             if row.dashboard_revenue == 0
             and row.dashboard_analytical_cost not in (None, 0)
         ]
-        if len(revenue_rows) != 1 or len(cost_rows) != 1:
+        if (
+            len(revenue_rows) != 1
+            or not cost_rows
+            or len(revenue_rows) + len(cost_rows) != len(rows)
+            or any(row.cost is None for row in rows)
+            or any(row.dashboard_gross_profit is None for row in rows)
+        ):
             result.extend(rows)
             continue
         revenue_row = revenue_rows[0]
-        cost_row = cost_rows[0]
-        quantity = _compatible_display_quantity(revenue_row, cost_row)
-        if quantity is None and revenue_row.quantity is not None and cost_row.quantity is not None:
+        quantities_compatible, quantity = _display_quantity_for_movements(
+            revenue_row, cost_rows
+        )
+        if not quantities_compatible:
             result.extend(rows)
             continue
-        if revenue_row.cost is None or cost_row.cost is None:
-            result.extend(rows)
-            continue
+
         merged = copy(revenue_row)
         merged.quantity = quantity
-        merged.cost = revenue_row.cost + cost_row.cost
-        merged.dashboard_revenue = (
-            revenue_row.dashboard_revenue + cost_row.dashboard_revenue
+        merged.cost = sum((row.cost for row in rows), Decimal("0"))
+        merged.dashboard_revenue = sum(
+            (row.dashboard_revenue for row in rows), Decimal("0")
         )
-        merged.dashboard_analytical_cost = (
-            revenue_row.dashboard_analytical_cost
-            + cost_row.dashboard_analytical_cost
+        merged.dashboard_analytical_cost = sum(
+            (row.dashboard_analytical_cost or Decimal("0") for row in rows),
+            Decimal("0"),
         )
-        merged.dashboard_gross_profit = (
-            (revenue_row.dashboard_gross_profit or Decimal("0"))
-            + (cost_row.dashboard_gross_profit or Decimal("0"))
+        merged.dashboard_gross_profit = sum(
+            (row.dashboard_gross_profit for row in rows), Decimal("0")
         )
-        merged.dashboard_cost_is_calculated = (
-            revenue_row.dashboard_cost_is_calculated
-            or cost_row.dashboard_cost_is_calculated
+        merged.dashboard_cost_is_calculated = any(
+            row.dashboard_cost_is_calculated for row in rows
+        )
+        ratios = {
+            row.dashboard_period_cost_ratio
+            for row in rows
+            if row.dashboard_period_cost_ratio is not None
+        }
+        merged.dashboard_period_cost_ratio = (
+            next(iter(ratios)) if len(ratios) == 1 else None
         )
         merged.dashboard_unit_price = _display_unit_price(
             merged.dashboard_revenue, merged.quantity
         )
         result.append(merged)
-    return result
+    return [_decorate_presentation_row(row) for row in result]
 
 
 def customer_breakdown(rows):
