@@ -457,6 +457,7 @@ def _read_direct_expense_lines(
         return {}
 
     resolved = {}
+    scanned_rows = 0
     receipt_guids = sorted({row.recorder for row in rows})
     for batch_guids in _chunks(receipt_guids):
         url = _direct_expense_lines_url(config, batch_guids)
@@ -465,6 +466,11 @@ def _read_direct_expense_lines(
             if page_budget["used"] > config.max_pages:
                 raise ODataPreviewError(
                     "1C direct expense line lookups exceeded the page limit"
+                )
+            scanned_rows += len(raw_rows)
+            if scanned_rows > config.max_rows:
+                raise ODataPreviewError(
+                    "1C direct expense line lookups exceeded the row limit"
                 )
             for raw in raw_rows:
                 if not isinstance(raw, dict):
@@ -1391,6 +1397,16 @@ def _validate_snapshot(payload, config, *, organization_id):
                     "Direct expense snapshot receipt line is inconsistent."
                 )
             _reject_guid_label(line_name)
+            if line_nomenclature_guid == ZERO_GUID:
+                normalized_line_content = line_content.strip()
+                if (
+                    not normalized_line_content
+                    or line_name != normalized_line_content
+                    or line_article
+                ):
+                    raise ValidationError(
+                        "Direct expense text-only receipt line is inconsistent."
+                    )
             direct_line_amount = _decimal_from_snapshot(
                 source_data.get("direct_expense_line_amount"),
                 "direct expense line amount",
