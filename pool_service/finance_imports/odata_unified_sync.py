@@ -582,6 +582,9 @@ def _canonical_profit(row):
         "resolved_order_organization_guid": source_data.get(
             "resolved_order_organization_guid", ""
         ),
+        "resolved_order_number": source_data.get("resolved_order_number", ""),
+        "resolved_order_date": source_data.get("resolved_order_date", ""),
+        "resolved_order_display": source_data.get("resolved_order_display", ""),
         "resolved_order_customer_guid": source_data.get(
             "resolved_order_customer_guid", ""
         ),
