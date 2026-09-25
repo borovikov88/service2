@@ -14,12 +14,13 @@
     white-space: normal;
     overflow-wrap: anywhere;
   }
-  .profit-order-table th:nth-child(1) { width: 38%; }
-  .profit-order-table th:nth-child(2) { width: 14%; }
-  .profit-order-table th:nth-child(3) { width: 10%; }
-  .profit-order-table th:nth-child(4),
+  .profit-order-table th:nth-child(1) { width: 34%; }
+  .profit-order-table th:nth-child(2) { width: 9%; }
+  .profit-order-table th:nth-child(3) { width: 11%; }
+  .profit-order-table th:nth-child(4) { width: 9%; }
   .profit-order-table th:nth-child(5),
-  .profit-order-table th:nth-child(6) { width: 12.66%; }
+  .profit-order-table th:nth-child(6),
+  .profit-order-table th:nth-child(7) { width: 12.33%; }
   .profit-line-title { display: block; font-weight: 600; }
   .profit-line-meta {
     display: block;
@@ -186,6 +187,7 @@
               <thead>
                 <tr>
                   <th>Номенклатура / затрата</th>
+                  <th>Период</th>
                   <th>Тип</th>
                   <th class="text-end">Количество</th>
                   <th class="text-end">Выручка</th>
@@ -205,6 +207,7 @@
                       {% if document.is_order_group and row.document_name %}<span class="profit-line-meta">{{ row.document_name }}</span>{% endif %}
                     {% endif %}
                   </td>
+                  <td data-label="Период" data-profit-row-period="{{ row.period_month|date:'Y-m' }}">{{ row.period_month|date:"m.Y" }}</td>
                   <td data-label="Тип">{{ row.dashboard_display_type|default:"—" }}</td>
                   <td class="text-end" data-label="Количество">
                     {% if row.dashboard_is_direct_expense %}—{% else %}{{ row.quantity|default_if_none:"—" }}{% if row.dashboard_unit_price != None %}<span class="profit-line-meta">по {{ row.dashboard_unit_price|money }}</span>{% endif %}{% endif %}
@@ -230,6 +233,7 @@
               {% if row.dashboard_is_direct_expense and row.document_name %}<span class="profit-line-meta">{{ row.document_name }}</span>{% elif document.is_order_group and row.document_name %}<span class="profit-line-meta">{{ row.document_name }}</span>{% endif %}
             </div>
             <dl class="profit-mobile-line__metrics">
+              <div class="profit-mobile-line__metric" data-profit-mobile-field="period"><dt>Период</dt><dd>{{ row.period_month|date:"m.Y" }}</dd></div>
               {% if row.dashboard_is_direct_expense %}
               <div class="profit-mobile-line__metric" data-profit-mobile-field="direct-expense"><dt>Прямые затраты</dt><dd>{{ row.dashboard_direct_expense_amount|money }}</dd></div>
               <div class="profit-mobile-line__metric profit-mobile-line__metric--profit" data-profit-mobile-field="gross-profit"><dt>Влияние на ВП</dt><dd class="{% if row.dashboard_gross_profit < 0 %}text-danger{% elif row.dashboard_gross_profit > 0 %}text-success{% endif %}">{{ row.dashboard_gross_profit|money }}</dd></div>
