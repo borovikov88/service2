@@ -434,7 +434,11 @@ def _sales_order_customer_guids(rows, documents):
     """Return customer refs from live orders linked by sales documents."""
     result = set()
     for row in rows:
-        primary = documents.get((row.recorder_type, row.recorder))
+        recorder_type = getattr(row, "recorder_type", None)
+        recorder = getattr(row, "recorder", None)
+        if not recorder_type or not recorder:
+            continue
+        primary = documents.get((recorder_type, recorder))
         order_ref = primary.get("order_ref") if primary else None
         order = documents.get(order_ref) if order_ref else None
         customer_guid = order.get("customer_guid") if order else None
