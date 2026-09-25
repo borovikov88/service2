@@ -530,25 +530,42 @@ def _resolved_order_group(row):
     if order_display != expected_display:
         return None
     order_customer_name = None
-    if _is_direct_expense_row(row):
-        if _guid(source_data.get("direct_expense_order_guid")) != order_guid:
-            return None
-        resolved_customer_guid = _guid(
-            source_data.get("resolved_order_customer_guid")
-        )
-        source_customer_guid = _guid(source_data.get("customer_guid"))
-        resolved_customer_name = source_data.get(
-            "resolved_order_customer_name"
-        )
+    resolved_customer_guid = _guid(
+        source_data.get("resolved_order_customer_guid")
+    )
+    resolved_customer_name = source_data.get("resolved_order_customer_name")
+    has_customer_metadata = (
+        source_data.get("resolved_order_customer_guid") is not None
+        or resolved_customer_name is not None
+    )
+    if has_customer_metadata:
         if (
             resolved_customer_guid is None
-            or resolved_customer_guid != source_customer_guid
             or not isinstance(resolved_customer_name, str)
             or not resolved_customer_name.strip()
-            or resolved_customer_name != row.customer_name
         ):
             return None
         order_customer_name = resolved_customer_name.strip()
+
+    if _is_direct_expense_row(row):
+        if _guid(source_data.get("direct_expense_order_guid")) != order_guid:
+            return None
+        source_customer_guid = _guid(source_data.get("customer_guid"))
+        if (
+            resolved_customer_guid is None
+            or resolved_customer_guid != source_customer_guid
+            or order_customer_name != row.customer_name
+        ):
+            return None
+    else:
+        source_order_guid_value = source_data.get("source_document_order_guid")
+        source_order_type = source_data.get("source_document_order_type")
+        if source_order_guid_value is not None or source_order_type is not None:
+            if (
+                _guid(source_order_guid_value) != order_guid
+                or source_order_type != _ORDER_TYPE
+            ):
+                return None
 
     return {
         "guid": order_guid,
