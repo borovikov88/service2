@@ -1380,7 +1380,18 @@ def _validate_snapshot(payload, config, *, organization_id):
             "resolved_order_organization_guid", "resolved_order_number",
             "resolved_order_date", "resolved_order_display",
         ))
-        if any(value is not None for value in order_values):
+        order_customer_values = (
+            source_data.get("resolved_order_customer_guid"),
+            source_data.get("resolved_order_customer_name"),
+        )
+        source_document_order_values = (
+            source_data.get("source_document_order_guid"),
+            source_data.get("source_document_order_type"),
+        )
+        has_resolved_order = any(value is not None for value in order_values)
+        normalized_order_guid = None
+        resolved_customer_guid = None
+        if has_resolved_order:
             if any(value is None for value in order_values):
                 raise ValidationError("OData snapshot resolved order is incomplete.")
             (
@@ -1408,19 +1419,85 @@ def _validate_snapshot(payload, config, *, organization_id):
                 allowed_types={ORDER_TYPE},
             ) != ORDER_TYPE:
                 raise ValidationError("OData snapshot resolved order type is invalid.")
-            if not isinstance(order_number, str) or not order_number.strip() or len(order_number) > 100:
-                raise ValidationError("OData snapshot resolved order number is invalid.")
+            if (
+                not isinstance(order_number, str)
+                or not order_number.strip()
+                or len(order_number) > 100
+            ):
+                raise ValidationError(
+                    "OData snapshot resolved order number is invalid."
+                )
             try:
                 order_date = date.fromisoformat(order_date_value)
             except (TypeError, ValueError) as exc:
-                raise ValidationError("OData snapshot resolved order date is invalid.") from exc
+                raise ValidationError(
+                    "OData snapshot resolved order date is invalid."
+                ) from exc
             if order_display != _document_display(ORDER_TYPE, {
                 "number": order_number,
                 "date": order_date,
             }):
-                raise ValidationError("OData snapshot resolved order display is invalid.")
-        if is_direct_expense and not all(value is not None for value in order_values):
-            raise ValidationError("Direct expense snapshot requires a resolved order.")
+                raise ValidationError(
+                    "OData snapshot resolved order display is invalid."
+                )
+            if any(value is None for value in order_customer_values):
+                raise ValidationError(
+                    "OData snapshot resolved order customer is incomplete."
+                )
+            resolved_customer_guid = normalize_guid(
+                order_customer_values[0],
+                field="Snapshot resolved order customer",
+            )
+            resolved_customer_name = order_customer_values[1]
+            if (
+                not isinstance(resolved_customer_name, str)
+                or not resolved_customer_name.strip()
+                or len(resolved_customer_name) > 500
+            ):
+                raise ValidationError(
+                    "OData snapshot resolved order customer is invalid."
+                )
+            _reject_guid_label(resolved_customer_name)
+
+            if is_direct_expense:
+                if any(value is not None for value in source_document_order_values):
+                    raise ValidationError(
+                        "Direct expense snapshot contains sales order binding fields."
+                    )
+            else:
+                if any(value is None for value in source_document_order_values):
+                    raise ValidationError(
+                        "OData snapshot source document order is incomplete."
+                    )
+                source_document_order_guid = normalize_guid(
+                    source_document_order_values[0],
+                    field="Snapshot source document order GUID",
+                )
+                source_document_order_type = _snapshot_document_type(
+                    source_document_order_values[1],
+                    field="Snapshot source document order type",
+                    allowed_types={ORDER_TYPE},
+                )
+                if (
+                    source_document_order_type != ORDER_TYPE
+                    or source_document_order_guid != normalized_order_guid
+                ):
+                    raise ValidationError(
+                        "OData snapshot source document order attribution is inconsistent."
+                    )
+        else:
+            if is_direct_expense:
+                raise ValidationError(
+                    "Direct expense snapshot requires a resolved order."
+                )
+            if any(value is not None for value in order_customer_values):
+                raise ValidationError(
+                    "OData snapshot order customer has no resolved order."
+                )
+            if any(value is not None for value in source_document_order_values):
+                raise ValidationError(
+                    "OData snapshot source document order has no resolved order."
+                )
         nomenclature_guid = normalize_guid(
             source_data.get("nomenclature_guid"),
             field="Snapshot nomenclature",
@@ -1445,10 +1522,6 @@ def _validate_snapshot(payload, config, *, organization_id):
                 raise ValidationError(
                     "Direct expense snapshot order attribution is inconsistent."
                 )
-            resolved_customer_guid = normalize_guid(
-                source_data.get("resolved_order_customer_guid"),
-                field="Snapshot resolved order customer",
-            )
             resolved_responsible_guid = normalize_guid(
                 source_data.get("resolved_order_responsible_guid"),
                 field="Snapshot resolved order responsible",
@@ -1524,8 +1597,6 @@ def _validate_snapshot(payload, config, *, organization_id):
                 for key in (
                     "direct_expense_receipt_resolved",
                     "direct_expense_order_guid",
-                    "resolved_order_customer_guid",
-                    "resolved_order_customer_name",
                     "resolved_order_responsible_guid",
                     "resolved_order_responsible_name",
                     "direct_expense_content",
