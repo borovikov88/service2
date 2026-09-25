@@ -604,6 +604,35 @@ class UnifiedSyncTests(TestCase):
                     month_fingerprint(REPORT_PROFIT, month, [changed]),
                 )
 
+    def test_profit_fingerprint_changes_when_sale_order_heading_changes(self):
+        month = date(2025, 5, 1)
+        first = profit_row()
+        first["source_data"].update({
+            "resolved_order_guid": "88888888-8888-4888-8888-888888888888",
+            "resolved_order_type": "Document_ЗаказПокупателя",
+            "resolved_order_organization_guid": ORG_GUID,
+            "resolved_order_number": "НФНФ-000114",
+            "resolved_order_date": "2025-05-01",
+            "resolved_order_display": "Заказ покупателя №НФНФ-000114 от 01.05.2025",
+        })
+        baseline = month_fingerprint(REPORT_PROFIT, month, [first])
+
+        for field, value in (
+            ("resolved_order_number", "НФНФ-000115"),
+            ("resolved_order_date", "2025-05-02"),
+            (
+                "resolved_order_display",
+                "Заказ покупателя №НФНФ-000114 от 02.05.2025",
+            ),
+        ):
+            changed = deepcopy(first)
+            changed["source_data"][field] = value
+            with self.subTest(field=field):
+                self.assertNotEqual(
+                    baseline,
+                    month_fingerprint(REPORT_PROFIT, month, [changed]),
+                )
+
     def test_month_fingerprint_is_order_independent(self):
         one = cashflow_row()
         two = cashflow_row()
