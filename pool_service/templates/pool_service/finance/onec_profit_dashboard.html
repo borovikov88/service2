@@ -200,8 +200,9 @@
                     <span class="profit-line-title">{{ row.dashboard_display_nomenclature }}</span>
                     {% if row.dashboard_is_direct_expense %}
                       <span class="profit-line-meta">Прямые затраты{% if row.document_name %} · {{ row.document_name }}{% endif %}</span>
-                    {% elif row.article %}
-                      <span class="profit-line-meta">Арт. {{ row.article }}</span>
+                    {% else %}
+                      {% if row.article %}<span class="profit-line-meta">Арт. {{ row.article }}</span>{% endif %}
+                      {% if document.is_order_group and row.document_name %}<span class="profit-line-meta">{{ row.document_name }}</span>{% endif %}
                     {% endif %}
                   </td>
                   <td data-label="Тип">{{ row.dashboard_display_type|default:"—" }}</td>
@@ -226,7 +227,7 @@
             <div class="profit-mobile-line__identity">
               <span class="profit-mobile-line__article">{% if row.dashboard_is_direct_expense %}Прямые затраты{% elif row.article %}Арт. {{ row.article }}{% else %}{{ row.dashboard_display_type|default:"Позиция" }}{% endif %}</span>
               <strong>{{ row.dashboard_display_nomenclature }}</strong>
-              {% if row.dashboard_is_direct_expense and row.document_name %}<span class="profit-line-meta">{{ row.document_name }}</span>{% endif %}
+              {% if row.dashboard_is_direct_expense and row.document_name %}<span class="profit-line-meta">{{ row.document_name }}</span>{% elif document.is_order_group and row.document_name %}<span class="profit-line-meta">{{ row.document_name }}</span>{% endif %}
             </div>
             <dl class="profit-mobile-line__metrics">
               {% if row.dashboard_is_direct_expense %}
