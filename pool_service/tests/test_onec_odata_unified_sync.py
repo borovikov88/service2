@@ -608,9 +608,13 @@ class UnifiedSyncTests(TestCase):
         month = date(2025, 5, 1)
         first = profit_row()
         first["source_data"].update({
+            "source_document_order_guid": "88888888-8888-4888-8888-888888888888",
+            "source_document_order_type": "Document_ЗаказПокупателя",
             "resolved_order_guid": "88888888-8888-4888-8888-888888888888",
             "resolved_order_type": "Document_ЗаказПокупателя",
             "resolved_order_organization_guid": ORG_GUID,
+            "resolved_order_customer_guid": "44444444-4444-4444-8444-444444444444",
+            "resolved_order_customer_name": "Клиент заказа",
             "resolved_order_number": "НФНФ-000114",
             "resolved_order_date": "2025-05-01",
             "resolved_order_display": "Заказ покупателя №НФНФ-000114 от 01.05.2025",
@@ -623,6 +627,15 @@ class UnifiedSyncTests(TestCase):
             (
                 "resolved_order_display",
                 "Заказ покупателя №НФНФ-000114 от 02.05.2025",
+            ),
+            ("resolved_order_customer_name", "Переименованный клиент"),
+            (
+                "resolved_order_customer_guid",
+                "55555555-5555-4555-8555-555555555555",
+            ),
+            (
+                "source_document_order_guid",
+                "99999999-9999-4999-8999-999999999999",
             ),
         ):
             changed = deepcopy(first)
