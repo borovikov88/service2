@@ -705,6 +705,97 @@ class ProfitDashboardTests(TestCase):
         self.assertContains(response, "Монтаж оборудования")
         self.assertContains(response, "Транспортные расходы")
 
+    def test_order_group_uses_newest_validated_heading_across_months(self):
+        order_guid = "88888888-8888-4888-8888-888888888888"
+        organization_guid = "22222222-2222-4222-8222-222222222222"
+        self.batch.source_type = OneCImportBatch.SOURCE_ODATA
+        self.batch.parser_version = "odata-2"
+        self.batch.save(update_fields=["source_type", "parser_version"])
+
+        versions = (
+            (
+                date(2026, 8, 1),
+                "11111111-1111-4111-8111-111111111111",
+                "РН-OLD",
+                "НФНФ-000113",
+                "2026-07-01",
+                "Заказ покупателя №НФНФ-000113 от 01.07.2026",
+            ),
+            (
+                date(2026, 9, 1),
+                "33333333-3333-4333-8333-333333333333",
+                "РН-NEW",
+                "НФНФ-000114",
+                "2026-07-02",
+                "Заказ покупателя №НФНФ-000114 от 02.07.2026",
+            ),
+        )
+        for line_number, (
+            month,
+            recorder,
+            sale_number,
+            order_number,
+            order_date,
+            order_display,
+        ) in enumerate(versions, start=1):
+            source_date = month.replace(day=15).isoformat()
+            sale_display = (
+                f"Расходная накладная №{sale_number} "
+                f"от {month.replace(day=15):%d.%m.%Y}"
+            )
+            self.add_row(
+                month,
+                name=f"Позиция {line_number}",
+                revenue="100",
+                cost="40",
+                customer="Клиент заказа",
+                manager="Менеджер",
+                document=sale_display,
+                source_recorder=recorder,
+                article=f"A-{line_number}",
+                quantity="1",
+                source_data={
+                    "source": "odata",
+                    "recorder": recorder,
+                    "recorder_type": "Document_РасходнаяНакладная",
+                    "line_number": line_number,
+                    "period": f"{source_date}T10:00:00+03:00",
+                    "source_date": source_date,
+                    "organization_guid": organization_guid,
+                    "document_guid": recorder,
+                    "document_type": "Document_РасходнаяНакладная",
+                    "document_number": sale_number,
+                    "document_date": source_date,
+                    "document_group_recorder": recorder,
+                    "document_group_recorder_type": "Document_РасходнаяНакладная",
+                    "document_group_key": (
+                        f"odata-document:{self.organization.pk}:"
+                        f"Document_РасходнаяНакладная:{recorder}"
+                    ),
+                    "document_group_number": sale_number,
+                    "document_group_date": source_date,
+                    "document_display": sale_display,
+                    "resolved_order_guid": order_guid,
+                    "resolved_order_type": "Document_ЗаказПокупателя",
+                    "resolved_order_organization_guid": organization_guid,
+                    "resolved_order_number": order_number,
+                    "resolved_order_date": order_date,
+                    "resolved_order_display": order_display,
+                },
+            )
+
+        data = dashboard_data(self.organization, resolve_period({
+            "period": "custom", "start": "2026-08", "end": "2026-09",
+        }, today=date(2026, 9, 25)))
+        order = data["customers"][0]["documents"][0]
+        self.assertTrue(order["is_order_group"])
+        self.assertEqual(
+            order["name"],
+            "Заказ покупателя №НФНФ-000114 от 02.07.2026",
+        )
+        self.assertEqual(order["number"], "НФНФ-000114")
+        self.assertEqual(order["date"], date(2026, 7, 2))
+
     def test_order_group_preserves_each_sale_source_document_in_ui(self):
         order_guid = "88888888-8888-4888-8888-888888888888"
         order_display = "Заказ покупателя №НФНФ-000114 от 01.07.2026"
