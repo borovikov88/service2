@@ -705,6 +705,99 @@ class ProfitDashboardTests(TestCase):
         self.assertContains(response, "Монтаж оборудования")
         self.assertContains(response, "Транспортные расходы")
 
+    def test_order_group_preserves_each_sale_source_document_in_ui(self):
+        order_guid = "88888888-8888-4888-8888-888888888888"
+        order_display = "Заказ покупателя №НФНФ-000114 от 01.07.2026"
+        organization_guid = "22222222-2222-4222-8222-222222222222"
+        self.batch.source_type = OneCImportBatch.SOURCE_ODATA
+        self.batch.parser_version = "odata-2"
+        self.batch.save(update_fields=["source_type", "parser_version"])
+
+        sales = (
+            (
+                "11111111-1111-4111-8111-111111111111",
+                "НФНФ-000335",
+                "Теплообменник",
+                "A-335",
+                "100",
+                "40",
+            ),
+            (
+                "33333333-3333-4333-8333-333333333333",
+                "НФНФ-000336",
+                "Насос",
+                "A-336",
+                "50",
+                "20",
+            ),
+        )
+        expected_documents = []
+        line_number = 1
+        for recorder, number, name, article, revenue, cost in sales:
+            display = f"Расходная накладная №{number} от 01.09.2026"
+            expected_documents.append(display)
+            group_key = (
+                f"odata-document:{self.organization.pk}:"
+                f"Document_РасходнаяНакладная:{recorder}"
+            )
+            for movement_revenue, movement_cost in (
+                (revenue, "0"),
+                ("0", cost),
+            ):
+                self.add_row(
+                    date(2026, 9, 1),
+                    name=name,
+                    revenue=movement_revenue,
+                    cost=movement_cost,
+                    customer="Клиент заказа",
+                    manager="Менеджер",
+                    document=display,
+                    source_recorder=recorder,
+                    article=article,
+                    quantity="1",
+                    source_data={
+                        "source": "odata",
+                        "recorder": recorder,
+                        "recorder_type": "Document_РасходнаяНакладная",
+                        "line_number": line_number,
+                        "period": "2026-09-01T10:00:00+03:00",
+                        "source_date": "2026-09-01",
+                        "organization_guid": organization_guid,
+                        "document_guid": recorder,
+                        "document_type": "Document_РасходнаяНакладная",
+                        "document_number": number,
+                        "document_date": "2026-09-01",
+                        "document_group_recorder": recorder,
+                        "document_group_recorder_type": "Document_РасходнаяНакладная",
+                        "document_group_key": group_key,
+                        "document_group_number": number,
+                        "document_group_date": "2026-09-01",
+                        "document_display": display,
+                        "resolved_order_guid": order_guid,
+                        "resolved_order_type": "Document_ЗаказПокупателя",
+                        "resolved_order_organization_guid": organization_guid,
+                        "resolved_order_number": "НФНФ-000114",
+                        "resolved_order_date": "2026-07-01",
+                        "resolved_order_display": order_display,
+                    },
+                )
+                line_number += 1
+
+        data = dashboard_data(self.organization, resolve_period({
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        }, today=date(2026, 9, 9)))
+        order = data["customers"][0]["documents"][0]
+        self.assertTrue(order["is_order_group"])
+        self.assertEqual(len(order["rows"]), 2)
+        self.assertEqual(order["source_documents"], sorted(expected_documents))
+
+        response = self.client.get(reverse("finance_onec_profit_dashboard"), {
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        })
+        for display in expected_documents:
+            with self.subTest(display=display):
+                self.assertContains(response, display, count=2)
+
     def test_presentation_keeps_movements_separate_when_quantities_conflict(self):
         recorder = "11111111-1111-4111-8111-111111111111"
         display = "Расходная накладная №1 от 01.09.2026"
