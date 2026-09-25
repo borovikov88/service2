@@ -461,12 +461,559 @@ class ProfitDashboardTests(TestCase):
         self.assertContains(response, "Арт. A-PAIR")
         self.assertContains(response, "50,00")
         self.assertContains(response, "<dt>Стоимость</dt>", html=True)
-        for field in ("quantity", "price", "revenue", "cost", "gross-profit"):
+        for field in (
+            "period", "quantity", "price", "revenue", "cost", "gross-profit",
+        ):
             self.assertContains(response, f'data-profit-mobile-field="{field}"')
-        for absent_field in ("period", "type", "source-cost", "cost-analytics", "flag"):
+        for absent_field in ("type", "source-cost", "cost-analytics", "flag"):
             self.assertNotContains(
                 response, f'data-profit-mobile-field="{absent_field}"'
             )
+
+    def test_presentation_collapses_one_revenue_with_multiple_cost_movements(self):
+        recorder = "11111111-1111-4111-8111-111111111111"
+        display = "Расходная накладная №РН-43 от 01.09.2026"
+        group_key = (
+            f"odata-document:{self.organization.pk}:"
+            f"Document_РасходнаяНакладная:{recorder}"
+        )
+        self.batch.source_type = OneCImportBatch.SOURCE_ODATA
+        self.batch.parser_version = "odata-2"
+        self.batch.save(update_fields=["source_type", "parser_version"])
+
+        def source_data(line_number):
+            return {
+                "source": "odata",
+                "recorder": recorder,
+                "recorder_type": "Document_РасходнаяНакладная",
+                "line_number": line_number,
+                "period": "2026-09-01T10:00:00+03:00",
+                "source_date": "2026-09-01",
+                "organization_guid": "22222222-2222-4222-8222-222222222222",
+                "document_guid": recorder,
+                "document_type": "Document_РасходнаяНакладная",
+                "document_number": "РН-43",
+                "document_date": "2026-09-01",
+                "document_group_recorder": recorder,
+                "document_group_recorder_type": "Document_РасходнаяНакладная",
+                "document_group_key": group_key,
+                "document_group_number": "РН-43",
+                "document_group_date": "2026-09-01",
+                "document_display": display,
+            }
+
+        for line_number, revenue, cost in (
+            (1, "100", "0"),
+            (2, "0", "25"),
+            (3, "0", "15"),
+        ):
+            self.add_row(
+                date(2026, 9, 1),
+                revenue=revenue,
+                cost=cost,
+                customer="Клиент",
+                document=display,
+                source_data=source_data(line_number),
+                source_recorder=recorder,
+                article="A-MULTI",
+                quantity="2",
+            )
+
+        data = dashboard_data(self.organization, resolve_period({
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        }, today=date(2026, 9, 9)))
+        document = data["customers"][0]["documents"][0]
+
+        self.assertEqual(document["source_row_count"], 3)
+        self.assertEqual(len(document["rows"]), 1)
+        self.assertEqual(document["rows"][0].dashboard_revenue, Decimal("100"))
+        self.assertEqual(
+            document["rows"][0].dashboard_analytical_cost, Decimal("40")
+        )
+        self.assertEqual(
+            document["rows"][0].dashboard_gross_profit, Decimal("60")
+        )
+        self.assertEqual(document["revenue"], Decimal("100"))
+        self.assertEqual(document["cost"], Decimal("40"))
+        self.assertEqual(document["gross_profit"], Decimal("60"))
+
+    def test_direct_expense_rows_show_receipt_line_names_and_expense_amount(self):
+        document_name = "Приходная накладная №НФНФ-000310 от 01.09.2026"
+        for line_name, cost in (
+            ("Монтаж оборудования", "25000"),
+            ("Транспортные расходы", "5000"),
+        ):
+            self.add_row(
+                date(2026, 9, 1),
+                name=line_name,
+                kind="Прямые расходы",
+                revenue="0",
+                cost=cost,
+                customer="Клиент",
+                manager="Менеджер",
+                document=document_name,
+                quantity="0",
+                source_data={
+                    "row_kind": "direct_order_expense",
+                    "direct_expense_content": "Прочие расходы",
+                    "direct_expense_line_name": line_name,
+                },
+            )
+
+        data = dashboard_data(self.organization, resolve_period({
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        }, today=date(2026, 9, 9)))
+        document = data["customers"][0]["documents"][0]
+
+        self.assertTrue(document["is_direct_expense_document"])
+        self.assertEqual(document["direct_expense_total"], Decimal("30000"))
+        self.assertEqual(
+            [row.dashboard_display_nomenclature for row in document["rows"]],
+            ["Монтаж оборудования", "Транспортные расходы"],
+        )
+        self.assertEqual(
+            [row.dashboard_direct_expense_amount for row in document["rows"]],
+            [Decimal("25000"), Decimal("5000")],
+        )
+
+        response = self.client.get(reverse("finance_onec_profit_dashboard"), {
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        })
+        self.assertContains(response, "Прямые затраты")
+        self.assertContains(response, "Монтаж оборудования")
+        self.assertContains(response, "Транспортные расходы")
+        self.assertContains(
+            response, 'data-profit-mobile-field="direct-expense"', count=2
+        )
+        self.assertNotContains(response, "Прямые расходы по заказу")
+        self.assertNotContains(response, "Прочие расходы")
+
+    def test_order_group_combines_sale_lines_and_direct_costs_in_one_table(self):
+        sale_recorder = "11111111-1111-4111-8111-111111111111"
+        receipt_recorder = "77777777-7777-4777-8777-777777777777"
+        order_guid = "88888888-8888-4888-8888-888888888888"
+        order_number = "НФНФ-000114"
+        order_display = "Заказ покупателя №НФНФ-000114 от 01.07.2026"
+        sale_display = "Расходная накладная №НФНФ-000335 от 01.09.2026"
+        sale_group_key = (
+            f"odata-document:{self.organization.pk}:"
+            f"Document_РасходнаяНакладная:{sale_recorder}"
+        )
+        self.batch.source_type = OneCImportBatch.SOURCE_ODATA
+        self.batch.parser_version = "odata-2"
+        self.batch.save(update_fields=["source_type", "parser_version"])
+
+        def sale_source_data(line_number):
+            return {
+                "source": "odata",
+                "recorder": sale_recorder,
+                "recorder_type": "Document_РасходнаяНакладная",
+                "line_number": line_number,
+                "period": "2026-09-01T10:00:00+03:00",
+                "source_date": "2026-09-01",
+                "organization_guid": "22222222-2222-4222-8222-222222222222",
+                "resolved_order_organization_guid": "22222222-2222-4222-8222-222222222222",
+                "document_guid": sale_recorder,
+                "document_type": "Document_РасходнаяНакладная",
+                "document_number": "НФНФ-000335",
+                "document_date": "2026-09-01",
+                "document_group_recorder": sale_recorder,
+                "document_group_recorder_type": "Document_РасходнаяНакладная",
+                "document_group_key": sale_group_key,
+                "document_group_number": "НФНФ-000335",
+                "document_group_date": "2026-09-01",
+                "document_display": sale_display,
+                "resolved_order_guid": order_guid,
+                "resolved_order_type": "Document_ЗаказПокупателя",
+                "resolved_order_number": order_number,
+                "resolved_order_date": "2026-07-01",
+                "resolved_order_display": order_display,
+            }
+
+        self.add_row(
+            date(2026, 9, 1), name="Теплообменник", revenue="100", cost="0",
+            customer="Без контрагента", manager="Менеджер",
+            document=sale_display, source_data=sale_source_data(1),
+            source_recorder=sale_recorder, article="A-ORDER", quantity="1",
+        )
+        self.add_row(
+            date(2026, 9, 1), name="Теплообменник", revenue="0", cost="40",
+            customer="Без контрагента", manager="Менеджер",
+            document=sale_display, source_data=sale_source_data(2),
+            source_recorder=sale_recorder, article="A-ORDER", quantity="1",
+        )
+
+        for line_name, cost, line_number in (
+            ("Монтаж оборудования", "25", 3),
+            ("Транспортные расходы", "5", 4),
+        ):
+            self.add_row(
+                date(2026, 9, 1), name=line_name, kind="Прямые расходы",
+                revenue="0", cost=cost, customer="Клиент заказа",
+                manager="Менеджер",
+                document="Приходная накладная №НФНФ-000310 от 01.09.2026",
+                source_recorder=receipt_recorder,
+                source_data={
+                    "source": "odata",
+                    "row_kind": "direct_order_expense",
+                    "organization_guid": "22222222-2222-4222-8222-222222222222",
+                    "customer_guid": "44444444-4444-4444-8444-444444444444",
+                    "direct_expense_order_guid": order_guid,
+                    "resolved_order_guid": order_guid,
+                    "resolved_order_type": "Document_ЗаказПокупателя",
+                    "resolved_order_organization_guid": "22222222-2222-4222-8222-222222222222",
+                    "resolved_order_customer_guid": "44444444-4444-4444-8444-444444444444",
+                    "resolved_order_customer_name": "Клиент заказа",
+                    "resolved_order_number": order_number,
+                    "resolved_order_date": "2026-07-01",
+                    "resolved_order_display": order_display,
+                    "direct_expense_line_name": line_name,
+                    "direct_expense_content": "Прямые затраты",
+                    "line_number": line_number,
+                },
+                quantity="0",
+            )
+
+        data = dashboard_data(self.organization, resolve_period({
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        }, today=date(2026, 9, 9)))
+        self.assertEqual(len(data["customers"]), 1)
+        self.assertEqual(data["customers"][0]["name"], "Клиент заказа")
+        order = data["customers"][0]["documents"][0]
+
+        self.assertTrue(order["is_order_group"])
+        self.assertEqual(order["label"], "Заказ покупателя")
+        self.assertEqual(order["number"], order_number)
+        self.assertEqual(order["source_row_count"], 4)
+        self.assertEqual(len(order["rows"]), 3)
+        self.assertEqual(order["revenue"], Decimal("100"))
+        self.assertEqual(order["cost"], Decimal("70"))
+        self.assertEqual(order["gross_profit"], Decimal("30"))
+        self.assertEqual(order["direct_expense_total"], Decimal("30"))
+        self.assertEqual(
+            [row.dashboard_is_direct_expense for row in order["rows"]],
+            [False, True, True],
+        )
+
+        response = self.client.get(reverse("finance_onec_profit_dashboard"), {
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        })
+        self.assertContains(response, "Заказ покупателя")
+        self.assertContains(response, "№НФНФ-000114")
+        self.assertContains(response, "profit-order-table")
+        self.assertContains(
+            response, 'data-profit-row-kind="direct-expense"', count=2
+        )
+        self.assertContains(response, "Монтаж оборудования")
+        self.assertContains(response, "Транспортные расходы")
+
+    def test_order_group_uses_newest_validated_heading_across_months(self):
+        order_guid = "88888888-8888-4888-8888-888888888888"
+        organization_guid = "22222222-2222-4222-8222-222222222222"
+        self.batch.source_type = OneCImportBatch.SOURCE_ODATA
+        self.batch.parser_version = "odata-2"
+        self.batch.save(update_fields=["source_type", "parser_version"])
+
+        versions = (
+            (
+                date(2026, 8, 1),
+                "11111111-1111-4111-8111-111111111111",
+                "РН-OLD",
+                "НФНФ-000113",
+                "2026-07-01",
+                "Заказ покупателя №НФНФ-000113 от 01.07.2026",
+            ),
+            (
+                date(2026, 9, 1),
+                "33333333-3333-4333-8333-333333333333",
+                "РН-NEW",
+                "НФНФ-000114",
+                "2026-07-02",
+                "Заказ покупателя №НФНФ-000114 от 02.07.2026",
+            ),
+        )
+        for line_number, (
+            month,
+            recorder,
+            sale_number,
+            order_number,
+            order_date,
+            order_display,
+        ) in enumerate(versions, start=1):
+            source_date = month.replace(day=15).isoformat()
+            sale_display = (
+                f"Расходная накладная №{sale_number} "
+                f"от {month.replace(day=15):%d.%m.%Y}"
+            )
+            self.add_row(
+                month,
+                name=f"Позиция {line_number}",
+                revenue="100",
+                cost="40",
+                customer="Клиент заказа",
+                manager="Менеджер",
+                document=sale_display,
+                source_recorder=recorder,
+                article=f"A-{line_number}",
+                quantity="1",
+                source_data={
+                    "source": "odata",
+                    "recorder": recorder,
+                    "recorder_type": "Document_РасходнаяНакладная",
+                    "line_number": line_number,
+                    "period": f"{source_date}T10:00:00+03:00",
+                    "source_date": source_date,
+                    "organization_guid": organization_guid,
+                    "document_guid": recorder,
+                    "document_type": "Document_РасходнаяНакладная",
+                    "document_number": sale_number,
+                    "document_date": source_date,
+                    "document_group_recorder": recorder,
+                    "document_group_recorder_type": "Document_РасходнаяНакладная",
+                    "document_group_key": (
+                        f"odata-document:{self.organization.pk}:"
+                        f"Document_РасходнаяНакладная:{recorder}"
+                    ),
+                    "document_group_number": sale_number,
+                    "document_group_date": source_date,
+                    "document_display": sale_display,
+                    "resolved_order_guid": order_guid,
+                    "resolved_order_type": "Document_ЗаказПокупателя",
+                    "resolved_order_organization_guid": organization_guid,
+                    "resolved_order_number": order_number,
+                    "resolved_order_date": order_date,
+                    "resolved_order_display": order_display,
+                },
+            )
+
+        data = dashboard_data(self.organization, resolve_period({
+            "period": "custom", "start": "2026-08", "end": "2026-09",
+        }, today=date(2026, 9, 25)))
+        order = data["customers"][0]["documents"][0]
+        self.assertTrue(order["is_order_group"])
+        self.assertEqual(
+            order["name"],
+            "Заказ покупателя №НФНФ-000114 от 02.07.2026",
+        )
+        self.assertEqual(order["number"], "НФНФ-000114")
+        self.assertEqual(order["date"], date(2026, 7, 2))
+
+        response = self.client.get(reverse("finance_onec_profit_dashboard"), {
+            "period": "custom", "start": "2026-08", "end": "2026-09",
+        })
+        self.assertContains(
+            response,
+            '<td data-label="Период" data-profit-row-period="2026-08">08.2026</td>',
+            html=True,
+        )
+        self.assertContains(
+            response,
+            '<td data-label="Период" data-profit-row-period="2026-09">09.2026</td>',
+            html=True,
+        )
+        self.assertContains(
+            response,
+            '<div class="profit-mobile-line__metric" data-profit-mobile-field="period"><dt>Период</dt><dd>08.2026</dd></div>',
+            html=True,
+        )
+        self.assertContains(
+            response,
+            '<div class="profit-mobile-line__metric" data-profit-mobile-field="period"><dt>Период</dt><dd>09.2026</dd></div>',
+            html=True,
+        )
+
+    def test_order_group_uses_newest_resolved_order_customer(self):
+        order_guid = "88888888-8888-4888-8888-888888888888"
+        organization_guid = "22222222-2222-4222-8222-222222222222"
+        old_customer_guid = "44444444-4444-4444-8444-444444444444"
+        new_customer_guid = "55555555-5555-4555-8555-555555555555"
+        self.batch.source_type = OneCImportBatch.SOURCE_ODATA
+        self.batch.parser_version = "odata-2"
+        self.batch.save(update_fields=["source_type", "parser_version"])
+
+        self.add_row(
+            date(2026, 8, 1),
+            name="Монтаж",
+            kind="Прямые расходы",
+            revenue="0",
+            cost="25",
+            customer="Старый клиент заказа",
+            manager="Менеджер",
+            document="Приходная накладная №ПН-OLD от 15.08.2026",
+            quantity="0",
+            source_data={
+                "source": "odata",
+                "row_kind": "direct_order_expense",
+                "organization_guid": organization_guid,
+                "customer_guid": old_customer_guid,
+                "direct_expense_order_guid": order_guid,
+                "resolved_order_guid": order_guid,
+                "resolved_order_type": "Document_ЗаказПокупателя",
+                "resolved_order_organization_guid": organization_guid,
+                "resolved_order_customer_guid": old_customer_guid,
+                "resolved_order_customer_name": "Старый клиент заказа",
+                "resolved_order_number": "НФНФ-000114",
+                "resolved_order_date": "2026-07-01",
+                "resolved_order_display": (
+                    "Заказ покупателя №НФНФ-000114 от 01.07.2026"
+                ),
+                "direct_expense_line_name": "Монтаж",
+                "direct_expense_content": "Монтаж",
+                "line_number": 1,
+            },
+        )
+
+        recorder = "33333333-3333-4333-8333-333333333333"
+        sale_display = "Расходная накладная №РН-NEW от 15.09.2026"
+        self.add_row(
+            date(2026, 9, 1),
+            name="Товар",
+            revenue="100",
+            cost="40",
+            customer="Клиент движения",
+            manager="Менеджер",
+            document=sale_display,
+            source_recorder=recorder,
+            article="A-NEW",
+            quantity="1",
+            source_data={
+                "source": "odata",
+                "recorder": recorder,
+                "recorder_type": "Document_РасходнаяНакладная",
+                "line_number": 2,
+                "period": "2026-09-15T10:00:00+03:00",
+                "source_date": "2026-09-15",
+                "organization_guid": organization_guid,
+                "document_guid": recorder,
+                "document_type": "Document_РасходнаяНакладная",
+                "document_number": "РН-NEW",
+                "document_date": "2026-09-15",
+                "document_group_recorder": recorder,
+                "document_group_recorder_type": "Document_РасходнаяНакладная",
+                "document_group_key": (
+                    f"odata-document:{self.organization.pk}:"
+                    f"Document_РасходнаяНакладная:{recorder}"
+                ),
+                "document_group_number": "РН-NEW",
+                "document_group_date": "2026-09-15",
+                "document_display": sale_display,
+                "source_document_order_guid": order_guid,
+                "source_document_order_type": "Document_ЗаказПокупателя",
+                "resolved_order_guid": order_guid,
+                "resolved_order_type": "Document_ЗаказПокупателя",
+                "resolved_order_organization_guid": organization_guid,
+                "resolved_order_customer_guid": new_customer_guid,
+                "resolved_order_customer_name": "Новый клиент заказа",
+                "resolved_order_number": "НФНФ-000114",
+                "resolved_order_date": "2026-07-02",
+                "resolved_order_display": (
+                    "Заказ покупателя №НФНФ-000114 от 02.07.2026"
+                ),
+            },
+        )
+
+        data = dashboard_data(self.organization, resolve_period({
+            "period": "custom", "start": "2026-08", "end": "2026-09",
+        }, today=date(2026, 9, 25)))
+        self.assertEqual(len(data["customers"]), 1)
+        self.assertEqual(data["customers"][0]["name"], "Новый клиент заказа")
+        self.assertEqual(
+            data["customers"][0]["documents"][0]["number"],
+            "НФНФ-000114",
+        )
+
+    def test_order_group_preserves_each_sale_source_document_in_ui(self):
+        order_guid = "88888888-8888-4888-8888-888888888888"
+        order_display = "Заказ покупателя №НФНФ-000114 от 01.07.2026"
+        organization_guid = "22222222-2222-4222-8222-222222222222"
+        self.batch.source_type = OneCImportBatch.SOURCE_ODATA
+        self.batch.parser_version = "odata-2"
+        self.batch.save(update_fields=["source_type", "parser_version"])
+
+        sales = (
+            (
+                "11111111-1111-4111-8111-111111111111",
+                "НФНФ-000335",
+                "Теплообменник",
+                "A-335",
+                "100",
+                "40",
+            ),
+            (
+                "33333333-3333-4333-8333-333333333333",
+                "НФНФ-000336",
+                "Насос",
+                "A-336",
+                "50",
+                "20",
+            ),
+        )
+        expected_documents = []
+        line_number = 1
+        for recorder, number, name, article, revenue, cost in sales:
+            display = f"Расходная накладная №{number} от 01.09.2026"
+            expected_documents.append(display)
+            group_key = (
+                f"odata-document:{self.organization.pk}:"
+                f"Document_РасходнаяНакладная:{recorder}"
+            )
+            for movement_revenue, movement_cost in (
+                (revenue, "0"),
+                ("0", cost),
+            ):
+                self.add_row(
+                    date(2026, 9, 1),
+                    name=name,
+                    revenue=movement_revenue,
+                    cost=movement_cost,
+                    customer="Клиент заказа",
+                    manager="Менеджер",
+                    document=display,
+                    source_recorder=recorder,
+                    article=article,
+                    quantity="1",
+                    source_data={
+                        "source": "odata",
+                        "recorder": recorder,
+                        "recorder_type": "Document_РасходнаяНакладная",
+                        "line_number": line_number,
+                        "period": "2026-09-01T10:00:00+03:00",
+                        "source_date": "2026-09-01",
+                        "organization_guid": organization_guid,
+                        "document_guid": recorder,
+                        "document_type": "Document_РасходнаяНакладная",
+                        "document_number": number,
+                        "document_date": "2026-09-01",
+                        "document_group_recorder": recorder,
+                        "document_group_recorder_type": "Document_РасходнаяНакладная",
+                        "document_group_key": group_key,
+                        "document_group_number": number,
+                        "document_group_date": "2026-09-01",
+                        "document_display": display,
+                        "resolved_order_guid": order_guid,
+                        "resolved_order_type": "Document_ЗаказПокупателя",
+                        "resolved_order_organization_guid": organization_guid,
+                        "resolved_order_number": "НФНФ-000114",
+                        "resolved_order_date": "2026-07-01",
+                        "resolved_order_display": order_display,
+                    },
+                )
+                line_number += 1
+
+        data = dashboard_data(self.organization, resolve_period({
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        }, today=date(2026, 9, 9)))
+        order = data["customers"][0]["documents"][0]
+        self.assertTrue(order["is_order_group"])
+        self.assertEqual(len(order["rows"]), 2)
+        self.assertEqual(order["source_documents"], sorted(expected_documents))
+
+        response = self.client.get(reverse("finance_onec_profit_dashboard"), {
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        })
+        for display in expected_documents:
+            with self.subTest(display=display):
+                self.assertContains(response, display, count=2)
 
     def test_presentation_keeps_movements_separate_when_quantities_conflict(self):
         recorder = "11111111-1111-4111-8111-111111111111"
@@ -750,7 +1297,8 @@ class ProfitDashboardTests(TestCase):
         self.assertContains(response, "period-loading")
         self.assertContains(response, "document.getElementById('period').value='custom'")
         self.assertContains(response, 'class="table align-middle table-hover mb-0 profit-customer-table"')
-        self.assertContains(response, 'class="table-responsive profit-document-lines"')
+        self.assertContains(response, 'class="profit-document-lines"')
+        self.assertContains(response, "profit-order-table")
         self.assertContains(response, 'data-label="Себестоимость"')
         self.assertContains(response, 'class="profit-document-line"')
         self.assertContains(response, 'data-label="Номенклатура"')

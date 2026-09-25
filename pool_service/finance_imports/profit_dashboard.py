@@ -471,35 +471,185 @@ def _document_display_metadata(row, document_name, is_validated):
     return {"label": label, "number": number.strip(), "date": document_date}
 
 
-def _compatible_display_quantity(revenue_row, cost_row):
+_DIRECT_EXPENSE_ROW_KIND = "direct_order_expense"
+_ORDER_TYPE = "Document_ЗаказПокупателя"
+_ORDER_LABEL = "Заказ покупателя"
+
+
+def _row_source_data(row):
+    return row.source_data if isinstance(row.source_data, dict) else {}
+
+
+def _is_direct_expense_row(row):
+    return _row_source_data(row).get("row_kind") == _DIRECT_EXPENSE_ROW_KIND
+
+
+def _resolved_order_group(row):
+    """Return validated customer-order metadata for presentation grouping."""
+    source_data = _row_source_data(row)
+    batch = row.import_batch
+    if (
+        batch.source_type != OneCImportBatch.SOURCE_ODATA
+        or batch.import_type != OneCImportBatch.TYPE_MONTHLY_PROFIT
+        or batch.parser_version != "odata-2"
+        or batch.status != OneCImportBatch.STATUS_CONFIRMED
+        or batch.organization_id != row.organization_id
+        or source_data.get("source") != "odata"
+    ):
+        return None
+
+    order_guid = _guid(source_data.get("resolved_order_guid"))
+    order_type = source_data.get("resolved_order_type")
+    source_organization_guid = _guid(source_data.get("organization_guid"))
+    order_organization_guid = _guid(
+        source_data.get("resolved_order_organization_guid")
+    )
+    order_number = source_data.get("resolved_order_number")
+    order_display = source_data.get("resolved_order_display")
+    if (
+        order_guid is None
+        or order_type != _ORDER_TYPE
+        or source_organization_guid is None
+        or order_organization_guid != source_organization_guid
+        or not isinstance(order_number, str)
+        or not order_number.strip()
+        or len(order_number) > 100
+        or not isinstance(order_display, str)
+        or not order_display.strip()
+    ):
+        return None
+    try:
+        order_date = date.fromisoformat(source_data.get("resolved_order_date"))
+    except (TypeError, ValueError):
+        return None
+
+    order_number = order_number.strip()
+    expected_display = (
+        f"{_ORDER_LABEL} №{order_number} от {order_date:%d.%m.%Y}"
+    )
+    if order_display != expected_display:
+        return None
+    order_customer_name = None
+    resolved_customer_guid = _guid(
+        source_data.get("resolved_order_customer_guid")
+    )
+    resolved_customer_name = source_data.get("resolved_order_customer_name")
+    has_customer_metadata = (
+        source_data.get("resolved_order_customer_guid") is not None
+        or resolved_customer_name is not None
+    )
+    if has_customer_metadata:
+        if (
+            resolved_customer_guid is None
+            or not isinstance(resolved_customer_name, str)
+            or not resolved_customer_name.strip()
+        ):
+            return None
+        order_customer_name = resolved_customer_name.strip()
+
+    if _is_direct_expense_row(row):
+        if _guid(source_data.get("direct_expense_order_guid")) != order_guid:
+            return None
+        source_customer_guid = _guid(source_data.get("customer_guid"))
+        if (
+            resolved_customer_guid is None
+            or resolved_customer_guid != source_customer_guid
+            or order_customer_name != row.customer_name
+        ):
+            return None
+    else:
+        source_order_guid_value = source_data.get("source_document_order_guid")
+        source_order_type = source_data.get("source_document_order_type")
+        if source_order_guid_value is not None or source_order_type is not None:
+            if (
+                _guid(source_order_guid_value) != order_guid
+                or source_order_type != _ORDER_TYPE
+            ):
+                return None
+
+    return {
+        "guid": order_guid,
+        "display": order_display,
+        "label": _ORDER_LABEL,
+        "number": order_number,
+        "date": order_date,
+        "customer_name": order_customer_name,
+    }
+
+
+def _decorate_presentation_row(row):
+    source_data = _row_source_data(row)
+    row.dashboard_is_direct_expense = _is_direct_expense_row(row)
+    row.dashboard_display_nomenclature = row.nomenclature
+    row.dashboard_display_type = row.nomenclature_type
+    row.dashboard_direct_expense_amount = None
+    if row.dashboard_is_direct_expense:
+        line_name = source_data.get("direct_expense_line_name")
+        content = source_data.get("direct_expense_content")
+        if isinstance(line_name, str) and line_name.strip():
+            row.dashboard_display_nomenclature = line_name.strip()
+        elif (
+            row.nomenclature == "Прямые расходы по заказу"
+            and isinstance(content, str)
+            and content.strip()
+        ):
+            row.dashboard_display_nomenclature = content.strip()
+        row.dashboard_display_type = "Прямые затраты"
+        row.dashboard_direct_expense_amount = row.dashboard_analytical_cost
+    return row
+
+
+def _presentation_item_key(row):
+    source_data = _row_source_data(row)
+    nomenclature_guid = _guid(source_data.get("nomenclature_guid"))
+    item_identity = (
+        ("guid", nomenclature_guid)
+        if nomenclature_guid
+        else (
+            "text",
+            (row.nomenclature or "").strip().casefold(),
+            (row.article or "").strip().casefold(),
+        )
+    )
+    return (
+        row.period_month,
+        source_data.get("source_date"),
+        item_identity,
+        row.nomenclature_type,
+        row.manager_name,
+    )
+
+
+def _display_quantity_for_movements(revenue_row, cost_rows):
     revenue_quantity = revenue_row.quantity
-    cost_quantity = cost_row.quantity
-    if revenue_quantity in (None, 0):
-        return cost_quantity
-    if cost_quantity in (None, 0):
-        return revenue_quantity
-    if revenue_quantity == cost_quantity or revenue_quantity == -cost_quantity:
-        return revenue_quantity
-    return None
+    cost_quantities = [
+        row.quantity for row in cost_rows if row.quantity not in (None, 0)
+    ]
+    if revenue_quantity not in (None, 0):
+        compatible = all(
+            quantity in {revenue_quantity, -revenue_quantity}
+            for quantity in cost_quantities
+        )
+        return compatible, revenue_quantity
+    if not cost_quantities:
+        return True, revenue_quantity
+    quantity = cost_quantities[0]
+    compatible = all(
+        candidate in {quantity, -quantity}
+        for candidate in cost_quantities[1:]
+    )
+    return compatible, quantity
 
 
 def _presentation_rows(document_rows):
-    """Join only an unambiguous revenue/cost movement pair for display."""
+    """Collapse accounting revenue/cost movements into one business line for display."""
     buckets = {}
     order = []
     for row in document_rows:
-        source_data = row.source_data if isinstance(row.source_data, dict) else {}
-        key = (
-            row.period_month,
-            source_data.get("source_date"),
-            row.nomenclature,
-            row.article,
-            row.nomenclature_type,
-            row.manager_name,
-            row.cost_source,
-            row.cost_calculation_method,
-            row.cost_calculation_ratio,
-        )
+        if _is_direct_expense_row(row):
+            key = ("direct-expense", row.source_identity or row.pk)
+        else:
+            key = ("business-line",) + _presentation_item_key(row)
         if key not in buckets:
             buckets[key] = []
             order.append(key)
@@ -508,7 +658,7 @@ def _presentation_rows(document_rows):
     result = []
     for key in order:
         rows = buckets[key]
-        if len(rows) != 2:
+        if key[0] == "direct-expense" or len(rows) < 2:
             result.extend(rows)
             continue
         revenue_rows = [
@@ -521,82 +671,236 @@ def _presentation_rows(document_rows):
             if row.dashboard_revenue == 0
             and row.dashboard_analytical_cost not in (None, 0)
         ]
-        if len(revenue_rows) != 1 or len(cost_rows) != 1:
+        if (
+            len(revenue_rows) != 1
+            or not cost_rows
+            or len(revenue_rows) + len(cost_rows) != len(rows)
+            or any(row.cost is None for row in rows)
+            or any(row.dashboard_gross_profit is None for row in rows)
+        ):
             result.extend(rows)
             continue
         revenue_row = revenue_rows[0]
-        cost_row = cost_rows[0]
-        quantity = _compatible_display_quantity(revenue_row, cost_row)
-        if quantity is None and revenue_row.quantity is not None and cost_row.quantity is not None:
+        quantities_compatible, quantity = _display_quantity_for_movements(
+            revenue_row, cost_rows
+        )
+        if not quantities_compatible:
             result.extend(rows)
             continue
-        if revenue_row.cost is None or cost_row.cost is None:
-            result.extend(rows)
-            continue
+
         merged = copy(revenue_row)
         merged.quantity = quantity
-        merged.cost = revenue_row.cost + cost_row.cost
-        merged.dashboard_revenue = (
-            revenue_row.dashboard_revenue + cost_row.dashboard_revenue
+        merged.cost = sum((row.cost for row in rows), Decimal("0"))
+        merged.dashboard_revenue = sum(
+            (row.dashboard_revenue for row in rows), Decimal("0")
         )
-        merged.dashboard_analytical_cost = (
-            revenue_row.dashboard_analytical_cost
-            + cost_row.dashboard_analytical_cost
+        merged.dashboard_analytical_cost = sum(
+            (row.dashboard_analytical_cost or Decimal("0") for row in rows),
+            Decimal("0"),
         )
-        merged.dashboard_gross_profit = (
-            (revenue_row.dashboard_gross_profit or Decimal("0"))
-            + (cost_row.dashboard_gross_profit or Decimal("0"))
+        merged.dashboard_gross_profit = sum(
+            (row.dashboard_gross_profit for row in rows), Decimal("0")
         )
-        merged.dashboard_cost_is_calculated = (
-            revenue_row.dashboard_cost_is_calculated
-            or cost_row.dashboard_cost_is_calculated
+        merged.dashboard_cost_is_calculated = any(
+            row.dashboard_cost_is_calculated for row in rows
+        )
+        ratios = {
+            row.dashboard_period_cost_ratio
+            for row in rows
+            if row.dashboard_period_cost_ratio is not None
+        }
+        merged.dashboard_period_cost_ratio = (
+            next(iter(ratios)) if len(ratios) == 1 else None
         )
         merged.dashboard_unit_price = _display_unit_price(
             merged.dashboard_revenue, merged.quantity
         )
         result.append(merged)
-    return result
+    return [_decorate_presentation_row(row) for row in result]
+
+
+def _display_customer_name(value):
+    normalized = re.sub(r"\s+", " ", (value or "").strip())
+    return normalized or "Покупатель не указан"
+
+
+def _order_group_customer_name(document):
+    validated = document.get("order_customer_names") or []
+    if validated:
+        validated.sort(
+            key=lambda item: (item[0] or date.min, item[1] or 0),
+            reverse=True,
+        )
+        return validated[0][2]
+
+    rows = sorted(
+        document["rows"],
+        key=lambda row: (row.period_month or date.min, row.pk or 0),
+        reverse=True,
+    )
+    names = [_display_customer_name(row.customer_name) for row in rows]
+    for name in names:
+        if _customer_key(name) not in {"", "без контрагента"}:
+            return name
+    return names[0] if names else "Покупатель не указан"
 
 
 def customer_breakdown(rows):
-    grouped = {}
+    # Build validated order groups before customer buckets. This guarantees
+    # one order -> one presentation table even when source sale movements have
+    # a missing/different register customer while direct costs use the order
+    # customer resolved from 1C.
+    presentation_groups = {}
     for row in rows:
-        key = _customer_key(row.customer_name)
-        customer = grouped.setdefault(key, {
-            "name": re.sub(r"\s+", " ", row.customer_name.strip()) if key else "Покупатель не указан",
-            "rows": [], "documents": {},
-        })
-        customer["rows"].append(row)
         document_key, document_name, can_collapse = _document_group(row)
-        document = customer["documents"].setdefault(document_key, {
+        order = _resolved_order_group(row)
+        if order is not None:
+            presentation_key = ("order", row.organization_id, order["guid"])
+        else:
+            presentation_key = (
+                "document",
+                _customer_key(row.customer_name),
+                document_key,
+            )
+
+        document = presentation_groups.setdefault(presentation_key, {
+            "presentation_key": presentation_key,
+            "name": order["display"] if order is not None else document_name,
+            "rows": [],
+            "subdocuments": {},
+            "is_order_group": order is not None,
+            "order": order,
+            "order_sort_key": (
+                (row.period_month or date.min, row.pk or 0)
+                if order is not None
+                else None
+            ),
+            "fallback_customer_name": _display_customer_name(row.customer_name),
+            "order_customer_names": [],
+        })
+        document["rows"].append(row)
+        if order is not None:
+            candidate_order_key = (row.period_month or date.min, row.pk or 0)
+            if (
+                document["order_sort_key"] is None
+                or candidate_order_key > document["order_sort_key"]
+            ):
+                document["order"] = order
+                document["name"] = order["display"]
+                document["order_sort_key"] = candidate_order_key
+            if order.get("customer_name"):
+                document["order_customer_names"].append(
+                    (row.period_month, row.pk, order["customer_name"])
+                )
+
+        subdocument = document["subdocuments"].setdefault(document_key, {
             "name": document_name,
             "rows": [],
             "can_collapse": can_collapse,
         })
-        document["can_collapse"] = document["can_collapse"] and can_collapse
-        document["rows"].append(row)
+        subdocument["can_collapse"] = (
+            subdocument["can_collapse"] and can_collapse
+        )
+        subdocument["rows"].append(row)
+
+    grouped = {}
+    for document in presentation_groups.values():
+        customer_name = (
+            _order_group_customer_name(document)
+            if document["is_order_group"]
+            else document["fallback_customer_name"]
+        )
+        key = _customer_key(customer_name)
+        customer = grouped.setdefault(key, {
+            "name": customer_name if key else "Покупатель не указан",
+            "rows": [],
+            "documents": {},
+        })
+        customer["rows"].extend(document["rows"])
+        customer["documents"][document["presentation_key"]] = document
+
     result = []
     for customer in grouped.values():
         totals = summarize(customer["rows"])
         documents = []
         for document in customer["documents"].values():
             document_rows = document["rows"]
-            document_metadata = _document_display_metadata(
-                document_rows[0], document["name"], document["can_collapse"]
+            document_totals = summarize(document_rows)
+
+            presentation_rows = []
+            for subdocument in document["subdocuments"].values():
+                subdocument_rows = subdocument["rows"]
+                if subdocument["can_collapse"]:
+                    presentation_rows.extend(_presentation_rows(subdocument_rows))
+                else:
+                    presentation_rows.extend(
+                        _decorate_presentation_row(row)
+                        for row in subdocument_rows
+                    )
+            presentation_rows.sort(key=lambda row: (
+                row.dashboard_is_direct_expense,
+                row.period_month,
+                (row.dashboard_display_nomenclature or "").casefold(),
+                row.pk,
+            ))
+
+            order = document["order"]
+            if order is not None:
+                document_metadata = {
+                    "label": order["label"],
+                    "number": order["number"],
+                    "date": order["date"],
+                }
+            else:
+                first_subdocument = next(iter(document["subdocuments"].values()))
+                document_metadata = _document_display_metadata(
+                    first_subdocument["rows"][0],
+                    document["name"],
+                    first_subdocument["can_collapse"],
+                )
+
+            direct_expense_rows = [
+                row for row in document_rows if _is_direct_expense_row(row)
+            ]
+            direct_expense_total = sum(
+                (
+                    row.dashboard_analytical_cost or Decimal("0")
+                    for row in direct_expense_rows
+                ),
+                Decimal("0"),
             )
+            is_direct_expense_document = (
+                bool(document_rows)
+                and len(direct_expense_rows) == len(document_rows)
+            )
+            source_documents = sorted({
+                row.document_name.strip()
+                for row in document_rows
+                if row.document_name and row.document_name.strip() != document["name"]
+            }, key=str.casefold)
+
             documents.append({
                 "name": document["name"],
                 **document_metadata,
-                "managers": sorted({row.manager_name for row in document_rows if row.manager_name}),
-                "rows": (
-                    _presentation_rows(document_rows)
-                    if document["can_collapse"]
-                    else document_rows
-                ),
+                "managers": sorted({
+                    row.manager_name for row in document_rows if row.manager_name
+                }),
+                "rows": presentation_rows,
                 "source_row_count": len(document_rows),
-                **summarize(document_rows),
+                "is_order_group": document["is_order_group"],
+                "is_direct_expense_document": is_direct_expense_document,
+                "has_direct_expenses": bool(direct_expense_rows),
+                "direct_expense_total": (
+                    direct_expense_total if direct_expense_rows else None
+                ),
+                "source_documents": source_documents,
+                **document_totals,
             })
-        documents.sort(key=lambda item: (-item["revenue"], item["name"].casefold()))
+        documents.sort(key=lambda item: (
+            not item["is_order_group"],
+            -item["revenue"],
+            item["name"].casefold(),
+        ))
         result.append({**customer, **totals, "documents": documents})
     result.sort(key=lambda item: (-item["revenue"], item["name"].casefold()))
     return result

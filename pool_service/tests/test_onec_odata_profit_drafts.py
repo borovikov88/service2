@@ -16,7 +16,11 @@ from django.test import TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from pool_service.finance_imports.odata_profit import ODataConfig, ODataPreviewError
+from pool_service.finance_imports.odata_profit import (
+    ODataConfig,
+    ODataPreviewError,
+    ZERO_GUID,
+)
 from pool_service.finance_imports.odata_direct_order_costs import read_direct_order_expense_rows
 from pool_service.finance_forms import ODataProfitDraftForm
 from pool_service.finance_imports.odata_profit_drafts import (
@@ -45,6 +49,8 @@ DIRECT_RECEIPT = "77777777-7777-4777-8777-777777777777"
 CUSTOMER_ORDER = "88888888-8888-4888-8888-888888888888"
 DIRECT_ACCOUNT = "99999999-9999-4999-8999-999999999999"
 DIRECT_OPERATION = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+DIRECT_ITEM_MOUNTING = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+DIRECT_ITEM_TRANSPORT = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 OTHER_ORG = "22222222-2222-4222-8222-222222222222"
 BASE_URL = "https://fresh.example/odata/standard.odata/"
 RECORDER_TYPE = "StandardODATA.Document_РасходнаяНакладная"
@@ -131,14 +137,71 @@ def direct_expense_row(line, amount):
     }
 
 
-def direct_order_document_payload(*, organization=ORG):
+def direct_expense_line_payload(
+    *,
+    order=CUSTOMER_ORDER,
+    first_amount="25000.00",
+    second_amount="5000.00",
+):
+    return {
+        "value": [
+            {
+                "Ref_Key": DIRECT_RECEIPT,
+                "LineNumber": 10,
+                "Номенклатура_Key": DIRECT_ITEM_MOUNTING,
+                "Заказ_Key": order,
+                "Содержание": "",
+                "Сумма": first_amount,
+                "Всего": first_amount,
+            },
+            {
+                "Ref_Key": DIRECT_RECEIPT,
+                "LineNumber": 11,
+                "Номенклатура_Key": DIRECT_ITEM_TRANSPORT,
+                "Заказ_Key": order,
+                "Содержание": "",
+                "Сумма": second_amount,
+                "Всего": second_amount,
+            },
+        ]
+    }
+
+
+def direct_nomenclature_reference_payload(*, direct_deleted=False):
+    return {
+        "value": [
+            reference_payload(
+                ITEM,
+                "Товар из 1С",
+                article="A-1",
+                nomenclature_type="Запас",
+            )["value"][0],
+            reference_payload(
+                DIRECT_ITEM_MOUNTING,
+                "Монтаж оборудования",
+                article="",
+                nomenclature_type="Услуга",
+                deletion_mark=direct_deleted,
+            )["value"][0],
+            reference_payload(
+                DIRECT_ITEM_TRANSPORT,
+                "Транспортные расходы",
+                article="",
+                nomenclature_type="Услуга",
+                deletion_mark=direct_deleted,
+            )["value"][0],
+        ]
+    }
+
+
+def direct_order_document_payload(*, organization=ORG, customer=CUSTOMER):
     return {
         "value": [{
             "Ref_Key": CUSTOMER_ORDER,
             "Number": "НФНФ-000114",
             "Date": "2026-05-01T12:00:00+03:00",
             "Организация_Key": organization,
-            "Контрагент_Key": CUSTOMER,
+            "Контрагент_Key": customer,
             "Ответственный_Key": RESPONSIBLE,
         }]
     }
@@ -281,8 +344,11 @@ class ODataProfitDraftTests(TestCase):
         *,
         revenue="94494.00",
         customer_deleted=False,
+        direct_nomenclature_deleted=False,
         order_organization=ORG,
         receipt_available=True,
+        line_order=CUSTOMER_ORDER,
+        first_line_amount="25000.00",
     ):
         sale = profit_row(revenue=revenue, cost="29696.64")
         opener = FakeOpener(
@@ -299,11 +365,12 @@ class ODataProfitDraftTests(TestCase):
                 if receipt_available
                 else {"value": []}
             ),
-            reference_payload(
-                ITEM,
-                "Товар из 1С",
-                article="A-1",
-                nomenclature_type="Запас",
+            direct_expense_line_payload(
+                order=line_order,
+                first_amount=first_line_amount,
+            ),
+            direct_nomenclature_reference_payload(
+                direct_deleted=direct_nomenclature_deleted,
             ),
             reference_payload(
                 CUSTOMER,
@@ -332,9 +399,8 @@ class ODataProfitDraftTests(TestCase):
             ]},
             direct_order_document_payload(),
             direct_receipt_document_payload(),
-            reference_payload(
-                ITEM, "Товар из 1С", article="A-1", nomenclature_type="Запас"
-            ),
+            direct_expense_line_payload(),
+            direct_nomenclature_reference_payload(),
             reference_payload(CUSTOMER, "Клиент заказа №114"),
             reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
             document_payload(number="НФНФ-000335"),
@@ -360,6 +426,24 @@ class ODataProfitDraftTests(TestCase):
         self.assertEqual(
             {row["cost"] for row in direct_rows},
             {"25000.00", "5000.00"},
+        )
+        self.assertEqual(
+            {row["nomenclature"] for row in direct_rows},
+            {"Монтаж оборудования", "Транспортные расходы"},
+        )
+        self.assertEqual(
+            {
+                row["source_data"]["direct_expense_line_name"]
+                for row in direct_rows
+            },
+            {"Монтаж оборудования", "Транспортные расходы"},
+        )
+        self.assertEqual(
+            {
+                row["source_data"]["direct_expense_line_nomenclature_guid"]
+                for row in direct_rows
+            },
+            {DIRECT_ITEM_MOUNTING, DIRECT_ITEM_TRANSPORT},
         )
         self.assertTrue(all(row["revenue"] == "0.00" for row in direct_rows))
         self.assertTrue(
@@ -490,12 +574,8 @@ class ODataProfitDraftTests(TestCase):
                 direct_expense_row(11, "5000.00"),
             ]},
             direct_order_document_payload(),
-            reference_payload(
-                ITEM,
-                "Товар из 1С",
-                article="A-1",
-                nomenclature_type="Запас",
-            ),
+            direct_expense_line_payload(),
+            direct_nomenclature_reference_payload(),
             reference_payload(CUSTOMER, "Клиент заказа №114"),
             reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
             document_payload(number="НФНФ-000335"),
@@ -553,12 +633,8 @@ class ODataProfitDraftTests(TestCase):
             ]},
             direct_order_document_payload(),
             direct_receipt_document_payload(),
-            reference_payload(
-                ITEM,
-                "Товар из 1С",
-                article="A-1",
-                nomenclature_type="Запас",
-            ),
+            direct_expense_line_payload(),
+            direct_nomenclature_reference_payload(),
             reference_payload(CUSTOMER, "Клиент заказа №114"),
             reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
             document_payload(number="НФНФ-000335"),
@@ -572,7 +648,7 @@ class ODataProfitDraftTests(TestCase):
                 "2026-05",
                 self.organization,
                 self.user,
-                config=config(max_pages=5),
+                config=config(max_pages=6),
                 opener=opener,
             )
 
@@ -590,6 +666,102 @@ class ODataProfitDraftTests(TestCase):
                 for row in direct
             )
         )
+
+    def test_direct_cost_rejects_receipt_line_for_other_order(self):
+        with self.assertRaisesRegex(
+            ODataDraftError,
+            "receipt line order does not match movement",
+        ):
+            self.create_direct_cost_draft(
+                revenue="94497.00",
+                line_order=DIRECT_ACCOUNT,
+            )
+
+    def test_direct_cost_rejects_receipt_line_amount_mismatch(self):
+        with self.assertRaisesRegex(
+            ODataDraftError,
+            "receipt line amount does not match movement",
+        ):
+            self.create_direct_cost_draft(
+                revenue="94497.50",
+                first_line_amount="24999.00",
+            )
+
+    def test_direct_cost_receipt_scan_respects_configured_row_limit(self):
+        sale = profit_row(revenue="94497.25", cost="29696.64")
+        direct_lines = direct_expense_line_payload()["value"] + [
+            {
+                "Ref_Key": DIRECT_RECEIPT,
+                "LineNumber": 90,
+                "Номенклатура_Key": DIRECT_ITEM_MOUNTING,
+                "Заказ_Key": CUSTOMER_ORDER,
+                "Содержание": "",
+                "Сумма": "1.00",
+                "Всего": "1.00",
+            },
+            {
+                "Ref_Key": DIRECT_RECEIPT,
+                "LineNumber": 91,
+                "Номенклатура_Key": DIRECT_ITEM_TRANSPORT,
+                "Заказ_Key": CUSTOMER_ORDER,
+                "Содержание": "",
+                "Сумма": "1.00",
+                "Всего": "1.00",
+            },
+        ]
+        opener = FakeOpener(
+            {"value": [sale]},
+            {"value": [
+                direct_expense_row(10, "25000.00"),
+                direct_expense_row(11, "5000.00"),
+            ]},
+            direct_order_document_payload(),
+            direct_receipt_document_payload(),
+            {"value": direct_lines},
+        )
+
+        with patch(
+            "pool_service.finance_imports.odata_profit_drafts."
+            "read_direct_order_expense_rows",
+            side_effect=read_direct_order_expense_rows,
+        ):
+            with self.assertRaisesRegex(ODataDraftError, "row limit"):
+                create_odata_profit_draft(
+                    "2026-05",
+                    "2026-05",
+                    self.organization,
+                    self.user,
+                    config=config(max_rows=3),
+                    opener=opener,
+                )
+
+    def test_confirmation_binds_text_only_direct_name_to_receipt_content(self):
+        batch = self.create_direct_cost_draft(revenue="94497.75")
+
+        def forge(snapshot):
+            direct = next(
+                row for row in snapshot["rows"]
+                if row["source_data"].get("row_kind")
+                == "direct_order_expense"
+                and row["source_row_number"] == 10
+            )
+            source_data = direct["source_data"]
+            source_data["nomenclature_guid"] = ZERO_GUID
+            source_data["direct_expense_line_nomenclature_guid"] = ZERO_GUID
+            source_data["direct_expense_line_content"] = "Текстовая услуга"
+            source_data["direct_expense_line_name"] = "Поддельное название"
+            source_data["direct_expense_line_article"] = ""
+            direct["nomenclature"] = "Поддельное название"
+            direct["article"] = ""
+
+        self.rewrite_snapshot(batch, forge)
+        with self.assertRaisesRegex(ValidationError, "text-only"):
+            confirm_odata_profit(
+                batch.id,
+                self.organization,
+                self.user,
+                config=config(),
+            )
 
     def test_direct_cost_rejects_customer_order_from_other_organization(self):
         with self.assertRaisesRegex(
@@ -654,6 +826,22 @@ class ODataProfitDraftTests(TestCase):
             OneCMonthlyProfit.objects.filter(import_batch=batch).exists()
         )
         self.assertFalse(OneCReportPeriodState.objects.exists())
+
+    def test_manual_direct_cost_draft_accepts_historical_deleted_nomenclature(self):
+        batch = self.create_direct_cost_draft(
+            revenue="94496.25",
+            direct_nomenclature_deleted=True,
+        )
+        with batch.stored_file.open("rb") as source:
+            snapshot = json.loads(source.read().decode("utf-8"))
+        direct = [
+            row for row in snapshot["rows"]
+            if row["source_data"].get("row_kind") == "direct_order_expense"
+        ]
+        self.assertEqual(
+            {row["nomenclature"] for row in direct},
+            {"Монтаж оборудования", "Транспортные расходы"},
+        )
 
     def test_manual_direct_cost_draft_accepts_historical_deleted_customer(self):
         batch = self.create_direct_cost_draft(
@@ -767,6 +955,140 @@ class ODataProfitDraftTests(TestCase):
         with batch.stored_file.open("rb") as source:
             saved_rows = json.loads(source.read().decode("utf-8"))["rows"]
         self.assertEqual(len({row["source_data"]["document_group_key"] for row in saved_rows}), 3)
+
+    def test_sale_order_persists_validated_source_organization(self):
+        rows = [profit_row(line=1)]
+        opener = FakeOpener(
+            {"value": rows},
+            reference_payload(ITEM, "Товар", article="A"),
+            reference_payload(CUSTOMER, "Покупатель"),
+            reference_payload(RESPONSIBLE, "Ответственный"),
+            document_payload(
+                RECORDER,
+                number="РН-1",
+                order=CUSTOMER_ORDER,
+            ),
+            direct_order_document_payload(organization=ORG),
+        )
+
+        batch = self.create_draft(rows=rows, opener=opener)
+        with batch.stored_file.open("rb") as source:
+            saved = json.loads(source.read().decode("utf-8"))["rows"][0]
+        self.assertEqual(
+            saved["source_data"]["resolved_order_organization_guid"],
+            ORG,
+        )
+        self.assertEqual(
+            saved["source_data"]["resolved_order_guid"],
+            CUSTOMER_ORDER,
+        )
+        self.assertEqual(
+            saved["source_data"]["source_document_order_guid"],
+            CUSTOMER_ORDER,
+        )
+        self.assertEqual(
+            saved["source_data"]["source_document_order_type"],
+            "Document_ЗаказПокупателя",
+        )
+        self.assertEqual(
+            saved["source_data"]["resolved_order_customer_guid"],
+            CUSTOMER,
+        )
+        self.assertEqual(
+            saved["source_data"]["resolved_order_customer_name"],
+            "Покупатель",
+        )
+
+    def test_sale_resolves_customer_from_linked_order(self):
+        order_customer = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        rows = [profit_row(line=1)]
+        opener = FakeOpener(
+            {"value": rows},
+            reference_payload(ITEM, "Товар", article="A"),
+            reference_payload(CUSTOMER, "Покупатель движения"),
+            reference_payload(RESPONSIBLE, "Ответственный"),
+            document_payload(
+                RECORDER,
+                number="РН-1",
+                order=CUSTOMER_ORDER,
+            ),
+            direct_order_document_payload(customer=order_customer),
+            reference_payload(order_customer, "Покупатель заказа"),
+        )
+
+        batch = self.create_draft(rows=rows, opener=opener)
+        with batch.stored_file.open("rb") as source:
+            saved = json.loads(source.read().decode("utf-8"))["rows"][0]
+        self.assertEqual(saved["customer_name"], "Покупатель движения")
+        self.assertEqual(
+            saved["source_data"]["resolved_order_customer_guid"],
+            order_customer,
+        )
+        self.assertEqual(
+            saved["source_data"]["resolved_order_customer_name"],
+            "Покупатель заказа",
+        )
+
+    def test_confirmation_rejects_forged_sale_resolved_order_with_new_checksum(self):
+        rows = [profit_row(line=1)]
+        opener = FakeOpener(
+            {"value": rows},
+            reference_payload(ITEM, "Товар", article="A"),
+            reference_payload(CUSTOMER, "Покупатель"),
+            reference_payload(RESPONSIBLE, "Ответственный"),
+            document_payload(
+                RECORDER,
+                number="РН-1",
+                order=CUSTOMER_ORDER,
+            ),
+            direct_order_document_payload(),
+        )
+        batch = self.create_draft(rows=rows, opener=opener)
+
+        def forge(snapshot):
+            source_data = snapshot["rows"][0]["source_data"]
+            source_data["resolved_order_guid"] = DIRECT_ACCOUNT
+            source_data["resolved_order_number"] = "ПОДМЕНА-1"
+            source_data["resolved_order_date"] = "2026-05-02"
+            source_data["resolved_order_display"] = (
+                "Заказ покупателя №ПОДМЕНА-1 от 02.05.2026"
+            )
+
+        self.rewrite_snapshot(batch, forge)
+        with self.assertRaisesRegex(
+            ValidationError,
+            "source document order attribution",
+        ):
+            confirm_odata_profit(
+                batch.id,
+                self.organization,
+                self.user,
+                config=config(),
+            )
+        self.assertFalse(
+            OneCMonthlyProfit.objects.filter(import_batch=batch).exists()
+        )
+
+    def test_sale_rejects_customer_order_from_other_organization(self):
+        rows = [profit_row(line=1)]
+        opener = FakeOpener(
+            {"value": rows},
+            reference_payload(ITEM, "Товар", article="A"),
+            reference_payload(CUSTOMER, "Покупатель"),
+            reference_payload(RESPONSIBLE, "Ответственный"),
+            document_payload(
+                RECORDER,
+                number="РН-1",
+                order=CUSTOMER_ORDER,
+            ),
+            direct_order_document_payload(organization=OTHER_ORG),
+        )
+
+        with self.assertRaisesRegex(
+            ODataDraftError,
+            "Sales customer order organization does not match movement",
+        ):
+            self.create_draft(rows=rows, opener=opener)
 
     def test_unresolved_shared_order_never_becomes_group_key(self):
         second = "77777777-7777-4777-8777-777777777777"

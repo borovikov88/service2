@@ -3,6 +3,140 @@
 {% block title %}Валовая прибыль{% endblock %}
 {% block content %}
 {% include "pool_service/finance/_desktop_workspace_styles.html" %}
+<style>
+  .profit-order-table {
+    width: 100%;
+    table-layout: fixed;
+  }
+  .profit-order-table th,
+  .profit-order-table td {
+    vertical-align: middle;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .profit-order-table th:nth-child(1) { width: 34%; }
+  .profit-order-table th:nth-child(2) { width: 9%; }
+  .profit-order-table th:nth-child(3) { width: 11%; }
+  .profit-order-table th:nth-child(4) { width: 9%; }
+  .profit-order-table th:nth-child(5),
+  .profit-order-table th:nth-child(6),
+  .profit-order-table th:nth-child(7) { width: 12.33%; }
+  .profit-line-title { display: block; font-weight: 600; }
+  .profit-line-meta {
+    display: block;
+    margin-top: 0.15rem;
+    color: var(--bs-secondary-color);
+    font-size: 0.72rem;
+    line-height: 1.25;
+  }
+  .profit-direct-expense-row > td {
+    background: color-mix(in srgb, var(--bs-warning-bg-subtle) 45%, transparent);
+  }
+  .profit-document-total {
+    display: inline-flex;
+    gap: 0.35rem;
+    align-items: baseline;
+    margin-left: 0.8rem;
+    white-space: nowrap;
+  }
+  .profit-document-mobile-lines { display: none; }
+
+  @media (max-width: 767.98px) {
+    .customer-profit-card { padding: 0.75rem !important; }
+    .profit-customer-table,
+    .profit-customer-table tbody,
+    .profit-customer-table tr,
+    .profit-customer-table td {
+      display: block;
+      width: 100%;
+    }
+    .profit-customer-table thead { display: none; }
+    .profit-customer-row {
+      margin-bottom: 0.8rem;
+      overflow: hidden;
+      border: 1px solid var(--bs-border-color);
+      border-radius: 0.75rem;
+    }
+    .profit-customer-row > td {
+      border: 0 !important;
+    }
+    .profit-customer-details { padding: 0.8rem !important; }
+    .profit-customer-details summary {
+      cursor: pointer;
+      font-size: 1rem;
+    }
+    .profit-customer-metric {
+      display: flex !important;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0.28rem 0.8rem !important;
+      text-align: right !important;
+    }
+    .profit-customer-metric::before {
+      content: attr(data-label);
+      color: var(--bs-secondary-color);
+      font-weight: 500;
+    }
+    .profit-document-card {
+      margin-left: 0 !important;
+      padding: 0.75rem !important;
+    }
+    .profit-document-header {
+      display: block !important;
+    }
+    .profit-document-totals {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.45rem 0.7rem;
+      margin-top: 0.65rem;
+      text-align: left !important;
+    }
+    .profit-document-total {
+      display: flex;
+      flex-direction: column;
+      gap: 0.05rem;
+      margin-left: 0;
+      white-space: normal;
+    }
+    .profit-document-desktop-lines { display: none; }
+    .profit-document-mobile-lines {
+      display: grid;
+      gap: 0.6rem;
+      margin-top: 0.7rem;
+    }
+    .profit-mobile-line {
+      padding-top: 0.65rem;
+      border-top: 1px solid var(--bs-border-color);
+    }
+    .profit-mobile-line__identity {
+      display: grid;
+      gap: 0.12rem;
+    }
+    .profit-mobile-line__article {
+      color: var(--bs-secondary-color);
+      font-size: 0.72rem;
+    }
+    .profit-mobile-line__metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.45rem 0.7rem;
+      margin: 0.55rem 0 0;
+    }
+    .profit-mobile-line__metric {
+      min-width: 0;
+    }
+    .profit-mobile-line__metric dt {
+      color: var(--bs-secondary-color);
+      font-size: 0.68rem;
+      font-weight: 500;
+    }
+    .profit-mobile-line__metric dd {
+      margin: 0.05rem 0 0;
+      font-weight: 600;
+      overflow-wrap: anywhere;
+    }
+  }
+</style>
 <div class="finance-desktop">
 <div class="finance-page-header d-flex justify-content-between align-items-center mb-4">
   <div><h1 class="h3 mb-1">Валовая прибыль</h1><div class="text-muted">Помесячные данные · {{ period.start|date:"d.m.Y" }} — {{ period.end|date:"d.m.Y" }}</div></div>
@@ -43,30 +177,73 @@
           <div class="small text-end profit-document-totals">
             <span class="profit-document-total"><span>Выручка</span><strong>{{ document.revenue|money }}</strong></span>
             <span class="profit-document-total"><span>Себестоимость</span><strong>{{ document.cost|money }}</strong></span>
-            <span class="profit-document-total"><span>Прибыль</span><strong class="{% if document.gross_profit < 0 %}text-danger{% elif document.gross_profit > 0 %}text-success{% endif %}">{{ document.gross_profit|money }}</strong></span>
+            <span class="profit-document-total"><span>Валовая прибыль</span><strong class="{% if document.gross_profit < 0 %}text-danger{% elif document.gross_profit > 0 %}text-success{% endif %}">{{ document.gross_profit|money }}</strong></span>
+            {% if document.has_direct_expenses %}<span class="profit-document-total"><span>Прямые затраты</span><strong>{{ document.direct_expense_total|money }}</strong></span>{% endif %}
           </div>
         </header>
         <div class="profit-document-desktop-lines">
-          <div class="table-responsive profit-document-lines" aria-label="Строки документа {{ document.name }}">
-            <table class="table table-sm mb-0 profit-document-table">
-              <thead><tr><th>Период</th><th>Номенклатура</th><th>Артикул</th><th>Тип</th><th class="text-end">Количество</th><th class="text-end">Выручка</th><th class="text-end">Исходная себестоимость 1С</th><th class="text-end">Аналитическая себестоимость</th><th class="text-end">Валовая прибыль</th><th>Признак</th></tr></thead>
-              <tbody>{% for row in document.rows %}<tr class="profit-document-line"><td data-label="Период">{{ row.period_month|date:"m.Y" }}</td><td data-label="Номенклатура">{{ row.nomenclature }}</td><td data-label="Артикул">{{ row.article|default:"—" }}</td><td data-label="Тип">{{ row.nomenclature_type|default:"—" }}</td><td class="text-end" data-label="Количество">{{ row.quantity|default:"—" }}</td><td class="text-end" data-label="Выручка">{{ row.dashboard_revenue|money }}</td><td class="text-end" data-label="Исходная себестоимость 1С">{{ row.cost|money }}</td><td class="text-end" data-label="Аналитическая себестоимость">{{ row.dashboard_analytical_cost|money }}</td><td class="text-end {% if row.dashboard_gross_profit < 0 %}text-danger fw-semibold{% endif %}" data-label="Валовая прибыль">{{ row.dashboard_gross_profit|money }}</td><td data-label="Признак">{% if row.dashboard_cost_is_calculated %}<span class="badge text-bg-warning" title="Сохранённый коэффициент товаров с фактической себестоимостью месяца импорта">Расчётная · {{ row.dashboard_period_cost_ratio|ratio_percent }}%</span>{% else %}—{% endif %}</td></tr>{% endfor %}</tbody>
+          <div class="profit-document-lines" aria-label="Строки заказа или документа {{ document.name }}">
+            <table class="table table-sm mb-0 profit-document-table profit-order-table">
+              <thead>
+                <tr>
+                  <th>Номенклатура / затрата</th>
+                  <th>Период</th>
+                  <th>Тип</th>
+                  <th class="text-end">Количество</th>
+                  <th class="text-end">Выручка</th>
+                  <th class="text-end">Себестоимость</th>
+                  <th class="text-end">Валовая прибыль</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in document.rows %}
+                <tr class="profit-document-line{% if row.dashboard_is_direct_expense %} profit-direct-expense-row{% endif %}" data-profit-row-kind="{% if row.dashboard_is_direct_expense %}direct-expense{% else %}item{% endif %}">
+                  <td data-label="Номенклатура">
+                    <span class="profit-line-title">{{ row.dashboard_display_nomenclature }}</span>
+                    {% if row.dashboard_is_direct_expense %}
+                      <span class="profit-line-meta">Прямые затраты{% if row.document_name %} · {{ row.document_name }}{% endif %}</span>
+                    {% else %}
+                      {% if row.article %}<span class="profit-line-meta">Арт. {{ row.article }}</span>{% endif %}
+                      {% if document.is_order_group and row.document_name %}<span class="profit-line-meta">{{ row.document_name }}</span>{% endif %}
+                    {% endif %}
+                  </td>
+                  <td data-label="Период" data-profit-row-period="{{ row.period_month|date:'Y-m' }}">{{ row.period_month|date:"m.Y" }}</td>
+                  <td data-label="Тип">{{ row.dashboard_display_type|default:"—" }}</td>
+                  <td class="text-end" data-label="Количество">
+                    {% if row.dashboard_is_direct_expense %}—{% else %}{{ row.quantity|default_if_none:"—" }}{% if row.dashboard_unit_price != None %}<span class="profit-line-meta">по {{ row.dashboard_unit_price|money }}</span>{% endif %}{% endif %}
+                  </td>
+                  <td class="text-end" data-label="Выручка">{% if row.dashboard_is_direct_expense %}—{% else %}{{ row.dashboard_revenue|money }}{% endif %}</td>
+                  <td class="text-end" data-label="Себестоимость">
+                    {% if row.dashboard_analytical_cost != None %}{{ row.dashboard_analytical_cost|money }}{% else %}—{% endif %}
+                    {% if row.dashboard_cost_is_calculated %}<span class="profit-line-meta">Исходная себестоимость 1С: {{ row.cost|money }}</span><span class="profit-line-meta">Расчётная · {{ row.dashboard_period_cost_ratio|ratio_percent }}% месяца импорта</span>{% endif %}
+                  </td>
+                  <td class="text-end {% if row.dashboard_gross_profit < 0 %}text-danger fw-semibold{% elif row.dashboard_gross_profit > 0 %}text-success{% endif %}" data-label="Валовая прибыль">{% if row.dashboard_gross_profit != None %}{{ row.dashboard_gross_profit|money }}{% else %}—{% endif %}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
             </table>
           </div>
         </div>
-        <div class="profit-document-mobile-lines" aria-label="Строки документа {{ document.name }}">
+        <div class="profit-document-mobile-lines" aria-label="Строки заказа или документа {{ document.name }}">
           {% for row in document.rows %}
           <article class="profit-mobile-line">
             <div class="profit-mobile-line__identity">
-              <span class="profit-mobile-line__article">Арт. {{ row.article|default:"—" }}</span>
-              <strong>{{ row.nomenclature }}</strong>
+              <span class="profit-mobile-line__article">{% if row.dashboard_is_direct_expense %}Прямые затраты{% elif row.article %}Арт. {{ row.article }}{% else %}{{ row.dashboard_display_type|default:"Позиция" }}{% endif %}</span>
+              <strong>{{ row.dashboard_display_nomenclature }}</strong>
+              {% if row.dashboard_is_direct_expense and row.document_name %}<span class="profit-line-meta">{{ row.document_name }}</span>{% elif document.is_order_group and row.document_name %}<span class="profit-line-meta">{{ row.document_name }}</span>{% endif %}
             </div>
             <dl class="profit-mobile-line__metrics">
+              <div class="profit-mobile-line__metric" data-profit-mobile-field="period"><dt>Период</dt><dd>{{ row.period_month|date:"m.Y" }}</dd></div>
+              {% if row.dashboard_is_direct_expense %}
+              <div class="profit-mobile-line__metric" data-profit-mobile-field="direct-expense"><dt>Прямые затраты</dt><dd>{{ row.dashboard_direct_expense_amount|money }}</dd></div>
+              <div class="profit-mobile-line__metric profit-mobile-line__metric--profit" data-profit-mobile-field="gross-profit"><dt>Влияние на ВП</dt><dd class="{% if row.dashboard_gross_profit < 0 %}text-danger{% elif row.dashboard_gross_profit > 0 %}text-success{% endif %}">{{ row.dashboard_gross_profit|money }}</dd></div>
+              {% else %}
               <div class="profit-mobile-line__metric" data-profit-mobile-field="quantity"><dt>Кол-во</dt><dd>{{ row.quantity|default_if_none:"—" }}</dd></div>
               <div class="profit-mobile-line__metric" data-profit-mobile-field="price"><dt>Цена</dt><dd>{% if row.dashboard_unit_price != None %}{{ row.dashboard_unit_price|money }}{% else %}—{% endif %}</dd></div>
               <div class="profit-mobile-line__metric" data-profit-mobile-field="revenue"><dt>Стоимость</dt><dd>{{ row.dashboard_revenue|money }}</dd></div>
               <div class="profit-mobile-line__metric" data-profit-mobile-field="cost"><dt>Себестоимость</dt><dd>{% if row.dashboard_analytical_cost != None %}{{ row.dashboard_analytical_cost|money }}{% else %}—{% endif %}</dd></div>
-              <div class="profit-mobile-line__metric profit-mobile-line__metric--profit" data-profit-mobile-field="gross-profit"><dt>Прибыль</dt><dd class="{% if row.dashboard_gross_profit < 0 %}text-danger{% elif row.dashboard_gross_profit > 0 %}text-success{% endif %}">{% if row.dashboard_gross_profit != None %}{{ row.dashboard_gross_profit|money }}{% else %}—{% endif %}</dd></div>
+              <div class="profit-mobile-line__metric profit-mobile-line__metric--profit" data-profit-mobile-field="gross-profit"><dt>Валовая прибыль</dt><dd class="{% if row.dashboard_gross_profit < 0 %}text-danger{% elif row.dashboard_gross_profit > 0 %}text-success{% endif %}">{% if row.dashboard_gross_profit != None %}{{ row.dashboard_gross_profit|money }}{% else %}—{% endif %}</dd></div>
+              {% endif %}
             </dl>
           </article>
           {% endfor %}

@@ -42,11 +42,14 @@ from pool_service.models import (
 from pool_service.tests.test_onec_odata_profit_preview import FakeOpener
 from pool_service.tests.test_onec_odata_profit_drafts import (
     CUSTOMER,
+    CUSTOMER_ORDER,
     DIRECT_RECEIPT,
     ErrorOnNthOpen,
     ITEM,
     RESPONSIBLE,
+    direct_expense_line_payload,
     direct_expense_row,
+    direct_nomenclature_reference_payload,
     direct_order_document_payload,
     direct_receipt_document_payload,
     document_payload,
@@ -197,9 +200,8 @@ class UnifiedSyncTests(TestCase):
             ]},
             direct_order_document_payload(),
             direct_receipt_document_payload(),
-            reference_payload(
-                ITEM, "Товар из 1С", article="A-1", nomenclature_type="Запас"
-            ),
+            direct_expense_line_payload(),
+            direct_nomenclature_reference_payload(),
             reference_payload(CUSTOMER, "Клиент заказа №114"),
             reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
             document_payload(number="НФНФ-000335"),
@@ -235,6 +237,10 @@ class UnifiedSyncTests(TestCase):
         self.assertTrue(
             all(row["customer_name"] == "Клиент заказа №114" for row in direct)
         )
+        self.assertEqual(
+            {row["nomenclature"] for row in direct},
+            {"Монтаж оборудования", "Транспортные расходы"},
+        )
 
     def test_unified_direct_cost_keeps_missing_receipt_metadata(self):
         sale = raw_profit_row(
@@ -249,12 +255,8 @@ class UnifiedSyncTests(TestCase):
             ]},
             direct_order_document_payload(),
             {"value": []},
-            reference_payload(
-                ITEM,
-                "Товар из 1С",
-                article="A-1",
-                nomenclature_type="Запас",
-            ),
+            direct_expense_line_payload(),
+            direct_nomenclature_reference_payload(),
             reference_payload(CUSTOMER, "Клиент заказа №114"),
             reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
             document_payload(number="НФНФ-000335"),
@@ -308,12 +310,8 @@ class UnifiedSyncTests(TestCase):
                 direct_expense_row(11, "5000.00"),
             ]},
             direct_order_document_payload(),
-            reference_payload(
-                ITEM,
-                "Товар из 1С",
-                article="A-1",
-                nomenclature_type="Запас",
-            ),
+            direct_expense_line_payload(),
+            direct_nomenclature_reference_payload(),
             reference_payload(CUSTOMER, "Клиент заказа №114"),
             reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
             document_payload(number="НФНФ-000335"),
@@ -362,12 +360,8 @@ class UnifiedSyncTests(TestCase):
             ]},
             direct_order_document_payload(),
             direct_receipt_document_payload(),
-            reference_payload(
-                ITEM,
-                "Товар из 1С",
-                article="A-1",
-                nomenclature_type="Запас",
-            ),
+            direct_expense_line_payload(),
+            direct_nomenclature_reference_payload(),
             reference_payload(
                 CUSTOMER,
                 "Клиент заказа №114",
@@ -605,6 +599,48 @@ class UnifiedSyncTests(TestCase):
             changed_order_display,
         ):
             with self.subTest(source_data=changed["source_data"]):
+                self.assertNotEqual(
+                    baseline,
+                    month_fingerprint(REPORT_PROFIT, month, [changed]),
+                )
+
+    def test_profit_fingerprint_changes_when_sale_order_heading_changes(self):
+        month = date(2025, 5, 1)
+        first = profit_row()
+        first["source_data"].update({
+            "source_document_order_guid": "88888888-8888-4888-8888-888888888888",
+            "source_document_order_type": "Document_ЗаказПокупателя",
+            "resolved_order_guid": "88888888-8888-4888-8888-888888888888",
+            "resolved_order_type": "Document_ЗаказПокупателя",
+            "resolved_order_organization_guid": ORG_GUID,
+            "resolved_order_customer_guid": "44444444-4444-4444-8444-444444444444",
+            "resolved_order_customer_name": "Клиент заказа",
+            "resolved_order_number": "НФНФ-000114",
+            "resolved_order_date": "2025-05-01",
+            "resolved_order_display": "Заказ покупателя №НФНФ-000114 от 01.05.2025",
+        })
+        baseline = month_fingerprint(REPORT_PROFIT, month, [first])
+
+        for field, value in (
+            ("resolved_order_number", "НФНФ-000115"),
+            ("resolved_order_date", "2025-05-02"),
+            (
+                "resolved_order_display",
+                "Заказ покупателя №НФНФ-000114 от 02.05.2025",
+            ),
+            ("resolved_order_customer_name", "Переименованный клиент"),
+            (
+                "resolved_order_customer_guid",
+                "55555555-5555-4555-8555-555555555555",
+            ),
+            (
+                "source_document_order_guid",
+                "99999999-9999-4999-8999-999999999999",
+            ),
+        ):
+            changed = deepcopy(first)
+            changed["source_data"][field] = value
+            with self.subTest(field=field):
                 self.assertNotEqual(
                     baseline,
                     month_fingerprint(REPORT_PROFIT, month, [changed]),
@@ -1077,6 +1113,64 @@ class UnifiedSyncTests(TestCase):
                 self.assertEqual(failed.cursor["index"], 0)
                 self.assertIsNone(failed.lease_token)
                 self.assertFalse(OneCImportBatch.objects.exists())
+
+    def test_unified_sync_rejects_sales_order_from_other_organization(self):
+        run, _ = start_unified_sync(
+            self.organization,
+            self.user,
+            [REPORT_PROFIT],
+            today=date(2025, 5, 1),
+        )
+        row = self._profit_odata_row()
+        opener = FakeOpener(
+            {"value": [row]},
+            self._reference_payload(
+                "33333333-3333-3333-3333-333333333333",
+                "Товар",
+                article="A-1",
+                nomenclature_type="Запас",
+            ),
+            self._reference_payload(
+                "44444444-4444-4444-4444-444444444444",
+                "Покупатель",
+            ),
+            self._reference_payload(
+                "66666666-6666-6666-6666-666666666666",
+                "Ответственный",
+            ),
+            document_payload(
+                RECORDER,
+                number="РН-000001",
+                value_date="2025-05-15T10:00:00+03:00",
+                order=CUSTOMER_ORDER,
+            ),
+            direct_order_document_payload(
+                organization="22222222-2222-4222-8222-222222222222"
+            ),
+        )
+
+        failed = step_unified_sync(
+            run.id,
+            self.user,
+            [REPORT_PROFIT],
+            0,
+            config=config(),
+            opener=opener,
+        )
+
+        item = failed.result_summary[REPORT_PROFIT]
+        self.assertEqual(item["status"], "retryable_error")
+        self.assertEqual(item["error_stage"], "profit_enrichment")
+        self.assertEqual(item["error_code"], "profit_enrichment_failed")
+        self.assertEqual(
+            item["error"],
+            "Не удалось проверить данные 1С. Продолжите проверку позже.",
+        )
+        self.assertEqual(failed.cursor["index"], 0)
+        self.assertIsNone(failed.lease_token)
+        self.assertFalse(
+            OneCImportBatch.objects.filter(status="previewed").exists()
+        )
 
     def test_profit_customer_lookup_odata_errors_have_safe_allowlisted_reasons(self):
         cases = (

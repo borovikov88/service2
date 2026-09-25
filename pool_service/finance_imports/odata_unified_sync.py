@@ -49,9 +49,11 @@ from .odata_profit_drafts import (
     _enrich_rows,
     _preview_metadata as profit_preview_metadata,
     _read_direct_expense_documents,
+    _read_direct_expense_lines,
     _read_profit_documents,
     _read_reference_map,
     _reference_lookup_kwargs,
+    _load_missing_sales_order_customers,
     _read_snapshot as read_profit_snapshot,
     _save_batch_snapshot,
     _bulk_create_monthly_rows,
@@ -578,8 +580,23 @@ def _canonical_profit(row):
             "direct_expense_order_guid", ""
         ),
         "resolved_order_guid": source_data.get("resolved_order_guid", ""),
+        "resolved_order_organization_guid": source_data.get(
+            "resolved_order_organization_guid", ""
+        ),
+        "resolved_order_number": source_data.get("resolved_order_number", ""),
+        "resolved_order_date": source_data.get("resolved_order_date", ""),
+        "resolved_order_display": source_data.get("resolved_order_display", ""),
+        "source_document_order_guid": source_data.get(
+            "source_document_order_guid", ""
+        ),
+        "source_document_order_type": source_data.get(
+            "source_document_order_type", ""
+        ),
         "resolved_order_customer_guid": source_data.get(
             "resolved_order_customer_guid", ""
+        ),
+        "resolved_order_customer_name": source_data.get(
+            "resolved_order_customer_name", ""
         ),
         "resolved_order_responsible_guid": source_data.get(
             "resolved_order_responsible_guid", ""
@@ -686,6 +703,12 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
             opener=opener,
             page_budget=budget,
         )
+        direct_lines = _read_direct_expense_lines(
+            config,
+            direct_rows,
+            opener=opener,
+            page_budget=budget,
+        )
     except Exception as exc:
         _raise_stage_error(
             STAGE_PROFIT_DOCUMENT_LOOKUP,
@@ -700,6 +723,14 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
         required = {
             "nomenclature": {
                 _profit_reference_guid(row.nomenclature_guid) for row in rows
+            } | {
+                guid
+                for line in direct_lines.values()
+                if (
+                    guid := _profit_reference_guid(
+                        line["nomenclature_guid"], allow_zero=True
+                    )
+                )
             },
             "customer": {
                 guid for row in rows
@@ -760,11 +791,30 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
             error_reason=_profit_document_error_reason(exc),
         )
     try:
+        _load_missing_sales_order_customers(
+            config,
+            rows,
+            references,
+            documents,
+            opener=opener,
+            page_budget=budget,
+        )
+    except Exception as exc:
+        _raise_stage_error(
+            STAGE_PROFIT_CUSTOMER_LOOKUP,
+            exc,
+            error_reason=_profit_customer_error_reason(exc),
+        )
+    try:
         normalized = _enrich_rows(
             rows, references, documents, organization_id
         )
         normalized.extend(_enrich_direct_expense_rows(
-            direct_rows, references, documents, organization_id
+            direct_rows,
+            references,
+            documents,
+            direct_lines,
+            organization_id,
         ))
         return normalized, pages
     except Exception as exc:
