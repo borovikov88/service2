@@ -167,7 +167,7 @@ def direct_expense_line_payload(
     }
 
 
-def direct_nomenclature_reference_payload():
+def direct_nomenclature_reference_payload(*, direct_deleted=False):
     return {
         "value": [
             reference_payload(
@@ -181,12 +181,14 @@ def direct_nomenclature_reference_payload():
                 "Монтаж оборудования",
                 article="",
                 nomenclature_type="Услуга",
+                deletion_mark=direct_deleted,
             )["value"][0],
             reference_payload(
                 DIRECT_ITEM_TRANSPORT,
                 "Транспортные расходы",
                 article="",
                 nomenclature_type="Услуга",
+                deletion_mark=direct_deleted,
             )["value"][0],
         ]
     }
@@ -342,6 +344,7 @@ class ODataProfitDraftTests(TestCase):
         *,
         revenue="94494.00",
         customer_deleted=False,
+        direct_nomenclature_deleted=False,
         order_organization=ORG,
         receipt_available=True,
         line_order=CUSTOMER_ORDER,
@@ -366,7 +369,9 @@ class ODataProfitDraftTests(TestCase):
                 order=line_order,
                 first_amount=first_line_amount,
             ),
-            direct_nomenclature_reference_payload(),
+            direct_nomenclature_reference_payload(
+                direct_deleted=direct_nomenclature_deleted,
+            ),
             reference_payload(
                 CUSTOMER,
                 "Клиент заказа №114",
@@ -821,6 +826,22 @@ class ODataProfitDraftTests(TestCase):
             OneCMonthlyProfit.objects.filter(import_batch=batch).exists()
         )
         self.assertFalse(OneCReportPeriodState.objects.exists())
+
+    def test_manual_direct_cost_draft_accepts_historical_deleted_nomenclature(self):
+        batch = self.create_direct_cost_draft(
+            revenue="94496.25",
+            direct_nomenclature_deleted=True,
+        )
+        with batch.stored_file.open("rb") as source:
+            snapshot = json.loads(source.read().decode("utf-8"))
+        direct = [
+            row for row in snapshot["rows"]
+            if row["source_data"].get("row_kind") == "direct_order_expense"
+        ]
+        self.assertEqual(
+            {row["nomenclature"] for row in direct},
+            {"Монтаж оборудования", "Транспортные расходы"},
+        )
 
     def test_manual_direct_cost_draft_accepts_historical_deleted_customer(self):
         batch = self.create_direct_cost_draft(
