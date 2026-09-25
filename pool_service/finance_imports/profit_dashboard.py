@@ -753,14 +753,28 @@ def customer_breakdown(rows):
             "subdocuments": {},
             "is_order_group": order is not None,
             "order": order,
+            "order_sort_key": (
+                (row.period_month or date.min, row.pk or 0)
+                if order is not None
+                else None
+            ),
             "fallback_customer_name": _display_customer_name(row.customer_name),
             "order_customer_names": [],
         })
         document["rows"].append(row)
-        if order is not None and order.get("customer_name"):
-            document["order_customer_names"].append(
-                (row.period_month, row.pk, order["customer_name"])
-            )
+        if order is not None:
+            candidate_order_key = (row.period_month or date.min, row.pk or 0)
+            if (
+                document["order_sort_key"] is None
+                or candidate_order_key > document["order_sort_key"]
+            ):
+                document["order"] = order
+                document["name"] = order["display"]
+                document["order_sort_key"] = candidate_order_key
+            if order.get("customer_name"):
+                document["order_customer_names"].append(
+                    (row.period_month, row.pk, order["customer_name"])
+                )
 
         subdocument = document["subdocuments"].setdefault(document_key, {
             "name": document_name,
