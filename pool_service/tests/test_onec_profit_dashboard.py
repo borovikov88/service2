@@ -461,9 +461,11 @@ class ProfitDashboardTests(TestCase):
         self.assertContains(response, "Арт. A-PAIR")
         self.assertContains(response, "50,00")
         self.assertContains(response, "<dt>Стоимость</dt>", html=True)
-        for field in ("quantity", "price", "revenue", "cost", "gross-profit"):
+        for field in (
+            "period", "quantity", "price", "revenue", "cost", "gross-profit",
+        ):
             self.assertContains(response, f'data-profit-mobile-field="{field}"')
-        for absent_field in ("period", "type", "source-cost", "cost-analytics", "flag"):
+        for absent_field in ("type", "source-cost", "cost-analytics", "flag"):
             self.assertNotContains(
                 response, f'data-profit-mobile-field="{absent_field}"'
             )
@@ -795,6 +797,114 @@ class ProfitDashboardTests(TestCase):
         )
         self.assertEqual(order["number"], "НФНФ-000114")
         self.assertEqual(order["date"], date(2026, 7, 2))
+
+        response = self.client.get(reverse("finance_onec_profit_dashboard"), {
+            "period": "custom", "start": "2026-08", "end": "2026-09",
+        })
+        self.assertContains(response, 'data-profit-row-period="2026-08"')
+        self.assertContains(response, 'data-profit-row-period="2026-09"')
+        self.assertContains(response, "08.2026", count=2)
+        self.assertContains(response, "09.2026", count=2)
+
+    def test_order_group_uses_newest_resolved_order_customer(self):
+        order_guid = "88888888-8888-4888-8888-888888888888"
+        organization_guid = "22222222-2222-4222-8222-222222222222"
+        old_customer_guid = "44444444-4444-4444-8444-444444444444"
+        new_customer_guid = "55555555-5555-4555-8555-555555555555"
+        self.batch.source_type = OneCImportBatch.SOURCE_ODATA
+        self.batch.parser_version = "odata-2"
+        self.batch.save(update_fields=["source_type", "parser_version"])
+
+        self.add_row(
+            date(2026, 8, 1),
+            name="Монтаж",
+            kind="Прямые расходы",
+            revenue="0",
+            cost="25",
+            customer="Старый клиент заказа",
+            manager="Менеджер",
+            document="Приходная накладная №ПН-OLD от 15.08.2026",
+            quantity="0",
+            source_data={
+                "source": "odata",
+                "row_kind": "direct_order_expense",
+                "organization_guid": organization_guid,
+                "customer_guid": old_customer_guid,
+                "direct_expense_order_guid": order_guid,
+                "resolved_order_guid": order_guid,
+                "resolved_order_type": "Document_ЗаказПокупателя",
+                "resolved_order_organization_guid": organization_guid,
+                "resolved_order_customer_guid": old_customer_guid,
+                "resolved_order_customer_name": "Старый клиент заказа",
+                "resolved_order_number": "НФНФ-000114",
+                "resolved_order_date": "2026-07-01",
+                "resolved_order_display": (
+                    "Заказ покупателя №НФНФ-000114 от 01.07.2026"
+                ),
+                "direct_expense_line_name": "Монтаж",
+                "direct_expense_content": "Монтаж",
+                "line_number": 1,
+            },
+        )
+
+        recorder = "33333333-3333-4333-8333-333333333333"
+        sale_display = "Расходная накладная №РН-NEW от 15.09.2026"
+        self.add_row(
+            date(2026, 9, 1),
+            name="Товар",
+            revenue="100",
+            cost="40",
+            customer="Клиент движения",
+            manager="Менеджер",
+            document=sale_display,
+            source_recorder=recorder,
+            article="A-NEW",
+            quantity="1",
+            source_data={
+                "source": "odata",
+                "recorder": recorder,
+                "recorder_type": "Document_РасходнаяНакладная",
+                "line_number": 2,
+                "period": "2026-09-15T10:00:00+03:00",
+                "source_date": "2026-09-15",
+                "organization_guid": organization_guid,
+                "document_guid": recorder,
+                "document_type": "Document_РасходнаяНакладная",
+                "document_number": "РН-NEW",
+                "document_date": "2026-09-15",
+                "document_group_recorder": recorder,
+                "document_group_recorder_type": "Document_РасходнаяНакладная",
+                "document_group_key": (
+                    f"odata-document:{self.organization.pk}:"
+                    f"Document_РасходнаяНакладная:{recorder}"
+                ),
+                "document_group_number": "РН-NEW",
+                "document_group_date": "2026-09-15",
+                "document_display": sale_display,
+                "source_document_order_guid": order_guid,
+                "source_document_order_type": "Document_ЗаказПокупателя",
+                "resolved_order_guid": order_guid,
+                "resolved_order_type": "Document_ЗаказПокупателя",
+                "resolved_order_organization_guid": organization_guid,
+                "resolved_order_customer_guid": new_customer_guid,
+                "resolved_order_customer_name": "Новый клиент заказа",
+                "resolved_order_number": "НФНФ-000114",
+                "resolved_order_date": "2026-07-02",
+                "resolved_order_display": (
+                    "Заказ покупателя №НФНФ-000114 от 02.07.2026"
+                ),
+            },
+        )
+
+        data = dashboard_data(self.organization, resolve_period({
+            "period": "custom", "start": "2026-08", "end": "2026-09",
+        }, today=date(2026, 9, 25)))
+        self.assertEqual(len(data["customers"]), 1)
+        self.assertEqual(data["customers"][0]["name"], "Новый клиент заказа")
+        self.assertEqual(
+            data["customers"][0]["documents"][0]["number"],
+            "НФНФ-000114",
+        )
 
     def test_order_group_preserves_each_sale_source_document_in_ui(self):
         order_guid = "88888888-8888-4888-8888-888888888888"
