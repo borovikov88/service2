@@ -197,10 +197,14 @@ def _read_reference_map(
     opener,
     page_budget,
     allow_deleted_nomenclature=False,
+    allowed_deleted_nomenclature_guids=None,
     allow_deleted_customer=False,
 ):
     entity_set, fields = CATALOGS[kind]
     expected = set(guids)
+    allowed_deleted_nomenclature_guids = set(
+        allowed_deleted_nomenclature_guids or ()
+    )
     found = {}
     for batch_guids in _chunks(sorted(expected)):
         url = _reference_url(config, entity_set, fields, batch_guids)
@@ -221,7 +225,13 @@ def _read_reference_map(
                 allows_historical_deleted_reference = (
                     raw.get("DeletionMark") is True
                     and (
-                        (kind == "nomenclature" and allow_deleted_nomenclature)
+                        (
+                            kind == "nomenclature"
+                            and (
+                                allow_deleted_nomenclature
+                                or key in allowed_deleted_nomenclature_guids
+                            )
+                        )
                         or (kind == "customer" and allow_deleted_customer)
                     )
                 )
@@ -263,11 +273,17 @@ def _reference_lookup_kwargs(
     opener,
     page_budget,
     allow_deleted_nomenclature=False,
+    allowed_deleted_nomenclature_guids=None,
 ):
     """Keep reference lookup order stable while sharing customer history policy."""
     kwargs = {"opener": opener, "page_budget": page_budget}
-    if kind == "nomenclature" and allow_deleted_nomenclature:
-        kwargs["allow_deleted_nomenclature"] = True
+    if kind == "nomenclature":
+        if allow_deleted_nomenclature:
+            kwargs["allow_deleted_nomenclature"] = True
+        elif allowed_deleted_nomenclature_guids:
+            kwargs["allowed_deleted_nomenclature_guids"] = (
+                allowed_deleted_nomenclature_guids
+            )
     elif kind == "customer":
         kwargs["allow_deleted_customer"] = True
     return kwargs
@@ -1680,10 +1696,17 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
         direct_customers, direct_responsibles = _direct_expense_reference_guids(
             direct_rows, direct_documents
         )
-        required["nomenclature"].update(
+        direct_nomenclature_guids = {
             line["nomenclature_guid"]
             for line in direct_lines.values()
             if line["nomenclature_guid"] != ZERO_GUID
+        }
+        sales_nomenclature_guids = {
+            row.nomenclature_guid for row in rows
+        }
+        required["nomenclature"].update(direct_nomenclature_guids)
+        allowed_deleted_direct_nomenclature_guids = (
+            direct_nomenclature_guids - sales_nomenclature_guids
         )
         required["customer"].update(direct_customers)
         required["responsible"].update(direct_responsibles)
@@ -1696,6 +1719,9 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
                     kind,
                     opener=client,
                     page_budget=reference_page_budget,
+                    allowed_deleted_nomenclature_guids=(
+                        allowed_deleted_direct_nomenclature_guids
+                    ),
                 ),
             )
             for kind, guids in required.items()
