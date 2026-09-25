@@ -53,6 +53,7 @@ from .odata_profit_drafts import (
     _read_profit_documents,
     _read_reference_map,
     _reference_lookup_kwargs,
+    _load_missing_sales_order_customers,
     _read_snapshot as read_profit_snapshot,
     _save_batch_snapshot,
     _bulk_create_monthly_rows,
@@ -585,8 +586,17 @@ def _canonical_profit(row):
         "resolved_order_number": source_data.get("resolved_order_number", ""),
         "resolved_order_date": source_data.get("resolved_order_date", ""),
         "resolved_order_display": source_data.get("resolved_order_display", ""),
+        "source_document_order_guid": source_data.get(
+            "source_document_order_guid", ""
+        ),
+        "source_document_order_type": source_data.get(
+            "source_document_order_type", ""
+        ),
         "resolved_order_customer_guid": source_data.get(
             "resolved_order_customer_guid", ""
+        ),
+        "resolved_order_customer_name": source_data.get(
+            "resolved_order_customer_name", ""
         ),
         "resolved_order_responsible_guid": source_data.get(
             "resolved_order_responsible_guid", ""
@@ -779,6 +789,21 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
             STAGE_PROFIT_DOCUMENT_LOOKUP,
             exc,
             error_reason=_profit_document_error_reason(exc),
+        )
+    try:
+        _load_missing_sales_order_customers(
+            config,
+            rows,
+            references,
+            documents,
+            opener=opener,
+            page_budget=budget,
+        )
+    except Exception as exc:
+        _raise_stage_error(
+            STAGE_PROFIT_CUSTOMER_LOOKUP,
+            exc,
+            error_reason=_profit_customer_error_reason(exc),
         )
     try:
         normalized = _enrich_rows(
