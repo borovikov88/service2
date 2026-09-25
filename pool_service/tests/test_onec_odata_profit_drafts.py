@@ -194,14 +194,14 @@ def direct_nomenclature_reference_payload(*, direct_deleted=False):
     }
 
 
-def direct_order_document_payload(*, organization=ORG):
+def direct_order_document_payload(*, organization=ORG, customer=CUSTOMER):
     return {
         "value": [{
             "Ref_Key": CUSTOMER_ORDER,
             "Number": "НФНФ-000114",
             "Date": "2026-05-01T12:00:00+03:00",
             "Организация_Key": organization,
-            "Контрагент_Key": CUSTOMER,
+            "Контрагент_Key": customer,
             "Ответственный_Key": RESPONSIBLE,
         }]
     }
@@ -981,6 +981,92 @@ class ODataProfitDraftTests(TestCase):
         self.assertEqual(
             saved["source_data"]["resolved_order_guid"],
             CUSTOMER_ORDER,
+        )
+        self.assertEqual(
+            saved["source_data"]["source_document_order_guid"],
+            CUSTOMER_ORDER,
+        )
+        self.assertEqual(
+            saved["source_data"]["source_document_order_type"],
+            "Document_ЗаказПокупателя",
+        )
+        self.assertEqual(
+            saved["source_data"]["resolved_order_customer_guid"],
+            CUSTOMER,
+        )
+        self.assertEqual(
+            saved["source_data"]["resolved_order_customer_name"],
+            "Покупатель",
+        )
+
+    def test_sale_resolves_customer_from_linked_order(self):
+        order_customer = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        rows = [profit_row(line=1)]
+        opener = FakeOpener(
+            {"value": rows},
+            reference_payload(ITEM, "Товар", article="A"),
+            reference_payload(CUSTOMER, "Покупатель движения"),
+            reference_payload(RESPONSIBLE, "Ответственный"),
+            document_payload(
+                RECORDER,
+                number="РН-1",
+                order=CUSTOMER_ORDER,
+            ),
+            direct_order_document_payload(customer=order_customer),
+            reference_payload(order_customer, "Покупатель заказа"),
+        )
+
+        batch = self.create_draft(rows=rows, opener=opener)
+        with batch.stored_file.open("rb") as source:
+            saved = json.loads(source.read().decode("utf-8"))["rows"][0]
+        self.assertEqual(saved["customer_name"], "Покупатель движения")
+        self.assertEqual(
+            saved["source_data"]["resolved_order_customer_guid"],
+            order_customer,
+        )
+        self.assertEqual(
+            saved["source_data"]["resolved_order_customer_name"],
+            "Покупатель заказа",
+        )
+
+    def test_confirmation_rejects_forged_sale_resolved_order_with_new_checksum(self):
+        rows = [profit_row(line=1)]
+        opener = FakeOpener(
+            {"value": rows},
+            reference_payload(ITEM, "Товар", article="A"),
+            reference_payload(CUSTOMER, "Покупатель"),
+            reference_payload(RESPONSIBLE, "Ответственный"),
+            document_payload(
+                RECORDER,
+                number="РН-1",
+                order=CUSTOMER_ORDER,
+            ),
+            direct_order_document_payload(),
+        )
+        batch = self.create_draft(rows=rows, opener=opener)
+
+        def forge(snapshot):
+            source_data = snapshot["rows"][0]["source_data"]
+            source_data["resolved_order_guid"] = DIRECT_ACCOUNT
+            source_data["resolved_order_number"] = "ПОДМЕНА-1"
+            source_data["resolved_order_date"] = "2026-05-02"
+            source_data["resolved_order_display"] = (
+                "Заказ покупателя №ПОДМЕНА-1 от 02.05.2026"
+            )
+
+        self.rewrite_snapshot(batch, forge)
+        with self.assertRaisesRegex(
+            ValidationError,
+            "source document order attribution",
+        ):
+            confirm_odata_profit(
+                batch.id,
+                self.organization,
+                self.user,
+                config=config(),
+            )
+        self.assertFalse(
+            OneCMonthlyProfit.objects.filter(import_batch=batch).exists()
         )
 
     def test_sale_rejects_customer_order_from_other_organization(self):
