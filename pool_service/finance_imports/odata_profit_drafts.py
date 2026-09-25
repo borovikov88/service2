@@ -430,6 +430,49 @@ def _read_profit_documents(config, rows, *, opener, page_budget):
     return documents
 
 
+def _sales_order_customer_guids(rows, documents):
+    """Return customer refs from live orders linked by sales documents."""
+    result = set()
+    for row in rows:
+        primary = documents.get((row.recorder_type, row.recorder))
+        order_ref = primary.get("order_ref") if primary else None
+        order = documents.get(order_ref) if order_ref else None
+        customer_guid = order.get("customer_guid") if order else None
+        if customer_guid:
+            result.add(customer_guid)
+    return result
+
+
+def _load_missing_sales_order_customers(
+    config,
+    rows,
+    references,
+    documents,
+    *,
+    opener,
+    page_budget,
+):
+    """Resolve order customers without changing the sale movement customer."""
+    missing = (
+        _sales_order_customer_guids(rows, documents)
+        - set(references["customer"])
+    )
+    if not missing:
+        return
+    references["customer"].update(
+        _read_reference_map(
+            config,
+            "customer",
+            missing,
+            **_reference_lookup_kwargs(
+                "customer",
+                opener=opener,
+                page_budget=page_budget,
+            ),
+        )
+    )
+
+
 def _direct_expense_lines_url(config, receipt_guids):
     expression = " or ".join(
         f"Ref_Key eq guid'{guid}'" for guid in receipt_guids
@@ -993,7 +1036,15 @@ def _enrich_rows(rows, references, documents, organization_id):
                 raise ODataPreviewError(
                     "Sales customer order organization does not match movement"
                 )
+            order_customer_guid = order_document.get("customer_guid")
+            order_customer = references["customer"].get(order_customer_guid)
+            if not order_customer_guid or order_customer is None:
+                raise ODataPreviewError(
+                    "Sales customer order customer is missing or unavailable"
+                )
             normalized[-1]["source_data"].update({
+                "source_document_order_guid": order_ref[1],
+                "source_document_order_type": order_ref[0],
                 "resolved_order_guid": order_ref[1],
                 "resolved_order_type": order_ref[0],
                 "resolved_order_organization_guid": order_document["organization_guid"],
@@ -1002,6 +1053,8 @@ def _enrich_rows(rows, references, documents, organization_id):
                 "resolved_order_display": _document_display(
                     order_ref[0], order_document
                 ),
+                "resolved_order_customer_guid": order_customer_guid,
+                "resolved_order_customer_name": order_customer["description"],
             })
     return normalized
 
@@ -1733,6 +1786,14 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
             page_budget=reference_page_budget,
         )
         documents.update(direct_documents)
+        _load_missing_sales_order_customers(
+            config,
+            rows,
+            references,
+            documents,
+            opener=client,
+            page_budget=reference_page_budget,
+        )
         normalized = _enrich_rows(rows, references, documents, organization.pk)
         normalized.extend(_enrich_direct_expense_rows(
             direct_rows,
