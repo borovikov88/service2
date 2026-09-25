@@ -801,10 +801,26 @@ class ProfitDashboardTests(TestCase):
         response = self.client.get(reverse("finance_onec_profit_dashboard"), {
             "period": "custom", "start": "2026-08", "end": "2026-09",
         })
-        self.assertContains(response, 'data-profit-row-period="2026-08"')
-        self.assertContains(response, 'data-profit-row-period="2026-09"')
-        self.assertContains(response, "08.2026", count=2)
-        self.assertContains(response, "09.2026", count=2)
+        self.assertContains(
+            response,
+            '<td data-label="Период" data-profit-row-period="2026-08">08.2026</td>',
+            html=True,
+        )
+        self.assertContains(
+            response,
+            '<td data-label="Период" data-profit-row-period="2026-09">09.2026</td>',
+            html=True,
+        )
+        self.assertContains(
+            response,
+            '<div class="profit-mobile-line__metric" data-profit-mobile-field="period"><dt>Период</dt><dd>08.2026</dd></div>',
+            html=True,
+        )
+        self.assertContains(
+            response,
+            '<div class="profit-mobile-line__metric" data-profit-mobile-field="period"><dt>Период</dt><dd>09.2026</dd></div>',
+            html=True,
+        )
 
     def test_order_group_uses_newest_resolved_order_customer(self):
         order_guid = "88888888-8888-4888-8888-888888888888"
