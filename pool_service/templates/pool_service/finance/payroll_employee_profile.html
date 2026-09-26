@@ -9,7 +9,7 @@
       <h1 class="h3 mb-1">{{ employee.display_name }}</h1>
       <div class="text-muted">Карточка сотрудника: зарплата, ФОТ и кадровые данные</div>
     </div>
-    <a class="btn btn-outline-secondary" href="{% url 'finance_payroll_employee_list' %}">К сотрудникам</a>
+    <div class="d-flex flex-wrap gap-2">{% if can_view_reward_detail %}<a class="btn btn-outline-primary" href="{% url 'finance_reward_employee_detail' employee.id %}?month={{ period_month|date:'Y-m' }}">Тестовые вознаграждения</a>{% endif %}<a class="btn btn-outline-secondary" href="{% url 'finance_payroll_employee_list' %}">К сотрудникам</a></div>
   </div>
 
   <div class="row g-3 mb-4">

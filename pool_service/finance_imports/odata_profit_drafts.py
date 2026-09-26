@@ -55,8 +55,8 @@ from .services import (
 from .validators import delete_private_batch_file
 
 
-SNAPSHOT_SCHEMA = "onec_odata_profit_draft_v2"
-PARSER_VERSION = "odata-2"
+SNAPSHOT_SCHEMA = "onec_odata_profit_draft_v3"
+PARSER_VERSION = "odata-3"
 REFERENCE_BATCH_SIZE = 40
 MAX_DRAFT_MONTHS = 12
 MONEY_QUANTUM = Decimal("0.01")
@@ -74,24 +74,28 @@ CATALOGS = {
         "Catalog_Сотрудники",
         ("Ref_Key", "Description", "DeletionMark"),
     ),
+    "author_user": (
+        "Catalog_Пользователи",
+        ("Ref_Key", "Description", "DeletionMark"),
+    ),
 }
 DOCUMENTS = {
     "Document_РасходнаяНакладная": {
         "label": "Расходная накладная",
-        "fields": ("Ref_Key", "Number", "Date", "Заказ", "Заказ_Type"),
+        "fields": ("Ref_Key", "Number", "Date", "Автор_Key", "Заказ", "Заказ_Type"),
     },
     "Document_ОтчетОРозничныхПродажах": {
         "label": "Отчёт о розничных продажах",
-        "fields": ("Ref_Key", "Number", "Date"),
+        "fields": ("Ref_Key", "Number", "Date", "Автор_Key"),
     },
     "Document_ЧекККМ": {
         "label": "Чек ККМ",
-        "fields": ("Ref_Key", "Number", "Date"),
+        "fields": ("Ref_Key", "Number", "Date", "Автор_Key"),
     },
     "Document_ЗаказПокупателя": {
         "label": "Заказ покупателя",
         "fields": (
-            "Ref_Key", "Number", "Date", "Организация_Key",
+            "Ref_Key", "Number", "Date", "Автор_Key", "Организация_Key",
             "Контрагент_Key", "Ответственный_Key"
         ),
     },
@@ -355,6 +359,13 @@ def _read_document_entities(
                         "number": number.strip(),
                         "date": _document_date(raw.get("Date")),
                     }
+                    raw_author = raw.get("Автор_Key")
+                    if raw_author not in (None, ""):
+                        item["author_user_guid"] = normalize_guid(
+                            raw_author,
+                            field="Document Автор_Key",
+                            allow_zero=True,
+                        )
                     if entity_type == ORDER_TYPE:
                         raw_organization = raw.get("Организация_Key")
                         if raw_organization not in (None, ""):
@@ -421,6 +432,23 @@ def _read_profit_documents(config, rows, *, opener, page_budget):
         page_budget=page_budget,
         require_all=True,
     )
+    linked_sale_refs = {
+        (row.document_type, row.document_guid)
+        for row in rows
+        if (
+            row.document_type in PROFIT_RECORDER_TYPES
+            and row.document_guid
+            and row.document_type != row.recorder_type
+        )
+    }
+    if linked_sale_refs:
+        documents.update(_read_document_entities(
+            config,
+            linked_sale_refs,
+            opener=opener,
+            page_budget=page_budget,
+            require_all=False,
+        ))
     order_refs = {
         item["order_ref"]
         for item in documents.values()
@@ -1108,6 +1136,54 @@ def _enrich_rows(
                 "document_number": primary_document["number"],
                 "document_date": primary_document["date"].isoformat(),
             })
+
+        reward_document_type = None
+        reward_document_guid = None
+        reward_document = None
+        if row.recorder_type in {RETAIL_CHECK_TYPE, "Document_РасходнаяНакладная"}:
+            reward_document_type = row.recorder_type
+            reward_document_guid = row.recorder
+            reward_document = documents.get((reward_document_type, reward_document_guid))
+        elif (
+            row.recorder_type == RETAIL_REPORT_TYPE
+            and row.document_type == RETAIL_CHECK_TYPE
+            and row.document_guid
+        ):
+            reward_document_type = RETAIL_CHECK_TYPE
+            reward_document_guid = row.document_guid
+            reward_document = documents.get((reward_document_type, reward_document_guid))
+
+        if reward_document_type and reward_document_guid:
+            reward_payload = {
+                "reward_document_type": reward_document_type,
+                "reward_document_guid": reward_document_guid,
+            }
+            if reward_document is not None:
+                reward_payload.update({
+                    "reward_document_number": reward_document["number"],
+                    "reward_document_date": reward_document["date"].isoformat(),
+                    "reward_document_display": _document_display(
+                        reward_document_type, reward_document
+                    ),
+                })
+                author_guid = reward_document.get("author_user_guid")
+                if author_guid and author_guid != ZERO_GUID:
+                    author = references["author_user"].get(author_guid)
+                    if author is None:
+                        raise ODataPreviewError(
+                            "1C document author user is missing or unavailable"
+                        )
+                    reward_payload.update({
+                        "author_user_guid": author_guid,
+                        "author_user_name": author["description"],
+                        "author_user_status": "available",
+                    })
+                else:
+                    reward_payload["author_user_status"] = "missing"
+            else:
+                reward_payload["author_user_status"] = "document_unavailable"
+            normalized[-1]["source_data"].update(reward_payload)
+
         group_document = group["group_document"]
         if group_document is not None:
             normalized[-1]["source_data"].update({
@@ -2014,6 +2090,19 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
             page_budget=reference_page_budget,
         )
         documents.update(direct_documents)
+        author_user_guids = {
+            document.get("author_user_guid")
+            for document in documents.values()
+            if document.get("author_user_guid")
+            not in (None, "", ZERO_GUID)
+        }
+        references["author_user"] = _read_reference_map(
+            config,
+            "author_user",
+            author_user_guids,
+            opener=client,
+            page_budget=reference_page_budget,
+        )
         _load_missing_sales_order_customers(
             config,
             rows,
@@ -2151,6 +2240,18 @@ def confirm_odata_profit(batch_id, organization, user, *, config=None):
                 batch, locked_organization, user, periods, locked_states
             )
             _save_confirmed_batch(batch, user, len(rows))
+            from pool_service.services.employee_rewards import (
+                register_author_identities_from_profit_rows,
+                seed_author_paperwork_proposals,
+                seed_template_participation,
+            )
+            register_author_identities_from_profit_rows(locked_organization, rows)
+            seed_author_paperwork_proposals(
+                locked_organization, rows, proposed_by=user
+            )
+            seed_template_participation(
+                locked_organization, rows, proposed_by=user
+            )
             _audit(batch, user, before, {
                 "status": batch.status, "rows_imported": batch.rows_imported,
             })

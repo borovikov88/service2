@@ -372,7 +372,7 @@ def _is_validated_odata_group(row, source_data, group_key, display):
     if (
         batch.source_type != OneCImportBatch.SOURCE_ODATA
         or batch.import_type != OneCImportBatch.TYPE_MONTHLY_PROFIT
-        or batch.parser_version != "odata-2"
+        or batch.parser_version not in {"odata-2", "odata-3"}
         or batch.status != OneCImportBatch.STATUS_CONFIRMED
         or batch.organization_id != row.organization_id
         or source_data.get("source") != "odata"
@@ -1043,6 +1043,19 @@ def customer_breakdown(rows):
                 if _readable_source_document_name(row)
                 and _readable_source_document_name(row) != document["name"]
             }, key=str.casefold)
+            reward_refs = {
+                (
+                    _row_source_data(row).get("reward_document_type"),
+                    _guid(_row_source_data(row).get("reward_document_guid")),
+                )
+                for row in document_rows
+                if _row_source_data(row).get("reward_document_type")
+                and _guid(_row_source_data(row).get("reward_document_guid"))
+            }
+            reward_document_type = None
+            reward_document_guid = None
+            if len(reward_refs) == 1:
+                reward_document_type, reward_document_guid = next(iter(reward_refs))
 
             documents.append({
                 "name": document["name"],
@@ -1059,6 +1072,8 @@ def customer_breakdown(rows):
                     direct_expense_total if direct_expense_rows else None
                 ),
                 "source_documents": source_documents,
+                "reward_document_type": reward_document_type,
+                "reward_document_guid": reward_document_guid,
                 **document_totals,
             })
         documents.sort(key=lambda item: (

@@ -50,7 +50,7 @@
 <div class="finance-desktop">
 <div class="finance-page-header d-flex justify-content-between align-items-center mb-4">
   <div><h1 class="h3 mb-1">Валовая прибыль</h1><div class="text-muted">Помесячные данные · {{ period.start|date:"d.m.Y" }} — {{ period.end|date:"d.m.Y" }}</div></div>
-  {% if can_import_gross_profit %}<div class="finance-page-actions"><a class="btn btn-outline-secondary" href="{% url 'finance_data' %}">Данные 1С</a></div>{% endif %}
+  <div class="finance-page-actions d-flex flex-wrap gap-2">{% if can_view_employee_rewards %}<a class="btn btn-outline-primary" href="{% url 'finance_rewards' %}?month={{ period.end|date:'Y-m' }}">Вознаграждения сотрудников</a>{% endif %}{% if can_import_gross_profit %}<a class="btn btn-outline-secondary" href="{% url 'finance_data' %}">Данные 1С</a>{% endif %}</div>
 </div>
 <form method="get" id="profit-period-form" class="finance-filter-card card card-soft p-3 mb-4"><div class="row g-3 align-items-end">
   <div class="col-lg-3 col-md-6"><label class="form-label" for="period">Период</label><select class="form-select" id="period" name="period">{% for value,label in period_choices %}<option value="{{ value }}"{% if period.preset == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
@@ -83,6 +83,7 @@
               <strong>{{ document.label }}</strong>{% if document.number %}<span class="profit-document-number">№{{ document.number }}</span>{% endif %}{% if document.date %}<time datetime="{{ document.date|date:'Y-m-d' }}">{{ document.date|date:"d.m.Y" }}</time>{% endif %}
             </div>
             {% if document.managers %}<div class="small text-muted">Менеджер: {{ document.managers|join:", " }}</div>{% endif %}
+            {% if document.reward_document_type and document.reward_document_guid and can_view_employee_rewards %}<div class="mt-1"><a class="small" href="{% url 'finance_reward_document' document.reward_document_type document.reward_document_guid %}?month={{ document.date|date:'Y-m' }}">Участники и вознаграждения →</a></div>{% endif %}
           </div>
           <div class="small text-end profit-document-totals">
             <span class="profit-document-total"><span>Выручка</span><strong>{{ document.revenue|money }}</strong></span>

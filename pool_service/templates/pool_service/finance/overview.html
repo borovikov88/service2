@@ -88,7 +88,7 @@
     <div class="owner-scope">Консолидировано: 4 юрлица</div>
   </header>
 
-  {% if can_access_finance_data %}<div class="mb-3"><a class="btn btn-outline-primary" href="{% url 'finance_data' %}">Данные 1С и обновление →</a></div>{% endif %}
+  <div class="mb-3 d-flex flex-wrap gap-2">{% if can_access_finance_data %}<a class="btn btn-outline-primary" href="{% url 'finance_data' %}">Данные 1С и обновление →</a>{% endif %}<a class="btn btn-outline-primary" href="{% url 'finance_rewards' %}">Вознаграждения сотрудников →</a></div>
 
   <form method="get" class="finance-filter-card card card-soft p-3 mb-3" id="owner-period-form">
     <div class="d-flex justify-content-between align-items-start gap-3 mb-3"><div><div class="owner-eyebrow">Единый фильтр</div><h2 class="h5 mb-0">Период</h2></div><div class="text-end"><strong>{{ effective_period_label }}</strong><div class="text-muted small">полные календарные месяцы</div></div></div>

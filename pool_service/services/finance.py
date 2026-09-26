@@ -136,6 +136,77 @@ def can_manage_employee_mapping(user, organization):
     return _has_management_finance_role(user, organization)
 
 
+def can_view_employee_rewards(user, organization):
+    """General reward table: management finance roles or explicit delegated right."""
+    if not user or not user.is_authenticated or not organization:
+        return False
+    if user.is_superuser:
+        return True
+    roles = organization_roles(user, organization)
+    return bool(
+        roles & MANAGEMENT_FINANCE_ROLES
+        or ("manager" in roles and user.has_perm("pool_service.view_employee_rewards"))
+    )
+
+
+def can_propose_employee_rewards(user, organization):
+    """Allow an employee to propose only their own participation."""
+    if not user or not user.is_authenticated or not organization:
+        return False
+    if can_manage_employee_rewards(user, organization):
+        return True
+    return user.has_perm("pool_service.propose_employee_rewards")
+
+
+def can_manage_employee_rewards(user, organization):
+    """Confirm participation; managers require an explicit delegated permission."""
+    if not user or not user.is_authenticated or not organization:
+        return False
+    if user.is_superuser:
+        return True
+    roles = organization_roles(user, organization)
+    return bool(
+        roles & MANAGEMENT_FINANCE_ROLES
+        or ("manager" in roles and user.has_perm("pool_service.manage_employee_rewards"))
+    )
+
+
+def can_manage_reward_rules(user, organization):
+    if not user or not user.is_authenticated or not organization:
+        return False
+    if user.is_superuser:
+        return True
+    roles = organization_roles(user, organization)
+    return bool(
+        roles & MANAGEMENT_FINANCE_ROLES
+        or ("manager" in roles and user.has_perm("pool_service.manage_reward_rules"))
+    )
+
+
+def can_close_reward_month(user, organization):
+    if not user or not user.is_authenticated or not organization:
+        return False
+    if user.is_superuser:
+        return True
+    roles = organization_roles(user, organization)
+    return bool(
+        roles & MANAGEMENT_FINANCE_ROLES
+        or ("manager" in roles and user.has_perm("pool_service.close_reward_month"))
+    )
+
+
+def can_view_employee_reward_detail(user, organization, employee):
+    if can_view_employee_rewards(user, organization):
+        return True
+    return bool(
+        user
+        and user.is_authenticated
+        and employee
+        and employee.organization_id == organization.id
+        and employee.user_id == user.id
+    )
+
+
 def can_view_employee_hr(user, organization):
     if not user or not user.is_authenticated or not organization:
         return False
