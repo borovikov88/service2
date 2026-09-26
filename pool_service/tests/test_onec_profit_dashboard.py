@@ -422,6 +422,14 @@ class ProfitDashboardTests(TestCase):
         self.assertContains(response, "grid-template-columns: repeat(3, minmax(0, 1fr))")
         self.assertContains(response, "@media (max-width: 399.98px)")
         self.assertContains(response, "grid-template-columns: 1fr")
+        self.assertContains(
+            response,
+            ".profit-document-totals {\n      grid-template-columns: 1fr",
+        )
+        self.assertContains(
+            response,
+            ".profit-document-total {\n      flex-direction: row",
+        )
         self.assertContains(response, "min-width: 920px")
         self.assertContains(
             response,
