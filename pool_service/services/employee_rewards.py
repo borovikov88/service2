@@ -24,6 +24,7 @@ from pool_service.models import (
     EmployeeRewardMonthClose,
     EmployeeRewardRule,
     EmployeeRewardScheme,
+    EmployeeRewardTemplate,
     OneCMonthlyProfit,
 )
 
@@ -441,6 +442,7 @@ def _document_inventory(all_rows):
                 "document_label": _document_label(row),
                 "period_month": row.period_month,
                 "customer_name": row.customer_name,
+                "customer_guid": _guid_text(_source_data(row).get("customer_guid")),
                 "rows": [],
             },
         )
@@ -855,8 +857,6 @@ def create_or_update_assignment(
         EmployeeRewardAssignment.objects.filter(
             organization=organization,
             period_month=period_month,
-            source_document_type=document_type,
-            source_document_guid=document_guid,
             scope_key=scope_key,
             role=role,
             employee=employee,
@@ -919,6 +919,140 @@ def create_or_update_assignment(
         },
     )
     return assignment
+
+
+@transaction.atomic
+def create_reward_template(
+    *,
+    organization,
+    source_customer_guid,
+    client,
+    pool,
+    role,
+    employee,
+    share_percent,
+    effective_from,
+    actor,
+):
+    """Create a future suggestion template; it never rewrites existing assignments."""
+    guid = _guid_text(source_customer_guid)
+    if not guid:
+        raise ValidationError("Для шаблона нужен устойчивый GUID клиента 1С.")
+    if client is None and pool is None:
+        raise ValidationError("Шаблон должен быть привязан к клиенту или объекту Service2.")
+    if client is not None and client.organization_id != organization.id:
+        raise ValidationError("Клиент относится к другой организации.")
+    if pool is not None and pool.organization_id != organization.id:
+        raise ValidationError("Объект относится к другой организации.")
+    if employee.organization_id != organization.id:
+        raise ValidationError("Сотрудник относится к другой организации.")
+    if role == EmployeeRewardRule.ROLE_PAPERWORK:
+        raise ValidationError("Оформление определяется автором исходного документа 1С.")
+    try:
+        share = Decimal(str(share_percent))
+    except Exception as exc:
+        raise ValidationError("Некорректная доля шаблона.") from exc
+    if share <= 0 or share > HUNDRED:
+        raise ValidationError("Доля шаблона должна быть больше 0 и не больше 100%.")
+    template = EmployeeRewardTemplate(
+        organization=organization,
+        client=client,
+        pool=pool,
+        source_customer_guid=guid,
+        role=role,
+        employee=employee,
+        share_percent=share,
+        effective_from=effective_from,
+        is_active=True,
+        created_by=actor,
+    )
+    template.full_clean()
+    template.save()
+    return template
+
+
+def seed_template_participation(organization, rows, proposed_by=None):
+    """Apply active client/object templates as proposals to new sale scopes."""
+    inventory = {}
+    for row in rows:
+        ref = reward_document_ref(row)
+        if not ref:
+            continue
+        key = (row.period_month, ref[0], ref[1])
+        item = inventory.setdefault(
+            key,
+            {
+                "period_month": row.period_month,
+                "document_type": ref[0],
+                "document_guid": ref[1],
+                "label": _document_label(row),
+                "customer_guid": _guid_text(_source_data(row).get("customer_guid")),
+                "rows": [],
+            },
+        )
+        item["rows"].append(row)
+
+    created_count = 0
+    for item in inventory.values():
+        customer_guid = item["customer_guid"]
+        if not customer_guid:
+            continue
+        templates = (
+            EmployeeRewardTemplate.objects.filter(
+                organization=organization,
+                source_customer_guid=customer_guid,
+                is_active=True,
+                effective_from__lte=item["period_month"],
+            )
+            .filter(Q(effective_to__isnull=True) | Q(effective_to__gte=item["period_month"]))
+            .select_related("employee", "client", "pool")
+        )
+        for template in templates:
+            # Project participation always requires explicit positions for this project.
+            if template.role in {
+                EmployeeRewardRule.ROLE_PROJECT,
+                EmployeeRewardRule.ROLE_PAPERWORK,
+            }:
+                continue
+            scope_key = _scope_key(
+                item["document_type"],
+                item["document_guid"],
+                item["rows"],
+                [],
+                template.role,
+            )
+            existing = EmployeeRewardAssignment.objects.filter(
+                organization=organization,
+                period_month=item["period_month"],
+                scope_key=scope_key,
+                role=template.role,
+                employee=template.employee,
+            ).exists()
+            if existing:
+                continue
+            assignment = EmployeeRewardAssignment(
+                organization=organization,
+                period_month=item["period_month"],
+                source_document_type=item["document_type"],
+                source_document_guid=item["document_guid"],
+                source_document_label=item["label"],
+                scope_key=scope_key,
+                role=template.role,
+                employee=template.employee,
+                share_percent=template.share_percent,
+                status=EmployeeRewardAssignment.STATUS_PROPOSED,
+                source_kind=(
+                    EmployeeRewardAssignment.SOURCE_OBJECT_TEMPLATE
+                    if template.pool_id
+                    else EmployeeRewardAssignment.SOURCE_CLIENT_TEMPLATE
+                ),
+                basis_note="Предложено по шаблону клиента/объекта; требуется подтверждение факта участия.",
+                proposed_by=proposed_by,
+            )
+            assignment.full_clean()
+            assignment.save()
+            created_count += 1
+    return created_count
 
 
 def confirmation_preview(organization, assignment_ids):
