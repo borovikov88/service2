@@ -414,6 +414,11 @@ class ProfitDashboardTests(TestCase):
             "period": "custom", "start": "2026-08", "end": "2026-08",
         })
         self.assertContains(response, 'class="profit-customer-mobile-metrics"')
+        rendered = response.content.decode()
+        summary_start = rendered.index('<summary class="fw-semibold">')
+        metrics_start = rendered.index('class="profit-customer-mobile-metrics"', summary_start)
+        summary_end = rendered.index("</summary>", summary_start)
+        self.assertLess(metrics_start, summary_end)
         self.assertContains(response, "grid-template-columns: repeat(3, minmax(0, 1fr))")
         self.assertContains(response, "min-width: 920px")
         self.assertContains(
