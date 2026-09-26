@@ -715,6 +715,7 @@ class ProfitDashboardTests(TestCase):
         order_display = "Заказ покупателя №НФНФ-000114 от 06.08.2026"
         sale_display = "Расходная накладная №НФНФ-000335 от 17.09.2026"
         close_display = "Закрытие месяца №НФНФ-000011 от 30.09.2026"
+        order_manager = "Ответственный заказа №114"
         self.batch.source_type = OneCImportBatch.SOURCE_ODATA
         self.batch.parser_version = "odata-2"
         self.batch.save(update_fields=["source_type", "parser_version"])
@@ -763,7 +764,7 @@ class ProfitDashboardTests(TestCase):
 
         self.add_row(
             date(2026, 9, 1), name="Расходные материалы", revenue="7000",
-            cost="0", customer="Детский сад №268", manager="Менеджер",
+            cost="0", customer="Детский сад №268", manager=order_manager,
             document=sale_display,
             source_data=source_data(
                 sale_recorder, "Document_РасходнаяНакладная",
@@ -773,7 +774,7 @@ class ProfitDashboardTests(TestCase):
         )
         self.add_row(
             date(2026, 9, 1), name="Расходные материалы", revenue="0",
-            cost="3032.89", customer="Детский сад №268", manager="Менеджер",
+            cost="3032.89", customer="Детский сад №268", manager=order_manager,
             document=sale_display,
             source_data=source_data(
                 sale_recorder, "Document_РасходнаяНакладная",
@@ -783,7 +784,7 @@ class ProfitDashboardTests(TestCase):
         )
         self.add_row(
             date(2026, 9, 1), name="Расходные материалы", revenue="0",
-            cost="25.36", customer="Детский сад №268", manager="Менеджер",
+            cost="25.36", customer="Детский сад №268", manager=order_manager,
             document=close_display,
             source_data=source_data(
                 close_recorder, "Document_ЗакрытиеМесяца",
@@ -792,9 +793,13 @@ class ProfitDashboardTests(TestCase):
             source_recorder=close_recorder, article="A-MAT", quantity="0",
         )
 
-        data = dashboard_data(self.organization, resolve_period({
-            "period": "custom", "start": "2026-09", "end": "2026-09",
-        }, today=date(2026, 9, 30)))
+        data = dashboard_data(
+            self.organization,
+            resolve_period({
+                "period": "custom", "start": "2026-09", "end": "2026-09",
+            }, today=date(2026, 9, 30)),
+            manager=order_manager,
+        )
         order = data["customers"][0]["documents"][0]
         self.assertTrue(order["is_order_group"])
         self.assertEqual(len(order["rows"]), 1)
@@ -804,6 +809,17 @@ class ProfitDashboardTests(TestCase):
         self.assertEqual(row.dashboard_gross_profit, Decimal("3941.75"))
         self.assertEqual(
             row.dashboard_month_close_adjustment, Decimal("25.36")
+        )
+        self.assertEqual(data["totals"]["cost"], Decimal("3058.25"))
+        self.assertEqual(
+            dashboard_data(
+                self.organization,
+                resolve_period({
+                    "period": "custom", "start": "2026-09", "end": "2026-09",
+                }, today=date(2026, 9, 30)),
+                manager="Ответственный движения",
+            )["totals"]["cost"],
+            Decimal("0"),
         )
 
         response = self.client.get(reverse("finance_onec_profit_dashboard"), {
