@@ -1015,6 +1015,101 @@ class ProfitDashboardTests(TestCase):
             with self.subTest(display=display):
                 self.assertContains(response, display, count=2)
 
+    def test_month_close_adjustment_collapses_into_order_item_line(self):
+        sale_recorder = "11111111-1111-4111-8111-111111111111"
+        close_recorder = "99999999-9999-4999-8999-999999999999"
+        item_guid = "33333333-3333-4333-8333-333333333333"
+        order_guid = "88888888-8888-4888-8888-888888888888"
+        organization_guid = "22222222-2222-4222-8222-222222222222"
+        display = "Расходная накладная №НФНФ-000335 от 17.09.2026"
+        group_key = (
+            f"odata-document:{self.organization.pk}:"
+            f"Document_РасходнаяНакладная:{sale_recorder}"
+        )
+        order_display = "Заказ покупателя №НФНФ-000114 от 01.09.2026"
+        self.batch.source_type = OneCImportBatch.SOURCE_ODATA
+        self.batch.parser_version = "odata-2"
+        self.batch.save(update_fields=["source_type", "parser_version"])
+
+        common = {
+            "source": "odata",
+            "organization_guid": organization_guid,
+            "nomenclature_guid": item_guid,
+            "customer_guid": "44444444-4444-4444-8444-444444444444",
+            "responsible_guid": "66666666-6666-4666-8666-666666666666",
+            "document_guid": sale_recorder,
+            "document_type": "Document_РасходнаяНакладная",
+            "document_number": "НФНФ-000335",
+            "document_date": "2026-09-17",
+            "document_group_recorder": sale_recorder,
+            "document_group_recorder_type": "Document_РасходнаяНакладная",
+            "document_group_key": group_key,
+            "document_group_number": "НФНФ-000335",
+            "document_group_date": "2026-09-17",
+            "document_display": display,
+            "source_document_order_guid": order_guid,
+            "source_document_order_type": "Document_ЗаказПокупателя",
+            "resolved_order_guid": order_guid,
+            "resolved_order_type": "Document_ЗаказПокупателя",
+            "resolved_order_organization_guid": organization_guid,
+            "resolved_order_number": "НФНФ-000114",
+            "resolved_order_date": "2026-09-01",
+            "resolved_order_display": order_display,
+            "resolved_order_customer_guid": "44444444-4444-4444-8444-444444444444",
+            "resolved_order_customer_name": "Клиент заказа",
+        }
+        self.add_row(
+            date(2026, 9, 1),
+            name="Товар A",
+            revenue="100",
+            cost="40",
+            customer="Клиент заказа",
+            document=display,
+            source_recorder=sale_recorder,
+            quantity="1",
+            article="A-1",
+            source_data={
+                **common,
+                "recorder": sale_recorder,
+                "recorder_type": "Document_РасходнаяНакладная",
+                "line_number": 1,
+                "period": "2026-09-17T09:14:39+03:00",
+                "source_date": "2026-09-17",
+            },
+        )
+        self.add_row(
+            date(2026, 9, 1),
+            name="Товар A",
+            revenue="0",
+            cost="-10",
+            customer="Клиент заказа",
+            document=display,
+            source_recorder=close_recorder,
+            quantity="0",
+            article="A-1",
+            source_data={
+                **common,
+                "recorder": close_recorder,
+                "recorder_type": "Document_ЗакрытиеМесяца",
+                "line_number": 2,
+                "period": "2026-09-30T23:59:59+03:00",
+                "source_date": "2026-09-30",
+            },
+        )
+
+        data = dashboard_data(self.organization, resolve_period({
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        }, today=date(2026, 9, 30)))
+        order = data["customers"][0]["documents"][0]
+        self.assertTrue(order["is_order_group"])
+        self.assertEqual(order["source_row_count"], 2)
+        self.assertEqual(len(order["rows"]), 1)
+        self.assertEqual(order["rows"][0].dashboard_revenue, Decimal("100"))
+        self.assertEqual(
+            order["rows"][0].dashboard_analytical_cost, Decimal("30")
+        )
+        self.assertEqual(order["rows"][0].dashboard_gross_profit, Decimal("70"))
+
     def test_presentation_keeps_movements_separate_when_quantities_conflict(self):
         recorder = "11111111-1111-4111-8111-111111111111"
         display = "Расходная накладная №1 от 01.09.2026"
