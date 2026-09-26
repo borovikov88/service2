@@ -1326,7 +1326,7 @@ def _validate_snapshot(payload, config, *, organization_id):
         ):
             raise ValidationError("OData snapshot document display is invalid.")
         known_recorder = (
-            recorder_type in PROFIT_RECORDER_TYPES
+            recorder_type in (PROFIT_RECORDER_TYPES | {MONTH_CLOSE_TYPE})
             or (is_direct_expense and recorder_type == DIRECT_EXPENSE_RECORDER_TYPE)
         )
         document_number = source_data.get("document_number")
