@@ -388,6 +388,39 @@ class ProfitDashboardTests(TestCase):
         self.assertEqual(sum(item["cost"] for item in data["customers"]), data["totals"]["cost"])
         self.assertEqual(sum(item["gross_profit"] for item in data["customers"]), data["totals"]["gross_profit"])
 
+    def test_mobile_customer_summary_uses_three_metrics_and_scrollable_detail_table(self):
+        self.add_row(
+            date(2026, 8, 1),
+            customer="Клиент",
+            document="Документ 1С от 20.08.2026",
+            source_data={
+                "recorder_type": "Document_РасходнаяНакладная",
+                "document_number": "НФНФ-000118",
+                "document_date": "2026-08-20",
+                "source_date": "2026-08-20",
+            },
+        )
+
+        data = dashboard_data(self.organization, resolve_period({
+            "period": "custom", "start": "2026-08", "end": "2026-08",
+        }, today=date(2026, 8, 20)))
+        document = data["customers"][0]["documents"][0]
+        self.assertEqual(
+            document["label"],
+            "Расходная накладная №НФНФ-000118 от 20.08.2026",
+        )
+
+        response = self.client.get(reverse("finance_onec_profit_dashboard"), {
+            "period": "custom", "start": "2026-08", "end": "2026-08",
+        })
+        self.assertContains(response, 'class="profit-customer-mobile-metrics"')
+        self.assertContains(response, "grid-template-columns: repeat(3, minmax(0, 1fr))")
+        self.assertContains(response, "min-width: 920px")
+        self.assertContains(
+            response,
+            "Расходная накладная №НФНФ-000118 от 20.08.2026",
+        )
+
     def test_explicit_document_key_merges_movements_without_changing_totals(self):
         recorder = "11111111-1111-4111-8111-111111111111"
         group_key = (
