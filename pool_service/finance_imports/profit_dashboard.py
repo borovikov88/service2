@@ -330,6 +330,8 @@ _DOCUMENT_LABELS = {
     "Document_РасходнаяНакладная": "Расходная накладная",
     "Document_ОтчетОРозничныхПродажах": "Отчёт о розничных продажах",
     "Document_ЧекККМ": "Чек ККМ",
+    "Document_ЗаказПокупателя": "Заказ покупателя",
+    "Document_ПриходнаяНакладная": "Приходная накладная",
     "Document_ЗакрытиеМесяца": "Закрытие месяца",
 }
 _RETAIL_CHECK_TYPE = "Document_ЧекККМ"
@@ -614,12 +616,52 @@ def _resolved_order_group(row):
     }
 
 
+def _readable_source_document_name(row):
+    """Return a readable 1C document name for already imported dashboard rows."""
+    source_data = _row_source_data(row)
+    stored_name = (row.document_name or "").strip()
+    if stored_name and not stored_name.startswith("Документ 1С"):
+        return stored_name
+
+    document_type = (
+        source_data.get("document_group_recorder_type")
+        or source_data.get("recorder_type")
+    )
+    label = _DOCUMENT_LABELS.get(document_type)
+    if not label:
+        return stored_name or "Документ 1С"
+
+    number = (
+        source_data.get("document_group_number")
+        or source_data.get("document_number")
+    )
+    number = number.strip() if isinstance(number, str) else ""
+    raw_date = (
+        source_data.get("document_group_date")
+        or source_data.get("document_date")
+        or source_data.get("source_date")
+    )
+    try:
+        document_date = date.fromisoformat(raw_date)
+    except (TypeError, ValueError):
+        document_date = None
+
+    if number and document_date:
+        return f"{label} №{number} от {document_date:%d.%m.%Y}"
+    if number:
+        return f"{label} №{number}"
+    if document_date:
+        return f"{label} от {document_date:%d.%m.%Y}"
+    return label
+
+
 def _decorate_presentation_row(row):
     source_data = _row_source_data(row)
     row.dashboard_is_direct_expense = _is_direct_expense_row(row)
     row.dashboard_display_nomenclature = row.nomenclature
     row.dashboard_display_type = row.nomenclature_type
     row.dashboard_direct_expense_amount = None
+    row.dashboard_source_document_name = _readable_source_document_name(row)
     if row.dashboard_is_direct_expense:
         line_name = source_data.get("direct_expense_line_name")
         content = source_data.get("direct_expense_content")
@@ -992,9 +1034,10 @@ def customer_breakdown(rows):
                 and len(direct_expense_rows) == len(document_rows)
             )
             source_documents = sorted({
-                row.document_name.strip()
+                _readable_source_document_name(row)
                 for row in document_rows
-                if row.document_name and row.document_name.strip() != document["name"]
+                if _readable_source_document_name(row)
+                and _readable_source_document_name(row) != document["name"]
             }, key=str.casefold)
 
             documents.append({
