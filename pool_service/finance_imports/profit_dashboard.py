@@ -372,7 +372,7 @@ def _is_validated_odata_group(row, source_data, group_key, display):
     if (
         batch.source_type != OneCImportBatch.SOURCE_ODATA
         or batch.import_type != OneCImportBatch.TYPE_MONTHLY_PROFIT
-        or batch.parser_version != "odata-2"
+        or batch.parser_version not in {"odata-2", "odata-3"}
         or batch.status != OneCImportBatch.STATUS_CONFIRMED
         or batch.organization_id != row.organization_id
         or source_data.get("source") != "odata"
