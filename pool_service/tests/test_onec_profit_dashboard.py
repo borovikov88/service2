@@ -303,10 +303,12 @@ class ProfitDashboardTests(TestCase):
         response = self.client.get(reverse("finance_onec_profit_dashboard"), {
             "period": "custom", "start": "2026-01", "end": "2026-01",
         })
-        self.assertRegex(
-            response.content.decode(),
-            r'(?s)Арт\. ZERO-PRICE.*?data-profit-mobile-field="price"><dt>Цена</dt><dd>—</dd>',
-        )
+        rendered = response.content.decode()
+        article_index = rendered.index("Арт. ZERO-PRICE")
+        row_start = rendered.rfind("<tr", 0, article_index)
+        row_end = rendered.index("</tr>", article_index)
+        self.assertNotEqual(row_start, -1)
+        self.assertNotIn("по ", rendered[row_start:row_end])
 
     def test_monthly_aggregate_is_invariant_when_selected_range_changes(self):
         january = date(2026, 1, 1)
@@ -545,15 +547,20 @@ class ProfitDashboardTests(TestCase):
         self.assertContains(response, "01.09.2026")
         self.assertContains(response, "Арт. A-PAIR")
         self.assertContains(response, "50,00")
-        self.assertContains(response, "<dt>Стоимость</dt>", html=True)
-        for field in (
-            "period", "quantity", "price", "revenue", "cost", "gross-profit",
-        ):
-            self.assertContains(response, f'data-profit-mobile-field="{field}"')
-        for absent_field in ("type", "source-cost", "cost-analytics", "flag"):
-            self.assertNotContains(
-                response, f'data-profit-mobile-field="{absent_field}"'
-            )
+        self.assertContains(
+            response,
+            '<td data-profit-row-period="2026-09">09.2026</td>',
+            html=True,
+        )
+        rendered = response.content.decode()
+        article_index = rendered.index("Арт. A-PAIR")
+        row_start = rendered.rfind("<tr", 0, article_index)
+        row_end = rendered.index("</tr>", article_index)
+        row_html = rendered[row_start:row_end]
+        self.assertIn("50,00", row_html)
+        self.assertIn("100,00", row_html)
+        self.assertIn("40,00", row_html)
+        self.assertIn("60,00", row_html)
 
     def test_presentation_collapses_one_revenue_with_multiple_cost_movements(self):
         recorder = "11111111-1111-4111-8111-111111111111"
@@ -668,7 +675,7 @@ class ProfitDashboardTests(TestCase):
         self.assertContains(response, "Монтаж оборудования")
         self.assertContains(response, "Транспортные расходы")
         self.assertContains(
-            response, 'data-profit-mobile-field="direct-expense"', count=2
+            response, 'data-profit-row-kind="direct-expense"', count=2
         )
         self.assertNotContains(response, "Прямые расходы по заказу")
         self.assertNotContains(response, "Прочие расходы")
@@ -1104,22 +1111,12 @@ class ProfitDashboardTests(TestCase):
         })
         self.assertContains(
             response,
-            '<td data-label="Период" data-profit-row-period="2026-08">08.2026</td>',
+            '<td data-profit-row-period="2026-08">08.2026</td>',
             html=True,
         )
         self.assertContains(
             response,
-            '<td data-label="Период" data-profit-row-period="2026-09">09.2026</td>',
-            html=True,
-        )
-        self.assertContains(
-            response,
-            '<div class="profit-mobile-line__metric" data-profit-mobile-field="period"><dt>Период</dt><dd>08.2026</dd></div>',
-            html=True,
-        )
-        self.assertContains(
-            response,
-            '<div class="profit-mobile-line__metric" data-profit-mobile-field="period"><dt>Период</dt><dd>09.2026</dd></div>',
+            '<td data-profit-row-period="2026-09">09.2026</td>',
             html=True,
         )
 
@@ -1314,7 +1311,7 @@ class ProfitDashboardTests(TestCase):
         })
         for display in expected_documents:
             with self.subTest(display=display):
-                self.assertContains(response, display, count=2)
+                self.assertContains(response, display, count=1)
 
     def test_presentation_keeps_movements_separate_when_quantities_conflict(self):
         recorder = "11111111-1111-4111-8111-111111111111"
