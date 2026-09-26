@@ -443,12 +443,14 @@ class ODataProfitDraftTests(TestCase):
             saved["source_data"]["resolved_order_customer_name"],
             "Клиент заказа №114",
         )
+        self.assertEqual(saved["customer_name"], "Клиент заказа №114")
 
         confirmed = confirm_odata_profit(
             batch.pk, self.organization, self.user, config=config()
         )
         row_model = OneCMonthlyProfit.objects.get(import_batch=confirmed)
         self.assertEqual(row_model.cost, Decimal("-12643.59"))
+        self.assertEqual(row_model.customer_name, "Клиент заказа №114")
         self.assertEqual(
             row_model.source_data["source_register_order_guid"],
             CUSTOMER_ORDER,
