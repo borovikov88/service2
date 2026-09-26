@@ -445,7 +445,7 @@ class ODataProfitDraftTests(TestCase):
         )
 
         confirmed = confirm_odata_profit(
-            batch.pk, self.organization, self.user
+            batch.pk, self.organization, self.user, config=config()
         )
         row_model = OneCMonthlyProfit.objects.get(import_batch=confirmed)
         self.assertEqual(row_model.cost, Decimal("-12643.59"))
