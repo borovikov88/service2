@@ -592,6 +592,9 @@ def _canonical_profit(row):
         "source_document_order_type": source_data.get(
             "source_document_order_type", ""
         ),
+        "source_register_order_guid": source_data.get(
+            "source_register_order_guid", ""
+        ),
         "resolved_order_customer_guid": source_data.get(
             "resolved_order_customer_guid", ""
         ),
