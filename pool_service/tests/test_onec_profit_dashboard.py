@@ -1598,14 +1598,13 @@ class ProfitDashboardTests(TestCase):
         self.assertContains(response, "period-loading")
         self.assertContains(response, "document.getElementById('period').value='custom'")
         self.assertContains(response, 'class="table align-middle table-hover mb-0 profit-customer-table"')
-        self.assertContains(response, 'class="profit-document-lines"')
+        self.assertContains(response, 'class="table-responsive profit-document-lines"')
         self.assertContains(response, "profit-order-table")
-        self.assertContains(response, 'data-label="Себестоимость"')
         self.assertContains(response, 'class="profit-document-line"')
-        self.assertContains(response, 'data-label="Номенклатура"')
-        self.assertContains(response, 'class="profit-document-desktop-lines"')
-        self.assertContains(response, 'class="profit-document-mobile-lines"')
-        self.assertContains(response, 'class="profit-mobile-line__metrics"')
+        self.assertNotContains(response, "data-label=")
+        self.assertNotContains(response, "profit-document-desktop-lines")
+        self.assertNotContains(response, "profit-document-mobile-lines")
+        self.assertNotContains(response, "profit-mobile-line")
 
     def test_manager_filter_applies_to_all_dashboard_sections(self):
         self.add_row(
