@@ -216,6 +216,7 @@
                   <td class="text-end" data-label="Себестоимость">
                     {% if row.dashboard_analytical_cost != None %}{{ row.dashboard_analytical_cost|money }}{% else %}—{% endif %}
                     {% if row.dashboard_cost_is_calculated %}<span class="profit-line-meta">Исходная себестоимость 1С: {{ row.cost|money }}</span><span class="profit-line-meta">Расчётная · {{ row.dashboard_period_cost_ratio|ratio_percent }}% месяца импорта</span>{% endif %}
+                    {% if row.dashboard_month_close_adjustment %}<span class="profit-line-meta">Корректировка закрытия месяца: {{ row.dashboard_month_close_adjustment|money }}</span>{% endif %}
                   </td>
                   <td class="text-end {% if row.dashboard_gross_profit < 0 %}text-danger fw-semibold{% elif row.dashboard_gross_profit > 0 %}text-success{% endif %}" data-label="Валовая прибыль">{% if row.dashboard_gross_profit != None %}{{ row.dashboard_gross_profit|money }}{% else %}—{% endif %}</td>
                 </tr>
@@ -241,7 +242,7 @@
               <div class="profit-mobile-line__metric" data-profit-mobile-field="quantity"><dt>Кол-во</dt><dd>{{ row.quantity|default_if_none:"—" }}</dd></div>
               <div class="profit-mobile-line__metric" data-profit-mobile-field="price"><dt>Цена</dt><dd>{% if row.dashboard_unit_price != None %}{{ row.dashboard_unit_price|money }}{% else %}—{% endif %}</dd></div>
               <div class="profit-mobile-line__metric" data-profit-mobile-field="revenue"><dt>Стоимость</dt><dd>{{ row.dashboard_revenue|money }}</dd></div>
-              <div class="profit-mobile-line__metric" data-profit-mobile-field="cost"><dt>Себестоимость</dt><dd>{% if row.dashboard_analytical_cost != None %}{{ row.dashboard_analytical_cost|money }}{% else %}—{% endif %}</dd></div>
+              <div class="profit-mobile-line__metric" data-profit-mobile-field="cost"><dt>Себестоимость</dt><dd>{% if row.dashboard_analytical_cost != None %}{{ row.dashboard_analytical_cost|money }}{% else %}—{% endif %}{% if row.dashboard_month_close_adjustment %}<span class="profit-line-meta">Корректировка закрытия месяца: {{ row.dashboard_month_close_adjustment|money }}</span>{% endif %}</dd></div>
               <div class="profit-mobile-line__metric profit-mobile-line__metric--profit" data-profit-mobile-field="gross-profit"><dt>Валовая прибыль</dt><dd class="{% if row.dashboard_gross_profit < 0 %}text-danger{% elif row.dashboard_gross_profit > 0 %}text-success{% endif %}">{% if row.dashboard_gross_profit != None %}{{ row.dashboard_gross_profit|money }}{% else %}—{% endif %}</dd></div>
               {% endif %}
             </dl>
