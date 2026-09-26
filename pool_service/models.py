@@ -3554,6 +3554,7 @@ class EmployeeRewardAssignmentLine(models.Model):
         related_name="lines",
     )
     source_identity = models.CharField(max_length=80)
+    line_fingerprint = models.CharField(max_length=64)
     nomenclature = models.CharField(max_length=500, blank=True)
     nomenclature_type = models.CharField(max_length=100, blank=True)
 
