@@ -45,6 +45,7 @@ ITEM = "33333333-3333-3333-3333-333333333333"
 CUSTOMER = "44444444-4444-4444-4444-444444444444"
 RECORDER = "55555555-5555-5555-5555-555555555555"
 RESPONSIBLE = "66666666-6666-6666-6666-666666666666"
+ORDER_RESPONSIBLE = "12121212-1212-4121-8121-121212121212"
 DIRECT_RECEIPT = "77777777-7777-4777-8777-777777777777"
 CUSTOMER_ORDER = "88888888-8888-4888-8888-888888888888"
 DIRECT_ACCOUNT = "99999999-9999-4999-8999-999999999999"
@@ -195,7 +196,9 @@ def direct_nomenclature_reference_payload(*, direct_deleted=False):
     }
 
 
-def direct_order_document_payload(*, organization=ORG, customer=CUSTOMER):
+def direct_order_document_payload(
+    *, organization=ORG, customer=CUSTOMER, responsible=RESPONSIBLE
+):
     return {
         "value": [{
             "Ref_Key": CUSTOMER_ORDER,
@@ -203,7 +206,7 @@ def direct_order_document_payload(*, organization=ORG, customer=CUSTOMER):
             "Date": "2026-05-01T12:00:00+03:00",
             "Организация_Key": organization,
             "Контрагент_Key": customer,
-            "Ответственный_Key": RESPONSIBLE,
+            "Ответственный_Key": responsible,
         }]
     }
 
@@ -409,14 +412,15 @@ class ODataProfitDraftTests(TestCase):
         opener = FakeOpener(
             {"value": [row]},
             reference_payload(ITEM, "Штукатурка цементная GP21 25 кг", article=""),
-            reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
+            reference_payload(RESPONSIBLE, "Ответственный движения"),
             document_payload(
                 close_recorder,
                 number="НФНФ-000011",
                 value_date="2026-05-31T23:59:59+03:00",
             ),
-            direct_order_document_payload(),
+            direct_order_document_payload(responsible=ORDER_RESPONSIBLE),
             reference_payload(CUSTOMER, "Клиент заказа №114"),
+            reference_payload(ORDER_RESPONSIBLE, "Ответственный заказа №114"),
         )
 
         batch = self.create_draft(rows=[row], opener=opener)
@@ -444,6 +448,8 @@ class ODataProfitDraftTests(TestCase):
             "Клиент заказа №114",
         )
         self.assertEqual(saved["customer_name"], "Клиент заказа №114")
+        self.assertEqual(saved["source_data"]["responsible_guid"], RESPONSIBLE)
+        self.assertEqual(saved["manager_name"], "Ответственный заказа №114")
 
         confirmed = confirm_odata_profit(
             batch.pk, self.organization, self.user, config=config()
@@ -451,6 +457,7 @@ class ODataProfitDraftTests(TestCase):
         row_model = OneCMonthlyProfit.objects.get(import_batch=confirmed)
         self.assertEqual(row_model.cost, Decimal("-12643.59"))
         self.assertEqual(row_model.customer_name, "Клиент заказа №114")
+        self.assertEqual(row_model.manager_name, "Ответственный заказа №114")
         self.assertEqual(
             row_model.source_data["source_register_order_guid"],
             CUSTOMER_ORDER,
