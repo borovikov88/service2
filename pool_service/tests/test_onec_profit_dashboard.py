@@ -745,8 +745,14 @@ class ProfitDashboardTests(TestCase):
                     if recorder_type == "Document_РасходнаяНакладная"
                     else close_display
                 ),
-                "source_document_order_guid": order_guid,
-                "source_document_order_type": "Document_ЗаказПокупателя",
+                **(
+                    {"source_register_order_guid": order_guid}
+                    if recorder_type == "Document_ЗакрытиеМесяца"
+                    else {
+                        "source_document_order_guid": order_guid,
+                        "source_document_order_type": "Document_ЗаказПокупателя",
+                    }
+                ),
                 "resolved_order_guid": order_guid,
                 "resolved_order_type": "Document_ЗаказПокупателя",
                 "resolved_order_number": "НФНФ-000114",
