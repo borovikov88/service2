@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal, InvalidOperation
-from uuid import UUID
-
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
@@ -21,7 +19,6 @@ from pool_service.models import (
     EmployeeRewardScheme,
 )
 from pool_service.services.employee_rewards import (
-    active_profit_rows,
     active_scheme,
     close_reward_month,
     confirm_adjustment,
@@ -33,7 +30,6 @@ from pool_service.services.employee_rewards import (
     document_rows,
     map_onec_author,
     reward_dashboard_data,
-    reward_document_ref,
 )
 from pool_service.services.finance import (
     can_close_reward_month,
