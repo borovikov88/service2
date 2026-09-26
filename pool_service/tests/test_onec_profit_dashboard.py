@@ -2,7 +2,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -811,6 +811,101 @@ class ProfitDashboardTests(TestCase):
         })
         self.assertContains(response, "Корректировка закрытия месяца")
         self.assertContains(response, "25,36")
+
+    @override_settings(ONEC_ODATA_ORGANIZATION_GUIDS=(
+        "22222222-2222-4222-8222-222222222222",
+        "33333333-3333-4333-8333-333333333333",
+    ))
+    def test_order_group_allows_month_close_order_in_another_configured_org(self):
+        sale_recorder = "11111111-1111-4111-8111-111111111111"
+        close_recorder = "99999999-9999-4999-8999-999999999999"
+        order_guid = "88888888-8888-4888-8888-888888888888"
+        source_organization_guid = "22222222-2222-4222-8222-222222222222"
+        order_organization_guid = "33333333-3333-4333-8333-333333333333"
+        nomenclature_guid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        order_display = "Заказ покупателя №НФНФ-000114 от 06.08.2026"
+        sale_display = "Расходная накладная №НФНФ-000335 от 17.09.2026"
+        close_display = "Закрытие месяца №НФНФ-000011 от 30.09.2026"
+        self.batch.source_type = OneCImportBatch.SOURCE_ODATA
+        self.batch.parser_version = "odata-2"
+        self.batch.save(update_fields=["source_type", "parser_version"])
+
+        def source_data(recorder, recorder_type, number, source_date, line_number):
+            return {
+                "source": "odata",
+                "recorder": recorder,
+                "recorder_type": recorder_type,
+                "line_number": line_number,
+                "period": f"{source_date}T10:00:00+03:00",
+                "source_date": source_date,
+                "organization_guid": source_organization_guid,
+                "resolved_order_organization_guid": order_organization_guid,
+                "document_guid": recorder,
+                "document_type": recorder_type,
+                "document_number": number,
+                "document_date": source_date,
+                "document_group_recorder": recorder,
+                "document_group_recorder_type": recorder_type,
+                "document_group_key": (
+                    f"odata-document:{self.organization.pk}:{recorder_type}:{recorder}"
+                ),
+                "document_group_number": number,
+                "document_group_date": source_date,
+                "document_display": (
+                    sale_display
+                    if recorder_type == "Document_РасходнаяНакладная"
+                    else close_display
+                ),
+                **(
+                    {"source_register_order_guid": order_guid}
+                    if recorder_type == "Document_ЗакрытиеМесяца"
+                    else {
+                        "source_document_order_guid": order_guid,
+                        "source_document_order_type": "Document_ЗаказПокупателя",
+                    }
+                ),
+                "resolved_order_guid": order_guid,
+                "resolved_order_type": "Document_ЗаказПокупателя",
+                "resolved_order_number": "НФНФ-000114",
+                "resolved_order_date": "2026-08-06",
+                "resolved_order_display": order_display,
+                "nomenclature_guid": nomenclature_guid,
+            }
+
+        self.add_row(
+            date(2026, 9, 1), name="Расходные материалы", revenue="100",
+            cost="40", customer="Детский сад №268", manager="Менеджер",
+            document=sale_display,
+            source_data=source_data(
+                sale_recorder, "Document_РасходнаяНакладная",
+                "НФНФ-000335", "2026-09-17", 1,
+            ),
+            source_recorder=sale_recorder, article="A-MAT", quantity="1",
+        )
+        self.add_row(
+            date(2026, 9, 1), name="Расходные материалы", revenue="0",
+            cost="5", customer="Детский сад №268", manager="Менеджер",
+            document=close_display,
+            source_data=source_data(
+                close_recorder, "Document_ЗакрытиеМесяца",
+                "НФНФ-000011", "2026-09-30", 2,
+            ),
+            source_recorder=close_recorder, article="A-MAT", quantity="0",
+        )
+
+        data = dashboard_data(self.organization, resolve_period({
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        }, today=date(2026, 9, 30)))
+        self.assertEqual(len(data["customers"]), 1)
+        self.assertEqual(len(data["customers"][0]["documents"]), 1)
+        order = data["customers"][0]["documents"][0]
+        self.assertTrue(order["is_order_group"])
+        self.assertEqual(order["number"], "НФНФ-000114")
+        self.assertEqual(len(order["rows"]), 1)
+        row = order["rows"][0]
+        self.assertEqual(row.dashboard_analytical_cost, Decimal("45"))
+        self.assertEqual(row.dashboard_gross_profit, Decimal("55"))
+        self.assertEqual(row.dashboard_month_close_adjustment, Decimal("5"))
 
     def test_order_group_uses_newest_validated_heading_across_months(self):
         order_guid = "88888888-8888-4888-8888-888888888888"
