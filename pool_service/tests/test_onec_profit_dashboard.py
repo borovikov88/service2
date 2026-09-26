@@ -433,6 +433,14 @@ class ProfitDashboardTests(TestCase):
         self.assertContains(response, "min-width: 920px")
         self.assertContains(
             response,
+            ".profit-document-desktop-lines { display: block !important; }",
+        )
+        self.assertContains(
+            response,
+            ".profit-document-mobile-lines { display: none !important; }",
+        )
+        self.assertContains(
+            response,
             "Расходная накладная №НФНФ-000118 от 20.08.2026",
         )
 
