@@ -329,6 +329,7 @@ _DOCUMENT_LABELS = {
     "Document_РасходнаяНакладная": "Расходная накладная",
     "Document_ОтчетОРозничныхПродажах": "Отчёт о розничных продажах",
     "Document_ЧекККМ": "Чек ККМ",
+    "Document_ЗакрытиеМесяца": "Закрытие месяца",
 }
 _RETAIL_CHECK_TYPE = "Document_ЧекККМ"
 _RETAIL_REPORT_TYPE = "Document_ОтчетОРозничныхПродажах"
