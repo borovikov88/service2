@@ -595,6 +595,14 @@ def _open_dashboard_data(organization, period_month, employee_id=None):
             for row in doc["rows"]
         } - {None}
         if not author_guids:
+            marker = (None, doc["document_guid"])
+            if marker not in seen_unmapped:
+                seen_unmapped.add(marker)
+                unmapped_authors.append({
+                    "author_guid": None,
+                    "author_name": "Автор отсутствует",
+                    "document_label": doc["document_label"],
+                })
             continue
         for guid in author_guids:
             identity = author_identities.get(guid)
