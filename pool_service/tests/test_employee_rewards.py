@@ -197,6 +197,26 @@ class EmployeeRewardTestCase(TestCase):
             Decimal("12000.00"),
         )
 
+    def test_warning_when_total_rewards_exceed_period_gp(self):
+        row = self._row()
+        sale_rule = self.rules[
+            (EmployeeRewardRule.ROLE_SALE, EmployeeRewardRule.UNIT_SALE)
+        ]
+        sale_rule.rate_percent = Decimal("80")
+        sale_rule.save(update_fields=["rate_percent"])
+        self._confirm_assignment(
+            self.employee1, EmployeeRewardRule.ROLE_SALE, row, 100
+        )
+        self._confirm_assignment(
+            self.employee1, EmployeeRewardRule.ROLE_WORK, row, 100
+        )
+
+        data = reward_dashboard_data(self.organization, self.period)
+
+        self.assertTrue(
+            any(issue["kind"] == "rewards_exceed_gp" for issue in data["issues"])
+        )
+
     def test_unknown_cost_is_not_treated_as_zero(self):
         row = self._row(
             revenue=Decimal("10000"),
