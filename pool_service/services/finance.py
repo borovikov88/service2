@@ -149,6 +149,15 @@ def can_view_employee_rewards(user, organization):
     )
 
 
+def can_propose_employee_rewards(user, organization):
+    """Allow an employee to propose only their own participation."""
+    if not user or not user.is_authenticated or not organization:
+        return False
+    if can_manage_employee_rewards(user, organization):
+        return True
+    return user.has_perm("pool_service.propose_employee_rewards")
+
+
 def can_manage_employee_rewards(user, organization):
     """Confirm participation; managers require an explicit delegated permission."""
     if not user or not user.is_authenticated or not organization:
