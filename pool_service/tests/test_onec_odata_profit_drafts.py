@@ -892,6 +892,65 @@ class ODataProfitDraftTests(TestCase):
             f"odata-document:{self.organization.pk}:Document_РасходнаяНакладная:{RECORDER}"
         ))
 
+    def test_month_close_adjustment_uses_linked_sale_document_and_order(self):
+        month_close_recorder = "99999999-9999-4999-8999-999999999999"
+        rows = [
+            profit_row(
+                line=1,
+                revenue="100.00",
+                cost="40.00",
+                document=RECORDER,
+                document_type=RECORDER_TYPE,
+            ),
+            profit_row(
+                line=2,
+                recorder=month_close_recorder,
+                recorder_type="StandardODATA.Document_ЗакрытиеМесяца",
+                revenue="0.00",
+                cost="-10.00",
+                document=RECORDER,
+                document_type=RECORDER_TYPE,
+            ),
+        ]
+        opener = FakeOpener(
+            {"value": rows},
+            reference_payload(ITEM, "Товар из 1С", article="A-1"),
+            reference_payload(CUSTOMER, "Покупатель из 1С"),
+            reference_payload(RESPONSIBLE, "Ответственный из 1С"),
+            document_payload(order=CUSTOMER_ORDER),
+            direct_order_document_payload(),
+        )
+        batch = self.create_draft(rows=rows, opener=opener)
+        with batch.stored_file.open("rb") as source:
+            snapshot = json.loads(source.read().decode("utf-8"))
+
+        sale, adjustment = snapshot["rows"]
+        self.assertEqual(
+            adjustment["source_data"]["document_group_recorder"], RECORDER
+        )
+        self.assertEqual(
+            adjustment["source_data"]["document_group_recorder_type"],
+            "Document_РасходнаяНакладная",
+        )
+        self.assertEqual(adjustment["document_name"], sale["document_name"])
+        self.assertEqual(
+            adjustment["source_data"]["resolved_order_guid"], CUSTOMER_ORDER
+        )
+        self.assertEqual(
+            adjustment["source_data"]["source_document_order_guid"],
+            CUSTOMER_ORDER,
+        )
+
+        confirmed = confirm_odata_profit(
+            batch.id, self.organization, self.user, config=config()
+        )
+        rows = list(
+            OneCMonthlyProfit.objects.filter(import_batch=confirmed)
+            .order_by("source_row_number")
+        )
+        self.assertEqual(sum(row.revenue for row in rows), Decimal("100.00"))
+        self.assertEqual(sum(row.cost for row in rows), Decimal("30.00"))
+
     def test_same_recorder_movements_share_readable_document_group_and_keep_totals(self):
         rows = [
             profit_row(line=1, revenue="100.00", cost="0.00"),
