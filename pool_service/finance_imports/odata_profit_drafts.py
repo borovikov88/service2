@@ -661,15 +661,15 @@ def _read_direct_expense_documents(
     return documents
 
 
-def _direct_expense_order(row, documents):
+def _direct_expense_order(row, documents, allowed_organization_guids):
     order = documents.get((ORDER_TYPE, row.order_guid))
     if order is None:
         raise ODataPreviewError(
             "Direct expense customer order is missing or unavailable"
         )
-    if order.get("organization_guid") != row.organization_guid:
+    if order.get("organization_guid") not in set(allowed_organization_guids):
         raise ODataPreviewError(
-            "Direct expense customer order organization does not match movement"
+            "Direct expense customer order organization is outside configured scope"
         )
     if not order.get("customer_guid"):
         raise ODataPreviewError(
@@ -678,11 +678,19 @@ def _direct_expense_order(row, documents):
     return order
 
 
-def _direct_expense_reference_guids(rows, documents):
+def _direct_expense_reference_guids(
+    rows,
+    documents,
+    allowed_organization_guids,
+):
     customers = set()
     responsibles = set()
     for row in rows:
-        order = _direct_expense_order(row, documents)
+        order = _direct_expense_order(
+            row,
+            documents,
+            allowed_organization_guids,
+        )
         customers.add(order["customer_guid"])
         responsible = order.get("responsible_guid")
         if responsible and responsible != ZERO_GUID:
@@ -696,11 +704,16 @@ def _enrich_direct_expense_rows(
     documents,
     direct_lines,
     organization_id,
+    allowed_organization_guids,
 ):
     normalized = []
     for row in rows:
         receipt = documents.get((DIRECT_EXPENSE_RECORDER_TYPE, row.recorder))
-        order = _direct_expense_order(row, documents)
+        order = _direct_expense_order(
+            row,
+            documents,
+            allowed_organization_guids,
+        )
         direct_line = direct_lines.get(row.identity)
         if direct_line is None:
             raise ODataPreviewError(
@@ -958,7 +971,13 @@ def _failed_mapping_batch(
     return batch
 
 
-def _enrich_rows(rows, references, documents, organization_id):
+def _enrich_rows(
+    rows,
+    references,
+    documents,
+    organization_id,
+    allowed_organization_guids,
+):
     normalized = []
     groups = _document_groups(rows, documents, organization_id)
     for row in rows:
@@ -1036,9 +1055,12 @@ def _enrich_rows(rows, references, documents, organization_id):
         order_ref = primary_document.get("order_ref") if primary_document else None
         if order_ref and order_ref in documents:
             order_document = documents[order_ref]
-            if order_document.get("organization_guid") != row.organization_guid:
+            if (
+                order_document.get("organization_guid")
+                not in set(allowed_organization_guids)
+            ):
                 raise ODataPreviewError(
-                    "Sales customer order organization does not match movement"
+                    "Sales customer order organization is outside configured scope"
                 )
             order_customer_guid = order_document.get("customer_guid")
             order_customer = references["customer"].get(order_customer_guid)
@@ -1413,9 +1435,12 @@ def _validate_snapshot(payload, config, *, organization_id):
                 order_organization_guid,
                 field="Snapshot resolved order organization",
             )
-            if normalized_order_organization_guid != source_org:
+            if (
+                normalized_order_organization_guid
+                not in set(config.organization_guids)
+            ):
                 raise ValidationError(
-                    "OData snapshot resolved order organization is inconsistent."
+                    "OData snapshot resolved order organization is outside configured scope."
                 )
             if _snapshot_document_type(
                 order_type,
@@ -1822,7 +1847,9 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
             page_budget=reference_page_budget,
         )
         direct_customers, direct_responsibles = _direct_expense_reference_guids(
-            direct_rows, direct_documents
+            direct_rows,
+            direct_documents,
+            config.organization_guids,
         )
         direct_nomenclature_guids = {
             line["nomenclature_guid"]
@@ -1869,13 +1896,20 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
             opener=client,
             page_budget=reference_page_budget,
         )
-        normalized = _enrich_rows(rows, references, documents, organization.pk)
+        normalized = _enrich_rows(
+            rows,
+            references,
+            documents,
+            organization.pk,
+            config.organization_guids,
+        )
         normalized.extend(_enrich_direct_expense_rows(
             direct_rows,
             references,
             documents,
             direct_lines,
             organization.pk,
+            config.organization_guids,
         ))
     except ODataPreviewError as exc:
         safe_message = str(exc)[:ERROR_MESSAGE_MAX_LENGTH]

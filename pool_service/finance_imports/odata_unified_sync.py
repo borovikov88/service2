@@ -718,7 +718,9 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
 
     try:
         direct_customers, direct_responsibles = _direct_expense_reference_guids(
-            direct_rows, direct_documents
+            direct_rows,
+            direct_documents,
+            config.organization_guids,
         )
         required = {
             "nomenclature": {
@@ -807,7 +809,11 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
         )
     try:
         normalized = _enrich_rows(
-            rows, references, documents, organization_id
+            rows,
+            references,
+            documents,
+            organization_id,
+            config.organization_guids,
         )
         normalized.extend(_enrich_direct_expense_rows(
             direct_rows,
@@ -815,6 +821,7 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
             documents,
             direct_lines,
             organization_id,
+            config.organization_guids,
         ))
         return normalized, pages
     except Exception as exc:

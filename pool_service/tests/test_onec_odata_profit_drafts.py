@@ -266,11 +266,12 @@ class ODataProfitDraftTests(TestCase):
         self.direct_expense_reader_patch.start()
         self.addCleanup(self.direct_expense_reader_patch.stop)
 
-    def create_draft(self, rows=None, opener=None):
+    def create_draft(self, rows=None, opener=None, draft_config=None):
         rows = [profit_row()] if rows is None else rows
         return create_odata_profit_draft(
             "2026-05", "2026-05", self.organization, self.user,
-            config=config(), opener=opener or successful_opener(rows),
+            config=draft_config or config(),
+            opener=opener or successful_opener(rows),
         )
 
     def active_batch(self, month=date(2026, 5, 1), revenue="80", cost="30"):
@@ -349,6 +350,7 @@ class ODataProfitDraftTests(TestCase):
         receipt_available=True,
         line_order=CUSTOMER_ORDER,
         first_line_amount="25000.00",
+        draft_config=None,
     ):
         sale = profit_row(revenue=revenue, cost="29696.64")
         opener = FakeOpener(
@@ -384,7 +386,11 @@ class ODataProfitDraftTests(TestCase):
             "pool_service.finance_imports.odata_profit_drafts.read_direct_order_expense_rows",
             side_effect=read_direct_order_expense_rows,
         ):
-            return self.create_draft(rows=[sale], opener=opener)
+            return self.create_draft(
+                rows=[sale],
+                opener=opener,
+                draft_config=draft_config,
+            )
 
     def test_direct_receipt_expenses_reduce_order_profit_and_confirm_exact_snapshot(self):
         sale = profit_row(
@@ -763,15 +769,44 @@ class ODataProfitDraftTests(TestCase):
                 config=config(),
             )
 
-    def test_direct_cost_rejects_customer_order_from_other_organization(self):
+    def test_direct_cost_rejects_customer_order_outside_configured_scope(self):
         with self.assertRaisesRegex(
             ODataDraftError,
-            "organization does not match movement",
+            "organization is outside configured scope",
         ):
             self.create_direct_cost_draft(
                 revenue="94498.00",
                 order_organization=OTHER_ORG,
             )
+
+    def test_direct_cost_accepts_cross_org_order_inside_configured_scope(self):
+        multi_config = config(organization_guids=(ORG, OTHER_ORG))
+        batch = self.create_direct_cost_draft(
+            revenue="94498.25",
+            order_organization=OTHER_ORG,
+            draft_config=multi_config,
+        )
+        with batch.stored_file.open("rb") as source:
+            snapshot = json.loads(source.read().decode("utf-8"))
+        direct_rows = [
+            row for row in snapshot["rows"]
+            if row["source_data"].get("row_kind") == "direct_order_expense"
+        ]
+        self.assertEqual(len(direct_rows), 2)
+        self.assertEqual(
+            {
+                row["source_data"]["resolved_order_organization_guid"]
+                for row in direct_rows
+            },
+            {OTHER_ORG},
+        )
+        confirmed = confirm_odata_profit(
+            batch.id,
+            self.organization,
+            self.user,
+            config=multi_config,
+        )
+        self.assertEqual(confirmed.status, OneCImportBatch.STATUS_CONFIRMED)
 
     def test_confirmation_rejects_fractional_direct_snapshot_line_numbers(self):
         batch = self.create_direct_cost_draft(revenue="94495.50")
@@ -1069,7 +1104,7 @@ class ODataProfitDraftTests(TestCase):
             OneCMonthlyProfit.objects.filter(import_batch=batch).exists()
         )
 
-    def test_sale_rejects_customer_order_from_other_organization(self):
+    def test_sale_rejects_customer_order_outside_configured_scope(self):
         rows = [profit_row(line=1)]
         opener = FakeOpener(
             {"value": rows},
@@ -1086,9 +1121,43 @@ class ODataProfitDraftTests(TestCase):
 
         with self.assertRaisesRegex(
             ODataDraftError,
-            "Sales customer order organization does not match movement",
+            "Sales customer order organization is outside configured scope",
         ):
             self.create_draft(rows=rows, opener=opener)
+
+    def test_sale_accepts_cross_org_order_inside_configured_scope(self):
+        rows = [profit_row(line=1)]
+        opener = FakeOpener(
+            {"value": rows},
+            reference_payload(ITEM, "Товар", article="A"),
+            reference_payload(CUSTOMER, "Покупатель"),
+            reference_payload(RESPONSIBLE, "Ответственный"),
+            document_payload(
+                RECORDER,
+                number="РН-1",
+                order=CUSTOMER_ORDER,
+            ),
+            direct_order_document_payload(organization=OTHER_ORG),
+        )
+        multi_config = config(organization_guids=(ORG, OTHER_ORG))
+        batch = self.create_draft(
+            rows=rows,
+            opener=opener,
+            draft_config=multi_config,
+        )
+        with batch.stored_file.open("rb") as source:
+            saved = json.loads(source.read().decode("utf-8"))["rows"][0]
+        self.assertEqual(
+            saved["source_data"]["resolved_order_organization_guid"],
+            OTHER_ORG,
+        )
+        confirmed = confirm_odata_profit(
+            batch.id,
+            self.organization,
+            self.user,
+            config=multi_config,
+        )
+        self.assertEqual(confirmed.status, OneCImportBatch.STATUS_CONFIRMED)
 
     def test_unresolved_shared_order_never_becomes_group_key(self):
         second = "77777777-7777-4777-8777-777777777777"
