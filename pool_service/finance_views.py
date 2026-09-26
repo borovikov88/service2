@@ -1331,6 +1331,11 @@ def finance_my(request):
         Decimal("0.00"),
     )
     latest_transactions = _decorate_accountable_movements(request.user, list(transactions[:15]))
+    reward_employee = Employee.objects.filter(
+        organization=organization,
+        user=request.user,
+        is_active=True,
+    ).first()
     return render(
         request,
         "pool_service/finance/dashboard.html",
@@ -1346,6 +1351,13 @@ def finance_my(request):
             "pending_total": pending_total,
             "company_cash_total": company_cash_total,
             "month_label": today.strftime("%m.%Y"),
+            "reward_employee": reward_employee,
+            "can_view_own_rewards": bool(
+                reward_employee
+                and can_view_employee_reward_detail(
+                    request.user, organization, reward_employee
+                )
+            ),
             "active_tab": "finance",
             "show_add_button": False,
         },
