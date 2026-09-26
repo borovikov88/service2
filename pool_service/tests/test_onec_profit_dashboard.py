@@ -420,6 +420,8 @@ class ProfitDashboardTests(TestCase):
         summary_end = rendered.index("</summary>", summary_start)
         self.assertLess(metrics_start, summary_end)
         self.assertContains(response, "grid-template-columns: repeat(3, minmax(0, 1fr))")
+        self.assertContains(response, "@media (max-width: 399.98px)")
+        self.assertContains(response, "grid-template-columns: 1fr")
         self.assertContains(response, "min-width: 920px")
         self.assertContains(
             response,
