@@ -1082,6 +1082,10 @@ def _enrich_rows(
         )
         if order_from_register:
             order_ref = (ORDER_TYPE, row.order_guid)
+            if order_ref not in documents:
+                raise ODataPreviewError(
+                    "Month-close customer order is missing or unavailable"
+                )
         if order_ref and order_ref in documents:
             order_document = documents[order_ref]
             if (
