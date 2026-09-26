@@ -1062,7 +1062,7 @@ class ProfitDashboardTests(TestCase):
             date(2026, 9, 1),
             name="Товар A",
             revenue="100",
-            cost="40",
+            cost="0",
             customer="Клиент заказа",
             document=display,
             source_recorder=sale_recorder,
@@ -1081,6 +1081,25 @@ class ProfitDashboardTests(TestCase):
             date(2026, 9, 1),
             name="Товар A",
             revenue="0",
+            cost="40",
+            customer="Клиент заказа",
+            document=display,
+            source_recorder=sale_recorder,
+            quantity="0",
+            article="A-1",
+            source_data={
+                **common,
+                "recorder": sale_recorder,
+                "recorder_type": "Document_РасходнаяНакладная",
+                "line_number": 2,
+                "period": "2026-09-17T09:14:39+03:00",
+                "source_date": "2026-09-17",
+            },
+        )
+        self.add_row(
+            date(2026, 9, 1),
+            name="Товар A",
+            revenue="0",
             cost="-10",
             customer="Клиент заказа",
             document=display,
@@ -1091,7 +1110,7 @@ class ProfitDashboardTests(TestCase):
                 **common,
                 "recorder": close_recorder,
                 "recorder_type": "Document_ЗакрытиеМесяца",
-                "line_number": 2,
+                "line_number": 3,
                 "period": "2026-09-30T23:59:59+03:00",
                 "source_date": "2026-09-30",
             },
@@ -1102,7 +1121,7 @@ class ProfitDashboardTests(TestCase):
         }, today=date(2026, 9, 30)))
         order = data["customers"][0]["documents"][0]
         self.assertTrue(order["is_order_group"])
-        self.assertEqual(order["source_row_count"], 2)
+        self.assertEqual(order["source_row_count"], 3)
         self.assertEqual(len(order["rows"]), 1)
         self.assertEqual(order["rows"][0].dashboard_revenue, Decimal("100"))
         self.assertEqual(
