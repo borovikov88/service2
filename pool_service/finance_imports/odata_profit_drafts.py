@@ -510,12 +510,11 @@ def _load_missing_month_close_order_responsibles(
     """Resolve order responsibles used to attribute register-backed month-close rows."""
     missing = set()
     for row in rows:
-        if (
-            row.recorder_type != MONTH_CLOSE_TYPE
-            or not getattr(row, "order_guid", None)
-        ):
+        recorder_type = getattr(row, "recorder_type", None)
+        order_guid = getattr(row, "order_guid", None)
+        if recorder_type != MONTH_CLOSE_TYPE or not order_guid:
             continue
-        order = documents.get((ORDER_TYPE, row.order_guid))
+        order = documents.get((ORDER_TYPE, order_guid))
         responsible_guid = order.get("responsible_guid") if order else None
         if (
             responsible_guid
