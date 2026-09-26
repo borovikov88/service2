@@ -653,6 +653,24 @@ def _open_dashboard_data(organization, period_month, employee_id=None):
         "close": None,
     }
     _apply_adjustments(data, organization, period_month)
+    period_financials = _scope_financials(EmployeeRewardRule.ROLE_SALE, all_rows)
+    total_rewards = quantize_money(
+        sum((item["total"] for item in data["rows"]), ZERO)
+    )
+    period_gp = period_financials["gross_profit"]
+    if (
+        period_financials["complete"]
+        and period_gp is not None
+        and total_rewards > period_gp
+    ):
+        data["issues"].append({
+            "kind": "rewards_exceed_gp",
+            "label": f"Итог за {period_month:%m.%Y}",
+            "detail": (
+                f"Тестовые вознаграждения {total_rewards} ₽ превышают "
+                f"итоговую ВП {period_gp} ₽."
+            ),
+        })
     return data
 
 
