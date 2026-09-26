@@ -360,12 +360,14 @@ def _parse_row(raw, start: date, end_exclusive: date, allowed_organizations) -> 
             )
         else:
             raise ODataPreviewError("Документ_Type requires a non-empty Документ")
-    raw_order_guid = normalize_guid(
-        raw.get("ЗаказПокупателя_Key"),
-        field="ЗаказПокупателя_Key",
-        allow_zero=True,
-    )
-    order_guid = None if raw_order_guid == ZERO_GUID else raw_order_guid
+    raw_order_guid_value = raw.get("ЗаказПокупателя_Key")
+    if raw_order_guid_value in (None, "", ZERO_GUID):
+        order_guid = None
+    else:
+        order_guid = normalize_guid(
+            raw_order_guid_value,
+            field="ЗаказПокупателя_Key",
+        )
     return ProfitRow(
         recorder=normalize_guid(raw.get("Recorder"), field="Recorder"),
         recorder_type=recorder_type,
