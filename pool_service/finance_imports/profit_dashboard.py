@@ -559,11 +559,25 @@ def _resolved_order_group(row):
         ):
             return None
     else:
+        recorder_type = source_data.get("recorder_type")
         source_order_guid_value = source_data.get("source_document_order_guid")
         source_order_type = source_data.get("source_document_order_type")
-        if source_order_guid_value is not None or source_order_type is not None:
+        source_register_order_guid = source_data.get("source_register_order_guid")
+        if recorder_type == _MONTH_CLOSE_TYPE:
             if (
-                _guid(source_order_guid_value) != order_guid
+                source_order_guid_value is not None
+                or source_order_type is not None
+                or _guid(source_register_order_guid) != order_guid
+            ):
+                return None
+        elif (
+            source_register_order_guid is not None
+            or source_order_guid_value is not None
+            or source_order_type is not None
+        ):
+            if (
+                source_register_order_guid is not None
+                or _guid(source_order_guid_value) != order_guid
                 or source_order_type != _ORDER_TYPE
             ):
                 return None
