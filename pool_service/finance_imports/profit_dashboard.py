@@ -619,6 +619,12 @@ def _decorate_presentation_row(row):
 def _presentation_item_key(row):
     source_data = _row_source_data(row)
     nomenclature_guid = _guid(source_data.get("nomenclature_guid"))
+    business_date = source_data.get("source_date")
+    if (
+        source_data.get("recorder_type") == _MONTH_CLOSE_TYPE
+        and source_data.get("document_date")
+    ):
+        business_date = source_data.get("document_date")
     item_identity = (
         ("guid", nomenclature_guid)
         if nomenclature_guid
@@ -630,7 +636,7 @@ def _presentation_item_key(row):
     )
     return (
         row.period_month,
-        source_data.get("source_date"),
+        business_date,
         item_identity,
         row.nomenclature_type,
         row.manager_name,
