@@ -99,12 +99,17 @@ DOCUMENTS = {
         "label": "Приходная накладная",
         "fields": ("Ref_Key", "Number", "Date"),
     },
+    "Document_ЗакрытиеМесяца": {
+        "label": "Закрытие месяца",
+        "fields": ("Ref_Key", "Number", "Date"),
+    },
 }
 RETAIL_REPORT_TYPE = "Document_ОтчетОРозничныхПродажах"
 RETAIL_CHECK_TYPE = "Document_ЧекККМ"
 ORDER_TYPE = "Document_ЗаказПокупателя"
 DIRECT_EXPENSE_NOMENCLATURE = "Прямые расходы по заказу"
 DIRECT_EXPENSE_NOMENCLATURE_TYPE = "Прямые расходы"
+MONTH_CLOSE_TYPE = "Document_ЗакрытиеМесяца"
 DIRECT_EXPENSE_LINES_ENTITY = "Document_ПриходнаяНакладная_Расходы"
 DIRECT_EXPENSE_LINE_FIELDS = (
     "Ref_Key",
@@ -115,7 +120,9 @@ DIRECT_EXPENSE_LINE_FIELDS = (
     "Сумма",
     "Всего",
 )
-ALLOWED_DOCUMENT_TYPES = PROFIT_DOCUMENT_TYPES | {DIRECT_EXPENSE_RECORDER_TYPE}
+ALLOWED_DOCUMENT_TYPES = (
+    PROFIT_DOCUMENT_TYPES | {DIRECT_EXPENSE_RECORDER_TYPE, MONTH_CLOSE_TYPE}
+)
 
 
 class ODataDraftError(ValidationError):
@@ -405,7 +412,7 @@ def _read_profit_documents(config, rows, *, opener, page_budget):
     primary_refs = {
         (row.recorder_type, row.recorder)
         for row in rows
-        if row.recorder_type in PROFIT_RECORDER_TYPES
+        if row.recorder_type in (PROFIT_RECORDER_TYPES | {MONTH_CLOSE_TYPE})
     }
     documents = _read_document_entities(
         config,
@@ -419,6 +426,14 @@ def _read_profit_documents(config, rows, *, opener, page_budget):
         for item in documents.values()
         if item.get("order_ref")
     }
+    order_refs.update(
+        (ORDER_TYPE, row.order_guid)
+        for row in rows
+        if (
+            row.recorder_type == MONTH_CLOSE_TYPE
+            and getattr(row, "order_guid", None)
+        )
+    )
     if order_refs:
         documents.update(_read_document_entities(
             config,
@@ -440,6 +455,12 @@ def _sales_order_customer_guids(rows, documents):
             continue
         primary = documents.get((recorder_type, recorder))
         order_ref = primary.get("order_ref") if primary else None
+        if (
+            order_ref is None
+            and recorder_type == MONTH_CLOSE_TYPE
+            and getattr(row, "order_guid", None)
+        ):
+            order_ref = (ORDER_TYPE, row.order_guid)
         order = documents.get(order_ref) if order_ref else None
         customer_guid = order.get("customer_guid") if order else None
         if customer_guid:
@@ -470,6 +491,46 @@ def _load_missing_sales_order_customers(
             missing,
             **_reference_lookup_kwargs(
                 "customer",
+                opener=opener,
+                page_budget=page_budget,
+            ),
+        )
+    )
+
+
+def _load_missing_month_close_order_responsibles(
+    config,
+    rows,
+    references,
+    documents,
+    *,
+    opener,
+    page_budget,
+):
+    """Resolve order responsibles used to attribute register-backed month-close rows."""
+    missing = set()
+    for row in rows:
+        recorder_type = getattr(row, "recorder_type", None)
+        order_guid = getattr(row, "order_guid", None)
+        if recorder_type != MONTH_CLOSE_TYPE or not order_guid:
+            continue
+        order = documents.get((ORDER_TYPE, order_guid))
+        responsible_guid = order.get("responsible_guid") if order else None
+        if (
+            responsible_guid
+            and responsible_guid != ZERO_GUID
+            and responsible_guid not in references["responsible"]
+        ):
+            missing.add(responsible_guid)
+    if not missing:
+        return
+    references["responsible"].update(
+        _read_reference_map(
+            config,
+            "responsible",
+            missing,
+            **_reference_lookup_kwargs(
+                "responsible",
                 opener=opener,
                 page_budget=page_budget,
             ),
@@ -909,6 +970,7 @@ def _source_row(row: ProfitRow):
         "responsible_guid": row.responsible_guid,
         "document_guid": row.document_guid,
         "document_type": row.document_type,
+        "order_guid": row.order_guid,
         "quantity": format(row.quantity, "f"),
         "revenue": format(row.revenue, "f"),
         "vat": format(row.vat, "f"),
@@ -1053,6 +1115,17 @@ def _enrich_rows(
                 "document_group_date": group_document["date"].isoformat(),
             })
         order_ref = primary_document.get("order_ref") if primary_document else None
+        order_from_register = (
+            order_ref is None
+            and row.recorder_type == MONTH_CLOSE_TYPE
+            and row.order_guid is not None
+        )
+        if order_from_register:
+            order_ref = (ORDER_TYPE, row.order_guid)
+            if order_ref not in documents:
+                raise ODataPreviewError(
+                    "Month-close customer order is missing or unavailable"
+                )
         if order_ref and order_ref in documents:
             order_document = documents[order_ref]
             if (
@@ -1068,9 +1141,23 @@ def _enrich_rows(
                 raise ODataPreviewError(
                     "Sales customer order customer is missing or unavailable"
                 )
-            normalized[-1]["source_data"].update({
-                "source_document_order_guid": order_ref[1],
-                "source_document_order_type": order_ref[0],
+            order_manager = None
+            if order_from_register:
+                order_responsible_guid = (
+                    order_document.get("responsible_guid") or ZERO_GUID
+                )
+                if order_responsible_guid == ZERO_GUID:
+                    order_manager = "Без ответственного"
+                else:
+                    order_responsible = references["responsible"].get(
+                        order_responsible_guid
+                    )
+                    if order_responsible is None:
+                        raise ODataPreviewError(
+                            "Month-close customer order responsible is missing or unavailable"
+                        )
+                    order_manager = order_responsible["description"]
+            order_source_data = {
                 "resolved_order_guid": order_ref[1],
                 "resolved_order_type": order_ref[0],
                 "resolved_order_organization_guid": order_document["organization_guid"],
@@ -1081,7 +1168,17 @@ def _enrich_rows(
                 ),
                 "resolved_order_customer_guid": order_customer_guid,
                 "resolved_order_customer_name": order_customer["description"],
-            })
+            }
+            if order_from_register:
+                order_source_data["source_register_order_guid"] = order_ref[1]
+                normalized[-1]["customer_name"] = order_customer["description"]
+                normalized[-1]["manager_name"] = order_manager
+            else:
+                order_source_data.update({
+                    "source_document_order_guid": order_ref[1],
+                    "source_document_order_type": order_ref[0],
+                })
+            normalized[-1]["source_data"].update(order_source_data)
     return normalized
 
 
@@ -1311,7 +1408,7 @@ def _validate_snapshot(payload, config, *, organization_id):
         ):
             raise ValidationError("OData snapshot document display is invalid.")
         known_recorder = (
-            recorder_type in PROFIT_RECORDER_TYPES
+            recorder_type in (PROFIT_RECORDER_TYPES | {MONTH_CLOSE_TYPE})
             or (is_direct_expense and recorder_type == DIRECT_EXPENSE_RECORDER_TYPE)
         )
         document_number = source_data.get("document_number")
@@ -1414,6 +1511,9 @@ def _validate_snapshot(payload, config, *, organization_id):
             source_data.get("source_document_order_guid"),
             source_data.get("source_document_order_type"),
         )
+        source_register_order_guid = source_data.get(
+            "source_register_order_guid"
+        )
         has_resolved_order = any(value is not None for value in order_values)
         normalized_order_guid = None
         resolved_customer_guid = None
@@ -1489,11 +1589,34 @@ def _validate_snapshot(payload, config, *, organization_id):
             _reject_guid_label(resolved_customer_name)
 
             if is_direct_expense:
-                if any(value is not None for value in source_document_order_values):
+                if (
+                    any(value is not None for value in source_document_order_values)
+                    or source_register_order_guid is not None
+                ):
                     raise ValidationError(
                         "Direct expense snapshot contains sales order binding fields."
                     )
+            elif recorder_type == MONTH_CLOSE_TYPE:
+                if any(value is not None for value in source_document_order_values):
+                    raise ValidationError(
+                        "Month-close snapshot contains document-order binding fields."
+                    )
+                if normalize_guid(
+                    source_register_order_guid,
+                    field="Snapshot source register order GUID",
+                ) != normalized_order_guid:
+                    raise ValidationError(
+                        "Month-close snapshot register order attribution is inconsistent."
+                    )
+                if customer != resolved_customer_name:
+                    raise ValidationError(
+                        "Month-close snapshot order customer attribution is inconsistent."
+                    )
             else:
+                if source_register_order_guid is not None:
+                    raise ValidationError(
+                        "Sales snapshot contains register-order binding fields."
+                    )
                 if any(value is None for value in source_document_order_values):
                     raise ValidationError(
                         "OData snapshot source document order is incomplete."
@@ -1523,9 +1646,12 @@ def _validate_snapshot(payload, config, *, organization_id):
                 raise ValidationError(
                     "OData snapshot order customer has no resolved order."
                 )
-            if any(value is not None for value in source_document_order_values):
+            if (
+                any(value is not None for value in source_document_order_values)
+                or source_register_order_guid is not None
+            ):
                 raise ValidationError(
-                    "OData snapshot source document order has no resolved order."
+                    "OData snapshot source order binding has no resolved order."
                 )
         nomenclature_guid = normalize_guid(
             source_data.get("nomenclature_guid"),
@@ -1889,6 +2015,14 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
         )
         documents.update(direct_documents)
         _load_missing_sales_order_customers(
+            config,
+            rows,
+            references,
+            documents,
+            opener=client,
+            page_budget=reference_page_budget,
+        )
+        _load_missing_month_close_order_responsibles(
             config,
             rows,
             references,

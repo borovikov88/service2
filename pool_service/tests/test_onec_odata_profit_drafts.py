@@ -45,6 +45,7 @@ ITEM = "33333333-3333-3333-3333-333333333333"
 CUSTOMER = "44444444-4444-4444-4444-444444444444"
 RECORDER = "55555555-5555-5555-5555-555555555555"
 RESPONSIBLE = "66666666-6666-6666-6666-666666666666"
+ORDER_RESPONSIBLE = "12121212-1212-4121-8121-121212121212"
 DIRECT_RECEIPT = "77777777-7777-4777-8777-777777777777"
 CUSTOMER_ORDER = "88888888-8888-4888-8888-888888888888"
 DIRECT_ACCOUNT = "99999999-9999-4999-8999-999999999999"
@@ -72,7 +73,7 @@ def profit_row(
     line=1, *, period="2026-05-15T10:00:00+03:00", organization=ORG,
     recorder=RECORDER, item=ITEM, customer=CUSTOMER, responsible=RESPONSIBLE,
     revenue="100.00", cost="40.00", recorder_type=RECORDER_TYPE,
-    document=None, document_type=None,
+    document=None, document_type=None, order_guid=ZERO_GUID,
 ):
     return {
         "Recorder": recorder,
@@ -86,6 +87,7 @@ def profit_row(
         "Ответственный_Key": responsible,
         "Документ": document or recorder,
         "Документ_Type": document_type or recorder_type,
+        "ЗаказПокупателя_Key": order_guid,
         "Количество": "2",
         "Сумма": revenue,
         "СуммаНДС": "10.00",
@@ -194,7 +196,9 @@ def direct_nomenclature_reference_payload(*, direct_deleted=False):
     }
 
 
-def direct_order_document_payload(*, organization=ORG, customer=CUSTOMER):
+def direct_order_document_payload(
+    *, organization=ORG, customer=CUSTOMER, responsible=RESPONSIBLE
+):
     return {
         "value": [{
             "Ref_Key": CUSTOMER_ORDER,
@@ -202,7 +206,7 @@ def direct_order_document_payload(*, organization=ORG, customer=CUSTOMER):
             "Date": "2026-05-01T12:00:00+03:00",
             "Организация_Key": organization,
             "Контрагент_Key": customer,
-            "Ответственный_Key": RESPONSIBLE,
+            "Ответственный_Key": responsible,
         }]
     }
 
@@ -391,6 +395,104 @@ class ODataProfitDraftTests(TestCase):
                 opener=opener,
                 draft_config=draft_config,
             )
+
+    def test_month_close_row_keeps_register_order_provenance(self):
+        close_recorder = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        close_type = "StandardODATA.Document_ЗакрытиеМесяца"
+        row = profit_row(
+            line=7,
+            period="2026-05-31T23:59:59+03:00",
+            recorder=close_recorder,
+            recorder_type=close_type,
+            customer=ZERO_GUID,
+            revenue="0.00",
+            cost="-12643.59",
+            order_guid=CUSTOMER_ORDER,
+        )
+        opener = FakeOpener(
+            {"value": [row]},
+            reference_payload(ITEM, "Штукатурка цементная GP21 25 кг", article=""),
+            reference_payload(RESPONSIBLE, "Ответственный движения"),
+            document_payload(
+                close_recorder,
+                number="НФНФ-000011",
+                value_date="2026-05-31T23:59:59+03:00",
+            ),
+            direct_order_document_payload(responsible=ORDER_RESPONSIBLE),
+            reference_payload(CUSTOMER, "Клиент заказа №114"),
+            reference_payload(ORDER_RESPONSIBLE, "Ответственный заказа №114"),
+        )
+
+        batch = self.create_draft(rows=[row], opener=opener)
+        with batch.stored_file.open("rb") as source:
+            snapshot = json.loads(source.read().decode("utf-8"))
+
+        self.assertEqual(len(snapshot["rows"]), 1)
+        saved = snapshot["rows"][0]
+        self.assertEqual(
+            saved["document_name"],
+            "Закрытие месяца №НФНФ-000011 от 31.05.2026",
+        )
+        self.assertEqual(
+            saved["source_data"]["source_register_order_guid"],
+            CUSTOMER_ORDER,
+        )
+        self.assertNotIn("source_document_order_guid", saved["source_data"])
+        self.assertNotIn("source_document_order_type", saved["source_data"])
+        self.assertEqual(
+            saved["source_data"]["resolved_order_guid"],
+            CUSTOMER_ORDER,
+        )
+        self.assertEqual(
+            saved["source_data"]["resolved_order_customer_name"],
+            "Клиент заказа №114",
+        )
+        self.assertEqual(saved["customer_name"], "Клиент заказа №114")
+        self.assertEqual(saved["source_data"]["responsible_guid"], RESPONSIBLE)
+        self.assertEqual(saved["manager_name"], "Ответственный заказа №114")
+
+        confirmed = confirm_odata_profit(
+            batch.pk, self.organization, self.user, config=config()
+        )
+        row_model = OneCMonthlyProfit.objects.get(import_batch=confirmed)
+        self.assertEqual(row_model.cost, Decimal("-12643.59"))
+        self.assertEqual(row_model.customer_name, "Клиент заказа №114")
+        self.assertEqual(row_model.manager_name, "Ответственный заказа №114")
+        self.assertEqual(
+            row_model.source_data["source_register_order_guid"],
+            CUSTOMER_ORDER,
+        )
+
+    def test_month_close_order_must_resolve_before_draft(self):
+        close_recorder = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+        row = profit_row(
+            line=8,
+            period="2026-05-31T23:59:59+03:00",
+            recorder=close_recorder,
+            recorder_type="StandardODATA.Document_ЗакрытиеМесяца",
+            customer=ZERO_GUID,
+            revenue="0.00",
+            cost="25.36",
+            order_guid=CUSTOMER_ORDER,
+        )
+        opener = FakeOpener(
+            {"value": [row]},
+            reference_payload(ITEM, "Расходные материалы", article=""),
+            reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
+            document_payload(
+                close_recorder,
+                number="НФНФ-000011",
+                value_date="2026-05-31T23:59:59+03:00",
+            ),
+            {"value": []},
+        )
+
+        with self.assertRaises(ODataDraftError) as captured:
+            self.create_draft(rows=[row], opener=opener)
+        self.assertIn(
+            "Month-close customer order is missing or unavailable",
+            str(captured.exception),
+        )
 
     def test_direct_receipt_expenses_reduce_order_profit_and_confirm_exact_snapshot(self):
         sale = profit_row(

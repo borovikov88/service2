@@ -46,6 +46,7 @@ from pool_service.tests.test_onec_odata_profit_drafts import (
     DIRECT_RECEIPT,
     ErrorOnNthOpen,
     ITEM,
+    ORDER_RESPONSIBLE,
     RESPONSIBLE,
     direct_expense_line_payload,
     direct_expense_row,
@@ -243,6 +244,73 @@ class UnifiedSyncTests(TestCase):
         self.assertEqual(
             {row["nomenclature"] for row in direct},
             {"Монтаж оборудования", "Транспортные расходы"},
+        )
+
+    def test_auto_profit_sync_resolves_month_close_manager_from_order(self):
+        close_recorder = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        row = raw_profit_row(
+            line=7,
+            period="2026-05-31T23:59:59+03:00",
+            recorder=close_recorder,
+            recorder_type="StandardODATA.Document_ЗакрытиеМесяца",
+            customer="00000000-0000-0000-0000-000000000000",
+            responsible=RESPONSIBLE,
+            revenue="0.00",
+            cost="25.36",
+            order_guid=CUSTOMER_ORDER,
+        )
+        opener = FakeOpener(
+            {"value": [row]},
+            reference_payload(ITEM, "Расходные материалы", article=""),
+            reference_payload(RESPONSIBLE, "Ответственный движения"),
+            document_payload(
+                close_recorder,
+                number="НФНФ-000011",
+                value_date="2026-05-31T23:59:59+03:00",
+            ),
+            direct_order_document_payload(responsible=ORDER_RESPONSIBLE),
+            reference_payload(CUSTOMER, "Клиент заказа №114"),
+            reference_payload(
+                ORDER_RESPONSIBLE,
+                "Ответственный заказа №114",
+            ),
+        )
+        run, created = start_unified_sync(
+            self.organization,
+            self.user,
+            [REPORT_PROFIT],
+            today=date(2026, 5, 1),
+            mode=OneCODataSyncRun.MODE_AUTO_APPLY,
+            period_start=date(2026, 5, 1),
+            period_end=date(2026, 5, 1),
+        )
+        self.assertTrue(created)
+
+        completed = step_unified_sync(
+            run.id,
+            self.user,
+            [REPORT_PROFIT],
+            0,
+            config=config(),
+            opener=opener,
+            mode=OneCODataSyncRun.MODE_AUTO_APPLY,
+        )
+
+        self.assertEqual(completed.status, OneCODataSyncRun.STATUS_COMPLETED)
+        self.assertNotEqual(
+            completed.result_summary[REPORT_PROFIT]["status"],
+            "retryable_error",
+        )
+        saved = OneCMonthlyProfit.objects.get(period_month=date(2026, 5, 1))
+        self.assertEqual(saved.manager_name, "Ответственный заказа №114")
+        self.assertEqual(saved.source_data["responsible_guid"], RESPONSIBLE)
+        self.assertEqual(
+            OneCReportPeriodState.objects.get(
+                organization=self.organization,
+                report_type=REPORT_PROFIT,
+                period_month=date(2026, 5, 1),
+            ).active_batch_id,
+            saved.import_batch_id,
         )
 
     def test_profit_collector_accepts_direct_cross_org_order_in_scope(self):
