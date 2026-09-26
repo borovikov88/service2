@@ -55,8 +55,8 @@ from .services import (
 from .validators import delete_private_batch_file
 
 
-SNAPSHOT_SCHEMA = "onec_odata_profit_draft_v2"
-PARSER_VERSION = "odata-2"
+SNAPSHOT_SCHEMA = "onec_odata_profit_draft_v3"
+PARSER_VERSION = "odata-3"
 REFERENCE_BATCH_SIZE = 40
 MAX_DRAFT_MONTHS = 12
 MONEY_QUANTUM = Decimal("0.01")
