@@ -2240,6 +2240,10 @@ def confirm_odata_profit(batch_id, organization, user, *, config=None):
                 batch, locked_organization, user, periods, locked_states
             )
             _save_confirmed_batch(batch, user, len(rows))
+            from pool_service.services.employee_rewards import (
+                register_author_identities_from_profit_rows,
+            )
+            register_author_identities_from_profit_rows(locked_organization, rows)
             _audit(batch, user, before, {
                 "status": batch.status, "rows_imported": batch.rows_imported,
             })
