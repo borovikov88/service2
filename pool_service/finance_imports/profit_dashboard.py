@@ -5,6 +5,7 @@ from decimal import Decimal
 import re
 from uuid import UUID
 
+from django.conf import settings
 from django.db.models import Sum
 from django.utils import timezone
 
@@ -343,6 +344,15 @@ def _guid(value):
     return normalized if normalized != "00000000-0000-0000-0000-000000000000" else None
 
 
+def _configured_organization_guids():
+    configured = set()
+    for value in getattr(settings, "ONEC_ODATA_ORGANIZATION_GUIDS", ()):
+        guid = _guid(value)
+        if guid is not None:
+            configured.add(guid)
+    return configured
+
+
 def _safe_document_type(value):
     if not isinstance(value, str):
         return None
@@ -507,11 +517,23 @@ def _resolved_order_group(row):
     )
     order_number = source_data.get("resolved_order_number")
     order_display = source_data.get("resolved_order_display")
+    configured_organization_guids = _configured_organization_guids()
+    organizations_in_scope = (
+        source_organization_guid is not None
+        and order_organization_guid is not None
+        and (
+            (
+                source_organization_guid in configured_organization_guids
+                and order_organization_guid in configured_organization_guids
+            )
+            if configured_organization_guids
+            else order_organization_guid == source_organization_guid
+        )
+    )
     if (
         order_guid is None
         or order_type != _ORDER_TYPE
-        or source_organization_guid is None
-        or order_organization_guid != source_organization_guid
+        or not organizations_in_scope
         or not isinstance(order_number, str)
         or not order_number.strip()
         or len(order_number) > 100
