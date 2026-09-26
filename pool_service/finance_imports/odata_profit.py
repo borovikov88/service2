@@ -20,7 +20,7 @@ ODATA_BASE_PATH = "/odata/standard.odata/"
 ENTITY_SET = "AccumulationRegister_Продажи_RecordType"
 FIELDS = (
     "Recorder", "Recorder_Type", "LineNumber", "Period", "Active", "Организация_Key",
-    "Номенклатура_Key", "Контрагент_Key", "Ответственный_Key", "Документ", "Документ_Type", "Количество", "Сумма",
+    "Номенклатура_Key", "Контрагент_Key", "Ответственный_Key", "Документ", "Документ_Type", "ЗаказПокупателя_Key", "Количество", "Сумма",
     "СуммаНДС", "Себестоимость",
 )
 ZERO_GUID = "00000000-0000-0000-0000-000000000000"
@@ -76,6 +76,7 @@ class ProfitRow:
     revenue: Decimal
     vat: Decimal
     cost: Decimal
+    order_guid: str | None = None
 
     @property
     def identity(self):
@@ -359,6 +360,12 @@ def _parse_row(raw, start: date, end_exclusive: date, allowed_organizations) -> 
             )
         else:
             raise ODataPreviewError("Документ_Type requires a non-empty Документ")
+    raw_order_guid = normalize_guid(
+        raw.get("ЗаказПокупателя_Key"),
+        field="ЗаказПокупателя_Key",
+        allow_zero=True,
+    )
+    order_guid = None if raw_order_guid == ZERO_GUID else raw_order_guid
     return ProfitRow(
         recorder=normalize_guid(raw.get("Recorder"), field="Recorder"),
         recorder_type=recorder_type,
@@ -380,6 +387,7 @@ def _parse_row(raw, start: date, end_exclusive: date, allowed_organizations) -> 
         revenue=_decimal(raw.get("Сумма"), field="Сумма"),
         vat=_decimal(raw.get("СуммаНДС"), field="СуммаНДС"),
         cost=_decimal(raw.get("Себестоимость"), field="Себестоимость"),
+        order_guid=order_guid,
     )
 
 
