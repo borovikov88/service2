@@ -71,6 +71,23 @@ def _guid_text(value):
     return value
 
 
+def _line_fingerprint(row):
+    """Semantic row fingerprint stable across line-number changes.
+
+    Ambiguous duplicates are intentionally not guessed: callers require a unique
+    fingerprint match before carrying a confirmed line-scoped assignment forward.
+    """
+    data = _source_data(row)
+    payload = "\0".join([
+        str(row.source_recorder or "").strip().lower(),
+        str(data.get("row_kind") or "sale").strip().lower(),
+        str(_guid_text(data.get("nomenclature_guid")) or "").strip().lower(),
+        str(row.article or "").strip().casefold(),
+        str(row.nomenclature_type or "").strip().casefold(),
+    ])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def reward_document_ref(row):
     """Return the real sale document, never an aggregate retail report author."""
     data = _source_data(row)
@@ -284,20 +301,41 @@ def _rule_map(scheme):
 
 
 def _scope_rows(assignment, all_rows):
-    explicit = list(assignment.lines.all())
-    if explicit:
-        identities = {item.source_identity for item in explicit}
-        return [row for row in all_rows if row.source_identity in identities]
-
     if assignment.scope_key.startswith("order:"):
         order_guid = assignment.scope_key.split(":", 1)[1].lower()
-        return [row for row in all_rows if _resolved_order_guid(row) == order_guid]
+        base_rows = [row for row in all_rows if _resolved_order_guid(row) == order_guid]
+    else:
+        doc_ref = (
+            assignment.source_document_type,
+            str(assignment.source_document_guid).lower(),
+        )
+        base_rows = [row for row in all_rows if reward_document_ref(row) == doc_ref]
 
-    doc_ref = (
-        assignment.source_document_type,
-        str(assignment.source_document_guid).lower(),
-    )
-    return [row for row in all_rows if reward_document_ref(row) == doc_ref]
+    explicit = list(assignment.lines.all())
+    if not explicit:
+        return base_rows, True
+
+    by_identity = {row.source_identity: row for row in base_rows}
+    by_fingerprint = defaultdict(list)
+    for row in base_rows:
+        by_fingerprint[_line_fingerprint(row)].append(row)
+
+    selected = []
+    complete = True
+    used_ids = set()
+    for stored in explicit:
+        exact = by_identity.get(stored.source_identity)
+        if exact is not None and _line_fingerprint(exact) == stored.line_fingerprint:
+            candidate = exact
+        else:
+            candidates = by_fingerprint.get(stored.line_fingerprint, [])
+            candidate = candidates[0] if len(candidates) == 1 else None
+        if candidate is None or candidate.id in used_ids:
+            complete = False
+            continue
+        used_ids.add(candidate.id)
+        selected.append(candidate)
+    return selected, complete
 
 
 def _is_direct_expense(row):
@@ -513,8 +551,21 @@ def _open_dashboard_data(organization, period_month, employee_id=None):
                     summary[item.employee_id]["review_count"] += 1
             continue
 
-        scope_rows = _scope_rows(confirmed[0], all_rows)
+        scope_rows, identity_complete = _scope_rows(confirmed[0], all_rows)
         financials = _scope_financials(role, scope_rows)
+        if not identity_complete:
+            financials["complete"] = False
+            financials["gross_profit"] = None
+            issue = {
+                "kind": "line_identity_changed",
+                "label": confirmed[0].source_document_label,
+                "detail": (
+                    "Выбранные строки 1С изменились или стали неоднозначными после "
+                    "повторной синхронизации. Требуется повторное подтверждение объёма."
+                ),
+            }
+            issues.append(issue)
+            missing_basis.append(issue)
         unit = _rule_unit(confirmed[0], scope_rows)
         rule = rules.get((role, unit))
         if not financials["complete"] and role in {
@@ -807,6 +858,8 @@ def reward_dashboard_data(organization, period_month, employee_id=None):
 
 
 def _scope_key(document_type, document_guid, rows, line_identities, role):
+    if role == EmployeeRewardRule.ROLE_PAPERWORK:
+        return f"document:{document_type}:{str(document_guid).lower()}"
     if line_identities:
         digest = hashlib.sha256(
             "\0".join(sorted(line_identities)).encode("utf-8")
@@ -859,6 +912,10 @@ def create_or_update_assignment(
         raise ValidationError("Выбраны строки, которые не принадлежат активному документу.")
     if any(not identity.startswith("odata:") for identity in requested):
         raise ValidationError("Для распределения по строкам требуется устойчивая OData identity.")
+    if role == EmployeeRewardRule.ROLE_PAPERWORK and requested:
+        raise ValidationError(
+            "Оформление оплачивается за самостоятельный документ/этап; выбор отдельных строк не допускается."
+        )
     if role == EmployeeRewardRule.ROLE_PROJECT and not requested:
         raise ValidationError(
             "Проект / расчёт подтверждается только по явно выбранным позициям."
@@ -880,6 +937,26 @@ def create_or_update_assignment(
             employee=employee,
         ).first()
     )
+    if confirm:
+        other_confirmed = EmployeeRewardAssignment.objects.filter(
+            organization=organization,
+            period_month=period_month,
+            role=role,
+            scope_key=scope_key,
+            status=EmployeeRewardAssignment.STATUS_CONFIRMED,
+        )
+        if assignment is not None:
+            other_confirmed = other_confirmed.exclude(pk=assignment.pk)
+        confirmed_share = sum(
+            (item.share_percent for item in other_confirmed.only("share_percent")),
+            ZERO,
+        )
+        if confirmed_share + share > HUNDRED:
+            raise ValidationError(
+                f"Подтверждённые доли внутри одной роли/объёма дадут "
+                f"{confirmed_share + share}%, максимум 100%."
+            )
+
     before = {}
     if assignment:
         before = {
@@ -919,6 +996,7 @@ def create_or_update_assignment(
         EmployeeRewardAssignmentLine(
             assignment=assignment,
             source_identity=identity,
+            line_fingerprint=_line_fingerprint(available[identity]),
             nomenclature=available[identity].nomenclature,
             nomenclature_type=available[identity].nomenclature_type,
         )
@@ -1243,6 +1321,13 @@ def close_reward_month(organization, period_month, actor):
     if not scheme:
         raise ValidationError("Нет действующей версии тестовой схемы.")
     data = _open_dashboard_data(organization, period_month)
+    blocking_kinds = {"missing_basis", "line_identity_changed", "share_overflow", "missing_rule"}
+    blockers = [item for item in data["issues"] if item.get("kind") in blocking_kinds]
+    if blockers:
+        raise ValidationError(
+            "Нельзя закрыть тестовый месяц: есть неподтверждённая/неполная финансовая база "
+            "или ошибка распределения. Сначала устраните записи в блоке «Требует проверки»."
+        )
     snapshot = _snapshot_dashboard(data)
     total = sum((row["total"] for row in data["rows"]), ZERO)
     return EmployeeRewardMonthClose.objects.create(
