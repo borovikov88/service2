@@ -2243,9 +2243,13 @@ def confirm_odata_profit(batch_id, organization, user, *, config=None):
             from pool_service.services.employee_rewards import (
                 register_author_identities_from_profit_rows,
                 seed_author_paperwork_proposals,
+                seed_template_participation,
             )
             register_author_identities_from_profit_rows(locked_organization, rows)
             seed_author_paperwork_proposals(
+                locked_organization, rows, proposed_by=user
+            )
+            seed_template_participation(
                 locked_organization, rows, proposed_by=user
             )
             _audit(batch, user, before, {
