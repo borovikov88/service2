@@ -707,6 +707,105 @@ class ProfitDashboardTests(TestCase):
         self.assertContains(response, "Монтаж оборудования")
         self.assertContains(response, "Транспортные расходы")
 
+    def test_order_group_folds_month_close_cost_into_matching_business_line(self):
+        sale_recorder = "11111111-1111-4111-8111-111111111111"
+        close_recorder = "99999999-9999-4999-8999-999999999999"
+        order_guid = "88888888-8888-4888-8888-888888888888"
+        organization_guid = "22222222-2222-4222-8222-222222222222"
+        order_display = "Заказ покупателя №НФНФ-000114 от 06.08.2026"
+        sale_display = "Расходная накладная №НФНФ-000335 от 17.09.2026"
+        close_display = "Закрытие месяца №НФНФ-000011 от 30.09.2026"
+        self.batch.source_type = OneCImportBatch.SOURCE_ODATA
+        self.batch.parser_version = "odata-2"
+        self.batch.save(update_fields=["source_type", "parser_version"])
+
+        def source_data(recorder, recorder_type, number, source_date, line_number):
+            return {
+                "source": "odata",
+                "recorder": recorder,
+                "recorder_type": recorder_type,
+                "line_number": line_number,
+                "period": f"{source_date}T10:00:00+03:00",
+                "source_date": source_date,
+                "organization_guid": organization_guid,
+                "resolved_order_organization_guid": organization_guid,
+                "document_guid": recorder,
+                "document_type": recorder_type,
+                "document_number": number,
+                "document_date": source_date,
+                "document_group_recorder": recorder,
+                "document_group_recorder_type": recorder_type,
+                "document_group_key": (
+                    f"odata-document:{self.organization.pk}:{recorder_type}:{recorder}"
+                ),
+                "document_group_number": number,
+                "document_group_date": source_date,
+                "document_display": (
+                    sale_display
+                    if recorder_type == "Document_РасходнаяНакладная"
+                    else close_display
+                ),
+                "source_document_order_guid": order_guid,
+                "source_document_order_type": "Document_ЗаказПокупателя",
+                "resolved_order_guid": order_guid,
+                "resolved_order_type": "Document_ЗаказПокупателя",
+                "resolved_order_number": "НФНФ-000114",
+                "resolved_order_date": "2026-08-06",
+                "resolved_order_display": order_display,
+                "nomenclature_guid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            }
+
+        self.add_row(
+            date(2026, 9, 1), name="Расходные материалы", revenue="7000",
+            cost="0", customer="Детский сад №268", manager="Менеджер",
+            document=sale_display,
+            source_data=source_data(
+                sale_recorder, "Document_РасходнаяНакладная",
+                "НФНФ-000335", "2026-09-17", 1,
+            ),
+            source_recorder=sale_recorder, article="A-MAT", quantity="1",
+        )
+        self.add_row(
+            date(2026, 9, 1), name="Расходные материалы", revenue="0",
+            cost="3032.89", customer="Детский сад №268", manager="Менеджер",
+            document=sale_display,
+            source_data=source_data(
+                sale_recorder, "Document_РасходнаяНакладная",
+                "НФНФ-000335", "2026-09-17", 2,
+            ),
+            source_recorder=sale_recorder, article="A-MAT", quantity="0",
+        )
+        self.add_row(
+            date(2026, 9, 1), name="Расходные материалы", revenue="0",
+            cost="25.36", customer="Детский сад №268", manager="Менеджер",
+            document=close_display,
+            source_data=source_data(
+                close_recorder, "Document_ЗакрытиеМесяца",
+                "НФНФ-000011", "2026-09-30", 3,
+            ),
+            source_recorder=close_recorder, article="A-MAT", quantity="0",
+        )
+
+        data = dashboard_data(self.organization, resolve_period({
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        }, today=date(2026, 9, 30)))
+        order = data["customers"][0]["documents"][0]
+        self.assertTrue(order["is_order_group"])
+        self.assertEqual(len(order["rows"]), 1)
+        row = order["rows"][0]
+        self.assertEqual(row.dashboard_revenue, Decimal("7000"))
+        self.assertEqual(row.dashboard_analytical_cost, Decimal("3058.25"))
+        self.assertEqual(row.dashboard_gross_profit, Decimal("3941.75"))
+        self.assertEqual(
+            row.dashboard_month_close_adjustment, Decimal("25.36")
+        )
+
+        response = self.client.get(reverse("finance_onec_profit_dashboard"), {
+            "period": "custom", "start": "2026-09", "end": "2026-09",
+        })
+        self.assertContains(response, "Корректировка закрытия месяца")
+        self.assertContains(response, "25,36")
+
     def test_order_group_uses_newest_validated_heading_across_months(self):
         order_guid = "88888888-8888-4888-8888-888888888888"
         organization_guid = "22222222-2222-4222-8222-222222222222"
