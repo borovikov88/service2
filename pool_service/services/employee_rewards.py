@@ -310,7 +310,7 @@ def _role_rows(role, rows):
         row
         for row in rows
         if _is_direct_expense(row)
-        or classify_nomenclature_type(row.nomenclature_type) == "services"
+        or classify_nomenclature_type(row.nomenclature_type) == "service"
     ]
 
 
@@ -600,7 +600,7 @@ def _open_dashboard_data(organization, period_month, employee_id=None):
             identity = author_identities.get(guid)
             if (
                 identity is None
-                or identity.status == EmployeeOneCUserIdentity.STATUS_NEEDS_CONFIRMATION
+                or identity.status != EmployeeOneCUserIdentity.STATUS_CONFIRMED
             ):
                 marker = (guid, doc["document_guid"])
                 if marker not in seen_unmapped:
