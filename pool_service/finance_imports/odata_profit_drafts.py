@@ -498,6 +498,47 @@ def _load_missing_sales_order_customers(
     )
 
 
+def _load_missing_month_close_order_responsibles(
+    config,
+    rows,
+    references,
+    documents,
+    *,
+    opener,
+    page_budget,
+):
+    """Resolve order responsibles used to attribute register-backed month-close rows."""
+    missing = set()
+    for row in rows:
+        if (
+            row.recorder_type != MONTH_CLOSE_TYPE
+            or not getattr(row, "order_guid", None)
+        ):
+            continue
+        order = documents.get((ORDER_TYPE, row.order_guid))
+        responsible_guid = order.get("responsible_guid") if order else None
+        if (
+            responsible_guid
+            and responsible_guid != ZERO_GUID
+            and responsible_guid not in references["responsible"]
+        ):
+            missing.add(responsible_guid)
+    if not missing:
+        return
+    references["responsible"].update(
+        _read_reference_map(
+            config,
+            "responsible",
+            missing,
+            **_reference_lookup_kwargs(
+                "responsible",
+                opener=opener,
+                page_budget=page_budget,
+            ),
+        )
+    )
+
+
 def _direct_expense_lines_url(config, receipt_guids):
     expression = " or ".join(
         f"Ref_Key eq guid'{guid}'" for guid in receipt_guids
@@ -1101,6 +1142,22 @@ def _enrich_rows(
                 raise ODataPreviewError(
                     "Sales customer order customer is missing or unavailable"
                 )
+            order_manager = None
+            if order_from_register:
+                order_responsible_guid = (
+                    order_document.get("responsible_guid") or ZERO_GUID
+                )
+                if order_responsible_guid == ZERO_GUID:
+                    order_manager = "Без ответственного"
+                else:
+                    order_responsible = references["responsible"].get(
+                        order_responsible_guid
+                    )
+                    if order_responsible is None:
+                        raise ODataPreviewError(
+                            "Month-close customer order responsible is missing or unavailable"
+                        )
+                    order_manager = order_responsible["description"]
             order_source_data = {
                 "resolved_order_guid": order_ref[1],
                 "resolved_order_type": order_ref[0],
@@ -1116,6 +1173,7 @@ def _enrich_rows(
             if order_from_register:
                 order_source_data["source_register_order_guid"] = order_ref[1]
                 normalized[-1]["customer_name"] = order_customer["description"]
+                normalized[-1]["manager_name"] = order_manager
             else:
                 order_source_data.update({
                     "source_document_order_guid": order_ref[1],
@@ -1958,6 +2016,14 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
         )
         documents.update(direct_documents)
         _load_missing_sales_order_customers(
+            config,
+            rows,
+            references,
+            documents,
+            opener=client,
+            page_budget=reference_page_budget,
+        )
+        _load_missing_month_close_order_responsibles(
             config,
             rows,
             references,
