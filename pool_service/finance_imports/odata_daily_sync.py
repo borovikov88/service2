@@ -258,7 +258,17 @@ def worker_tick(*, max_steps=4, max_seconds=240, now=None):
         try:
             retry_at = datetime.fromisoformat(progress["worker_retry_after"])
             if timezone.is_aware(retry_at) and retry_at > now:
-                return {"state": "retry_later", "run": str(run.pk), "steps": 0}
+                result = {"state": "retry_later", "run": str(run.pk), "steps": 0}
+                for key in (
+                    "error_stage",
+                    "error_reason",
+                    "error_hint",
+                    "finance_position_state",
+                ):
+                    value = progress.get(key)
+                    if isinstance(value, str) and value:
+                        result[key] = value
+                return result
         except (KeyError, TypeError, ValueError):
             pass
     _worker_note(run.pk, worker_seen_at=now.isoformat())
