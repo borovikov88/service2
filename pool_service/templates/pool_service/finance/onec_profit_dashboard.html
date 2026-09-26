@@ -164,12 +164,14 @@
 <tr class="profit-customer-row">
   <td class="py-3 profit-customer-details">
     <details>
-      <summary class="fw-semibold">{{ customer.name }}</summary>
-      <div class="profit-customer-mobile-metrics" aria-label="Итоги по покупателю">
-        <div class="profit-customer-mobile-metric"><span>Выручка</span><strong>{{ customer.revenue|money }}</strong></div>
-        <div class="profit-customer-mobile-metric"><span>Себестоимость</span><strong>{{ customer.cost|money }}</strong></div>
-        <div class="profit-customer-mobile-metric"><span>Валовая прибыль</span><strong class="{% if customer.gross_profit < 0 %}text-danger{% elif customer.gross_profit > 0 %}text-success{% endif %}">{{ customer.gross_profit|money }}</strong></div>
-      </div>
+      <summary class="fw-semibold">
+        <span class="profit-customer-name">{{ customer.name }}</span>
+        <span class="profit-customer-mobile-metrics" aria-label="Итоги по покупателю">
+          <span class="profit-customer-mobile-metric"><span>Выручка</span><strong>{{ customer.revenue|money }}</strong></span>
+          <span class="profit-customer-mobile-metric"><span>Себестоимость</span><strong>{{ customer.cost|money }}</strong></span>
+          <span class="profit-customer-mobile-metric"><span>Валовая прибыль</span><strong class="{% if customer.gross_profit < 0 %}text-danger{% elif customer.gross_profit > 0 %}text-success{% endif %}">{{ customer.gross_profit|money }}</strong></span>
+        </span>
+      </summary>
       {% for document in customer.documents %}
       <section class="border rounded-3 bg-light-subtle p-3 mt-3 ms-lg-3 profit-document-card">
         <header class="d-flex flex-wrap justify-content-between gap-2 mb-2 profit-document-header">
