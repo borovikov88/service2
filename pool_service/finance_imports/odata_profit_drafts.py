@@ -429,7 +429,10 @@ def _read_profit_documents(config, rows, *, opener, page_budget):
     order_refs.update(
         (ORDER_TYPE, row.order_guid)
         for row in rows
-        if getattr(row, "order_guid", None)
+        if (
+            row.recorder_type == MONTH_CLOSE_TYPE
+            and getattr(row, "order_guid", None)
+        )
     )
     if order_refs:
         documents.update(_read_document_entities(
