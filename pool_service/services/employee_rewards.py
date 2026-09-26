@@ -223,7 +223,15 @@ def seed_author_paperwork_proposals(organization, rows, proposed_by=None):
         .select_related("employee")
     }
     created_count = 0
+    closed_months = set(
+        EmployeeRewardMonthClose.objects.filter(
+            organization=organization,
+            period_month__in={row.period_month for row in rows},
+        ).values_list("period_month", flat=True)
+    )
     for item in _document_author_groups(rows).values():
+        if item["period_month"] in closed_months:
+            continue
         if len(item["authors"]) != 1:
             continue
         author_guid = next(iter(item["authors"]))
@@ -1093,7 +1101,15 @@ def seed_template_participation(organization, rows, proposed_by=None):
         item["rows"].append(row)
 
     created_count = 0
+    closed_months = set(
+        EmployeeRewardMonthClose.objects.filter(
+            organization=organization,
+            period_month__in={item["period_month"] for item in inventory.values()},
+        ).values_list("period_month", flat=True)
+    )
     for item in inventory.values():
+        if item["period_month"] in closed_months:
+            continue
         customer_guid = item["customer_guid"]
         if not customer_guid:
             continue
