@@ -388,7 +388,7 @@ class ProfitDashboardTests(TestCase):
         self.assertEqual(sum(item["cost"] for item in data["customers"]), data["totals"]["cost"])
         self.assertEqual(sum(item["gross_profit"] for item in data["customers"]), data["totals"]["gross_profit"])
 
-    def test_mobile_customer_summary_uses_three_metrics_and_scrollable_detail_table(self):
+    def test_customer_and_document_details_use_shared_responsive_tables(self):
         self.add_row(
             date(2026, 8, 1),
             customer="Клиент",
@@ -413,32 +413,61 @@ class ProfitDashboardTests(TestCase):
         response = self.client.get(reverse("finance_onec_profit_dashboard"), {
             "period": "custom", "start": "2026-08", "end": "2026-08",
         })
-        self.assertContains(response, 'class="profit-customer-mobile-metrics"')
         rendered = response.content.decode()
-        summary_start = rendered.index('<summary class="fw-semibold">')
-        metrics_start = rendered.index('class="profit-customer-mobile-metrics"', summary_start)
+
+        self.assertNotContains(response, "profit-customer-mobile-")
+        self.assertNotContains(response, "profit-document-mobile-")
+        self.assertNotContains(response, "profit-mobile-line")
+        self.assertNotContains(response, "data-profit-mobile-field")
+        self.assertContains(
+            response,
+            '<table class="table align-middle table-hover mb-0 profit-customer-table">',
+        )
+        self.assertContains(
+            response,
+            '<div class="table-responsive profit-document-lines"',
+        )
+        self.assertContains(
+            response,
+            '<table class="table table-sm mb-0 profit-document-table profit-order-table">',
+        )
+
+        customer_table = rendered.index(
+            '<table class="table align-middle table-hover mb-0 profit-customer-table">'
+        )
+        responsive_wrapper = rendered.rfind(
+            '<div class="table-responsive">', 0, customer_table
+        )
+        self.assertNotEqual(responsive_wrapper, -1)
+
+        summary_start = rendered.index('<summary class="fw-semibold">', customer_table)
         summary_end = rendered.index("</summary>", summary_start)
-        self.assertLess(metrics_start, summary_end)
-        self.assertContains(response, "grid-template-columns: repeat(3, minmax(0, 1fr))")
-        self.assertContains(response, "@media (max-width: 399.98px)")
-        self.assertContains(response, "grid-template-columns: 1fr")
-        self.assertContains(
-            response,
-            ".profit-document-totals {\n      grid-template-columns: 1fr",
+        self.assertNotIn("Выручка", rendered[summary_start:summary_end])
+
+        details_end = rendered.index("</details>", summary_end)
+        row_end = rendered.index("</tr>", details_end)
+        customer_metrics = rendered[details_end:row_end]
+        self.assertIn("100,00\u00a0₽", customer_metrics)
+        self.assertIn("60,00\u00a0₽", customer_metrics)
+        self.assertIn("40,00\u00a0₽", customer_metrics)
+
+        document_table = rendered.index(
+            '<table class="table table-sm mb-0 profit-document-table profit-order-table">'
         )
-        self.assertContains(
-            response,
-            ".profit-document-total {\n      flex-direction: row",
-        )
-        self.assertContains(response, "min-width: 920px")
-        self.assertContains(
-            response,
-            ".profit-document-desktop-lines { display: block !important; }",
-        )
-        self.assertContains(
-            response,
-            ".profit-document-mobile-lines { display: none !important; }",
-        )
+        document_head_end = rendered.index("</thead>", document_table)
+        document_header = rendered[document_table:document_head_end]
+        for label in (
+            "Номенклатура / затрата",
+            "Период",
+            "Тип",
+            "Количество",
+            "Выручка",
+            "Себестоимость",
+            "Валовая прибыль",
+        ):
+            self.assertIn(label, document_header)
+        document_table_end = rendered.index("</table>", document_table)
+        self.assertNotIn("data-label=", rendered[document_table:document_table_end])
         self.assertContains(
             response,
             "Расходная накладная №НФНФ-000118 от 20.08.2026",
