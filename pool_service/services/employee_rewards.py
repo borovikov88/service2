@@ -948,6 +948,10 @@ def create_reward_template(
         raise ValidationError("Сотрудник относится к другой организации.")
     if role == EmployeeRewardRule.ROLE_PAPERWORK:
         raise ValidationError("Оформление определяется автором исходного документа 1С.")
+    if role == EmployeeRewardRule.ROLE_PROJECT:
+        raise ValidationError(
+            "Проект / расчёт назначается только на конкретный проект и выбранные позиции."
+        )
     try:
         share = Decimal(str(share_percent))
     except Exception as exc:
