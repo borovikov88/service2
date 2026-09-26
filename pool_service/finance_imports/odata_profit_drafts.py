@@ -99,12 +99,17 @@ DOCUMENTS = {
         "label": "Приходная накладная",
         "fields": ("Ref_Key", "Number", "Date"),
     },
+    "Document_ЗакрытиеМесяца": {
+        "label": "Закрытие месяца",
+        "fields": ("Ref_Key", "Number", "Date"),
+    },
 }
 RETAIL_REPORT_TYPE = "Document_ОтчетОРозничныхПродажах"
 RETAIL_CHECK_TYPE = "Document_ЧекККМ"
 ORDER_TYPE = "Document_ЗаказПокупателя"
 DIRECT_EXPENSE_NOMENCLATURE = "Прямые расходы по заказу"
 DIRECT_EXPENSE_NOMENCLATURE_TYPE = "Прямые расходы"
+MONTH_CLOSE_TYPE = "Document_ЗакрытиеМесяца"
 DIRECT_EXPENSE_LINES_ENTITY = "Document_ПриходнаяНакладная_Расходы"
 DIRECT_EXPENSE_LINE_FIELDS = (
     "Ref_Key",
@@ -115,7 +120,9 @@ DIRECT_EXPENSE_LINE_FIELDS = (
     "Сумма",
     "Всего",
 )
-ALLOWED_DOCUMENT_TYPES = PROFIT_DOCUMENT_TYPES | {DIRECT_EXPENSE_RECORDER_TYPE}
+ALLOWED_DOCUMENT_TYPES = (
+    PROFIT_DOCUMENT_TYPES | {DIRECT_EXPENSE_RECORDER_TYPE, MONTH_CLOSE_TYPE}
+)
 
 
 class ODataDraftError(ValidationError):
@@ -405,7 +412,7 @@ def _read_profit_documents(config, rows, *, opener, page_budget):
     primary_refs = {
         (row.recorder_type, row.recorder)
         for row in rows
-        if row.recorder_type in PROFIT_RECORDER_TYPES
+        if row.recorder_type in (PROFIT_RECORDER_TYPES | {MONTH_CLOSE_TYPE})
     }
     documents = _read_document_entities(
         config,
@@ -419,6 +426,11 @@ def _read_profit_documents(config, rows, *, opener, page_budget):
         for item in documents.values()
         if item.get("order_ref")
     }
+    order_refs.update(
+        (ORDER_TYPE, row.order_guid)
+        for row in rows
+        if getattr(row, "order_guid", None)
+    )
     if order_refs:
         documents.update(_read_document_entities(
             config,
@@ -909,6 +921,7 @@ def _source_row(row: ProfitRow):
         "responsible_guid": row.responsible_guid,
         "document_guid": row.document_guid,
         "document_type": row.document_type,
+        "order_guid": row.order_guid,
         "quantity": format(row.quantity, "f"),
         "revenue": format(row.revenue, "f"),
         "vat": format(row.vat, "f"),
@@ -1053,6 +1066,8 @@ def _enrich_rows(
                 "document_group_date": group_document["date"].isoformat(),
             })
         order_ref = primary_document.get("order_ref") if primary_document else None
+        if order_ref is None and row.order_guid:
+            order_ref = (ORDER_TYPE, row.order_guid)
         if order_ref and order_ref in documents:
             order_document = documents[order_ref]
             if (
