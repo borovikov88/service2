@@ -40,6 +40,7 @@
     white-space: nowrap;
   }
   .profit-document-mobile-lines { display: none; }
+  .profit-customer-mobile-metrics { display: none; }
 
   @media (max-width: 767.98px) {
     .customer-profit-card { padding: 0.75rem !important; }
@@ -64,19 +65,31 @@
     .profit-customer-details summary {
       cursor: pointer;
       font-size: 1rem;
+      list-style-position: outside;
     }
-    .profit-customer-metric {
-      display: flex !important;
-      justify-content: space-between;
-      gap: 1rem;
-      padding: 0.28rem 0.8rem !important;
-      text-align: right !important;
+    .profit-customer-mobile-metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.35rem;
+      margin-top: 0.6rem;
     }
-    .profit-customer-metric::before {
-      content: attr(data-label);
+    .profit-customer-mobile-metric {
+      min-width: 0;
+      line-height: 1.15;
+    }
+    .profit-customer-mobile-metric span {
+      display: block;
       color: var(--bs-secondary-color);
-      font-weight: 500;
+      font-size: 0.64rem;
+      white-space: nowrap;
     }
+    .profit-customer-mobile-metric strong {
+      display: block;
+      margin-top: 0.15rem;
+      font-size: 0.82rem;
+      white-space: nowrap;
+    }
+    .profit-customer-metric { display: none !important; }
     .profit-document-card {
       margin-left: 0 !important;
       padding: 0.75rem !important;
@@ -86,8 +99,8 @@
     }
     .profit-document-totals {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.45rem 0.7rem;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.45rem;
       margin-top: 0.65rem;
       text-align: left !important;
     }
@@ -98,42 +111,59 @@
       margin-left: 0;
       white-space: normal;
     }
-    .profit-document-desktop-lines { display: none; }
-    .profit-document-mobile-lines {
-      display: grid;
-      gap: 0.6rem;
-      margin-top: 0.7rem;
-    }
-    .profit-mobile-line {
-      padding-top: 0.65rem;
+    .profit-document-lines {
+      width: 100%;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
       border-top: 1px solid var(--bs-border-color);
+      margin-top: 0.65rem;
+      padding-top: 0.35rem;
     }
-    .profit-mobile-line__identity {
-      display: grid;
-      gap: 0.12rem;
+    .profit-order-table {
+      width: max-content;
+      min-width: 920px;
+      table-layout: auto;
     }
-    .profit-mobile-line__article {
-      color: var(--bs-secondary-color);
-      font-size: 0.72rem;
+    .profit-order-table th,
+    .profit-order-table td {
+      white-space: nowrap;
+      overflow-wrap: normal;
     }
-    .profit-mobile-line__metrics {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.45rem 0.7rem;
-      margin: 0.55rem 0 0;
+    .profit-order-table th:first-child,
+    .profit-order-table td:first-child {
+      min-width: 260px;
+      white-space: normal;
     }
-    .profit-mobile-line__metric {
-      min-width: 0;
+    .profit-document-desktop-lines { display: block !important; }
+    .profit-document-mobile-lines { display: none !important; }
+  }
+
+  @media (max-width: 399.98px) {
+    .profit-customer-mobile-metrics {
+      grid-template-columns: 1fr;
+      gap: 0.25rem;
     }
-    .profit-mobile-line__metric dt {
-      color: var(--bs-secondary-color);
-      font-size: 0.68rem;
-      font-weight: 500;
+    .profit-customer-mobile-metric {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 0.75rem;
     }
-    .profit-mobile-line__metric dd {
-      margin: 0.05rem 0 0;
-      font-weight: 600;
-      overflow-wrap: anywhere;
+    .profit-customer-mobile-metric span,
+    .profit-customer-mobile-metric strong {
+      margin-top: 0;
+      white-space: nowrap;
+    }
+    .profit-document-totals {
+      grid-template-columns: 1fr;
+      gap: 0.25rem;
+    }
+    .profit-document-total {
+      flex-direction: row;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 0.75rem;
+      white-space: nowrap;
     }
   }
 </style>
@@ -164,7 +194,14 @@
 <tr class="profit-customer-row">
   <td class="py-3 profit-customer-details">
     <details>
-      <summary class="fw-semibold">{{ customer.name }}</summary>
+      <summary class="fw-semibold">
+        <span class="profit-customer-name">{{ customer.name }}</span>
+        <span class="profit-customer-mobile-metrics" aria-label="Итоги по покупателю">
+          <span class="profit-customer-mobile-metric"><span>Выручка</span><strong>{{ customer.revenue|money }}</strong></span>
+          <span class="profit-customer-mobile-metric"><span>Себестоимость</span><strong>{{ customer.cost|money }}</strong></span>
+          <span class="profit-customer-mobile-metric"><span>Валовая прибыль</span><strong class="{% if customer.gross_profit < 0 %}text-danger{% elif customer.gross_profit > 0 %}text-success{% endif %}">{{ customer.gross_profit|money }}</strong></span>
+        </span>
+      </summary>
       {% for document in customer.documents %}
       <section class="border rounded-3 bg-light-subtle p-3 mt-3 ms-lg-3 profit-document-card">
         <header class="d-flex flex-wrap justify-content-between gap-2 mb-2 profit-document-header">
@@ -201,10 +238,10 @@
                   <td data-label="Номенклатура">
                     <span class="profit-line-title">{{ row.dashboard_display_nomenclature }}</span>
                     {% if row.dashboard_is_direct_expense %}
-                      <span class="profit-line-meta">Прямые затраты{% if row.document_name %} · {{ row.document_name }}{% endif %}</span>
+                      <span class="profit-line-meta">Прямые затраты{% if row.dashboard_source_document_name %} · {{ row.dashboard_source_document_name }}{% endif %}</span>
                     {% else %}
                       {% if row.article %}<span class="profit-line-meta">Арт. {{ row.article }}</span>{% endif %}
-                      {% if document.is_order_group and row.document_name %}<span class="profit-line-meta">{{ row.document_name }}</span>{% endif %}
+                      {% if document.is_order_group and row.dashboard_source_document_name %}<span class="profit-line-meta">{{ row.dashboard_source_document_name }}</span>{% endif %}
                     {% endif %}
                   </td>
                   <td data-label="Период" data-profit-row-period="{{ row.period_month|date:'Y-m' }}">{{ row.period_month|date:"m.Y" }}</td>
@@ -231,7 +268,7 @@
             <div class="profit-mobile-line__identity">
               <span class="profit-mobile-line__article">{% if row.dashboard_is_direct_expense %}Прямые затраты{% elif row.article %}Арт. {{ row.article }}{% else %}{{ row.dashboard_display_type|default:"Позиция" }}{% endif %}</span>
               <strong>{{ row.dashboard_display_nomenclature }}</strong>
-              {% if row.dashboard_is_direct_expense and row.document_name %}<span class="profit-line-meta">{{ row.document_name }}</span>{% elif document.is_order_group and row.document_name %}<span class="profit-line-meta">{{ row.document_name }}</span>{% endif %}
+              {% if row.dashboard_is_direct_expense and row.dashboard_source_document_name %}<span class="profit-line-meta">{{ row.dashboard_source_document_name }}</span>{% elif document.is_order_group and row.dashboard_source_document_name %}<span class="profit-line-meta">{{ row.dashboard_source_document_name }}</span>{% endif %}
             </div>
             <dl class="profit-mobile-line__metrics">
               <div class="profit-mobile-line__metric" data-profit-mobile-field="period"><dt>Период</dt><dd>{{ row.period_month|date:"m.Y" }}</dd></div>
