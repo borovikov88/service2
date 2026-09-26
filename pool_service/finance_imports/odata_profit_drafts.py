@@ -1115,6 +1115,7 @@ def _enrich_rows(
             }
             if order_from_register:
                 order_source_data["source_register_order_guid"] = order_ref[1]
+                normalized[-1]["customer_name"] = order_customer["description"]
             else:
                 order_source_data.update({
                     "source_document_order_guid": order_ref[1],
@@ -1549,6 +1550,10 @@ def _validate_snapshot(payload, config, *, organization_id):
                 ) != normalized_order_guid:
                     raise ValidationError(
                         "Month-close snapshot register order attribution is inconsistent."
+                    )
+                if customer != resolved_customer_name:
+                    raise ValidationError(
+                        "Month-close snapshot order customer attribution is inconsistent."
                     )
             else:
                 if source_register_order_guid is not None:
