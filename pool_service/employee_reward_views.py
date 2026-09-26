@@ -38,6 +38,7 @@ from pool_service.services.employee_rewards import (
 from pool_service.services.finance import (
     can_close_reward_month,
     can_manage_employee_rewards,
+    can_propose_employee_rewards,
     can_manage_reward_rules,
     can_view_employee_reward_detail,
     can_view_employee_rewards,
@@ -143,7 +144,9 @@ def reward_employee_detail(request, employee_id):
 @login_required
 def reward_document(request, document_type, document_guid):
     organization = _organization(request)
-    if not can_manage_employee_rewards(request.user, organization):
+    can_manage = can_manage_employee_rewards(request.user, organization)
+    can_propose = can_propose_employee_rewards(request.user, organization)
+    if not (can_manage or can_propose):
         raise PermissionDenied
     try:
         period_month = _month(request.GET.get("month"))
@@ -155,14 +158,24 @@ def reward_document(request, document_type, document_guid):
     if not rows:
         raise Http404("Документ не найден в активных подтверждённых данных.")
 
-    assignments = list(
-        EmployeeRewardAssignment.objects.filter(
+    assignment_qs = EmployeeRewardAssignment.objects.filter(
+        organization=organization,
+        period_month=period_month,
+        source_document_type=document_type,
+        source_document_guid=document_guid,
+    )
+    own_employee = None
+    if not can_manage:
+        own_employee = Employee.objects.filter(
             organization=organization,
-            period_month=period_month,
-            source_document_type=document_type,
-            source_document_guid=document_guid,
-        )
-        .select_related("employee")
+            user=request.user,
+            is_active=True,
+        ).first()
+        if own_employee is None:
+            raise PermissionDenied
+        assignment_qs = assignment_qs.filter(employee=own_employee)
+    assignments = list(
+        assignment_qs.select_related("employee")
         .prefetch_related("lines")
         .order_by("role", "scope_key", "employee__display_name", "id")
     )
@@ -176,8 +189,14 @@ def reward_document(request, document_type, document_guid):
             "document_label": assignments[0].source_document_label if assignments else rows[0].document_name,
             "rows": rows,
             "assignments": assignments,
-            "employees": _employee_queryset(organization),
+            "employees": (
+                _employee_queryset(organization)
+                if can_manage
+                else Employee.objects.filter(pk=own_employee.pk)
+            ),
             "role_choices": EmployeeRewardRule.ROLE_CHOICES,
+            "can_manage_rewards": can_manage,
+            "show_financial_basis": can_manage,
             "is_closed": reward_dashboard_data(organization, period_month)["is_closed"],
         },
     )
@@ -187,7 +206,9 @@ def reward_document(request, document_type, document_guid):
 @require_POST
 def reward_assignment_save(request, document_type, document_guid):
     organization = _organization(request)
-    if not can_manage_employee_rewards(request.user, organization):
+    can_manage = can_manage_employee_rewards(request.user, organization)
+    can_propose = can_propose_employee_rewards(request.user, organization)
+    if not (can_manage or can_propose):
         raise PermissionDenied
     next_url = reverse(
         "finance_reward_document",
@@ -195,10 +216,18 @@ def reward_assignment_save(request, document_type, document_guid):
     )
     try:
         period_month = _month(request.POST.get("month"))
-        employee = get_object_or_404(
-            _employee_queryset(organization),
-            pk=request.POST.get("employee"),
-        )
+        if can_manage:
+            employee = get_object_or_404(
+                _employee_queryset(organization),
+                pk=request.POST.get("employee"),
+            )
+        else:
+            employee = get_object_or_404(
+                Employee,
+                organization=organization,
+                user=request.user,
+                is_active=True,
+            )
         role = request.POST.get("role")
         if role not in dict(EmployeeRewardRule.ROLE_CHOICES):
             raise ValidationError("Некорректная роль.")
@@ -213,7 +242,7 @@ def reward_assignment_save(request, document_type, document_guid):
             share_percent=request.POST.get("share_percent"),
             actor=request.user,
             line_identities=line_ids,
-            confirm=request.POST.get("confirm") == "1",
+            confirm=can_manage and request.POST.get("confirm") == "1",
             basis_note=request.POST.get("basis_note", ""),
         )
     except ValidationError as exc:
