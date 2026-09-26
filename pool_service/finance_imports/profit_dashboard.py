@@ -398,6 +398,8 @@ def _is_validated_odata_group(row, source_data, group_key, display):
     )
     if row.source_identity != expected_identity:
         return False
+    document_guid_value = source_data.get("document_guid")
+    document_type_value = source_data.get("document_type")
     if (group_type, group_recorder) != (recorder_type, recorder):
         month_close_link = (
             recorder_type == _MONTH_CLOSE_TYPE
@@ -415,8 +417,6 @@ def _is_validated_odata_group(row, source_data, group_key, display):
     if group_key != expected_group_key:
         return False
     source_org = _guid(source_data.get("organization_guid"))
-    document_guid_value = source_data.get("document_guid")
-    document_type_value = source_data.get("document_type")
     if document_guid_value is None and document_type_value is None:
         pass
     elif (
