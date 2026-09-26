@@ -7,7 +7,11 @@ from django.test import TestCase
 from django.urls import reverse
 
 from pool_service.finance_imports.odata_profit import ProfitRow
-from pool_service.finance_imports.odata_profit_drafts import _enrich_rows
+from pool_service.finance_imports.odata_profit_drafts import (
+    PARSER_VERSION,
+    SNAPSHOT_SCHEMA,
+    _enrich_rows,
+)
 from pool_service.models import (
     Client,
     Employee,
@@ -232,6 +236,49 @@ class EmployeeRewardTestCase(TestCase):
         self.assertTrue(any(issue["kind"] == "missing_basis" for issue in data["issues"]))
         self.assertIsNone(employee["details"][0]["amount"])
 
+    def test_month_close_is_blocked_when_percentage_basis_is_unknown(self):
+        row = self._row(
+            revenue=Decimal("10000"),
+            cost=Decimal("0"),
+            cost_source=OneCMonthlyProfit.COST_SOURCE_UNDEFINED,
+        )
+        self._confirm_assignment(
+            self.employee1, EmployeeRewardRule.ROLE_SALE, row, 100
+        )
+        with self.assertRaisesMessage(Exception, "Нельзя закрыть тестовый месяц"):
+            close_reward_month(self.organization, self.period, self.owner)
+
+    def test_direct_confirmation_rejects_share_overflow(self):
+        row = self._row()
+        self._confirm_assignment(
+            self.employee1, EmployeeRewardRule.ROLE_WORK, row, 60
+        )
+        with self.assertRaisesMessage(Exception, "максимум 100%"):
+            self._confirm_assignment(
+                self.employee2, EmployeeRewardRule.ROLE_WORK, row, 60
+            )
+
+    def test_paperwork_rejects_line_selection_and_keeps_one_document_scope(self):
+        row = self._row()
+        with self.assertRaisesMessage(Exception, "выбор отдельных строк"):
+            self._confirm_assignment(
+                self.employee1,
+                EmployeeRewardRule.ROLE_PAPERWORK,
+                row,
+                100,
+                lines=[row.source_identity],
+            )
+        assignment = self._confirm_assignment(
+            self.employee1,
+            EmployeeRewardRule.ROLE_PAPERWORK,
+            row,
+            100,
+        )
+        self.assertEqual(
+            assignment.scope_key,
+            f"document:{row.source_data['reward_document_type']}:{row.source_data['reward_document_guid']}",
+        )
+
     def test_one_employee_can_receive_multiple_confirmed_roles(self):
         row = self._row()
         self._confirm_assignment(self.employee1, EmployeeRewardRule.ROLE_SALE, row, 100)
@@ -422,6 +469,111 @@ class EmployeeRewardTestCase(TestCase):
         self.assertEqual(replacement.source_identity, row.source_identity)
         self.assertEqual(employee["sale_amount"], Decimal("4000.00"))
 
+    def test_line_scoped_assignment_follows_unique_semantic_line_after_reorder(self):
+        document_guid = uuid4()
+        recorder = uuid4()
+        row = self._row(
+            recorder=recorder,
+            document_guid=document_guid,
+            line=1,
+            nomenclature="Проектирование",
+            nomenclature_type="Услуга",
+        )
+        assignment = self._confirm_assignment(
+            self.employee1,
+            EmployeeRewardRule.ROLE_PROJECT,
+            row,
+            100,
+            lines=[row.source_identity],
+        )
+        old_identity = row.source_identity
+
+        new_batch = self._new_batch("3" * 64)
+        replacement = self._row(
+            batch=new_batch,
+            recorder=recorder,
+            document_guid=document_guid,
+            line=7,
+            nomenclature="Проектирование",
+            nomenclature_type="Услуга",
+            revenue=Decimal("60000"),
+            cost=Decimal("20000"),
+        )
+        state = OneCReportPeriodState.objects.get(
+            organization=self.organization,
+            report_type=OneCImportBatch.TYPE_MONTHLY_PROFIT,
+            period_month=self.period,
+        )
+        state.active_batch = new_batch
+        state.save(update_fields=["active_batch"])
+
+        data = reward_dashboard_data(self.organization, self.period)
+        employee = next(
+            item for item in data["rows"] if item["employee_id"] == self.employee1.id
+        )
+        self.assertNotEqual(replacement.source_identity, old_identity)
+        self.assertEqual(assignment.lines.count(), 1)
+        self.assertEqual(employee["project_amount"], Decimal("2000.00"))
+        self.assertFalse(
+            any(issue["kind"] == "line_identity_changed" for issue in data["issues"])
+        )
+
+    def test_ambiguous_semantic_line_after_reimport_requires_reconfirmation(self):
+        document_guid = uuid4()
+        recorder = uuid4()
+        row = self._row(
+            recorder=recorder,
+            document_guid=document_guid,
+            line=1,
+            nomenclature="Монтаж",
+            nomenclature_type="Услуга",
+        )
+        self._confirm_assignment(
+            self.employee1,
+            EmployeeRewardRule.ROLE_WORK,
+            row,
+            100,
+            lines=[row.source_identity],
+        )
+
+        new_batch = self._new_batch("4" * 64)
+        self._row(
+            batch=new_batch,
+            recorder=recorder,
+            document_guid=document_guid,
+            line=7,
+            nomenclature="Монтаж",
+            nomenclature_type="Услуга",
+        )
+        self._row(
+            batch=new_batch,
+            recorder=recorder,
+            document_guid=document_guid,
+            line=8,
+            nomenclature="Монтаж",
+            nomenclature_type="Услуга",
+            revenue=Decimal("10000"),
+            cost=Decimal("5000"),
+        )
+        state = OneCReportPeriodState.objects.get(
+            organization=self.organization,
+            report_type=OneCImportBatch.TYPE_MONTHLY_PROFIT,
+            period_month=self.period,
+        )
+        state.active_batch = new_batch
+        state.save(update_fields=["active_batch"])
+
+        data = reward_dashboard_data(self.organization, self.period)
+        employee = next(
+            item for item in data["rows"] if item["employee_id"] == self.employee1.id
+        )
+        self.assertEqual(employee["work_amount"], Decimal("0.00"))
+        self.assertTrue(
+            any(issue["kind"] == "line_identity_changed" for issue in data["issues"])
+        )
+        with self.assertRaisesMessage(Exception, "Нельзя закрыть тестовый месяц"):
+            close_reward_month(self.organization, self.period, self.owner)
+
     def test_closed_month_uses_snapshot_after_rule_change(self):
         row = self._row()
         self._confirm_assignment(self.employee1, EmployeeRewardRule.ROLE_SALE, row, 100)
@@ -494,9 +646,66 @@ class EmployeeRewardTestCase(TestCase):
         self.assertEqual(general.status_code, 403)
         self.assertEqual(own.status_code, 200)
         self.assertEqual(other.status_code, 403)
+        self.assertNotContains(own, "База ВП")
+        self.assertNotContains(own, "10% ВП")
+
+
+    def test_closed_month_does_not_receive_seeded_author_or_template_assignments(self):
+        author_guid = uuid4()
+        customer_guid = uuid4()
+        EmployeeOneCUserIdentity.objects.create(
+            organization=self.organization,
+            onec_user_id=author_guid,
+            display_name="Mapped Author",
+            employee=self.employee1,
+            status=EmployeeOneCUserIdentity.STATUS_CONFIRMED,
+        )
+        client = Client.objects.create(
+            organization=self.organization,
+            name="Closed Template Client",
+        )
+        create_reward_template(
+            organization=self.organization,
+            source_customer_guid=customer_guid,
+            client=client,
+            pool=None,
+            role=EmployeeRewardRule.ROLE_SALE,
+            employee=self.employee1,
+            share_percent=100,
+            effective_from=self.period,
+            actor=self.owner,
+        )
+        close_reward_month(self.organization, self.period, self.owner)
+        row = self._row(
+            author_guid=author_guid,
+            customer_guid=customer_guid,
+        )
+        self.assertEqual(
+            seed_author_paperwork_proposals(
+                self.organization, [row], proposed_by=self.owner
+            ),
+            0,
+        )
+        self.assertEqual(
+            seed_template_participation(
+                self.organization, [row], proposed_by=self.owner
+            ),
+            0,
+        )
+        self.assertEqual(
+            EmployeeRewardAssignment.objects.filter(
+                organization=self.organization,
+                period_month=self.period,
+            ).count(),
+            0,
+        )
 
 
 class OneCAuthorEnrichmentTests(TestCase):
+    def test_author_aware_snapshot_uses_new_schema_and_parser_version(self):
+        self.assertEqual(SNAPSHOT_SCHEMA, "onec_odata_profit_draft_v3")
+        self.assertEqual(PARSER_VERSION, "odata-3")
+
     def test_author_is_taken_from_document_user_not_responsible_employee(self):
         organization_id = 7
         recorder = str(uuid4())
