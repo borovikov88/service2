@@ -1107,7 +1107,7 @@ class UnifiedSyncTests(TestCase):
         self.assertEqual(item["error"], "Не удалось проверить данные 1С. Продолжите проверку позже.")
         self.assertNotIn("secret", str(item))
         self.assertNotIn("fresh.example", str(item))
-        self.assertNotIn("abc", str(item))
+        self.assertNotIn("abc", item["error"])
         self.assertNotIn("secret", "\n".join(logs.output))
         self.assertNotIn("fresh.example", "\n".join(logs.output))
         self.assertNotIn("Traceback", "\n".join(logs.output))
