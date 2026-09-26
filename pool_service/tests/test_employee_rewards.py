@@ -9,6 +9,7 @@ from django.urls import reverse
 from pool_service.finance_imports.odata_profit import ProfitRow
 from pool_service.finance_imports.odata_profit_drafts import _enrich_rows
 from pool_service.models import (
+    Client,
     Employee,
     EmployeeOneCUserIdentity,
     EmployeeRewardAssignment,
@@ -18,13 +19,16 @@ from pool_service.models import (
     OneCMonthlyProfit,
     OneCReportPeriodState,
     Organization,
+    Pool,
     OrganizationAccess,
 )
 from pool_service.services.employee_rewards import (
     close_reward_month,
     create_or_update_assignment,
+    create_reward_template,
     reward_dashboard_data,
     seed_author_paperwork_proposals,
+    seed_template_participation,
 )
 
 
@@ -119,6 +123,7 @@ class EmployeeRewardTestCase(TestCase):
         cost_source=OneCMonthlyProfit.COST_SOURCE_ACTUAL,
         author_guid=None,
         author_name=None,
+        customer_guid=None,
     ):
         recorder = recorder or uuid4()
         document_guid = document_guid or recorder
@@ -133,6 +138,7 @@ class EmployeeRewardTestCase(TestCase):
             "reward_document_type": document_type,
             "reward_document_guid": str(document_guid),
             "reward_document_display": "Документ тест",
+            "customer_guid": str(customer_guid or uuid4()),
         }
         if order_guid:
             data["resolved_order_guid"] = str(order_guid)
@@ -276,6 +282,96 @@ class EmployeeRewardTestCase(TestCase):
             EmployeeRewardAssignment.objects.get().source_document_type,
             "Document_РасходнаяНакладная",
         )
+
+    def test_same_order_reuses_one_role_assignment_across_realizations(self):
+        order_guid = uuid4()
+        first = self._row(
+            recorder=uuid4(),
+            document_guid=uuid4(),
+            order_guid=order_guid,
+            line=1,
+        )
+        second = self._row(
+            recorder=uuid4(),
+            document_guid=uuid4(),
+            order_guid=order_guid,
+            line=2,
+            revenue=Decimal("10000"),
+            cost=Decimal("5000"),
+        )
+        self._confirm_assignment(
+            self.employee1, EmployeeRewardRule.ROLE_SALE, first, 100
+        )
+        self._confirm_assignment(
+            self.employee1, EmployeeRewardRule.ROLE_SALE, second, 100
+        )
+        assignments = EmployeeRewardAssignment.objects.filter(
+            organization=self.organization,
+            period_month=self.period,
+            role=EmployeeRewardRule.ROLE_SALE,
+            employee=self.employee1,
+        )
+        self.assertEqual(assignments.count(), 1)
+        self.assertEqual(assignments.get().scope_key, f"order:{order_guid}")
+
+    def test_client_object_template_seeds_future_proposal_not_confirmation(self):
+        customer_guid = uuid4()
+        client = Client.objects.create(
+            organization=self.organization,
+            name="Template Client",
+        )
+        pool = Pool.objects.create(
+            organization=self.organization,
+            client=client,
+            address="Template Object",
+        )
+        create_reward_template(
+            organization=self.organization,
+            source_customer_guid=customer_guid,
+            client=client,
+            pool=pool,
+            role=EmployeeRewardRule.ROLE_WORK,
+            employee=self.employee1,
+            share_percent=Decimal("60"),
+            effective_from=self.period,
+            actor=self.owner,
+        )
+        row = self._row(customer_guid=customer_guid)
+        created = seed_template_participation(
+            self.organization, [row], proposed_by=self.owner
+        )
+        self.assertEqual(created, 1)
+        assignment = EmployeeRewardAssignment.objects.get(
+            organization=self.organization,
+            role=EmployeeRewardRule.ROLE_WORK,
+        )
+        self.assertEqual(assignment.employee_id, self.employee1.id)
+        self.assertEqual(assignment.share_percent, Decimal("60"))
+        self.assertEqual(
+            assignment.status, EmployeeRewardAssignment.STATUS_PROPOSED
+        )
+        self.assertEqual(
+            assignment.source_kind,
+            EmployeeRewardAssignment.SOURCE_OBJECT_TEMPLATE,
+        )
+
+    def test_project_cannot_be_saved_as_recurring_template(self):
+        client = Client.objects.create(
+            organization=self.organization,
+            name="Project Template Client",
+        )
+        with self.assertRaisesMessage(Exception, "конкретный проект"):
+            create_reward_template(
+                organization=self.organization,
+                source_customer_guid=uuid4(),
+                client=client,
+                pool=None,
+                role=EmployeeRewardRule.ROLE_PROJECT,
+                employee=self.employee1,
+                share_percent=100,
+                effective_from=self.period,
+                actor=self.owner,
+            )
 
     def test_assignment_survives_active_import_replacement(self):
         document_guid = uuid4()
