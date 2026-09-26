@@ -102,6 +102,7 @@ DOCUMENTS = {
 }
 RETAIL_REPORT_TYPE = "Document_ОтчетОРозничныхПродажах"
 RETAIL_CHECK_TYPE = "Document_ЧекККМ"
+MONTH_CLOSE_TYPE = "Document_ЗакрытиеМесяца"
 ORDER_TYPE = "Document_ЗаказПокупателя"
 DIRECT_EXPENSE_NOMENCLATURE = "Прямые расходы по заказу"
 DIRECT_EXPENSE_NOMENCLATURE_TYPE = "Прямые расходы"
@@ -407,6 +408,15 @@ def _read_profit_documents(config, rows, *, opener, page_budget):
         for row in rows
         if row.recorder_type in PROFIT_RECORDER_TYPES
     }
+    primary_refs.update({
+        (row.document_type, row.document_guid)
+        for row in rows
+        if (
+            row.recorder_type == MONTH_CLOSE_TYPE
+            and row.document_type in PROFIT_RECORDER_TYPES
+            and row.document_guid
+        )
+    })
     documents = _read_document_entities(
         config,
         primary_refs,
@@ -870,6 +880,16 @@ def _document_groups(rows, documents, organization_id):
         primary_identity = row.recorder_type, row.recorder
         group_identity = primary_identity
         primary_document = documents.get(primary_identity)
+        if (
+            row.recorder_type == MONTH_CLOSE_TYPE
+            and row.document_type in PROFIT_RECORDER_TYPES
+            and row.document_guid
+        ):
+            linked_identity = (row.document_type, row.document_guid)
+            linked_document = documents.get(linked_identity)
+            if linked_document is not None:
+                primary_document = linked_document
+                group_identity = linked_identity
         if row.recorder_type == RETAIL_CHECK_TYPE and primary_document is not None:
             candidates = reports_by_day.get(
                 (row.organization_guid, primary_document["date"]), set()
@@ -1297,9 +1317,15 @@ def _validate_snapshot(payload, config, *, organization_id):
         ):
             raise ValidationError("OData snapshot document group key is invalid.")
         if (group_type, group_recorder) != (recorder_type, recorder):
+            month_close_link = (
+                recorder_type == MONTH_CLOSE_TYPE
+                and document_guid is not None
+                and document_type in PROFIT_RECORDER_TYPES
+                and (group_type, group_recorder) == (document_type, document_guid)
+            )
             if not (
-                recorder_type == RETAIL_CHECK_TYPE
-                and group_type == RETAIL_REPORT_TYPE
+                (recorder_type == RETAIL_CHECK_TYPE and group_type == RETAIL_REPORT_TYPE)
+                or month_close_link
             ):
                 raise ValidationError("OData snapshot document group is invalid.")
         document_display = source_data.get("document_display")
@@ -1312,6 +1338,12 @@ def _validate_snapshot(payload, config, *, organization_id):
             raise ValidationError("OData snapshot document display is invalid.")
         known_recorder = (
             recorder_type in PROFIT_RECORDER_TYPES
+            or (
+                recorder_type == MONTH_CLOSE_TYPE
+                and document_guid is not None
+                and document_type in PROFIT_RECORDER_TYPES
+                and (group_type, group_recorder) == (document_type, document_guid)
+            )
             or (is_direct_expense and recorder_type == DIRECT_EXPENSE_RECORDER_TYPE)
         )
         document_number = source_data.get("document_number")
@@ -1388,6 +1420,18 @@ def _validate_snapshot(payload, config, *, organization_id):
                 retail_reports[(source_org, document_date)][
                     report_identity
                 ] = report_descriptor
+            if recorder_type == MONTH_CLOSE_TYPE:
+                if (
+                    document_type != group_type
+                    or normalize_guid(
+                        document_guid, field="Snapshot linked document GUID"
+                    ) != group_recorder
+                    or document_number != group_number
+                    or document_date != group_date
+                ):
+                    raise ValidationError(
+                        "OData snapshot month-close document link is inconsistent."
+                    )
             if recorder_type == RETAIL_CHECK_TYPE and group_type == RETAIL_REPORT_TYPE:
                 if source_date != document_date or document_date != group_date:
                     raise ValidationError("OData snapshot retail document date is inconsistent.")
