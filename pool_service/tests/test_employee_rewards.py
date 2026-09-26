@@ -2,7 +2,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
-from django.contrib.auth.models import User
+from django.contrib.auth.models import Permission, User
 from django.test import TestCase
 from django.urls import reverse
 
@@ -322,6 +322,47 @@ class EmployeeRewardTestCase(TestCase):
         self.assertTrue(after["is_closed"])
         self.assertEqual(before_total, after_total)
         self.assertEqual(after_total, Decimal("3000.00"))
+
+    def test_permissioned_employee_proposes_only_self_without_financial_basis(self):
+        row = self._row()
+        permission = Permission.objects.get(codename="propose_employee_rewards")
+        self.employee_user.user_permissions.add(permission)
+        self.client.force_login(self.employee_user)
+        url = reverse(
+            "finance_reward_document",
+            args=[
+                row.source_data["reward_document_type"],
+                row.source_data["reward_document_guid"],
+            ],
+        )
+        response = self.client.get(url, {"month": "2026-09"})
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "Себестоимость")
+        self.assertNotContains(response, "Сохранить и подтвердить")
+
+        response = self.client.post(
+            reverse(
+                "finance_reward_assignment_save",
+                args=[
+                    row.source_data["reward_document_type"],
+                    row.source_data["reward_document_guid"],
+                ],
+            ),
+            {
+                "month": "2026-09",
+                "employee": str(self.employee2.id),
+                "role": EmployeeRewardRule.ROLE_WORK,
+                "share_percent": "100",
+                "basis_note": "own proposal",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        assignment = EmployeeRewardAssignment.objects.get(
+            organization=self.organization,
+            role=EmployeeRewardRule.ROLE_WORK,
+        )
+        self.assertEqual(assignment.employee_id, self.employee1.id)
+        self.assertEqual(assignment.status, EmployeeRewardAssignment.STATUS_PROPOSED)
 
     def test_employee_can_only_open_own_reward_detail_not_general_table(self):
         self.client.force_login(self.employee_user)
