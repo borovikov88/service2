@@ -78,5 +78,12 @@
   {% if issues %}
   <div class="card card-soft p-3 mt-3"><h2 class="h5">Требует проверки</h2><div class="table-responsive"><table class="table table-sm mb-0" style="min-width:700px"><thead><tr><th>Документ</th><th>Причина</th></tr></thead><tbody>{% for issue in issues %}<tr><td>{{ issue.label }}</td><td>{{ issue.detail }}</td></tr>{% endfor %}</tbody></table></div></div>
   {% endif %}
+
+  {% if is_closed and can_manage_rewards %}
+  <div class="card card-soft p-3 mt-3"><h2 class="h5">Поздние корректировки тестового расчёта</h2><div class="small text-muted mb-3">Корректировка не меняет закрытый результат задним числом и не создаёт автоматическое удержание из зарплаты.</div>
+    <form method="post" action="{% url 'finance_reward_adjustment_create' %}" class="row g-2 align-items-end mb-3">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><div class="col-md-4"><label class="form-label">Сотрудник</label><select class="form-select" name="employee" required>{% for item in employees %}<option value="{{ item.id }}">{{ item.display_name }}</option>{% endfor %}</select></div><div class="col-md-2"><label class="form-label">Сумма, ₽</label><input class="form-control" type="number" step="0.01" name="amount" required></div><div class="col-md-4"><label class="form-label">Основание</label><input class="form-control" name="reason" maxlength="1000" required></div><div class="col-md-2"><button class="btn btn-outline-primary w-100">Предложить</button></div></form>
+    {% if adjustment_rows %}<div class="table-responsive"><table class="table table-sm align-middle mb-0" style="min-width:760px"><thead><tr><th>Сотрудник</th><th class="text-end">Сумма</th><th>Основание</th><th>Статус</th><th></th></tr></thead><tbody>{% for item in adjustment_rows %}<tr><td>{{ item.employee.display_name }}</td><td class="text-end">{{ item.amount|money }}</td><td>{{ item.reason }}</td><td>{{ item.get_status_display }}</td><td>{% if item.status == "proposed" %}<form method="post" action="{% url 'finance_reward_adjustment_confirm' item.id %}">{% csrf_token %}<button class="btn btn-sm btn-outline-primary">Подтвердить</button></form>{% endif %}</td></tr>{% endfor %}</tbody></table></div>{% endif %}
+  </div>
+  {% endif %}
 </div>
 {% endblock %}
