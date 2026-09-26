@@ -332,6 +332,7 @@ _DOCUMENT_LABELS = {
 }
 _RETAIL_CHECK_TYPE = "Document_ЧекККМ"
 _RETAIL_REPORT_TYPE = "Document_ОтчетОРозничныхПродажах"
+_MONTH_CLOSE_TYPE = "Document_ЗакрытиеМесяца"
 
 
 def _guid(value):
@@ -375,7 +376,10 @@ def _is_validated_odata_group(row, source_data, group_key, display):
         recorder is None
         or group_recorder is None
         or recorder != source_recorder
-        or recorder_type not in _DOCUMENT_LABELS
+        or (
+            recorder_type not in _DOCUMENT_LABELS
+            and recorder_type != _MONTH_CLOSE_TYPE
+        )
         or group_type not in _DOCUMENT_LABELS
     ):
         return False
@@ -394,19 +398,25 @@ def _is_validated_odata_group(row, source_data, group_key, display):
     )
     if row.source_identity != expected_identity:
         return False
-    if (group_type, group_recorder) != (recorder_type, recorder) and not (
-        recorder_type == _RETAIL_CHECK_TYPE
-        and group_type == _RETAIL_REPORT_TYPE
-    ):
-        return False
+    document_guid_value = source_data.get("document_guid")
+    document_type_value = source_data.get("document_type")
+    if (group_type, group_recorder) != (recorder_type, recorder):
+        month_close_link = (
+            recorder_type == _MONTH_CLOSE_TYPE
+            and _safe_document_type(document_type_value) == group_type
+            and _guid(document_guid_value) == group_recorder
+        )
+        if not (
+            (recorder_type == _RETAIL_CHECK_TYPE and group_type == _RETAIL_REPORT_TYPE)
+            or month_close_link
+        ):
+            return False
     expected_group_key = (
         f"odata-document:{row.organization_id}:{group_type}:{group_recorder}"
     )
     if group_key != expected_group_key:
         return False
     source_org = _guid(source_data.get("organization_guid"))
-    document_guid_value = source_data.get("document_guid")
-    document_type_value = source_data.get("document_type")
     if document_guid_value is None and document_type_value is None:
         pass
     elif (
@@ -450,6 +460,13 @@ def _is_validated_odata_group(row, source_data, group_key, display):
         return False
     if (group_type, group_recorder) == (recorder_type, recorder):
         return group_number == document_number and group_date == document_date
+    if recorder_type == _MONTH_CLOSE_TYPE:
+        return (
+            _safe_document_type(document_type_value) == group_type
+            and _guid(document_guid_value) == group_recorder
+            and document_number == group_number
+            and document_date == group_date
+        )
     return source_date == document_date == group_date
 
 
@@ -602,6 +619,12 @@ def _decorate_presentation_row(row):
 def _presentation_item_key(row):
     source_data = _row_source_data(row)
     nomenclature_guid = _guid(source_data.get("nomenclature_guid"))
+    business_date = source_data.get("source_date")
+    if (
+        source_data.get("recorder_type") == _MONTH_CLOSE_TYPE
+        and source_data.get("document_date")
+    ):
+        business_date = source_data.get("document_date")
     item_identity = (
         ("guid", nomenclature_guid)
         if nomenclature_guid
@@ -613,7 +636,7 @@ def _presentation_item_key(row):
     )
     return (
         row.period_month,
-        source_data.get("source_date"),
+        business_date,
         item_identity,
         row.nomenclature_type,
         row.manager_name,
