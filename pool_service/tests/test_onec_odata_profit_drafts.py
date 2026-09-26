@@ -452,6 +452,37 @@ class ODataProfitDraftTests(TestCase):
             CUSTOMER_ORDER,
         )
 
+    def test_month_close_order_must_resolve_before_draft(self):
+        close_recorder = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+        row = profit_row(
+            line=8,
+            period="2026-05-31T23:59:59+03:00",
+            recorder=close_recorder,
+            recorder_type="StandardODATA.Document_ЗакрытиеМесяца",
+            customer=ZERO_GUID,
+            revenue="0.00",
+            cost="25.36",
+            order_guid=CUSTOMER_ORDER,
+        )
+        opener = FakeOpener(
+            {"value": [row]},
+            reference_payload(ITEM, "Расходные материалы", article=""),
+            reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
+            document_payload(
+                close_recorder,
+                number="НФНФ-000011",
+                value_date="2026-05-31T23:59:59+03:00",
+            ),
+            {"value": []},
+        )
+
+        with self.assertRaises(ODataDraftError) as captured:
+            self.create_draft(rows=[row], opener=opener)
+        self.assertIn(
+            "Month-close customer order is missing or unavailable",
+            str(captured.exception),
+        )
+
     def test_direct_receipt_expenses_reduce_order_profit_and_confirm_exact_snapshot(self):
         sale = profit_row(
             revenue="94494.00",
