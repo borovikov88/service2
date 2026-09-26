@@ -62,10 +62,13 @@ ORG_GUID = "11111111-1111-1111-1111-111111111111"
 RECORDER = "55555555-5555-5555-5555-555555555555"
 
 
-def config():
+def config(*, organization_guids=(ORG_GUID,)):
     return ODataConfig(
         base_url="https://fresh.example/odata/standard.odata/",
-        organization_guids=(ORG_GUID,), timeout_seconds=7, max_pages=10, max_rows=1000,
+        organization_guids=organization_guids,
+        timeout_seconds=7,
+        max_pages=10,
+        max_rows=1000,
     )
 
 
@@ -240,6 +243,52 @@ class UnifiedSyncTests(TestCase):
         self.assertEqual(
             {row["nomenclature"] for row in direct},
             {"Монтаж оборудования", "Транспортные расходы"},
+        )
+
+    def test_profit_collector_accepts_direct_cross_org_order_in_scope(self):
+        other_org = "22222222-2222-4222-8222-222222222222"
+        sale = raw_profit_row(
+            revenue="94494.25",
+            cost="29696.64",
+        )
+        opener = FakeOpener(
+            {"value": [sale]},
+            {"value": [
+                direct_expense_row(10, "25000.00"),
+                direct_expense_row(11, "5000.00"),
+            ]},
+            direct_order_document_payload(organization=other_org),
+            direct_receipt_document_payload(),
+            direct_expense_line_payload(),
+            direct_nomenclature_reference_payload(),
+            reference_payload(CUSTOMER, "Клиент заказа №114"),
+            reference_payload(RESPONSIBLE, "Ответственный заказа №114"),
+            document_payload(number="НФНФ-000335"),
+        )
+
+        with patch(
+            "pool_service.finance_imports.odata_unified_sync.read_direct_order_expense_rows",
+            side_effect=read_direct_order_expense_rows,
+        ):
+            rows, _ = _collect_profit_chunk(
+                "2026-05-01",
+                "2026-05-31",
+                config=config(organization_guids=(ORG_GUID, other_org)),
+                opener=opener,
+                organization_id=self.organization.pk,
+            )
+
+        direct = [
+            row for row in rows
+            if row["source_data"].get("row_kind") == "direct_order_expense"
+        ]
+        self.assertEqual(len(direct), 2)
+        self.assertEqual(
+            {
+                row["source_data"]["resolved_order_organization_guid"]
+                for row in direct
+            },
+            {other_org},
         )
 
     def test_unified_direct_cost_keeps_missing_receipt_metadata(self):
@@ -1114,7 +1163,7 @@ class UnifiedSyncTests(TestCase):
                 self.assertIsNone(failed.lease_token)
                 self.assertFalse(OneCImportBatch.objects.exists())
 
-    def test_unified_sync_rejects_sales_order_from_other_organization(self):
+    def test_unified_sync_rejects_sales_order_outside_configured_scope(self):
         run, _ = start_unified_sync(
             self.organization,
             self.user,
@@ -1171,6 +1220,54 @@ class UnifiedSyncTests(TestCase):
         self.assertFalse(
             OneCImportBatch.objects.filter(status="previewed").exists()
         )
+
+    def test_unified_sync_accepts_sales_order_in_other_configured_organization(self):
+        other_org = "22222222-2222-4222-8222-222222222222"
+        run, _ = start_unified_sync(
+            self.organization,
+            self.user,
+            [REPORT_PROFIT],
+            today=date(2025, 5, 1),
+        )
+        row = self._profit_odata_row()
+        opener = FakeOpener(
+            {"value": [row]},
+            self._reference_payload(
+                "33333333-3333-3333-3333-333333333333",
+                "Товар",
+                article="A-1",
+                nomenclature_type="Запас",
+            ),
+            self._reference_payload(
+                "44444444-4444-4444-4444-444444444444",
+                "Покупатель",
+            ),
+            self._reference_payload(
+                "66666666-6666-6666-6666-666666666666",
+                "Ответственный",
+            ),
+            document_payload(
+                RECORDER,
+                number="РН-000001",
+                value_date="2025-05-15T10:00:00+03:00",
+                order=CUSTOMER_ORDER,
+            ),
+            direct_order_document_payload(organization=other_org),
+        )
+
+        result = step_unified_sync(
+            run.id,
+            self.user,
+            [REPORT_PROFIT],
+            0,
+            config=config(organization_guids=(ORG_GUID, other_org)),
+            opener=opener,
+        )
+
+        item = result.result_summary[REPORT_PROFIT]
+        self.assertNotEqual(item["status"], "retryable_error")
+        self.assertGreater(result.cursor["index"], 0)
+
 
     def test_profit_customer_lookup_odata_errors_have_safe_allowlisted_reasons(self):
         cases = (
