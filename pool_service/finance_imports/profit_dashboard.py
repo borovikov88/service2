@@ -621,6 +621,83 @@ def _presentation_item_key(row):
     )
 
 
+
+_MONTH_CLOSE_TYPE = "Document_ЗакрытиеМесяца"
+
+
+def _month_close_adjustment_key(row):
+    source_data = _row_source_data(row)
+    nomenclature_guid = _guid(source_data.get("nomenclature_guid"))
+    item_identity = (
+        ("guid", nomenclature_guid)
+        if nomenclature_guid
+        else (
+            "text",
+            (row.nomenclature or "").strip().casefold(),
+            (row.article or "").strip().casefold(),
+        )
+    )
+    return (
+        row.period_month,
+        item_identity,
+        row.nomenclature_type,
+        row.manager_name,
+    )
+
+
+def _merge_order_month_close_adjustments(rows):
+    """Fold unambiguous month-close cost corrections into the matching order line."""
+    candidates = {}
+    for index, row in enumerate(rows):
+        source_data = _row_source_data(row)
+        if (
+            _is_direct_expense_row(row)
+            or source_data.get("recorder_type") == _MONTH_CLOSE_TYPE
+            or row.dashboard_revenue == 0
+        ):
+            continue
+        candidates.setdefault(_month_close_adjustment_key(row), []).append(index)
+
+    replacements = {}
+    consumed = set()
+    for index, row in enumerate(rows):
+        source_data = _row_source_data(row)
+        if (
+            source_data.get("recorder_type") != _MONTH_CLOSE_TYPE
+            or row.dashboard_revenue != 0
+            or row.dashboard_analytical_cost is None
+            or row.dashboard_gross_profit is None
+        ):
+            continue
+        targets = candidates.get(_month_close_adjustment_key(row), [])
+        if len(targets) != 1:
+            continue
+        target_index = targets[0]
+        target = replacements.get(target_index)
+        if target is None:
+            target = copy(rows[target_index])
+            target.dashboard_month_close_adjustment = Decimal("0")
+        target.cost = (target.cost or Decimal("0")) + (row.cost or Decimal("0"))
+        target.dashboard_analytical_cost = (
+            (target.dashboard_analytical_cost or Decimal("0"))
+            + row.dashboard_analytical_cost
+        )
+        target.dashboard_gross_profit = (
+            (target.dashboard_gross_profit or Decimal("0"))
+            + row.dashboard_gross_profit
+        )
+        target.dashboard_month_close_adjustment += row.dashboard_analytical_cost
+        replacements[target_index] = target
+        consumed.add(index)
+
+    result = []
+    for index, row in enumerate(rows):
+        if index in consumed:
+            continue
+        result.append(replacements.get(index, row))
+    return result
+
+
 def _display_quantity_for_movements(revenue_row, cost_rows):
     revenue_quantity = revenue_row.quantity
     cost_quantities = [
@@ -838,6 +915,10 @@ def customer_breakdown(rows):
                         _decorate_presentation_row(row)
                         for row in subdocument_rows
                     )
+            if document["is_order_group"]:
+                presentation_rows = _merge_order_month_close_adjustments(
+                    presentation_rows
+                )
             presentation_rows.sort(key=lambda row: (
                 row.dashboard_is_direct_expense,
                 row.period_month,
