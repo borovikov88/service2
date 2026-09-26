@@ -452,6 +452,12 @@ def _sales_order_customer_guids(rows, documents):
             continue
         primary = documents.get((recorder_type, recorder))
         order_ref = primary.get("order_ref") if primary else None
+        if (
+            order_ref is None
+            and recorder_type == MONTH_CLOSE_TYPE
+            and getattr(row, "order_guid", None)
+        ):
+            order_ref = (ORDER_TYPE, row.order_guid)
         order = documents.get(order_ref) if order_ref else None
         customer_guid = order.get("customer_guid") if order else None
         if customer_guid:
@@ -1066,7 +1072,12 @@ def _enrich_rows(
                 "document_group_date": group_document["date"].isoformat(),
             })
         order_ref = primary_document.get("order_ref") if primary_document else None
-        if order_ref is None and row.order_guid:
+        order_from_register = (
+            order_ref is None
+            and row.recorder_type == MONTH_CLOSE_TYPE
+            and row.order_guid is not None
+        )
+        if order_from_register:
             order_ref = (ORDER_TYPE, row.order_guid)
         if order_ref and order_ref in documents:
             order_document = documents[order_ref]
@@ -1083,9 +1094,7 @@ def _enrich_rows(
                 raise ODataPreviewError(
                     "Sales customer order customer is missing or unavailable"
                 )
-            normalized[-1]["source_data"].update({
-                "source_document_order_guid": order_ref[1],
-                "source_document_order_type": order_ref[0],
+            order_source_data = {
                 "resolved_order_guid": order_ref[1],
                 "resolved_order_type": order_ref[0],
                 "resolved_order_organization_guid": order_document["organization_guid"],
@@ -1096,7 +1105,15 @@ def _enrich_rows(
                 ),
                 "resolved_order_customer_guid": order_customer_guid,
                 "resolved_order_customer_name": order_customer["description"],
-            })
+            }
+            if order_from_register:
+                order_source_data["source_register_order_guid"] = order_ref[1]
+            else:
+                order_source_data.update({
+                    "source_document_order_guid": order_ref[1],
+                    "source_document_order_type": order_ref[0],
+                })
+            normalized[-1]["source_data"].update(order_source_data)
     return normalized
 
 
@@ -1429,6 +1446,9 @@ def _validate_snapshot(payload, config, *, organization_id):
             source_data.get("source_document_order_guid"),
             source_data.get("source_document_order_type"),
         )
+        source_register_order_guid = source_data.get(
+            "source_register_order_guid"
+        )
         has_resolved_order = any(value is not None for value in order_values)
         normalized_order_guid = None
         resolved_customer_guid = None
@@ -1504,11 +1524,30 @@ def _validate_snapshot(payload, config, *, organization_id):
             _reject_guid_label(resolved_customer_name)
 
             if is_direct_expense:
-                if any(value is not None for value in source_document_order_values):
+                if (
+                    any(value is not None for value in source_document_order_values)
+                    or source_register_order_guid is not None
+                ):
                     raise ValidationError(
                         "Direct expense snapshot contains sales order binding fields."
                     )
+            elif recorder_type == MONTH_CLOSE_TYPE:
+                if any(value is not None for value in source_document_order_values):
+                    raise ValidationError(
+                        "Month-close snapshot contains document-order binding fields."
+                    )
+                if normalize_guid(
+                    source_register_order_guid,
+                    field="Snapshot source register order GUID",
+                ) != normalized_order_guid:
+                    raise ValidationError(
+                        "Month-close snapshot register order attribution is inconsistent."
+                    )
             else:
+                if source_register_order_guid is not None:
+                    raise ValidationError(
+                        "Sales snapshot contains register-order binding fields."
+                    )
                 if any(value is None for value in source_document_order_values):
                     raise ValidationError(
                         "OData snapshot source document order is incomplete."
@@ -1538,9 +1577,12 @@ def _validate_snapshot(payload, config, *, organization_id):
                 raise ValidationError(
                     "OData snapshot order customer has no resolved order."
                 )
-            if any(value is not None for value in source_document_order_values):
+            if (
+                any(value is not None for value in source_document_order_values)
+                or source_register_order_guid is not None
+            ):
                 raise ValidationError(
-                    "OData snapshot source document order has no resolved order."
+                    "OData snapshot source order binding has no resolved order."
                 )
         nomenclature_guid = normalize_guid(
             source_data.get("nomenclature_guid"),
