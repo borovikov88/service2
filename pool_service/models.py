@@ -54,6 +54,10 @@ class Organization(models.Model):
             ("view_payroll_personal", "Can view personal payroll data"),
             ("import_payroll", "Can import payroll"),
             ("manage_employee_mapping", "Can manage employee mapping"),
+            ("view_employee_rewards", "Can view employee reward summaries"),
+            ("manage_employee_rewards", "Can manage employee reward participation"),
+            ("manage_reward_rules", "Can manage employee reward rules"),
+            ("close_reward_month", "Can close employee reward month"),
         ]
 
     def __str__(self):
@@ -3229,3 +3233,518 @@ class DevelopmentTaskEvent(models.Model):
 
     def __str__(self):
         return f"{self.task.reference}: {self.message}"
+
+
+class EmployeeOneCUserIdentity(models.Model):
+    """Maps a 1C user account (Автор_Key) to an existing Service2 employee."""
+
+    STATUS_NEEDS_CONFIRMATION = "needs_confirmation"
+    STATUS_CONFIRMED = "confirmed"
+    STATUS_TECHNICAL = "technical"
+    STATUS_CHOICES = [
+        (STATUS_NEEDS_CONFIRMATION, "Требует сопоставления"),
+        (STATUS_CONFIRMED, "Сопоставлен"),
+        (STATUS_TECHNICAL, "Техническая учётная запись"),
+    ]
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="employee_onec_user_identities",
+    )
+    onec_user_id = models.UUIDField()
+    display_name = models.CharField(max_length=500)
+    employee = models.ForeignKey(
+        Employee,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="onec_user_identities",
+    )
+    status = models.CharField(
+        max_length=24,
+        choices=STATUS_CHOICES,
+        default=STATUS_NEEDS_CONFIRMATION,
+    )
+    confirmed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="confirmed_employee_onec_user_identities",
+    )
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    comment = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["display_name", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "onec_user_id"],
+                name="unique_reward_onec_user_org",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["organization", "status"],
+                name="reward_user_org_status_idx",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.employee_id and self.employee.organization_id != self.organization_id:
+            raise ValidationError({"employee": "Сотрудник относится к другой организации."})
+        if self.status == self.STATUS_CONFIRMED and not self.employee_id:
+            raise ValidationError({"employee": "Для сопоставления требуется сотрудник."})
+        if self.status == self.STATUS_TECHNICAL and self.employee_id:
+            raise ValidationError({"employee": "Техническая учётная запись не должна быть сотрудником."})
+
+    def __str__(self):
+        return self.display_name
+
+
+class EmployeeRewardScheme(models.Model):
+    """Versioned ruleset for the isolated test reward calculation."""
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="employee_reward_schemes",
+    )
+    name = models.CharField(max_length=200)
+    version = models.PositiveIntegerField(default=1)
+    effective_from = models.DateField()
+    effective_to = models.DateField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_employee_reward_schemes",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["organization_id", "-effective_from", "-version"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "name", "version"],
+                name="unique_reward_scheme_ver",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.effective_to and self.effective_to < self.effective_from:
+            raise ValidationError({"effective_to": "Дата окончания не может быть раньше начала."})
+
+    def __str__(self):
+        return f"{self.name} v{self.version}"
+
+
+class EmployeeRewardRule(models.Model):
+    ROLE_CLIENT_MANAGER = "client_manager"
+    ROLE_SALE = "sale"
+    ROLE_PAPERWORK = "paperwork"
+    ROLE_PROJECT = "project"
+    ROLE_WORK = "work"
+    ROLE_CHOICES = [
+        (ROLE_CLIENT_MANAGER, "Менеджер клиента"),
+        (ROLE_SALE, "Продажа"),
+        (ROLE_PAPERWORK, "Оформление"),
+        (ROLE_PROJECT, "Проект / расчёт"),
+        (ROLE_WORK, "Выполнение работ"),
+    ]
+
+    UNIT_CLIENT_MANAGER = "client_manager"
+    UNIT_SALE = "sale"
+    UNIT_PAPERWORK_RETAIL = "paperwork_retail_check"
+    UNIT_PAPERWORK_PACKAGE = "paperwork_sales_package"
+    UNIT_PROJECT = "project"
+    UNIT_WORK = "work"
+    UNIT_CHOICES = [
+        (UNIT_CLIENT_MANAGER, "Менеджер клиента"),
+        (UNIT_SALE, "Продажа"),
+        (UNIT_PAPERWORK_RETAIL, "Самостоятельный розничный чек"),
+        (UNIT_PAPERWORK_PACKAGE, "Комплект документов / самостоятельный этап"),
+        (UNIT_PROJECT, "Проект / расчёт"),
+        (UNIT_WORK, "Выполнение работ"),
+    ]
+
+    KIND_INFORMATION = "information"
+    KIND_FIXED = "fixed"
+    KIND_PERCENT = "percent"
+    KIND_CHOICES = [
+        (KIND_INFORMATION, "Информационная"),
+        (KIND_FIXED, "Фиксированная сумма"),
+        (KIND_PERCENT, "Процент от ВП"),
+    ]
+
+    scheme = models.ForeignKey(
+        EmployeeRewardScheme,
+        on_delete=models.CASCADE,
+        related_name="rules",
+    )
+    role = models.CharField(max_length=24, choices=ROLE_CHOICES)
+    unit_kind = models.CharField(max_length=40, choices=UNIT_CHOICES)
+    calculation_kind = models.CharField(max_length=16, choices=KIND_CHOICES)
+    fixed_amount = models.DecimalField(
+        max_digits=20, decimal_places=2, null=True, blank=True
+    )
+    rate_percent = models.DecimalField(
+        max_digits=9, decimal_places=4, null=True, blank=True
+    )
+
+    class Meta:
+        ordering = ["scheme_id", "role", "unit_kind"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["scheme", "role", "unit_kind"],
+                name="unique_reward_rule_unit",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(fixed_amount__isnull=True) | models.Q(fixed_amount__gte=0),
+                name="reward_rule_fixed_nonneg",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(rate_percent__isnull=True) | models.Q(rate_percent__gte=0),
+                name="reward_rule_rate_nonneg",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.calculation_kind == self.KIND_FIXED:
+            if self.fixed_amount is None:
+                raise ValidationError({"fixed_amount": "Для фиксированного правила нужна сумма."})
+            if self.rate_percent is not None:
+                raise ValidationError({"rate_percent": "Для фиксированного правила процент не используется."})
+        elif self.calculation_kind == self.KIND_PERCENT:
+            if self.rate_percent is None:
+                raise ValidationError({"rate_percent": "Для процентного правила нужна ставка."})
+            if self.fixed_amount is not None:
+                raise ValidationError({"fixed_amount": "Для процентного правила фикс не используется."})
+        else:
+            if self.fixed_amount is not None or self.rate_percent is not None:
+                raise ValidationError("Информационная роль не должна иметь денежную ставку.")
+
+
+class EmployeeRewardAssignment(models.Model):
+    STATUS_REQUIRED = "required"
+    STATUS_PROPOSED = "proposed"
+    STATUS_CONFIRMED = "confirmed"
+    STATUS_NOT_APPLICABLE = "not_applicable"
+    STATUS_CHOICES = [
+        (STATUS_REQUIRED, "Требуется назначение"),
+        (STATUS_PROPOSED, "Назначено, ожидает подтверждения"),
+        (STATUS_CONFIRMED, "Подтверждено"),
+        (STATUS_NOT_APPLICABLE, "Не применяется"),
+    ]
+
+    SOURCE_MANUAL = "manual"
+    SOURCE_CLIENT_TEMPLATE = "client_template"
+    SOURCE_OBJECT_TEMPLATE = "object_template"
+    SOURCE_ORDER = "order"
+    SOURCE_TASK = "task_suggestion"
+    SOURCE_ONEC_AUTHOR = "onec_author"
+    SOURCE_CHOICES = [
+        (SOURCE_MANUAL, "Вручную"),
+        (SOURCE_CLIENT_TEMPLATE, "Шаблон клиента"),
+        (SOURCE_OBJECT_TEMPLATE, "Шаблон объекта"),
+        (SOURCE_ORDER, "Заказ"),
+        (SOURCE_TASK, "Связанная задача"),
+        (SOURCE_ONEC_AUTHOR, "Автор документа 1С"),
+    ]
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="employee_reward_assignments",
+    )
+    period_month = models.DateField()
+    source_document_type = models.CharField(max_length=120)
+    source_document_guid = models.UUIDField()
+    source_document_label = models.CharField(max_length=500, blank=True)
+    scope_key = models.CharField(max_length=240)
+    role = models.CharField(max_length=24, choices=EmployeeRewardRule.ROLE_CHOICES)
+    employee = models.ForeignKey(
+        Employee,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="reward_assignments",
+    )
+    share_percent = models.DecimalField(
+        max_digits=7, decimal_places=2, default=100
+    )
+    status = models.CharField(
+        max_length=24,
+        choices=STATUS_CHOICES,
+        default=STATUS_PROPOSED,
+    )
+    source_kind = models.CharField(
+        max_length=24,
+        choices=SOURCE_CHOICES,
+        default=SOURCE_MANUAL,
+    )
+    basis_note = models.CharField(max_length=500, blank=True)
+    proposed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="proposed_employee_reward_assignments",
+    )
+    confirmed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="confirmed_employee_reward_assignments",
+    )
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["period_month", "source_document_type", "source_document_guid", "role", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=[
+                    "organization", "period_month", "source_document_type",
+                    "source_document_guid", "scope_key", "role", "employee",
+                ],
+                name="unique_reward_assignment",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(share_percent__gt=0) & models.Q(share_percent__lte=100),
+                name="reward_share_valid",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["organization", "period_month", "status"],
+                name="reward_assign_period_idx",
+            ),
+            models.Index(
+                fields=["organization", "source_document_guid"],
+                name="reward_assign_doc_idx",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.period_month and self.period_month.day != 1:
+            raise ValidationError({"period_month": "Месяц должен начинаться с первого числа."})
+        if self.employee_id and self.employee.organization_id != self.organization_id:
+            raise ValidationError({"employee": "Сотрудник относится к другой организации."})
+        if self.status in {self.STATUS_PROPOSED, self.STATUS_CONFIRMED} and not self.employee_id:
+            raise ValidationError({"employee": "Для назначенного участия требуется сотрудник."})
+
+
+class EmployeeRewardAssignmentLine(models.Model):
+    assignment = models.ForeignKey(
+        EmployeeRewardAssignment,
+        on_delete=models.CASCADE,
+        related_name="lines",
+    )
+    source_identity = models.CharField(max_length=80)
+    nomenclature = models.CharField(max_length=500, blank=True)
+    nomenclature_type = models.CharField(max_length=100, blank=True)
+
+    class Meta:
+        ordering = ["assignment_id", "source_identity"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["assignment", "source_identity"],
+                name="unique_reward_assign_line",
+            ),
+        ]
+
+
+class EmployeeRewardTemplate(models.Model):
+    """Suggested participants for a Service2 client/object; never rewrites history."""
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="employee_reward_templates",
+    )
+    client = models.ForeignKey(
+        Client,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="reward_templates",
+    )
+    pool = models.ForeignKey(
+        Pool,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="reward_templates",
+    )
+    source_customer_guid = models.UUIDField(null=True, blank=True)
+    role = models.CharField(max_length=24, choices=EmployeeRewardRule.ROLE_CHOICES)
+    employee = models.ForeignKey(
+        Employee,
+        on_delete=models.PROTECT,
+        related_name="reward_templates",
+    )
+    share_percent = models.DecimalField(max_digits=7, decimal_places=2, default=100)
+    effective_from = models.DateField()
+    effective_to = models.DateField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_employee_reward_templates",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["organization_id", "role", "employee_id", "id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(client__isnull=False)
+                    | models.Q(pool__isnull=False)
+                    | models.Q(source_customer_guid__isnull=False)
+                ),
+                name="reward_template_has_target",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(share_percent__gt=0) & models.Q(share_percent__lte=100),
+                name="reward_template_share_valid",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.employee_id and self.employee.organization_id != self.organization_id:
+            raise ValidationError({"employee": "Сотрудник относится к другой организации."})
+        if self.client_id and self.client.organization_id != self.organization_id:
+            raise ValidationError({"client": "Клиент относится к другой организации."})
+        if self.pool_id and self.pool.organization_id != self.organization_id:
+            raise ValidationError({"pool": "Объект относится к другой организации."})
+        if self.effective_to and self.effective_to < self.effective_from:
+            raise ValidationError({"effective_to": "Дата окончания не может быть раньше начала."})
+
+
+class EmployeeRewardAssignmentChange(models.Model):
+    assignment = models.ForeignKey(
+        EmployeeRewardAssignment,
+        on_delete=models.CASCADE,
+        related_name="changes",
+    )
+    actor = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="employee_reward_assignment_changes",
+    )
+    action = models.CharField(max_length=80)
+    before = models.JSONField(default=dict, blank=True)
+    after = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["assignment_id", "created_at", "id"]
+
+
+class EmployeeRewardMonthClose(models.Model):
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="employee_reward_month_closes",
+    )
+    period_month = models.DateField()
+    scheme = models.ForeignKey(
+        EmployeeRewardScheme,
+        on_delete=models.PROTECT,
+        related_name="month_closes",
+    )
+    result_data = models.JSONField(default=dict)
+    total_amount = models.DecimalField(max_digits=20, decimal_places=2, default=0)
+    closed_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="closed_employee_reward_months",
+    )
+    closed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-period_month", "organization_id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "period_month"],
+                name="unique_reward_month_close",
+            ),
+        ]
+
+
+class EmployeeRewardAdjustment(models.Model):
+    STATUS_PROPOSED = "proposed"
+    STATUS_CONFIRMED = "confirmed"
+    STATUS_REJECTED = "rejected"
+    STATUS_CHOICES = [
+        (STATUS_PROPOSED, "Предложена"),
+        (STATUS_CONFIRMED, "Подтверждена"),
+        (STATUS_REJECTED, "Отклонена"),
+    ]
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="employee_reward_adjustments",
+    )
+    period_month = models.DateField()
+    employee = models.ForeignKey(
+        Employee,
+        on_delete=models.PROTECT,
+        related_name="reward_adjustments",
+    )
+    amount = models.DecimalField(max_digits=20, decimal_places=2)
+    reason = models.CharField(max_length=1000)
+    status = models.CharField(
+        max_length=16,
+        choices=STATUS_CHOICES,
+        default=STATUS_PROPOSED,
+    )
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="created_employee_reward_adjustments",
+    )
+    confirmed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="confirmed_employee_reward_adjustments",
+    )
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["period_month", "employee_id", "id"]
+        indexes = [
+            models.Index(
+                fields=["organization", "period_month", "status"],
+                name="reward_adjust_period_idx",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.period_month and self.period_month.day != 1:
+            raise ValidationError({"period_month": "Месяц должен начинаться с первого числа."})
+        if self.employee_id and self.employee.organization_id != self.organization_id:
+            raise ValidationError({"employee": "Сотрудник относится к другой организации."})
