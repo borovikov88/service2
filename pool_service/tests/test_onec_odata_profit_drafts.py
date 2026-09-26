@@ -72,7 +72,7 @@ def profit_row(
     line=1, *, period="2026-05-15T10:00:00+03:00", organization=ORG,
     recorder=RECORDER, item=ITEM, customer=CUSTOMER, responsible=RESPONSIBLE,
     revenue="100.00", cost="40.00", recorder_type=RECORDER_TYPE,
-    document=None, document_type=None,
+    document=None, document_type=None, order_guid=ZERO_GUID,
 ):
     return {
         "Recorder": recorder,
@@ -86,6 +86,7 @@ def profit_row(
         "Ответственный_Key": responsible,
         "Документ": document or recorder,
         "Документ_Type": document_type or recorder_type,
+        "ЗаказПокупателя_Key": order_guid,
         "Количество": "2",
         "Сумма": revenue,
         "СуммаНДС": "10.00",
