@@ -176,6 +176,8 @@ from pool_service.services.finance import (
     can_view_cashflow,
     can_view_cost_control,
     can_view_gross_profit,
+    can_view_employee_rewards,
+    can_view_employee_reward_detail,
     ensure_default_categories,
     finance_staff,
     find_client_by_name,
@@ -4297,6 +4299,9 @@ def finance_payroll_employee_profile(request, employee_id):
         "payroll_history": payroll_history,
         "compensation_form": compensation_form,
         "can_edit_compensation": can_manage_finance(request.user, organization),
+        "can_view_reward_detail": can_view_employee_reward_detail(
+            request.user, organization, employee
+        ),
         "active_tab": "finance",
     })
 
@@ -4516,6 +4521,7 @@ def finance_onec_profit_dashboard(request):
         "pagination_query": pagination_params.urlencode(),
         "managers": managers, "manager": manager, "sort": sort,
         "can_import_gross_profit": can_import_gross_profit(request.user, organization),
+        "can_view_employee_rewards": can_view_employee_rewards(request.user, organization),
         "active_tab": "finance",
     })
 
