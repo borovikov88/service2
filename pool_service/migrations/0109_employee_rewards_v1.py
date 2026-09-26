@@ -65,6 +65,7 @@ class Migration(migrations.Migration):
                     ("import_payroll", "Can import payroll"),
                     ("manage_employee_mapping", "Can manage employee mapping"),
                     ("view_employee_rewards", "Can view employee reward summaries"),
+                    ("propose_employee_rewards", "Can propose own employee reward participation"),
                     ("manage_employee_rewards", "Can manage employee reward participation"),
                     ("manage_reward_rules", "Can manage employee reward rules"),
                     ("close_reward_month", "Can close employee reward month"),
