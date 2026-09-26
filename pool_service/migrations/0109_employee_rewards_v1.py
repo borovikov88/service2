@@ -146,6 +146,7 @@ class Migration(migrations.Migration):
             fields=[
                 ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
                 ("source_identity", models.CharField(max_length=80)),
+                ("line_fingerprint", models.CharField(max_length=64)),
                 ("nomenclature", models.CharField(blank=True, max_length=500)),
                 ("nomenclature_type", models.CharField(blank=True, max_length=100)),
                 ("assignment", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="lines", to="pool_service.employeerewardassignment")),
