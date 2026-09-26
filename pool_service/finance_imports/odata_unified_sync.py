@@ -54,6 +54,7 @@ from .odata_profit_drafts import (
     _read_reference_map,
     _reference_lookup_kwargs,
     _load_missing_sales_order_customers,
+    _load_missing_month_close_order_responsibles,
     _read_snapshot as read_profit_snapshot,
     _save_batch_snapshot,
     _bulk_create_monthly_rows,
@@ -807,6 +808,21 @@ def _collect_profit_chunk(start, end, *, config, opener, organization_id):
     except Exception as exc:
         _raise_stage_error(
             STAGE_PROFIT_CUSTOMER_LOOKUP,
+            exc,
+            error_reason=_profit_customer_error_reason(exc),
+        )
+    try:
+        _load_missing_month_close_order_responsibles(
+            config,
+            rows,
+            references,
+            documents,
+            opener=opener,
+            page_budget=budget,
+        )
+    except Exception as exc:
+        _raise_stage_error(
+            STAGE_PROFIT_RESPONSIBLE_LOOKUP,
             exc,
             error_reason=_profit_customer_error_reason(exc),
         )
