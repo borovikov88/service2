@@ -468,7 +468,11 @@ def _is_validated_odata_group(row, source_data, group_key, display):
 
 def _document_display_metadata(row, document_name, is_validated):
     """Return safe, readable document details for the presentation layer."""
-    fallback = {"label": document_name, "number": "", "date": None}
+    fallback = {
+        "label": _readable_source_document_name(row) or document_name,
+        "number": "",
+        "date": None,
+    }
     if not is_validated:
         return fallback
     source_data = row.source_data if isinstance(row.source_data, dict) else {}
