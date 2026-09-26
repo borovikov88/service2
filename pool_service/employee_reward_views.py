@@ -11,12 +11,14 @@ from django.urls import reverse
 from django.views.decorators.http import require_POST
 
 from pool_service.models import (
+    Client,
     Employee,
     EmployeeOneCUserIdentity,
     EmployeeRewardAdjustment,
     EmployeeRewardAssignment,
     EmployeeRewardRule,
     EmployeeRewardScheme,
+    Pool,
 )
 from pool_service.services.employee_rewards import (
     active_scheme,
@@ -26,6 +28,7 @@ from pool_service.services.employee_rewards import (
     confirmation_preview,
     create_adjustment,
     create_or_update_assignment,
+    create_reward_template,
     create_scheme_version,
     document_rows,
     map_onec_author,
@@ -193,6 +196,26 @@ def reward_document(request, document_type, document_guid):
             "role_choices": EmployeeRewardRule.ROLE_CHOICES,
             "can_manage_rewards": can_manage,
             "show_financial_basis": can_manage,
+            "source_customer_guid": next(
+                (
+                    str((row.source_data or {}).get("customer_guid") or "")
+                    for row in rows
+                    if (row.source_data or {}).get("customer_guid")
+                    and str((row.source_data or {}).get("customer_guid"))
+                    != "00000000-0000-0000-0000-000000000000"
+                ),
+                "",
+            ),
+            "clients": (
+                Client.objects.filter(organization=organization).order_by("name", "id")
+                if can_manage else []
+            ),
+            "pools": (
+                Pool.objects.filter(organization=organization)
+                .select_related("client")
+                .order_by("client__name", "address", "id")
+                if can_manage else []
+            ),
             "is_closed": reward_dashboard_data(organization, period_month)["is_closed"],
         },
     )
@@ -228,7 +251,7 @@ def reward_assignment_save(request, document_type, document_guid):
         if role not in dict(EmployeeRewardRule.ROLE_CHOICES):
             raise ValidationError("Некорректная роль.")
         line_ids = request.POST.getlist("line")
-        create_or_update_assignment(
+        assignment = create_or_update_assignment(
             organization=organization,
             period_month=period_month,
             document_type=document_type,
@@ -241,6 +264,50 @@ def reward_assignment_save(request, document_type, document_guid):
             confirm=can_manage and request.POST.get("confirm") == "1",
             basis_note=request.POST.get("basis_note", ""),
         )
+        if can_manage and request.POST.get("save_template") == "1":
+            scope_rows = document_rows(
+                organization, period_month, document_type, str(document_guid)
+            )
+            customer_guid = next(
+                (
+                    str((row.source_data or {}).get("customer_guid") or "")
+                    for row in scope_rows
+                    if (row.source_data or {}).get("customer_guid")
+                    and str((row.source_data or {}).get("customer_guid"))
+                    != "00000000-0000-0000-0000-000000000000"
+                ),
+                "",
+            )
+            client = None
+            pool = None
+            if request.POST.get("template_client"):
+                client = get_object_or_404(
+                    Client,
+                    organization=organization,
+                    pk=request.POST.get("template_client"),
+                )
+            if request.POST.get("template_pool"):
+                pool = get_object_or_404(
+                    Pool,
+                    organization=organization,
+                    pk=request.POST.get("template_pool"),
+                )
+            next_month = (
+                date(period_month.year + 1, 1, 1)
+                if period_month.month == 12
+                else date(period_month.year, period_month.month + 1, 1)
+            )
+            create_reward_template(
+                organization=organization,
+                source_customer_guid=customer_guid,
+                client=client,
+                pool=pool,
+                role=assignment.role,
+                employee=assignment.employee,
+                share_percent=assignment.share_percent,
+                effective_from=next_month,
+                actor=request.user,
+            )
     except ValidationError as exc:
         messages.error(request, _validation_message(exc))
     else:
@@ -405,16 +472,17 @@ def reward_month_close(request):
     organization = _organization(request)
     if not can_close_reward_month(request.user, organization):
         raise PermissionDenied
+    raw_month = request.POST.get("month", "")
     try:
-        period_month = _month(request.POST.get("month"))
+        period_month = _month(raw_month)
         close_reward_month(organization, period_month, request.user)
     except ValidationError as exc:
         messages.error(request, _validation_message(exc))
-    else:
-        messages.success(
-            request,
-            "Месяц тестового расчёта закрыт. Результат и версия правил зафиксированы.",
-        )
+        return redirect(f"{reverse('finance_rewards')}?month={raw_month}")
+    messages.success(
+        request,
+        "Месяц тестового расчёта закрыт. Результат и версия правил зафиксированы.",
+    )
     return redirect(f"{reverse('finance_rewards')}?month={period_month:%Y-%m}")
 
 
