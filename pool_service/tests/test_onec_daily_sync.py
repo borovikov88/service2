@@ -174,10 +174,27 @@ class DailyFinanceTests(TestCase):
         step.assert_called_once()
 
     def test_retry_after_prevents_repeated_network_calls(self):
-        self.run_record(progress={"worker_retry_cursor": 0,
-                                 "worker_retry_after": (NOW + timedelta(minutes=15)).isoformat()})
+        self.run_record(progress={
+            "worker_retry_cursor": 0,
+            "worker_retry_after": (NOW + timedelta(minutes=15)).isoformat(),
+            "error_stage": "profit_document_lookup",
+            "error_reason": "missing_document",
+            "error_hint": "документы продаж: повторите попытку позже",
+            "finance_position_state": "retryable_error",
+            "private_debug": "must-not-leak",
+        })
         with patch(MODULE + ".step_unified_sync") as step:
-            self.assertEqual(worker_tick(now=NOW)["state"], "retry_later")
+            result = worker_tick(now=NOW)
+        self.assertEqual(result, {
+            "state": "retry_later",
+            "run": str(OneCODataSyncRun.objects.get().pk),
+            "steps": 0,
+            "error_stage": "profit_document_lookup",
+            "error_reason": "missing_document",
+            "error_hint": "документы продаж: повторите попытку позже",
+            "finance_position_state": "retryable_error",
+        })
+        self.assertNotIn("private_debug", result)
         step.assert_not_called()
 
     def test_check_is_readonly_and_validates_source_and_actor(self):
