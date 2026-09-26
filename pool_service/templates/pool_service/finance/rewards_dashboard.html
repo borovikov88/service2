@@ -1,0 +1,82 @@
+{% extends "pool_service/base.html" %}
+{% load finance_tags %}
+{% block title %}Вознаграждения сотрудников{% endblock %}
+{% block content %}
+{% include "pool_service/finance/_desktop_workspace_styles.html" %}
+<div class="finance-desktop">
+  <div class="finance-page-header d-flex flex-wrap justify-content-between gap-3 align-items-start mb-4">
+    <div>
+      <div class="text-muted small">Управленческие финансы</div>
+      <h1 class="h3 mb-1">Вознаграждения сотрудников</h1>
+      <div class="alert alert-warning py-2 px-3 mb-0 mt-2"><strong>Тестовый расчёт — не начислено к выплате.</strong> Не изменяет ФОТ, выплаты и документы 1С.</div>
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+      {% if can_manage_rewards %}<a class="btn btn-outline-secondary" href="{% url 'finance_reward_author_mapping' %}">Авторы 1С</a>{% endif %}
+      {% if can_manage_rules %}<a class="btn btn-outline-secondary" href="{% url 'finance_reward_rules' %}">Тестовая схема</a>{% endif %}
+    </div>
+  </div>
+
+  <form method="get" class="card card-soft p-3 mb-4">
+    <div class="row g-2 align-items-end">
+      <div class="col-sm-4 col-lg-3"><label class="form-label">Месяц</label><input class="form-control" type="month" name="month" value="{{ period_month|date:'Y-m' }}"></div>
+      <div class="col-sm-5 col-lg-4"><label class="form-label">Сотрудник</label><select class="form-select" name="employee"><option value="">Все сотрудники</option>{% for item in employees %}<option value="{{ item.id }}"{% if selected_employee and selected_employee.id == item.id %} selected{% endif %}>{{ item.display_name }}</option>{% endfor %}</select></div>
+      <div class="col-sm-3 col-lg-auto"><button class="btn btn-primary w-100">Показать</button></div>
+    </div>
+  </form>
+
+  <div class="card card-soft p-3 mb-4">
+    <div class="d-flex flex-wrap justify-content-between gap-2">
+      <div><strong>{{ scheme_name }}</strong><div class="small text-muted">{% if is_closed %}Месяц закрыт {{ close.closed_at|date:"d.m.Y H:i" }}. Показан зафиксированный результат.{% else %}Месяц открыт: пересчёт предварительный.{% endif %}</div></div>
+      {% if can_close_month and not is_closed %}
+      <form method="post" action="{% url 'finance_reward_month_close' %}">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><button class="btn btn-outline-danger" type="submit">Закрыть тестовый месяц</button></form>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card card-soft p-3 mb-4">
+    <div class="table-responsive">
+      <table class="table align-middle mb-0" style="min-width:1180px">
+        <thead><tr><th>Сотрудник</th><th class="text-end">Оформлено</th><th class="text-end">Выручка продавца</th><th class="text-end">ВП продавца</th><th class="text-end">Фикс оформления</th><th class="text-end">Продажа</th><th class="text-end">Проект</th><th class="text-end">Работы</th><th class="text-end">Корректировки</th><th class="text-end">Итого тест</th><th class="text-end">Проверка</th></tr></thead>
+        <tbody>
+        {% for row in rows %}
+          <tr>
+            <td><a href="{% url 'finance_reward_employee_detail' row.employee_id %}?month={{ period_month|date:'Y-m' }}">{{ row.employee_name }}</a></td>
+            <td class="text-end">{{ row.paperwork_units|floatformat:2 }}</td>
+            <td class="text-end">{{ row.seller_revenue|money }}</td>
+            <td class="text-end">{{ row.seller_gp|money }}</td>
+            <td class="text-end">{{ row.paperwork_amount|money }}</td>
+            <td class="text-end">{{ row.sale_amount|money }}</td>
+            <td class="text-end">{{ row.project_amount|money }}</td>
+            <td class="text-end">{{ row.work_amount|money }}</td>
+            <td class="text-end">{{ row.adjustments|money }}</td>
+            <td class="text-end fw-semibold">{{ row.total|money }}</td>
+            <td class="text-end">{% if row.review_count %}<span class="badge text-bg-warning">{{ row.review_count }}</span>{% else %}<span class="text-success">0</span>{% endif %}</td>
+          </tr>
+        {% empty %}<tr><td colspan="11" class="text-muted text-center py-4">Нет сотрудников для выбранного фильтра.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="small text-muted mt-2">ВП по разным ролям не суммируется между ролями. Суммируются только денежные вознаграждения.</div>
+  </div>
+
+  {% if pending_assignments and can_manage_rewards %}
+  <form method="post" action="{% url 'finance_reward_confirmation_preview' %}" class="card card-soft p-3 mb-4">
+    {% csrf_token %}
+    <h2 class="h5">Ожидают подтверждения</h2>
+    <div class="table-responsive"><table class="table table-sm align-middle mb-3" style="min-width:800px"><thead><tr><th></th><th>Документ</th><th>Роль</th><th>Сотрудник</th><th class="text-end">Доля</th><th>Источник</th></tr></thead><tbody>
+    {% for item in pending_assignments %}<tr><td><input class="form-check-input" type="checkbox" name="assignment" value="{{ item.id }}"></td><td>{{ item.source_document_label }}</td><td>{{ item.get_role_display }}</td><td>{{ item.employee.display_name|default:"—" }}</td><td class="text-end">{{ item.share_percent }}%</td><td>{{ item.get_source_kind_display }}</td></tr>{% endfor %}
+    </tbody></table></div>
+    <div><button class="btn btn-primary">Предпросмотр массового подтверждения</button></div>
+  </form>
+  {% endif %}
+
+  <div class="row g-3">
+    <div class="col-xl-6"><div class="card card-soft p-3 h-100"><h2 class="h5">Нераспределённые документы</h2><div class="table-responsive"><table class="table table-sm mb-0" style="min-width:650px"><thead><tr><th>Документ</th><th>Клиент</th><th></th></tr></thead><tbody>{% for item in unassigned_documents %}<tr><td>{{ item.document_label }}</td><td>{{ item.customer_name }}</td><td><a href="{% url 'finance_reward_document' item.document_type item.document_guid %}?month={{ item.period_month|date:'Y-m' }}">Участники</a></td></tr>{% empty %}<tr><td colspan="3" class="text-muted">Нет.</td></tr>{% endfor %}</tbody></table></div></div></div>
+    <div class="col-xl-6"><div class="card card-soft p-3 h-100"><h2 class="h5">Авторы, требующие сопоставления</h2><div class="table-responsive"><table class="table table-sm mb-0" style="min-width:600px"><thead><tr><th>Автор 1С</th><th>Документ</th></tr></thead><tbody>{% for item in unmapped_authors %}<tr><td>{{ item.author_name|default:"Автор отсутствует" }}</td><td>{{ item.document_label }}</td></tr>{% empty %}<tr><td colspan="2" class="text-muted">Нет.</td></tr>{% endfor %}</tbody></table></div></div></div>
+  </div>
+
+  {% if issues %}
+  <div class="card card-soft p-3 mt-3"><h2 class="h5">Требует проверки</h2><div class="table-responsive"><table class="table table-sm mb-0" style="min-width:700px"><thead><tr><th>Документ</th><th>Причина</th></tr></thead><tbody>{% for issue in issues %}<tr><td>{{ issue.label }}</td><td>{{ issue.detail }}</td></tr>{% endfor %}</tbody></table></div></div>
+  {% endif %}
+</div>
+{% endblock %}
