@@ -136,6 +136,7 @@ def reward_employee_detail(request, employee_id):
             "employee": employee,
             "reward_row": row,
             "can_view_all_rewards": can_view_employee_rewards(request.user, organization),
+            "show_financial_basis": can_view_employee_rewards(request.user, organization),
         },
     )
 
