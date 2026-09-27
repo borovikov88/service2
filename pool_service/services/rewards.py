@@ -287,8 +287,17 @@ def _resolve_missing_author_placeholder(organization, user, period_month, key):
         source_document_key=key,
         assignment_source=RewardParticipation.SOURCE_ONEC_AUTHOR,
         author_identity__isnull=True,
-    ).exclude(status=RewardParticipation.STATUS_NOT_APPLICABLE)
+    )
+    marker_reason = "Источник 1С после синхронизации предоставил Автор_Key"
     for item in placeholders:
+        latest_reason = (
+            item.changes.order_by("-id").values_list("reason", flat=True).first()
+        )
+        if (
+            item.status == RewardParticipation.STATUS_NOT_APPLICABLE
+            and latest_reason == marker_reason
+        ):
+            continue
         before = participation_snapshot(item)
         item.status = RewardParticipation.STATUS_NOT_APPLICABLE
         item.basis = "Ранее автор отсутствовал; после повторной синхронизации Автор_Key получен."
@@ -298,7 +307,7 @@ def _resolve_missing_author_placeholder(organization, user, period_month, key):
             actor=user,
             before=before,
             after=participation_snapshot(item),
-            reason="Источник 1С после синхронизации предоставил Автор_Key",
+            reason=marker_reason,
         )
 
 

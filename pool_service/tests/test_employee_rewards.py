@@ -769,3 +769,57 @@ class EmployeeRewardCalculationTests(TestCase):
                 reason="Автор_Key снова отсутствует после повторной синхронизации"
             ).exists()
         )
+
+
+    def test_manually_dismissed_placeholder_reactivates_after_author_cycle(self):
+        row = self.add_row(1, "1000.00")
+        sync_author_proposals(self.org, self.user, self.month)
+        placeholder = RewardParticipation.objects.get(
+            organization=self.org,
+            period_month=self.month,
+            role=RewardParticipation.ROLE_DOCUMENTATION,
+            author_identity__isnull=True,
+        )
+        resolve_documentation_placeholder(
+            placeholder,
+            self.user,
+            not_applicable=True,
+        )
+        placeholder.refresh_from_db()
+        self.assertEqual(
+            placeholder.status,
+            RewardParticipation.STATUS_NOT_APPLICABLE,
+        )
+
+        row.source_data = {
+            **row.source_data,
+            "author_guid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "author_name": "Автор A",
+        }
+        row.save(update_fields=["source_data"])
+        sync_author_proposals(self.org, self.user, self.month)
+        placeholder.refresh_from_db()
+        self.assertEqual(
+            placeholder.changes.order_by("-id").values_list("reason", flat=True).first(),
+            "Источник 1С после синхронизации предоставил Автор_Key",
+        )
+
+        row.source_data = {
+            **row.source_data,
+            "author_guid": "",
+            "author_name": "",
+        }
+        row.save(update_fields=["source_data"])
+        sync_author_proposals(self.org, self.user, self.month)
+
+        placeholder.refresh_from_db()
+        self.assertEqual(
+            placeholder.status,
+            RewardParticipation.STATUS_REQUIRED,
+        )
+        self.assertIsNone(placeholder.employee_id)
+        self.assertTrue(
+            placeholder.changes.filter(
+                reason="Автор_Key снова отсутствует после повторной синхронизации"
+            ).exists()
+        )
