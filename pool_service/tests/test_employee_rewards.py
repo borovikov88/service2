@@ -178,3 +178,19 @@ class EmployeeRewardCalculationTests(TestCase):
         self.participation(self.e1, RewardParticipation.ROLE_DOCUMENTATION, "1.000000", lines=[row.source_identity], scope="doc-fixed")
         detail = calculate_month(self.org, self.month)["details"][0]
         self.assertEqual(Decimal(detail["amount"]), Decimal("200.00"))
+
+    def test_work_role_rejects_goods_line(self):
+        goods = self.add_row(1, "1000.00", kind="Товар")
+        document = reward_document_options(self.org, self.month)[0]
+        with self.assertRaisesMessage(Exception, "только работы и услуги"):
+            create_manual_participation(
+                self.org, self.user, self.month, document_key=document["scope_key"],
+                employee=self.e1, role=RewardParticipation.ROLE_WORK, share=Decimal("1"),
+                line_identities=[goods.source_identity],
+            )
+
+    def test_calculated_cost_is_labelled_in_detail(self):
+        row = self.add_row(1, "1000.00", cost_source=OneCMonthlyProfit.COST_SOURCE_CALCULATED)
+        self.participation(self.e1, RewardParticipation.ROLE_SALE, "1.000000", lines=[row.source_identity])
+        detail = calculate_month(self.org, self.month)["details"][0]
+        self.assertEqual(detail["base_quality"], "Расчётная ВП")

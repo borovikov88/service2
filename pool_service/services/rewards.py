@@ -10,6 +10,7 @@ from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import models, transaction
 from django.utils import timezone
 
+from pool_service.finance_imports.monthly_profit_parser import classify_nomenclature_type
 from pool_service.models import Employee, OneCMonthlyProfit
 from pool_service.reward_models import (
     OneCAuthorIdentity,
@@ -480,9 +481,35 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
         if not scope_rows:
             issues.append({"kind": "missing_base", "label": scope_key, "count": 1})
             continue
+        if role != RewardParticipation.ROLE_DOCUMENTATION and confirmed[0].scope_line_identities:
+            full_scope = rows_by_document.get(confirmed[0].source_document_key, [])
+            direct_cost_rows = [
+                row for row in full_scope
+                if (row.source_data or {}).get("row_kind") == "direct_order_expense"
+            ]
+            business_line_ids = {
+                row.source_identity for row in full_scope
+                if (row.source_data or {}).get("row_kind") != "direct_order_expense"
+            }
+            selected_ids = set(confirmed[0].scope_line_identities)
+            if direct_cost_rows and selected_ids != business_line_ids:
+                issues.append({
+                    "kind": "partial_direct_cost_allocation",
+                    "label": scope_key,
+                    "count": len(direct_cost_rows),
+                })
+                for x in confirmed:
+                    employee_totals[x.employee_id]["review_count"] += 1
+                continue
+            if direct_cost_rows:
+                present = {row.source_identity for row in scope_rows}
+                scope_rows = scope_rows + [
+                    row for row in direct_cost_rows if row.source_identity not in present
+                ]
         revenue = money(sum((Decimal(row.revenue or 0) for row in scope_rows), Decimal("0")))
         if role == RewardParticipation.ROLE_DOCUMENTATION:
             base = money(sum((_row_gp(row) or Decimal("0") for row in scope_rows), Decimal("0")))
+            base_quality = "Фиксированная оплата оформления"
         else:
             gp_values = [_row_gp(row) for row in scope_rows]
             if any(value is None for value in gp_values):
@@ -491,6 +518,11 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
                     employee_totals[x.employee_id]["review_count"] += 1
                 continue
             base = money(sum(gp_values, Decimal("0")))
+            base_quality = (
+                "Расчётная ВП"
+                if any(row.cost_source == OneCMonthlyProfit.COST_SOURCE_CALCULATED for row in scope_rows)
+                else "Фактическая ВП"
+            )
         share_total = sum((x.share for x in confirmed), Decimal("0"))
         if share_total > ONE:
             issues.append({"kind": "share_overflow", "label": scope_key, "count": 1})
@@ -529,6 +561,7 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
                 "document": _document_label(item),
                 "role": item.get_role_display(),
                 "base": str(base),
+                "base_quality": base_quality,
                 "rate": rate_label,
                 "share": str(item.share),
                 "amount": str(amount),
@@ -568,11 +601,34 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
     if unmapped_authors:
         issues.append({"kind": "unmapped_author", "label": "Несопоставленные авторы 1С", "count": len(unmapped_authors)})
 
+    month_gp_values = [_row_gp(row) for row in rows]
+    month_gross_profit = (
+        None
+        if any(value is None for value in month_gp_values)
+        else money(sum(month_gp_values, Decimal("0")))
+    )
+    total_test_reward = money(sum(
+        (Decimal(item["total"]) for item in employees),
+        Decimal("0"),
+    ))
+    reward_exceeds_gross_profit = (
+        month_gross_profit is not None and total_test_reward > month_gross_profit
+    )
+    if reward_exceeds_gross_profit:
+        issues.append({
+            "kind": "reward_exceeds_gross_profit",
+            "label": "Суммарный тестовый результат превышает ВП месяца.",
+            "count": 1,
+        })
+
     return {
         "period_month": period_month.isoformat(),
         "is_test": True,
         "closed": False,
         "scheme": _scheme_payload(scheme),
+        "month_gross_profit": None if month_gross_profit is None else str(month_gross_profit),
+        "total_test_reward": str(total_test_reward),
+        "reward_exceeds_gross_profit": reward_exceeds_gross_profit,
         "employees": employees,
         "details": [x for x in details if not employee_id or x["employee_id"] == employee_id],
         "issues": issues,
@@ -627,7 +683,7 @@ def close_month(organization, user, period_month):
     if scheme is None:
         raise ValidationError("Нельзя закрыть месяц без версии тестовой схемы.")
     snapshot = calculate_month(organization, period_month, use_closed=False)
-    blocking = {"missing_scheme", "missing_base", "missing_cost", "share_overflow", "unmapped_author", "unconfirmed", "unallocated"}
+    blocking = {"missing_scheme", "missing_base", "missing_cost", "share_overflow", "unmapped_author", "unconfirmed", "unallocated", "partial_direct_cost_allocation"}
     if any(issue.get("kind") in blocking for issue in snapshot["issues"]):
         raise ValidationError("Есть неполные или неподтверждённые данные; месяц не закрыт.")
     raw = json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode("utf-8")
@@ -680,6 +736,7 @@ def reward_document_options(organization, period_month):
                 "identity": row.source_identity,
                 "name": row.nomenclature,
                 "type": row.nomenclature_type,
+                "kind": classify_nomenclature_type(row.nomenclature_type),
                 "revenue": str(money(row.revenue or 0)),
                 "gross_profit": None if gp is None else str(gp),
                 "cost_missing": gp is None,
@@ -737,6 +794,14 @@ def create_manual_participation(
     selected = list(dict.fromkeys(line_identities or []))
     if any(identity not in allowed_lines for identity in selected):
         raise ValidationError("Выбранная строка не относится к документу или является прямой затратой.")
+    if role == RewardParticipation.ROLE_WORK and selected:
+        line_kinds = {
+            item["identity"]: item["kind"]
+            for item in document["lines"]
+            if not item["is_direct_expense"]
+        }
+        if any(line_kinds.get(identity) != "service" for identity in selected):
+            raise ValidationError("Для роли «Выполнение работ» можно выбирать только работы и услуги.")
     if role in {RewardParticipation.ROLE_PROJECT, RewardParticipation.ROLE_WORK} and not selected and not not_applicable:
         raise ValidationError("Для проекта или выполнения работ нужно выбрать конкретные позиции/работы.")
     if not_applicable:
