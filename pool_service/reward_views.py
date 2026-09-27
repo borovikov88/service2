@@ -247,8 +247,7 @@ def employee_rewards(request):
 def employee_reward_detail(request, employee_id):
     organization = _org(request)
     employee = get_object_or_404(Employee, pk=employee_id, organization=organization)
-    is_self = employee.user_id == request.user.id
-    if not is_self and not can_view_rewards(request.user, organization):
+    if not can_view_rewards(request.user, organization):
         return render(request, "403.html", status=403)
     period_month = _period(request)
     data = calculate_month(organization, period_month, employee_id=employee.id)

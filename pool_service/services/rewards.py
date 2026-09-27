@@ -24,6 +24,7 @@ from pool_service.services.finance import can_access_management_finance
 
 MONEY = Decimal("0.01")
 ONE = Decimal("1.000000")
+MAX_FIXED_REWARD = Decimal("1000000.00")
 RETAIL_CHECK = "Document_ЧекККМ"
 RETAIL_REPORT = "Document_ОтчетОРозничныхПродажах"
 REALIZATION = "Document_РасходнаяНакладная"
@@ -144,7 +145,18 @@ def create_scheme_version(organization, user, *, effective_from, values):
         "documentation_retail_fixed", "documentation_document_fixed",
         "sale_rate", "project_rate", "work_rate", "client_manager_rate",
     }
-    fields = {key: Decimal(str(value)) for key, value in values.items() if key in allowed}
+    try:
+        fields = {key: Decimal(str(value)) for key, value in values.items() if key in allowed}
+    except (ValueError, ArithmeticError) as exc:
+        raise ValidationError("Ставки и фиксированные суммы должны быть числовыми.") from exc
+    fixed_fields = ("documentation_retail_fixed", "documentation_document_fixed")
+    rate_fields = ("sale_rate", "project_rate", "work_rate", "client_manager_rate")
+    for key in fixed_fields:
+        if key in fields and (fields[key] < 0 or fields[key] > MAX_FIXED_REWARD):
+            raise ValidationError("Фиксированная сумма должна быть от 0 до 1 000 000 ₽.")
+    for key in rate_fields:
+        if key in fields and (fields[key] < 0 or fields[key] > ONE):
+            raise ValidationError("Процентная ставка должна быть от 0% до 100%.")
     return RewardSchemeVersion.objects.create(
         organization=organization,
         name="Тестовая схема №1",
@@ -268,12 +280,8 @@ def sync_author_proposals(organization, user, period_month):
         author_guid = (data.get("author_guid") or "").strip()
         author_name = (data.get("author_name") or "").strip()
         if data.get("recorder_type") == RETAIL_REPORT:
-            _, was_created = _ensure_required_documentation(
-                organization, user, period_month, key, row,
-                basis="Агрегирующий отчёт о розничных продажах: автор отчёта не назначается оформителем чеков.",
-            )
-            created += int(was_created)
-            issues += 1
+            # This is an aggregate accounting document, not a standalone
+            # documentation reward unit. Its author must never be inherited by checks.
             continue
         if not author_guid:
             _, was_created = _ensure_required_documentation(
@@ -322,6 +330,7 @@ def sync_author_proposals(organization, user, period_month):
         }
         _, was_created = RewardParticipation.objects.get_or_create(
             organization=organization,
+            period_month=period_month,
             role=RewardParticipation.ROLE_DOCUMENTATION,
             scope_key=key,
             source_document_key=key,
@@ -536,7 +545,10 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
     for row in rows:
         row_data = row.source_data or {}
         business_scopes[_row_business_scope_key(row)].append(row)
-        if row_data.get("row_kind") != "direct_order_expense":
+        if (
+            row_data.get("row_kind") != "direct_order_expense"
+            and row_data.get("recorder_type") != RETAIL_REPORT
+        ):
             source_documents.setdefault(_row_document_key(row), row)
     for business_key, scope_rows in business_scopes.items():
         sale_rows = [
@@ -604,6 +616,17 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
                 if x.employee_id:
                     employee_totals[x.employee_id]["review_count"] += 1
         if not confirmed or scheme is None:
+            continue
+        selected_identities = set(confirmed[0].scope_line_identities or [])
+        missing_selected = selected_identities.difference(rows_by_identity)
+        if missing_selected:
+            issues.append({
+                "kind": "missing_selected_lines",
+                "label": scope_key,
+                "count": len(missing_selected),
+            })
+            for item in confirmed:
+                employee_totals[item.employee_id]["review_count"] += 1
             continue
         scope_rows = _scope_rows(confirmed[0], rows_by_identity, rows_by_document)
         if not scope_rows:
@@ -814,7 +837,7 @@ def close_month(organization, user, period_month):
     blocking = {
         "missing_scheme", "missing_base", "missing_cost", "month_missing_cost",
         "share_overflow", "unmapped_author", "unconfirmed", "unallocated",
-        "partial_direct_cost_allocation", "missing_sale_role",
+        "partial_direct_cost_allocation", "missing_selected_lines", "missing_sale_role",
         "missing_documentation_role", "missing_work_role",
     }
     if any(issue.get("kind") in blocking for issue in snapshot["issues"]):
@@ -999,6 +1022,11 @@ def add_documentation_participant(participation, employee, share, user):
         raise ValidationError("Совместный оформитель добавляется только к роли оформления.")
     if not can_manage_participation(user, participation.organization):
         raise PermissionDenied
+    if RewardMonthClose.objects.filter(
+        organization=participation.organization,
+        period_month=participation.period_month,
+    ).exists():
+        raise ValidationError("Совместного оформителя нельзя добавлять после закрытия месяца.")
     if employee.organization_id != participation.organization_id:
         raise ValidationError("Сотрудник относится к другой организации.")
     share = Decimal(str(share)).quantize(Decimal("0.000001"))

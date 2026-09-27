@@ -6,7 +6,15 @@ from django.test import TestCase
 
 from pool_service.models import Employee, OneCImportBatch, OneCMonthlyProfit, OneCReportPeriodState, Organization
 from pool_service.reward_models import RewardParticipation, RewardSchemeVersion
-from pool_service.services.rewards import calculate_month, confirm_participation, create_manual_participation, reward_document_options, update_participation_share
+from pool_service.services.rewards import (
+    add_documentation_participant,
+    calculate_month,
+    confirm_participation,
+    create_manual_participation,
+    create_scheme_version,
+    reward_document_options,
+    update_participation_share,
+)
 
 
 class EmployeeRewardCalculationTests(TestCase):
@@ -215,3 +223,47 @@ class EmployeeRewardCalculationTests(TestCase):
         item.refresh_from_db()
         self.assertEqual(item.share, Decimal("0.600000"))
         self.assertTrue(item.changes.filter(reason="Изменение доли участия").exists())
+
+
+    def test_scheme_rejects_negative_or_over_100_percent_values(self):
+        next_month = date(2026, 10, 1)
+        with self.assertRaisesMessage(Exception, "Фиксированная сумма"):
+            create_scheme_version(
+                self.org, self.user, effective_from=next_month,
+                values={"documentation_retail_fixed": "-1"},
+            )
+        with self.assertRaisesMessage(Exception, "Процентная ставка"):
+            create_scheme_version(
+                self.org, self.user, effective_from=next_month,
+                values={"sale_rate": "1.01"},
+            )
+
+    def test_missing_selected_line_after_reimport_is_blocking_issue(self):
+        row = self.add_row(1, "1000.00", kind="Работа")
+        missing_identity = row.source_identity.replace(":1", ":999999")
+        self.participation(
+            self.e1,
+            RewardParticipation.ROLE_WORK,
+            "1.000000",
+            lines=[row.source_identity, missing_identity],
+            scope="missing-line",
+        )
+        data = calculate_month(self.org, self.month)
+        self.assertTrue(any(item["kind"] == "missing_selected_lines" for item in data["issues"]))
+        self.assertFalse(any(item["scope_key"] == "missing-line" for item in data["details"]))
+
+    def test_closed_month_rejects_co_documenter(self):
+        from pool_service.reward_models import RewardMonthClose
+        item = RewardParticipation.objects.create(
+            organization=self.org, employee=self.e1, role=RewardParticipation.ROLE_DOCUMENTATION,
+            status=RewardParticipation.STATUS_CONFIRMED, share=Decimal("0.500000"),
+            period_month=self.month, scope_key="closed-doc", source_document_key="closed-doc",
+            source_document_type="Document_РасходнаяНакладная",
+            assignment_source=RewardParticipation.SOURCE_MANUAL, created_by=self.user,
+        )
+        RewardMonthClose.objects.create(
+            organization=self.org, period_month=self.month, scheme_version=self.scheme,
+            snapshot={}, source_hash="0" * 64, closed_by=self.user,
+        )
+        with self.assertRaisesMessage(Exception, "после закрытия месяца"):
+            add_documentation_participant(item, self.e2, Decimal("0.500000"), self.user)
