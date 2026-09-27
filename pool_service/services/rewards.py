@@ -120,6 +120,7 @@ def ensure_test_scheme(organization, user, period_month):
     )
 
 
+@transaction.atomic
 def create_scheme_version(organization, user, *, effective_from, values):
     if not can_manage_rules(user, organization):
         raise PermissionDenied

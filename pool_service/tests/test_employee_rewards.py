@@ -267,3 +267,15 @@ class EmployeeRewardCalculationTests(TestCase):
         )
         with self.assertRaisesMessage(Exception, "после закрытия месяца"):
             add_documentation_participant(item, self.e2, Decimal("0.500000"), self.user)
+
+
+    def test_invalid_scheme_does_not_mutate_previous_version(self):
+        with self.assertRaisesMessage(Exception, "Процентная ставка"):
+            create_scheme_version(
+                self.org,
+                self.user,
+                effective_from=date(2026, 10, 1),
+                values={"sale_rate": "1.01"},
+            )
+        self.scheme.refresh_from_db()
+        self.assertIsNone(self.scheme.effective_to)
