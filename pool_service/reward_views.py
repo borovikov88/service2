@@ -29,6 +29,7 @@ from pool_service.services.rewards import (
     month_start,
     reward_document_options,
     sync_author_proposals,
+    update_participation_share,
 )
 
 
@@ -100,6 +101,8 @@ def employee_rewards(request):
                 if not can_manage_participation(request.user, organization):
                     raise PermissionDenied
                 item = get_object_or_404(RewardParticipantTemplate, pk=request.POST.get("template_id"), organization=organization)
+                if period_month < item.effective_from.replace(day=1):
+                    raise ValidationError("Нельзя завершить шаблон до даты начала его действия.")
                 next_month = (period_month.replace(day=28) + timedelta(days=4)).replace(day=1)
                 item.effective_to = next_month - timedelta(days=1)
                 item.save(update_fields=["effective_to"])
@@ -162,6 +165,19 @@ def employee_rewards(request):
                     request.user,
                 )
                 messages.success(request, "Совместный оформитель добавлен.")
+            elif action == "update_share":
+                item = get_object_or_404(
+                    RewardParticipation,
+                    pk=request.POST.get("participation_id"),
+                    organization=organization,
+                    period_month=period_month,
+                )
+                update_participation_share(
+                    item,
+                    request.user,
+                    Decimal(request.POST.get("share_percent", "0")) / 100,
+                )
+                messages.success(request, "Доля участия изменена.")
             elif action == "confirm":
                 if not can_manage_participation(request.user, organization):
                     raise PermissionDenied

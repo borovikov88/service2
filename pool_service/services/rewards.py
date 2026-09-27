@@ -129,6 +129,13 @@ def create_scheme_version(organization, user, *, effective_from, values):
         .first()
     )
     version = (latest.version if latest else 0) + 1
+    if latest and effective_from <= latest.effective_from:
+        raise ValidationError("Новая версия правил должна начинаться позже предыдущей версии.")
+    if RewardMonthClose.objects.filter(
+        organization=organization,
+        period_month=effective_from,
+    ).exists():
+        raise ValidationError("Нельзя менять правила уже закрытого месяца.")
     if latest and (latest.effective_to is None or latest.effective_to >= effective_from):
         previous_day = effective_from - timedelta(days=1)
         latest.effective_to = previous_day
@@ -169,6 +176,32 @@ def active_profit_rows(organization, period_month):
         .select_related("import_batch")
         .order_by("source_row_number", "id")
     )
+
+
+def _resolve_missing_author_placeholder(organization, user, period_month, key):
+    placeholders = RewardParticipation.objects.filter(
+        organization=organization,
+        period_month=period_month,
+        role=RewardParticipation.ROLE_DOCUMENTATION,
+        scope_key=key,
+        source_document_key=key,
+        employee__isnull=True,
+        author_identity__isnull=True,
+        status=RewardParticipation.STATUS_REQUIRED,
+    )
+    for item in placeholders:
+        before = participation_snapshot(item)
+        item.status = RewardParticipation.STATUS_NOT_APPLICABLE
+        item.basis = "Ранее автор отсутствовал; после повторной синхронизации Автор_Key получен."
+        item.save(update_fields=["status", "basis", "updated_at"])
+        RewardParticipationChange.objects.create(
+            participation=item,
+            actor=user,
+            before=before,
+            after=participation_snapshot(item),
+            reason="Источник 1С после синхронизации предоставил Автор_Key",
+        )
+
 
 
 def _ensure_required_documentation(organization, user, period_month, key, row, *, basis, author_identity=None):
@@ -354,6 +387,43 @@ def save_participation(participation, user, *, employee, role, share, status, li
         actor=user,
         before=before,
         after=participation_snapshot(participation),
+    )
+    return participation
+
+
+@transaction.atomic
+def update_participation_share(participation, user, share):
+    if not can_manage_participation(user, participation.organization):
+        raise PermissionDenied
+    if RewardMonthClose.objects.filter(
+        organization=participation.organization,
+        period_month=participation.period_month,
+    ).exists():
+        raise ValidationError("Закрытый месяц нельзя переписывать.")
+    if participation.status == RewardParticipation.STATUS_NOT_APPLICABLE:
+        raise ValidationError("Для роли «не применяется» доля не задаётся.")
+    share = Decimal(str(share)).quantize(Decimal("0.000001"))
+    if share <= 0 or share > ONE:
+        raise ValidationError("Доля должна быть больше 0 и не больше 100%.")
+    if participation.status == RewardParticipation.STATUS_CONFIRMED:
+        other_share = RewardParticipation.objects.filter(
+            organization=participation.organization,
+            period_month=participation.period_month,
+            scope_key=participation.scope_key,
+            role=participation.role,
+            status=RewardParticipation.STATUS_CONFIRMED,
+        ).exclude(pk=participation.pk).aggregate(total=models.Sum("share"))["total"] or Decimal("0")
+        if other_share + share > ONE:
+            raise ValidationError("Подтверждённые доли по роли превышают 100%.")
+    before = participation_snapshot(participation)
+    participation.share = share
+    participation.save(update_fields=["share", "updated_at"])
+    RewardParticipationChange.objects.create(
+        participation=participation,
+        actor=user,
+        before=before,
+        after=participation_snapshot(participation),
+        reason="Изменение доли участия",
     )
     return participation
 

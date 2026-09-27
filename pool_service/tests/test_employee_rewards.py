@@ -6,7 +6,7 @@ from django.test import TestCase
 
 from pool_service.models import Employee, OneCImportBatch, OneCMonthlyProfit, OneCReportPeriodState, Organization
 from pool_service.reward_models import RewardParticipation, RewardSchemeVersion
-from pool_service.services.rewards import calculate_month, confirm_participation, create_manual_participation, reward_document_options
+from pool_service.services.rewards import calculate_month, confirm_participation, create_manual_participation, reward_document_options, update_participation_share
 
 
 class EmployeeRewardCalculationTests(TestCase):
@@ -207,3 +207,11 @@ class EmployeeRewardCalculationTests(TestCase):
         self.add_row(1, "1000.00", cost_source=OneCMonthlyProfit.COST_SOURCE_UNDEFINED)
         data = calculate_month(self.org, self.month)
         self.assertTrue(any(item["kind"] == "month_missing_cost" for item in data["issues"]))
+
+    def test_confirmed_share_can_be_reduced_with_audit(self):
+        row = self.add_row(1, "30000.00", kind="Работа")
+        item = self.participation(self.e1, RewardParticipation.ROLE_WORK, "1.000000", lines=[row.source_identity], scope="shared-doc")
+        update_participation_share(item, self.user, Decimal("0.600000"))
+        item.refresh_from_db()
+        self.assertEqual(item.share, Decimal("0.600000"))
+        self.assertTrue(item.changes.filter(reason="Изменение доли участия").exists())
