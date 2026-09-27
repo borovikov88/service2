@@ -101,7 +101,7 @@ def employee_rewards(request):
                     pool=pool,
                     employee=employee,
                     role=request.POST.get("role", ""),
-                    share=Decimal(request.POST.get("share_percent", "100")) / 100,
+                    share=_percent_value(request.POST.get("share_percent"), "Доля шаблона"),
                     effective_from=period_month,
                     is_company_client=is_company_client,
                     created_by=request.user,
@@ -136,7 +136,7 @@ def employee_rewards(request):
                     document_key=request.POST.get("document_key", ""),
                     employee=employee,
                     role=request.POST.get("role", ""),
-                    share=Decimal(request.POST.get("share_percent", "0")) / 100,
+                    share=_percent_value(request.POST.get("share_percent"), "Доля участия"),
                     line_identities=selected_lines,
                     assignment_source=(
                         RewardParticipation.SOURCE_TEMPLATE
@@ -196,7 +196,7 @@ def employee_rewards(request):
                 add_documentation_participant(
                     source,
                     employee,
-                    Decimal(request.POST.get("share_percent", "0")) / 100,
+                    _percent_value(request.POST.get("share_percent"), "Доля совместного оформления"),
                     request.user,
                 )
                 messages.success(request, "Совместный оформитель добавлен.")
@@ -210,7 +210,7 @@ def employee_rewards(request):
                 update_participation_share(
                     item,
                     request.user,
-                    Decimal(request.POST.get("share_percent", "0")) / 100,
+                    _percent_value(request.POST.get("share_percent"), "Доля участия"),
                 )
                 messages.success(request, "Доля участия изменена.")
             elif action == "confirm":
