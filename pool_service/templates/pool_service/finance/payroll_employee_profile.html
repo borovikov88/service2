@@ -2,6 +2,7 @@
 {% load finance_tags %}
 {% block title %}{{ employee.display_name }} · сотрудник{% endblock %}
 {% block content %}
+<div class="mb-3"><a class="btn btn-outline-primary" href="{% url 'finance_employee_reward_detail' employee.id %}">Помесячные тестовые вознаграждения →</a></div>
 {% include "pool_service/finance/_desktop_workspace_styles.html" %}
 <div class="finance-desktop">
   <div class="finance-secondary-header d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4">

@@ -4,6 +4,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils import timezone
 
 from pool_service.models import Employee
@@ -19,6 +20,7 @@ from pool_service.services.rewards import (
     close_month,
     create_manual_participation,
     confirm_participation,
+    confirm_participation_batch,
     create_scheme_version,
     ensure_test_scheme,
     map_author,
@@ -173,6 +175,37 @@ def employee_reward_detail(request, employee_id):
         "employee": employee,
         "data": data,
         "period_month": period_month,
+        "active_tab": "finance",
+        "show_add_button": False,
+    })
+
+
+@login_required
+def employee_reward_confirm_preview(request):
+    organization = _org(request)
+    if not can_manage_participation(request.user, organization):
+        return render(request, "403.html", status=403)
+    period_month = _period(request)
+    raw_ids = request.POST.getlist("participation_id") if request.method == "POST" else []
+    ids = [int(value) for value in raw_ids if str(value).isdigit()]
+    items = list(
+        RewardParticipation.objects.filter(
+            organization=organization,
+            period_month=period_month,
+            pk__in=ids,
+        ).select_related("employee", "author_identity").order_by("source_document_date", "source_document_number", "role", "id")
+    )
+    if request.method == "POST" and request.POST.get("confirm") == "1":
+        try:
+            confirm_participation_batch(organization, request.user, period_month, ids)
+        except ValidationError as exc:
+            messages.error(request, "; ".join(exc.messages))
+        else:
+            messages.success(request, f"Подтверждено назначений: {len(items)}.")
+        return redirect(f"{reverse('finance_employee_rewards')}?month={period_month:%Y-%m}")
+    return render(request, "pool_service/finance/employee_reward_confirm_preview.html", {
+        "period_month": period_month,
+        "items": items,
         "active_tab": "finance",
         "show_add_button": False,
     })

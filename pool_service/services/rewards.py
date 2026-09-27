@@ -832,3 +832,29 @@ def add_documentation_participant(participation, employee, share, user):
         reason="Добавлен совместный оформитель",
     )
     return item
+
+
+@transaction.atomic
+def confirm_participation_batch(organization, user, period_month, participation_ids):
+    if not can_manage_participation(user, organization):
+        raise PermissionDenied
+    period_month = month_start(period_month)
+    ids = list(dict.fromkeys(int(value) for value in participation_ids))
+    items = list(
+        RewardParticipation.objects.select_for_update()
+        .filter(
+            organization=organization,
+            period_month=period_month,
+            pk__in=ids,
+        )
+        .select_related("employee")
+        .order_by("scope_key", "role", "id")
+    )
+    if len(items) != len(ids):
+        raise ValidationError("Часть выбранных назначений недоступна.")
+    if any(item.status == RewardParticipation.STATUS_NOT_APPLICABLE for item in items):
+        raise ValidationError("Строка «не применяется» не требует подтверждения.")
+    for item in items:
+        if item.status != RewardParticipation.STATUS_CONFIRMED:
+            confirm_participation(item, user)
+    return items

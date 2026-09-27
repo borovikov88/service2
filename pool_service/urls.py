@@ -182,6 +182,7 @@ from .finance_position_browser import (
 from .reward_views import (
     employee_rewards,
     employee_reward_detail,
+    employee_reward_confirm_preview,
 )
 from .development_views import (
     development_iteration_create,
@@ -354,6 +355,7 @@ urlpatterns = [
     path("finance/1c-profit/", finance_onec_profit_dashboard, name="finance_onec_profit_dashboard"),
     path("finance/rewards/", employee_rewards, name="finance_employee_rewards"),
     path("finance/rewards/staff/<int:employee_id>/", employee_reward_detail, name="finance_employee_reward_detail"),
+    path("finance/rewards/confirm/", employee_reward_confirm_preview, name="finance_employee_reward_confirm_preview"),
     path("finance/1c-imports/cost-control/", finance_onec_cost_control, name="finance_onec_cost_control"),
     path("finance/1c-imports/monthly-profit/upload/", finance_onec_monthly_profit_upload, name="finance_onec_monthly_profit_upload"),
     path("finance/1c-imports/<uuid:batch_id>/preview/", finance_onec_import_preview, name="finance_onec_import_preview"),
