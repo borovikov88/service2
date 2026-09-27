@@ -212,6 +212,7 @@ def _read_reference_map(
     allowed_deleted_nomenclature_guids=None,
     allow_deleted_customer=False,
     allow_deleted_author=False,
+    allow_missing=False,
 ):
     entity_set, fields = CATALOGS[kind]
     expected = set(guids)
@@ -2042,14 +2043,24 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
             for item in documents.values()
             if item.get("author_guid")
         }
-        references["author"] = _read_reference_map(
-            config,
-            "author",
-            document_author_guids,
-            opener=client,
-            page_budget=reference_page_budget,
-            allow_deleted_author=True,
-        ) if document_author_guids else {}
+        if document_author_guids:
+            try:
+                references["author"] = _read_reference_map(
+                    config,
+                    "author",
+                    document_author_guids,
+                    opener=client,
+                    page_budget=reference_page_budget,
+                    allow_deleted_author=True,
+                    allow_missing=True,
+                )
+            except (ODataPreviewError, ValidationError, OSError):
+                # Автор_Key itself is sufficient for later safe mapping.
+                # User descriptions are optional enrichment and must never
+                # abort the gross-profit refresh.
+                references["author"] = {}
+        else:
+            references["author"] = {}
         _load_missing_sales_order_customers(
             config,
             rows,

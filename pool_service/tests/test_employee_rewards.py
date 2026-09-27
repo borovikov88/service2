@@ -413,3 +413,82 @@ class EmployeeRewardCalculationTests(TestCase):
         RewardParticipation.objects.filter(pk=pending.pk).update(share=Decimal("0.600000"))
         with self.assertRaisesMessage(Exception, "превышают 100%"):
             confirm_participation(stale, self.user)
+
+
+    def test_direct_expense_does_not_create_documentation_placeholder(self):
+        row = self.add_row(1, "-500.00")
+        row.source_data = {
+            **row.source_data,
+            "row_kind": "direct_order_expense",
+            "author_guid": "",
+        }
+        row.save(update_fields=["source_data"])
+        sync_author_proposals(self.org, self.user, self.month)
+        self.assertFalse(
+            RewardParticipation.objects.filter(
+                organization=self.org,
+                period_month=self.month,
+                role=RewardParticipation.ROLE_DOCUMENTATION,
+            ).exists()
+        )
+
+    def test_overlapping_manual_line_scopes_are_rejected(self):
+        a = self.add_row(1, "1000.00", kind="Работа")
+        b = self.add_row(2, "2000.00", kind="Работа")
+        document = reward_document_options(self.org, self.month)[0]
+        create_manual_participation(
+            self.org, self.user, self.month,
+            document_key=document["scope_key"],
+            employee=self.e1,
+            role=RewardParticipation.ROLE_WORK,
+            share=Decimal("1"),
+            line_identities=[a.source_identity],
+        )
+        with self.assertRaisesMessage(Exception, "Пересекающиеся наборы"):
+            create_manual_participation(
+                self.org, self.user, self.month,
+                document_key=document["scope_key"],
+                employee=self.e2,
+                role=RewardParticipation.ROLE_WORK,
+                share=Decimal("1"),
+                line_identities=[a.source_identity, b.source_identity],
+            )
+
+    def test_author_removed_retires_old_proposal(self):
+        row = self.add_row(1, "1000.00")
+        row.source_data = {
+            **row.source_data,
+            "author_guid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "author_name": "Автор A",
+        }
+        row.save(update_fields=["source_data"])
+        sync_author_proposals(self.org, self.user, self.month)
+        old = RewardParticipation.objects.get(
+            author_identity__onec_user_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        )
+        row.source_data = {**row.source_data, "author_guid": "", "author_name": ""}
+        row.save(update_fields=["source_data"])
+        sync_author_proposals(self.org, self.user, self.month)
+        old.refresh_from_db()
+        self.assertEqual(old.status, RewardParticipation.STATUS_NOT_APPLICABLE)
+        self.assertTrue(
+            RewardParticipation.objects.filter(
+                organization=self.org,
+                period_month=self.month,
+                role=RewardParticipation.ROLE_DOCUMENTATION,
+                author_identity__isnull=True,
+                status=RewardParticipation.STATUS_REQUIRED,
+            ).exists()
+        )
+
+    def test_calculation_flags_stale_author_sync(self):
+        row = self.add_row(1, "1000.00")
+        row.source_data = {
+            **row.source_data,
+            "author_guid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        }
+        row.save(update_fields=["source_data"])
+        data = calculate_month(self.org, self.month)
+        self.assertTrue(any(
+            item["kind"] == "author_sync_stale" for item in data["issues"]
+        ))

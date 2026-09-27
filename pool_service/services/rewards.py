@@ -234,9 +234,10 @@ def _resolve_stale_author_proposals(organization, user, period_month, key, curre
             assignment_source=RewardParticipation.SOURCE_ONEC_AUTHOR,
             author_identity__isnull=False,
         )
-        .exclude(author_identity__onec_user_id=current_author_guid)
         .exclude(status=RewardParticipation.STATUS_NOT_APPLICABLE)
     )
+    if current_author_guid:
+        stale = stale.exclude(author_identity__onec_user_id=current_author_guid)
     for item in stale:
         before = participation_snapshot(item)
         item.status = RewardParticipation.STATUS_NOT_APPLICABLE
@@ -332,6 +333,8 @@ def sync_author_proposals(organization, user, period_month):
     by_doc = {}
     for row in rows:
         data = row.source_data or {}
+        if data.get("row_kind") == "direct_order_expense":
+            continue
         recorder_type = data.get("recorder_type")
         key = _row_document_key(row)
         by_doc.setdefault(key, row)
@@ -346,6 +349,9 @@ def sync_author_proposals(organization, user, period_month):
             # documentation reward unit. Its author must never be inherited by checks.
             continue
         if not author_guid:
+            _resolve_stale_author_proposals(
+                organization, user, period_month, key, None
+            )
             _, was_created = _ensure_required_documentation(
                 organization, user, period_month, key, row,
                 basis="Автор исходного документа 1С отсутствует — требуется сопоставление вручную.",
@@ -394,7 +400,7 @@ def sync_author_proposals(organization, user, period_month):
             "assignment_source": RewardParticipation.SOURCE_ONEC_AUTHOR,
             "created_by": user,
         }
-        _, was_created = RewardParticipation.objects.get_or_create(
+        proposal, was_created = RewardParticipation.objects.get_or_create(
             organization=organization,
             period_month=period_month,
             role=RewardParticipation.ROLE_DOCUMENTATION,
@@ -403,6 +409,24 @@ def sync_author_proposals(organization, user, period_month):
             author_identity=identity,
             defaults=defaults,
         )
+        if (
+            not was_created
+            and proposal.assignment_source == RewardParticipation.SOURCE_ONEC_AUTHOR
+            and proposal.status == RewardParticipation.STATUS_NOT_APPLICABLE
+        ):
+            before = participation_snapshot(proposal)
+            proposal.employee = employee
+            proposal.status = status
+            proposal.share = ONE
+            proposal.basis = "Автор исходного документа 1С"
+            proposal.save(update_fields=["employee", "status", "share", "basis", "updated_at"])
+            RewardParticipationChange.objects.create(
+                participation=proposal,
+                actor=user,
+                before=before,
+                after=participation_snapshot(proposal),
+                reason="Автор_Key снова соответствует ранее созданному предложению",
+            )
         created += int(was_created)
     return {"created": created, "issues": issues}
 
@@ -582,6 +606,56 @@ def _fixed_for(document_type, scheme):
     return scheme.documentation_retail_fixed if document_type == RETAIL_CHECK else scheme.documentation_document_fixed
 
 
+def _author_sync_issue_count(organization, period_month, rows):
+    current_documents = {}
+    for row in rows:
+        data = row.source_data or {}
+        if (
+            data.get("row_kind") == "direct_order_expense"
+            or data.get("recorder_type") == RETAIL_REPORT
+        ):
+            continue
+        current_documents.setdefault(_row_document_key(row), row)
+
+    issue_count = 0
+    for key, row in current_documents.items():
+        expected_guid = ((row.source_data or {}).get("author_guid") or "").strip()
+        all_proposals = list(
+            RewardParticipation.objects.filter(
+                organization=organization,
+                period_month=period_month,
+                role=RewardParticipation.ROLE_DOCUMENTATION,
+                source_document_key=key,
+                assignment_source=RewardParticipation.SOURCE_ONEC_AUTHOR,
+            ).select_related("author_identity")
+        )
+        if not all_proposals:
+            issue_count += 1
+            continue
+        active = [
+            item for item in all_proposals
+            if item.status != RewardParticipation.STATUS_NOT_APPLICABLE
+        ]
+        if expected_guid:
+            matching = [
+                item for item in active
+                if item.author_identity_id
+                and item.author_identity.onec_user_id == expected_guid
+            ]
+            stale_active = [
+                item for item in active
+                if not item.author_identity_id
+                or item.author_identity.onec_user_id != expected_guid
+            ]
+            if not matching or stale_active:
+                issue_count += 1
+        else:
+            if any(item.author_identity_id for item in active):
+                issue_count += 1
+    return issue_count
+
+
+
 def calculate_month(organization, period_month, *, employee_id=None, use_closed=True):
     period_month = month_start(period_month)
     closed = RewardMonthClose.objects.filter(organization=organization, period_month=period_month).first()
@@ -685,6 +759,15 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
 
     if scheme is None:
         issues.append({"kind": "missing_scheme", "label": "Нет версии тестовой схемы для месяца."})
+    author_sync_issues = _author_sync_issue_count(
+        organization, period_month, rows
+    )
+    if author_sync_issues:
+        issues.append({
+            "kind": "author_sync_stale",
+            "label": "Предложения по авторам не соответствуют активным данным 1С. Обновите предложения по авторам.",
+            "count": author_sync_issues,
+        })
 
     for (scope_key, role), items in groups.items():
         confirmed = [x for x in items if x.status == RewardParticipation.STATUS_CONFIRMED and x.employee_id]
@@ -917,7 +1000,7 @@ def close_month(organization, user, period_month):
     blocking = {
         "missing_scheme", "missing_base", "missing_cost", "month_missing_cost",
         "share_overflow", "unmapped_author", "unconfirmed", "unallocated",
-        "partial_direct_cost_allocation", "missing_selected_lines", "missing_sale_role",
+        "partial_direct_cost_allocation", "missing_selected_lines", "author_sync_stale", "missing_sale_role",
         "missing_documentation_role", "missing_work_role",
     }
     if any(issue.get("kind") in blocking for issue in snapshot["issues"]):
@@ -1060,6 +1143,27 @@ def create_manual_participation(
             raise ValidationError("Доля должна быть больше 0 и не больше 100%.")
         status = RewardParticipation.STATUS_PENDING
     scope_key = _assignment_scope_key(document_key, role, selected)
+    active_role_scopes = RewardParticipation.objects.filter(
+        organization=organization,
+        period_month=period_month,
+        source_document_key=document_key,
+        role=role,
+    ).exclude(status=RewardParticipation.STATUS_NOT_APPLICABLE)
+    selected_set = set(selected)
+    for current in active_role_scopes:
+        if current.scope_key == scope_key:
+            continue
+        current_set = set(current.scope_line_identities or [])
+        overlaps = (
+            not selected_set
+            or not current_set
+            or bool(selected_set.intersection(current_set))
+        )
+        if overlaps:
+            raise ValidationError(
+                "Пересекающиеся наборы позиций в одной роли недопустимы; "
+                "добавьте сотрудника в существующий объём либо выберите непересекающиеся строки."
+            )
     existing = RewardParticipation.objects.filter(
         organization=organization,
         period_month=period_month,
