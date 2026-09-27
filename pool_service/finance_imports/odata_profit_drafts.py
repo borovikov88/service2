@@ -2043,24 +2043,6 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
             for item in documents.values()
             if item.get("author_guid")
         }
-        if document_author_guids:
-            try:
-                references["author"] = _read_reference_map(
-                    config,
-                    "author",
-                    document_author_guids,
-                    opener=client,
-                    page_budget=reference_page_budget,
-                    allow_deleted_author=True,
-                    allow_missing=True,
-                )
-            except (ODataPreviewError, ValidationError, OSError):
-                # Автор_Key itself is sufficient for later safe mapping.
-                # User descriptions are optional enrichment and must never
-                # abort the gross-profit refresh.
-                references["author"] = {}
-        else:
-            references["author"] = {}
         _load_missing_sales_order_customers(
             config,
             rows,
@@ -2077,6 +2059,26 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
             opener=client,
             page_budget=reference_page_budget,
         )
+        # Optional display-name enrichment is deliberately isolated from the
+        # shared budget so it can never starve required finance references.
+        if document_author_guids:
+            try:
+                references["author"] = _read_reference_map(
+                    config,
+                    "author",
+                    document_author_guids,
+                    opener=client,
+                    page_budget={"used": 0},
+                    allow_deleted_author=True,
+                    allow_missing=True,
+                )
+            except (ODataPreviewError, ValidationError, OSError):
+                # Автор_Key itself is sufficient for later safe mapping.
+                # User descriptions are optional enrichment and must never
+                # abort the gross-profit refresh.
+                references["author"] = {}
+        else:
+            references["author"] = {}
         normalized = _enrich_rows(
             rows,
             references,

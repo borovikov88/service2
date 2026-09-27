@@ -27,6 +27,7 @@ ONE = Decimal("1.000000")
 MAX_FIXED_REWARD = Decimal("1000000.00")
 RETAIL_CHECK = "Document_ЧекККМ"
 RETAIL_REPORT = "Document_ОтчетОРозничныхПродажах"
+MONTH_CLOSE = "Document_ЗакрытиеМесяца"
 REALIZATION = "Document_РасходнаяНакладная"
 
 
@@ -177,6 +178,15 @@ def create_scheme_version(organization, user, *, effective_from, values):
     )
 
 
+def _is_documentation_reward_source(row):
+    data = row.source_data or {}
+    return (
+        data.get("row_kind") != "direct_order_expense"
+        and data.get("recorder_type") not in {RETAIL_REPORT, MONTH_CLOSE}
+    )
+
+
+
 def _row_document_key(row):
     data = row.source_data or {}
     recorder_type = data.get("recorder_type") or ""
@@ -259,10 +269,9 @@ def _resolve_missing_author_placeholder(organization, user, period_month, key):
         role=RewardParticipation.ROLE_DOCUMENTATION,
         scope_key=key,
         source_document_key=key,
-        employee__isnull=True,
+        assignment_source=RewardParticipation.SOURCE_ONEC_AUTHOR,
         author_identity__isnull=True,
-        status=RewardParticipation.STATUS_REQUIRED,
-    )
+    ).exclude(status=RewardParticipation.STATUS_NOT_APPLICABLE)
     for item in placeholders:
         before = participation_snapshot(item)
         item.status = RewardParticipation.STATUS_NOT_APPLICABLE
@@ -333,7 +342,7 @@ def sync_author_proposals(organization, user, period_month):
     by_doc = {}
     for row in rows:
         data = row.source_data or {}
-        if data.get("row_kind") == "direct_order_expense":
+        if not _is_documentation_reward_source(row):
             continue
         recorder_type = data.get("recorder_type")
         key = _row_document_key(row)
@@ -344,10 +353,6 @@ def sync_author_proposals(organization, user, period_month):
         data = row.source_data or {}
         author_guid = (data.get("author_guid") or "").strip()
         author_name = (data.get("author_name") or "").strip()
-        if data.get("recorder_type") == RETAIL_REPORT:
-            # This is an aggregate accounting document, not a standalone
-            # documentation reward unit. Its author must never be inherited by checks.
-            continue
         if not author_guid:
             _resolve_stale_author_proposals(
                 organization, user, period_month, key, None
@@ -610,10 +615,7 @@ def _author_sync_issue_count(organization, period_month, rows):
     current_documents = {}
     for row in rows:
         data = row.source_data or {}
-        if (
-            data.get("row_kind") == "direct_order_expense"
-            or data.get("recorder_type") == RETAIL_REPORT
-        ):
+        if not _is_documentation_reward_source(row):
             continue
         current_documents.setdefault(_row_document_key(row), row)
 
@@ -698,10 +700,7 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
     for row in rows:
         row_data = row.source_data or {}
         business_scopes[_row_business_scope_key(row)].append(row)
-        if (
-            row_data.get("row_kind") != "direct_order_expense"
-            and row_data.get("recorder_type") != RETAIL_REPORT
-        ):
+        if _is_documentation_reward_source(row):
             source_documents.setdefault(_row_document_key(row), row)
     for business_key, scope_rows in business_scopes.items():
         sale_rows = [
@@ -907,8 +906,14 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
 
     unmapped_authors = list(
         OneCAuthorIdentity.objects.filter(
-            organization=organization, status=OneCAuthorIdentity.STATUS_NEEDS_MAPPING,
+            organization=organization,
+            status=OneCAuthorIdentity.STATUS_NEEDS_MAPPING,
             reward_participations__period_month=period_month,
+            reward_participations__status__in=[
+                RewardParticipation.STATUS_REQUIRED,
+                RewardParticipation.STATUS_PENDING,
+                RewardParticipation.STATUS_CONFIRMED,
+            ],
         ).distinct().values("id", "onec_user_id", "raw_name")
     )
     if unmapped_authors:

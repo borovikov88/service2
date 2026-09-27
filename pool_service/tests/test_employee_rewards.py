@@ -492,3 +492,74 @@ class EmployeeRewardCalculationTests(TestCase):
         self.assertTrue(any(
             item["kind"] == "author_sync_stale" for item in data["issues"]
         ))
+
+
+    def test_month_close_adjustment_is_not_documentation_unit(self):
+        row = self.add_row(1, "-500.00")
+        row.source_data = {
+            **row.source_data,
+            "recorder_type": "Document_ЗакрытиеМесяца",
+            "author_guid": "",
+        }
+        row.save(update_fields=["source_data"])
+        sync_author_proposals(self.org, self.user, self.month)
+        self.assertFalse(
+            RewardParticipation.objects.filter(
+                organization=self.org,
+                period_month=self.month,
+                role=RewardParticipation.ROLE_DOCUMENTATION,
+            ).exists()
+        )
+        data = calculate_month(self.org, self.month)
+        self.assertFalse(any(
+            issue["kind"] == "missing_documentation_role"
+            for issue in data["issues"]
+        ))
+
+    def test_retired_unmapped_author_does_not_block_month(self):
+        row = self.add_row(1, "1000.00")
+        row.source_data = {
+            **row.source_data,
+            "author_guid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "author_name": "Автор A",
+        }
+        row.save(update_fields=["source_data"])
+        sync_author_proposals(self.org, self.user, self.month)
+        old = RewardParticipation.objects.get(
+            author_identity__onec_user_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        )
+        old.status = RewardParticipation.STATUS_NOT_APPLICABLE
+        old.save(update_fields=["status"])
+        data = calculate_month(self.org, self.month)
+        self.assertFalse(any(
+            issue["kind"] == "unmapped_author"
+            for issue in data["issues"]
+        ))
+
+    def test_present_author_retires_manually_resolved_identityless_placeholder(self):
+        row = self.add_row(1, "1000.00")
+        sync_author_proposals(self.org, self.user, self.month)
+        placeholder = RewardParticipation.objects.get(
+            organization=self.org,
+            period_month=self.month,
+            role=RewardParticipation.ROLE_DOCUMENTATION,
+            author_identity__isnull=True,
+        )
+        resolve_documentation_placeholder(
+            placeholder, self.user, employee=self.e1
+        )
+        placeholder.refresh_from_db()
+        self.assertEqual(placeholder.status, RewardParticipation.STATUS_PENDING)
+
+        row.source_data = {
+            **row.source_data,
+            "author_guid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "author_name": "Автор A",
+        }
+        row.save(update_fields=["source_data"])
+        sync_author_proposals(self.org, self.user, self.month)
+        placeholder.refresh_from_db()
+        self.assertEqual(
+            placeholder.status,
+            RewardParticipation.STATUS_NOT_APPLICABLE,
+        )
