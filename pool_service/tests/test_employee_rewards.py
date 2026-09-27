@@ -13,6 +13,7 @@ from pool_service.services.rewards import (
     confirm_participation,
     create_manual_participation,
     create_scheme_version,
+    ensure_test_scheme,
     reward_document_options,
     resolve_documentation_placeholder,
     sync_author_proposals,
@@ -660,3 +661,58 @@ class EmployeeRewardCalculationTests(TestCase):
             detail["scope_key"] == item.scope_key
             for detail in data["details"]
         ))
+
+
+    def test_resync_reuses_resolved_missing_author_placeholder(self):
+        self.add_row(1, "1000.00")
+        sync_author_proposals(self.org, self.user, self.month)
+        placeholder = RewardParticipation.objects.get(
+            organization=self.org,
+            period_month=self.month,
+            role=RewardParticipation.ROLE_DOCUMENTATION,
+            author_identity__isnull=True,
+        )
+        resolve_documentation_placeholder(
+            placeholder, self.user, employee=self.e1
+        )
+        confirm_participation(placeholder, self.user)
+        before_ids = list(
+            RewardParticipation.objects.filter(
+                organization=self.org,
+                period_month=self.month,
+                role=RewardParticipation.ROLE_DOCUMENTATION,
+                author_identity__isnull=True,
+            ).values_list("id", flat=True)
+        )
+
+        sync_author_proposals(self.org, self.user, self.month)
+
+        after = RewardParticipation.objects.filter(
+            organization=self.org,
+            period_month=self.month,
+            role=RewardParticipation.ROLE_DOCUMENTATION,
+            author_identity__isnull=True,
+        )
+        self.assertEqual(list(after.values_list("id", flat=True)), before_ids)
+        self.assertEqual(after.get().status, RewardParticipation.STATUS_CONFIRMED)
+
+    def test_ensure_test_scheme_backfills_before_future_version_with_unique_number(self):
+        RewardSchemeVersion.objects.all().delete()
+        future = RewardSchemeVersion.objects.create(
+            organization=self.org,
+            name="Тестовая схема №1",
+            version=1,
+            effective_from=date(2026, 11, 1),
+            created_by=self.user,
+        )
+
+        backfilled = ensure_test_scheme(
+            self.org, self.user, date(2026, 9, 1)
+        )
+
+        self.assertEqual(backfilled.version, 2)
+        self.assertEqual(backfilled.effective_from, date(2026, 9, 1))
+        self.assertEqual(backfilled.effective_to, date(2026, 10, 31))
+        future.refresh_from_db()
+        self.assertEqual(future.version, 1)
+        self.assertEqual(future.effective_from, date(2026, 11, 1))

@@ -120,11 +120,27 @@ def ensure_test_scheme(organization, user, period_month):
         period_month__gte=period_month,
     ).exists():
         raise ValidationError("Нельзя создавать правила задним числом через уже закрытый месяц.")
+
+    versions = RewardSchemeVersion.objects.filter(
+        organization=organization,
+        name="Тестовая схема №1",
+    )
+    latest_version = versions.order_by("-version").first()
+    next_scheme = (
+        versions.filter(effective_from__gt=period_month)
+        .order_by("effective_from", "version")
+        .first()
+    )
+    effective_to = None
+    if next_scheme:
+        effective_to = next_scheme.effective_from - timedelta(days=1)
+
     return RewardSchemeVersion.objects.create(
         organization=organization,
         name="Тестовая схема №1",
-        version=1,
+        version=(latest_version.version if latest_version else 0) + 1,
         effective_from=period_month,
+        effective_to=effective_to,
         created_by=user,
     )
 
@@ -295,10 +311,9 @@ def _ensure_required_documentation(organization, user, period_month, key, row, *
         role=RewardParticipation.ROLE_DOCUMENTATION,
         scope_key=key,
         source_document_key=key,
-        employee__isnull=True,
+        assignment_source=RewardParticipation.SOURCE_ONEC_AUTHOR,
         author_identity=author_identity,
-        status=RewardParticipation.STATUS_REQUIRED,
-    ).first()
+    ).order_by("id").first()
     if existing:
         return existing, False
     item = RewardParticipation.objects.create(
