@@ -12,7 +12,7 @@ from pool_service.services.rewards import calculate_month, confirm_participation
 class EmployeeRewardCalculationTests(TestCase):
     def setUp(self):
         self.org = Organization.objects.create(name="Test rewards org")
-        self.user = User.objects.create_user("owner-test-rewards")
+        self.user = User.objects.create_superuser("owner-test-rewards", "owner@example.test", "test")
         self.e1 = Employee.objects.create(organization=self.org, display_name="Первый")
         self.e2 = Employee.objects.create(organization=self.org, display_name="Второй")
         self.month = date(2026, 9, 1)
@@ -157,3 +157,24 @@ class EmployeeRewardCalculationTests(TestCase):
                 employee=self.e1, role=RewardParticipation.ROLE_WORK, share=Decimal("1"),
                 line_identities=[],
             )
+
+    def test_confirm_rejects_share_over_100_percent(self):
+        row = self.add_row(1, "10000.00", kind="Работа")
+        a = self.participation(self.e1, RewardParticipation.ROLE_WORK, "0.700000", lines=[row.source_identity], scope="same")
+        pending = RewardParticipation.objects.create(
+            organization=self.org, employee=self.e2, role=RewardParticipation.ROLE_WORK,
+            status=RewardParticipation.STATUS_PENDING, share=Decimal("0.400000"),
+            period_month=self.month, scope_key="same",
+            source_document_key=a.source_document_key,
+            source_document_type=a.source_document_type,
+            scope_line_identities=[row.source_identity], assignment_source=RewardParticipation.SOURCE_MANUAL,
+            created_by=self.user,
+        )
+        with self.assertRaisesMessage(Exception, "превышают 100%"):
+            confirm_participation(pending, self.user)
+
+    def test_documentation_fixed_does_not_require_known_cost(self):
+        row = self.add_row(1, "1000.00", cost_source=OneCMonthlyProfit.COST_SOURCE_UNDEFINED)
+        self.participation(self.e1, RewardParticipation.ROLE_DOCUMENTATION, "1.000000", lines=[row.source_identity], scope="doc-fixed")
+        detail = calculate_month(self.org, self.month)["details"][0]
+        self.assertEqual(Decimal(detail["amount"]), Decimal("200.00"))

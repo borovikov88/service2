@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.db import transaction
+from django.db import models, transaction
 from django.utils import timezone
 
 from pool_service.models import Employee, OneCMonthlyProfit
@@ -170,6 +170,50 @@ def active_profit_rows(organization, period_month):
     )
 
 
+def _ensure_required_documentation(organization, user, period_month, key, row, *, basis, author_identity=None):
+    data = row.source_data or {}
+    existing = RewardParticipation.objects.filter(
+        organization=organization,
+        period_month=period_month,
+        role=RewardParticipation.ROLE_DOCUMENTATION,
+        scope_key=key,
+        source_document_key=key,
+        employee__isnull=True,
+        author_identity=author_identity,
+        status=RewardParticipation.STATUS_REQUIRED,
+    ).first()
+    if existing:
+        return existing, False
+    item = RewardParticipation.objects.create(
+        organization=organization,
+        employee=None,
+        author_identity=author_identity,
+        role=RewardParticipation.ROLE_DOCUMENTATION,
+        status=RewardParticipation.STATUS_REQUIRED,
+        share=ONE,
+        period_month=period_month,
+        scope_key=key,
+        source_document_key=key,
+        source_document_type=data.get("recorder_type") or "",
+        source_document_guid=str(data.get("recorder") or row.source_recorder or ""),
+        source_document_number=data.get("document_number") or "",
+        source_document_date=_safe_date(data.get("document_date") or data.get("source_date")),
+        scope_line_identities=[],
+        customer_name=row.customer_name,
+        basis=basis,
+        assignment_source=RewardParticipation.SOURCE_ONEC_AUTHOR,
+        created_by=user,
+    )
+    RewardParticipationChange.objects.create(
+        participation=item,
+        actor=user,
+        before={},
+        after=participation_snapshot(item),
+        reason=basis,
+    )
+    return item, True
+
+
 @transaction.atomic
 def sync_author_proposals(organization, user, period_month):
     if not can_manage_participation(user, organization):
@@ -181,9 +225,6 @@ def sync_author_proposals(organization, user, period_month):
     for row in rows:
         data = row.source_data or {}
         recorder_type = data.get("recorder_type")
-        if recorder_type == RETAIL_REPORT:
-            # Aggregate report author must never be inherited by its included checks.
-            continue
         key = _row_document_key(row)
         by_doc.setdefault(key, row)
     created = 0
@@ -192,7 +233,20 @@ def sync_author_proposals(organization, user, period_month):
         data = row.source_data or {}
         author_guid = (data.get("author_guid") or "").strip()
         author_name = (data.get("author_name") or "").strip()
+        if data.get("recorder_type") == RETAIL_REPORT:
+            _, was_created = _ensure_required_documentation(
+                organization, user, period_month, key, row,
+                basis="Агрегирующий отчёт о розничных продажах: автор отчёта не назначается оформителем чеков.",
+            )
+            created += int(was_created)
+            issues += 1
+            continue
         if not author_guid:
+            _, was_created = _ensure_required_documentation(
+                organization, user, period_month, key, row,
+                basis="Автор исходного документа 1С отсутствует — требуется сопоставление вручную.",
+            )
+            created += int(was_created)
             issues += 1
             continue
         identity, _ = OneCAuthorIdentity.objects.get_or_create(
@@ -203,7 +257,16 @@ def sync_author_proposals(organization, user, period_month):
         if author_name and identity.raw_name != author_name:
             identity.raw_name = author_name
             identity.save(update_fields=["raw_name", "updated_at"])
-        if identity.status in {OneCAuthorIdentity.STATUS_TECHNICAL, OneCAuthorIdentity.STATUS_EXCLUDED}:
+        if identity.status == OneCAuthorIdentity.STATUS_TECHNICAL:
+            _, was_created = _ensure_required_documentation(
+                organization, user, period_month, key, row,
+                basis="Автор — техническая учётная запись 1С; сотрудник не назначен автоматически.",
+                author_identity=identity,
+            )
+            created += int(was_created)
+            issues += 1
+            continue
+        if identity.status == OneCAuthorIdentity.STATUS_EXCLUDED:
             continue
         employee = identity.employee if identity.status == OneCAuthorIdentity.STATUS_MAPPED else None
         status = RewardParticipation.STATUS_PENDING if employee else RewardParticipation.STATUS_REQUIRED
@@ -305,6 +368,15 @@ def confirm_participation(participation, user):
         raise ValidationError("Закрытый месяц нельзя переписывать.")
     if not participation.employee_id:
         raise ValidationError("Нельзя подтвердить участие без сотрудника.")
+    confirmed_share = RewardParticipation.objects.filter(
+        organization=participation.organization,
+        period_month=participation.period_month,
+        scope_key=participation.scope_key,
+        role=participation.role,
+        status=RewardParticipation.STATUS_CONFIRMED,
+    ).exclude(pk=participation.pk).aggregate(total=models.Sum("share"))["total"] or Decimal("0")
+    if confirmed_share + participation.share > ONE:
+        raise ValidationError("Подтверждённые доли по роли превышают 100%.")
     before = participation_snapshot(participation)
     participation.status = RewardParticipation.STATUS_CONFIRMED
     participation.confirmed_by = user
@@ -555,7 +627,7 @@ def close_month(organization, user, period_month):
     if scheme is None:
         raise ValidationError("Нельзя закрыть месяц без версии тестовой схемы.")
     snapshot = calculate_month(organization, period_month, use_closed=False)
-    blocking = {"missing_scheme", "missing_base", "missing_cost", "share_overflow", "unmapped_author", "unconfirmed"}
+    blocking = {"missing_scheme", "missing_base", "missing_cost", "share_overflow", "unmapped_author", "unconfirmed", "unallocated"}
     if any(issue.get("kind") in blocking for issue in snapshot["issues"]):
         raise ValidationError("Есть неполные или неподтверждённые данные; месяц не закрыт.")
     raw = json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode("utf-8")
