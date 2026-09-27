@@ -849,6 +849,28 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
             for item in confirmed:
                 employee_totals[item.employee_id]["review_count"] += 1
             continue
+        if (
+            role != RewardParticipation.ROLE_DOCUMENTATION
+            and not selected_identities
+        ):
+            aliased_rows = rows_by_document.get(
+                confirmed[0].source_document_key, []
+            )
+            moved_all_lines = [
+                row for row in aliased_rows
+                if (row.source_data or {}).get("row_kind") != "direct_order_expense"
+                and _row_business_scope_key(row)
+                != confirmed[0].source_document_key
+            ]
+            if moved_all_lines:
+                issues.append({
+                    "kind": "moved_all_lines_scope",
+                    "label": scope_key,
+                    "count": len(moved_all_lines),
+                })
+                for item in confirmed:
+                    employee_totals[item.employee_id]["review_count"] += 1
+                continue
         scope_rows = _scope_rows(confirmed[0], rows_by_identity, rows_by_document)
         if not scope_rows:
             issues.append({"kind": "missing_base", "label": scope_key, "count": 1})
@@ -1065,7 +1087,7 @@ def close_month(organization, user, period_month):
     blocking = {
         "missing_scheme", "missing_base", "missing_cost", "month_missing_cost",
         "share_overflow", "unmapped_author", "unconfirmed", "unallocated",
-        "partial_direct_cost_allocation", "missing_selected_lines", "moved_selected_lines", "author_sync_stale", "missing_sale_role",
+        "partial_direct_cost_allocation", "missing_selected_lines", "moved_selected_lines", "moved_all_lines_scope", "author_sync_stale", "missing_sale_role",
         "missing_documentation_role", "missing_work_role",
     }
     if any(issue.get("kind") in blocking for issue in snapshot["issues"]):

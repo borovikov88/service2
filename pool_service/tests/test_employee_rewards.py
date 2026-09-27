@@ -632,3 +632,31 @@ class EmployeeRewardCalculationTests(TestCase):
         self.assertEqual(_percent_value("10,5", "Продажа"), Decimal("0.105"))
         with self.assertRaisesMessage(Exception, "числовое значение"):
             _percent_value("", "Продажа")
+
+
+    def test_all_lines_sale_scope_is_blocked_when_document_gains_order(self):
+        row = self.add_row(1, "1000.00")
+        document = reward_document_options(self.org, self.month)[0]
+        item = create_manual_participation(
+            self.org, self.user, self.month,
+            document_key=document["scope_key"],
+            employee=self.e1,
+            role=RewardParticipation.ROLE_SALE,
+            share=Decimal("1"),
+            line_identities=[],
+        )
+        confirm_participation(item, self.user)
+        row.source_data = {
+            **row.source_data,
+            "resolved_order_guid": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        }
+        row.save(update_fields=["source_data"])
+        data = calculate_month(self.org, self.month)
+        self.assertTrue(any(
+            issue["kind"] == "moved_all_lines_scope"
+            for issue in data["issues"]
+        ))
+        self.assertFalse(any(
+            detail["scope_key"] == item.scope_key
+            for detail in data["details"]
+        ))

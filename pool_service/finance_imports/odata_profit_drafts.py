@@ -277,7 +277,7 @@ def _read_reference_map(
                     item["article"] = (article or "").strip()[:120]
                     item["nomenclature_type"] = nomenclature_type.strip()
                 found[key] = item
-    if set(found) != expected:
+    if set(found) != expected and not allow_missing:
         raise ODataPreviewError("1C reference is missing or unavailable")
     return found
 
