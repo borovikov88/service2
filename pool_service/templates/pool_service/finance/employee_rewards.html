@@ -1,0 +1,97 @@
+{% extends "pool_service/base.html" %}
+{% load finance_tags %}
+{% block title %}Вознаграждения сотрудников{% endblock %}
+{% block content %}
+{% include "pool_service/finance/_desktop_workspace_styles.html" %}
+<div class="finance-desktop">
+  <div class="finance-page-header d-flex justify-content-between align-items-start gap-3 mb-3">
+    <div>
+      <h1 class="h3 mb-1">Вознаграждения сотрудников</h1>
+      <div class="text-muted">Тестовый расчёт — не начислено к выплате</div>
+    </div>
+    <a class="btn btn-outline-secondary" href="{% url 'finance_overview' %}">Назад к управленческим финансам</a>
+  </div>
+
+  <form class="card card-soft p-3 mb-3" method="get">
+    <div class="row g-2 align-items-end">
+      <div class="col-sm-4"><label class="form-label">Месяц</label><input class="form-control" type="month" name="month" value="{{ period_month|date:'Y-m' }}"></div>
+      <div class="col-sm-5"><label class="form-label">Сотрудник</label><select class="form-select" name="employee"><option value="">Все сотрудники</option>{% for employee in employees %}<option value="{{ employee.id }}" {% if request.GET.employee == employee.id|stringformat:"s" %}selected{% endif %}>{{ employee.display_name }}</option>{% endfor %}</select></div>
+      <div class="col-sm-3"><button class="btn btn-primary w-100">Показать</button></div>
+    </div>
+  </form>
+
+  {% if not data.scheme %}
+  <div class="alert alert-warning">Для месяца нет версии тестовой схемы.
+    {% if can_manage_rules %}<form class="d-inline" method="post">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="ensure_scheme"><button class="btn btn-sm btn-warning">Создать «Тестовую схему №1»</button></form>{% endif %}
+  </div>
+  {% endif %}
+
+  <div class="alert alert-info py-2"><strong>Тестовый расчёт — не начислено к выплате.</strong> Фактический ФОТ, выплаты и документы 1С не изменяются.{% if data.closed %} Месяц зафиксирован; показан закрытый snapshot.{% endif %}</div>
+
+  {% if can_manage_participation %}
+  <form method="post" class="mb-3">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="sync_authors"><button class="btn btn-outline-primary">Обновить предложения по авторам из сохранённых данных 1С</button></form>
+  {% endif %}
+
+  <section class="card card-soft p-3 mb-4">
+    <h2 class="h5">Итоги по сотрудникам</h2>
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0" style="min-width:1180px">
+        <thead><tr><th>Сотрудник</th><th class="text-end">Оформлено</th><th class="text-end">Выручка продавца</th><th class="text-end">ВП продавца</th><th class="text-end">Фикс оформления</th><th class="text-end">Продажи</th><th class="text-end">Проект</th><th class="text-end">Работы</th><th class="text-end">Корректировки</th><th class="text-end">Общий тест</th><th class="text-end">Проверить</th></tr></thead>
+        <tbody>{% for row in data.employees %}<tr>
+          <td><a href="{% url 'finance_employee_reward_detail' row.employee_id %}?month={{ period_month|date:'Y-m' }}">{{ row.employee }}</a></td>
+          <td class="text-end">{{ row.documentation_count }}</td><td class="text-end">{{ row.seller_revenue|money }}</td><td class="text-end">{{ row.seller_gp|money }}</td>
+          <td class="text-end">{{ row.documentation_reward|money }}</td><td class="text-end">{{ row.sale_reward|money }}</td><td class="text-end">{{ row.project_reward|money }}</td><td class="text-end">{{ row.work_reward|money }}</td><td class="text-end">{{ row.adjustments|money }}</td><td class="text-end fw-semibold">{{ row.total|money }}</td><td class="text-end">{{ row.review_count }}</td>
+        </tr>{% empty %}<tr><td colspan="11" class="text-muted text-center py-4">Подтверждённых распределений пока нет.</td></tr>{% endfor %}</tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card card-soft p-3 mb-4">
+    <h2 class="h5">Расшифровка</h2>
+    <div class="table-responsive"><table class="table table-sm align-middle mb-0" style="min-width:1100px"><thead><tr><th>Сотрудник</th><th>Клиент / объект</th><th>Документ</th><th>Роль</th><th class="text-end">База</th><th>Ставка / фикс</th><th class="text-end">Доля</th><th class="text-end">Сумма</th><th>Статус</th></tr></thead><tbody>
+      {% for row in data.details %}<tr><td>{{ row.employee }}</td><td>{{ row.customer|default:"—" }}</td><td>{{ row.document }}</td><td>{{ row.role }}</td><td class="text-end">{{ row.base|money }}</td><td>{{ row.rate }}</td><td class="text-end">{{ row.share|floatformat:2 }}</td><td class="text-end">{{ row.amount|money }}</td><td>{{ row.status }}</td></tr>{% empty %}<tr><td colspan="9" class="text-muted text-center py-3">Нет рассчитанных строк.</td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+
+  <section class="card card-soft p-3 mb-4">
+    <h2 class="h5">Требует внимания</h2>
+    <div class="table-responsive"><table class="table table-sm mb-0" style="min-width:720px"><thead><tr><th>Тип</th><th>Документ / причина</th><th class="text-end">Количество / остаток</th></tr></thead><tbody>
+      {% for issue in data.issues %}<tr><td>{{ issue.kind }}</td><td>{{ issue.label }}</td><td class="text-end">{{ issue.count|default:issue.share|default:"—" }}</td></tr>{% empty %}<tr><td colspan="3" class="text-muted">Нет проблем.</td></tr>{% endfor %}
+    </tbody></table></div>
+
+    {% if data.unmapped_authors and can_manage_participation %}
+      <h3 class="h6 mt-3">Несопоставленные авторы 1С</h3>
+      {% for author in data.unmapped_authors %}
+      <form method="post" class="row g-2 align-items-center mb-2">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="map_author"><input type="hidden" name="identity_id" value="{{ author.id }}"><div class="col-md-5">{{ author.raw_name|default:author.onec_user_id }}</div><div class="col-md-5"><select class="form-select form-select-sm" name="employee_id" required><option value="">Выберите сотрудника</option>{% for employee in employees %}<option value="{{ employee.id }}">{{ employee.display_name }}</option>{% endfor %}</select></div><div class="col-md-2"><button class="btn btn-sm btn-outline-primary w-100">Сопоставить</button></div></form>
+      {% endfor %}
+    {% endif %}
+  </section>
+
+  {% if participations %}
+  <section class="card card-soft p-3 mb-4">
+    <h2 class="h5">Участники и вознаграждения</h2>
+    <div class="small text-muted mb-2">Назначения хранят устойчивый ключ исходного документа и строк. Автор 1С создаёт только предложение на оформление; подтверждение — отдельно.</div>
+    <div class="table-responsive"><table class="table table-sm mb-0" style="min-width:980px"><thead><tr><th>Документ</th><th>Роль</th><th>Сотрудник</th><th>Источник</th><th class="text-end">Доля</th><th>Статус</th><th></th></tr></thead><tbody>
+    {% for item in participations %}<tr><td>{{ item.source_document_number|default:item.source_document_key }}</td><td>{{ item.get_role_display }}</td><td>{{ item.employee.display_name|default:"Требует сопоставления" }}</td><td>{{ item.get_assignment_source_display }}</td><td class="text-end">{{ item.share|floatformat:2 }}</td><td>{{ item.get_status_display }}</td><td>{% if can_manage_participation and item.status != "confirmed" and item.employee_id %}<form method="post">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="confirm"><input type="hidden" name="participation_id" value="{{ item.id }}"><button class="btn btn-sm btn-outline-success">Подтвердить</button></form>{% endif %}</td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+  {% endif %}
+
+  {% if can_manage_rules and scheme and not data.closed %}
+  <details class="card card-soft p-3 mb-4"><summary class="fw-semibold">Настройки тестовой схемы · версия {{ scheme.version }}</summary>
+    <form method="post" class="row g-2 mt-2">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="save_scheme">
+      <div class="col-md-4"><label class="form-label">Розничный чек, ₽</label><input class="form-control" name="documentation_retail_fixed" value="{{ scheme.documentation_retail_fixed }}"></div>
+      <div class="col-md-4"><label class="form-label">Комплект документов, ₽</label><input class="form-control" name="documentation_document_fixed" value="{{ scheme.documentation_document_fixed }}"></div>
+      <div class="col-md-4"><label class="form-label">Продажа, % ВП</label><input class="form-control" name="sale_rate" value="{% widthratio scheme.sale_rate 0.01 1 %}"></div>
+      <div class="col-md-4"><label class="form-label">Проект / расчёт, % ВП</label><input class="form-control" name="project_rate" value="{% widthratio scheme.project_rate 0.01 1 %}"></div>
+      <div class="col-md-4"><label class="form-label">Выполнение работ, % ВП</label><input class="form-control" name="work_rate" value="{% widthratio scheme.work_rate 0.01 1 %}"></div>
+      <div class="col-md-4 d-flex align-items-end"><button class="btn btn-outline-primary w-100">Создать новую версию правил</button></div>
+    </form>
+  </details>
+  {% endif %}
+
+  {% if can_close_period and data.scheme and not data.closed %}
+  <form method="post" class="mb-4">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="close_month"><button class="btn btn-outline-danger">Закрыть тестовый месяц</button></form>
+  {% endif %}
+</div>
+{% endblock %}

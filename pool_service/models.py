@@ -3229,3 +3229,8 @@ class DevelopmentTaskEvent(models.Model):
 
     def __str__(self):
         return f"{self.task.reference}: {self.message}"
+
+
+# Register the isolated employee reward models in this Django app.
+# Kept in a separate module so the test-reward domain cannot leak into payroll models.
+from . import reward_models  # noqa: E402,F401

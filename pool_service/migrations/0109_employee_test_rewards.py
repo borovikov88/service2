@@ -1,0 +1,135 @@
+from decimal import Decimal
+import django.db.models.deletion
+from django.conf import settings
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+    dependencies = [
+        ("pool_service", "0108_employee_compensation_month"),
+        migrations.swappable_dependency(settings.AUTH_USER_MODEL),
+    ]
+
+    operations = [
+        migrations.CreateModel(
+            name="OneCAuthorIdentity",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("onec_user_id", models.CharField(max_length=120)),
+                ("raw_name", models.CharField(blank=True, max_length=500)),
+                ("status", models.CharField(choices=[("needs_mapping","Требует сопоставления"),("mapped","Сопоставлен"),("technical","Техническая учётная запись"),("excluded","Исключён")], default="needs_mapping", max_length=24)),
+                ("confirmed_at", models.DateTimeField(blank=True, null=True)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                ("confirmed_by", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name="confirmed_onec_authors", to=settings.AUTH_USER_MODEL)),
+                ("employee", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, related_name="onec_author_identities", to="pool_service.employee")),
+                ("organization", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="onec_author_identities", to="pool_service.organization")),
+            ],
+        ),
+        migrations.CreateModel(
+            name="RewardSchemeVersion",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("name", models.CharField(default="Тестовая схема №1", max_length=120)),
+                ("version", models.PositiveIntegerField(default=1)),
+                ("effective_from", models.DateField()),
+                ("effective_to", models.DateField(blank=True, null=True)),
+                ("is_test", models.BooleanField(default=True)),
+                ("documentation_retail_fixed", models.DecimalField(decimal_places=2, default=Decimal("50.00"), max_digits=12)),
+                ("documentation_document_fixed", models.DecimalField(decimal_places=2, default=Decimal("200.00"), max_digits=12)),
+                ("sale_rate", models.DecimalField(decimal_places=6, default=Decimal("0.100000"), max_digits=7)),
+                ("project_rate", models.DecimalField(decimal_places=6, default=Decimal("0.050000"), max_digits=7)),
+                ("work_rate", models.DecimalField(decimal_places=6, default=Decimal("0.400000"), max_digits=7)),
+                ("client_manager_rate", models.DecimalField(decimal_places=6, default=Decimal("0.000000"), max_digits=7)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("created_by", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name="created_reward_schemes", to=settings.AUTH_USER_MODEL)),
+                ("organization", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="reward_scheme_versions", to="pool_service.organization")),
+            ],
+            options={"ordering":["organization_id","effective_from","version"],"permissions":[("view_employee_rewards","Can view employee reward summary"),("manage_employee_reward_participation","Can manage employee reward participation"),("manage_employee_reward_rules","Can manage employee reward rules"),("close_employee_reward_period","Can close employee reward period")]},
+        ),
+        migrations.CreateModel(
+            name="RewardParticipantTemplate",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("role", models.CharField(choices=[("client_manager","Менеджер клиента"),("sale","Продажа"),("documentation","Оформление"),("project","Проект / расчёт"),("work","Выполнение работ")], max_length=24)),
+                ("share", models.DecimalField(decimal_places=6, default=Decimal("1.000000"), max_digits=7)),
+                ("effective_from", models.DateField()),
+                ("effective_to", models.DateField(blank=True, null=True)),
+                ("is_company_client", models.BooleanField(default=False)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("client", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name="reward_participant_templates", to="pool_service.client")),
+                ("created_by", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name="created_reward_templates", to=settings.AUTH_USER_MODEL)),
+                ("employee", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name="reward_participant_templates", to="pool_service.employee")),
+                ("organization", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="reward_participant_templates", to="pool_service.organization")),
+                ("pool", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name="reward_participant_templates", to="pool_service.pool")),
+            ],
+        ),
+        migrations.CreateModel(
+            name="RewardParticipation",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("role", models.CharField(choices=[("client_manager","Менеджер клиента"),("sale","Продажа"),("documentation","Оформление"),("project","Проект / расчёт"),("work","Выполнение работ")], max_length=24)),
+                ("status", models.CharField(choices=[("required","Требуется назначение"),("pending","Назначено, ожидает подтверждения"),("confirmed","Подтверждено"),("not_applicable","Не применяется")], default="pending", max_length=24)),
+                ("share", models.DecimalField(decimal_places=6, default=Decimal("1.000000"), max_digits=7)),
+                ("period_month", models.DateField()),
+                ("scope_key", models.CharField(max_length=255)),
+                ("source_document_key", models.CharField(max_length=255)),
+                ("source_document_type", models.CharField(blank=True, max_length=120)),
+                ("source_document_guid", models.CharField(blank=True, max_length=120)),
+                ("source_document_number", models.CharField(blank=True, max_length=120)),
+                ("source_document_date", models.DateField(blank=True, null=True)),
+                ("scope_line_identities", models.JSONField(blank=True, default=list)),
+                ("customer_name", models.CharField(blank=True, max_length=500)),
+                ("object_label", models.CharField(blank=True, max_length=500)),
+                ("basis", models.CharField(blank=True, max_length=500)),
+                ("assignment_source", models.CharField(choices=[("template","Шаблон"),("order","Заказ"),("task","Задача / наряд"),("onec_author","Автор документа 1С"),("manual","Вручную")], default="manual", max_length=24)),
+                ("confirmed_at", models.DateTimeField(blank=True, null=True)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                ("author_identity", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, related_name="reward_participations", to="pool_service.onecauthoridentity")),
+                ("confirmed_by", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name="confirmed_reward_participations", to=settings.AUTH_USER_MODEL)),
+                ("created_by", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name="created_reward_participations", to=settings.AUTH_USER_MODEL)),
+                ("employee", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, related_name="reward_participations", to="pool_service.employee")),
+                ("organization", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="reward_participations", to="pool_service.organization")),
+            ],
+        ),
+        migrations.CreateModel(
+            name="RewardParticipationChange",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("before", models.JSONField(default=dict)),("after", models.JSONField(default=dict)),("reason", models.CharField(blank=True, max_length=500)),("created_at", models.DateTimeField(auto_now_add=True)),
+                ("actor", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name="reward_participation_changes", to=settings.AUTH_USER_MODEL)),
+                ("participation", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="changes", to="pool_service.rewardparticipation")),
+            ],
+            options={"ordering":["created_at","id"]},
+        ),
+        migrations.CreateModel(
+            name="RewardMonthClose",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("period_month", models.DateField()),("snapshot", models.JSONField(default=dict)),("source_hash", models.CharField(max_length=64)),("closed_at", models.DateTimeField(auto_now_add=True)),
+                ("closed_by", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name="closed_reward_months", to=settings.AUTH_USER_MODEL)),
+                ("organization", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="reward_month_closes", to="pool_service.organization")),
+                ("scheme_version", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name="month_closes", to="pool_service.rewardschemeversion")),
+            ],
+        ),
+        migrations.CreateModel(
+            name="RewardAdjustment",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("period_month", models.DateField()),("original_period_month", models.DateField()),("amount", models.DecimalField(decimal_places=2, max_digits=16)),("reason", models.CharField(max_length=500)),("status", models.CharField(choices=[("proposed","Предложена"),("confirmed","Подтверждена")], default="proposed", max_length=16)),("confirmed_at", models.DateTimeField(blank=True, null=True)),("created_at", models.DateTimeField(auto_now_add=True)),
+                ("confirmed_by", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name="confirmed_reward_adjustments", to=settings.AUTH_USER_MODEL)),
+                ("created_by", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name="created_reward_adjustments", to=settings.AUTH_USER_MODEL)),
+                ("employee", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name="reward_adjustments", to="pool_service.employee")),
+                ("organization", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="reward_adjustments", to="pool_service.organization")),
+            ],
+        ),
+        migrations.AddConstraint(model_name="onecauthoridentity", constraint=models.UniqueConstraint(fields=("organization","onec_user_id"), name="unique_onec_author_per_org")),
+        migrations.AddConstraint(model_name="rewardschemeversion", constraint=models.UniqueConstraint(fields=("organization","name","version"), name="unique_reward_scheme_version")),
+        migrations.AddConstraint(model_name="rewardmonthclose", constraint=models.UniqueConstraint(fields=("organization","period_month"), name="unique_reward_close_org_month")),
+        migrations.AddIndex(model_name="onecauthoridentity", index=models.Index(fields=["organization","status"], name="onec_author_org_status_idx")),
+        migrations.AddIndex(model_name="rewardparticipanttemplate", index=models.Index(fields=["organization","role","effective_from"], name="reward_tpl_org_role_idx")),
+        migrations.AddIndex(model_name="rewardparticipation", index=models.Index(fields=["organization","period_month","role"], name="reward_part_org_month_role_idx")),
+        migrations.AddIndex(model_name="rewardparticipation", index=models.Index(fields=["organization","source_document_key"], name="reward_part_doc_idx")),
+        migrations.AddIndex(model_name="rewardadjustment", index=models.Index(fields=["organization","period_month","status"], name="reward_adj_org_month_idx")),
+    ]

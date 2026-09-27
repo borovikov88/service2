@@ -74,19 +74,24 @@ CATALOGS = {
         "Catalog_Сотрудники",
         ("Ref_Key", "Description", "DeletionMark"),
     ),
+    # Автор_Key of sale documents points to Catalog_Пользователи, not Catalog_Сотрудники.
+    "author": (
+        "Catalog_Пользователи",
+        ("Ref_Key", "Description", "DeletionMark"),
+    ),
 }
 DOCUMENTS = {
     "Document_РасходнаяНакладная": {
         "label": "Расходная накладная",
-        "fields": ("Ref_Key", "Number", "Date", "Заказ", "Заказ_Type"),
+        "fields": ("Ref_Key", "Number", "Date", "Автор_Key", "Заказ", "Заказ_Type"),
     },
     "Document_ОтчетОРозничныхПродажах": {
         "label": "Отчёт о розничных продажах",
-        "fields": ("Ref_Key", "Number", "Date"),
+        "fields": ("Ref_Key", "Number", "Date", "Автор_Key"),
     },
     "Document_ЧекККМ": {
         "label": "Чек ККМ",
-        "fields": ("Ref_Key", "Number", "Date"),
+        "fields": ("Ref_Key", "Number", "Date", "Автор_Key"),
     },
     "Document_ЗаказПокупателя": {
         "label": "Заказ покупателя",
@@ -355,6 +360,16 @@ def _read_document_entities(
                         "number": number.strip(),
                         "date": _document_date(raw.get("Date")),
                     }
+                    if entity_type in PROFIT_RECORDER_TYPES:
+                        raw_author = raw.get("Автор_Key")
+                        if raw_author not in (None, "", ZERO_GUID):
+                            author_guid = normalize_guid(
+                                raw_author,
+                                field="Document Автор_Key",
+                                allow_zero=True,
+                            )
+                            if author_guid != ZERO_GUID:
+                                item["author_guid"] = author_guid
                     if entity_type == ORDER_TYPE:
                         raw_organization = raw.get("Организация_Key")
                         if raw_organization not in (None, ""):
@@ -1108,6 +1123,12 @@ def _enrich_rows(
                 "document_number": primary_document["number"],
                 "document_date": primary_document["date"].isoformat(),
             })
+            author_guid = primary_document.get("author_guid")
+            if author_guid:
+                author = references.get("author", {}).get(author_guid)
+                normalized[-1]["source_data"]["author_guid"] = author_guid
+                if author:
+                    normalized[-1]["source_data"]["author_name"] = author["description"]
         group_document = group["group_document"]
         if group_document is not None:
             normalized[-1]["source_data"].update({
@@ -2014,6 +2035,18 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
             page_budget=reference_page_budget,
         )
         documents.update(direct_documents)
+        document_author_guids = {
+            item["author_guid"]
+            for item in documents.values()
+            if item.get("author_guid")
+        }
+        references["author"] = _read_reference_map(
+            config,
+            "author",
+            document_author_guids,
+            opener=client,
+            page_budget=reference_page_budget,
+        ) if document_author_guids else {}
         _load_missing_sales_order_customers(
             config,
             rows,
