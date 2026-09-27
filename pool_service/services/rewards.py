@@ -315,6 +315,33 @@ def _ensure_required_documentation(organization, user, period_month, key, row, *
         author_identity=author_identity,
     ).order_by("id").first()
     if existing:
+        if (
+            author_identity is None
+            and existing.status == RewardParticipation.STATUS_NOT_APPLICABLE
+            and existing.changes.order_by("-id").values_list("reason", flat=True).first()
+            == "Источник 1С после синхронизации предоставил Автор_Key"
+        ):
+            before = participation_snapshot(existing)
+            existing.employee = None
+            existing.status = RewardParticipation.STATUS_REQUIRED
+            existing.share = ONE
+            existing.confirmed_by = None
+            existing.confirmed_at = None
+            existing.basis = (
+                "Автор_Key снова отсутствует после ранее синхронизированного автора — "
+                "требуется новое решение руководителя."
+            )
+            existing.save(update_fields=[
+                "employee", "status", "share", "confirmed_by", "confirmed_at",
+                "basis", "updated_at",
+            ])
+            RewardParticipationChange.objects.create(
+                participation=existing,
+                actor=user,
+                before=before,
+                after=participation_snapshot(existing),
+                reason="Автор_Key снова отсутствует после повторной синхронизации",
+            )
         return existing, False
     item = RewardParticipation.objects.create(
         organization=organization,

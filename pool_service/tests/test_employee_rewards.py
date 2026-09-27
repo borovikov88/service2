@@ -716,3 +716,56 @@ class EmployeeRewardCalculationTests(TestCase):
         future.refresh_from_db()
         self.assertEqual(future.version, 1)
         self.assertEqual(future.effective_from, date(2026, 11, 1))
+
+
+    def test_author_reappears_then_disappears_reactivates_placeholder(self):
+        row = self.add_row(1, "1000.00")
+        sync_author_proposals(self.org, self.user, self.month)
+        placeholder = RewardParticipation.objects.get(
+            organization=self.org,
+            period_month=self.month,
+            role=RewardParticipation.ROLE_DOCUMENTATION,
+            author_identity__isnull=True,
+        )
+
+        row.source_data = {
+            **row.source_data,
+            "author_guid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "author_name": "Автор A",
+        }
+        row.save(update_fields=["source_data"])
+        sync_author_proposals(self.org, self.user, self.month)
+        placeholder.refresh_from_db()
+        self.assertEqual(
+            placeholder.status,
+            RewardParticipation.STATUS_NOT_APPLICABLE,
+        )
+
+        row.source_data = {
+            **row.source_data,
+            "author_guid": "",
+            "author_name": "",
+        }
+        row.save(update_fields=["source_data"])
+        sync_author_proposals(self.org, self.user, self.month)
+
+        placeholder.refresh_from_db()
+        self.assertEqual(
+            placeholder.status,
+            RewardParticipation.STATUS_REQUIRED,
+        )
+        self.assertIsNone(placeholder.employee_id)
+        self.assertEqual(
+            RewardParticipation.objects.filter(
+                organization=self.org,
+                period_month=self.month,
+                role=RewardParticipation.ROLE_DOCUMENTATION,
+                author_identity__isnull=True,
+            ).count(),
+            1,
+        )
+        self.assertTrue(
+            placeholder.changes.filter(
+                reason="Автор_Key снова отсутствует после повторной синхронизации"
+            ).exists()
+        )
