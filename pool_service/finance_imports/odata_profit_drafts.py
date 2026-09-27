@@ -74,19 +74,24 @@ CATALOGS = {
         "Catalog_Сотрудники",
         ("Ref_Key", "Description", "DeletionMark"),
     ),
+    # Автор_Key of sale documents points to Catalog_Пользователи, not Catalog_Сотрудники.
+    "author": (
+        "Catalog_Пользователи",
+        ("Ref_Key", "Description", "DeletionMark"),
+    ),
 }
 DOCUMENTS = {
     "Document_РасходнаяНакладная": {
         "label": "Расходная накладная",
-        "fields": ("Ref_Key", "Number", "Date", "Заказ", "Заказ_Type"),
+        "fields": ("Ref_Key", "Number", "Date", "Автор_Key", "Заказ", "Заказ_Type"),
     },
     "Document_ОтчетОРозничныхПродажах": {
         "label": "Отчёт о розничных продажах",
-        "fields": ("Ref_Key", "Number", "Date"),
+        "fields": ("Ref_Key", "Number", "Date", "Автор_Key"),
     },
     "Document_ЧекККМ": {
         "label": "Чек ККМ",
-        "fields": ("Ref_Key", "Number", "Date"),
+        "fields": ("Ref_Key", "Number", "Date", "Автор_Key"),
     },
     "Document_ЗаказПокупателя": {
         "label": "Заказ покупателя",
@@ -206,6 +211,8 @@ def _read_reference_map(
     allow_deleted_nomenclature=False,
     allowed_deleted_nomenclature_guids=None,
     allow_deleted_customer=False,
+    allow_deleted_author=False,
+    allow_missing=False,
 ):
     entity_set, fields = CATALOGS[kind]
     expected = set(guids)
@@ -240,6 +247,7 @@ def _read_reference_map(
                             )
                         )
                         or (kind == "customer" and allow_deleted_customer)
+                        or (kind == "author" and allow_deleted_author)
                     )
                 )
                 if raw.get("DeletionMark") is not False and not allows_historical_deleted_reference:
@@ -269,7 +277,7 @@ def _read_reference_map(
                     item["article"] = (article or "").strip()[:120]
                     item["nomenclature_type"] = nomenclature_type.strip()
                 found[key] = item
-    if set(found) != expected:
+    if set(found) != expected and not allow_missing:
         raise ODataPreviewError("1C reference is missing or unavailable")
     return found
 
@@ -355,6 +363,16 @@ def _read_document_entities(
                         "number": number.strip(),
                         "date": _document_date(raw.get("Date")),
                     }
+                    if entity_type in PROFIT_RECORDER_TYPES:
+                        raw_author = raw.get("Автор_Key")
+                        if raw_author not in (None, "", ZERO_GUID):
+                            author_guid = normalize_guid(
+                                raw_author,
+                                field="Document Автор_Key",
+                                allow_zero=True,
+                            )
+                            if author_guid != ZERO_GUID:
+                                item["author_guid"] = author_guid
                     if entity_type == ORDER_TYPE:
                         raw_organization = raw.get("Организация_Key")
                         if raw_organization not in (None, ""):
@@ -1108,6 +1126,12 @@ def _enrich_rows(
                 "document_number": primary_document["number"],
                 "document_date": primary_document["date"].isoformat(),
             })
+            author_guid = primary_document.get("author_guid")
+            if author_guid:
+                author = references.get("author", {}).get(author_guid)
+                normalized[-1]["source_data"]["author_guid"] = author_guid
+                if author:
+                    normalized[-1]["source_data"]["author_name"] = author["description"]
         group_document = group["group_document"]
         if group_document is not None:
             normalized[-1]["source_data"].update({
@@ -2014,6 +2038,11 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
             page_budget=reference_page_budget,
         )
         documents.update(direct_documents)
+        document_author_guids = {
+            item["author_guid"]
+            for item in documents.values()
+            if item.get("author_guid")
+        }
         _load_missing_sales_order_customers(
             config,
             rows,
@@ -2030,6 +2059,26 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
             opener=client,
             page_budget=reference_page_budget,
         )
+        # Optional display-name enrichment is deliberately isolated from the
+        # shared budget so it can never starve required finance references.
+        if document_author_guids:
+            try:
+                references["author"] = _read_reference_map(
+                    config,
+                    "author",
+                    document_author_guids,
+                    opener=client,
+                    page_budget={"used": 0},
+                    allow_deleted_author=True,
+                    allow_missing=True,
+                )
+            except (ODataPreviewError, ValidationError, OSError):
+                # Автор_Key itself is sufficient for later safe mapping.
+                # User descriptions are optional enrichment and must never
+                # abort the gross-profit refresh.
+                references["author"] = {}
+        else:
+            references["author"] = {}
         normalized = _enrich_rows(
             rows,
             references,

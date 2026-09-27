@@ -1,0 +1,14 @@
+{% extends "pool_service/base.html" %}
+{% load finance_tags %}
+{% block title %}Вознаграждения · {{ employee.display_name }}{% endblock %}
+{% block content %}
+{% include "pool_service/finance/_desktop_workspace_styles.html" %}
+<div class="finance-desktop">
+<a class="btn btn-sm btn-outline-secondary mb-3" href="{% url 'finance_employee_rewards' %}?month={{ period_month|date:'Y-m' }}">← Все сотрудники</a>
+<h1 class="h3">{{ employee.display_name }}</h1>
+<p class="text-muted">Тестовый расчёт — не начислено к выплате · {{ period_month|date:"m.Y" }}</p>
+<div class="table-responsive"><table class="table table-hover" style="min-width:980px"><thead><tr><th>Клиент</th><th>Документ</th><th>Роль</th><th class="text-end">База</th><th>Ставка / фикс</th><th class="text-end">Доля</th><th class="text-end">Сумма</th><th>Статус</th></tr></thead><tbody>
+{% for row in data.details %}<tr><td>{{ row.customer|default:"—" }}</td><td>{{ row.document }}</td><td>{{ row.role }}</td><td class="text-end">{{ row.base|money }}</td><td>{{ row.rate }}</td><td class="text-end">{{ row.share|floatformat:2 }}</td><td class="text-end">{{ row.amount|money }}</td><td>{{ row.status }}</td></tr>{% empty %}<tr><td colspan="8" class="text-muted text-center">Нет рассчитанных строк.</td></tr>{% endfor %}
+</tbody></table></div>
+</div>
+{% endblock %}
