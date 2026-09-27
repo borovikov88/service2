@@ -70,11 +70,30 @@
 
   {% if can_manage_participation and not data.closed %}
   <section class="card card-soft p-3 mb-4">
+    <h2 class="h5">Шаблоны клиента / объекта</h2>
+    <p class="small text-muted">Шаблон — только предложение для будущих назначений. Он не подтверждает фактическое выполнение работ и не переписывает историю.</p>
+    <form method="post" class="row g-2 align-items-end">{% csrf_token %}
+      <input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="create_template">
+      <div class="col-lg-3"><label class="form-label">Клиент Service2</label><select class="form-select form-select-sm" name="client_id"><option value="">—</option>{% for client in clients %}<option value="{{ client.id }}">{{ client.name }}</option>{% endfor %}</select></div>
+      <div class="col-lg-3"><label class="form-label">Объект</label><select class="form-select form-select-sm" name="pool_id"><option value="">Любой / не указан</option>{% for pool in pools %}<option value="{{ pool.id }}">{{ pool.client.name }} · {{ pool.address }}</option>{% endfor %}</select></div>
+      <div class="col-lg-2"><label class="form-label">Роль</label><select class="form-select form-select-sm" name="role"><option value="client_manager">Менеджер клиента</option><option value="sale">Продажа</option><option value="project">Проект / расчёт</option><option value="work">Выполнение работ</option></select></div>
+      <div class="col-lg-2"><label class="form-label">Сотрудник</label><select class="form-select form-select-sm" name="employee_id"><option value="">—</option>{% for employee in employees %}<option value="{{ employee.id }}">{{ employee.display_name }}</option>{% endfor %}</select></div>
+      <div class="col-lg-1"><label class="form-label">Доля %</label><input class="form-control form-control-sm" type="number" min="0" max="100" step="0.01" name="share_percent" value="100"></div>
+      <div class="col-lg-1"><button class="btn btn-sm btn-outline-primary w-100">+</button></div>
+      <div class="col-12"><label class="form-check"><input class="form-check-input" type="checkbox" name="is_company_client" value="1"><span class="form-check-label">Общий клиент компании (только роль «Менеджер клиента», без конкретного сотрудника)</span></label></div>
+    </form>
+    {% if participant_templates %}<div class="table-responsive mt-3"><table class="table table-sm" style="min-width:860px"><thead><tr><th>Клиент / объект</th><th>Роль</th><th>Сотрудник</th><th class="text-end">Доля</th><th>Действует</th><th></th></tr></thead><tbody>{% for item in participant_templates %}<tr><td>{% if item.is_company_client %}Общий клиент компании{% else %}{{ item.client.name|default:"—" }}{% if item.pool_id %} · {{ item.pool.address }}{% endif %}{% endif %}</td><td>{{ item.get_role_display }}</td><td>{{ item.employee.display_name|default:"—" }}</td><td class="text-end">{{ item.share|floatformat:2 }}</td><td>с {{ item.effective_from|date:"m.Y" }}{% if item.effective_to %} по {{ item.effective_to|date:"m.Y" }}{% endif %}</td><td>{% if not item.effective_to %}<form method="post">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="end_template"><input type="hidden" name="template_id" value="{{ item.id }}"><button class="btn btn-sm btn-outline-secondary">Завершить после месяца</button></form>{% endif %}</td></tr>{% endfor %}</tbody></table></div>{% endif %}
+  </section>
+  {% endif %}
+
+  {% if can_manage_participation and not data.closed %}
+  <section class="card card-soft p-3 mb-4">
     <h2 class="h5">Добавить участие</h2>
     <p class="small text-muted">Для продажи можно оставить позиции пустыми — тогда база берётся по всему заказу/самостоятельному документу вместе с относящимися прямыми затратами. Для проекта и выполнения работ позиции обязательны.</p>
     <form method="post" class="row g-3">{% csrf_token %}
       <input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}">
       <input type="hidden" name="action" value="add_participation">
+      <div class="col-lg-12"><label class="form-label">Шаблон-предложение (необязательно)</label><select class="form-select form-select-sm" id="reward-template-select"><option value="">Без шаблона</option>{% for item in participant_templates %}{% if item.employee_id %}<option value="{{ item.id }}" data-role="{{ item.role }}" data-employee="{{ item.employee_id }}" data-share="{% widthratio item.share 0.01 1 %}">{{ item.client.name|default:"Клиент компании" }}{% if item.pool_id %} · {{ item.pool.address }}{% endif %} · {{ item.get_role_display }} · {{ item.employee.display_name }}</option>{% endif %}{% endfor %}</select></div>
       <div class="col-lg-6"><label class="form-label">Заказ / документ</label><select class="form-select" name="document_key" id="reward-document-key" required>{% for doc in document_options %}<option value="{{ doc.scope_key }}"{% if selected_document_key == doc.scope_key %} selected{% endif %}>{{ doc.customer }} · {{ doc.label }}</option>{% endfor %}</select></div>
       <div class="col-lg-3"><label class="form-label">Роль</label><select class="form-select" name="role" required><option value="sale">Продажа</option><option value="project">Проект / расчёт</option><option value="work">Выполнение работ</option><option value="client_manager">Менеджер клиента</option></select></div>
       <div class="col-lg-3"><label class="form-label">Сотрудник</label><select class="form-select" name="employee_id" required>{% for employee in employees %}<option value="{{ employee.id }}">{{ employee.display_name }}</option>{% endfor %}</select></div>
@@ -91,7 +110,7 @@
       </form>
     </details>
     <script>
-    (()=>{const select=document.getElementById('reward-document-key');if(!select)return;const sync=()=>{document.querySelectorAll('.reward-lines').forEach(x=>{x.hidden=x.dataset.documentKey!==select.value;x.querySelectorAll('input').forEach(i=>{if(x.hidden)i.checked=false;});});};select.addEventListener('change',sync);sync();})();
+    (()=>{const select=document.getElementById('reward-document-key');if(!select)return;const sync=()=>{document.querySelectorAll('.reward-lines').forEach(x=>{x.hidden=x.dataset.documentKey!==select.value;x.querySelectorAll('input').forEach(i=>{if(x.hidden)i.checked=false;});});};select.addEventListener('change',sync);sync();const template=document.getElementById('reward-template-select');if(template){template.addEventListener('change',()=>{const option=template.selectedOptions[0];if(!option||!option.value)return;const form=template.closest('form');form.querySelector('[name="role"]').value=option.dataset.role;form.querySelector('[name="employee_id"]').value=option.dataset.employee;form.querySelector('[name="share_percent"]').value=option.dataset.share;});}})();
     </script>
   </section>
   {% endif %}

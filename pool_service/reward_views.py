@@ -3,12 +3,13 @@ from decimal import Decimal
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.db import models
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 
-from pool_service.models import Employee
-from pool_service.reward_models import OneCAuthorIdentity, RewardParticipation, RewardSchemeVersion
+from pool_service.models import Client, Employee, Pool
+from pool_service.reward_models import OneCAuthorIdentity, RewardParticipantTemplate, RewardParticipation, RewardSchemeVersion
 from pool_service.services.permissions import organization_for_user
 from pool_service.services.rewards import (
     calculate_month,
@@ -67,6 +68,41 @@ def employee_rewards(request):
                 employee = get_object_or_404(Employee, pk=request.POST.get("employee_id"), organization=organization)
                 map_author(identity, employee, request.user)
                 messages.success(request, "Автор 1С сопоставлен с сотрудником.")
+            elif action == "create_template":
+                if not can_manage_participation(request.user, organization):
+                    raise PermissionDenied
+                client = None
+                pool = None
+                employee = None
+                if request.POST.get("client_id"):
+                    client = get_object_or_404(Client, pk=request.POST["client_id"], organization=organization)
+                if request.POST.get("pool_id"):
+                    pool = get_object_or_404(Pool, pk=request.POST["pool_id"], organization=organization)
+                if request.POST.get("employee_id"):
+                    employee = get_object_or_404(Employee, pk=request.POST["employee_id"], organization=organization)
+                is_company_client = request.POST.get("is_company_client") == "1"
+                item = RewardParticipantTemplate(
+                    organization=organization,
+                    client=client,
+                    pool=pool,
+                    employee=employee,
+                    role=request.POST.get("role", ""),
+                    share=Decimal(request.POST.get("share_percent", "100")) / 100,
+                    effective_from=period_month,
+                    is_company_client=is_company_client,
+                    created_by=request.user,
+                )
+                item.full_clean()
+                item.save()
+                messages.success(request, "Шаблон участников создан. Он применяется только к будущим назначениям.")
+            elif action == "end_template":
+                if not can_manage_participation(request.user, organization):
+                    raise PermissionDenied
+                item = get_object_or_404(RewardParticipantTemplate, pk=request.POST.get("template_id"), organization=organization)
+                next_month = (period_month.replace(day=28) + timezone.timedelta(days=4)).replace(day=1)
+                item.effective_to = next_month - timezone.timedelta(days=1)
+                item.save(update_fields=["effective_to"])
+                messages.success(request, "Шаблон завершён после выбранного месяца; история назначений не изменена.")
             elif action == "add_participation":
                 employee = get_object_or_404(Employee, pk=request.POST.get("employee_id"), organization=organization)
                 selected_lines = request.POST.getlist("line_identity")
@@ -144,12 +180,25 @@ def employee_rewards(request):
         .order_by("source_document_date", "source_document_number", "role", "employee__display_name")
     )
     employees = Employee.objects.filter(organization=organization, is_active=True).order_by("display_name")
+    clients = Client.objects.filter(organization=organization).order_by("name", "id")
+    pools = Pool.objects.filter(organization=organization, is_deleted=False).select_related("client").order_by("client__name", "address", "id")
+    participant_templates = (
+        RewardParticipantTemplate.objects.filter(
+            organization=organization,
+            effective_from__lte=period_month,
+        ).filter(
+            models.Q(effective_to__isnull=True) | models.Q(effective_to__gte=period_month)
+        ).select_related("client", "pool", "employee").order_by("role", "client__name", "pool__address", "employee__display_name", "id")
+    )
     document_options = reward_document_options(organization, period_month)
     selected_document_key = request.GET.get("document_key", "")
     return render(request, "pool_service/finance/employee_rewards.html", {
         "data": data,
         "period_month": period_month,
         "employees": employees,
+        "clients": clients,
+        "pools": pools,
+        "participant_templates": participant_templates,
         "document_options": document_options,
         "selected_document_key": selected_document_key,
         "participations": participations,

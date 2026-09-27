@@ -81,7 +81,7 @@ class RewardParticipantTemplate(models.Model):
     organization = models.ForeignKey("Organization", on_delete=models.CASCADE, related_name="reward_participant_templates")
     client = models.ForeignKey("Client", on_delete=models.CASCADE, null=True, blank=True, related_name="reward_participant_templates")
     pool = models.ForeignKey("Pool", on_delete=models.CASCADE, null=True, blank=True, related_name="reward_participant_templates")
-    employee = models.ForeignKey("Employee", on_delete=models.PROTECT, related_name="reward_participant_templates")
+    employee = models.ForeignKey("Employee", on_delete=models.PROTECT, null=True, blank=True, related_name="reward_participant_templates")
     role = models.CharField(max_length=24, choices=ROLE_CHOICES)
     share = models.DecimalField(max_digits=7, decimal_places=6, default=Decimal("1.000000"))
     effective_from = models.DateField()
@@ -97,8 +97,17 @@ class RewardParticipantTemplate(models.Model):
         super().clean()
         if self.share < 0 or self.share > 1:
             raise ValidationError({"share": "Доля должна быть от 0 до 1."})
+        if self.is_company_client:
+            if self.role != self.ROLE_CLIENT_MANAGER:
+                raise ValidationError({"is_company_client": "Общий клиент компании допустим только для роли менеджера клиента."})
+            if self.employee_id:
+                raise ValidationError({"employee": "Для общего клиента компании конкретный менеджер не назначается."})
+        elif not self.employee_id:
+            raise ValidationError({"employee": "Для шаблона нужно выбрать сотрудника."})
         if self.employee_id and self.employee.organization_id != self.organization_id:
             raise ValidationError({"employee": "Сотрудник относится к другой организации."})
+        if self.pool_id and self.client_id and self.pool.client_id != self.client_id:
+            raise ValidationError({"pool": "Объект относится к другому клиенту."})
 
 
 class RewardParticipation(models.Model):

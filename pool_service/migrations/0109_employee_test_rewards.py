@@ -59,7 +59,7 @@ class Migration(migrations.Migration):
                 ("created_at", models.DateTimeField(auto_now_add=True)),
                 ("client", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name="reward_participant_templates", to="pool_service.client")),
                 ("created_by", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name="created_reward_templates", to=settings.AUTH_USER_MODEL)),
-                ("employee", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name="reward_participant_templates", to="pool_service.employee")),
+                ("employee", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, related_name="reward_participant_templates", to="pool_service.employee")),
                 ("organization", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="reward_participant_templates", to="pool_service.organization")),
                 ("pool", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name="reward_participant_templates", to="pool_service.pool")),
             ],
