@@ -1,3 +1,4 @@
+from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib import messages
@@ -99,13 +100,20 @@ def employee_rewards(request):
                 if not can_manage_participation(request.user, organization):
                     raise PermissionDenied
                 item = get_object_or_404(RewardParticipantTemplate, pk=request.POST.get("template_id"), organization=organization)
-                next_month = (period_month.replace(day=28) + timezone.timedelta(days=4)).replace(day=1)
-                item.effective_to = next_month - timezone.timedelta(days=1)
+                next_month = (period_month.replace(day=28) + timedelta(days=4)).replace(day=1)
+                item.effective_to = next_month - timedelta(days=1)
                 item.save(update_fields=["effective_to"])
                 messages.success(request, "Шаблон завершён после выбранного месяца; история назначений не изменена.")
             elif action == "add_participation":
                 employee = get_object_or_404(Employee, pk=request.POST.get("employee_id"), organization=organization)
                 selected_lines = request.POST.getlist("line_identity")
+                template = None
+                if request.POST.get("template_id"):
+                    template = get_object_or_404(
+                        RewardParticipantTemplate,
+                        pk=request.POST["template_id"],
+                        organization=organization,
+                    )
                 create_manual_participation(
                     organization,
                     request.user,
@@ -115,6 +123,14 @@ def employee_rewards(request):
                     role=request.POST.get("role", ""),
                     share=Decimal(request.POST.get("share_percent", "0")) / 100,
                     line_identities=selected_lines,
+                    assignment_source=(
+                        RewardParticipation.SOURCE_TEMPLATE
+                        if template else RewardParticipation.SOURCE_MANUAL
+                    ),
+                    basis=(
+                        f"Предложено шаблоном #{template.id}; фактическое участие уточнено вручную."
+                        if template else "Ручное распределение по подтверждённым строкам ВП"
+                    ),
                 )
                 messages.success(request, "Участие добавлено и ожидает подтверждения.")
             elif action == "mark_not_applicable":

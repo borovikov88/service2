@@ -840,6 +840,8 @@ def create_manual_participation(
     share,
     line_identities=None,
     not_applicable=False,
+    assignment_source=RewardParticipation.SOURCE_MANUAL,
+    basis="Ручное распределение по подтверждённым строкам ВП",
 ):
     if not can_manage_participation(user, organization):
         raise PermissionDenied
@@ -904,8 +906,8 @@ def create_manual_participation(
         source_document_date=document["source_document_date"],
         scope_line_identities=selected,
         customer_name=document["customer"],
-        basis="Ручное распределение по подтверждённым строкам ВП",
-        assignment_source=RewardParticipation.SOURCE_MANUAL,
+        basis=basis,
+        assignment_source=assignment_source,
         created_by=user,
     )
     item.full_clean()
