@@ -13,6 +13,7 @@ from pool_service.services.rewards import (
     create_manual_participation,
     create_scheme_version,
     reward_document_options,
+    resolve_documentation_placeholder,
     sync_author_proposals,
     update_participation_share,
 )
@@ -311,3 +312,104 @@ class EmployeeRewardCalculationTests(TestCase):
                 author_identity__onec_user_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             ).exists()
         )
+
+
+    def test_manual_path_rejects_documentation_role(self):
+        self.add_row(1, "1000.00")
+        document = reward_document_options(self.org, self.month)[0]
+        with self.assertRaisesMessage(Exception, "недоступна для ручного"):
+            create_manual_participation(
+                self.org, self.user, self.month,
+                document_key=document["scope_key"],
+                employee=self.e1,
+                role=RewardParticipation.ROLE_DOCUMENTATION,
+                share=Decimal("1"),
+            )
+
+    def test_missing_author_placeholder_can_be_assigned(self):
+        self.add_row(1, "1000.00")
+        sync_author_proposals(self.org, self.user, self.month)
+        placeholder = RewardParticipation.objects.get(
+            organization=self.org,
+            period_month=self.month,
+            role=RewardParticipation.ROLE_DOCUMENTATION,
+            author_identity__isnull=True,
+        )
+        resolve_documentation_placeholder(
+            placeholder, self.user, employee=self.e1
+        )
+        placeholder.refresh_from_db()
+        self.assertEqual(placeholder.employee, self.e1)
+        self.assertEqual(placeholder.status, RewardParticipation.STATUS_PENDING)
+
+    def test_changed_author_retires_previous_proposal(self):
+        row = self.add_row(1, "1000.00")
+        row.source_data = {
+            **row.source_data,
+            "author_guid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "author_name": "Автор A",
+        }
+        row.save(update_fields=["source_data"])
+        sync_author_proposals(self.org, self.user, self.month)
+        old = RewardParticipation.objects.get(
+            author_identity__onec_user_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        )
+        row.source_data = {
+            **row.source_data,
+            "author_guid": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "author_name": "Автор B",
+        }
+        row.save(update_fields=["source_data"])
+        sync_author_proposals(self.org, self.user, self.month)
+        old.refresh_from_db()
+        self.assertEqual(old.status, RewardParticipation.STATUS_NOT_APPLICABLE)
+        self.assertTrue(
+            RewardParticipation.objects.filter(
+                author_identity__onec_user_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                period_month=self.month,
+            ).exists()
+        )
+
+    def test_backdated_scheme_cannot_cross_later_closed_month(self):
+        from pool_service.reward_models import RewardMonthClose
+        march = date(2026, 11, 1)
+        RewardMonthClose.objects.create(
+            organization=self.org,
+            period_month=march,
+            scheme_version=self.scheme,
+            snapshot={},
+            source_hash="1" * 64,
+            closed_by=self.user,
+        )
+        with self.assertRaisesMessage(Exception, "закрытый месяц"):
+            create_scheme_version(
+                self.org,
+                self.user,
+                effective_from=date(2026, 10, 1),
+                values={"sale_rate": "0.11"},
+            )
+
+    def test_confirm_reloads_participation_after_lock(self):
+        row = self.add_row(1, "1000.00", kind="Работа")
+        self.participation(
+            self.e1, RewardParticipation.ROLE_WORK, "0.500000",
+            lines=[row.source_identity], scope="stale-confirm",
+        )
+        pending = RewardParticipation.objects.create(
+            organization=self.org,
+            employee=self.e2,
+            role=RewardParticipation.ROLE_WORK,
+            status=RewardParticipation.STATUS_PENDING,
+            share=Decimal("0.400000"),
+            period_month=self.month,
+            scope_key="stale-confirm",
+            source_document_key="odata-source:%s:Document_РасходнаяНакладная:11111111-1111-4111-8111-111111111111" % self.org.id,
+            source_document_type="Document_РасходнаяНакладная",
+            scope_line_identities=[row.source_identity],
+            assignment_source=RewardParticipation.SOURCE_MANUAL,
+            created_by=self.user,
+        )
+        stale = RewardParticipation.objects.get(pk=pending.pk)
+        RewardParticipation.objects.filter(pk=pending.pk).update(share=Decimal("0.600000"))
+        with self.assertRaisesMessage(Exception, "превышают 100%"):
+            confirm_participation(stale, self.user)

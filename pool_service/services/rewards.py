@@ -105,12 +105,20 @@ def models_q_effective(period_month):
     return Q(effective_to__isnull=True) | Q(effective_to__gte=period_month)
 
 
+@transaction.atomic
 def ensure_test_scheme(organization, user, period_month):
+    if not can_manage_rules(user, organization):
+        raise PermissionDenied
+    period_month = month_start(period_month)
+    _lock_reward_organization(organization)
     scheme = scheme_for_month(organization, period_month)
     if scheme:
         return scheme
-    if not can_manage_rules(user, organization):
-        raise PermissionDenied
+    if RewardMonthClose.objects.filter(
+        organization=organization,
+        period_month__gte=period_month,
+    ).exists():
+        raise ValidationError("Нельзя создавать правила задним числом через уже закрытый месяц.")
     return RewardSchemeVersion.objects.create(
         organization=organization,
         name="Тестовая схема №1",
@@ -125,6 +133,7 @@ def create_scheme_version(organization, user, *, effective_from, values):
     if not can_manage_rules(user, organization):
         raise PermissionDenied
     effective_from = month_start(effective_from)
+    _lock_reward_organization(organization)
     latest = (
         RewardSchemeVersion.objects.filter(organization=organization, name="Тестовая схема №1")
         .order_by("-version")
@@ -135,9 +144,9 @@ def create_scheme_version(organization, user, *, effective_from, values):
         raise ValidationError("Новая версия правил должна начинаться позже предыдущей версии.")
     if RewardMonthClose.objects.filter(
         organization=organization,
-        period_month=effective_from,
+        period_month__gte=effective_from,
     ).exists():
-        raise ValidationError("Нельзя менять правила уже закрытого месяца.")
+        raise ValidationError("Нельзя менять правила задним числом через уже закрытый месяц.")
     if latest and (latest.effective_to is None or latest.effective_to >= effective_from):
         previous_day = effective_from - timedelta(days=1)
         latest.effective_to = previous_day
@@ -188,6 +197,22 @@ def _lock_reward_organization(organization):
 
 
 
+def _reload_reward_participation(participation):
+    return (
+        RewardParticipation.objects.select_for_update()
+        .select_related("employee", "author_identity", "organization")
+        .get(pk=participation.pk)
+    )
+
+
+def _reload_author_identity(identity):
+    return (
+        OneCAuthorIdentity.objects.select_for_update()
+        .select_related("organization", "employee")
+        .get(pk=identity.pk)
+    )
+
+
 def active_profit_rows(organization, period_month):
     return list(
         OneCMonthlyProfit.objects.active_for(organization)
@@ -195,6 +220,35 @@ def active_profit_rows(organization, period_month):
         .select_related("import_batch")
         .order_by("source_row_number", "id")
     )
+
+
+def _resolve_stale_author_proposals(organization, user, period_month, key, current_author_guid):
+    stale = (
+        RewardParticipation.objects.select_related("author_identity")
+        .filter(
+            organization=organization,
+            period_month=period_month,
+            role=RewardParticipation.ROLE_DOCUMENTATION,
+            scope_key=key,
+            source_document_key=key,
+            assignment_source=RewardParticipation.SOURCE_ONEC_AUTHOR,
+            author_identity__isnull=False,
+        )
+        .exclude(author_identity__onec_user_id=current_author_guid)
+        .exclude(status=RewardParticipation.STATUS_NOT_APPLICABLE)
+    )
+    for item in stale:
+        before = participation_snapshot(item)
+        item.status = RewardParticipation.STATUS_NOT_APPLICABLE
+        item.basis = "Автор_Key исходного документа изменился после повторной синхронизации."
+        item.save(update_fields=["status", "basis", "updated_at"])
+        RewardParticipationChange.objects.create(
+            participation=item,
+            actor=user,
+            before=before,
+            after=participation_snapshot(item),
+            reason="Автор_Key документа изменён в источнике 1С",
+        )
 
 
 def _resolve_missing_author_placeholder(organization, user, period_month, key):
@@ -300,6 +354,9 @@ def sync_author_proposals(organization, user, period_month):
             issues += 1
             continue
         _resolve_missing_author_placeholder(organization, user, period_month, key)
+        _resolve_stale_author_proposals(
+            organization, user, period_month, key, author_guid
+        )
         identity, _ = OneCAuthorIdentity.objects.get_or_create(
             organization=organization,
             onec_user_id=author_guid,
@@ -362,6 +419,7 @@ def map_author(identity, employee, user):
     if not can_manage_participation(user, identity.organization):
         raise PermissionDenied
     _lock_reward_organization(identity.organization)
+    identity = _reload_author_identity(identity)
     if employee.organization_id != identity.organization_id:
         raise ValidationError("Сотрудник относится к другой организации.")
     identity.employee = employee
@@ -386,6 +444,7 @@ def save_participation(participation, user, *, employee, role, share, status, li
     if not can_manage_participation(user, participation.organization):
         raise PermissionDenied
     _lock_reward_organization(participation.organization)
+    participation = _reload_reward_participation(participation)
     if RewardMonthClose.objects.filter(
         organization=participation.organization, period_month=participation.period_month
     ).exists():
@@ -421,6 +480,7 @@ def update_participation_share(participation, user, share):
     if not can_manage_participation(user, participation.organization):
         raise PermissionDenied
     _lock_reward_organization(participation.organization)
+    participation = _reload_reward_participation(participation)
     if RewardMonthClose.objects.filter(
         organization=participation.organization,
         period_month=participation.period_month,
@@ -459,6 +519,7 @@ def confirm_participation(participation, user):
     if not can_manage_participation(user, participation.organization):
         raise PermissionDenied
     _lock_reward_organization(participation.organization)
+    participation = _reload_reward_participation(participation)
     if RewardMonthClose.objects.filter(
         organization=participation.organization,
         period_month=participation.period_month,
@@ -961,9 +1022,14 @@ def create_manual_participation(
     _lock_reward_organization(organization)
     if RewardMonthClose.objects.filter(organization=organization, period_month=period_month).exists():
         raise ValidationError("Закрытый месяц нельзя переписывать.")
-    roles = {value for value, _ in RewardParticipation.ROLE_CHOICES}
+    roles = {
+        RewardParticipation.ROLE_CLIENT_MANAGER,
+        RewardParticipation.ROLE_SALE,
+        RewardParticipation.ROLE_PROJECT,
+        RewardParticipation.ROLE_WORK,
+    }
     if role not in roles:
-        raise ValidationError("Неизвестная роль участия.")
+        raise ValidationError("Эта роль недоступна для ручного создания участия.")
     options = {item["scope_key"]: item for item in reward_document_options(organization, period_month)}
     document = options.get(document_key)
     if document is None:
@@ -1036,6 +1102,49 @@ def create_manual_participation(
 
 
 @transaction.atomic
+def resolve_documentation_placeholder(participation, user, *, employee=None, not_applicable=False):
+    if not can_manage_participation(user, participation.organization):
+        raise PermissionDenied
+    _lock_reward_organization(participation.organization)
+    participation = _reload_reward_participation(participation)
+    if RewardMonthClose.objects.filter(
+        organization=participation.organization,
+        period_month=participation.period_month,
+    ).exists():
+        raise ValidationError("Закрытый месяц нельзя переписывать.")
+    if (
+        participation.role != RewardParticipation.ROLE_DOCUMENTATION
+        or participation.author_identity_id is not None
+        or participation.status != RewardParticipation.STATUS_REQUIRED
+        or participation.employee_id is not None
+    ):
+        raise ValidationError("Эта строка не является неразрешённым оформлением без Автор_Key.")
+    before = participation_snapshot(participation)
+    if not_applicable:
+        participation.status = RewardParticipation.STATUS_NOT_APPLICABLE
+        participation.share = Decimal("0")
+        participation.basis = "Оформление вручную отмечено как не применимое."
+        participation.confirmed_by = user
+        participation.confirmed_at = timezone.now()
+    else:
+        if employee is None or employee.organization_id != participation.organization_id:
+            raise ValidationError("Нужно выбрать сотрудника этой организации.")
+        participation.employee = employee
+        participation.status = RewardParticipation.STATUS_PENDING
+        participation.share = ONE
+        participation.basis = "Автор_Key отсутствовал; оформитель назначен руководителем вручную."
+    participation.save()
+    RewardParticipationChange.objects.create(
+        participation=participation,
+        actor=user,
+        before=before,
+        after=participation_snapshot(participation),
+        reason="Разрешение оформления без Автор_Key",
+    )
+    return participation
+
+
+@transaction.atomic
 def add_documentation_participant(participation, employee, share, user):
     """Add a co-documenter to the same fixed-fee unit; never creates another fund."""
     if participation.role != RewardParticipation.ROLE_DOCUMENTATION:
@@ -1043,6 +1152,7 @@ def add_documentation_participant(participation, employee, share, user):
     if not can_manage_participation(user, participation.organization):
         raise PermissionDenied
     _lock_reward_organization(participation.organization)
+    participation = _reload_reward_participation(participation)
     if RewardMonthClose.objects.filter(
         organization=participation.organization,
         period_month=participation.period_month,

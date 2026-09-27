@@ -28,6 +28,7 @@ from pool_service.services.rewards import (
     map_author,
     month_start,
     reward_document_options,
+    resolve_documentation_placeholder,
     sync_author_proposals,
     update_participation_share,
 )
@@ -149,6 +150,29 @@ def employee_rewards(request):
                     not_applicable=True,
                 )
                 messages.success(request, "Роль отмечена как «не применяется».")
+            elif action == "resolve_missing_author":
+                item = get_object_or_404(
+                    RewardParticipation,
+                    pk=request.POST.get("participation_id"),
+                    organization=organization,
+                    period_month=period_month,
+                    role=RewardParticipation.ROLE_DOCUMENTATION,
+                )
+                mark_na = request.POST.get("resolution") == "not_applicable"
+                employee = None
+                if not mark_na:
+                    employee = get_object_or_404(
+                        Employee,
+                        pk=request.POST.get("employee_id"),
+                        organization=organization,
+                    )
+                resolve_documentation_placeholder(
+                    item,
+                    request.user,
+                    employee=employee,
+                    not_applicable=mark_na,
+                )
+                messages.success(request, "Оформление без Автор_Key разрешено.")
             elif action == "add_co_documenter":
                 source = get_object_or_404(
                     RewardParticipation,
