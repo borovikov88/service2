@@ -178,6 +178,11 @@ def create_scheme_version(organization, user, *, effective_from, values):
         raise ValidationError("Ставки и фиксированные суммы должны быть числовыми.") from exc
     fixed_fields = ("documentation_retail_fixed", "documentation_document_fixed")
     rate_fields = ("sale_rate", "project_rate", "work_rate", "client_manager_rate")
+    for key, value in fields.items():
+        if not value.is_finite():
+            raise ValidationError(
+                "Значения ставок и фиксированных сумм должны быть конечными числами."
+            )
     for key in fixed_fields:
         if key in fields and (fields[key] < 0 or fields[key] > MAX_FIXED_REWARD):
             raise ValidationError("Фиксированная сумма должна быть от 0 до 1 000 000 ₽.")
@@ -585,6 +590,44 @@ def save_participation(participation, user, *, employee, role, share, status, li
         actor=user,
         before=before,
         after=participation_snapshot(participation),
+    )
+    return participation
+
+
+@transaction.atomic
+def cancel_pending_participation(participation, user):
+    if not can_manage_participation(user, participation.organization):
+        raise PermissionDenied
+    _lock_reward_organization(participation.organization)
+    participation = _reload_reward_participation(participation)
+    if RewardMonthClose.objects.filter(
+        organization=participation.organization,
+        period_month=participation.period_month,
+    ).exists():
+        raise ValidationError("Закрытый месяц нельзя переписывать.")
+    if participation.status != RewardParticipation.STATUS_PENDING:
+        raise ValidationError("Отменить можно только назначение, ожидающее подтверждения.")
+    if participation.assignment_source not in {
+        RewardParticipation.SOURCE_MANUAL,
+        RewardParticipation.SOURCE_TEMPLATE,
+    }:
+        raise ValidationError("Автоматическое назначение автора 1С отменяется через сопоставление автора.")
+    before = participation_snapshot(participation)
+    participation.status = RewardParticipation.STATUS_NOT_APPLICABLE
+    participation.basis = (
+        (participation.basis + " · ") if participation.basis else ""
+    ) + "Ошибочное назначение отменено руководителем."
+    participation.confirmed_by = user
+    participation.confirmed_at = timezone.now()
+    participation.save(update_fields=[
+        "status", "basis", "confirmed_by", "confirmed_at", "updated_at",
+    ])
+    RewardParticipationChange.objects.create(
+        participation=participation,
+        actor=user,
+        before=before,
+        after=participation_snapshot(participation),
+        reason="Отмена ошибочного pending-назначения",
     )
     return participation
 
@@ -1400,6 +1443,25 @@ def add_documentation_participant(participation, employee, share, user):
         period_month=participation.period_month,
     ).exists():
         raise ValidationError("Совместного оформителя нельзя добавлять после закрытия месяца.")
+    if participation.status not in {
+        RewardParticipation.STATUS_PENDING,
+        RewardParticipation.STATUS_CONFIRMED,
+    }:
+        raise ValidationError(
+            "Совместного оформителя можно добавлять только к активному назначению оформления."
+        )
+    source_is_active = any(
+        _is_documentation_reward_source(row)
+        and _row_document_key(row) == participation.source_document_key
+        for row in active_profit_rows(
+            participation.organization,
+            participation.period_month,
+        )
+    )
+    if not source_is_active:
+        raise ValidationError(
+            "Исходный документ оформления отсутствует в активной версии месяца."
+        )
     if employee.organization_id != participation.organization_id:
         raise ValidationError("Сотрудник относится к другой организации.")
     share = Decimal(str(share)).quantize(Decimal("0.000001"))

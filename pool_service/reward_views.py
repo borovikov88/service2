@@ -15,6 +15,7 @@ from pool_service.services.permissions import organization_for_user
 from pool_service.services.rewards import (
     calculate_month,
     add_documentation_participant,
+    cancel_pending_participation,
     can_close_period,
     can_manage_participation,
     can_manage_rules,
@@ -200,6 +201,18 @@ def employee_rewards(request):
                     request.user,
                 )
                 messages.success(request, "Совместный оформитель добавлен.")
+            elif action == "cancel_pending":
+                item = get_object_or_404(
+                    RewardParticipation,
+                    pk=request.POST.get("participation_id"),
+                    organization=organization,
+                    period_month=period_month,
+                )
+                cancel_pending_participation(item, request.user)
+                messages.success(
+                    request,
+                    "Ошибочное назначение отменено. Создайте корректное назначение заново.",
+                )
             elif action == "update_share":
                 item = get_object_or_404(
                     RewardParticipation,

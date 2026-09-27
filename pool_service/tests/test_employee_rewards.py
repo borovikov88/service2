@@ -10,6 +10,7 @@ from pool_service.reward_views import _percent_value
 from pool_service.services.rewards import (
     add_documentation_participant,
     calculate_month,
+    cancel_pending_participation,
     confirm_participation,
     create_manual_participation,
     create_scheme_version,
@@ -823,3 +824,62 @@ class EmployeeRewardCalculationTests(TestCase):
                 reason="Автор_Key снова отсутствует после повторной синхронизации"
             ).exists()
         )
+
+
+    def test_non_finite_fixed_reward_is_validation_error(self):
+        with self.assertRaisesMessage(Exception, "конечными числами"):
+            create_scheme_version(
+                self.org,
+                self.user,
+                effective_from=date(2026, 10, 1),
+                values={"documentation_retail_fixed": "NaN"},
+            )
+
+    def test_pending_manual_assignment_can_be_cancelled_and_recreated(self):
+        row = self.add_row(1, "1000.00")
+        document = reward_document_options(self.org, self.month)[0]
+        item = create_manual_participation(
+            self.org,
+            self.user,
+            self.month,
+            document_key=document["scope_key"],
+            employee=self.e1,
+            role=RewardParticipation.ROLE_SALE,
+            share=Decimal("1"),
+            line_identities=[],
+        )
+        cancel_pending_participation(item, self.user)
+        item.refresh_from_db()
+        self.assertEqual(item.status, RewardParticipation.STATUS_NOT_APPLICABLE)
+        replacement = create_manual_participation(
+            self.org,
+            self.user,
+            self.month,
+            document_key=document["scope_key"],
+            employee=self.e2,
+            role=RewardParticipation.ROLE_SALE,
+            share=Decimal("1"),
+            line_identities=[],
+        )
+        self.assertEqual(replacement.status, RewardParticipation.STATUS_PENDING)
+        self.assertEqual(replacement.employee, self.e2)
+
+    def test_co_documenter_rejected_for_inactive_source(self):
+        row = self.add_row(1, "1000.00")
+        sync_author_proposals(self.org, self.user, self.month)
+        proposal = RewardParticipation.objects.filter(
+            organization=self.org,
+            period_month=self.month,
+            role=RewardParticipation.ROLE_DOCUMENTATION,
+        ).first()
+        if proposal.employee_id is None:
+            proposal.employee = self.e1
+            proposal.status = RewardParticipation.STATUS_PENDING
+            proposal.save(update_fields=["employee", "status"])
+        row.delete()
+        sync_author_proposals(self.org, self.user, self.month)
+        proposal.refresh_from_db()
+        with self.assertRaisesMessage(Exception, "активному назначению"):
+            add_documentation_participant(
+                proposal, self.e2, Decimal("0.5"), self.user
+            )
