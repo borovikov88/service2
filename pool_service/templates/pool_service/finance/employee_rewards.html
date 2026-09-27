@@ -67,12 +67,32 @@
     {% endif %}
   </section>
 
+  {% if can_manage_participation and not data.closed %}
+  <section class="card card-soft p-3 mb-4">
+    <h2 class="h5">Добавить участие</h2>
+    <p class="small text-muted">Для продажи можно оставить позиции пустыми — тогда база берётся по всему заказу/самостоятельному документу вместе с относящимися прямыми затратами. Для проекта и выполнения работ позиции обязательны.</p>
+    <form method="post" class="row g-3">{% csrf_token %}
+      <input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}">
+      <input type="hidden" name="action" value="add_participation">
+      <div class="col-lg-6"><label class="form-label">Заказ / документ</label><select class="form-select" name="document_key" id="reward-document-key" required>{% for doc in document_options %}<option value="{{ doc.scope_key }}"{% if selected_document_key == doc.scope_key %} selected{% endif %}>{{ doc.customer }} · {{ doc.label }}</option>{% endfor %}</select></div>
+      <div class="col-lg-3"><label class="form-label">Роль</label><select class="form-select" name="role" required><option value="sale">Продажа</option><option value="project">Проект / расчёт</option><option value="work">Выполнение работ</option><option value="client_manager">Менеджер клиента</option></select></div>
+      <div class="col-lg-3"><label class="form-label">Сотрудник</label><select class="form-select" name="employee_id" required>{% for employee in employees %}<option value="{{ employee.id }}">{{ employee.display_name }}</option>{% endfor %}</select></div>
+      <div class="col-lg-3"><label class="form-label">Доля, %</label><input class="form-control" type="number" min="0.01" max="100" step="0.01" name="share_percent" value="100" required></div>
+      <div class="col-lg-9"><label class="form-label">Позиции / работы</label><div class="border rounded p-2" style="max-height:240px;overflow:auto">{% for doc in document_options %}<div class="reward-lines" data-document-key="{{ doc.scope_key }}"{% if selected_document_key and selected_document_key != doc.scope_key %} hidden{% elif not selected_document_key and not forloop.first %} hidden{% endif %}>{% for line in doc.lines %}{% if not line.is_direct_expense %}<label class="d-flex gap-2 align-items-start py-1"><input class="form-check-input mt-1" type="checkbox" name="line_identity" value="{{ line.identity }}"><span><strong>{{ line.name }}</strong>{% if line.type %} · {{ line.type }}{% endif %}<span class="d-block small text-muted">ВП: {% if line.cost_missing %}не определена{% else %}{{ line.gross_profit|money }}{% endif %}</span></span></label>{% endif %}{% endfor %}</div>{% empty %}<span class="text-muted">Нет активных подтверждённых данных за месяц.</span>{% endfor %}</div></div>
+      <div class="col-12"><button class="btn btn-primary">Добавить — ожидает подтверждения</button></div>
+    </form>
+    <script>
+    (()=>{const select=document.getElementById('reward-document-key');if(!select)return;const sync=()=>{document.querySelectorAll('.reward-lines').forEach(x=>{x.hidden=x.dataset.documentKey!==select.value;x.querySelectorAll('input').forEach(i=>{if(x.hidden)i.checked=false;});});};select.addEventListener('change',sync);sync();})();
+    </script>
+  </section>
+  {% endif %}
+
   {% if participations %}
   <section class="card card-soft p-3 mb-4">
     <h2 class="h5">Участники и вознаграждения</h2>
     <div class="small text-muted mb-2">Назначения хранят устойчивый ключ исходного документа и строк. Автор 1С создаёт только предложение на оформление; подтверждение — отдельно.</div>
     <div class="table-responsive"><table class="table table-sm mb-0" style="min-width:980px"><thead><tr><th>Документ</th><th>Роль</th><th>Сотрудник</th><th>Источник</th><th class="text-end">Доля</th><th>Статус</th><th></th></tr></thead><tbody>
-    {% for item in participations %}<tr><td>{{ item.source_document_number|default:item.source_document_key }}</td><td>{{ item.get_role_display }}</td><td>{{ item.employee.display_name|default:"Требует сопоставления" }}</td><td>{{ item.get_assignment_source_display }}</td><td class="text-end">{{ item.share|floatformat:2 }}</td><td>{{ item.get_status_display }}</td><td>{% if can_manage_participation and item.status != "confirmed" and item.employee_id %}<form method="post">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="confirm"><input type="hidden" name="participation_id" value="{{ item.id }}"><button class="btn btn-sm btn-outline-success">Подтвердить</button></form>{% endif %}</td></tr>{% endfor %}
+    {% for item in participations %}<tr><td>{{ item.source_document_number|default:item.source_document_key }}</td><td>{{ item.get_role_display }}</td><td>{{ item.employee.display_name|default:"Требует сопоставления" }}</td><td>{{ item.get_assignment_source_display }}</td><td class="text-end">{{ item.share|floatformat:2 }}</td><td>{{ item.get_status_display }}</td><td>{% if can_manage_participation and item.status != "confirmed" and item.employee_id %}<form method="post" class="d-inline">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="confirm"><input type="hidden" name="participation_id" value="{{ item.id }}"><button class="btn btn-sm btn-outline-success">Подтвердить</button></form>{% endif %}{% if can_manage_participation and item.role == "documentation" and item.employee_id %}<details class="d-inline-block ms-1"><summary class="btn btn-sm btn-outline-secondary">+ оформитель</summary><form method="post" class="border rounded p-2 mt-1" style="min-width:260px">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="add_co_documenter"><input type="hidden" name="participation_id" value="{{ item.id }}"><select class="form-select form-select-sm mb-1" name="employee_id" required>{% for employee in employees %}<option value="{{ employee.id }}">{{ employee.display_name }}</option>{% endfor %}</select><div class="input-group input-group-sm"><input class="form-control" type="number" min="0.01" max="100" step="0.01" name="share_percent" value="50"><span class="input-group-text">%</span><button class="btn btn-outline-primary">Добавить</button></div></form></details>{% endif %}</td></tr>{% endfor %}
     </tbody></table></div>
   </section>
   {% endif %}

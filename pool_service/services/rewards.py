@@ -367,7 +367,11 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
     rows_by_identity = {row.source_identity: row for row in rows}
     rows_by_document = defaultdict(list)
     for row in rows:
-        rows_by_document[_row_document_key(row)].append(row)
+        original_key = _row_document_key(row)
+        business_key = _row_business_scope_key(row)
+        rows_by_document[original_key].append(row)
+        if business_key != original_key:
+            rows_by_document[business_key].append(row)
 
     participations = list(
         RewardParticipation.objects.filter(organization=organization, period_month=period_month)
@@ -404,14 +408,17 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
         if not scope_rows:
             issues.append({"kind": "missing_base", "label": scope_key, "count": 1})
             continue
-        gp_values = [_row_gp(row) for row in scope_rows]
-        if any(value is None for value in gp_values):
-            issues.append({"kind": "missing_cost", "label": scope_key, "count": 1})
-            for x in confirmed:
-                employee_totals[x.employee_id]["review_count"] += 1
-            continue
-        base = money(sum(gp_values, Decimal("0")))
         revenue = money(sum((Decimal(row.revenue or 0) for row in scope_rows), Decimal("0")))
+        if role == RewardParticipation.ROLE_DOCUMENTATION:
+            base = money(sum((_row_gp(row) or Decimal("0") for row in scope_rows), Decimal("0")))
+        else:
+            gp_values = [_row_gp(row) for row in scope_rows]
+            if any(value is None for value in gp_values):
+                issues.append({"kind": "missing_cost", "label": scope_key, "count": 1})
+                for x in confirmed:
+                    employee_totals[x.employee_id]["review_count"] += 1
+                continue
+            base = money(sum(gp_values, Decimal("0")))
         share_total = sum((x.share for x in confirmed), Decimal("0"))
         if share_total > ONE:
             issues.append({"kind": "share_overflow", "label": scope_key, "count": 1})
@@ -561,3 +568,195 @@ def close_month(organization, user, period_month):
         closed_by=user,
     )
     return obj
+
+
+def _row_business_scope_key(row):
+    """Stable order scope when available; otherwise the original sale document."""
+    data = row.source_data or {}
+    order_guid = data.get("resolved_order_guid") or data.get("direct_expense_order_guid")
+    if order_guid:
+        return f"odata-order:{row.organization_id}:{str(order_guid).lower()}"
+    return _row_document_key(row)
+
+
+def reward_document_options(organization, period_month):
+    """Read-only assignment scopes built only from active confirmed Service2 profit rows."""
+    period_month = month_start(period_month)
+    rows = active_profit_rows(organization, period_month)
+    groups = defaultdict(list)
+    for row in rows:
+        groups[_row_business_scope_key(row)].append(row)
+    result = []
+    for scope_key, scope_rows in groups.items():
+        sale_rows = [
+            row for row in scope_rows
+            if (row.source_data or {}).get("row_kind") != "direct_order_expense"
+        ]
+        primary = sale_rows[0] if sale_rows else scope_rows[0]
+        data = primary.source_data or {}
+        label = (
+            data.get("resolved_order_display")
+            or data.get("document_display")
+            or primary.document_name
+            or scope_key
+        )
+        lines = []
+        for row in scope_rows:
+            row_data = row.source_data or {}
+            gp = _row_gp(row)
+            lines.append({
+                "identity": row.source_identity,
+                "name": row.nomenclature,
+                "type": row.nomenclature_type,
+                "revenue": str(money(row.revenue or 0)),
+                "gross_profit": None if gp is None else str(gp),
+                "cost_missing": gp is None,
+                "is_direct_expense": row_data.get("row_kind") == "direct_order_expense",
+            })
+        result.append({
+            "scope_key": scope_key,
+            "label": label,
+            "customer": primary.customer_name,
+            "source_document_type": data.get("recorder_type") or "",
+            "source_document_guid": str(data.get("recorder") or primary.source_recorder or ""),
+            "source_document_number": data.get("document_number") or data.get("resolved_order_number") or "",
+            "source_document_date": _safe_date(data.get("document_date") or data.get("resolved_order_date") or data.get("source_date")),
+            "lines": lines,
+        })
+    result.sort(key=lambda item: ((item["customer"] or "").casefold(), item["label"].casefold()))
+    return result
+
+
+def _assignment_scope_key(document_key, role, line_identities):
+    normalized = sorted(set(line_identities or []))
+    suffix = "all"
+    if normalized:
+        digest = hashlib.sha256("\n".join(normalized).encode("utf-8")).hexdigest()[:20]
+        suffix = f"lines:{digest}"
+    return f"{document_key}:{role}:{suffix}"
+
+
+@transaction.atomic
+def create_manual_participation(
+    organization,
+    user,
+    period_month,
+    *,
+    document_key,
+    employee,
+    role,
+    share,
+    line_identities=None,
+    not_applicable=False,
+):
+    if not can_manage_participation(user, organization):
+        raise PermissionDenied
+    period_month = month_start(period_month)
+    if RewardMonthClose.objects.filter(organization=organization, period_month=period_month).exists():
+        raise ValidationError("Закрытый месяц нельзя переписывать.")
+    roles = {value for value, _ in RewardParticipation.ROLE_CHOICES}
+    if role not in roles:
+        raise ValidationError("Неизвестная роль участия.")
+    options = {item["scope_key"]: item for item in reward_document_options(organization, period_month)}
+    document = options.get(document_key)
+    if document is None:
+        raise ValidationError("Документ не относится к активным подтверждённым данным месяца.")
+    allowed_lines = {item["identity"] for item in document["lines"] if not item["is_direct_expense"]}
+    selected = list(dict.fromkeys(line_identities or []))
+    if any(identity not in allowed_lines for identity in selected):
+        raise ValidationError("Выбранная строка не относится к документу или является прямой затратой.")
+    if role in {RewardParticipation.ROLE_PROJECT, RewardParticipation.ROLE_WORK} and not selected and not not_applicable:
+        raise ValidationError("Для проекта или выполнения работ нужно выбрать конкретные позиции/работы.")
+    if not_applicable:
+        employee = None
+        share_decimal = Decimal("0")
+        status = RewardParticipation.STATUS_NOT_APPLICABLE
+    else:
+        if employee is None or employee.organization_id != organization.id:
+            raise ValidationError("Нужно выбрать сотрудника этой организации.")
+        share_decimal = Decimal(str(share)).quantize(Decimal("0.000001"))
+        if share_decimal <= 0 or share_decimal > ONE:
+            raise ValidationError("Доля должна быть больше 0 и не больше 100%.")
+        status = RewardParticipation.STATUS_PENDING
+    scope_key = _assignment_scope_key(document_key, role, selected)
+    existing = RewardParticipation.objects.filter(
+        organization=organization,
+        period_month=period_month,
+        scope_key=scope_key,
+        role=role,
+        employee=employee,
+        status__in=[RewardParticipation.STATUS_PENDING, RewardParticipation.STATUS_CONFIRMED, RewardParticipation.STATUS_NOT_APPLICABLE],
+    ).first()
+    if existing:
+        raise ValidationError("Такое участие уже добавлено.")
+    item = RewardParticipation(
+        organization=organization,
+        employee=employee,
+        role=role,
+        status=status,
+        share=share_decimal,
+        period_month=period_month,
+        scope_key=scope_key,
+        source_document_key=document_key,
+        source_document_type=document["source_document_type"],
+        source_document_guid=document["source_document_guid"],
+        source_document_number=document["source_document_number"],
+        source_document_date=document["source_document_date"],
+        scope_line_identities=selected,
+        customer_name=document["customer"],
+        basis="Ручное распределение по подтверждённым строкам ВП",
+        assignment_source=RewardParticipation.SOURCE_MANUAL,
+        created_by=user,
+    )
+    item.full_clean()
+    item.save()
+    RewardParticipationChange.objects.create(
+        participation=item,
+        actor=user,
+        before={},
+        after=participation_snapshot(item),
+        reason="Создание назначения",
+    )
+    return item
+
+
+@transaction.atomic
+def add_documentation_participant(participation, employee, share, user):
+    """Add a co-documenter to the same fixed-fee unit; never creates another fund."""
+    if participation.role != RewardParticipation.ROLE_DOCUMENTATION:
+        raise ValidationError("Совместный оформитель добавляется только к роли оформления.")
+    if not can_manage_participation(user, participation.organization):
+        raise PermissionDenied
+    if employee.organization_id != participation.organization_id:
+        raise ValidationError("Сотрудник относится к другой организации.")
+    share = Decimal(str(share)).quantize(Decimal("0.000001"))
+    if share <= 0 or share > ONE:
+        raise ValidationError("Доля должна быть больше 0 и не больше 100%.")
+    item = RewardParticipation.objects.create(
+        organization=participation.organization,
+        employee=employee,
+        role=participation.role,
+        status=RewardParticipation.STATUS_PENDING,
+        share=share,
+        period_month=participation.period_month,
+        scope_key=participation.scope_key,
+        source_document_key=participation.source_document_key,
+        source_document_type=participation.source_document_type,
+        source_document_guid=participation.source_document_guid,
+        source_document_number=participation.source_document_number,
+        source_document_date=participation.source_document_date,
+        scope_line_identities=list(participation.scope_line_identities),
+        customer_name=participation.customer_name,
+        object_label=participation.object_label,
+        basis="Совместное оформление комплекта документов",
+        assignment_source=RewardParticipation.SOURCE_MANUAL,
+        created_by=user,
+    )
+    RewardParticipationChange.objects.create(
+        participation=item,
+        actor=user,
+        before={},
+        after=participation_snapshot(item),
+        reason="Добавлен совместный оформитель",
+    )
+    return item

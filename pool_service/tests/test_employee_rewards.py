@@ -6,7 +6,7 @@ from django.test import TestCase
 
 from pool_service.models import Employee, OneCImportBatch, OneCMonthlyProfit, OneCReportPeriodState, Organization
 from pool_service.reward_models import RewardParticipation, RewardSchemeVersion
-from pool_service.services.rewards import calculate_month, confirm_participation
+from pool_service.services.rewards import calculate_month, confirm_participation, create_manual_participation, reward_document_options
 
 
 class EmployeeRewardCalculationTests(TestCase):
@@ -126,3 +126,34 @@ class EmployeeRewardCalculationTests(TestCase):
         change = item.changes.get()
         self.assertEqual(change.before["status"], RewardParticipation.STATUS_PENDING)
         self.assertEqual(change.after["status"], RewardParticipation.STATUS_CONFIRMED)
+
+    def test_manual_work_scopes_can_use_different_lines(self):
+        first = self.add_row(1, "10000.00", kind="Работа")
+        second = self.add_row(2, "20000.00", kind="Работа")
+        document = reward_document_options(self.org, self.month)[0]
+        a = create_manual_participation(
+            self.org, self.user, self.month, document_key=document["scope_key"],
+            employee=self.e1, role=RewardParticipation.ROLE_WORK, share=Decimal("1"),
+            line_identities=[first.source_identity],
+        )
+        b = create_manual_participation(
+            self.org, self.user, self.month, document_key=document["scope_key"],
+            employee=self.e2, role=RewardParticipation.ROLE_WORK, share=Decimal("1"),
+            line_identities=[second.source_identity],
+        )
+        confirm_participation(a, self.user)
+        confirm_participation(b, self.user)
+        data = calculate_month(self.org, self.month)
+        amounts = {item["employee"]: Decimal(item["amount"]) for item in data["details"]}
+        self.assertEqual(amounts["Первый"], Decimal("4000.00"))
+        self.assertEqual(amounts["Второй"], Decimal("8000.00"))
+
+    def test_project_or_work_requires_selected_lines(self):
+        self.add_row(1, "1000.00", kind="Работа")
+        document = reward_document_options(self.org, self.month)[0]
+        with self.assertRaisesMessage(Exception, "нужно выбрать конкретные"):
+            create_manual_participation(
+                self.org, self.user, self.month, document_key=document["scope_key"],
+                employee=self.e1, role=RewardParticipation.ROLE_WORK, share=Decimal("1"),
+                line_identities=[],
+            )

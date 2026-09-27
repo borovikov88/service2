@@ -11,16 +11,19 @@ from pool_service.reward_models import OneCAuthorIdentity, RewardParticipation, 
 from pool_service.services.permissions import organization_for_user
 from pool_service.services.rewards import (
     calculate_month,
+    add_documentation_participant,
     can_close_period,
     can_manage_participation,
     can_manage_rules,
     can_view_rewards,
     close_month,
+    create_manual_participation,
     confirm_participation,
     create_scheme_version,
     ensure_test_scheme,
     map_author,
     month_start,
+    reward_document_options,
     sync_author_proposals,
 )
 
@@ -62,6 +65,49 @@ def employee_rewards(request):
                 employee = get_object_or_404(Employee, pk=request.POST.get("employee_id"), organization=organization)
                 map_author(identity, employee, request.user)
                 messages.success(request, "Автор 1С сопоставлен с сотрудником.")
+            elif action == "add_participation":
+                employee = get_object_or_404(Employee, pk=request.POST.get("employee_id"), organization=organization)
+                selected_lines = request.POST.getlist("line_identity")
+                create_manual_participation(
+                    organization,
+                    request.user,
+                    period_month,
+                    document_key=request.POST.get("document_key", ""),
+                    employee=employee,
+                    role=request.POST.get("role", ""),
+                    share=Decimal(request.POST.get("share_percent", "0")) / 100,
+                    line_identities=selected_lines,
+                )
+                messages.success(request, "Участие добавлено и ожидает подтверждения.")
+            elif action == "mark_not_applicable":
+                create_manual_participation(
+                    organization,
+                    request.user,
+                    period_month,
+                    document_key=request.POST.get("document_key", ""),
+                    employee=None,
+                    role=request.POST.get("role", ""),
+                    share=Decimal("0"),
+                    line_identities=[],
+                    not_applicable=True,
+                )
+                messages.success(request, "Роль отмечена как «не применяется».")
+            elif action == "add_co_documenter":
+                source = get_object_or_404(
+                    RewardParticipation,
+                    pk=request.POST.get("participation_id"),
+                    organization=organization,
+                    period_month=period_month,
+                    role=RewardParticipation.ROLE_DOCUMENTATION,
+                )
+                employee = get_object_or_404(Employee, pk=request.POST.get("employee_id"), organization=organization)
+                add_documentation_participant(
+                    source,
+                    employee,
+                    Decimal(request.POST.get("share_percent", "0")) / 100,
+                    request.user,
+                )
+                messages.success(request, "Совместный оформитель добавлен.")
             elif action == "confirm":
                 if not can_manage_participation(request.user, organization):
                     raise PermissionDenied
@@ -96,10 +142,14 @@ def employee_rewards(request):
         .order_by("source_document_date", "source_document_number", "role", "employee__display_name")
     )
     employees = Employee.objects.filter(organization=organization, is_active=True).order_by("display_name")
+    document_options = reward_document_options(organization, period_month)
+    selected_document_key = request.GET.get("document_key", "")
     return render(request, "pool_service/finance/employee_rewards.html", {
         "data": data,
         "period_month": period_month,
         "employees": employees,
+        "document_options": document_options,
+        "selected_document_key": selected_document_key,
         "participations": participations,
         "scheme": scheme,
         "can_manage_participation": can_manage_participation(request.user, organization),
