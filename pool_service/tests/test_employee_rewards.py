@@ -5,7 +5,7 @@ from django.contrib.auth.models import User
 from django.test import TestCase
 
 from pool_service.models import Employee, OneCImportBatch, OneCMonthlyProfit, OneCReportPeriodState, Organization
-from pool_service.reward_models import RewardParticipation, RewardSchemeVersion
+from pool_service.reward_models import OneCAuthorIdentity, RewardParticipation, RewardSchemeVersion
 from pool_service.services.rewards import (
     add_documentation_participant,
     calculate_month,
@@ -13,6 +13,7 @@ from pool_service.services.rewards import (
     create_manual_participation,
     create_scheme_version,
     reward_document_options,
+    sync_author_proposals,
     update_participation_share,
 )
 
@@ -279,3 +280,34 @@ class EmployeeRewardCalculationTests(TestCase):
             )
         self.scheme.refresh_from_db()
         self.assertIsNone(self.scheme.effective_to)
+
+
+    def test_resync_with_author_clears_missing_author_placeholder(self):
+        row = self.add_row(1, "1000.00")
+        sync_author_proposals(self.org, self.user, self.month)
+        placeholder = RewardParticipation.objects.get(
+            organization=self.org,
+            period_month=self.month,
+            role=RewardParticipation.ROLE_DOCUMENTATION,
+            author_identity__isnull=True,
+        )
+        self.assertEqual(placeholder.status, RewardParticipation.STATUS_REQUIRED)
+
+        row.source_data = {
+            **row.source_data,
+            "author_guid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "author_name": "Исторический пользователь",
+        }
+        row.save(update_fields=["source_data"])
+        sync_author_proposals(self.org, self.user, self.month)
+
+        placeholder.refresh_from_db()
+        self.assertEqual(placeholder.status, RewardParticipation.STATUS_NOT_APPLICABLE)
+        self.assertTrue(
+            RewardParticipation.objects.filter(
+                organization=self.org,
+                period_month=self.month,
+                role=RewardParticipation.ROLE_DOCUMENTATION,
+                author_identity__onec_user_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            ).exists()
+        )

@@ -11,7 +11,7 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from pool_service.finance_imports.monthly_profit_parser import classify_nomenclature_type
-from pool_service.models import Employee, OneCMonthlyProfit
+from pool_service.models import Employee, OneCMonthlyProfit, Organization
 from pool_service.reward_models import (
     OneCAuthorIdentity,
     RewardAdjustment,
@@ -182,6 +182,12 @@ def _row_gp(row):
     return None if value is None else money(value)
 
 
+def _lock_reward_organization(organization):
+    """Serialize reward mutations/closing per organization on the DB connection."""
+    Organization.objects.select_for_update().only("pk").get(pk=organization.pk)
+
+
+
 def active_profit_rows(organization, period_month):
     return list(
         OneCMonthlyProfit.objects.active_for(organization)
@@ -265,6 +271,7 @@ def _ensure_required_documentation(organization, user, period_month, key, row, *
 def sync_author_proposals(organization, user, period_month):
     if not can_manage_participation(user, organization):
         raise PermissionDenied
+    _lock_reward_organization(organization)
     if RewardMonthClose.objects.filter(organization=organization, period_month=period_month).exists():
         raise ValidationError("Месяц закрыт. Новые назначения оформляются корректировкой.")
     rows = active_profit_rows(organization, period_month)
@@ -292,6 +299,7 @@ def sync_author_proposals(organization, user, period_month):
             created += int(was_created)
             issues += 1
             continue
+        _resolve_missing_author_placeholder(organization, user, period_month, key)
         identity, _ = OneCAuthorIdentity.objects.get_or_create(
             organization=organization,
             onec_user_id=author_guid,
@@ -353,6 +361,7 @@ def _safe_date(value):
 def map_author(identity, employee, user):
     if not can_manage_participation(user, identity.organization):
         raise PermissionDenied
+    _lock_reward_organization(identity.organization)
     if employee.organization_id != identity.organization_id:
         raise ValidationError("Сотрудник относится к другой организации.")
     identity.employee = employee
@@ -360,7 +369,12 @@ def map_author(identity, employee, user):
     identity.confirmed_by = user
     identity.confirmed_at = timezone.now()
     identity.save(update_fields=["employee", "status", "confirmed_by", "confirmed_at", "updated_at"])
-    identity.reward_participations.filter(status=RewardParticipation.STATUS_REQUIRED).update(
+    closed_periods = RewardMonthClose.objects.filter(
+        organization=identity.organization
+    ).values_list("period_month", flat=True)
+    identity.reward_participations.filter(
+        status=RewardParticipation.STATUS_REQUIRED
+    ).exclude(period_month__in=closed_periods).update(
         employee=employee,
         status=RewardParticipation.STATUS_PENDING,
         updated_at=timezone.now(),
@@ -371,6 +385,7 @@ def map_author(identity, employee, user):
 def save_participation(participation, user, *, employee, role, share, status, line_identities=None):
     if not can_manage_participation(user, participation.organization):
         raise PermissionDenied
+    _lock_reward_organization(participation.organization)
     if RewardMonthClose.objects.filter(
         organization=participation.organization, period_month=participation.period_month
     ).exists():
@@ -405,6 +420,7 @@ def save_participation(participation, user, *, employee, role, share, status, li
 def update_participation_share(participation, user, share):
     if not can_manage_participation(user, participation.organization):
         raise PermissionDenied
+    _lock_reward_organization(participation.organization)
     if RewardMonthClose.objects.filter(
         organization=participation.organization,
         period_month=participation.period_month,
@@ -442,6 +458,7 @@ def update_participation_share(participation, user, share):
 def confirm_participation(participation, user):
     if not can_manage_participation(user, participation.organization):
         raise PermissionDenied
+    _lock_reward_organization(participation.organization)
     if RewardMonthClose.objects.filter(
         organization=participation.organization,
         period_month=participation.period_month,
@@ -829,6 +846,7 @@ def close_month(organization, user, period_month):
     if not can_close_period(user, organization):
         raise PermissionDenied
     period_month = month_start(period_month)
+    _lock_reward_organization(organization)
     if RewardMonthClose.objects.filter(organization=organization, period_month=period_month).exists():
         raise ValidationError("Месяц уже закрыт.")
     scheme = scheme_for_month(organization, period_month)
@@ -940,6 +958,7 @@ def create_manual_participation(
     if not can_manage_participation(user, organization):
         raise PermissionDenied
     period_month = month_start(period_month)
+    _lock_reward_organization(organization)
     if RewardMonthClose.objects.filter(organization=organization, period_month=period_month).exists():
         raise ValidationError("Закрытый месяц нельзя переписывать.")
     roles = {value for value, _ in RewardParticipation.ROLE_CHOICES}
@@ -1023,6 +1042,7 @@ def add_documentation_participant(participation, employee, share, user):
         raise ValidationError("Совместный оформитель добавляется только к роли оформления.")
     if not can_manage_participation(user, participation.organization):
         raise PermissionDenied
+    _lock_reward_organization(participation.organization)
     if RewardMonthClose.objects.filter(
         organization=participation.organization,
         period_month=participation.period_month,
@@ -1068,6 +1088,7 @@ def confirm_participation_batch(organization, user, period_month, participation_
     if not can_manage_participation(user, organization):
         raise PermissionDenied
     period_month = month_start(period_month)
+    _lock_reward_organization(organization)
     ids = list(dict.fromkeys(int(value) for value in participation_ids))
     items = list(
         RewardParticipation.objects.select_for_update()

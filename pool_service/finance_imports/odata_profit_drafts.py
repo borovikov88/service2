@@ -211,6 +211,7 @@ def _read_reference_map(
     allow_deleted_nomenclature=False,
     allowed_deleted_nomenclature_guids=None,
     allow_deleted_customer=False,
+    allow_deleted_author=False,
 ):
     entity_set, fields = CATALOGS[kind]
     expected = set(guids)
@@ -245,6 +246,7 @@ def _read_reference_map(
                             )
                         )
                         or (kind == "customer" and allow_deleted_customer)
+                        or (kind == "author" and allow_deleted_author)
                     )
                 )
                 if raw.get("DeletionMark") is not False and not allows_historical_deleted_reference:
@@ -2046,6 +2048,7 @@ def create_odata_profit_draft(start_month, end_month, organization, user, *, con
             document_author_guids,
             opener=client,
             page_budget=reference_page_budget,
+            allow_deleted_author=True,
         ) if document_author_guids else {}
         _load_missing_sales_order_customers(
             config,
