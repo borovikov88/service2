@@ -6,7 +6,7 @@ from django.test import TestCase
 
 from pool_service.models import Employee, OneCImportBatch, OneCMonthlyProfit, OneCReportPeriodState, Organization
 from pool_service.reward_models import RewardParticipation, RewardSchemeVersion
-from pool_service.services.rewards import calculate_month
+from pool_service.services.rewards import calculate_month, confirm_participation
 
 
 class EmployeeRewardCalculationTests(TestCase):
@@ -108,3 +108,21 @@ class EmployeeRewardCalculationTests(TestCase):
         data = calculate_month(self.org, self.month)
         self.assertEqual(Decimal(data["details"][0]["amount"]), Decimal("7200.00"))
         self.assertTrue(any(x["kind"] == "unallocated" for x in data["issues"]))
+
+    def test_confirm_participation_writes_history(self):
+        row = self.add_row(1, "1000.00")
+        item = RewardParticipation.objects.create(
+            organization=self.org, employee=self.e1, role=RewardParticipation.ROLE_SALE,
+            status=RewardParticipation.STATUS_PENDING, share=Decimal("1.000000"),
+            period_month=self.month, scope_key="audit",
+            source_document_key="odata-source:%s:Document_РасходнаяНакладная:11111111-1111-4111-8111-111111111111" % self.org.id,
+            source_document_type="Document_РасходнаяНакладная",
+            scope_line_identities=[row.source_identity], assignment_source=RewardParticipation.SOURCE_MANUAL,
+            created_by=self.user,
+        )
+        confirm_participation(item, self.user)
+        item.refresh_from_db()
+        self.assertEqual(item.status, RewardParticipation.STATUS_CONFIRMED)
+        change = item.changes.get()
+        self.assertEqual(change.before["status"], RewardParticipation.STATUS_PENDING)
+        self.assertEqual(change.after["status"], RewardParticipation.STATUS_CONFIRMED)

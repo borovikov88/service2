@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.core.exceptions import PermissionDenied, ValidationError
@@ -129,8 +129,8 @@ def create_scheme_version(organization, user, *, effective_from, values):
     )
     version = (latest.version if latest else 0) + 1
     if latest and (latest.effective_to is None or latest.effective_to >= effective_from):
-        previous_month = (effective_from - timezone.timedelta(days=1)).replace(day=1)
-        latest.effective_to = previous_month
+        previous_day = effective_from - timedelta(days=1)
+        latest.effective_to = previous_day
         latest.save(update_fields=["effective_to"])
     allowed = {
         "documentation_retail_fixed", "documentation_document_fixed",
@@ -290,6 +290,34 @@ def save_participation(participation, user, *, employee, role, share, status, li
         actor=user,
         before=before,
         after=participation_snapshot(participation),
+    )
+    return participation
+
+
+@transaction.atomic
+def confirm_participation(participation, user):
+    if not can_manage_participation(user, participation.organization):
+        raise PermissionDenied
+    if RewardMonthClose.objects.filter(
+        organization=participation.organization,
+        period_month=participation.period_month,
+    ).exists():
+        raise ValidationError("Закрытый месяц нельзя переписывать.")
+    if not participation.employee_id:
+        raise ValidationError("Нельзя подтвердить участие без сотрудника.")
+    before = participation_snapshot(participation)
+    participation.status = RewardParticipation.STATUS_CONFIRMED
+    participation.confirmed_by = user
+    participation.confirmed_at = timezone.now()
+    participation.save(update_fields=[
+        "status", "confirmed_by", "confirmed_at", "updated_at"
+    ])
+    RewardParticipationChange.objects.create(
+        participation=participation,
+        actor=user,
+        before=before,
+        after=participation_snapshot(participation),
+        reason="Подтверждение участия",
     )
     return participation
 

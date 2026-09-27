@@ -5,7 +5,6 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
-from django.views.decorators.http import require_POST
 
 from pool_service.models import Employee
 from pool_service.reward_models import OneCAuthorIdentity, RewardParticipation, RewardSchemeVersion
@@ -17,6 +16,7 @@ from pool_service.services.rewards import (
     can_manage_rules,
     can_view_rewards,
     close_month,
+    confirm_participation,
     create_scheme_version,
     ensure_test_scheme,
     map_author,
@@ -66,10 +66,7 @@ def employee_rewards(request):
                 if not can_manage_participation(request.user, organization):
                     raise PermissionDenied
                 item = get_object_or_404(RewardParticipation, pk=request.POST.get("participation_id"), organization=organization, period_month=period_month)
-                item.status = RewardParticipation.STATUS_CONFIRMED
-                item.confirmed_by = request.user
-                item.confirmed_at = timezone.now()
-                item.save(update_fields=["status", "confirmed_by", "confirmed_at", "updated_at"])
+                confirm_participation(item, request.user)
                 messages.success(request, "Участие подтверждено.")
             elif action == "save_scheme":
                 create_scheme_version(
