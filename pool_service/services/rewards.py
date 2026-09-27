@@ -331,6 +331,37 @@ def _ensure_required_documentation(organization, user, period_month, key, row, *
     return item, True
 
 
+def _retire_removed_author_proposals(
+    organization, user, period_month, active_document_keys
+):
+    removed = (
+        RewardParticipation.objects.filter(
+            organization=organization,
+            period_month=period_month,
+            role=RewardParticipation.ROLE_DOCUMENTATION,
+            assignment_source=RewardParticipation.SOURCE_ONEC_AUTHOR,
+        )
+        .exclude(status=RewardParticipation.STATUS_NOT_APPLICABLE)
+        .exclude(source_document_key__in=active_document_keys)
+    )
+    for item in removed:
+        before = participation_snapshot(item)
+        item.status = RewardParticipation.STATUS_NOT_APPLICABLE
+        item.basis = (
+            "Исходный документ отсутствует в активной подтверждённой версии месяца."
+        )
+        item.save(update_fields=["status", "basis", "updated_at"])
+        RewardParticipationChange.objects.create(
+            participation=item,
+            actor=user,
+            before=before,
+            after=participation_snapshot(item),
+            reason="Документ удалён или перенесён при повторной синхронизации",
+        )
+
+
+
+
 @transaction.atomic
 def sync_author_proposals(organization, user, period_month):
     if not can_manage_participation(user, organization):
@@ -347,6 +378,9 @@ def sync_author_proposals(organization, user, period_month):
         recorder_type = data.get("recorder_type")
         key = _row_document_key(row)
         by_doc.setdefault(key, row)
+    _retire_removed_author_proposals(
+        organization, user, period_month, set(by_doc)
+    )
     created = 0
     issues = 0
     for key, row in by_doc.items():
@@ -620,6 +654,17 @@ def _author_sync_issue_count(organization, period_month, rows):
         current_documents.setdefault(_row_document_key(row), row)
 
     issue_count = 0
+    active_generated_keys = set(
+        RewardParticipation.objects.filter(
+            organization=organization,
+            period_month=period_month,
+            role=RewardParticipation.ROLE_DOCUMENTATION,
+            assignment_source=RewardParticipation.SOURCE_ONEC_AUTHOR,
+        )
+        .exclude(status=RewardParticipation.STATUS_NOT_APPLICABLE)
+        .values_list("source_document_key", flat=True)
+    )
+    issue_count += len(active_generated_keys.difference(current_documents))
     for key, row in current_documents.items():
         expected_guid = ((row.source_data or {}).get("author_guid") or "").strip()
         all_proposals = list(
@@ -785,6 +830,21 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
                 "kind": "missing_selected_lines",
                 "label": scope_key,
                 "count": len(missing_selected),
+            })
+            for item in confirmed:
+                employee_totals[item.employee_id]["review_count"] += 1
+            continue
+        moved_selected = [
+            identity
+            for identity in selected_identities
+            if _row_business_scope_key(rows_by_identity[identity])
+            != confirmed[0].source_document_key
+        ]
+        if moved_selected:
+            issues.append({
+                "kind": "moved_selected_lines",
+                "label": scope_key,
+                "count": len(moved_selected),
             })
             for item in confirmed:
                 employee_totals[item.employee_id]["review_count"] += 1
@@ -1005,7 +1065,7 @@ def close_month(organization, user, period_month):
     blocking = {
         "missing_scheme", "missing_base", "missing_cost", "month_missing_cost",
         "share_overflow", "unmapped_author", "unconfirmed", "unallocated",
-        "partial_direct_cost_allocation", "missing_selected_lines", "author_sync_stale", "missing_sale_role",
+        "partial_direct_cost_allocation", "missing_selected_lines", "moved_selected_lines", "author_sync_stale", "missing_sale_role",
         "missing_documentation_role", "missing_work_role",
     }
     if any(issue.get("kind") in blocking for issue in snapshot["issues"]):

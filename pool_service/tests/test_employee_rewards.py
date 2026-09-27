@@ -6,6 +6,7 @@ from django.test import TestCase
 
 from pool_service.models import Employee, OneCImportBatch, OneCMonthlyProfit, OneCReportPeriodState, Organization
 from pool_service.reward_models import OneCAuthorIdentity, RewardParticipation, RewardSchemeVersion
+from pool_service.reward_views import _percent_value
 from pool_service.services.rewards import (
     add_documentation_participant,
     calculate_month,
@@ -563,3 +564,71 @@ class EmployeeRewardCalculationTests(TestCase):
             placeholder.status,
             RewardParticipation.STATUS_NOT_APPLICABLE,
         )
+
+
+    def test_removed_document_retires_generated_author_proposal(self):
+        row = self.add_row(1, "1000.00")
+        row.source_data = {
+            **row.source_data,
+            "author_guid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "author_name": "Автор A",
+        }
+        row.save(update_fields=["source_data"])
+        sync_author_proposals(self.org, self.user, self.month)
+        proposal = RewardParticipation.objects.get(
+            author_identity__onec_user_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        )
+        row.delete()
+        sync_author_proposals(self.org, self.user, self.month)
+        proposal.refresh_from_db()
+        self.assertEqual(
+            proposal.status,
+            RewardParticipation.STATUS_NOT_APPLICABLE,
+        )
+
+    def test_removed_document_is_flagged_stale_before_author_sync(self):
+        row = self.add_row(1, "1000.00")
+        row.source_data = {
+            **row.source_data,
+            "author_guid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        }
+        row.save(update_fields=["source_data"])
+        sync_author_proposals(self.org, self.user, self.month)
+        row.delete()
+        data = calculate_month(self.org, self.month)
+        self.assertTrue(any(
+            issue["kind"] == "author_sync_stale"
+            for issue in data["issues"]
+        ))
+
+    def test_selected_line_moved_to_another_order_is_blocking(self):
+        row = self.add_row(1, "1000.00", kind="Работа")
+        document = reward_document_options(self.org, self.month)[0]
+        item = create_manual_participation(
+            self.org, self.user, self.month,
+            document_key=document["scope_key"],
+            employee=self.e1,
+            role=RewardParticipation.ROLE_WORK,
+            share=Decimal("1"),
+            line_identities=[row.source_identity],
+        )
+        confirm_participation(item, self.user)
+        row.source_data = {
+            **row.source_data,
+            "resolved_order_guid": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        }
+        row.save(update_fields=["source_data"])
+        data = calculate_month(self.org, self.month)
+        self.assertTrue(any(
+            issue["kind"] == "moved_selected_lines"
+            for issue in data["issues"]
+        ))
+        self.assertFalse(any(
+            detail["scope_key"] == item.scope_key for detail in data["details"]
+        ))
+
+
+    def test_percent_input_accepts_comma_and_rejects_empty(self):
+        self.assertEqual(_percent_value("10,5", "Продажа"), Decimal("0.105"))
+        with self.assertRaisesMessage(Exception, "числовое значение"):
+            _percent_value("", "Продажа")

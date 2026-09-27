@@ -41,6 +41,17 @@ def _org(request):
     return organization
 
 
+def _percent_value(raw, label):
+    text_value = str(raw or "").strip().replace(",", ".")
+    try:
+        value = Decimal(text_value)
+    except Exception as exc:
+        raise ValidationError(f"{label}: введите числовое значение.") from exc
+    if not value.is_finite():
+        raise ValidationError(f"{label}: введите конечное числовое значение.")
+    return value / Decimal("100")
+
+
 def _period(request):
     value = request.GET.get("month") or request.POST.get("month")
     if value:
@@ -214,9 +225,9 @@ def employee_rewards(request):
                     values={
                         "documentation_retail_fixed": request.POST["documentation_retail_fixed"],
                         "documentation_document_fixed": request.POST["documentation_document_fixed"],
-                        "sale_rate": Decimal(request.POST["sale_rate"]) / 100,
-                        "project_rate": Decimal(request.POST["project_rate"]) / 100,
-                        "work_rate": Decimal(request.POST["work_rate"]) / 100,
+                        "sale_rate": _percent_value(request.POST.get("sale_rate"), "Продажа"),
+                        "project_rate": _percent_value(request.POST.get("project_rate"), "Проект / расчёт"),
+                        "work_rate": _percent_value(request.POST.get("work_rate"), "Выполнение работ"),
                         "client_manager_rate": Decimal("0"),
                     },
                 )
