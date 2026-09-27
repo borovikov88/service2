@@ -457,6 +457,64 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
 
     details = []
     issues = []
+    participation_keys = {
+        (item.source_document_key, item.role)
+        for item in participations
+    }
+    business_scopes = defaultdict(list)
+    source_documents = {}
+    for row in rows:
+        row_data = row.source_data or {}
+        business_scopes[_row_business_scope_key(row)].append(row)
+        if row_data.get("row_kind") != "direct_order_expense":
+            source_documents.setdefault(_row_document_key(row), row)
+    for business_key, scope_rows in business_scopes.items():
+        sale_rows = [
+            row for row in scope_rows
+            if (row.source_data or {}).get("row_kind") != "direct_order_expense"
+        ]
+        if sale_rows and (business_key, RewardParticipation.ROLE_SALE) not in participation_keys:
+            issues.append({
+                "kind": "missing_sale_role",
+                "label": (
+                    (sale_rows[0].source_data or {}).get("resolved_order_display")
+                    or sale_rows[0].document_name
+                    or business_key
+                ),
+                "count": 1,
+            })
+        has_service = any(
+            classify_nomenclature_type(row.nomenclature_type) == "service"
+            for row in sale_rows
+        )
+        if has_service and (business_key, RewardParticipation.ROLE_WORK) not in participation_keys:
+            issues.append({
+                "kind": "missing_work_role",
+                "label": (
+                    (sale_rows[0].source_data or {}).get("resolved_order_display")
+                    or sale_rows[0].document_name
+                    or business_key
+                ),
+                "count": 1,
+            })
+    for source_key, row in source_documents.items():
+        if (source_key, RewardParticipation.ROLE_DOCUMENTATION) not in participation_keys:
+            issues.append({
+                "kind": "missing_documentation_role",
+                "label": row.document_name or source_key,
+                "count": 1,
+            })
+    missing_cost_rows = [
+        row for row in rows
+        if row.cost_source == OneCMonthlyProfit.COST_SOURCE_UNDEFINED
+    ]
+    if missing_cost_rows:
+        issues.append({
+            "kind": "month_missing_cost",
+            "label": "Есть строки с неопределённой себестоимостью.",
+            "count": len(missing_cost_rows),
+        })
+
     employee_totals = defaultdict(lambda: {
         "documentation_count": 0, "seller_revenue": Decimal("0"), "seller_gp": Decimal("0"),
         "documentation_reward": Decimal("0"), "sale_reward": Decimal("0"),
@@ -683,7 +741,12 @@ def close_month(organization, user, period_month):
     if scheme is None:
         raise ValidationError("Нельзя закрыть месяц без версии тестовой схемы.")
     snapshot = calculate_month(organization, period_month, use_closed=False)
-    blocking = {"missing_scheme", "missing_base", "missing_cost", "share_overflow", "unmapped_author", "unconfirmed", "unallocated", "partial_direct_cost_allocation"}
+    blocking = {
+        "missing_scheme", "missing_base", "missing_cost", "month_missing_cost",
+        "share_overflow", "unmapped_author", "unconfirmed", "unallocated",
+        "partial_direct_cost_allocation", "missing_sale_role",
+        "missing_documentation_role", "missing_work_role",
+    }
     if any(issue.get("kind") in blocking for issue in snapshot["issues"]):
         raise ValidationError("Есть неполные или неподтверждённые данные; месяц не закрыт.")
     raw = json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode("utf-8")

@@ -194,3 +194,16 @@ class EmployeeRewardCalculationTests(TestCase):
         self.participation(self.e1, RewardParticipation.ROLE_SALE, "1.000000", lines=[row.source_identity])
         detail = calculate_month(self.org, self.month)["details"][0]
         self.assertEqual(detail["base_quality"], "Расчётная ВП")
+
+    def test_missing_roles_are_visible_before_assignments(self):
+        self.add_row(1, "1000.00", kind="Работа")
+        data = calculate_month(self.org, self.month)
+        kinds = {item["kind"] for item in data["issues"]}
+        self.assertIn("missing_sale_role", kinds)
+        self.assertIn("missing_documentation_role", kinds)
+        self.assertIn("missing_work_role", kinds)
+
+    def test_month_unknown_cost_is_visible_even_without_participant(self):
+        self.add_row(1, "1000.00", cost_source=OneCMonthlyProfit.COST_SOURCE_UNDEFINED)
+        data = calculate_month(self.org, self.month)
+        self.assertTrue(any(item["kind"] == "month_missing_cost" for item in data["issues"]))

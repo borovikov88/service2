@@ -82,6 +82,14 @@
       <div class="col-lg-9"><label class="form-label">Позиции / работы</label><div class="border rounded p-2" style="max-height:240px;overflow:auto">{% for doc in document_options %}<div class="reward-lines" data-document-key="{{ doc.scope_key }}"{% if selected_document_key and selected_document_key != doc.scope_key %} hidden{% elif not selected_document_key and not forloop.first %} hidden{% endif %}>{% for line in doc.lines %}{% if not line.is_direct_expense %}<label class="d-flex gap-2 align-items-start py-1"><input class="form-check-input mt-1" type="checkbox" name="line_identity" value="{{ line.identity }}"><span><strong>{{ line.name }}</strong>{% if line.type %} · {{ line.type }}{% endif %}<span class="d-block small text-muted">ВП: {% if line.cost_missing %}не определена{% else %}{{ line.gross_profit|money }}{% endif %}</span></span></label>{% endif %}{% endfor %}</div>{% empty %}<span class="text-muted">Нет активных подтверждённых данных за месяц.</span>{% endfor %}</div></div>
       <div class="col-12"><button class="btn btn-primary">Добавить — ожидает подтверждения</button></div>
     </form>
+    <details class="mt-3"><summary class="small fw-semibold">Отметить роль как «не применяется»</summary>
+      <form method="post" class="row g-2 mt-2">{% csrf_token %}
+        <input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="mark_not_applicable">
+        <div class="col-md-7"><select class="form-select form-select-sm" name="document_key" required>{% for doc in document_options %}<option value="{{ doc.scope_key }}">{{ doc.customer }} · {{ doc.label }}</option>{% endfor %}</select></div>
+        <div class="col-md-3"><select class="form-select form-select-sm" name="role" required><option value="work">Выполнение работ</option><option value="project">Проект / расчёт</option><option value="sale">Продажа</option><option value="client_manager">Менеджер клиента</option></select></div>
+        <div class="col-md-2"><button class="btn btn-sm btn-outline-secondary w-100">Не применяется</button></div>
+      </form>
+    </details>
     <script>
     (()=>{const select=document.getElementById('reward-document-key');if(!select)return;const sync=()=>{document.querySelectorAll('.reward-lines').forEach(x=>{x.hidden=x.dataset.documentKey!==select.value;x.querySelectorAll('input').forEach(i=>{if(x.hidden)i.checked=false;});});};select.addEventListener('change',sync);sync();})();
     </script>
