@@ -1,7 +1,9 @@
 from datetime import timedelta
+from importlib import import_module
 import logging
 from unittest.mock import patch
 
+from django.apps import apps
 from django.contrib.auth.models import Permission, User
 from django.core.management import call_command
 from django.db import IntegrityError, transaction
@@ -158,6 +160,64 @@ class CommunicationsTests(TestCase):
         rendered = record.getMessage()
         self.assertNotIn(secret, rendered)
         self.assertIn("[REDACTED]", rendered)
+
+    def test_owner_sees_communications_in_current_desktop_and_mobile_navigation(self):
+        self.client.login(username="owner", password="test")
+        response = self.client.get(reverse("pool_list"))
+        communications_url = reverse("communications_conversations")
+        self.assertContains(
+            response,
+            f'href="{communications_url}" class="desktop-sidebar__link',
+        )
+        self.assertContains(
+            response,
+            f'href="{communications_url}" class="list-group-item list-group-item-action',
+        )
+
+    def test_manager_does_not_see_communications_navigation_during_rollout(self):
+        self.client.login(username="worker", password="test")
+        response = self.client.get(reverse("pool_list"))
+        communications_url = reverse("communications_conversations")
+        self.assertNotContains(
+            response,
+            f'href="{communications_url}" class="desktop-sidebar__link',
+        )
+        self.assertNotContains(
+            response,
+            f'href="{communications_url}" class="list-group-item list-group-item-action',
+        )
+        self.assertTrue(response.context["can_access_communications"])
+        self.assertFalse(response.context["show_communications_menu"])
+
+    def test_legacy_role_backfill_creates_defaults_without_overwriting_explicit_access(self):
+        CommunicationAccess.objects.filter(
+            user=self.owner,
+            organization=self.organization,
+        ).delete()
+        worker_access = CommunicationAccess.objects.get(
+            user=self.worker,
+            organization=self.organization,
+        )
+        worker_access.can_manage_channels = True
+        worker_access.save(update_fields=["can_manage_channels"])
+
+        migration = import_module(
+            "pool_service.migrations.0116_backfill_communication_access"
+        )
+        migration.backfill_communication_access(apps, None)
+
+        owner_access = CommunicationAccess.objects.get(
+            user=self.owner,
+            organization=self.organization,
+        )
+        self.assertTrue(owner_access.can_view_conversations)
+        self.assertTrue(owner_access.can_reply_conversations)
+        self.assertTrue(owner_access.can_assign_conversation)
+        self.assertTrue(owner_access.can_view_all_calls)
+        self.assertTrue(owner_access.can_manage_channels)
+
+        worker_access.refresh_from_db()
+        self.assertTrue(worker_access.can_manage_channels)
 
     def test_first_worker_takes_conversation_atomically(self):
         conversation = Conversation.objects.create(organization=self.organization, connection=self.connection, external_id="chat", participant_name="Иван")

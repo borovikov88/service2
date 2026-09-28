@@ -207,13 +207,23 @@ def plan_status_context(request):
         and (not security_pin_enabled or not security_passkey_enabled)
         and not passkey_prompt_dismissed(request)
     )
+    can_access_communications = (
+        user.is_superuser
+        or communication_access.filter(can_view_conversations=True).exists()
+    )
+    # Communications is still being rolled out. Keep the navigation entry
+    # owner/admin-only for now, while server-side capabilities remain the
+    # source of truth for direct access.
+    show_communications_menu = is_org_admin and can_access_communications
+
     context = {
         "is_personal_user": personal_user,
         "is_personal_free": personal_free,
         "is_org_admin": is_org_admin,
         "is_org_staff": is_org_staff,
         "can_access_crm": can_access_crm,
-        "can_access_communications": user.is_superuser or communication_access.filter(can_view_conversations=True).exists(),
+        "can_access_communications": can_access_communications,
+        "show_communications_menu": show_communications_menu,
         "can_manage_communication_channels": user.is_superuser or communication_access.filter(can_manage_channels=True).exists(),
         "can_access_finance": can_access_finance,
         "can_manage_company_cash": can_manage_company_cash,
