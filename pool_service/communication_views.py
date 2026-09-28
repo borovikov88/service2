@@ -310,22 +310,29 @@ def _communication_connection_exists(*, organization, kind, external_id, exclude
     return queryset.exists()
 
 
+def _one_time_secret_key(kind, connection_id):
+    return f"{kind}:{connection_id}"
+
+
 def _stash_one_time_secret(request, *, kind, connection_id, secret):
-    request.session["communication_one_time_secret"] = {
-        "kind": kind,
-        "connection_id": connection_id,
-        "secret": secret,
-    }
+    payloads = request.session.get("communication_one_time_secrets", {})
+    if not isinstance(payloads, dict):
+        payloads = {}
+    payloads[_one_time_secret_key(kind, connection_id)] = secret
+    request.session["communication_one_time_secrets"] = payloads
     request.session.modified = True
 
 
 def _pop_one_time_secret(request, *, kind, connection_id):
-    payload = request.session.pop("communication_one_time_secret", None)
-    if not isinstance(payload, dict):
+    payloads = request.session.get("communication_one_time_secrets", {})
+    if not isinstance(payloads, dict):
         return ""
-    if payload.get("kind") != kind or payload.get("connection_id") != connection_id:
-        return ""
-    secret = payload.get("secret")
+    secret = payloads.pop(_one_time_secret_key(kind, connection_id), "")
+    if payloads:
+        request.session["communication_one_time_secrets"] = payloads
+    else:
+        request.session.pop("communication_one_time_secrets", None)
+    request.session.modified = True
     return secret if isinstance(secret, str) else ""
 
 
