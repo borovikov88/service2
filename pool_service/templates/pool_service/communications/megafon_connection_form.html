@@ -1,0 +1,43 @@
+{% extends "pool_service/base.html" %}
+{% block title %}{% if connection %}Настройки Мегафона{% else %}Добавить Мегафон{% endif %}{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+  <div>
+    <div class="text-muted">Коммуникации · Каналы связи · Мегафон</div>
+    <h1 class="h3 mb-0">{% if connection %}{{ connection.name }}{% else %}Добавить ВАТС Мегафона{% endif %}</h1>
+  </div>
+  <a href="{% url 'communications_channels' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>К каналам</a>
+</div>
+
+<div class="alert alert-info">
+  <strong>Текущий этап:</strong> здесь настраивается карточка ВАТС и безопасные домены записей разговоров.
+  Provider API/webhook Мегафона в текущем коде ещё не реализован, поэтому создание этой карточки само по себе не начнёт импорт звонков.
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-7">
+    <div class="card card-body">
+      <h2 class="h5 mb-3">Настройки ВАТС</h2>
+      <form method="post" novalidate>
+        {% csrf_token %}
+        {% if form.non_field_errors %}<div class="alert alert-danger">{{ form.non_field_errors }}</div>{% endif %}
+        {% for field in form %}
+        <div class="mb-3">
+          <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+          {{ field }}
+          {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+          {% for error in field.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+        </div>
+        {% endfor %}
+        <button class="btn btn-primary" type="submit">{% if connection %}Сохранить{% else %}Добавить ВАТС{% endif %}</button>
+      </form>
+    </div>
+  </div>
+  <div class="col-lg-5">
+    <div class="card card-body">
+      <h2 class="h5">Записи разговоров</h2>
+      <p class="text-muted small mb-0">Service2 открывает запись только по HTTPS и только с доменов, указанных в списке. Это защищает переходы на произвольные внешние адреса.</p>
+    </div>
+  </div>
+</div>
+{% endblock %}
