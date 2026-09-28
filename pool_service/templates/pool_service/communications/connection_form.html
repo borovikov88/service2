@@ -1,0 +1,89 @@
+{% extends "pool_service/base.html" %}
+{% block title %}{% if editing %}Настройки {{ provider_name }}{% else %}Подключить {{ provider_name }}{% endif %}{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-xl-8 col-lg-9">
+    <div class="d-flex justify-content-between align-items-start gap-3 mb-4">
+      <div>
+        <div class="text-muted">Коммуникации · Каналы связи</div>
+        <h1 class="h3 mb-1">{% if editing %}Настройки {{ provider_name }}{% else %}Подключить {{ provider_name }}{% endif %}</h1>
+        <div class="text-muted">
+          {% if kind == 'website' %}
+            Подключение сайта использует отдельный bearer-токен. Он показывается только один раз после создания или ротации.
+          {% else %}
+            Client ID и client secret сохраняются только в зашифрованном виде. Webhook-токен показывается один раз.
+          {% endif %}
+        </div>
+      </div>
+      <a href="{% url 'communications_channels' %}" class="btn btn-outline-secondary">Назад</a>
+    </div>
+
+    <form method="post" class="card card-body" autocomplete="off">
+      {% csrf_token %}
+      {% if form.non_field_errors %}
+      <div class="alert alert-danger">{{ form.non_field_errors }}</div>
+      {% endif %}
+
+      <div class="mb-3">
+        <label class="form-label" for="{{ form.name.id_for_label }}">{{ form.name.label }}</label>
+        {{ form.name }}
+        {% for error in form.name.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label" for="{{ form.external_id.id_for_label }}">{{ form.external_id.label }}</label>
+        {{ form.external_id }}
+        {% if form.external_id.help_text %}<div class="form-text">{{ form.external_id.help_text }}</div>{% endif %}
+        {% for error in form.external_id.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+
+      {% if kind == 'avito' %}
+      <hr>
+      <h2 class="h5">Доступ к Avito API</h2>
+      {% if editing %}
+      <div class="alert alert-light border">
+        {% if avito_credentials_configured %}
+          Учётные данные уже сохранены. Оставьте оба поля пустыми, если менять их не нужно.
+        {% else %}
+          Учётные данные ещё не настроены. Заполните оба поля.
+        {% endif %}
+      </div>
+      {% endif %}
+      <div class="mb-3">
+        <label class="form-label" for="{{ form.client_id.id_for_label }}">{{ form.client_id.label }}</label>
+        {{ form.client_id }}
+        {% for error in form.client_id.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="{{ form.client_secret.id_for_label }}">{{ form.client_secret.label }}</label>
+        {{ form.client_secret }}
+        {% for error in form.client_secret.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+      {% endif %}
+
+      <div class="form-check mb-4">
+        {{ form.is_active }}
+        <label class="form-check-label" for="{{ form.is_active.id_for_label }}">{{ form.is_active.label }}</label>
+      </div>
+
+      <div class="d-flex flex-wrap gap-2">
+        <button class="btn btn-primary" type="submit">{% if editing %}Сохранить{% else %}Создать подключение{% endif %}</button>
+        <a class="btn btn-outline-secondary" href="{% url 'communications_channels' %}">Отмена</a>
+      </div>
+    </form>
+
+    {% if editing %}
+    <div class="card card-body mt-3">
+      <h2 class="h5">Токен подключения</h2>
+      <p class="text-muted mb-3">
+        Ротация немедленно делает старый токен недействительным. Новый токен будет показан только один раз.
+      </p>
+      <form method="post" action="{% url 'communication_connection_rotate_token' connection.pk %}">
+        {% csrf_token %}
+        <button class="btn btn-outline-danger" type="submit">Сгенерировать новый токен</button>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

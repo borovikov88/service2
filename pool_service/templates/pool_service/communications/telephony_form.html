@@ -1,0 +1,49 @@
+{% extends "pool_service/base.html" %}
+{% block title %}{% if editing %}Настройки Мегафона{% else %}Добавить линию Мегафона{% endif %}{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-xl-8 col-lg-9">
+    <div class="d-flex justify-content-between align-items-start gap-3 mb-4">
+      <div>
+        <div class="text-muted">Коммуникации · Каналы связи</div>
+        <h1 class="h3 mb-1">{% if editing %}Настройки Мегафона{% else %}Добавить линию Мегафона{% endif %}</h1>
+        <div class="text-muted">Настройки линии и безопасных адресов записей разговоров.</div>
+      </div>
+      <a href="{% url 'communications_channels' %}" class="btn btn-outline-secondary">Назад</a>
+    </div>
+
+    <div class="alert alert-light border">
+      Автоматическая загрузка звонков из API Мегафона пока не включена. Эта страница готовит линию и ограничения для записей разговоров без хранения секретов провайдера в открытом виде.
+    </div>
+
+    <form method="post" class="card card-body">
+      {% csrf_token %}
+      {% if form.non_field_errors %}<div class="alert alert-danger">{{ form.non_field_errors }}</div>{% endif %}
+      <div class="mb-3">
+        <label class="form-label" for="{{ form.name.id_for_label }}">{{ form.name.label }}</label>
+        {{ form.name }}
+        {% for error in form.name.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="{{ form.external_id.id_for_label }}">{{ form.external_id.label }}</label>
+        {{ form.external_id }}
+        {% for error in form.external_id.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="{{ form.recording_allowed_hosts.id_for_label }}">{{ form.recording_allowed_hosts.label }}</label>
+        {{ form.recording_allowed_hosts }}
+        {% if form.recording_allowed_hosts.help_text %}<div class="form-text">{{ form.recording_allowed_hosts.help_text }}</div>{% endif %}
+        {% for error in form.recording_allowed_hosts.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+      <div class="form-check mb-4">
+        {{ form.is_active }}
+        <label class="form-check-label" for="{{ form.is_active.id_for_label }}">{{ form.is_active.label }}</label>
+      </div>
+      <div class="d-flex gap-2">
+        <button class="btn btn-primary" type="submit">{% if editing %}Сохранить{% else %}Добавить линию{% endif %}</button>
+        <a class="btn btn-outline-secondary" href="{% url 'communications_channels' %}">Отмена</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
