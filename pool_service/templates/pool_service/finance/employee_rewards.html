@@ -57,7 +57,7 @@
   <section class="card card-soft p-3 mb-4">
     <h2 class="h5">Требует внимания</h2>
     <div class="table-responsive"><table class="table table-sm mb-0" style="min-width:720px"><thead><tr><th>Тип</th><th>Документ / причина</th><th class="text-end">Количество / остаток</th></tr></thead><tbody>
-      {% for issue in data.issues %}<tr><td>{{ issue.kind }}</td><td>{{ issue.label }}</td><td class="text-end">{{ issue.count|default:issue.share|default:"—" }}</td></tr>{% empty %}<tr><td colspan="3" class="text-muted">Нет проблем.</td></tr>{% endfor %}
+      {% for issue in data.issues %}<tr><td>{{ issue.kind }}</td><td>{{ issue.label }}</td><td class="text-end">{% if issue.count %}{{ issue.count }}{% elif issue.share %}{{ issue.share }}{% else %}—{% endif %}</td></tr>{% empty %}<tr><td colspan="3" class="text-muted">Нет проблем.</td></tr>{% endfor %}
     </tbody></table></div>
 
     {% if data.unmapped_authors and can_manage_participation %}
