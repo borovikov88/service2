@@ -13,7 +13,15 @@ from django.urls import reverse
 from django.utils import timezone
 
 from pool_service.communication_models import AvitoCredential, CommunicationAccess, CommunicationChannel, ChannelConnection, Conversation, ConversationMessage, MessageAttachment, PhoneCall, TelephonyConnection, WebsiteRequest
-from pool_service.communication_avito import AvitoError, AvitoRetryableError, access_token, send_message
+from pool_service.communication_avito import (
+    AvitoError,
+    AvitoRetryableError,
+    access_token,
+    send_message,
+    subscribe_webhook,
+    unsubscribe_webhook,
+    webhook_subscriptions,
+)
 from pool_service.communication_secrets import decrypt_secret, encrypt_secret
 from pool_service.communication_services import receive_message, users_with_conversation_access
 from pool_service.communication_services import conversation_capability
@@ -1075,6 +1083,37 @@ class AvitoCommunicationTests(TestCase):
         self.assertEqual(decrypt_secret(credential.access_token_encrypted), "short-lived-token")
         self.assertEqual(access_token(self.connection), "short-lived-token")
         self.assertEqual(request.call_count, 2)
+
+    @patch("pool_service.communication_avito._json_request")
+    def test_webhook_provider_helpers_validate_contract(self, request):
+        credential = AvitoCredential.objects.create(
+            connection=self.connection,
+            client_id_encrypted=encrypt_secret("client-id"),
+            client_secret_encrypted=encrypt_secret("client-secret"),
+            access_token_encrypted=encrypt_secret("cached-token"),
+            access_token_expires_at=timezone.now() + timedelta(hours=1),
+        )
+        callback = "https://service2.example/api/communications/avito/test/token/webhook/"
+
+        request.side_effect = [
+            {"ok": True},
+            {"subscriptions": [{"url": callback, "version": "3"}]},
+            {"ok": True},
+        ]
+        self.assertEqual(subscribe_webhook(self.connection, callback), {"ok": True})
+        self.assertEqual(webhook_subscriptions(self.connection), [callback])
+        self.assertEqual(unsubscribe_webhook(self.connection, callback), {"ok": True})
+        self.assertEqual(request.call_count, 3)
+        credential.refresh_from_db()
+        self.assertEqual(
+            decrypt_secret(credential.access_token_encrypted),
+            "cached-token",
+        )
+
+        request.reset_mock()
+        request.return_value = {"ok": False}
+        with self.assertRaisesMessage(AvitoError, "provider_webhook_rejected"):
+            subscribe_webhook(self.connection, callback)
 
     @patch("pool_service.communication_avito._json_request")
     def test_corrupt_cached_token_is_replaced(self, request):
