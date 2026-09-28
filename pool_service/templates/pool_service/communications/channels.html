@@ -1,39 +1,145 @@
 {% extends "pool_service/base.html" %}
 {% block title %}Каналы связи{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
-  <div><div class="text-muted">Настройки</div><h1 class="h3 mb-0">Каналы связи</h1></div>
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+  <div>
+    <div class="text-muted">Коммуникации · Настройки</div>
+    <h1 class="h3 mb-1">Каналы связи</h1>
+    <div class="text-muted">Подключайте источники обращений и управляйте их состоянием из Service2.</div>
+  </div>
   <a href="{% url 'communications_conversations' %}" class="btn btn-outline-secondary">К диалогам</a>
 </div>
-<div class="row g-3">
-  {% for channel in channels %}
-  <div class="col-lg-6">
-    <div class="card card-body h-100">
-      <div class="d-flex justify-content-between align-items-start gap-3">
-        <div><h2 class="h5 mb-1">{{ channel.get_kind_display }}</h2><div class="text-muted">{{ channel.name }}</div></div>
-        <div class="text-end">
-          <span class="badge {% if channel.is_active %}bg-success{% else %}bg-secondary{% endif %}">{% if channel.is_active %}Активно{% else %}Отключено{% endif %}</span>
-          <form method="post" action="{% url 'communication_channel_set_active' channel.pk %}" class="mt-2">
-            {% csrf_token %}<input type="hidden" name="active" value="{% if channel.is_active %}0{% else %}1{% endif %}">
-            <button class="btn btn-sm {% if channel.is_active %}btn-outline-danger{% else %}btn-outline-success{% endif %}" type="submit">{% if channel.is_active %}Отключить канал{% else %}Включить канал{% endif %}</button>
-          </form>
+
+<div class="row g-4">
+  {% for provider in providers %}
+  <div class="col-xl-6">
+    <section class="card h-100">
+      <div class="card-body">
+        <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
+          <div>
+            <div class="d-flex align-items-center gap-2">
+              {% if provider.kind == 'website' %}<i class="bi bi-globe2 fs-4"></i>{% else %}<i class="bi bi-chat-square-text fs-4"></i>{% endif %}
+              <h2 class="h5 mb-0">{{ provider.title }}</h2>
+            </div>
+            <div class="text-muted mt-2">{{ provider.description }}</div>
+          </div>
+          <a class="btn btn-primary" href="{% url 'communication_connection_create' provider.kind %}">
+            <i class="bi bi-plus-lg me-1"></i>Добавить подключение
+          </a>
+        </div>
+
+        {% if provider.channels %}
+        <div class="mb-3">
+          <div class="small text-uppercase text-muted fw-semibold mb-2">Канал</div>
+          {% for channel in provider.channels %}
+          <div class="border rounded p-2 d-flex justify-content-between align-items-center gap-3 mb-2">
+            <div>
+              <div class="fw-semibold">{{ channel.name }}</div>
+              <div class="small text-muted">{% if channel.is_active %}Канал включён{% else %}Канал отключён{% endif %}</div>
+            </div>
+            <form method="post" action="{% url 'communication_channel_set_active' channel.pk %}">
+              {% csrf_token %}
+              <input type="hidden" name="active" value="{% if channel.is_active %}0{% else %}1{% endif %}">
+              <button class="btn btn-sm {% if channel.is_active %}btn-outline-danger{% else %}btn-outline-success{% endif %}" type="submit">
+                {% if channel.is_active %}Отключить канал{% else %}Включить канал{% endif %}
+              </button>
+            </form>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+
+        <div class="small text-uppercase text-muted fw-semibold mb-2">Подключения</div>
+        <div class="d-flex flex-column gap-2">
+          {% for connection in provider.connections %}
+          <div class="border rounded p-3">
+            <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+              <div>
+                <div class="fw-semibold">{{ connection.name }}</div>
+                <div class="small text-muted mt-1">ID: {{ connection.external_id }}</div>
+                <div class="d-flex flex-wrap gap-2 mt-2">
+                  <span class="badge {% if connection.is_active %}bg-success{% else %}bg-secondary{% endif %}">
+                    {% if connection.is_active %}Активно{% else %}Отключено{% endif %}
+                  </span>
+                  <span class="badge {% if connection.configuration_ready %}bg-primary{% else %}bg-warning text-dark{% endif %}">
+                    {% if connection.configuration_ready %}Настроено{% else %}Требует настройки{% endif %}
+                  </span>
+                </div>
+              </div>
+              <div class="d-flex flex-wrap gap-2">
+                <a class="btn btn-sm btn-outline-primary" href="{% url 'communication_connection_edit' connection.pk %}">
+                  Настройки
+                </a>
+                <form method="post" action="{% url 'communication_connection_set_active' connection.pk %}">
+                  {% csrf_token %}
+                  <input type="hidden" name="active" value="{% if connection.is_active %}0{% else %}1{% endif %}">
+                  <button class="btn btn-sm {% if connection.is_active %}btn-outline-danger{% else %}btn-outline-success{% endif %}" type="submit">
+                    {% if connection.is_active %}Отключить{% else %}Включить{% endif %}
+                  </button>
+                </form>
+              </div>
+            </div>
+          </div>
+          {% empty %}
+          <div class="border rounded p-3 text-muted">Подключений пока нет.</div>
+          {% endfor %}
         </div>
       </div>
-      <hr>
-      <strong class="mb-2">Подключения</strong>
-      <div class="d-flex flex-column gap-2">
-        {% for connection in channel.connections.all %}
-        <div class="border rounded p-2 d-flex justify-content-between align-items-center gap-3">
-          <div><div class="fw-semibold">{{ connection.name }}</div><div class="small text-muted">{% if connection.is_active %}Подключение активно{% else %}Подключение отключено{% endif %}</div></div>
-          <form method="post" action="{% url 'communication_connection_set_active' connection.pk %}">
-            {% csrf_token %}<input type="hidden" name="active" value="{% if connection.is_active %}0{% else %}1{% endif %}">
-            <button class="btn btn-sm {% if connection.is_active %}btn-outline-danger{% else %}btn-outline-success{% endif %}" type="submit">{% if connection.is_active %}Отключить{% else %}Включить{% endif %}</button>
-          </form>
-        </div>
-        {% empty %}<div class="text-muted">Нет подключений</div>{% endfor %}
-      </div>
-    </div>
+    </section>
   </div>
-  {% empty %}<div class="col-12"><div class="alert alert-light">Каналы ещё не настроены. Добавьте подключения через администрирование.</div></div>{% endfor %}
+  {% endfor %}
+
+  <div class="col-xl-6">
+    <section class="card h-100">
+      <div class="card-body">
+        <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
+          <div>
+            <div class="d-flex align-items-center gap-2">
+              <i class="bi bi-telephone fs-4"></i>
+              <h2 class="h5 mb-0">Мегафон</h2>
+            </div>
+            <div class="text-muted mt-2">Линии телефонии, права на записи разговоров и подготовка подключения API.</div>
+          </div>
+          <a class="btn btn-primary" href="{% url 'communication_telephony_create' %}">
+            <i class="bi bi-plus-lg me-1"></i>Добавить линию
+          </a>
+        </div>
+
+        <div class="alert alert-light border small">
+          Интерфейс настройки линии уже доступен. Автоматическое получение звонков из API Мегафона будет подключаться отдельным адаптером; создание линии само по себе не запускает синхронизацию.
+        </div>
+
+        <div class="d-flex flex-column gap-2">
+          {% for connection in telephony_connections %}
+          <div class="border rounded p-3">
+            <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+              <div>
+                <div class="fw-semibold">{{ connection.name }}</div>
+                <div class="small text-muted mt-1">ID: {{ connection.external_id }}</div>
+                <div class="mt-2">
+                  <span class="badge {% if connection.is_active %}bg-success{% else %}bg-secondary{% endif %}">
+                    {% if connection.is_active %}Активно{% else %}Отключено{% endif %}
+                  </span>
+                </div>
+              </div>
+              <div class="d-flex flex-wrap gap-2">
+                <a class="btn btn-sm btn-outline-primary" href="{% url 'communication_telephony_edit' connection.pk %}">Настройки</a>
+                <form method="post" action="{% url 'communication_telephony_set_active' connection.pk %}">
+                  {% csrf_token %}
+                  <input type="hidden" name="active" value="{% if connection.is_active %}0{% else %}1{% endif %}">
+                  <button class="btn btn-sm {% if connection.is_active %}btn-outline-danger{% else %}btn-outline-success{% endif %}" type="submit">
+                    {% if connection.is_active %}Отключить{% else %}Включить{% endif %}
+                  </button>
+                </form>
+              </div>
+            </div>
+          </div>
+          {% empty %}
+          <div class="border rounded p-3 text-muted">Линии телефонии пока не настроены.</div>
+          {% endfor %}
+        </div>
+      </div>
+    </section>
+  </div>
 </div>
 {% endblock %}
