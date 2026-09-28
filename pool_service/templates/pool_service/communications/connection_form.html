@@ -11,7 +11,7 @@
           {% if kind == 'website' %}
             Подключение сайта использует отдельный bearer-токен. Он показывается только один раз после создания или ротации.
           {% else %}
-            Client ID и client secret сохраняются только в зашифрованном виде. Webhook-токен показывается один раз.
+            Client ID и client secret сохраняются только в зашифрованном виде. После сохранения подключите webhook одной кнопкой на странице «Каналы связи».
           {% endif %}
         </div>
       </div>
@@ -72,7 +72,7 @@
       </div>
     </form>
 
-    {% if editing %}
+    {% if editing and kind == 'website' %}
     <div class="card card-body mt-3">
       <h2 class="h5">Токен подключения</h2>
       <p class="text-muted mb-3">
