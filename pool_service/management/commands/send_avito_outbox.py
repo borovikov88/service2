@@ -1,8 +1,16 @@
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from pool_service.communication_avito import AvitoAmbiguousDeliveryError, AvitoError, send_message
+from pool_service.communication_avito import (
+    AvitoAmbiguousDeliveryError,
+    AvitoError,
+    AvitoRetryableError,
+    send_message,
+)
 from pool_service.communication_models import ChannelConnection, CommunicationChannel, ConversationMessage
+
+
+MAX_TRANSIENT_ATTEMPTS = 3
 
 
 def claim_message(message_id):
@@ -23,7 +31,8 @@ def claim_message(message_id):
         if not channel.is_active or not connection.is_active:
             return None
         message.delivery_status = ConversationMessage.DELIVERY_SENDING
-        message.save(update_fields=["delivery_status"])
+        message.delivery_attempts += 1
+        message.save(update_fields=["delivery_status", "delivery_attempts"])
         return message
 
 
@@ -42,7 +51,7 @@ class Command(BaseCommand):
             conversation__connection__channel__is_active=True,
             conversation__connection__is_active=True,
         ).order_by("pk").values_list("pk", flat=True)[:limit])
-        delivered = failed = 0
+        delivered = retrying = failed = 0
         for message_id in message_ids:
             # Conditional update is the single-flight claim. A crashed/uncertain
             # delivery intentionally remains "sending" for manual reconciliation:
@@ -59,9 +68,23 @@ class Command(BaseCommand):
                 message.delivery_error = str(exc)[:500]
                 message.save(update_fields=["delivery_error"])
                 failed += 1
+            except AvitoRetryableError as exc:
+                # Token acquisition and other pre-send transient failures are
+                # known not to have delivered a customer message. Requeue them
+                # only for a bounded number of attempts.
+                message.delivery_error = str(exc)[:500]
+                if message.delivery_attempts < MAX_TRANSIENT_ATTEMPTS:
+                    message.delivery_status = ConversationMessage.DELIVERY_PENDING
+                    retrying += 1
+                else:
+                    message.delivery_status = ConversationMessage.DELIVERY_FAILED
+                    failed += 1
+                message.save(update_fields=["delivery_status", "delivery_error"])
             except AvitoError as exc:
                 message.delivery_status = ConversationMessage.DELIVERY_FAILED
                 message.delivery_error = str(exc)[:500]
                 message.save(update_fields=["delivery_status", "delivery_error"])
                 failed += 1
-        self.stdout.write(f"delivered={delivered} failed={failed}")
+        self.stdout.write(
+            f"delivered={delivered} retrying={retrying} failed={failed}"
+        )
