@@ -174,6 +174,21 @@ class CommunicationsTests(TestCase):
             f'href="{communications_url}" class="list-group-item list-group-item-action',
         )
 
+    def test_manager_does_not_see_communications_navigation_during_rollout(self):
+        self.client.login(username="worker", password="test")
+        response = self.client.get(reverse("pool_list"))
+        communications_url = reverse("communications_conversations")
+        self.assertNotContains(
+            response,
+            f'href="{communications_url}" class="desktop-sidebar__link',
+        )
+        self.assertNotContains(
+            response,
+            f'href="{communications_url}" class="list-group-item list-group-item-action',
+        )
+        self.assertTrue(response.context["can_access_communications"])
+        self.assertFalse(response.context["show_communications_menu"])
+
     def test_legacy_role_backfill_creates_defaults_without_overwriting_explicit_access(self):
         CommunicationAccess.objects.filter(
             user=self.owner,
