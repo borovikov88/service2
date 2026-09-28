@@ -860,7 +860,7 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
             issues.append({
                 "kind": "missing_sale_role",
                 "label": (
-                    (sale_rows[0].source_data or {}).get("resolved_order_display")
+                    _source_mapping(sale_rows[0].source_data).get("resolved_order_display")
                     or sale_rows[0].document_name
                     or business_key
                 ),
@@ -874,7 +874,7 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
             issues.append({
                 "kind": "missing_work_role",
                 "label": (
-                    (sale_rows[0].source_data or {}).get("resolved_order_display")
+                    _source_mapping(sale_rows[0].source_data).get("resolved_order_display")
                     or sale_rows[0].document_name
                     or business_key
                 ),
