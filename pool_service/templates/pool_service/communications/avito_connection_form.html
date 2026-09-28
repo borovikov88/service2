@@ -1,0 +1,82 @@
+{% extends "pool_service/base.html" %}
+{% block title %}{% if connection %}Настройки Авито{% else %}Подключить Авито{% endif %}{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+  <div>
+    <div class="text-muted">Коммуникации · Каналы связи · Авито</div>
+    <h1 class="h3 mb-0">{% if connection %}{{ connection.name }}{% else %}Подключить Авито{% endif %}</h1>
+  </div>
+  <a href="{% url 'communications_channels' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>К каналам</a>
+</div>
+
+{% if not communication_credential_key_configured %}
+<div class="alert alert-warning">
+  Перед долговременным использованием Авито рекомендуется задать стабильный <code>COMMUNICATION_CREDENTIAL_KEY</code> на production.
+</div>
+{% endif %}
+
+{% if one_time_secret %}
+<div class="alert alert-success border-0 shadow-sm mb-4">
+  <h2 class="h5"><i class="bi bi-shield-lock me-2"></i>Webhook готов</h2>
+  <p class="mb-2">Скопируйте callback URL сейчас. Секретная часть повторно не показывается.</p>
+  <div class="input-group mb-2">
+    <input id="avito-webhook-url" class="form-control font-monospace" value="{{ callback_url }}" readonly>
+    <button class="btn btn-outline-success" type="button" onclick="navigator.clipboard.writeText(document.getElementById('avito-webhook-url').value)">Копировать</button>
+  </div>
+  <div class="small text-muted">Webhook token: <code>{{ one_time_secret }}</code></div>
+</div>
+{% endif %}
+
+<div class="row g-4">
+  <div class="col-lg-7">
+    <div class="card card-body">
+      <h2 class="h5 mb-3">Аккаунт и API</h2>
+      {% if connection and credential_configured %}
+      <div class="alert alert-light border small">
+        <i class="bi bi-check-circle text-success me-1"></i>Client ID и Client Secret сохранены в зашифрованном виде.
+        Оставьте оба секретных поля пустыми, если менять их не нужно.
+      </div>
+      {% endif %}
+      <form method="post" novalidate>
+        {% csrf_token %}
+        {% if form.non_field_errors %}<div class="alert alert-danger">{{ form.non_field_errors }}</div>{% endif %}
+        {% for field in form %}
+        <div class="mb-3">
+          <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+          {{ field }}
+          {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+          {% for error in field.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+        </div>
+        {% endfor %}
+        <button class="btn btn-primary" type="submit">{% if connection %}Сохранить{% else %}Подключить Авито{% endif %}</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="col-lg-5">
+    {% if connection %}
+    <div class="card card-body mb-4">
+      <h2 class="h5">Webhook</h2>
+      <div class="small text-muted mb-2">Public ID</div>
+      <div class="font-monospace text-break mb-3">{{ public_id }}</div>
+      {% if connection.api_token_hash %}
+      <div class="alert alert-success py-2 small"><i class="bi bi-check-circle me-1"></i>Webhook-токен выпущен.</div>
+      {% else %}
+      <div class="alert alert-warning py-2 small">Webhook-токен ещё не выпущен.</div>
+      {% endif %}
+      <div class="small text-muted mb-3">Полный callback URL можно получить только при ротации токена: секретная часть не хранится в открытом виде.</div>
+      <form method="post" action="{% url 'communication_avito_connection_rotate_webhook' connection.pk %}">
+        {% csrf_token %}
+        <button class="btn btn-outline-danger" type="submit"><i class="bi bi-arrow-repeat me-1"></i>Перевыпустить webhook</button>
+      </form>
+    </div>
+    {% else %}
+    <div class="card card-body bg-light border-0">
+      <h2 class="h5">После подключения</h2>
+      <p class="mb-2">Service2 зашифрует Client ID/Secret и выпустит секретный webhook URL.</p>
+      <p class="mb-0 text-muted small">Callback URL нужно будет один раз зарегистрировать в настройках API Авито.</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
