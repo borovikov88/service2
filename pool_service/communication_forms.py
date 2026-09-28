@@ -1,0 +1,113 @@
+from django import forms
+
+
+class CommunicationConnectionForm(forms.Form):
+    name = forms.CharField(
+        label="Название подключения",
+        max_length=120,
+        widget=forms.TextInput(attrs={"class": "form-control", "placeholder": "Например, Основной сайт"}),
+    )
+    external_id = forms.CharField(
+        label="Идентификатор",
+        max_length=255,
+        help_text="Сайт: домен или внутреннее имя. Авито: числовой ID аккаунта.",
+        widget=forms.TextInput(attrs={"class": "form-control"}),
+    )
+    is_active = forms.BooleanField(
+        label="Подключение активно",
+        required=False,
+        initial=True,
+        widget=forms.CheckboxInput(attrs={"class": "form-check-input"}),
+    )
+    client_id = forms.CharField(
+        label="Avito client_id",
+        max_length=500,
+        required=False,
+        widget=forms.PasswordInput(
+            render_value=False,
+            attrs={"class": "form-control", "autocomplete": "new-password"},
+        ),
+    )
+    client_secret = forms.CharField(
+        label="Avito client_secret",
+        max_length=1000,
+        required=False,
+        widget=forms.PasswordInput(
+            render_value=False,
+            attrs={"class": "form-control", "autocomplete": "new-password"},
+        ),
+    )
+
+    def __init__(self, *args, kind, require_avito_credentials=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.kind = kind
+        self.require_avito_credentials = require_avito_credentials
+        if kind != "avito":
+            self.fields.pop("client_id")
+            self.fields.pop("client_secret")
+
+    def clean(self):
+        cleaned = super().clean()
+        if self.kind != "avito":
+            return cleaned
+        client_id = cleaned.get("client_id", "")
+        client_secret = cleaned.get("client_secret", "")
+        if self.require_avito_credentials and (not client_id or not client_secret):
+            if not client_id:
+                self.add_error("client_id", "Укажите client_id.")
+            if not client_secret:
+                self.add_error("client_secret", "Укажите client_secret.")
+        elif bool(client_id) != bool(client_secret):
+            message = "Для обновления учётных данных заполните оба поля."
+            if client_id:
+                self.add_error("client_secret", message)
+            else:
+                self.add_error("client_id", message)
+        return cleaned
+
+
+class TelephonyConnectionForm(forms.Form):
+    name = forms.CharField(
+        label="Название подключения",
+        max_length=120,
+        initial="Мегафон",
+        widget=forms.TextInput(attrs={"class": "form-control"}),
+    )
+    external_id = forms.CharField(
+        label="Идентификатор линии / аккаунта",
+        max_length=255,
+        widget=forms.TextInput(attrs={"class": "form-control"}),
+    )
+    recording_allowed_hosts = forms.CharField(
+        label="Разрешённые хосты записей разговоров",
+        required=False,
+        help_text="По одному доменному имени в строке, без https://, пути и порта.",
+        widget=forms.Textarea(attrs={"class": "form-control", "rows": 4, "placeholder": "records.example.ru"}),
+    )
+    is_active = forms.BooleanField(
+        label="Подключение активно",
+        required=False,
+        initial=True,
+        widget=forms.CheckboxInput(attrs={"class": "form-check-input"}),
+    )
+
+    def clean_recording_allowed_hosts(self):
+        raw = self.cleaned_data.get("recording_allowed_hosts", "")
+        hosts = []
+        for line in raw.replace(",", "\n").splitlines():
+            host = line.strip().lower()
+            if not host:
+                continue
+            if (
+                "://" in host
+                or ":" in host
+                or "/" in host
+                or "@" in host
+                or any(character.isspace() for character in host)
+            ):
+                raise forms.ValidationError(
+                    "Указывайте только доменное имя без схемы, пути и порта."
+                )
+            if host not in hosts:
+                hosts.append(host)
+        return hosts
