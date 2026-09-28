@@ -351,6 +351,11 @@ VAPID_EMAIL = os.getenv("VAPID_EMAIL", DEFAULT_FROM_EMAIL)
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
+    "filters": {
+        "redact_communication_webhook_secret": {
+            "()": "service_site.logging_handlers.RedactCommunicationWebhookSecretFilter",
+        },
+    },
     "formatters": {
         "onec_unified_sync": {
             "format": "{asctime} {levelname} {name} {message}",
@@ -376,6 +381,7 @@ LOGGING = {
             "filename": str(BASE_DIR.parent / "var" / "log" / "django-request-error.log"),
             "level": "ERROR",
             "formatter": "django_request_error",
+            "filters": ["redact_communication_webhook_secret"],
             "encoding": "utf-8",
             "delay": True,
         },
@@ -408,3 +414,7 @@ CKEDITOR_5_CONFIGS = {
 
 # Confirmed individual catalog kinds withheld from gross payroll.
 ONEC_ODATA_PAYROLL_WITHHOLDING_GUIDS = os.getenv("ONEC_ODATA_PAYROLL_WITHHOLDING_GUIDS", "")
+
+# Stable application-level key for encrypted provider credentials. In production
+# this should be set independently so Django SECRET_KEY can be rotated safely.
+COMMUNICATION_CREDENTIAL_KEY = os.getenv("COMMUNICATION_CREDENTIAL_KEY", "")

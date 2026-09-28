@@ -63,6 +63,8 @@ class AuthRedirectMiddleware:
             "/signup/personal/",
             "/signup/company/",
             "/api/smsru/",
+            "/api/communications/website/",
+            "/api/communications/avito/",
             "/static/",
             "/health/",
             "/consent/",

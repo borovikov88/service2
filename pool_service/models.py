@@ -744,6 +744,7 @@ class Notification(models.Model):
         ("task_assignment", "task_assignment"),
         ("finance", "finance"),
         ("development", "development"),
+        ("communication", "communication"),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="notifications")

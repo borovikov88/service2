@@ -43,6 +43,7 @@ class PoolServiceConfig(AppConfig):
         # must be registered before migration state/checks are evaluated.
         import pool_service.finance_position_models  # noqa: F401
         import pool_service.onec_diagnostic_mcp_models  # noqa: F401
+        import pool_service.communication_models  # noqa: F401
 
     def ready(self):
         _wire_onec_diagnostic_mcp_environment()

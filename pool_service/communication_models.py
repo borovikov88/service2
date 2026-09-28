@@ -1,0 +1,331 @@
+import uuid
+
+from django.contrib.auth.models import User
+from django.db.models.signals import post_delete, post_save, pre_save
+from django.dispatch import receiver
+from django.core.exceptions import ValidationError
+from django.db import models
+from django.contrib.auth.hashers import check_password, make_password
+
+from pool_service.models import Organization, OrganizationAccess
+from pool_service.storage import private_media_storage
+
+
+class CommunicationChannel(models.Model):
+    KIND_AVITO = "avito"
+    KIND_WEBSITE = "website"
+    KIND_MEGAFON = "megafon"
+    KIND_CHOICES = [(KIND_AVITO, "Авито"), (KIND_WEBSITE, "Сайт"), (KIND_MEGAFON, "Мегафон")]
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="communication_channels")
+    kind = models.CharField(max_length=24, choices=KIND_CHOICES)
+    name = models.CharField(max_length=120)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("organization", "kind", "name")
+        permissions = [
+            ("can_view_conversations", "Can view conversations"),
+            ("can_reply_conversations", "Can reply to conversations"),
+            ("can_take_conversation", "Can take a conversation"),
+            ("can_assign_conversation", "Can assign a conversation"),
+            ("can_view_all_calls", "Can view all calls"),
+            ("can_view_own_calls", "Can view own calls"),
+            ("can_listen_calls", "Can listen to call recordings"),
+            ("can_manage_channels", "Can manage communication channels"),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class CommunicationAccess(models.Model):
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="communication_accesses")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="communication_accesses")
+    can_view_conversations = models.BooleanField(default=False)
+    can_reply_conversations = models.BooleanField(default=False)
+    can_take_conversation = models.BooleanField(default=False)
+    can_assign_conversation = models.BooleanField(default=False)
+    can_view_all_calls = models.BooleanField(default=False)
+    can_view_own_calls = models.BooleanField(default=False)
+    can_listen_calls = models.BooleanField(default=False)
+    can_manage_channels = models.BooleanField(default=False)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["organization", "user"], name="comm_access_org_user_uniq")]
+
+
+def _communication_access_defaults(role):
+    fields = {
+        "can_view_conversations": False,
+        "can_reply_conversations": False,
+        "can_take_conversation": False,
+        "can_assign_conversation": False,
+        "can_view_all_calls": False,
+        "can_view_own_calls": False,
+        "can_listen_calls": False,
+        "can_manage_channels": False,
+    }
+    if role in {"owner", "admin"}:
+        return {name: True for name in fields}
+    if role == "manager":
+        fields.update(
+            can_view_conversations=True,
+            can_reply_conversations=True,
+            can_take_conversation=True,
+            can_view_own_calls=True,
+            can_listen_calls=True,
+        )
+    return fields
+
+
+def _effective_communication_role(organization, user):
+    roles = set(OrganizationAccess.objects.filter(
+        organization=organization,
+        user=user,
+    ).values_list("role", flat=True))
+    if roles & {"owner", "admin"}:
+        return "owner"
+    if "manager" in roles:
+        return "manager"
+    return next(iter(roles), None)
+
+
+@receiver(pre_save, sender=OrganizationAccess)
+def remember_previous_communication_role(sender, instance, **_kwargs):
+    if not instance.pk:
+        instance._communication_previous_role = None
+        return
+    instance._communication_previous_role = OrganizationAccess.objects.filter(
+        pk=instance.pk
+    ).values_list("role", flat=True).first()
+
+
+@receiver(post_save, sender=OrganizationAccess)
+def create_communication_access(sender, instance, created, **_kwargs):
+    effective_role = _effective_communication_role(instance.organization, instance.user)
+    if effective_role is None:
+        return
+    defaults = _communication_access_defaults(effective_role)
+    access, access_created = CommunicationAccess.objects.get_or_create(
+        organization=instance.organization,
+        user=instance.user,
+        defaults=defaults,
+    )
+    role_changed = (
+        created
+        or getattr(instance, "_communication_previous_role", None) != instance.role
+    )
+    if not access_created and role_changed:
+        # Role transitions recompute inherited capabilities so an owner/admin
+        # downgrade cannot retain elevated channel/call/assignment rights.
+        CommunicationAccess.objects.filter(pk=access.pk).update(**defaults)
+
+
+@receiver(post_delete, sender=OrganizationAccess)
+def recompute_communication_access_after_role_delete(sender, instance, **_kwargs):
+    effective_role = _effective_communication_role(instance.organization, instance.user)
+    access = CommunicationAccess.objects.filter(
+        organization=instance.organization,
+        user=instance.user,
+    )
+    if effective_role is None:
+        access.delete()
+        return
+    access.update(**_communication_access_defaults(effective_role))
+
+
+class ChannelConnection(models.Model):
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    channel = models.ForeignKey(CommunicationChannel, on_delete=models.CASCADE, related_name="connections")
+    name = models.CharField(max_length=120)
+    external_id = models.CharField(max_length=255)
+    is_active = models.BooleanField(default=True)
+    settings = models.JSONField(default=dict, blank=True, help_text="Non-secret connection metadata only")
+    api_token_hash = models.CharField(max_length=128, blank=True, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("channel", "external_id")
+
+    def set_api_token(self, token):
+        self.api_token_hash = make_password(token)
+
+    def check_api_token(self, token):
+        return bool(self.api_token_hash and token and check_password(token, self.api_token_hash))
+
+
+class AvitoCredential(models.Model):
+    """Encrypted credentials and short-lived access token for one Avito account."""
+
+    connection = models.OneToOneField(
+        ChannelConnection,
+        on_delete=models.CASCADE,
+        related_name="avito_credential",
+    )
+    client_id_encrypted = models.TextField(editable=False)
+    client_secret_encrypted = models.TextField(editable=False)
+    access_token_encrypted = models.TextField(blank=True, editable=False)
+    access_token_expires_at = models.DateTimeField(null=True, blank=True, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def clean(self):
+        if self.connection_id and self.connection.channel.kind != CommunicationChannel.KIND_AVITO:
+            raise ValidationError("Avito credentials require an Avito connection.")
+
+
+class Conversation(models.Model):
+    STATUS_NEW = "new"
+    STATUS_ACTIVE = "active"
+    STATUS_WAITING = "waiting"
+    STATUS_DONE = "done"
+    STATUS_SPAM = "spam"
+    STATUS_CHOICES = [(STATUS_NEW, "Новое"), (STATUS_ACTIVE, "В работе"), (STATUS_WAITING, "Ожидаем клиента"), (STATUS_DONE, "Завершено"), (STATUS_SPAM, "Спам / Нецелевое")]
+    uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="conversations")
+    connection = models.ForeignKey(ChannelConnection, on_delete=models.PROTECT, related_name="conversations")
+    external_id = models.CharField(max_length=255)
+    participant_name = models.CharField(max_length=255)
+    participant_phone = models.CharField(max_length=40, blank=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_NEW)
+    assignee = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="assigned_conversations")
+    last_message_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("connection", "external_id")
+        ordering = ["-last_message_at", "-created_at"]
+
+    def clean(self):
+        if self.connection_id and self.organization_id and self.connection.channel.organization_id != self.organization_id:
+            raise ValidationError("Conversation connection belongs to another organization.")
+        if self.assignee_id and not self.assignee.organizationaccess_set.filter(organization_id=self.organization_id).exists():
+            raise ValidationError("Conversation assignee must belong to the organization.")
+
+
+class ConversationMessage(models.Model):
+    DIRECTION_IN = "in"
+    DIRECTION_OUT = "out"
+    DELIVERY_RECEIVED = "received"
+    DELIVERY_PENDING = "pending"
+    DELIVERY_SENDING = "sending"
+    DELIVERY_DELIVERED = "delivered"
+    DELIVERY_FAILED = "failed"
+    conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name="messages")
+    external_id = models.CharField(max_length=255, blank=True, null=True)
+    direction = models.CharField(max_length=3, choices=[(DIRECTION_IN, "Входящее"), (DIRECTION_OUT, "Исходящее")])
+    body = models.TextField(blank=True)
+    sender_name = models.CharField(max_length=255, blank=True)
+    sent_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="conversation_messages")
+    delivery_status = models.CharField(max_length=16, choices=[(DELIVERY_RECEIVED, "Получено"), (DELIVERY_PENDING, "Ожидает отправки"), (DELIVERY_SENDING, "Отправляется"), (DELIVERY_DELIVERED, "Доставлено"), (DELIVERY_FAILED, "Ошибка")], default=DELIVERY_RECEIVED)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    delivery_error = models.CharField(max_length=500, blank=True)
+    delivery_attempts = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["conversation", "external_id"],
+                name="comm_message_external_uniq",
+            )
+        ]
+
+
+class MessageAttachment(models.Model):
+    message = models.ForeignKey(ConversationMessage, on_delete=models.CASCADE, related_name="attachments")
+    original = models.FileField(upload_to="communications/original/%Y/%m/", storage=private_media_storage)
+    optimized = models.FileField(upload_to="communications/optimized/%Y/%m/", storage=private_media_storage, blank=True)
+    original_name = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=120, blank=True)
+    original_size = models.PositiveBigIntegerField(default=0)
+    width = models.PositiveIntegerField(null=True, blank=True)
+    height = models.PositiveIntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class ConversationAssignment(models.Model):
+    conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name="assignment_history")
+    assignee = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="conversation_assignments")
+    changed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="conversation_assignment_changes")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class ConversationReadState(models.Model):
+    conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name="read_states")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="conversation_read_states")
+    last_read_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        unique_together = ("conversation", "user")
+
+
+class WebsiteRequest(models.Model):
+    conversation = models.OneToOneField(Conversation, on_delete=models.CASCADE, related_name="website_request")
+    service = models.CharField(max_length=255, blank=True)
+    delivery = models.CharField(max_length=255, blank=True)
+    address = models.CharField(max_length=500, blank=True)
+    comment = models.TextField(blank=True)
+    submitted_at = models.DateTimeField()
+
+
+class TelephonyConnection(models.Model):
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="telephony_connections")
+    name = models.CharField(max_length=120, default="Мегафон")
+    external_id = models.CharField(max_length=255)
+    is_active = models.BooleanField(default=True)
+    recording_allowed_hosts = models.JSONField(default=list, blank=True, help_text="HTTPS hostnames allowed for recording redirects")
+
+    class Meta:
+        unique_together = ("organization", "external_id")
+
+    def clean(self):
+        if not isinstance(self.recording_allowed_hosts, list) or any(
+            not isinstance(item, str)
+            or not item.strip()
+            or ":" in item
+            or "/" in item
+            or "@" in item
+            for item in self.recording_allowed_hosts
+        ):
+            raise ValidationError("Recording allowed hosts must be a list of hostnames without scheme or port.")
+
+
+class PhoneCall(models.Model):
+    DIRECTION_IN = "in"
+    DIRECTION_OUT = "out"
+    RESULT_ANSWERED = "answered"
+    RESULT_MISSED = "missed"
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="phone_calls")
+    connection = models.ForeignKey(TelephonyConnection, on_delete=models.PROTECT, related_name="calls")
+    external_id = models.CharField(max_length=255)
+    employee = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="phone_calls")
+    contact_name = models.CharField(max_length=255, blank=True)
+    phone_number = models.CharField(max_length=40)
+    direction = models.CharField(max_length=3, choices=[(DIRECTION_IN, "Входящий"), (DIRECTION_OUT, "Исходящий")])
+    started_at = models.DateTimeField(db_index=True)
+    duration_seconds = models.PositiveIntegerField(default=0)
+    result = models.CharField(max_length=20, choices=[(RESULT_ANSWERED, "Отвечен"), (RESULT_MISSED, "Пропущен")])
+    recording_ref = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("connection", "external_id")
+        ordering = ["-started_at"]
+
+    def clean(self):
+        if self.connection_id and self.organization_id and self.connection.organization_id != self.organization_id:
+            raise ValidationError("Telephony connection belongs to another organization.")
+        if self.employee_id and not self.employee.organizationaccess_set.filter(organization_id=self.organization_id).exists():
+            raise ValidationError("Call employee must belong to the organization.")
+
+
+class CallAnalysis(models.Model):
+    """Reserved extension point; analysis is never applied to customer data automatically."""
+    call = models.OneToOneField(PhoneCall, on_delete=models.CASCADE, related_name="analysis")
+    transcript = models.TextField(blank=True)
+    summary = models.TextField(blank=True)
+    facts = models.JSONField(default=dict, blank=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
