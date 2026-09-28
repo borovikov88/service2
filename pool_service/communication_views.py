@@ -637,13 +637,14 @@ def megafon_connection_create(request):
             form.add_error("external_id", "Такое подключение Мегафона уже существует.")
         else:
             try:
-                connection = TelephonyConnection.objects.create(
+                connection = TelephonyConnection(
                     organization=organization,
                     name=form.cleaned_data["name"].strip(),
                     external_id=form.cleaned_data["external_id"].strip(),
                     recording_allowed_hosts=form.cleaned_data["recording_hosts"],
                 )
                 connection.full_clean()
+                connection.save()
             except IntegrityError:
                 form.add_error("external_id", "Такое подключение Мегафона уже существует.")
             else:
