@@ -17,6 +17,12 @@ from django.views.decorators.http import require_POST
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.debug import sensitive_post_parameters
 
+from pool_service.communication_avito import (
+    AvitoError,
+    subscribe_webhook as avito_subscribe_webhook,
+    unsubscribe_webhook as avito_unsubscribe_webhook,
+    webhook_subscriptions as avito_webhook_subscriptions,
+)
 from pool_service.communication_forms import CommunicationConnectionForm, TelephonyConnectionForm
 from pool_service.communication_models import (
     AvitoCredential, ChannelConnection, CommunicationChannel, Conversation,
@@ -372,9 +378,12 @@ def channels(request):
         for connection in channel.connections.all():
             connection.configuration_ready = bool(connection.api_token_hash)
             if channel.kind == CommunicationChannel.KIND_AVITO:
-                connection.configuration_ready = (
-                    connection.configuration_ready
-                    and connection.pk in avito_credential_ids
+                connection.configuration_ready = connection.pk in avito_credential_ids
+                connection.avito_webhook_status = (connection.settings or {}).get(
+                    "avito_webhook_status", "not_connected"
+                )
+                connection.avito_webhook_checked_at = (connection.settings or {}).get(
+                    "avito_webhook_checked_at", ""
                 )
             provider_connections[channel.kind].append(connection)
 
@@ -433,18 +442,22 @@ def communication_connection_create(request, kind):
                 external_id=external_id,
                 is_active=form.cleaned_data["is_active"],
             )
-            token = secrets.token_urlsafe(32)
-            connection.set_api_token(token)
-            connection.save(update_fields=["api_token_hash"])
             if kind == CommunicationChannel.KIND_AVITO:
                 AvitoCredential.objects.create(
                     connection=connection,
                     client_id_encrypted=encrypt_secret(form.cleaned_data["client_id"]),
                     client_secret_encrypted=encrypt_secret(form.cleaned_data["client_secret"]),
                 )
-                return _connection_setup_result(
-                    request, connection, token, secret_kind="avito"
+                connection.settings = {"avito_webhook_status": "not_connected"}
+                connection.save(update_fields=["settings"])
+                messages.success(
+                    request,
+                    "Аккаунт Авито сохранён. Нажмите «Подключить Авито», чтобы Service2 зарегистрировал webhook автоматически.",
                 )
+                return redirect("communications_channels")
+            token = secrets.token_urlsafe(32)
+            connection.set_api_token(token)
+            connection.save(update_fields=["api_token_hash"])
             return _connection_setup_result(
                 request, connection, token, secret_kind="website"
             )
@@ -497,10 +510,12 @@ def communication_connection_edit(request, connection_id):
         if duplicate:
             form.add_error("external_id", "Подключение с таким идентификатором уже существует.")
         else:
+            previous_external_id = connection.external_id
             connection.name = form.cleaned_data["name"].strip()
             connection.external_id = external_id
             connection.is_active = form.cleaned_data["is_active"]
             connection.save(update_fields=["name", "external_id", "is_active"])
+            avito_credentials_changed = False
             if kind == CommunicationChannel.KIND_AVITO and form.cleaned_data.get("client_id"):
                 credential, _ = AvitoCredential.objects.get_or_create(
                     connection=connection,
@@ -514,6 +529,15 @@ def communication_connection_edit(request, connection_id):
                 credential.access_token_encrypted = ""
                 credential.access_token_expires_at = None
                 credential.save()
+                avito_credentials_changed = True
+            if kind == CommunicationChannel.KIND_AVITO and (
+                previous_external_id != external_id or avito_credentials_changed
+            ):
+                settings_data = dict(connection.settings or {})
+                settings_data["avito_webhook_status"] = "needs_check"
+                settings_data["avito_webhook_checked_at"] = ""
+                connection.settings = settings_data
+                connection.save(update_fields=["settings"])
             messages.success(request, "Настройки подключения сохранены.")
             return redirect("communications_channels")
 
@@ -549,12 +573,12 @@ def communication_connection_rotate_token(request, connection_id):
             CommunicationChannel.KIND_AVITO,
         ),
     )
-    if (
-        connection.channel.kind == CommunicationChannel.KIND_AVITO
-        and not AvitoCredential.objects.filter(connection=connection).exists()
-    ):
-        messages.error(request, "Сначала сохраните client_id и client_secret Авито.")
-        return redirect("communication_connection_edit", connection_id=connection.pk)
+    if connection.channel.kind == CommunicationChannel.KIND_AVITO:
+        messages.info(
+            request,
+            "Webhook Авито теперь подключается и обновляется автоматически кнопкой «Подключить Авито».",
+        )
+        return redirect("communications_channels")
     token = secrets.token_urlsafe(32)
     connection.set_api_token(token)
     connection.save(update_fields=["api_token_hash"])
@@ -564,6 +588,147 @@ def communication_connection_rotate_token(request, connection_id):
         token,
         secret_kind=connection.channel.kind,
     )
+
+
+def _avito_callback_url(request, connection, token):
+    callback_url = request.build_absolute_uri(
+        reverse("avito_webhook", args=[connection.public_id, token])
+    )
+    if not callback_url.startswith("https://"):
+        raise AvitoError("service2_webhook_requires_https")
+    return callback_url
+
+
+def _avito_subscription_token(request, connection, value):
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
+    expected_host = request.get_host().lower()
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc.lower() != expected_host
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    prefix = f"/api/communications/avito/{connection.public_id}/"
+    suffix = "/webhook/"
+    if not parsed.path.startswith(prefix) or not parsed.path.endswith(suffix):
+        return None
+    token = parsed.path[len(prefix):-len(suffix)]
+    return token or None
+
+
+def _set_avito_webhook_status(connection, status, *, error=""):
+    settings_data = dict(connection.settings or {})
+    settings_data["avito_webhook_status"] = status
+    settings_data["avito_webhook_checked_at"] = timezone.now().isoformat()
+    if error:
+        settings_data["avito_webhook_error"] = error[:120]
+    else:
+        settings_data.pop("avito_webhook_error", None)
+    connection.settings = settings_data
+    connection.save(update_fields=["settings"])
+
+
+@login_required
+@require_POST
+def communication_avito_connect(request, connection_id):
+    organization = _context(request, "can_manage_channels")
+    connection = get_object_or_404(
+        ChannelConnection.objects.select_related("channel"),
+        pk=connection_id,
+        channel__organization=organization,
+        channel__kind=CommunicationChannel.KIND_AVITO,
+    )
+    if not connection.is_active or not connection.channel.is_active:
+        messages.error(request, "Сначала включите канал и подключение Авито.")
+        return redirect("communications_channels")
+    if not AvitoCredential.objects.filter(connection=connection).exists():
+        messages.error(request, "Сначала сохраните client_id и client_secret Авито.")
+        return redirect("communication_connection_edit", connection_id=connection.pk)
+
+    try:
+        existing_urls = avito_webhook_subscriptions(connection)
+        for value in existing_urls:
+            token = _avito_subscription_token(request, connection, value)
+            if token and connection.check_api_token(token):
+                _set_avito_webhook_status(connection, "connected")
+                messages.success(request, "Авито уже подключено. Webhook подтверждён.")
+                return redirect("communications_channels")
+    except AvitoError:
+        existing_urls = []
+
+    old_hash = connection.api_token_hash
+    token = secrets.token_urlsafe(32)
+    callback_url = _avito_callback_url(request, connection, token)
+    connection.set_api_token(token)
+    connection.save(update_fields=["api_token_hash"])
+
+    try:
+        avito_subscribe_webhook(connection, callback_url)
+        verified_urls = avito_webhook_subscriptions(connection)
+        verified = callback_url in verified_urls
+        if not verified:
+            raise AvitoError("provider_webhook_not_confirmed")
+    except AvitoError as exc:
+        connection.api_token_hash = old_hash
+        connection.save(update_fields=["api_token_hash"])
+        _set_avito_webhook_status(connection, "error", error=str(exc))
+        messages.error(
+            request,
+            "Авито не подтвердило webhook. Проверьте client_id, client_secret, доступ Messenger API и повторите подключение.",
+        )
+        return redirect("communications_channels")
+
+    for stale_url in existing_urls:
+        if stale_url == callback_url:
+            continue
+        if _avito_subscription_token(request, connection, stale_url):
+            try:
+                avito_unsubscribe_webhook(connection, stale_url)
+            except AvitoError:
+                pass
+
+    _set_avito_webhook_status(connection, "connected")
+    messages.success(request, "Авито подключено: webhook зарегистрирован и подтверждён.")
+    return redirect("communications_channels")
+
+
+@login_required
+@require_POST
+def communication_avito_check(request, connection_id):
+    organization = _context(request, "can_manage_channels")
+    connection = get_object_or_404(
+        ChannelConnection.objects.select_related("channel"),
+        pk=connection_id,
+        channel__organization=organization,
+        channel__kind=CommunicationChannel.KIND_AVITO,
+    )
+    try:
+        urls = avito_webhook_subscriptions(connection)
+        connected = any(
+            token and connection.check_api_token(token)
+            for token in (
+                _avito_subscription_token(request, connection, value)
+                for value in urls
+            )
+        )
+    except AvitoError as exc:
+        _set_avito_webhook_status(connection, "error", error=str(exc))
+        messages.error(request, "Не удалось проверить подключение Авито.")
+        return redirect("communications_channels")
+
+    if connected:
+        _set_avito_webhook_status(connection, "connected")
+        messages.success(request, "Подключение Авито подтверждено.")
+    else:
+        _set_avito_webhook_status(connection, "not_connected")
+        messages.warning(request, "Webhook Service2 не найден в активных подписках Авито.")
+    return redirect("communications_channels")
 
 
 @login_required
