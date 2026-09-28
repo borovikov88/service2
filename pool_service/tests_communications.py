@@ -313,6 +313,168 @@ class CommunicationsTests(TestCase):
         self.assertTrue(foreign_channel.is_active)
         self.assertTrue(foreign_connection.is_active)
 
+    def test_owner_can_create_website_connection_and_token_is_one_time(self):
+        self.client.login(username="owner", password="test")
+        response = self.client.post(
+            reverse("communication_website_connection_create"),
+            {"name": "Основной сайт", "external_id": "aqualine22.ru"},
+        )
+        self.assertEqual(response.status_code, 302)
+        connection = ChannelConnection.objects.get(
+            channel__organization=self.organization,
+            channel__kind=CommunicationChannel.KIND_WEBSITE,
+            external_id="aqualine22.ru",
+        )
+        self.assertTrue(connection.api_token_hash)
+        self.assertEqual(
+            response.url,
+            reverse("communication_website_connection_edit", args=[connection.pk]),
+        )
+
+        first_view = self.client.get(response.url)
+        self.assertContains(first_view, "Сохраните токен сейчас")
+        self.assertContains(first_view, str(connection.public_id))
+        self.assertEqual(first_view["Cache-Control"], "no-store")
+
+        second_view = self.client.get(response.url)
+        self.assertNotContains(second_view, "Сохраните токен сейчас")
+
+        self.client.logout()
+        self.client.login(username="worker", password="test")
+        self.assertEqual(
+            self.client.post(
+                reverse("communication_website_connection_create"),
+                {"name": "Скрытый сайт", "external_id": "hidden.example"},
+            ).status_code,
+            403,
+        )
+
+    def test_avito_settings_encrypt_credentials_and_never_echo_secret(self):
+        self.client.login(username="owner", password="test")
+        client_id = "avito-client-id"
+        client_secret = "avito-client-secret"
+        response = self.client.post(
+            reverse("communication_avito_connection_create"),
+            {
+                "name": "Основной Авито",
+                "external_id": "12345678",
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        connection = ChannelConnection.objects.get(
+            channel__organization=self.organization,
+            channel__kind=CommunicationChannel.KIND_AVITO,
+            external_id="12345678",
+        )
+        credential = AvitoCredential.objects.get(connection=connection)
+        self.assertNotEqual(credential.client_id_encrypted, client_id)
+        self.assertNotEqual(credential.client_secret_encrypted, client_secret)
+        self.assertEqual(decrypt_secret(credential.client_id_encrypted), client_id)
+        self.assertEqual(decrypt_secret(credential.client_secret_encrypted), client_secret)
+        self.assertTrue(connection.api_token_hash)
+
+        first_view = self.client.get(response.url)
+        self.assertContains(first_view, "Webhook готов")
+        self.assertContains(first_view, str(connection.public_id))
+        self.assertNotContains(first_view, client_secret)
+        self.assertEqual(first_view["Cache-Control"], "no-store")
+
+        second_view = self.client.get(response.url)
+        self.assertNotContains(second_view, "Webhook готов")
+        self.assertNotContains(second_view, client_secret)
+
+        old_client_secret = credential.client_secret_encrypted
+        edit_response = self.client.post(
+            reverse("communication_avito_connection_edit", args=[connection.pk]),
+            {
+                "name": "Авито продажи",
+                "external_id": "12345678",
+                "client_id": "",
+                "client_secret": "",
+            },
+        )
+        self.assertEqual(edit_response.status_code, 302)
+        credential.refresh_from_db()
+        self.assertEqual(credential.client_secret_encrypted, old_client_secret)
+
+    def test_channel_settings_are_organization_scoped(self):
+        foreign_organization = Organization.objects.create(name="Foreign communication settings")
+        foreign_channel = CommunicationChannel.objects.create(
+            organization=foreign_organization,
+            kind=CommunicationChannel.KIND_WEBSITE,
+            name="Foreign website",
+        )
+        foreign_connection = ChannelConnection.objects.create(
+            channel=foreign_channel,
+            name="Foreign connection",
+            external_id="foreign.example",
+        )
+        foreign_phone = TelephonyConnection.objects.create(
+            organization=foreign_organization,
+            name="Foreign Megafon",
+            external_id="foreign-vpbx",
+        )
+
+        self.client.login(username="owner", password="test")
+        self.assertEqual(
+            self.client.get(
+                reverse("communication_website_connection_edit", args=[foreign_connection.pk])
+            ).status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.get(
+                reverse("communication_megafon_connection_edit", args=[foreign_phone.pk])
+            ).status_code,
+            404,
+        )
+
+    def test_owner_can_manage_megafon_metadata_and_recording_hosts(self):
+        self.client.login(username="owner", password="test")
+        response = self.client.post(
+            reverse("communication_megafon_connection_create"),
+            {
+                "name": "Мегафон ВАТС",
+                "external_id": "vpbx-main",
+                "recording_hosts": "records.megafon.ru\nmedia.megafon.ru\nrecords.megafon.ru",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        connection = TelephonyConnection.objects.get(
+            organization=self.organization,
+            external_id="vpbx-main",
+        )
+        self.assertEqual(
+            connection.recording_allowed_hosts,
+            ["records.megafon.ru", "media.megafon.ru"],
+        )
+        page = self.client.get(
+            reverse("communication_megafon_connection_edit", args=[connection.pk])
+        )
+        self.assertContains(page, "Provider API/webhook Мегафона")
+        self.assertContains(page, "records.megafon.ru")
+
+        invalid = self.client.post(
+            reverse("communication_megafon_connection_edit", args=[connection.pk]),
+            {
+                "name": "Мегафон ВАТС",
+                "external_id": "vpbx-main",
+                "recording_hosts": "https://records.megafon.ru/path",
+            },
+        )
+        self.assertEqual(invalid.status_code, 200)
+        self.assertContains(invalid, "Укажите только имя домена")
+
+    def test_channel_dashboard_exposes_provider_setup_actions_to_owner(self):
+        self.client.login(username="owner", password="test")
+        page = self.client.get(reverse("communications_channels"))
+        self.assertContains(page, reverse("communication_website_connection_create"))
+        self.assertContains(page, reverse("communication_avito_connection_create"))
+        self.assertContains(page, reverse("communication_megafon_connection_create"))
+        self.assertContains(page, "Безопасность ключей")
+
     def test_communication_notification_feed_is_persistent_and_user_scoped(self):
         own_notification = Notification.objects.create(
             user=self.worker,

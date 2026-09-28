@@ -1,23 +1,37 @@
 from datetime import date
 from urllib.parse import urlsplit
 
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.models import User
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
 from django.core.files.images import get_image_dimensions
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import OuterRef, Q, Subquery
 from django.http import FileResponse, Http404, HttpResponseBadRequest, HttpResponseRedirect, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.views.decorators.cache import never_cache
+from django.views.decorators.debug import sensitive_post_parameters, sensitive_variables
 from django.views.decorators.http import require_POST
 from django.views.decorators.csrf import ensure_csrf_cookie
 
+from pool_service.communication_forms import (
+    AvitoConnectionForm,
+    MegafonConnectionForm,
+    WebsiteConnectionForm,
+)
+from pool_service.communication_management import (
+    configure_avito_credentials,
+    get_or_create_provider_channel,
+    rotate_connection_token,
+)
 from pool_service.communication_models import (
-    ChannelConnection, CommunicationChannel, Conversation, ConversationAssignment,
-    ConversationMessage, ConversationReadState, MessageAttachment, PhoneCall,
+    AvitoCredential, ChannelConnection, CommunicationChannel, Conversation,
+    ConversationAssignment, ConversationMessage, ConversationReadState,
+    MessageAttachment, PhoneCall, TelephonyConnection,
 )
 from pool_service.communication_services import conversation_capability, optimize_message_image, organization_access
 from pool_service.models import Notification, OrganizationAccess
@@ -286,11 +300,458 @@ def call_recording(request, call_id):
     return HttpResponseRedirect(call.recording_ref)
 
 
+def _communication_connection_exists(*, organization, kind, external_id, exclude_id=None):
+    queryset = ChannelConnection.objects.filter(
+        channel__organization=organization,
+        channel__kind=kind,
+        external_id=external_id,
+    )
+    if exclude_id is not None:
+        queryset = queryset.exclude(pk=exclude_id)
+    return queryset.exists()
+
+
+def _one_time_secret_key(kind, connection_id):
+    return f"{kind}:{connection_id}"
+
+
+def _stash_one_time_secret(request, *, kind, connection_id, secret):
+    payloads = request.session.get("communication_one_time_secrets", {})
+    if not isinstance(payloads, dict):
+        payloads = {}
+    payloads[_one_time_secret_key(kind, connection_id)] = secret
+    request.session["communication_one_time_secrets"] = payloads
+    request.session.modified = True
+
+
+def _pop_one_time_secret(request, *, kind, connection_id):
+    payloads = request.session.get("communication_one_time_secrets", {})
+    if not isinstance(payloads, dict):
+        return ""
+    secret = payloads.pop(_one_time_secret_key(kind, connection_id), "")
+    if payloads:
+        request.session["communication_one_time_secrets"] = payloads
+    else:
+        request.session.pop("communication_one_time_secrets", None)
+    request.session.modified = True
+    return secret if isinstance(secret, str) else ""
+
+
 @login_required
 def channels(request):
     organization = _context(request, "can_manage_channels")
-    channels = CommunicationChannel.objects.filter(organization=organization).prefetch_related("connections")
-    return render(request, "pool_service/communications/channels.html", {"active_tab": "communications", "channels": channels})
+    channel_items = list(
+        CommunicationChannel.objects.filter(organization=organization)
+        .prefetch_related("connections")
+        .order_by("kind", "name", "pk")
+    )
+    avito_credential_ids = set(
+        AvitoCredential.objects.filter(connection__channel__organization=organization)
+        .values_list("connection_id", flat=True)
+    )
+    website_channels = []
+    avito_channels = []
+    website_connections = []
+    avito_connections = []
+    for channel in channel_items:
+        if channel.kind == CommunicationChannel.KIND_WEBSITE:
+            website_channels.append(channel)
+        elif channel.kind == CommunicationChannel.KIND_AVITO:
+            avito_channels.append(channel)
+        for connection in channel.connections.all():
+            connection.credentials_configured = connection.pk in avito_credential_ids
+            connection.provider_channel_active = channel.is_active
+            if channel.kind == CommunicationChannel.KIND_WEBSITE:
+                website_connections.append(connection)
+            elif channel.kind == CommunicationChannel.KIND_AVITO:
+                avito_connections.append(connection)
+    telephony_connections = TelephonyConnection.objects.filter(
+        organization=organization
+    ).order_by("name", "pk")
+    return render(
+        request,
+        "pool_service/communications/channels.html",
+        {
+            "active_tab": "communications",
+            "channels": channel_items,
+            "website_channels": website_channels,
+            "avito_channels": avito_channels,
+            "website_connections": website_connections,
+            "avito_connections": avito_connections,
+            "telephony_connections": telephony_connections,
+            "communication_credential_key_configured": bool(
+                getattr(settings, "COMMUNICATION_CREDENTIAL_KEY", "")
+            ),
+        },
+    )
+
+
+@login_required
+@never_cache
+@sensitive_variables("token")
+def website_connection_create(request):
+    organization = _context(request, "can_manage_channels")
+    form = WebsiteConnectionForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        external_id = form.cleaned_data["external_id"].strip()
+        if _communication_connection_exists(
+            organization=organization,
+            kind=CommunicationChannel.KIND_WEBSITE,
+            external_id=external_id,
+        ):
+            form.add_error("external_id", "Такое подключение сайта уже существует.")
+        else:
+            try:
+                with transaction.atomic():
+                    channel = get_or_create_provider_channel(
+                        organization, CommunicationChannel.KIND_WEBSITE
+                    )
+                    connection = ChannelConnection.objects.create(
+                        channel=channel,
+                        name=form.cleaned_data["name"].strip(),
+                        external_id=external_id,
+                    )
+                    token = rotate_connection_token(connection)
+            except IntegrityError:
+                form.add_error("external_id", "Такое подключение сайта уже существует.")
+            else:
+                _stash_one_time_secret(
+                    request,
+                    kind=CommunicationChannel.KIND_WEBSITE,
+                    connection_id=connection.pk,
+                    secret=token,
+                )
+                messages.success(request, "Подключение сайта создано.")
+                return redirect("communication_website_connection_edit", connection.pk)
+    return render(
+        request,
+        "pool_service/communications/website_connection_form.html",
+        {"active_tab": "communications", "form": form, "connection": None},
+    )
+
+
+@login_required
+@never_cache
+def website_connection_edit(request, connection_id):
+    organization = _context(request, "can_manage_channels")
+    connection = get_object_or_404(
+        ChannelConnection.objects.select_related("channel"),
+        pk=connection_id,
+        channel__organization=organization,
+        channel__kind=CommunicationChannel.KIND_WEBSITE,
+    )
+    initial = {"name": connection.name, "external_id": connection.external_id}
+    form = WebsiteConnectionForm(request.POST or None, initial=initial)
+    if request.method == "POST" and form.is_valid():
+        external_id = form.cleaned_data["external_id"].strip()
+        if _communication_connection_exists(
+            organization=organization,
+            kind=CommunicationChannel.KIND_WEBSITE,
+            external_id=external_id,
+            exclude_id=connection.pk,
+        ):
+            form.add_error("external_id", "Такое подключение сайта уже существует.")
+        else:
+            connection.name = form.cleaned_data["name"].strip()
+            connection.external_id = external_id
+            try:
+                connection.save(update_fields=["name", "external_id"])
+            except IntegrityError:
+                form.add_error("external_id", "Такое подключение сайта уже существует.")
+            else:
+                messages.success(request, "Настройки сайта сохранены.")
+                return redirect("communication_website_connection_edit", connection.pk)
+    one_time_secret = _pop_one_time_secret(
+        request,
+        kind=CommunicationChannel.KIND_WEBSITE,
+        connection_id=connection.pk,
+    )
+    response = render(
+        request,
+        "pool_service/communications/website_connection_form.html",
+        {
+            "active_tab": "communications",
+            "form": form,
+            "connection": connection,
+            "one_time_secret": one_time_secret,
+            "public_id": str(connection.public_id),
+        },
+    )
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+@login_required
+@require_POST
+@sensitive_variables("token")
+def website_connection_rotate_token(request, connection_id):
+    organization = _context(request, "can_manage_channels")
+    connection = get_object_or_404(
+        ChannelConnection,
+        pk=connection_id,
+        channel__organization=organization,
+        channel__kind=CommunicationChannel.KIND_WEBSITE,
+    )
+    token = rotate_connection_token(connection)
+    _stash_one_time_secret(
+        request,
+        kind=CommunicationChannel.KIND_WEBSITE,
+        connection_id=connection.pk,
+        secret=token,
+    )
+    messages.success(request, "Токен сайта перевыпущен. Старый токен больше не действует.")
+    return redirect("communication_website_connection_edit", connection.pk)
+
+
+@login_required
+@never_cache
+@sensitive_post_parameters("client_id", "client_secret")
+@sensitive_variables("form", "webhook_token")
+def avito_connection_create(request):
+    organization = _context(request, "can_manage_channels")
+    form = AvitoConnectionForm(request.POST or None, require_credentials=True)
+    if request.method == "POST" and form.is_valid():
+        external_id = form.cleaned_data["external_id"]
+        if _communication_connection_exists(
+            organization=organization,
+            kind=CommunicationChannel.KIND_AVITO,
+            external_id=external_id,
+        ):
+            form.add_error("external_id", "Этот аккаунт Авито уже подключён.")
+        else:
+            try:
+                with transaction.atomic():
+                    channel = get_or_create_provider_channel(
+                        organization, CommunicationChannel.KIND_AVITO
+                    )
+                    connection = ChannelConnection.objects.create(
+                        channel=channel,
+                        name=form.cleaned_data["name"].strip(),
+                        external_id=external_id,
+                    )
+                    configure_avito_credentials(
+                        connection=connection,
+                        client_id=form.cleaned_data["client_id"],
+                        client_secret=form.cleaned_data["client_secret"],
+                    )
+                    webhook_token = rotate_connection_token(connection)
+            except IntegrityError:
+                form.add_error("external_id", "Этот аккаунт Авито уже подключён.")
+            else:
+                _stash_one_time_secret(
+                    request,
+                    kind=CommunicationChannel.KIND_AVITO,
+                    connection_id=connection.pk,
+                    secret=webhook_token,
+                )
+                messages.success(request, "Аккаунт Авито добавлен.")
+                return redirect("communication_avito_connection_edit", connection.pk)
+    return render(
+        request,
+        "pool_service/communications/avito_connection_form.html",
+        {
+            "active_tab": "communications",
+            "form": form,
+            "connection": None,
+            "communication_credential_key_configured": bool(
+                getattr(settings, "COMMUNICATION_CREDENTIAL_KEY", "")
+            ),
+        },
+    )
+
+
+@login_required
+@never_cache
+@sensitive_post_parameters("client_id", "client_secret")
+@sensitive_variables("form", "one_time_secret")
+def avito_connection_edit(request, connection_id):
+    organization = _context(request, "can_manage_channels")
+    connection = get_object_or_404(
+        ChannelConnection.objects.select_related("channel"),
+        pk=connection_id,
+        channel__organization=organization,
+        channel__kind=CommunicationChannel.KIND_AVITO,
+    )
+    credential_configured = AvitoCredential.objects.filter(connection=connection).exists()
+    initial = {"name": connection.name, "external_id": connection.external_id}
+    form = AvitoConnectionForm(request.POST or None, initial=initial)
+    if request.method == "POST" and form.is_valid():
+        external_id = form.cleaned_data["external_id"]
+        if _communication_connection_exists(
+            organization=organization,
+            kind=CommunicationChannel.KIND_AVITO,
+            external_id=external_id,
+            exclude_id=connection.pk,
+        ):
+            form.add_error("external_id", "Этот аккаунт Авито уже подключён.")
+        else:
+            try:
+                with transaction.atomic():
+                    connection.name = form.cleaned_data["name"].strip()
+                    connection.external_id = external_id
+                    connection.save(update_fields=["name", "external_id"])
+                    if form.cleaned_data.get("client_id"):
+                        configure_avito_credentials(
+                            connection=connection,
+                            client_id=form.cleaned_data["client_id"],
+                            client_secret=form.cleaned_data["client_secret"],
+                        )
+            except IntegrityError:
+                form.add_error("external_id", "Этот аккаунт Авито уже подключён.")
+            else:
+                messages.success(request, "Настройки Авито сохранены.")
+                return redirect("communication_avito_connection_edit", connection.pk)
+    one_time_secret = _pop_one_time_secret(
+        request,
+        kind=CommunicationChannel.KIND_AVITO,
+        connection_id=connection.pk,
+    )
+    callback_url = ""
+    if one_time_secret:
+        callback_url = request.build_absolute_uri(
+            reverse("avito_webhook", args=[connection.public_id, one_time_secret])
+        )
+    response = render(
+        request,
+        "pool_service/communications/avito_connection_form.html",
+        {
+            "active_tab": "communications",
+            "form": form,
+            "connection": connection,
+            "credential_configured": credential_configured,
+            "one_time_secret": one_time_secret,
+            "callback_url": callback_url,
+            "public_id": str(connection.public_id),
+            "communication_credential_key_configured": bool(
+                getattr(settings, "COMMUNICATION_CREDENTIAL_KEY", "")
+            ),
+        },
+    )
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+@login_required
+@require_POST
+@sensitive_variables("webhook_token")
+def avito_connection_rotate_webhook(request, connection_id):
+    organization = _context(request, "can_manage_channels")
+    connection = get_object_or_404(
+        ChannelConnection,
+        pk=connection_id,
+        channel__organization=organization,
+        channel__kind=CommunicationChannel.KIND_AVITO,
+    )
+    webhook_token = rotate_connection_token(connection)
+    _stash_one_time_secret(
+        request,
+        kind=CommunicationChannel.KIND_AVITO,
+        connection_id=connection.pk,
+        secret=webhook_token,
+    )
+    messages.success(
+        request,
+        "Webhook-токен Авито перевыпущен. Старый callback больше не авторизуется.",
+    )
+    return redirect("communication_avito_connection_edit", connection.pk)
+
+
+@login_required
+@never_cache
+def megafon_connection_create(request):
+    organization = _context(request, "can_manage_channels")
+    form = MegafonConnectionForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        if TelephonyConnection.objects.filter(
+            organization=organization,
+            external_id=form.cleaned_data["external_id"].strip(),
+        ).exists():
+            form.add_error("external_id", "Такое подключение Мегафона уже существует.")
+        else:
+            try:
+                connection = TelephonyConnection(
+                    organization=organization,
+                    name=form.cleaned_data["name"].strip(),
+                    external_id=form.cleaned_data["external_id"].strip(),
+                    recording_allowed_hosts=form.cleaned_data["recording_hosts"],
+                )
+                connection.full_clean()
+                connection.save()
+            except IntegrityError:
+                form.add_error("external_id", "Такое подключение Мегафона уже существует.")
+            else:
+                messages.success(request, "Настройки Мегафона добавлены.")
+                return redirect("communication_megafon_connection_edit", connection.pk)
+    return render(
+        request,
+        "pool_service/communications/megafon_connection_form.html",
+        {"active_tab": "communications", "form": form, "connection": None},
+    )
+
+
+@login_required
+@never_cache
+def megafon_connection_edit(request, connection_id):
+    organization = _context(request, "can_manage_channels")
+    connection = get_object_or_404(
+        TelephonyConnection,
+        pk=connection_id,
+        organization=organization,
+    )
+    initial = {
+        "name": connection.name,
+        "external_id": connection.external_id,
+        "recording_hosts": "\n".join(connection.recording_allowed_hosts or []),
+    }
+    form = MegafonConnectionForm(request.POST or None, initial=initial)
+    if request.method == "POST" and form.is_valid():
+        external_id = form.cleaned_data["external_id"].strip()
+        if TelephonyConnection.objects.filter(
+            organization=organization,
+            external_id=external_id,
+        ).exclude(pk=connection.pk).exists():
+            form.add_error("external_id", "Такое подключение Мегафона уже существует.")
+        else:
+            connection.name = form.cleaned_data["name"].strip()
+            connection.external_id = external_id
+            connection.recording_allowed_hosts = form.cleaned_data["recording_hosts"]
+            try:
+                connection.full_clean()
+                connection.save(
+                    update_fields=["name", "external_id", "recording_allowed_hosts"]
+                )
+            except IntegrityError:
+                form.add_error("external_id", "Такое подключение Мегафона уже существует.")
+            else:
+                messages.success(request, "Настройки Мегафона сохранены.")
+                return redirect("communication_megafon_connection_edit", connection.pk)
+    return render(
+        request,
+        "pool_service/communications/megafon_connection_form.html",
+        {"active_tab": "communications", "form": form, "connection": connection},
+    )
+
+
+@login_required
+@require_POST
+def megafon_connection_set_active(request, connection_id):
+    organization = _context(request, "can_manage_channels")
+    desired = _requested_active(request)
+    if desired is None:
+        return HttpResponseBadRequest("Некорректный статус подключения.")
+    connection = get_object_or_404(
+        TelephonyConnection,
+        pk=connection_id,
+        organization=organization,
+    )
+    if connection.is_active != desired:
+        connection.is_active = desired
+        connection.save(update_fields=["is_active"])
+    messages.success(
+        request,
+        "Подключение Мегафона включено." if desired else "Подключение Мегафона отключено.",
+    )
+    return redirect("communications_channels")
 
 
 def _requested_active(request):

@@ -1,39 +1,210 @@
 {% extends "pool_service/base.html" %}
 {% block title %}Каналы связи{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
-  <div><div class="text-muted">Настройки</div><h1 class="h3 mb-0">Каналы связи</h1></div>
-  <a href="{% url 'communications_conversations' %}" class="btn btn-outline-secondary">К диалогам</a>
+<style>
+.channel-provider-card{border:1px solid #e6e9ef;border-radius:1rem;background:#fff;height:100%}
+.channel-provider-card__head{padding:1.25rem 1.25rem .9rem;border-bottom:1px solid #eef0f4}
+.channel-provider-card__body{padding:1.25rem}
+.channel-provider-icon{width:2.75rem;height:2.75rem;border-radius:.8rem;background:#f2f6fb;display:inline-flex;align-items:center;justify-content:center;font-size:1.25rem}
+.channel-connection{border:1px solid #e6e9ef;border-radius:.8rem;padding:1rem}
+.channel-meta{font-size:.85rem;color:#6c757d}
+.secret-warning{border-left:4px solid #f0ad4e}
+.provider-state{background:#f8f9fb;border-radius:.75rem;padding:.7rem .8rem}
+@media(max-width:767px){.channel-provider-card__head,.channel-provider-card__body{padding:1rem}.channel-connection{padding:.85rem}}
+</style>
+
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+  <div>
+    <div class="text-muted">Коммуникации</div>
+    <h1 class="h3 mb-1">Каналы связи</h1>
+    <div class="text-muted">Подключения, ключи и состояние внешних каналов.</div>
+  </div>
+  <a href="{% url 'communications_conversations' %}" class="btn btn-outline-secondary">
+    <i class="bi bi-arrow-left me-1"></i>К диалогам
+  </a>
 </div>
-<div class="row g-3">
-  {% for channel in channels %}
-  <div class="col-lg-6">
-    <div class="card card-body h-100">
-      <div class="d-flex justify-content-between align-items-start gap-3">
-        <div><h2 class="h5 mb-1">{{ channel.get_kind_display }}</h2><div class="text-muted">{{ channel.name }}</div></div>
-        <div class="text-end">
-          <span class="badge {% if channel.is_active %}bg-success{% else %}bg-secondary{% endif %}">{% if channel.is_active %}Активно{% else %}Отключено{% endif %}</span>
-          <form method="post" action="{% url 'communication_channel_set_active' channel.pk %}" class="mt-2">
-            {% csrf_token %}<input type="hidden" name="active" value="{% if channel.is_active %}0{% else %}1{% endif %}">
+
+{% if not communication_credential_key_configured %}
+<div class="alert alert-warning secret-warning">
+  Для Авито рекомендуется задать отдельный <code>COMMUNICATION_CREDENTIAL_KEY</code> на production.
+  Сейчас шифрование может использовать Django <code>SECRET_KEY</code>; при его ротации сохранённые credentials нужно будет перенастроить.
+</div>
+{% endif %}
+
+<div class="row g-4">
+  <div class="col-xl-4 col-md-6">
+    <section class="channel-provider-card">
+      <div class="channel-provider-card__head d-flex justify-content-between align-items-start gap-3">
+        <div class="d-flex gap-3">
+          <span class="channel-provider-icon"><i class="bi bi-globe2"></i></span>
+          <div>
+            <h2 class="h5 mb-1">Сайт</h2>
+            <div class="text-muted small">Онлайн-чат и формы заявок.</div>
+          </div>
+        </div>
+        <a href="{% url 'communication_website_connection_create' %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg me-1"></i>Добавить</a>
+      </div>
+      <div class="channel-provider-card__body">
+        {% for channel in website_channels %}
+        <div class="provider-state d-flex justify-content-between align-items-center gap-2 mb-3">
+          <span class="small"><strong>Канал:</strong> {% if channel.is_active %}<span class="text-success">включён</span>{% else %}<span class="text-danger">отключён</span>{% endif %}</span>
+          <form method="post" action="{% url 'communication_channel_set_active' channel.pk %}">
+            {% csrf_token %}
+            <input type="hidden" name="active" value="{% if channel.is_active %}0{% else %}1{% endif %}">
             <button class="btn btn-sm {% if channel.is_active %}btn-outline-danger{% else %}btn-outline-success{% endif %}" type="submit">{% if channel.is_active %}Отключить канал{% else %}Включить канал{% endif %}</button>
           </form>
         </div>
+        {% endfor %}
+        <div class="d-flex flex-column gap-3">
+          {% for connection in website_connections %}
+          <div class="channel-connection">
+            <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+              <div>
+                <div class="fw-semibold">{{ connection.name }}</div>
+                <div class="channel-meta">{{ connection.external_id }}</div>
+              </div>
+              <span class="badge {% if connection.is_active and connection.provider_channel_active %}bg-success{% else %}bg-secondary{% endif %}">
+                {% if connection.is_active and connection.provider_channel_active %}Активно{% else %}Отключено{% endif %}
+              </span>
+            </div>
+            <div class="small mb-3">
+              {% if connection.api_token_hash %}
+                <span class="text-success"><i class="bi bi-shield-check me-1"></i>API-токен настроен</span>
+              {% else %}
+                <span class="text-danger"><i class="bi bi-exclamation-triangle me-1"></i>API-токен не настроен</span>
+              {% endif %}
+            </div>
+            <div class="d-flex flex-wrap gap-2">
+              <a href="{% url 'communication_website_connection_edit' connection.pk %}" class="btn btn-sm btn-outline-primary">Настройки</a>
+              <form method="post" action="{% url 'communication_connection_set_active' connection.pk %}">
+                {% csrf_token %}
+                <input type="hidden" name="active" value="{% if connection.is_active %}0{% else %}1{% endif %}">
+                <button class="btn btn-sm {% if connection.is_active %}btn-outline-danger{% else %}btn-outline-success{% endif %}" type="submit">{% if connection.is_active %}Отключить{% else %}Включить{% endif %}</button>
+              </form>
+            </div>
+          </div>
+          {% empty %}
+          <div class="text-muted small">Подключений сайта пока нет. Нажмите «Добавить».</div>
+          {% endfor %}
+        </div>
       </div>
-      <hr>
-      <strong class="mb-2">Подключения</strong>
-      <div class="d-flex flex-column gap-2">
-        {% for connection in channel.connections.all %}
-        <div class="border rounded p-2 d-flex justify-content-between align-items-center gap-3">
-          <div><div class="fw-semibold">{{ connection.name }}</div><div class="small text-muted">{% if connection.is_active %}Подключение активно{% else %}Подключение отключено{% endif %}</div></div>
-          <form method="post" action="{% url 'communication_connection_set_active' connection.pk %}">
-            {% csrf_token %}<input type="hidden" name="active" value="{% if connection.is_active %}0{% else %}1{% endif %}">
-            <button class="btn btn-sm {% if connection.is_active %}btn-outline-danger{% else %}btn-outline-success{% endif %}" type="submit">{% if connection.is_active %}Отключить{% else %}Включить{% endif %}</button>
+    </section>
+  </div>
+
+  <div class="col-xl-4 col-md-6">
+    <section class="channel-provider-card">
+      <div class="channel-provider-card__head d-flex justify-content-between align-items-start gap-3">
+        <div class="d-flex gap-3">
+          <span class="channel-provider-icon"><i class="bi bi-chat-square-text"></i></span>
+          <div>
+            <h2 class="h5 mb-1">Авито</h2>
+            <div class="text-muted small">Входящие диалоги и ответы из Service2.</div>
+          </div>
+        </div>
+        <a href="{% url 'communication_avito_connection_create' %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg me-1"></i>Добавить</a>
+      </div>
+      <div class="channel-provider-card__body">
+        {% for channel in avito_channels %}
+        <div class="provider-state d-flex justify-content-between align-items-center gap-2 mb-3">
+          <span class="small"><strong>Канал:</strong> {% if channel.is_active %}<span class="text-success">включён</span>{% else %}<span class="text-danger">отключён</span>{% endif %}</span>
+          <form method="post" action="{% url 'communication_channel_set_active' channel.pk %}">
+            {% csrf_token %}
+            <input type="hidden" name="active" value="{% if channel.is_active %}0{% else %}1{% endif %}">
+            <button class="btn btn-sm {% if channel.is_active %}btn-outline-danger{% else %}btn-outline-success{% endif %}" type="submit">{% if channel.is_active %}Отключить канал{% else %}Включить канал{% endif %}</button>
           </form>
         </div>
-        {% empty %}<div class="text-muted">Нет подключений</div>{% endfor %}
+        {% endfor %}
+        <div class="d-flex flex-column gap-3">
+          {% for connection in avito_connections %}
+          <div class="channel-connection">
+            <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+              <div>
+                <div class="fw-semibold">{{ connection.name }}</div>
+                <div class="channel-meta">Аккаунт {{ connection.external_id }}</div>
+              </div>
+              <span class="badge {% if connection.is_active and connection.provider_channel_active %}bg-success{% else %}bg-secondary{% endif %}">
+                {% if connection.is_active and connection.provider_channel_active %}Активно{% else %}Отключено{% endif %}
+              </span>
+            </div>
+            <div class="small mb-3">
+              {% if connection.credentials_configured and connection.api_token_hash %}
+                <span class="text-success"><i class="bi bi-shield-check me-1"></i>Credentials и webhook настроены</span>
+              {% elif connection.credentials_configured %}
+                <span class="text-warning"><i class="bi bi-exclamation-triangle me-1"></i>Credentials есть, webhook не выпущен</span>
+              {% else %}
+                <span class="text-danger"><i class="bi bi-exclamation-triangle me-1"></i>Credentials не настроены</span>
+              {% endif %}
+            </div>
+            <div class="d-flex flex-wrap gap-2">
+              <a href="{% url 'communication_avito_connection_edit' connection.pk %}" class="btn btn-sm btn-outline-primary">Настройки</a>
+              <form method="post" action="{% url 'communication_connection_set_active' connection.pk %}">
+                {% csrf_token %}
+                <input type="hidden" name="active" value="{% if connection.is_active %}0{% else %}1{% endif %}">
+                <button class="btn btn-sm {% if connection.is_active %}btn-outline-danger{% else %}btn-outline-success{% endif %}" type="submit">{% if connection.is_active %}Отключить{% else %}Включить{% endif %}</button>
+              </form>
+            </div>
+          </div>
+          {% empty %}
+          <div class="text-muted small">Аккаунты Авито пока не подключены. Нажмите «Добавить».</div>
+          {% endfor %}
+        </div>
       </div>
+    </section>
+  </div>
+
+  <div class="col-xl-4 col-md-6">
+    <section class="channel-provider-card">
+      <div class="channel-provider-card__head d-flex justify-content-between align-items-start gap-3">
+        <div class="d-flex gap-3">
+          <span class="channel-provider-icon"><i class="bi bi-telephone"></i></span>
+          <div>
+            <h2 class="h5 mb-1">Мегафон</h2>
+            <div class="text-muted small">ВАТС, звонки и записи разговоров.</div>
+          </div>
+        </div>
+        <a href="{% url 'communication_megafon_connection_create' %}" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg me-1"></i>Добавить</a>
+      </div>
+      <div class="channel-provider-card__body">
+        <div class="alert alert-light border small mb-3">
+          <strong>Этап настройки.</strong> Карточка ВАТС и разрешённые домены записей уже настраиваются здесь.
+          Автоматический приём событий Мегафона будет работать после подключения provider API-адаптера.
+        </div>
+        <div class="d-flex flex-column gap-3">
+          {% for connection in telephony_connections %}
+          <div class="channel-connection">
+            <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+              <div>
+                <div class="fw-semibold">{{ connection.name }}</div>
+                <div class="channel-meta">{{ connection.external_id }}</div>
+              </div>
+              <span class="badge {% if connection.is_active %}bg-success{% else %}bg-secondary{% endif %}">{% if connection.is_active %}Активно{% else %}Отключено{% endif %}</span>
+            </div>
+            <div class="small text-muted mb-3">Разрешённых доменов записей: {{ connection.recording_allowed_hosts|length }}</div>
+            <div class="d-flex flex-wrap gap-2">
+              <a href="{% url 'communication_megafon_connection_edit' connection.pk %}" class="btn btn-sm btn-outline-primary">Настройки</a>
+              <form method="post" action="{% url 'communication_megafon_connection_set_active' connection.pk %}">
+                {% csrf_token %}
+                <input type="hidden" name="active" value="{% if connection.is_active %}0{% else %}1{% endif %}">
+                <button class="btn btn-sm {% if connection.is_active %}btn-outline-danger{% else %}btn-outline-success{% endif %}" type="submit">{% if connection.is_active %}Отключить{% else %}Включить{% endif %}</button>
+              </form>
+            </div>
+          </div>
+          {% empty %}
+          <div class="text-muted small">ВАТС Мегафона пока не добавлена. Нажмите «Добавить».</div>
+          {% endfor %}
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<div class="card card-body mt-4">
+  <div class="d-flex gap-3 align-items-start">
+    <i class="bi bi-info-circle text-primary fs-5"></i>
+    <div>
+      <div class="fw-semibold">Безопасность ключей</div>
+      <div class="text-muted small">Client Secret и bearer/webhook-токены не выводятся повторно. Новый токен показывается только один раз сразу после создания или ротации.</div>
     </div>
   </div>
-  {% empty %}<div class="col-12"><div class="alert alert-light">Каналы ещё не настроены. Добавьте подключения через администрирование.</div></div>{% endfor %}
 </div>
 {% endblock %}

@@ -1,0 +1,71 @@
+{% extends "pool_service/base.html" %}
+{% block title %}{% if connection %}Настройки сайта{% else %}Подключить сайт{% endif %}{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+  <div>
+    <div class="text-muted">Коммуникации · Каналы связи · Сайт</div>
+    <h1 class="h3 mb-0">{% if connection %}{{ connection.name }}{% else %}Подключить сайт{% endif %}</h1>
+  </div>
+  <a href="{% url 'communications_channels' %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>К каналам</a>
+</div>
+
+{% if one_time_secret %}
+<div class="alert alert-success border-0 shadow-sm mb-4">
+  <h2 class="h5"><i class="bi bi-key me-2"></i>Сохраните токен сейчас</h2>
+  <p class="mb-2">Он показывается только один раз. Service2 хранит только его хеш.</p>
+  <div class="input-group">
+    <input id="website-token" class="form-control font-monospace" value="{{ one_time_secret }}" readonly>
+    <button class="btn btn-outline-success" type="button" onclick="navigator.clipboard.writeText(document.getElementById('website-token').value)">Копировать</button>
+  </div>
+</div>
+{% endif %}
+
+<div class="row g-4">
+  <div class="col-lg-7">
+    <div class="card card-body">
+      <h2 class="h5 mb-3">Основные настройки</h2>
+      <form method="post" novalidate>
+        {% csrf_token %}
+        {% if form.non_field_errors %}<div class="alert alert-danger">{{ form.non_field_errors }}</div>{% endif %}
+        {% for field in form %}
+        <div class="mb-3">
+          <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+          {{ field }}
+          {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+          {% for error in field.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+        </div>
+        {% endfor %}
+        <button class="btn btn-primary" type="submit">{% if connection %}Сохранить{% else %}Создать подключение{% endif %}</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="col-lg-5">
+    {% if connection %}
+    <div class="card card-body mb-4">
+      <h2 class="h5">API сайта</h2>
+      <div class="small text-muted mb-2">Public ID</div>
+      <div class="font-monospace text-break mb-3">{{ public_id }}</div>
+      <div class="small text-muted mb-1">Входящие сообщения</div>
+      <code class="d-block text-break mb-2">/api/communications/website/{{ public_id }}/chat/messages/</code>
+      <div class="small text-muted mb-1">Формы заявок</div>
+      <code class="d-block text-break">/api/communications/website/{{ public_id }}/requests/</code>
+    </div>
+    <div class="card card-body">
+      <h2 class="h5">Bearer-токен</h2>
+      <p class="text-muted small">Текущий токен нельзя посмотреть повторно. Ротация немедленно отключит старый токен.</p>
+      <form method="post" action="{% url 'communication_website_connection_rotate_token' connection.pk %}">
+        {% csrf_token %}
+        <button class="btn btn-outline-danger" type="submit"><i class="bi bi-arrow-repeat me-1"></i>Перевыпустить токен</button>
+      </form>
+    </div>
+    {% else %}
+    <div class="card card-body bg-light border-0">
+      <h2 class="h5">Что произойдёт</h2>
+      <p class="mb-2">После создания Service2 выпустит bearer-токен и покажет его один раз.</p>
+      <p class="mb-0 text-muted small">Токен должен использовать backend сайта в заголовке <code>Authorization: Bearer …</code>. Не размещайте его в JavaScript браузера.</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
