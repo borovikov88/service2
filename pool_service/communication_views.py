@@ -15,6 +15,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 from django.views.decorators.csrf import ensure_csrf_cookie
+from django.views.decorators.debug import sensitive_post_parameters
 
 from pool_service.communication_forms import CommunicationConnectionForm, TelephonyConnectionForm
 from pool_service.communication_models import (
@@ -408,6 +409,7 @@ def channels(request):
 
 
 @login_required
+@sensitive_post_parameters("client_id", "client_secret")
 @transaction.atomic
 def communication_connection_create(request, kind):
     organization = _context(request, "can_manage_channels")
@@ -461,6 +463,7 @@ def communication_connection_create(request, kind):
 
 
 @login_required
+@sensitive_post_parameters("client_id", "client_secret")
 @transaction.atomic
 def communication_connection_edit(request, connection_id):
     organization = _context(request, "can_manage_channels")
