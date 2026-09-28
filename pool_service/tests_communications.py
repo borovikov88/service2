@@ -159,6 +159,19 @@ class CommunicationsTests(TestCase):
         self.assertNotIn(secret, rendered)
         self.assertIn("[REDACTED]", rendered)
 
+    def test_owner_sees_communications_in_current_desktop_and_mobile_navigation(self):
+        self.client.login(username="owner", password="test")
+        response = self.client.get(reverse("pool_list"))
+        communications_url = reverse("communications_conversations")
+        self.assertContains(
+            response,
+            f'href="{communications_url}" class="desktop-sidebar__link',
+        )
+        self.assertContains(
+            response,
+            f'href="{communications_url}" class="list-group-item list-group-item-action',
+        )
+
     def test_first_worker_takes_conversation_atomically(self):
         conversation = Conversation.objects.create(organization=self.organization, connection=self.connection, external_id="chat", participant_name="Иван")
         other_notification = Notification.objects.create(
