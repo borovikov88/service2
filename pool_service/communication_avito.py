@@ -21,6 +21,10 @@ class AvitoError(Exception):
     """A sanitized provider error safe to persist and show to operators."""
 
 
+class AvitoRetryableError(AvitoError):
+    """A pre-send provider failure that is safe to retry within a bound."""
+
+
 class AvitoAmbiguousDeliveryError(AvitoError):
     """The request may have reached Avito, so automatic retry is unsafe."""
 
@@ -91,10 +95,13 @@ def _json_request(url, *, method="GET", headers=None, data=None, timeout=15, amb
         with urlopen(request, timeout=timeout) as response:
             raw = response.read(1024 * 1024 + 1)
     except HTTPError as exc:
+        if not ambiguous_transport and (exc.code == 429 or 500 <= exc.code <= 599):
+            raise AvitoRetryableError(f"provider_http_{exc.code}") from exc
         raise AvitoError(f"provider_http_{exc.code}") from exc
     except (URLError, TimeoutError) as exc:
-        error_class = AvitoAmbiguousDeliveryError if ambiguous_transport else AvitoError
-        raise error_class("provider_delivery_unknown" if ambiguous_transport else "provider_unavailable") from exc
+        if ambiguous_transport:
+            raise AvitoAmbiguousDeliveryError("provider_delivery_unknown") from exc
+        raise AvitoRetryableError("provider_unavailable") from exc
     if len(raw) > 1024 * 1024:
         raise AvitoError("provider_response_too_large")
     try:
