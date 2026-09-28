@@ -469,6 +469,46 @@ class CommunicationsTests(TestCase):
         self.assertFalse(self.connection.check_api_token("failed-webhook-token"))
         self.assertEqual(self.connection.settings["avito_webhook_status"], "error")
 
+    @patch("pool_service.communication_views.avito_unsubscribe_webhook")
+    @patch("pool_service.communication_views.avito_subscribe_webhook")
+    @patch("pool_service.communication_views.avito_webhook_subscriptions")
+    def test_explicit_avito_reconnect_rotates_token_and_removes_stale_subscription(
+        self, subscriptions, subscribe, unsubscribe
+    ):
+        AvitoCredential.objects.create(
+            connection=self.connection,
+            client_id_encrypted=encrypt_secret("client"),
+            client_secret_encrypted=encrypt_secret("secret"),
+        )
+        self.connection.set_api_token("old-webhook-token")
+        self.connection.settings = {"avito_webhook_status": "connected"}
+        self.connection.save(update_fields=["api_token_hash", "settings"])
+        old_callback = (
+            f"https://testserver/api/communications/avito/"
+            f"{self.connection.public_id}/old-webhook-token/webhook/"
+        )
+        new_callback = (
+            f"https://testserver/api/communications/avito/"
+            f"{self.connection.public_id}/new-webhook-token/webhook/"
+        )
+        subscriptions.side_effect = [[old_callback], [new_callback]]
+        self.client.login(username="owner", password="test")
+        with patch(
+            "pool_service.communication_views.secrets.token_urlsafe",
+            return_value="new-webhook-token",
+        ):
+            response = self.client.post(
+                reverse("communication_avito_connect", args=[self.connection.pk]),
+                {"force": "1"},
+                secure=True,
+            )
+        self.assertEqual(response.status_code, 302)
+        self.connection.refresh_from_db()
+        self.assertFalse(self.connection.check_api_token("old-webhook-token"))
+        self.assertTrue(self.connection.check_api_token("new-webhook-token"))
+        subscribe.assert_called_once_with(self.connection, new_callback)
+        unsubscribe.assert_called_once_with(self.connection, old_callback)
+
     @patch("pool_service.communication_views.avito_webhook_subscriptions")
     def test_owner_can_check_avito_webhook(self, subscriptions):
         AvitoCredential.objects.create(
