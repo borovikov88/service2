@@ -62,14 +62,40 @@
                     {% if connection.is_active %}Активно{% else %}Отключено{% endif %}
                   </span>
                   <span class="badge {% if connection.configuration_ready %}bg-primary{% else %}bg-warning text-dark{% endif %}">
-                    {% if connection.configuration_ready %}Настроено{% else %}Требует настройки{% endif %}
+                    {% if connection.configuration_ready %}Учётные данные сохранены{% else %}Требует настройки{% endif %}
                   </span>
+                  {% if provider.kind == 'avito' %}
+                    {% if connection.avito_webhook_status == 'connected' %}
+                      <span class="badge bg-success">Webhook подключён</span>
+                    {% elif connection.avito_webhook_status == 'error' %}
+                      <span class="badge bg-danger">Ошибка подключения</span>
+                    {% elif connection.avito_webhook_status == 'needs_check' %}
+                      <span class="badge bg-warning text-dark">Нужно проверить</span>
+                    {% else %}
+                      <span class="badge bg-secondary">Webhook не подключён</span>
+                    {% endif %}
+                  {% endif %}
                 </div>
+                {% if provider.kind == 'avito' and connection.avito_webhook_checked_at %}
+                  <div class="small text-muted mt-2">Последняя проверка: {{ connection.avito_webhook_checked_at }}</div>
+                {% endif %}
               </div>
               <div class="d-flex flex-wrap gap-2">
                 <a class="btn btn-sm btn-outline-primary" href="{% url 'communication_connection_edit' connection.pk %}">
                   Настройки
                 </a>
+                {% if provider.kind == 'avito' and connection.configuration_ready %}
+                <form method="post" action="{% url 'communication_avito_connect' connection.pk %}">
+                  {% csrf_token %}
+                  <button class="btn btn-sm btn-primary" type="submit">
+                    {% if connection.avito_webhook_status == 'connected' %}Переподключить Авито{% else %}Подключить Авито{% endif %}
+                  </button>
+                </form>
+                <form method="post" action="{% url 'communication_avito_check' connection.pk %}">
+                  {% csrf_token %}
+                  <button class="btn btn-sm btn-outline-secondary" type="submit">Проверить</button>
+                </form>
+                {% endif %}
                 <form method="post" action="{% url 'communication_connection_set_active' connection.pk %}">
                   {% csrf_token %}
                   <input type="hidden" name="active" value="{% if connection.is_active %}0{% else %}1{% endif %}">
