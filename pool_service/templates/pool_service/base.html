@@ -118,7 +118,7 @@
       </a>
       {% endif %}
 
-      {% if can_access_communications %}
+      {% if show_communications_menu %}
       <a href="{% url 'communications_conversations' %}" class="desktop-sidebar__link {% if active_tab == 'communications' %}is-active{% endif %}">
         <i class="bi bi-chat-dots"></i><span>Коммуникации</span>
       </a>
@@ -310,7 +310,7 @@
                   <i class="bi bi-people"></i>
                   <span>Клиенты</span>
                 </a>
-                {% if can_access_communications %}<a href="{% url 'communications_conversations' %}" class="ui-dropdown__item {% if active_tab == 'communications' %}is-active{% endif %}"><i class="bi bi-chat-dots"></i><span>Коммуникации</span></a>{% endif %}
+                {% if show_communications_menu %}<a href="{% url 'communications_conversations' %}" class="ui-dropdown__item {% if active_tab == 'communications' %}is-active{% endif %}"><i class="bi bi-chat-dots"></i><span>Коммуникации</span></a>{% endif %}
                 {% endif %}
               </div>
             </div>
@@ -330,7 +330,7 @@
           {% if is_org_staff %}
             <a class="text-decoration-none {% if active_tab == 'clients' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'clients_list' %}">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;</a>
           {% endif %}
-          {% if can_access_communications %}<a class="text-decoration-none {% if active_tab == 'communications' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'communications_conversations' %}">Коммуникации</a>{% endif %}
+          {% if show_communications_menu %}<a class="text-decoration-none {% if active_tab == 'communications' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'communications_conversations' %}">Коммуникации</a>{% endif %}
           {% if can_access_management_finance %}
             <div class="crm-nav">
               <a class="crm-nav__link text-decoration-none {% if active_finance_area == 'management' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'finance_dashboard' %}">Управленческие финансы</a>
@@ -532,7 +532,7 @@
           {% if is_org_staff %}
           <a href="{% url 'clients_list' %}" class="list-group-item list-group-item-action">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;</a>
           {% endif %}
-          {% if can_access_communications %}
+          {% if show_communications_menu %}
           <a href="{% url 'communications_conversations' %}" class="list-group-item list-group-item-action {% if active_tab == 'communications' %}active{% endif %}">
             <i class="bi bi-chat-dots me-2"></i>Коммуникации
           </a>
