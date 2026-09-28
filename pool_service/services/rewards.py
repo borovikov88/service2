@@ -451,8 +451,8 @@ def sync_author_proposals(organization, user, period_month):
     issues = 0
     for key, row in by_doc.items():
         data = _source_mapping(row.source_data)
-        author_guid = (data.get("author_guid") or "").strip()
-        author_name = (data.get("author_name") or "").strip()
+        author_guid = _source_text(data.get("author_guid"))
+        author_name = _source_text(data.get("author_name"))
         if not author_guid:
             _resolve_stale_author_proposals(
                 organization, user, period_month, key, None
@@ -1231,7 +1231,7 @@ def reward_document_options(organization, period_month):
             if _source_mapping(row.source_data).get("row_kind") != "direct_order_expense"
         ]
         primary = sale_rows[0] if sale_rows else scope_rows[0]
-        data = primary.source_data or {}
+        data = _source_mapping(primary.source_data)
         label = _source_text(
             data.get("resolved_order_display")
             or data.get("document_display")
