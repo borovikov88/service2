@@ -35,6 +35,21 @@ class CommunicationsTests(TestCase):
         self.channel = CommunicationChannel.objects.create(organization=self.organization, kind="avito", name="Авито")
         self.connection = ChannelConnection.objects.create(channel=self.channel, name="Аккаунт 1", external_id="one")
 
+    def test_owner_sees_communications_in_active_desktop_and_mobile_navigation(self):
+        self.client.login(username="owner", password="test")
+        response = self.client.get(reverse("clients_list"))
+        self.assertEqual(response.status_code, 200)
+        url = reverse("communications_conversations")
+        html = response.content.decode("utf-8")
+        self.assertIn(
+            f'href="{url}" class="desktop-sidebar__link',
+            html,
+        )
+        self.assertIn(
+            f'href="{url}" class="list-group-item list-group-item-action',
+            html,
+        )
+
     @patch("pool_service.services.notifications.send_push_to_users")
     def test_incoming_message_creates_conversation_and_notifications(self, _send_push):
         message, created = receive_message(connection=self.connection, external_conversation_id="chat-1", participant_name="Иван", body="Здравствуйте", external_message_id="message-1")
