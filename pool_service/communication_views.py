@@ -636,11 +636,10 @@ def _set_avito_webhook_status(connection, status, *, error=""):
 
 @login_required
 @require_POST
-@transaction.atomic
 def communication_avito_connect(request, connection_id):
     organization = _context(request, "can_manage_channels")
     connection = get_object_or_404(
-        ChannelConnection.objects.select_for_update().select_related("channel"),
+        ChannelConnection.objects.select_related("channel"),
         pk=connection_id,
         channel__organization=organization,
         channel__kind=CommunicationChannel.KIND_AVITO,
@@ -665,7 +664,6 @@ def communication_avito_connect(request, connection_id):
     except AvitoError:
         existing_urls = []
 
-    old_hash = connection.api_token_hash
     token = secrets.token_urlsafe(32)
     try:
         callback_url = _avito_callback_url(request, connection, token)
@@ -674,8 +672,15 @@ def communication_avito_connect(request, connection_id):
         messages.error(request, "Service2 не смог сформировать защищённый HTTPS webhook URL.")
         return redirect("communications_channels")
 
-    connection.set_api_token(token)
-    connection.save(update_fields=["api_token_hash"])
+    # Commit the new webhook hash before calling Avito. Avito can probe the
+    # callback synchronously during subscription, so a transaction spanning the
+    # provider call would make the new secret invisible to that probe.
+    with transaction.atomic():
+        locked = ChannelConnection.objects.select_for_update().get(pk=connection.pk)
+        old_hash = locked.api_token_hash
+        locked.set_api_token(token)
+        locked.save(update_fields=["api_token_hash"])
+        connection.api_token_hash = locked.api_token_hash
 
     try:
         avito_subscribe_webhook(connection, callback_url)
@@ -684,8 +689,13 @@ def communication_avito_connect(request, connection_id):
         if not verified:
             raise AvitoError("provider_webhook_not_confirmed")
     except AvitoError as exc:
-        connection.api_token_hash = old_hash
-        connection.save(update_fields=["api_token_hash"])
+        with transaction.atomic():
+            locked = ChannelConnection.objects.select_for_update().get(pk=connection.pk)
+            # Do not clobber a newer concurrent reconnect.
+            if locked.check_api_token(token):
+                locked.api_token_hash = old_hash
+                locked.save(update_fields=["api_token_hash"])
+                connection.api_token_hash = old_hash
         _set_avito_webhook_status(connection, "error", error=str(exc))
         messages.error(
             request,
