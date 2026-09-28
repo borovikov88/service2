@@ -636,10 +636,11 @@ def _set_avito_webhook_status(connection, status, *, error=""):
 
 @login_required
 @require_POST
+@transaction.atomic
 def communication_avito_connect(request, connection_id):
     organization = _context(request, "can_manage_channels")
     connection = get_object_or_404(
-        ChannelConnection.objects.select_related("channel"),
+        ChannelConnection.objects.select_for_update().select_related("channel"),
         pk=connection_id,
         channel__organization=organization,
         channel__kind=CommunicationChannel.KIND_AVITO,
@@ -651,14 +652,16 @@ def communication_avito_connect(request, connection_id):
         messages.error(request, "Сначала сохраните client_id и client_secret Авито.")
         return redirect("communication_connection_edit", connection_id=connection.pk)
 
+    force_reconnect = request.POST.get("force") == "1"
     try:
         existing_urls = avito_webhook_subscriptions(connection)
-        for value in existing_urls:
-            token = _avito_subscription_token(request, connection, value)
-            if token and connection.check_api_token(token):
-                _set_avito_webhook_status(connection, "connected")
-                messages.success(request, "Авито уже подключено. Webhook подтверждён.")
-                return redirect("communications_channels")
+        if not force_reconnect:
+            for value in existing_urls:
+                token = _avito_subscription_token(request, connection, value)
+                if token and connection.check_api_token(token):
+                    _set_avito_webhook_status(connection, "connected")
+                    messages.success(request, "Авито уже подключено. Webhook подтверждён.")
+                    return redirect("communications_channels")
     except AvitoError:
         existing_urls = []
 
