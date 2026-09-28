@@ -50,6 +50,9 @@ class CommunicationConnectionForm(forms.Form):
         cleaned = super().clean()
         if self.kind != "avito":
             return cleaned
+        external_id = cleaned.get("external_id", "")
+        if external_id and not external_id.isascii() or (external_id and not external_id.isdecimal()):
+            self.add_error("external_id", "ID аккаунта Авито должен состоять только из цифр.")
         client_id = cleaned.get("client_id", "")
         client_secret = cleaned.get("client_secret", "")
         if self.require_avito_credentials and (not client_id or not client_secret):
