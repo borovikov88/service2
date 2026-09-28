@@ -1,6 +1,7 @@
 import secrets
 
 from django.db import transaction
+from django.views.decorators.debug import sensitive_variables
 
 from pool_service.communication_models import (
     AvitoCredential,
@@ -52,6 +53,12 @@ def create_connection(*, organization, kind, name, external_id):
 
 
 @transaction.atomic
+@sensitive_variables(
+    "client_id",
+    "client_secret",
+    "encrypted_client_id",
+    "encrypted_client_secret",
+)
 def configure_avito_credentials(*, connection, client_id, client_secret):
     if connection.channel.kind != CommunicationChannel.KIND_AVITO:
         raise ValueError("Avito credentials require an Avito connection")
