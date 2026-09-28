@@ -3,8 +3,9 @@ from decimal import Decimal
 
 from django.contrib.auth.models import User
 from django.test import TestCase
+from django.urls import reverse
 
-from pool_service.models import Employee, OneCImportBatch, OneCMonthlyProfit, OneCReportPeriodState, Organization
+from pool_service.models import Employee, OneCImportBatch, OneCMonthlyProfit, OneCReportPeriodState, Organization, OrganizationAccess
 from pool_service.reward_models import OneCAuthorIdentity, RewardParticipation, RewardSchemeVersion
 from pool_service.reward_views import _percent_value
 from pool_service.services.rewards import (
@@ -72,6 +73,49 @@ class EmployeeRewardCalculationTests(TestCase):
             scope_line_identities=lines or [], customer_name="Клиент",
             assignment_source=RewardParticipation.SOURCE_MANUAL, created_by=self.user,
         )
+
+
+    def test_rewards_page_get_tolerates_irregular_persisted_source_metadata(self):
+        OrganizationAccess.objects.create(
+            user=self.user,
+            organization=self.org,
+            role="owner",
+        )
+        row = self.add_row(1, "1000.00")
+        row.source_data = ["legacy", "metadata"]
+        row.save(update_fields=["source_data"])
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse("finance_employee_rewards"),
+            {"month": "2026-09"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_rewards_page_get_normalizes_non_string_source_labels_and_author_id(self):
+        OrganizationAccess.objects.create(
+            user=self.user,
+            organization=self.org,
+            role="owner",
+        )
+        row = self.add_row(1, "1000.00")
+        row.source_data = {
+            "source": "odata",
+            "recorder": "11111111-1111-4111-8111-111111111111",
+            "recorder_type": "Document_РасходнаяНакладная",
+            "document_display": 12345,
+            "author_guid": 67890,
+        }
+        row.save(update_fields=["source_data"])
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse("finance_employee_rewards"),
+            {"month": "2026-09"},
+        )
+
+        self.assertEqual(response.status_code, 200)
 
     def test_two_workers_split_one_fund_without_increasing_it(self):
         row = self.add_row(1, "30000.00")
