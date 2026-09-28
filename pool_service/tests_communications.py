@@ -1,21 +1,24 @@
 from datetime import timedelta
+import logging
 from unittest.mock import patch
 
 from django.contrib.auth.models import Permission, User
 from django.core.management import call_command
+from django.db import IntegrityError, transaction
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, RequestFactory, TestCase
 from django.urls import reverse
 from django.utils import timezone
 
 from pool_service.communication_models import AvitoCredential, CommunicationAccess, CommunicationChannel, ChannelConnection, Conversation, ConversationMessage, MessageAttachment, PhoneCall, TelephonyConnection, WebsiteRequest
-from pool_service.communication_avito import access_token, send_message
+from pool_service.communication_avito import AvitoRetryableError, access_token, send_message
 from pool_service.communication_secrets import decrypt_secret, encrypt_secret
 from pool_service.communication_services import receive_message, users_with_conversation_access
 from pool_service.communication_services import conversation_capability
 from pool_service.communication_api import _payload
 from pool_service.management.commands.send_avito_outbox import claim_message
 from pool_service.models import Notification, Organization, OrganizationAccess
+from service_site.logging_handlers import RedactCommunicationWebhookSecretFilter
 
 
 class CommunicationsTests(TestCase):
@@ -78,6 +81,83 @@ class CommunicationsTests(TestCase):
         capabilities.refresh_from_db()
         self.assertTrue(capabilities.can_view_conversations)
         self.assertTrue(capabilities.can_reply_conversations)
+
+    def test_admin_downgrade_recomputes_inherited_capabilities(self):
+        user = User.objects.create_user("downgraded-admin", password="test")
+        role = OrganizationAccess.objects.create(
+            user=user,
+            organization=self.organization,
+            role="admin",
+        )
+        capabilities = CommunicationAccess.objects.get(user=user, organization=self.organization)
+        self.assertTrue(capabilities.can_manage_channels)
+        self.assertTrue(capabilities.can_assign_conversation)
+        self.assertTrue(capabilities.can_view_all_calls)
+
+        role.role = "manager"
+        role.save(update_fields=["role"])
+        capabilities.refresh_from_db()
+
+        self.assertTrue(capabilities.can_view_conversations)
+        self.assertTrue(capabilities.can_reply_conversations)
+        self.assertTrue(capabilities.can_take_conversation)
+        self.assertTrue(capabilities.can_view_own_calls)
+        self.assertTrue(capabilities.can_listen_calls)
+        self.assertFalse(capabilities.can_manage_channels)
+        self.assertFalse(capabilities.can_assign_conversation)
+        self.assertFalse(capabilities.can_view_all_calls)
+
+    def test_database_idempotency_allows_null_ids_but_rejects_duplicates(self):
+        conversation = Conversation.objects.create(
+            organization=self.organization,
+            connection=self.connection,
+            external_id="db-idempotency",
+            participant_name="Иван",
+        )
+        ConversationMessage.objects.create(
+            conversation=conversation,
+            direction=ConversationMessage.DIRECTION_OUT,
+            body="Первый без provider id",
+            delivery_status=ConversationMessage.DELIVERY_PENDING,
+        )
+        ConversationMessage.objects.create(
+            conversation=conversation,
+            direction=ConversationMessage.DIRECTION_OUT,
+            body="Второй без provider id",
+            delivery_status=ConversationMessage.DELIVERY_PENDING,
+        )
+        ConversationMessage.objects.create(
+            conversation=conversation,
+            external_id="provider-duplicate",
+            direction=ConversationMessage.DIRECTION_IN,
+            body="Первый",
+        )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ConversationMessage.objects.create(
+                    conversation=conversation,
+                    external_id="provider-duplicate",
+                    direction=ConversationMessage.DIRECTION_IN,
+                    body="Дубликат",
+                )
+
+    def test_request_log_filter_redacts_avito_webhook_secret(self):
+        secret = "super-secret-webhook-token"
+        record = logging.LogRecord(
+            name="django.request",
+            level=logging.ERROR,
+            pathname=__file__,
+            lineno=1,
+            msg="Internal Server Error: %s",
+            args=(
+                f"/api/communications/avito/123e4567-e89b-12d3-a456-426614174000/{secret}/webhook/",
+            ),
+            exc_info=None,
+        )
+        self.assertTrue(RedactCommunicationWebhookSecretFilter().filter(record))
+        rendered = record.getMessage()
+        self.assertNotIn(secret, rendered)
+        self.assertIn("[REDACTED]", rendered)
 
     def test_first_worker_takes_conversation_atomically(self):
         conversation = Conversation.objects.create(organization=self.organization, connection=self.connection, external_id="chat", participant_name="Иван")
@@ -726,6 +806,39 @@ class AvitoCommunicationTests(TestCase):
         self.assertIsNone(claim_message(selected_id))
         message.refresh_from_db()
         self.assertEqual(message.delivery_status, ConversationMessage.DELIVERY_PENDING)
+
+    @patch("pool_service.management.commands.send_avito_outbox.send_message")
+    def test_transient_presend_failure_retries_are_bounded(self, sender):
+        sender.side_effect = AvitoRetryableError("provider_http_503")
+        conversation = Conversation.objects.create(
+            organization=self.organization,
+            connection=self.connection,
+            external_id="chat-transient",
+            participant_name="Иван",
+        )
+        message = ConversationMessage.objects.create(
+            conversation=conversation,
+            direction=ConversationMessage.DIRECTION_OUT,
+            body="Повторить после временной ошибки",
+            delivery_status=ConversationMessage.DELIVERY_PENDING,
+        )
+
+        call_command("send_avito_outbox")
+        message.refresh_from_db()
+        self.assertEqual(message.delivery_status, ConversationMessage.DELIVERY_PENDING)
+        self.assertEqual(message.delivery_attempts, 1)
+
+        call_command("send_avito_outbox")
+        message.refresh_from_db()
+        self.assertEqual(message.delivery_status, ConversationMessage.DELIVERY_PENDING)
+        self.assertEqual(message.delivery_attempts, 2)
+
+        call_command("send_avito_outbox")
+        message.refresh_from_db()
+        self.assertEqual(message.delivery_status, ConversationMessage.DELIVERY_FAILED)
+        self.assertEqual(message.delivery_attempts, 3)
+        self.assertEqual(message.delivery_error, "provider_http_503")
+        self.assertEqual(sender.call_count, 3)
 
     def test_missing_credentials_fail_message_without_crashing_batch(self):
         conversation = Conversation.objects.create(
