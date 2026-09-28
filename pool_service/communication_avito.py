@@ -157,6 +157,42 @@ def _provider_root():
     return getattr(settings, "AVITO_API_ROOT", AVITO_API_ROOT).rstrip("/")
 
 
+def authorized_account_id(connection):
+    """Return the numeric Avito account id tied to the current credentials."""
+    token = access_token(connection)
+    response = _json_request(
+        f"{_provider_root()}/core/v1/accounts/self",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        },
+    )
+    value = response.get("id")
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise AvitoError("provider_account_id_missing")
+    account_id = str(value).strip()
+    if not account_id.isascii() or not account_id.isdecimal() or len(account_id) > 32:
+        raise AvitoError("provider_account_id_invalid")
+    return account_id
+
+
+def verify_messenger_access(connection, account_id=None):
+    """Probe Messenger read access without changing the Avito unread state."""
+    account_id = account_id or authorized_account_id(connection)
+    token = access_token(connection)
+    encoded_account_id = quote(str(account_id), safe="")
+    response = _json_request(
+        f"{_provider_root()}/messenger/v2/accounts/{encoded_account_id}/chats?limit=1&offset=0",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        },
+    )
+    if not isinstance(response.get("chats", []), list):
+        raise AvitoError("provider_chats_invalid")
+    return True
+
+
 def _webhook_url(value):
     if not isinstance(value, str) or not value or len(value) > 2048:
         raise AvitoError("provider_webhook_url_invalid")
