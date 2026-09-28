@@ -1207,6 +1207,7 @@ class AvitoCommunicationTests(TestCase):
         )
 
         request.reset_mock()
+        request.side_effect = None
         request.return_value = {"ok": False}
         with self.assertRaisesMessage(AvitoError, "provider_webhook_rejected"):
             subscribe_webhook(self.connection, callback)
