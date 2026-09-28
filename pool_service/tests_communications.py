@@ -469,6 +469,38 @@ class CommunicationsTests(TestCase):
         self.assertFalse(self.connection.check_api_token("failed-webhook-token"))
         self.assertEqual(self.connection.settings["avito_webhook_status"], "error")
 
+    @patch("pool_service.communication_views.avito_subscribe_webhook")
+    @patch("pool_service.communication_views.avito_webhook_subscriptions")
+    def test_avito_connect_keeps_new_token_when_subscribe_response_is_lost_but_subscription_exists(
+        self, subscriptions, subscribe
+    ):
+        AvitoCredential.objects.create(
+            connection=self.connection,
+            client_id_encrypted=encrypt_secret("client"),
+            client_secret_encrypted=encrypt_secret("secret"),
+        )
+        callback = (
+            f"https://testserver/api/communications/avito/"
+            f"{self.connection.public_id}/ambiguous-webhook-token/webhook/"
+        )
+        subscriptions.side_effect = [[], [callback]]
+        subscribe.side_effect = AvitoError("provider_unavailable")
+        self.client.login(username="owner", password="test")
+        with patch(
+            "pool_service.communication_views.secrets.token_urlsafe",
+            return_value="ambiguous-webhook-token",
+        ):
+            response = self.client.post(
+                reverse("communication_avito_connect", args=[self.connection.pk]),
+                secure=True,
+            )
+        self.assertEqual(response.status_code, 302)
+        self.connection.refresh_from_db()
+        self.assertTrue(self.connection.check_api_token("ambiguous-webhook-token"))
+        self.assertEqual(
+            self.connection.settings["avito_webhook_status"], "connected"
+        )
+
     @patch("pool_service.communication_views.avito_unsubscribe_webhook")
     @patch("pool_service.communication_views.avito_subscribe_webhook")
     @patch("pool_service.communication_views.avito_webhook_subscriptions")
