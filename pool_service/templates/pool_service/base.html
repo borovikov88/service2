@@ -118,6 +118,12 @@
       </a>
       {% endif %}
 
+      {% if can_access_communications %}
+      <a href="{% url 'communications_conversations' %}" class="desktop-sidebar__link {% if active_tab == 'communications' %}is-active{% endif %}">
+        <i class="bi bi-chat-dots"></i><span>Коммуникации</span>
+      </a>
+      {% endif %}
+
       {% if can_access_management_finance %}
       <details class="desktop-sidebar__group" {% if active_finance_area == 'management' %}open{% endif %}>
         <summary class="desktop-sidebar__link {% if active_finance_area == 'management' %}is-active{% endif %}">
@@ -203,6 +209,7 @@
                 {% elif active_tab == 'readings' %}Календарь
                 {% elif active_tab == 'pools' %}Объекты
                 {% elif active_tab == 'clients' %}Клиенты
+                {% elif active_tab == 'communications' %}Коммуникации
                 {% elif active_tab == 'finance' %}Финансы
                 {% elif active_tab == 'users' %}Пользователи
                 {% elif active_tab == 'development' %}Разработка
@@ -524,6 +531,9 @@
           {% endif %}
           {% if is_org_staff %}
           <a href="{% url 'clients_list' %}" class="list-group-item list-group-item-action">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;</a>
+          {% endif %}
+          {% if can_access_communications %}
+          <a href="{% url 'communications_conversations' %}" class="list-group-item list-group-item-action {% if active_tab == 'communications' %}active{% endif %}">Коммуникации</a>
           {% endif %}
           {% if can_access_management_finance %}
           <details class="mobile-submenu mb-2" {% if active_finance_area == 'management' %}open{% endif %}>
