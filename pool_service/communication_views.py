@@ -341,9 +341,22 @@ def channels(request):
         AvitoCredential.objects.filter(connection__channel__organization=organization)
         .values_list("connection_id", flat=True)
     )
+    website_channels = []
+    avito_channels = []
+    website_connections = []
+    avito_connections = []
     for channel in channel_items:
+        if channel.kind == CommunicationChannel.KIND_WEBSITE:
+            website_channels.append(channel)
+        elif channel.kind == CommunicationChannel.KIND_AVITO:
+            avito_channels.append(channel)
         for connection in channel.connections.all():
             connection.credentials_configured = connection.pk in avito_credential_ids
+            connection.provider_channel_active = channel.is_active
+            if channel.kind == CommunicationChannel.KIND_WEBSITE:
+                website_connections.append(connection)
+            elif channel.kind == CommunicationChannel.KIND_AVITO:
+                avito_connections.append(connection)
     telephony_connections = TelephonyConnection.objects.filter(
         organization=organization
     ).order_by("name", "pk")
@@ -353,6 +366,10 @@ def channels(request):
         {
             "active_tab": "communications",
             "channels": channel_items,
+            "website_channels": website_channels,
+            "avito_channels": avito_channels,
+            "website_connections": website_connections,
+            "avito_connections": avito_connections,
             "telephony_connections": telephony_connections,
             "communication_credential_key_configured": bool(
                 getattr(settings, "COMMUNICATION_CREDENTIAL_KEY", "")
