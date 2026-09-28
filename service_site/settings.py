@@ -351,6 +351,11 @@ VAPID_EMAIL = os.getenv("VAPID_EMAIL", DEFAULT_FROM_EMAIL)
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
+    "filters": {
+        "redact_communication_webhook_secret": {
+            "()": "service_site.logging_handlers.RedactCommunicationWebhookSecretFilter",
+        },
+    },
     "formatters": {
         "onec_unified_sync": {
             "format": "{asctime} {levelname} {name} {message}",
@@ -376,6 +381,7 @@ LOGGING = {
             "filename": str(BASE_DIR.parent / "var" / "log" / "django-request-error.log"),
             "level": "ERROR",
             "formatter": "django_request_error",
+            "filters": ["redact_communication_webhook_secret"],
             "encoding": "utf-8",
             "delay": True,
         },
