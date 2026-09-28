@@ -184,9 +184,8 @@ def webhook_subscriptions(connection):
         headers={
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
-            "Content-Type": "application/json",
         },
-        data=b"{}",
+        data=b"",
     )
     subscriptions = response.get("subscriptions")
     if not isinstance(subscriptions, list):
@@ -204,7 +203,7 @@ def webhook_subscriptions(connection):
 def subscribe_webhook(connection, url):
     url = _webhook_url(url)
     token = access_token(connection)
-    return _json_request(
+    response = _json_request(
         f"{_provider_root()}/messenger/v3/webhook",
         method="POST",
         headers={
@@ -214,12 +213,15 @@ def subscribe_webhook(connection, url):
         },
         data=json.dumps({"url": url}).encode("utf-8"),
     )
+    if response.get("ok") is not True:
+        raise AvitoError("provider_webhook_rejected")
+    return response
 
 
 def unsubscribe_webhook(connection, url):
     url = _webhook_url(url)
     token = access_token(connection)
-    return _json_request(
+    response = _json_request(
         f"{_provider_root()}/messenger/v1/webhook/unsubscribe",
         method="POST",
         headers={
@@ -229,6 +231,9 @@ def unsubscribe_webhook(connection, url):
         },
         data=json.dumps({"url": url}).encode("utf-8"),
     )
+    if response.get("ok") is not True:
+        raise AvitoError("provider_webhook_unsubscribe_rejected")
+    return response
 
 
 def send_message(message):
