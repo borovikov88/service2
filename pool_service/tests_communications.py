@@ -17,9 +17,11 @@ from pool_service.communication_avito import (
     AvitoError,
     AvitoRetryableError,
     access_token,
+    authorized_account_id,
     send_message,
     subscribe_webhook,
     unsubscribe_webhook,
+    verify_messenger_access,
     webhook_subscriptions,
 )
 from pool_service.communication_secrets import decrypt_secret, encrypt_secret
@@ -44,6 +46,18 @@ class CommunicationsTests(TestCase):
         OrganizationAccess.objects.create(user=self.accountant, organization=self.organization, role="accountant")
         self.channel = CommunicationChannel.objects.create(organization=self.organization, kind="avito", name="Авито")
         self.connection = ChannelConnection.objects.create(channel=self.channel, name="Аккаунт 1", external_id="one")
+        account_id_patcher = patch(
+            "pool_service.communication_views.avito_authorized_account_id",
+            return_value=self.connection.external_id,
+        )
+        messenger_access_patcher = patch(
+            "pool_service.communication_views.avito_verify_messenger_access",
+            return_value=True,
+        )
+        self.avito_authorized_account_id = account_id_patcher.start()
+        self.avito_verify_messenger_access = messenger_access_patcher.start()
+        self.addCleanup(account_id_patcher.stop)
+        self.addCleanup(messenger_access_patcher.stop)
 
     @patch("pool_service.services.notifications.send_push_to_users")
     def test_incoming_message_creates_conversation_and_notifications(self, _send_push):
@@ -392,6 +406,7 @@ class CommunicationsTests(TestCase):
             f"{self.connection.public_id}/new-webhook-token/webhook/"
         )
         subscriptions.side_effect = [[], [callback]]
+        self.avito_authorized_account_id.return_value = "123456789"
         self.client.login(username="owner", password="test")
         with patch(
             "pool_service.communication_views.secrets.token_urlsafe",
@@ -403,6 +418,7 @@ class CommunicationsTests(TestCase):
             )
         self.assertEqual(response.status_code, 302)
         self.connection.refresh_from_db()
+        self.assertEqual(self.connection.external_id, "123456789")
         self.assertTrue(self.connection.check_api_token("new-webhook-token"))
         self.assertEqual(
             self.connection.settings["avito_webhook_status"], "connected"
@@ -565,6 +581,27 @@ class CommunicationsTests(TestCase):
         self.assertEqual(
             self.connection.settings["avito_webhook_status"], "connected"
         )
+
+    @patch("pool_service.communication_views.avito_webhook_subscriptions")
+    def test_avito_check_surfaces_missing_messenger_access(self, subscriptions):
+        AvitoCredential.objects.create(
+            connection=self.connection,
+            client_id_encrypted=encrypt_secret("client"),
+            client_secret_encrypted=encrypt_secret("secret"),
+        )
+        self.avito_verify_messenger_access.side_effect = AvitoError("provider_http_402")
+        self.client.login(username="owner", password="test")
+        response = self.client.post(
+            reverse("communication_avito_check", args=[self.connection.pk]),
+            secure=True,
+        )
+        self.assertEqual(response.status_code, 302)
+        self.connection.refresh_from_db()
+        self.assertEqual(self.connection.settings["avito_webhook_status"], "error")
+        self.assertEqual(
+            self.connection.settings["avito_webhook_error"], "provider_http_402"
+        )
+        subscriptions.assert_not_called()
 
     def test_manager_cannot_open_channel_setup_pages(self):
         self.client.login(username="worker", password="test")
@@ -1141,15 +1178,33 @@ class AvitoCommunicationTests(TestCase):
         self.assertEqual(self.client.post(bad_url, payload, content_type="application/json").status_code, 401)
         first = self.client.post(url, payload, content_type="application/json")
         duplicate = self.client.post(url, payload, content_type="application/json")
-        self.assertEqual(first.status_code, 201)
+        self.assertEqual(first.status_code, 200)
         self.assertEqual(duplicate.status_code, 200)
+        self.assertTrue(first.json()["created"])
         self.assertFalse(duplicate.json()["created"])
         self.assertEqual(ConversationMessage.objects.get().body, "Здравствуйте")
+        self.connection.refresh_from_db()
+        self.assertTrue(self.connection.settings["avito_webhook_last_received_at"])
+        self.assertEqual(self.connection.settings["avito_webhook_last_result"], "duplicate")
 
         wrong_account = {"payload": {"type": "message", "value": dict(payload["payload"]["value"], id="message-2", user_id=999)}}
         response = self.client.post(url, wrong_account, content_type="application/json")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(ConversationMessage.objects.count(), 1)
+        self.connection.refresh_from_db()
+        self.assertEqual(self.connection.settings["avito_webhook_last_result"], "ignored")
+
+        invalid = {"payload": {"type": "message", "value": dict(
+            payload["payload"]["value"], id="message-3", type="unsupported"
+        )}}
+        invalid_response = self.client.post(url, invalid, content_type="application/json")
+        self.assertEqual(invalid_response.status_code, 200)
+        self.connection.refresh_from_db()
+        self.assertEqual(self.connection.settings["avito_webhook_last_result"], "error")
+        self.assertEqual(
+            self.connection.settings["avito_webhook_last_error"],
+            "unsupported_message_type",
+        )
 
     @patch("pool_service.communication_avito._json_request")
     def test_credentials_are_encrypted_and_outgoing_message_is_delivered(self, request):
@@ -1179,6 +1234,27 @@ class AvitoCommunicationTests(TestCase):
         self.assertEqual(decrypt_secret(credential.access_token_encrypted), "short-lived-token")
         self.assertEqual(access_token(self.connection), "short-lived-token")
         self.assertEqual(request.call_count, 2)
+
+    @patch("pool_service.communication_avito._json_request")
+    def test_authorized_account_and_messenger_access_helpers(self, request):
+        AvitoCredential.objects.create(
+            connection=self.connection,
+            client_id_encrypted=encrypt_secret("client-id"),
+            client_secret_encrypted=encrypt_secret("client-secret"),
+            access_token_encrypted=encrypt_secret("cached-token"),
+            access_token_expires_at=timezone.now() + timedelta(hours=1),
+        )
+        request.side_effect = [
+            {"id": 7986565},
+            {"chats": []},
+        ]
+        self.assertEqual(authorized_account_id(self.connection), "7986565")
+        self.assertTrue(verify_messenger_access(self.connection, "7986565"))
+        self.assertIn("/core/v1/accounts/self", request.call_args_list[0].args[0])
+        self.assertIn(
+            "/messenger/v2/accounts/7986565/chats?limit=1&offset=0",
+            request.call_args_list[1].args[0],
+        )
 
     @patch("pool_service.communication_avito._json_request")
     def test_webhook_provider_helpers_validate_contract(self, request):
