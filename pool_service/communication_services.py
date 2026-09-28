@@ -71,7 +71,8 @@ def optimize_message_image(attachment):
 
 
 @transaction.atomic
-def receive_message(*, connection, external_conversation_id, participant_name, body, external_message_id="", participant_phone=""):
+def receive_message(*, connection, external_conversation_id, participant_name, body, external_message_id=None, participant_phone=""):
+    external_message_id = external_message_id or None
     conversation, _ = Conversation.objects.select_for_update().get_or_create(
         connection=connection,
         external_id=external_conversation_id,
@@ -81,7 +82,7 @@ def receive_message(*, connection, external_conversation_id, participant_name, b
             "participant_phone": participant_phone,
         },
     )
-    if external_message_id:
+    if external_message_id is not None:
         existing = ConversationMessage.objects.filter(
             conversation=conversation, external_id=external_message_id
         ).first()
@@ -98,7 +99,7 @@ def receive_message(*, connection, external_conversation_id, participant_name, b
                 delivery_status=ConversationMessage.DELIVERY_RECEIVED,
             )
     except IntegrityError:
-        if not external_message_id:
+        if external_message_id is None:
             raise
         return ConversationMessage.objects.get(
             conversation=conversation,
