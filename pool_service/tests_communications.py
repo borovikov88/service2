@@ -609,6 +609,16 @@ class CommunicationsTests(TestCase):
             name="Foreign connection",
             external_id="foreign",
         )
+        foreign_avito_channel = CommunicationChannel.objects.create(
+            organization=foreign_organization,
+            kind="avito",
+            name="Foreign Avito",
+        )
+        foreign_avito_connection = ChannelConnection.objects.create(
+            channel=foreign_avito_channel,
+            name="Foreign Avito account",
+            external_id="987654321",
+        )
         foreign_line = TelephonyConnection.objects.create(
             organization=foreign_organization,
             name="Foreign line",
@@ -624,6 +634,20 @@ class CommunicationsTests(TestCase):
         self.assertEqual(
             self.client.get(
                 reverse("communication_telephony_edit", args=[foreign_line.pk])
+            ).status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.post(
+                reverse("communication_avito_connect", args=[foreign_avito_connection.pk]),
+                secure=True,
+            ).status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.post(
+                reverse("communication_avito_check", args=[foreign_avito_connection.pk]),
+                secure=True,
             ).status_code,
             404,
         )
