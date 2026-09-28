@@ -1,7 +1,7 @@
 import uuid
 
 from django.contrib.auth.models import User
-from django.db.models.signals import post_save
+from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -79,24 +79,60 @@ def _communication_access_defaults(role):
     return fields
 
 
+def _effective_communication_role(organization, user):
+    roles = set(OrganizationAccess.objects.filter(
+        organization=organization,
+        user=user,
+    ).values_list("role", flat=True))
+    if roles & {"owner", "admin"}:
+        return "owner"
+    if "manager" in roles:
+        return "manager"
+    return next(iter(roles), None)
+
+
+@receiver(pre_save, sender=OrganizationAccess)
+def remember_previous_communication_role(sender, instance, **_kwargs):
+    if not instance.pk:
+        instance._communication_previous_role = None
+        return
+    instance._communication_previous_role = OrganizationAccess.objects.filter(
+        pk=instance.pk
+    ).values_list("role", flat=True).first()
+
+
 @receiver(post_save, sender=OrganizationAccess)
 def create_communication_access(sender, instance, created, **_kwargs):
-    roles = set(OrganizationAccess.objects.filter(
+    effective_role = _effective_communication_role(instance.organization, instance.user)
+    if effective_role is None:
+        return
+    defaults = _communication_access_defaults(effective_role)
+    access, access_created = CommunicationAccess.objects.get_or_create(
         organization=instance.organization,
         user=instance.user,
-    ).values_list("role", flat=True))
-    effective_role = "owner" if roles & {"owner", "admin"} else "manager" if "manager" in roles else next(iter(roles), "accountant")
-    access, _ = CommunicationAccess.objects.get_or_create(
-        organization=instance.organization,
-        user=instance.user,
-        defaults=_communication_access_defaults(effective_role),
+        defaults=defaults,
     )
-    # A transition to a non-operational role must revoke previously inherited
-    # access. Explicit capabilities remain untouched while an operational role exists.
-    if roles and roles <= {"accountant"}:
-        CommunicationAccess.objects.filter(pk=access.pk).update(
-            **_communication_access_defaults("accountant")
-        )
+    role_changed = (
+        created
+        or getattr(instance, "_communication_previous_role", None) != instance.role
+    )
+    if not access_created and role_changed:
+        # Role transitions recompute inherited capabilities so an owner/admin
+        # downgrade cannot retain elevated channel/call/assignment rights.
+        CommunicationAccess.objects.filter(pk=access.pk).update(**defaults)
+
+
+@receiver(post_delete, sender=OrganizationAccess)
+def recompute_communication_access_after_role_delete(sender, instance, **_kwargs):
+    effective_role = _effective_communication_role(instance.organization, instance.user)
+    access = CommunicationAccess.objects.filter(
+        organization=instance.organization,
+        user=instance.user,
+    )
+    if effective_role is None:
+        access.delete()
+        return
+    access.update(**_communication_access_defaults(effective_role))
 
 
 class ChannelConnection(models.Model):
@@ -177,7 +213,7 @@ class ConversationMessage(models.Model):
     DELIVERY_DELIVERED = "delivered"
     DELIVERY_FAILED = "failed"
     conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name="messages")
-    external_id = models.CharField(max_length=255, blank=True)
+    external_id = models.CharField(max_length=255, blank=True, null=True)
     direction = models.CharField(max_length=3, choices=[(DIRECTION_IN, "Входящее"), (DIRECTION_OUT, "Исходящее")])
     body = models.TextField(blank=True)
     sender_name = models.CharField(max_length=255, blank=True)
@@ -185,11 +221,17 @@ class ConversationMessage(models.Model):
     delivery_status = models.CharField(max_length=16, choices=[(DELIVERY_RECEIVED, "Получено"), (DELIVERY_PENDING, "Ожидает отправки"), (DELIVERY_SENDING, "Отправляется"), (DELIVERY_DELIVERED, "Доставлено"), (DELIVERY_FAILED, "Ошибка")], default=DELIVERY_RECEIVED)
     delivered_at = models.DateTimeField(null=True, blank=True)
     delivery_error = models.CharField(max_length=500, blank=True)
+    delivery_attempts = models.PositiveSmallIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["created_at", "id"]
-        constraints = [models.UniqueConstraint(fields=["conversation", "external_id"], condition=~models.Q(external_id=""), name="comm_message_external_uniq")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["conversation", "external_id"],
+                name="comm_message_external_uniq",
+            )
+        ]
 
 
 class MessageAttachment(models.Model):
