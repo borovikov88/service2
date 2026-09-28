@@ -623,15 +623,18 @@ def _avito_subscription_token(request, connection, value):
 
 
 def _set_avito_webhook_status(connection, status, *, error=""):
-    settings_data = dict(connection.settings or {})
-    settings_data["avito_webhook_status"] = status
-    settings_data["avito_webhook_checked_at"] = timezone.now().isoformat()
-    if error:
-        settings_data["avito_webhook_error"] = error[:120]
-    else:
-        settings_data.pop("avito_webhook_error", None)
-    connection.settings = settings_data
-    connection.save(update_fields=["settings"])
+    with transaction.atomic():
+        locked = ChannelConnection.objects.select_for_update().get(pk=connection.pk)
+        settings_data = dict(locked.settings or {})
+        settings_data["avito_webhook_status"] = status
+        settings_data["avito_webhook_checked_at"] = timezone.now().isoformat()
+        if error:
+            settings_data["avito_webhook_error"] = error[:120]
+        else:
+            settings_data.pop("avito_webhook_error", None)
+        locked.settings = settings_data
+        locked.save(update_fields=["settings"])
+        connection.settings = settings_data
 
 
 @login_required
@@ -682,16 +685,28 @@ def communication_avito_connect(request, connection_id):
         locked.save(update_fields=["api_token_hash"])
         connection.api_token_hash = locked.api_token_hash
 
+    registration_error = None
     try:
         avito_subscribe_webhook(connection, callback_url)
+    except AvitoError as exc:
+        # The provider may have accepted the subscription even when its response
+        # was lost. Verify the authoritative subscription list before rollback.
+        registration_error = exc
+
+    try:
         verified_urls = avito_webhook_subscriptions(connection)
         verified = any(
             _avito_subscription_token(request, connection, value) == token
             for value in verified_urls
         )
-        if not verified:
-            raise AvitoError("provider_webhook_not_confirmed")
     except AvitoError as exc:
+        verified_urls = []
+        verified = False
+        if registration_error is None:
+            registration_error = exc
+
+    if not verified:
+        rolled_back = False
         with transaction.atomic():
             locked = ChannelConnection.objects.select_for_update().get(pk=connection.pk)
             # Do not clobber a newer concurrent reconnect.
@@ -699,11 +714,19 @@ def communication_avito_connect(request, connection_id):
                 locked.api_token_hash = old_hash
                 locked.save(update_fields=["api_token_hash"])
                 connection.api_token_hash = old_hash
-        _set_avito_webhook_status(connection, "error", error=str(exc))
-        messages.error(
-            request,
-            "Авито не подтвердило webhook. Проверьте client_id, client_secret, доступ Messenger API и повторите подключение.",
-        )
+                rolled_back = True
+        if rolled_back:
+            error = registration_error or AvitoError("provider_webhook_not_confirmed")
+            _set_avito_webhook_status(connection, "error", error=str(error))
+            messages.error(
+                request,
+                "Авито не подтвердило webhook. Проверьте client_id, client_secret, доступ Messenger API и повторите подключение.",
+            )
+        else:
+            messages.warning(
+                request,
+                "Подключение Авито уже было изменено другим запросом. Обновите страницу и проверьте статус.",
+            )
         return redirect("communications_channels")
 
     for stale_url in existing_urls:
