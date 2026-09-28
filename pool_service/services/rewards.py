@@ -35,6 +35,16 @@ def money(value):
     return Decimal(value or 0).quantize(MONEY, rounding=ROUND_HALF_UP)
 
 
+def _source_mapping(value):
+    """Treat historical/irregular source_data as optional metadata, never as a page-fatal value."""
+    return value if isinstance(value, dict) else {}
+
+
+def _source_text(value):
+    """Normalize optional persisted source metadata before string operations."""
+    return "" if value is None else str(value).strip()
+
+
 def month_start(value):
     if isinstance(value, date):
         return value.replace(day=1)
@@ -200,7 +210,7 @@ def create_scheme_version(organization, user, *, effective_from, values):
 
 
 def _is_documentation_reward_source(row):
-    data = row.source_data or {}
+    data = _source_mapping(row.source_data)
     return (
         data.get("row_kind") != "direct_order_expense"
         and data.get("recorder_type") not in {RETAIL_REPORT, MONTH_CLOSE}
@@ -209,7 +219,7 @@ def _is_documentation_reward_source(row):
 
 
 def _row_document_key(row):
-    data = row.source_data or {}
+    data = _source_mapping(row.source_data)
     recorder_type = data.get("recorder_type") or ""
     recorder = str(data.get("recorder") or row.source_recorder or "")
     return f"odata-source:{row.organization_id}:{recorder_type}:{recorder}"
@@ -318,7 +328,7 @@ def _resolve_missing_author_placeholder(organization, user, period_month, key):
 
 
 def _ensure_required_documentation(organization, user, period_month, key, row, *, basis, author_identity=None):
-    data = row.source_data or {}
+    data = _source_mapping(row.source_data)
     existing = RewardParticipation.objects.filter(
         organization=organization,
         period_month=period_month,
@@ -428,7 +438,7 @@ def sync_author_proposals(organization, user, period_month):
     rows = active_profit_rows(organization, period_month)
     by_doc = {}
     for row in rows:
-        data = row.source_data or {}
+        data = _source_mapping(row.source_data)
         if not _is_documentation_reward_source(row):
             continue
         recorder_type = data.get("recorder_type")
@@ -440,7 +450,7 @@ def sync_author_proposals(organization, user, period_month):
     created = 0
     issues = 0
     for key, row in by_doc.items():
-        data = row.source_data or {}
+        data = _source_mapping(row.source_data)
         author_guid = (data.get("author_guid") or "").strip()
         author_name = (data.get("author_name") or "").strip()
         if not author_guid:
@@ -742,7 +752,7 @@ def _fixed_for(document_type, scheme):
 def _author_sync_issue_count(organization, period_month, rows):
     current_documents = {}
     for row in rows:
-        data = row.source_data or {}
+        data = _source_mapping(row.source_data)
         if not _is_documentation_reward_source(row):
             continue
         current_documents.setdefault(_row_document_key(row), row)
@@ -760,7 +770,7 @@ def _author_sync_issue_count(organization, period_month, rows):
     )
     issue_count += len(active_generated_keys.difference(current_documents))
     for key, row in current_documents.items():
-        expected_guid = ((row.source_data or {}).get("author_guid") or "").strip()
+        expected_guid = _source_text(_source_mapping(row.source_data).get("author_guid"))
         all_proposals = list(
             RewardParticipation.objects.filter(
                 organization=organization,
@@ -837,14 +847,14 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
     business_scopes = defaultdict(list)
     source_documents = {}
     for row in rows:
-        row_data = row.source_data or {}
+        row_data = _source_mapping(row.source_data)
         business_scopes[_row_business_scope_key(row)].append(row)
         if _is_documentation_reward_source(row):
             source_documents.setdefault(_row_document_key(row), row)
     for business_key, scope_rows in business_scopes.items():
         sale_rows = [
             row for row in scope_rows
-            if (row.source_data or {}).get("row_kind") != "direct_order_expense"
+            if _source_mapping(row.source_data).get("row_kind") != "direct_order_expense"
         ]
         if sale_rows and (business_key, RewardParticipation.ROLE_SALE) not in participation_keys:
             issues.append({
@@ -952,7 +962,7 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
             )
             moved_all_lines = [
                 row for row in aliased_rows
-                if (row.source_data or {}).get("row_kind") != "direct_order_expense"
+                if _source_mapping(row.source_data).get("row_kind") != "direct_order_expense"
                 and _row_business_scope_key(row)
                 != confirmed[0].source_document_key
             ]
@@ -973,11 +983,11 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
             full_scope = rows_by_document.get(confirmed[0].source_document_key, [])
             direct_cost_rows = [
                 row for row in full_scope
-                if (row.source_data or {}).get("row_kind") == "direct_order_expense"
+                if _source_mapping(row.source_data).get("row_kind") == "direct_order_expense"
             ]
             business_line_ids = {
                 row.source_identity for row in full_scope
-                if (row.source_data or {}).get("row_kind") != "direct_order_expense"
+                if _source_mapping(row.source_data).get("row_kind") != "direct_order_expense"
             }
             selected_ids = set(confirmed[0].scope_line_identities)
             if direct_cost_rows and selected_ids != business_line_ids:
@@ -1200,7 +1210,7 @@ def close_month(organization, user, period_month):
 
 def _row_business_scope_key(row):
     """Stable order scope when available; otherwise the original sale document."""
-    data = row.source_data or {}
+    data = _source_mapping(row.source_data)
     order_guid = data.get("resolved_order_guid") or data.get("direct_expense_order_guid")
     if order_guid:
         return f"odata-order:{row.organization_id}:{str(order_guid).lower()}"
@@ -1218,19 +1228,19 @@ def reward_document_options(organization, period_month):
     for scope_key, scope_rows in groups.items():
         sale_rows = [
             row for row in scope_rows
-            if (row.source_data or {}).get("row_kind") != "direct_order_expense"
+            if _source_mapping(row.source_data).get("row_kind") != "direct_order_expense"
         ]
         primary = sale_rows[0] if sale_rows else scope_rows[0]
         data = primary.source_data or {}
-        label = (
+        label = _source_text(
             data.get("resolved_order_display")
             or data.get("document_display")
             or primary.document_name
             or scope_key
-        )
+        ) or scope_key
         lines = []
         for row in scope_rows:
-            row_data = row.source_data or {}
+            row_data = _source_mapping(row.source_data)
             gp = _row_gp(row)
             lines.append({
                 "identity": row.source_identity,
@@ -1245,14 +1255,14 @@ def reward_document_options(organization, period_month):
         result.append({
             "scope_key": scope_key,
             "label": label,
-            "customer": primary.customer_name,
+            "customer": _source_text(primary.customer_name),
             "source_document_type": data.get("recorder_type") or "",
             "source_document_guid": str(data.get("recorder") or primary.source_recorder or ""),
             "source_document_number": data.get("document_number") or data.get("resolved_order_number") or "",
             "source_document_date": _safe_date(data.get("document_date") or data.get("resolved_order_date") or data.get("source_date")),
             "lines": lines,
         })
-    result.sort(key=lambda item: ((item["customer"] or "").casefold(), item["label"].casefold()))
+    result.sort(key=lambda item: (item["customer"].casefold(), item["label"].casefold()))
     return result
 
 
