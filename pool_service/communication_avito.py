@@ -195,8 +195,8 @@ def webhook_subscriptions(connection):
         if not isinstance(item, dict):
             continue
         value = item.get("url")
-        if isinstance(value, str) and value:
-            urls.append(value[:2048])
+        if isinstance(value, str) and 0 < len(value) <= 2048:
+            urls.append(value)
     return urls
 
 
