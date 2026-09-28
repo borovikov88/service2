@@ -313,7 +313,7 @@ def _connection_setup_result(request, connection, secret_value, *, secret_kind):
         callback_url = request.build_absolute_uri(
             reverse("avito_webhook", args=[connection.public_id, secret_value])
         )
-    return render(
+    response = render(
         request,
         "pool_service/communications/connection_secret.html",
         {
@@ -327,6 +327,10 @@ def _connection_setup_result(request, connection, secret_value, *, secret_kind):
             "instructions": instructions,
         },
     )
+    response["Cache-Control"] = "no-store"
+    response["Pragma"] = "no-cache"
+    response["Referrer-Policy"] = "no-referrer"
+    return response
 
 
 def _communication_provider_channel(organization, kind):
