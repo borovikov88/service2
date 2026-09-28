@@ -173,6 +173,8 @@ def plan_status_context(request):
     from pool_service.services.finance import automatic_lock_is_disabled
 
     accesses = organization_accesses_for_user(user)
+    from pool_service.communication_models import CommunicationAccess
+    communication_access = CommunicationAccess.objects.filter(user=user)
     personal_user = is_personal_user(user)
     org_roles = [access.role for access in accesses]
     operational_roles = {"owner", "admin", "manager", "service", "installer"}
@@ -211,6 +213,8 @@ def plan_status_context(request):
         "is_org_admin": is_org_admin,
         "is_org_staff": is_org_staff,
         "can_access_crm": can_access_crm,
+        "can_access_communications": user.is_superuser or communication_access.filter(can_view_conversations=True).exists(),
+        "can_manage_communication_channels": user.is_superuser or communication_access.filter(can_manage_channels=True).exists(),
         "can_access_finance": can_access_finance,
         "can_manage_company_cash": can_manage_company_cash,
         "can_access_kkm_cash": can_access_kkm_cash,

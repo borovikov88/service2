@@ -2,6 +2,14 @@ from django.contrib import admin
 from import_export import resources
 from import_export.admin import ImportExportModelAdmin
 from .models import Client, Pool, WaterReading, Organization, PoolAccess, OrganizationAccess
+from .communication_models import (
+    CommunicationAccess,
+    ChannelConnection,
+    CommunicationChannel,
+    Conversation,
+    PhoneCall,
+    TelephonyConnection,
+)
 from django.utils.html import format_html
 
 # Inline classes
@@ -47,3 +55,32 @@ class PoolAdmin(admin.ModelAdmin):
 @admin.register(Client)
 class ClientAdmin(admin.ModelAdmin):
     list_display = ('name',)
+
+
+class CommunicationSuperuserAdmin(admin.ModelAdmin):
+    """Provider and cross-organization communication data is superuser-only."""
+
+    def has_module_permission(self, request):
+        return request.user.is_superuser
+
+    def has_view_permission(self, request, obj=None):
+        return request.user.is_superuser
+
+    def has_add_permission(self, request):
+        return request.user.is_superuser
+
+    def has_change_permission(self, request, obj=None):
+        return request.user.is_superuser
+
+    def has_delete_permission(self, request, obj=None):
+        return request.user.is_superuser
+
+
+admin.site.register(CommunicationChannel, CommunicationSuperuserAdmin)
+admin.site.register(ChannelConnection, CommunicationSuperuserAdmin)
+admin.site.register(CommunicationAccess, CommunicationSuperuserAdmin)
+admin.site.register(Conversation, CommunicationSuperuserAdmin)
+admin.site.register(TelephonyConnection, CommunicationSuperuserAdmin)
+admin.site.register(PhoneCall, CommunicationSuperuserAdmin)
+# Credentials are provisioned through the dedicated command and are not exposed
+# in Django admin, where encrypted values could otherwise be overwritten.

@@ -303,6 +303,7 @@
                   <i class="bi bi-people"></i>
                   <span>Клиенты</span>
                 </a>
+                {% if can_access_communications %}<a href="{% url 'communications_conversations' %}" class="ui-dropdown__item {% if active_tab == 'communications' %}is-active{% endif %}"><i class="bi bi-chat-dots"></i><span>Коммуникации</span></a>{% endif %}
                 {% endif %}
               </div>
             </div>
@@ -322,6 +323,7 @@
           {% if is_org_staff %}
             <a class="text-decoration-none {% if active_tab == 'clients' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'clients_list' %}">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;</a>
           {% endif %}
+          {% if can_access_communications %}<a class="text-decoration-none {% if active_tab == 'communications' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'communications_conversations' %}">Коммуникации</a>{% endif %}
           {% if can_access_management_finance %}
             <div class="crm-nav">
               <a class="crm-nav__link text-decoration-none {% if active_finance_area == 'management' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'finance_dashboard' %}">Управленческие финансы</a>
@@ -619,6 +621,9 @@
     {% endif %}
   </div>
   <div id="offline-toast" class="offline-toast"></div>
+  {% if user.is_authenticated and can_access_communications %}
+  <div id="communication-alerts" class="position-fixed bottom-0 end-0 p-3 d-flex flex-column gap-2" style="z-index:1095;max-width:min(420px,100vw);"></div>
+  {% endif %}
   {% if security_show_quick_setup_prompt and not hide_header %}
   <div class="modal fade" id="quickSecuritySetupModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
     <div class="modal-dialog modal-dialog-centered">
@@ -793,6 +798,91 @@
         const toast = new bootstrap.Toast(el, { delay: 4000 });
         toast.show();
       });
+
+      const communicationAlerts = document.getElementById("communication-alerts");
+      if (communicationAlerts) {
+        const feedUrl = "{% url 'communication_notification_feed' %}";
+        const resolveTemplate = "{% url 'communication_notification_resolve' 0 %}";
+        let communicationPollRunning = false;
+        const resolveNotification = async (id) => {
+          const url = resolveTemplate.replace("/0/", `/${id}/`);
+          const response = await fetch(url, {
+            method: "POST",
+            headers: {"X-CSRFToken": getCsrfToken(), "X-Requested-With": "XMLHttpRequest"},
+            credentials: "same-origin",
+            keepalive: true,
+          });
+          if (!response.ok) throw new Error("notification_resolve_failed");
+        };
+        const renderCommunicationAlert = (notification) => {
+          if (document.getElementById(`communication-alert-${notification.id}`)) return;
+          const alert = document.createElement("div");
+          alert.id = `communication-alert-${notification.id}`;
+          alert.dataset.notificationId = notification.id;
+          alert.className = "card border-primary shadow p-3";
+          alert.setAttribute("role", "alert");
+          const header = document.createElement("div");
+          header.className = "d-flex justify-content-between align-items-start gap-3";
+          const content = document.createElement("div");
+          const title = document.createElement("div");
+          title.className = "fw-semibold";
+          title.textContent = notification.title;
+          const message = document.createElement("div");
+          message.className = "small mt-1";
+          message.textContent = notification.message;
+          const open = document.createElement("a");
+          open.className = "btn btn-sm btn-primary mt-2";
+          open.href = notification.action_url;
+          open.textContent = "Открыть диалог";
+          open.addEventListener("click", () => resolveNotification(notification.id).catch(() => {}));
+          const close = document.createElement("button");
+          close.type = "button";
+          close.className = "btn-close";
+          close.setAttribute("aria-label", "Закрыть уведомление");
+          close.addEventListener("click", async () => {
+            close.disabled = true;
+            try {
+              await resolveNotification(notification.id);
+              alert.remove();
+            } catch (_error) {
+              close.disabled = false;
+            }
+          });
+          content.append(title, message, open);
+          header.append(content, close);
+          alert.append(header);
+          communicationAlerts.append(alert);
+        };
+        const pollCommunicationAlerts = async () => {
+          if (document.visibilityState !== "visible" || communicationPollRunning) return;
+          communicationPollRunning = true;
+          try {
+            const visibleIds = Array.from(communicationAlerts.querySelectorAll("[data-notification-id]"))
+              .map((element) => element.dataset.notificationId)
+              .filter(Boolean);
+            const batches = visibleIds.length
+              ? Array.from({length: Math.ceil(visibleIds.length / 20)}, (_, index) => visibleIds.slice(index * 20, (index + 1) * 20))
+              : [[]];
+            for (const batch of batches) {
+              const url = new URL(feedUrl, window.location.origin);
+              if (batch.length) url.searchParams.set("visible", batch.join(","));
+              const response = await fetch(url, {headers: {"Accept": "application/json"}, credentials: "same-origin"});
+              if (!response.ok) continue;
+              const payload = await response.json();
+              (payload.resolved_ids || []).forEach((id) => {
+                document.getElementById(`communication-alert-${id}`)?.remove();
+              });
+              (payload.notifications || []).forEach(renderCommunicationAlert);
+            }
+          } catch (_error) {
+            // Notifications are best-effort; regular pages must remain usable.
+          } finally {
+            communicationPollRunning = false;
+          }
+        };
+        pollCommunicationAlerts();
+        window.setInterval(pollCommunicationAlerts, 15000);
+      }
 
       // сбрасываем состояние мобильного меню при загрузке
       closeMenu();

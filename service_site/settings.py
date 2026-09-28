@@ -408,3 +408,7 @@ CKEDITOR_5_CONFIGS = {
 
 # Confirmed individual catalog kinds withheld from gross payroll.
 ONEC_ODATA_PAYROLL_WITHHOLDING_GUIDS = os.getenv("ONEC_ODATA_PAYROLL_WITHHOLDING_GUIDS", "")
+
+# Stable application-level key for encrypted provider credentials. In production
+# this should be set independently so Django SECRET_KEY can be rotated safely.
+COMMUNICATION_CREDENTIAL_KEY = os.getenv("COMMUNICATION_CREDENTIAL_KEY", "")
