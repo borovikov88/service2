@@ -313,6 +313,152 @@ class CommunicationsTests(TestCase):
         self.assertTrue(foreign_channel.is_active)
         self.assertTrue(foreign_connection.is_active)
 
+    def test_owner_can_create_website_connection_and_token_is_shown_once(self):
+        self.client.login(username="owner", password="test")
+        with patch("pool_service.communication_views.secrets.token_urlsafe", return_value="website-one-time-token"):
+            response = self.client.post(
+                reverse("communication_connection_create", args=["website"]),
+                {
+                    "name": "Основной сайт",
+                    "external_id": "aqualine22.ru",
+                    "is_active": "on",
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "website-one-time-token")
+        self.assertEqual(response["Cache-Control"], "no-store")
+        self.assertEqual(response["Referrer-Policy"], "no-referrer")
+        connection = ChannelConnection.objects.get(
+            channel__organization=self.organization,
+            channel__kind="website",
+            external_id="aqualine22.ru",
+        )
+        self.assertTrue(connection.check_api_token("website-one-time-token"))
+        edit_page = self.client.get(
+            reverse("communication_connection_edit", args=[connection.pk])
+        )
+        self.assertEqual(edit_page.status_code, 200)
+        self.assertNotContains(edit_page, "website-one-time-token")
+
+    def test_owner_can_create_avito_connection_with_encrypted_credentials_and_rotate_webhook(self):
+        self.client.login(username="owner", password="test")
+        with patch("pool_service.communication_views.secrets.token_urlsafe", return_value="avito-webhook-one"):
+            response = self.client.post(
+                reverse("communication_connection_create", args=["avito"]),
+                {
+                    "name": "Основной Авито",
+                    "external_id": "123456789",
+                    "client_id": "avito-client-id",
+                    "client_secret": "avito-client-secret",
+                    "is_active": "on",
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "avito-webhook-one")
+        connection = ChannelConnection.objects.get(
+            channel=self.channel,
+            external_id="123456789",
+        )
+        credential = AvitoCredential.objects.get(connection=connection)
+        self.assertNotEqual(credential.client_id_encrypted, "avito-client-id")
+        self.assertNotEqual(credential.client_secret_encrypted, "avito-client-secret")
+        self.assertEqual(decrypt_secret(credential.client_id_encrypted), "avito-client-id")
+        self.assertEqual(
+            decrypt_secret(credential.client_secret_encrypted),
+            "avito-client-secret",
+        )
+        self.assertTrue(connection.check_api_token("avito-webhook-one"))
+
+        with patch("pool_service.communication_views.secrets.token_urlsafe", return_value="avito-webhook-two"):
+            rotated = self.client.post(
+                reverse("communication_connection_rotate_token", args=[connection.pk])
+            )
+        self.assertEqual(rotated.status_code, 200)
+        self.assertContains(rotated, "avito-webhook-two")
+        connection.refresh_from_db()
+        self.assertFalse(connection.check_api_token("avito-webhook-one"))
+        self.assertTrue(connection.check_api_token("avito-webhook-two"))
+
+    def test_manager_cannot_open_channel_setup_pages(self):
+        self.client.login(username="worker", password="test")
+        self.assertEqual(
+            self.client.get(
+                reverse("communication_connection_create", args=["website"])
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.get(reverse("communication_connection_edit", args=[self.connection.pk])).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.get(reverse("communication_telephony_create")).status_code,
+            403,
+        )
+
+    def test_owner_can_create_and_edit_megafon_line_with_safe_recording_hosts(self):
+        self.client.login(username="owner", password="test")
+        created = self.client.post(
+            reverse("communication_telephony_create"),
+            {
+                "name": "Мегафон офис",
+                "external_id": "line-1",
+                "recording_allowed_hosts": "records.megafon.example\nmedia.megafon.example",
+                "is_active": "on",
+            },
+        )
+        self.assertEqual(created.status_code, 302)
+        line = TelephonyConnection.objects.get(
+            organization=self.organization, external_id="line-1"
+        )
+        self.assertEqual(
+            line.recording_allowed_hosts,
+            ["records.megafon.example", "media.megafon.example"],
+        )
+
+        invalid = self.client.post(
+            reverse("communication_telephony_edit", args=[line.pk]),
+            {
+                "name": "Мегафон офис",
+                "external_id": "line-1",
+                "recording_allowed_hosts": "https://records.example/path",
+                "is_active": "on",
+            },
+        )
+        self.assertEqual(invalid.status_code, 200)
+        self.assertContains(invalid, "только доменное имя")
+
+    def test_channel_settings_are_organization_scoped(self):
+        foreign_organization = Organization.objects.create(name="Foreign setup org")
+        foreign_channel = CommunicationChannel.objects.create(
+            organization=foreign_organization,
+            kind="website",
+            name="Foreign site",
+        )
+        foreign_connection = ChannelConnection.objects.create(
+            channel=foreign_channel,
+            name="Foreign connection",
+            external_id="foreign",
+        )
+        foreign_line = TelephonyConnection.objects.create(
+            organization=foreign_organization,
+            name="Foreign line",
+            external_id="foreign-line",
+        )
+        self.client.login(username="owner", password="test")
+        self.assertEqual(
+            self.client.get(
+                reverse("communication_connection_edit", args=[foreign_connection.pk])
+            ).status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.get(
+                reverse("communication_telephony_edit", args=[foreign_line.pk])
+            ).status_code,
+            404,
+        )
+
     def test_communication_notification_feed_is_persistent_and_user_scoped(self):
         own_notification = Notification.objects.create(
             user=self.worker,
