@@ -664,7 +664,13 @@ def communication_avito_connect(request, connection_id):
 
     old_hash = connection.api_token_hash
     token = secrets.token_urlsafe(32)
-    callback_url = _avito_callback_url(request, connection, token)
+    try:
+        callback_url = _avito_callback_url(request, connection, token)
+    except AvitoError as exc:
+        _set_avito_webhook_status(connection, "error", error=str(exc))
+        messages.error(request, "Service2 не смог сформировать защищённый HTTPS webhook URL.")
+        return redirect("communications_channels")
+
     connection.set_api_token(token)
     connection.save(update_fields=["api_token_hash"])
 
