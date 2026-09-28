@@ -14,6 +14,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.cache import never_cache
+from django.views.decorators.debug import sensitive_post_parameters, sensitive_variables
 from django.views.decorators.http import require_POST
 from django.views.decorators.csrf import ensure_csrf_cookie
 
@@ -387,6 +388,7 @@ def channels(request):
 
 @login_required
 @never_cache
+@sensitive_variables("token")
 def website_connection_create(request):
     organization = _context(request, "can_manage_channels")
     form = WebsiteConnectionForm(request.POST or None)
@@ -481,6 +483,7 @@ def website_connection_edit(request, connection_id):
 
 @login_required
 @require_POST
+@sensitive_variables("token")
 def website_connection_rotate_token(request, connection_id):
     organization = _context(request, "can_manage_channels")
     connection = get_object_or_404(
@@ -502,6 +505,8 @@ def website_connection_rotate_token(request, connection_id):
 
 @login_required
 @never_cache
+@sensitive_post_parameters("client_id", "client_secret")
+@sensitive_variables("form", "webhook_token")
 def avito_connection_create(request):
     organization = _context(request, "can_manage_channels")
     form = AvitoConnectionForm(request.POST or None, require_credentials=True)
@@ -557,6 +562,8 @@ def avito_connection_create(request):
 
 @login_required
 @never_cache
+@sensitive_post_parameters("client_id", "client_secret")
+@sensitive_variables("form", "one_time_secret")
 def avito_connection_edit(request, connection_id):
     organization = _context(request, "can_manage_channels")
     connection = get_object_or_404(
@@ -626,6 +633,7 @@ def avito_connection_edit(request, connection_id):
 
 @login_required
 @require_POST
+@sensitive_variables("webhook_token")
 def avito_connection_rotate_webhook(request, connection_id):
     organization = _context(request, "can_manage_channels")
     connection = get_object_or_404(
