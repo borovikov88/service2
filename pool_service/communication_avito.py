@@ -2,7 +2,7 @@ import json
 from dataclasses import dataclass
 from datetime import timedelta
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from django.conf import settings
@@ -151,6 +151,84 @@ def access_token(connection):
     credential.access_token_expires_at = now + timedelta(seconds=expires_in)
     credential.save(update_fields=["access_token_encrypted", "access_token_expires_at", "updated_at"])
     return token
+
+
+def _provider_root():
+    return getattr(settings, "AVITO_API_ROOT", AVITO_API_ROOT).rstrip("/")
+
+
+def _webhook_url(value):
+    if not isinstance(value, str) or not value or len(value) > 2048:
+        raise AvitoError("provider_webhook_url_invalid")
+    try:
+        parsed = urlsplit(value)
+        parsed.port
+    except ValueError as exc:
+        raise AvitoError("provider_webhook_url_invalid") from exc
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.fragment
+    ):
+        raise AvitoError("provider_webhook_url_invalid")
+    return value
+
+
+def webhook_subscriptions(connection):
+    token = access_token(connection)
+    response = _json_request(
+        f"{_provider_root()}/messenger/v1/subscriptions",
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        data=b"{}",
+    )
+    subscriptions = response.get("subscriptions")
+    if not isinstance(subscriptions, list):
+        raise AvitoError("provider_subscriptions_invalid")
+    urls = []
+    for item in subscriptions:
+        if not isinstance(item, dict):
+            continue
+        value = item.get("url")
+        if isinstance(value, str) and value:
+            urls.append(value[:2048])
+    return urls
+
+
+def subscribe_webhook(connection, url):
+    url = _webhook_url(url)
+    token = access_token(connection)
+    return _json_request(
+        f"{_provider_root()}/messenger/v3/webhook",
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        data=json.dumps({"url": url}).encode("utf-8"),
+    )
+
+
+def unsubscribe_webhook(connection, url):
+    url = _webhook_url(url)
+    token = access_token(connection)
+    return _json_request(
+        f"{_provider_root()}/messenger/v1/webhook/unsubscribe",
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        data=json.dumps({"url": url}).encode("utf-8"),
+    )
 
 
 def send_message(message):
