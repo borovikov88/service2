@@ -685,7 +685,10 @@ def communication_avito_connect(request, connection_id):
     try:
         avito_subscribe_webhook(connection, callback_url)
         verified_urls = avito_webhook_subscriptions(connection)
-        verified = callback_url in verified_urls
+        verified = any(
+            _avito_subscription_token(request, connection, value) == token
+            for value in verified_urls
+        )
         if not verified:
             raise AvitoError("provider_webhook_not_confirmed")
     except AvitoError as exc:
