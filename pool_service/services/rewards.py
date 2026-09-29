@@ -406,7 +406,18 @@ def reward_profit_rows(organization, period_month):
                 _source_mapping(row.source_data).get("document_group_recorder")
             ).lower() in report_recorders
         ]
-        if not reports or not transactions or not mapped_checks or len(report_recorders) != 1:
+        only_returns = bool(transactions) and all(
+            _source_mapping(row.source_data).get("recorder_type")
+            == RETAIL_RETURN
+            for row in transactions
+        )
+        if (
+            not reports
+            or not transactions
+            or (not mapped_checks and not only_returns)
+            or len(report_recorders) != 1
+            or any(Decimal(row.revenue or 0) != 0 for row in reports)
+        ):
             result.extend(day_rows)
             continue
 
