@@ -15,6 +15,7 @@ from pool_service.services.rewards import (
     cancel_pending_participation,
     confirm_participation,
     create_manual_participation,
+    create_manual_participations_batch,
     create_scheme_version,
     ensure_test_scheme,
     reward_document_options,
@@ -23,6 +24,7 @@ from pool_service.services.rewards import (
     scheme_for_month,
     sync_author_proposals,
     sync_reward_rules,
+    update_order_participation,
     update_participation_share,
 )
 
@@ -470,6 +472,97 @@ class EmployeeRewardCalculationTests(TestCase):
         self.assertEqual(item.share, Decimal("0.600000"))
         self.assertTrue(item.changes.filter(reason="Изменение доли участия").exists())
 
+
+    def test_batch_participants_save_atomically(self):
+        row = self.add_row(1, "10000.00", kind="Работа")
+        document = reward_document_options(self.org, self.month)[0]
+        with self.assertRaisesMessage(Exception, "не может превышать 100%"):
+            create_manual_participations_batch(
+                self.org,
+                self.user,
+                self.month,
+                document_key=document["scope_key"],
+                assignments=[
+                    {
+                        "employee": self.e1,
+                        "role": RewardParticipation.ROLE_WORK,
+                        "share": Decimal("1"),
+                        "line_identities": [row.source_identity],
+                    },
+                    {
+                        "employee": self.e2,
+                        "role": RewardParticipation.ROLE_WORK,
+                        "share": Decimal("1"),
+                        "line_identities": [row.source_identity],
+                    },
+                ],
+            )
+        self.assertFalse(
+            RewardParticipation.objects.filter(
+                organization=self.org,
+                period_month=self.month,
+                role=RewardParticipation.ROLE_WORK,
+            ).exists()
+        )
+
+    def test_batch_participants_can_split_one_role_between_employees(self):
+        row = self.add_row(1, "10000.00", kind="Работа")
+        document = reward_document_options(self.org, self.month)[0]
+        created = create_manual_participations_batch(
+            self.org,
+            self.user,
+            self.month,
+            document_key=document["scope_key"],
+            assignments=[
+                {
+                    "employee": self.e1,
+                    "role": RewardParticipation.ROLE_WORK,
+                    "share": Decimal("0.5"),
+                    "line_identities": [row.source_identity],
+                },
+                {
+                    "employee": self.e2,
+                    "role": RewardParticipation.ROLE_WORK,
+                    "share": Decimal("0.5"),
+                    "line_identities": [row.source_identity],
+                },
+            ],
+        )
+        self.assertEqual(len(created), 2)
+        self.assertEqual(
+            sum((item.share for item in created), Decimal("0")),
+            Decimal("1.000000"),
+        )
+
+    def test_existing_participant_can_be_edited_with_audit(self):
+        row = self.add_row(1, "10000.00", kind="Работа")
+        document = reward_document_options(self.org, self.month)[0]
+        item = create_manual_participation(
+            self.org,
+            self.user,
+            self.month,
+            document_key=document["scope_key"],
+            employee=self.e1,
+            role=RewardParticipation.ROLE_SALE,
+            share=Decimal("1"),
+        )
+        update_order_participation(
+            item,
+            self.user,
+            employee=self.e2,
+            role=RewardParticipation.ROLE_WORK,
+            share=Decimal("0.5"),
+            line_identities=[row.source_identity],
+        )
+        item.refresh_from_db()
+        self.assertEqual(item.employee, self.e2)
+        self.assertEqual(item.role, RewardParticipation.ROLE_WORK)
+        self.assertEqual(item.share, Decimal("0.500000"))
+        self.assertEqual(item.scope_line_identities, [row.source_identity])
+        self.assertEqual(item.assignment_source, RewardParticipation.SOURCE_MANUAL)
+        self.assertTrue(
+            item.changes.filter(reason="Редактирование участника заказа").exists()
+        )
 
     def test_scheme_accepts_localized_fixed_amounts_with_comma(self):
         updated = create_scheme_version(

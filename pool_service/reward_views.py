@@ -31,6 +31,7 @@ from pool_service.services.rewards import (
     confirm_participation,
     confirm_participation_batch,
     create_manual_participation,
+    create_manual_participations_batch,
     create_scheme_version,
     ensure_test_scheme,
     map_author,
@@ -41,6 +42,7 @@ from pool_service.services.rewards import (
     reward_order_workspace,
     sync_author_proposals,
     sync_reward_rules,
+    update_order_participation,
     update_participation_share,
 )
 
@@ -272,6 +274,77 @@ def employee_rewards(request):
                     basis="Ручное назначение руководителем в карточке заказа",
                 )
                 messages.success(request, "Участник сохранён и сразу подтверждён.")
+            elif action == "add_participations_batch":
+                total = int(request.POST.get("participants_total") or 0)
+                if total < 1 or total > 20:
+                    raise ValidationError(
+                        "Добавьте от 1 до 20 участников за одно сохранение."
+                    )
+                assignments = []
+                for index in range(total):
+                    employee_id = (request.POST.get(
+                        f"participant_{index}_employee_id"
+                    ) or "").strip()
+                    role = (request.POST.get(
+                        f"participant_{index}_role"
+                    ) or "").strip()
+                    share_raw = (request.POST.get(
+                        f"participant_{index}_share_percent"
+                    ) or "").strip()
+                    line_identities = request.POST.getlist(
+                        f"participant_{index}_line_identity"
+                    )
+                    if not employee_id and not role and not share_raw:
+                        continue
+                    employee = get_object_or_404(
+                        Employee,
+                        pk=employee_id,
+                        organization=organization,
+                    )
+                    assignments.append({
+                        "employee": employee,
+                        "role": role,
+                        "share": _percent_value(
+                            share_raw,
+                            f"Строка {index + 1}: доля участия",
+                        ),
+                        "line_identities": line_identities,
+                    })
+                created = create_manual_participations_batch(
+                    organization,
+                    request.user,
+                    period_month,
+                    document_key=request.POST.get("document_key", ""),
+                    assignments=assignments,
+                )
+                messages.success(
+                    request,
+                    f"Сохранено участников: {len(created)}.",
+                )
+            elif action == "edit_participation":
+                item = get_object_or_404(
+                    RewardParticipation,
+                    pk=request.POST.get("participation_id"),
+                    organization=organization,
+                    period_month=period_month,
+                )
+                employee = get_object_or_404(
+                    Employee,
+                    pk=request.POST.get("employee_id"),
+                    organization=organization,
+                )
+                update_order_participation(
+                    item,
+                    request.user,
+                    employee=employee,
+                    role=request.POST.get("role", ""),
+                    share=_percent_value(
+                        request.POST.get("share_percent"),
+                        "Доля участия",
+                    ),
+                    line_identities=request.POST.getlist("line_identity"),
+                )
+                messages.success(request, "Участник обновлён.")
             elif action == "mark_not_applicable":
                 create_manual_participation(
                     organization,
