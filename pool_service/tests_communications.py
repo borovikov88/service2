@@ -1320,6 +1320,20 @@ class AvitoCommunicationTests(TestCase):
                     }
                 ]
             },
+            {"id": 12345},
+            {
+                "chats": [
+                    {
+                        "id": "chat-recovery",
+                        "users": [
+                            {
+                                "name": "Клиент",
+                                "public_user_profile": {"user_id": 67890},
+                            }
+                        ],
+                    }
+                ]
+            },
         ]
         list_request.return_value = [
             {
