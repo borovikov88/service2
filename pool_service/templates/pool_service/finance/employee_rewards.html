@@ -1,147 +1,326 @@
-{% extends "pool_service/base.html" %}
-{% load finance_tags %}
+{% extends "base.html" %}
+{% load finance_extras %}
 {% block title %}Вознаграждения сотрудников{% endblock %}
 {% block content %}
-{% include "pool_service/finance/_desktop_workspace_styles.html" %}
-<div class="finance-desktop">
-  <div class="finance-page-header d-flex justify-content-between align-items-start gap-3 mb-3">
+<style>
+.reward-page{max-width:1500px;margin:0 auto}
+.reward-tabs{display:flex;gap:.5rem;overflow:auto;padding-bottom:.25rem}
+.reward-tabs .btn{white-space:nowrap}
+.reward-order{border:1px solid var(--bs-border-color);border-radius:.75rem;background:var(--bs-body-bg);margin-bottom:.75rem}
+.reward-order>summary{list-style:none;cursor:pointer;padding:1rem}
+.reward-order>summary::-webkit-details-marker{display:none}
+.reward-order-body{border-top:1px solid var(--bs-border-color);padding:1rem}
+.reward-order-title{display:flex;gap:.75rem;align-items:flex-start;justify-content:space-between}
+.reward-kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.5rem;margin-top:.75rem}
+.reward-kpi{background:var(--bs-tertiary-bg);border-radius:.5rem;padding:.55rem .7rem}
+.reward-kpi small{display:block;color:var(--bs-secondary-color)}
+.reward-badges{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.6rem}
+.reward-role{border:1px solid var(--bs-border-color);border-radius:.6rem;padding:.75rem;margin-bottom:.6rem}
+.reward-role-head{display:flex;justify-content:space-between;gap:.75rem;align-items:flex-start}
+.reward-lines-mobile{display:none}
+.reward-add-panel{background:var(--bs-tertiary-bg);border-radius:.65rem;padding:.8rem}
+.reward-form-error{display:none}
+.reward-employee-detail{margin-top:.4rem}
+.reward-attention{border-left:4px solid var(--bs-warning)}
+@media(max-width:767.98px){
+  .reward-page{padding-left:.1rem;padding-right:.1rem}
+  .reward-order>summary,.reward-order-body{padding:.8rem}
+  .reward-order-title{display:block}
+  .reward-kpis{grid-template-columns:1fr 1fr}
+  .reward-kpi:last-child{grid-column:1/-1}
+  .reward-lines-table{display:none}
+  .reward-lines-mobile{display:block}
+  .reward-line-card{border-bottom:1px solid var(--bs-border-color);padding:.65rem 0}
+  .reward-role-head{display:block}
+  .reward-tabs{margin-left:-.25rem;margin-right:-.25rem}
+}
+</style>
+
+<div class="container-fluid py-3 reward-page">
+  <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between mb-3">
     <div>
       <h1 class="h3 mb-1">Вознаграждения сотрудников</h1>
-      <div class="text-muted">Тестовый расчёт — не начислено к выплате</div>
+      <div class="text-muted small">Клиент → заказ → позиции → сотрудники → роль → доля → результат в рублях</div>
     </div>
-    <a class="btn btn-outline-secondary" href="{% url 'finance_overview' %}">Назад к управленческим финансам</a>
-  </div>
-
-  <form class="card card-soft p-3 mb-3" method="get">
-    <div class="row g-2 align-items-end">
-      <div class="col-sm-4"><label class="form-label">Месяц</label><input class="form-control" type="month" name="month" value="{{ period_month|date:'Y-m' }}"></div>
-      <div class="col-sm-5"><label class="form-label">Сотрудник</label><select class="form-select" name="employee"><option value="">Все сотрудники</option>{% for employee in employees %}<option value="{{ employee.id }}" {% if request.GET.employee == employee.id|stringformat:"s" %}selected{% endif %}>{{ employee.display_name }}</option>{% endfor %}</select></div>
-      <div class="col-sm-3"><button class="btn btn-primary w-100">Показать</button></div>
-    </div>
-  </form>
-
-  {% if not data.scheme %}
-  <div class="alert alert-warning">Для месяца нет версии тестовой схемы.
-    {% if can_manage_rules %}<form class="d-inline" method="post">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="ensure_scheme"><button class="btn btn-sm btn-warning">Создать «Тестовую схему №1»</button></form>{% endif %}
-  </div>
-  {% endif %}
-
-  <div class="alert alert-info py-2"><strong>Тестовый расчёт — не начислено к выплате.</strong> Фактический ФОТ, выплаты и документы 1С не изменяются.{% if data.closed %} Месяц зафиксирован; показан закрытый snapshot.{% endif %}</div>
-  {% if data.reward_exceeds_gross_profit %}<div class="alert alert-danger py-2"><strong>Предупреждение:</strong> суммарный тестовый результат {{ data.total_test_reward|money }} превышает ВП месяца {{ data.month_gross_profit|money }}.</div>{% endif %}
-
-  {% if can_manage_participation %}
-  <form method="post" class="mb-3">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="sync_authors"><button class="btn btn-outline-primary">Обновить предложения по авторам из сохранённых данных 1С</button></form>
-  {% endif %}
-
-  <section class="card card-soft p-3 mb-4">
-    <h2 class="h5">Итоги по сотрудникам</h2>
-    <div class="table-responsive">
-      <table class="table table-hover align-middle mb-0" style="min-width:1180px">
-        <thead><tr><th>Сотрудник</th><th class="text-end">Оформлено</th><th class="text-end">Выручка продавца</th><th class="text-end">ВП продавца</th><th class="text-end">Фикс оформления</th><th class="text-end">Продажи</th><th class="text-end">Проект</th><th class="text-end">Работы</th><th class="text-end">Корректировки</th><th class="text-end">Общий тест</th><th class="text-end">Проверить</th></tr></thead>
-        <tbody>{% for row in data.employees %}<tr>
-          <td><a href="{% url 'finance_employee_reward_detail' row.employee_id %}?month={{ period_month|date:'Y-m' }}">{{ row.employee }}</a></td>
-          <td class="text-end">{{ row.documentation_count }}</td><td class="text-end">{{ row.seller_revenue|money }}</td><td class="text-end">{{ row.seller_gp|money }}</td>
-          <td class="text-end">{{ row.documentation_reward|money }}</td><td class="text-end">{{ row.sale_reward|money }}</td><td class="text-end">{{ row.project_reward|money }}</td><td class="text-end">{{ row.work_reward|money }}</td><td class="text-end">{{ row.adjustments|money }}</td><td class="text-end fw-semibold">{{ row.total|money }}</td><td class="text-end">{{ row.review_count }}</td>
-        </tr>{% empty %}<tr><td colspan="11" class="text-muted text-center py-4">Подтверждённых распределений пока нет.</td></tr>{% endfor %}</tbody>
-      </table>
-    </div>
-  </section>
-
-  <section class="card card-soft p-3 mb-4">
-    <h2 class="h5">Расшифровка</h2>
-    <div class="table-responsive"><table class="table table-sm align-middle mb-0" style="min-width:1100px"><thead><tr><th>Сотрудник</th><th>Клиент / объект</th><th>Документ</th><th>Роль</th><th class="text-end">База</th><th>Качество базы</th><th>Ставка / фикс</th><th class="text-end">Доля</th><th class="text-end">Сумма</th><th>Статус</th></tr></thead><tbody>
-      {% for row in data.details %}<tr><td>{{ row.employee }}</td><td>{{ row.customer|default:"—" }}</td><td>{{ row.document }}</td><td>{{ row.role }}</td><td class="text-end">{{ row.base|money }}</td><td>{{ row.base_quality }}</td><td>{{ row.rate }}</td><td class="text-end">{{ row.share|floatformat:2 }}</td><td class="text-end">{{ row.amount|money }}</td><td>{{ row.status }}</td></tr>{% empty %}<tr><td colspan="10" class="text-muted text-center py-3">Нет рассчитанных строк.</td></tr>{% endfor %}
-    </tbody></table></div>
-  </section>
-
-  <section class="card card-soft p-3 mb-4">
-    <h2 class="h5">Требует внимания</h2>
-    <div class="table-responsive"><table class="table table-sm mb-0" style="min-width:720px"><thead><tr><th>Тип</th><th>Документ / причина</th><th class="text-end">Количество / остаток</th></tr></thead><tbody>
-      {% for issue in data.issues %}<tr><td>{{ issue.kind }}</td><td>{{ issue.label }}</td><td class="text-end">{% if issue.count %}{{ issue.count }}{% elif issue.share %}{{ issue.share }}{% else %}—{% endif %}</td></tr>{% empty %}<tr><td colspan="3" class="text-muted">Нет проблем.</td></tr>{% endfor %}
-    </tbody></table></div>
-
-    {% if data.unmapped_authors and can_manage_participation %}
-      <h3 class="h6 mt-3">Несопоставленные авторы 1С</h3>
-      {% for author in data.unmapped_authors %}
-      <form method="post" class="row g-2 align-items-center mb-2">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="map_author"><input type="hidden" name="identity_id" value="{{ author.id }}"><div class="col-md-5"><div class="fw-semibold">{{ author.display_name }}</div>{% if author.has_human_name %}<div class="small text-muted text-break">{{ author.onec_user_id }}</div>{% endif %}</div><div class="col-md-5"><select class="form-select form-select-sm" name="employee_id" required><option value="">Выберите сотрудника</option>{% for employee in employees %}<option value="{{ employee.id }}">{{ employee.display_name }}</option>{% endfor %}</select></div><div class="col-md-2"><button class="btn btn-sm btn-outline-primary w-100">Сопоставить</button></div></form>
-      {% endfor %}
-    {% endif %}
-  </section>
-
-  {% if can_manage_participation and not data.closed %}
-  <section class="card card-soft p-3 mb-4">
-    <h2 class="h5">Шаблоны клиента / объекта</h2>
-    <p class="small text-muted">Шаблон — только предложение для будущих назначений. Он не подтверждает фактическое выполнение работ и не переписывает историю.</p>
-    <form method="post" class="row g-2 align-items-end">{% csrf_token %}
-      <input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="create_template">
-      <div class="col-lg-3"><label class="form-label">Клиент Service2</label><select class="form-select form-select-sm" name="client_id"><option value="">—</option>{% for client in clients %}<option value="{{ client.id }}">{{ client.name }}</option>{% endfor %}</select></div>
-      <div class="col-lg-3"><label class="form-label">Объект</label><select class="form-select form-select-sm" name="pool_id"><option value="">Любой / не указан</option>{% for pool in pools %}<option value="{{ pool.id }}">{{ pool.client.name }} · {{ pool.address }}</option>{% endfor %}</select></div>
-      <div class="col-lg-2"><label class="form-label">Роль</label><select class="form-select form-select-sm" name="role"><option value="client_manager">Менеджер клиента</option><option value="sale">Продажа</option><option value="project">Проект / расчёт</option><option value="work">Выполнение работ</option></select></div>
-      <div class="col-lg-2"><label class="form-label">Сотрудник</label><select class="form-select form-select-sm" name="employee_id"><option value="">—</option>{% for employee in employees %}<option value="{{ employee.id }}">{{ employee.display_name }}</option>{% endfor %}</select></div>
-      <div class="col-lg-1"><label class="form-label">Доля %</label><input class="form-control form-control-sm" type="number" min="0" max="100" step="0.01" name="share_percent" value="100"></div>
-      <div class="col-lg-1"><button class="btn btn-sm btn-outline-primary w-100">+</button></div>
-      <div class="col-12"><label class="form-check"><input class="form-check-input" type="checkbox" name="is_company_client" value="1"><span class="form-check-label">Общий клиент компании (только роль «Менеджер клиента», без конкретного сотрудника)</span></label></div>
+    <form method="get" class="d-flex gap-2 align-items-end">
+      <input type="hidden" name="tab" value="{{ selected_tab }}">
+      <div><label class="form-label small mb-1">Месяц</label><input class="form-control form-control-sm" type="month" name="month" value="{{ period_month|date:'Y-m' }}"></div>
+      <button class="btn btn-sm btn-outline-primary">Показать</button>
     </form>
-    {% if participant_templates %}<div class="table-responsive mt-3"><table class="table table-sm" style="min-width:860px"><thead><tr><th>Клиент / объект</th><th>Роль</th><th>Сотрудник</th><th class="text-end">Доля</th><th>Действует</th><th></th></tr></thead><tbody>{% for item in participant_templates %}<tr><td>{% if item.is_company_client %}Общий клиент компании{% else %}{{ item.client.name|default:"—" }}{% if item.pool_id %} · {{ item.pool.address }}{% endif %}{% endif %}</td><td>{{ item.get_role_display }}</td><td>{{ item.employee.display_name|default:"—" }}</td><td class="text-end">{{ item.share|floatformat:2 }}</td><td>с {{ item.effective_from|date:"m.Y" }}{% if item.effective_to %} по {{ item.effective_to|date:"m.Y" }}{% endif %}</td><td>{% if not item.effective_to %}<form method="post">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="end_template"><input type="hidden" name="template_id" value="{{ item.id }}"><button class="btn btn-sm btn-outline-secondary">Завершить после месяца</button></form>{% endif %}</td></tr>{% endfor %}</tbody></table></div>{% endif %}
-  </section>
+  </div>
+
+  {% if data.closed %}
+    <div class="alert alert-info">Вознаграждения за {{ period_month|date:"m.Y" }} зафиксированы. Период доступен только для просмотра; изменения выполняются через корректировки.</div>
   {% endif %}
 
-  {% if can_manage_participation and not data.closed %}
-  <section class="card card-soft p-3 mb-4">
-    <h2 class="h5">Добавить участие</h2>
-    <p class="small text-muted">Для продажи можно оставить позиции пустыми — тогда база берётся по всему заказу/самостоятельному документу вместе с относящимися прямыми затратами. Для проекта и выполнения работ позиции обязательны.</p>
-    <form method="post" class="row g-3">{% csrf_token %}
+  {% if not data.scheme and can_manage_rules and not data.closed %}
+    <div class="alert alert-warning d-flex flex-wrap align-items-center justify-content-between gap-2">
+      <span>Для этого месяца ещё нет правил вознаграждений.</span>
+      <form method="post">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="ensure_scheme"><input type="hidden" name="return_tab" value="settings"><button class="btn btn-sm btn-warning">Создать правила</button></form>
+    </div>
+  {% endif %}
+
+  <div class="reward-tabs mb-3">
+    <a class="btn btn-sm {% if selected_tab == 'orders' %}btn-primary{% else %}btn-outline-secondary{% endif %}" href="?month={{ period_month|date:'Y-m' }}&tab=orders">Заказы</a>
+    <a class="btn btn-sm {% if selected_tab == 'attention' %}btn-warning{% else %}btn-outline-secondary{% endif %}" href="?month={{ period_month|date:'Y-m' }}&tab=attention">Требует внимания{% if attention_orders %} · {{ attention_orders|length }}{% endif %}</a>
+    <a class="btn btn-sm {% if selected_tab == 'employees' %}btn-primary{% else %}btn-outline-secondary{% endif %}" href="?month={{ period_month|date:'Y-m' }}&tab=employees">Итоги по сотрудникам</a>
+    <a class="btn btn-sm {% if selected_tab == 'settings' %}btn-primary{% else %}btn-outline-secondary{% endif %}" href="?month={{ period_month|date:'Y-m' }}&tab=settings">Правила и настройки</a>
+  </div>
+
+  {% if selected_tab == "orders" %}
+    <form method="get" class="row g-2 mb-3">
       <input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}">
-      <input type="hidden" name="action" value="add_participation">
-      <div class="col-lg-12"><label class="form-label">Шаблон-предложение (необязательно)</label><select class="form-select form-select-sm" id="reward-template-select" name="template_id"><option value="">Без шаблона</option>{% for item in participant_templates %}{% if item.employee_id %}<option value="{{ item.id }}" data-role="{{ item.role }}" data-employee="{{ item.employee_id }}" data-share="{% widthratio item.share 0.01 1 %}">{{ item.client.name|default:"Клиент компании" }}{% if item.pool_id %} · {{ item.pool.address }}{% endif %} · {{ item.get_role_display }} · {{ item.employee.display_name }}</option>{% endif %}{% endfor %}</select></div>
-      <div class="col-lg-6"><label class="form-label">Заказ / документ</label><select class="form-select" name="document_key" id="reward-document-key" required>{% for doc in document_options %}<option value="{{ doc.scope_key }}"{% if selected_document_key == doc.scope_key %} selected{% endif %}>{{ doc.customer }} · {{ doc.label }}</option>{% endfor %}</select></div>
-      <div class="col-lg-3"><label class="form-label">Роль</label><select class="form-select" name="role" required><option value="sale">Продажа</option><option value="project">Проект / расчёт</option><option value="work">Выполнение работ</option><option value="client_manager">Менеджер клиента</option></select></div>
-      <div class="col-lg-3"><label class="form-label">Сотрудник</label><select class="form-select" name="employee_id" required>{% for employee in employees %}<option value="{{ employee.id }}">{{ employee.display_name }}</option>{% endfor %}</select></div>
-      <div class="col-lg-3"><label class="form-label">Доля, %</label><input class="form-control" type="number" min="0.01" max="100" step="0.01" name="share_percent" value="100" required></div>
-      <div class="col-lg-9"><label class="form-label">Позиции / работы</label><div class="border rounded p-2" style="max-height:240px;overflow:auto">{% for doc in document_options %}<div class="reward-lines" data-document-key="{{ doc.scope_key }}"{% if selected_document_key and selected_document_key != doc.scope_key %} hidden{% elif not selected_document_key and not forloop.first %} hidden{% endif %}>{% for line in doc.lines %}{% if not line.is_direct_expense %}<label class="d-flex gap-2 align-items-start py-1"><input class="form-check-input mt-1" type="checkbox" name="line_identity" value="{{ line.identity }}"><span><strong>{{ line.name }}</strong>{% if line.type %} · {{ line.type }}{% endif %}<span class="d-block small text-muted">ВП: {% if line.cost_missing %}не определена{% else %}{{ line.gross_profit|money }}{% endif %}</span></span></label>{% endif %}{% endfor %}</div>{% empty %}<span class="text-muted">Нет активных подтверждённых данных за месяц.</span>{% endfor %}</div></div>
-      <div class="col-12"><button class="btn btn-primary">Добавить — ожидает подтверждения</button></div>
+      <input type="hidden" name="tab" value="orders">
+      <div class="col-md-8"><input class="form-control" name="q" value="{{ search_query }}" placeholder="Поиск по клиенту, номеру заказа или объекту"></div>
+      <div class="col-md-auto"><button class="btn btn-outline-primary w-100">Найти</button></div>
+      {% if search_query %}<div class="col-md-auto"><a class="btn btn-outline-secondary w-100" href="?month={{ period_month|date:'Y-m' }}&tab=orders">Сбросить</a></div>{% endif %}
     </form>
-    <details class="mt-3"><summary class="small fw-semibold">Отметить роль как «не применяется»</summary>
-      <form method="post" class="row g-2 mt-2">{% csrf_token %}
-        <input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="mark_not_applicable">
-        <div class="col-md-7"><select class="form-select form-select-sm" name="document_key" required>{% for doc in document_options %}<option value="{{ doc.scope_key }}">{{ doc.customer }} · {{ doc.label }}</option>{% endfor %}</select></div>
-        <div class="col-md-3"><select class="form-select form-select-sm" name="role" required><option value="work">Выполнение работ</option><option value="project">Проект / расчёт</option><option value="sale">Продажа</option><option value="client_manager">Менеджер клиента</option></select></div>
-        <div class="col-md-2"><button class="btn btn-sm btn-outline-secondary w-100">Не применяется</button></div>
+
+    <div id="orders-list">
+    {% for order in orders %}
+      <details class="reward-order {% if order.problems %}reward-attention{% endif %}" id="reward-{{ order.source_document_guid|slugify }}" {% if open_order == order.scope_key %}open{% endif %}>
+        <summary>
+          <div class="reward-order-title">
+            <div>
+              <div class="fw-semibold">{{ order.customer }}</div>
+              {% if order.pool_label %}<div class="small text-muted">{{ order.pool_label }}</div>{% endif %}
+              <div class="small">{{ order.label }}{% if order.source_document_date %} · {{ order.source_document_date|date:"d.m.Y" }}{% endif %}</div>
+            </div>
+            {% if order.status_ok %}<span class="badge text-bg-success">Всё заполнено</span>{% else %}<span class="badge text-bg-warning">Требует внимания</span>{% endif %}
+          </div>
+          <div class="reward-kpis">
+            <div class="reward-kpi"><small>Выручка</small><strong>{{ order.revenue|money }}</strong></div>
+            <div class="reward-kpi"><small>Себестоимость</small><strong>{% if order.cost == None %}не определена{% else %}{{ order.cost|money }}{% endif %}</strong></div>
+            <div class="reward-kpi"><small>Валовая прибыль</small><strong>{% if order.gross_profit == None %}не определена{% else %}{{ order.gross_profit|money }}{% endif %}</strong></div>
+          </div>
+          <div class="reward-badges">
+            {% for role in order.roles %}
+              {% for p in role.participants %}{% if p.status == "confirmed" %}<span class="badge text-bg-light border">{{ role.label }} · {{ p.employee }} · {% widthratio p.share 0.01 1 %}%</span>{% endif %}{% endfor %}
+            {% empty %}<span class="small text-muted">Участники ещё не назначены.</span>{% endfor %}
+          </div>
+        </summary>
+
+        <div class="reward-order-body">
+          {% if order.problems %}
+          <div class="alert alert-warning py-2">
+            {% for problem in order.problems %}<div>⚠ {{ problem }}</div>{% endfor %}
+          </div>
+          {% endif %}
+
+          {% if can_manage_participation and not data.closed %}
+          <div class="row g-2 mb-3">
+            {% if not order.client_id and order.customer_guid %}
+            <div class="col-lg-6">
+              <form method="post" class="d-flex gap-2 align-items-end">{% csrf_token %}
+                <input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="map_customer"><input type="hidden" name="document_key" value="{{ order.scope_key }}"><input type="hidden" name="return_open" value="{{ order.scope_key }}"><input type="hidden" name="return_anchor" value="reward-{{ order.source_document_guid|slugify }}"><input type="hidden" name="return_q" value="{{ search_query }}">
+                <div class="flex-grow-1"><label class="form-label small">Связать с клиентом Service2</label><select class="form-select form-select-sm" name="client_id" required><option value="">Выберите клиента</option>{% for client in clients %}<option value="{{ client.id }}">{{ client.name }}</option>{% endfor %}</select></div>
+                <button class="btn btn-sm btn-outline-primary">Связать</button>
+              </form>
+            </div>
+            {% elif order.client_id and not order.pool_id %}
+            <div class="col-lg-6">
+              <form method="post" class="d-flex gap-2 align-items-end reward-pool-link">{% csrf_token %}
+                <input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="map_order_object"><input type="hidden" name="document_key" value="{{ order.scope_key }}"><input type="hidden" name="return_open" value="{{ order.scope_key }}"><input type="hidden" name="return_anchor" value="reward-{{ order.source_document_guid|slugify }}"><input type="hidden" name="return_q" value="{{ search_query }}">
+                <div class="flex-grow-1"><label class="form-label small">Объект Service2, если применимо</label><select class="form-select form-select-sm" name="pool_id" data-client="{{ order.client_id }}" required><option value="">Выберите объект</option>{% for pool in pools %}{% if pool.client_id == order.client_id %}<option value="{{ pool.id }}">{{ pool.address }}</option>{% endif %}{% endfor %}</select></div>
+                <button class="btn btn-sm btn-outline-primary">Связать</button>
+              </form>
+            </div>
+            {% endif %}
+          </div>
+          {% endif %}
+
+          <h2 class="h6">Позиции заказа</h2>
+          <div class="table-responsive reward-lines-table mb-3">
+            <table class="table table-sm align-middle mb-0">
+              <thead><tr><th>Номенклатура</th><th>Тип</th><th class="text-end">Выручка</th><th class="text-end">Себестоимость</th><th class="text-end">ВП</th></tr></thead>
+              <tbody>{% for line in order.lines %}<tr><td>{{ line.name }}</td><td>{{ line.type|default:"—" }}</td><td class="text-end">{{ line.revenue|money }}</td><td class="text-end">{% if line.cost == None %}—{% else %}{{ line.cost|money }}{% endif %}</td><td class="text-end">{% if line.gross_profit == None %}—{% else %}{{ line.gross_profit|money }}{% endif %}</td></tr>{% empty %}<tr><td colspan="5" class="text-muted">Нет рабочих позиций.</td></tr>{% endfor %}</tbody>
+            </table>
+          </div>
+          <div class="reward-lines-mobile mb-3">
+            {% for line in order.lines %}<div class="reward-line-card"><div class="fw-semibold">{{ line.name }}</div><div class="small text-muted">{{ line.type|default:"—" }}</div><div class="d-flex justify-content-between small mt-1"><span>Выручка {{ line.revenue|money }}</span><span>Себестоимость {% if line.cost == None %}—{% else %}{{ line.cost|money }}{% endif %}</span></div><div class="small"><strong>ВП {% if line.gross_profit == None %}—{% else %}{{ line.gross_profit|money }}{% endif %}</strong></div></div>{% endfor %}
+          </div>
+
+          {% if order.direct_expenses %}
+          <div class="border rounded p-2 mb-3">
+            <div class="fw-semibold mb-1">Прямые затраты · {{ order.direct_expense_total|money }}</div>
+            {% for line in order.direct_expenses %}<div class="d-flex justify-content-between gap-2 small"><span>{{ line.name }}</span><strong>{% if line.cost == None %}—{% else %}{{ line.cost|money }}{% endif %}</strong></div>{% endfor %}
+          </div>
+          {% endif %}
+
+          <h2 class="h6">Участники заказа</h2>
+          <div class="reward-existing">
+          {% for role in order.roles %}
+            <div class="reward-role">
+              <div class="reward-role-head">
+                <div><div class="fw-semibold">{{ role.label }}</div><div class="small text-muted">База: {% if role.base == None %}—{% else %}{{ role.base|money }}{% endif %} · Ставка: {{ role.rate }}{% if role.fund != None %} · Фонд роли: {{ role.fund|money }}{% endif %}</div></div>
+                <div class="small"><strong>Распределено: {% widthratio role.share_total 0.01 1 %} из 100%</strong>{% if role.remaining_share != "0.000000" %}<br><span class="text-warning">Осталось: {% widthratio role.remaining_share 0.01 1 %}%</span>{% endif %}</div>
+              </div>
+              <div class="mt-2">
+                {% for p in role.participants %}
+                  <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center py-1 reward-existing-participant" data-role="{{ role.role }}" data-share="{% widthratio p.share 0.01 1 %}" data-scope-lines="{{ p.scope_lines|join:',' }}">
+                    <span>{{ p.employee }} — <strong>{% widthratio p.share 0.01 1 %}%</strong>{% if p.status == "pending" or p.status == "required" %} <span class="badge text-bg-warning">требует решения</span>{% endif %}</span>
+                    <span>{{ p.amount|money }}</span>
+                  </div>
+                  {% if can_manage_participation and not data.closed and p.status == "required" %}
+                    {% if p.author_identity_id %}
+                    <form method="post" class="row g-2 mt-1">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="map_author"><input type="hidden" name="identity_id" value="{{ p.author_identity_id }}"><input type="hidden" name="return_open" value="{{ order.scope_key }}"><input type="hidden" name="return_anchor" value="reward-{{ order.source_document_guid|slugify }}"><div class="col"><select class="form-select form-select-sm" name="employee_id" required><option value="">Сопоставить автора с сотрудником</option>{% for employee in employees %}<option value="{{ employee.id }}">{{ employee.display_name }}</option>{% endfor %}</select></div><div class="col-auto"><button class="btn btn-sm btn-outline-primary">Сопоставить</button></div></form>
+                    {% else %}
+                    <form method="post" class="row g-2 mt-1">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="resolve_missing_author"><input type="hidden" name="participation_id" value="{{ p.id }}"><input type="hidden" name="return_open" value="{{ order.scope_key }}"><input type="hidden" name="return_anchor" value="reward-{{ order.source_document_guid|slugify }}"><div class="col"><select class="form-select form-select-sm" name="employee_id"><option value="">Выберите оформителя</option>{% for employee in employees %}<option value="{{ employee.id }}">{{ employee.display_name }}</option>{% endfor %}</select></div><div class="col-auto"><button class="btn btn-sm btn-outline-primary" name="resolution" value="assign">Назначить</button></div></form>
+                    {% endif %}
+                  {% endif %}
+                  {% if can_manage_participation and not data.closed and p.status == "pending" %}
+                  <div class="d-flex gap-2 mt-1"><form method="post">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="confirm"><input type="hidden" name="participation_id" value="{{ p.id }}"><input type="hidden" name="return_open" value="{{ order.scope_key }}"><input type="hidden" name="return_anchor" value="reward-{{ order.source_document_guid|slugify }}"><button class="btn btn-sm btn-outline-success">Подтвердить предложение</button></form><form method="post">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="cancel_pending"><input type="hidden" name="participation_id" value="{{ p.id }}"><input type="hidden" name="return_open" value="{{ order.scope_key }}"><input type="hidden" name="return_anchor" value="reward-{{ order.source_document_guid|slugify }}"><button class="btn btn-sm btn-outline-secondary">Отклонить</button></form></div>
+                  {% endif %}
+                {% endfor %}
+              </div>
+            </div>
+          {% empty %}<p class="text-muted small">Участники ещё не назначены.</p>{% endfor %}
+          </div>
+
+          {% if can_manage_participation and not data.closed %}
+          <details class="reward-add-panel mt-3">
+            <summary class="fw-semibold">+ Добавить участника</summary>
+            <form method="post" class="row g-2 mt-2 reward-add-form">{% csrf_token %}
+              <input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="add_participation"><input type="hidden" name="document_key" value="{{ order.scope_key }}"><input type="hidden" name="return_open" value="{{ order.scope_key }}"><input type="hidden" name="return_anchor" value="reward-{{ order.source_document_guid|slugify }}"><input type="hidden" name="return_q" value="{{ search_query }}">
+              <div class="col-md-4"><label class="form-label">Сотрудник</label><select class="form-select" name="employee_id" required><option value="">Выберите сотрудника</option>{% for employee in employees %}<option value="{{ employee.id }}">{{ employee.display_name }}</option>{% endfor %}</select></div>
+              <div class="col-md-4"><label class="form-label">Роль</label><select class="form-select reward-role-select" name="role" required><option value="client_manager">Менеджер клиента</option><option value="sale">Продажа</option><option value="project">Проект / расчёт</option><option value="work">Выполнение работ</option></select></div>
+              <div class="col-md-4"><label class="form-label">Доля внутри фонда роли, %</label><input class="form-control reward-share-input" type="number" min="0.01" max="100" step="0.01" name="share_percent" value="100" required></div>
+              <div class="col-12 reward-line-selector">
+                <div class="d-flex justify-content-between align-items-center"><label class="form-label mb-1">Позиции, к которым относится участие</label><button type="button" class="btn btn-sm btn-link reward-select-work">Выбрать все работы</button></div>
+                <div class="border rounded p-2">{% for line in order.lines %}<label class="d-flex gap-2 align-items-start py-1 reward-select-line" data-kind="{{ line.kind }}"><input class="form-check-input mt-1" type="checkbox" name="line_identity" value="{{ line.identity }}"><span><strong>{{ line.name }}</strong><span class="d-block small text-muted">{{ line.type }} · ВП {% if line.gross_profit == None %}не определена{% else %}{{ line.gross_profit|money }}{% endif %}</span></span></label>{% endfor %}</div>
+                <div class="form-text reward-line-help">Для менеджера клиента позиции не выбираются. Для продажи по умолчанию используется весь заказ. Для проекта выберите позиции; для выполнения доступны только работы/услуги.</div>
+              </div>
+              {% if order.direct_expenses %}<div class="col-12"><div class="alert alert-secondary py-2 mb-0 small">У заказа есть прямые затраты {{ order.direct_expense_total|money }}, относящиеся ко всему заказу. Если выбран только фрагмент позиций, система не распределит эти затраты молча и потребует отдельного решения.</div></div>{% endif %}
+              <div class="col-12"><div class="alert alert-danger py-2 reward-form-error"></div><button class="btn btn-primary">Сохранить участника</button></div>
+            </form>
+          </details>
+          {% endif %}
+        </div>
+      </details>
+    {% empty %}<div class="text-muted text-center py-4">Заказы за выбранный месяц не найдены.</div>{% endfor %}
+    </div>
+
+  {% elif selected_tab == "attention" %}
+    {% for order in attention_orders %}
+      <div class="card card-soft p-3 mb-2 reward-attention">
+        <div class="d-flex flex-wrap gap-2 justify-content-between">
+          <div><div class="fw-semibold">{{ order.customer }} · {{ order.label }}</div>{% if order.pool_label %}<div class="small text-muted">{{ order.pool_label }}</div>{% endif %}</div>
+          <a class="btn btn-sm btn-outline-primary" href="?month={{ period_month|date:'Y-m' }}&tab=orders&open={{ order.scope_key|urlencode }}#reward-{{ order.source_document_guid|slugify }}">Открыть заказ</a>
+        </div>
+        <div class="mt-2">{% for problem in order.problems %}<div>⚠ {{ problem }}</div>{% endfor %}</div>
+      </div>
+    {% empty %}<div class="alert alert-success">Нет заказов, требующих решения.</div>{% endfor %}
+
+  {% elif selected_tab == "employees" %}
+    <div class="card card-soft p-3">
+      <h2 class="h5">Итоги по сотрудникам · {{ period_month|date:"m.Y" }}</h2>
+      <div class="table-responsive"><table class="table table-sm align-middle" style="min-width:820px"><thead><tr><th>Сотрудник</th><th class="text-end">Оформление</th><th class="text-end">Продажи</th><th class="text-end">Проект / расчёт</th><th class="text-end">Выполнение работ</th><th class="text-end">Корректировки</th><th class="text-end">Всего</th></tr></thead><tbody>
+      {% for employee in data.employees %}<tr><td><a href="{% url 'finance_employee_reward_detail' employee.employee_id %}?month={{ period_month|date:'Y-m' }}">{{ employee.employee }}</a></td><td class="text-end">{{ employee.documentation_reward|money }}</td><td class="text-end">{{ employee.sale_reward|money }}</td><td class="text-end">{{ employee.project_reward|money }}</td><td class="text-end">{{ employee.work_reward|money }}</td><td class="text-end">{{ employee.adjustments|money }}</td><td class="text-end fw-semibold">{{ employee.total|money }}</td></tr>{% empty %}<tr><td colspan="7" class="text-muted text-center py-3">Нет рассчитанных вознаграждений.</td></tr>{% endfor %}
+      </tbody></table></div>
+      <details class="mt-2"><summary class="fw-semibold">Расшифровка начислений</summary><div class="table-responsive mt-2"><table class="table table-sm" style="min-width:900px"><thead><tr><th>Сотрудник</th><th>Клиент / заказ</th><th>Роль</th><th class="text-end">База</th><th>Ставка</th><th class="text-end">Доля</th><th class="text-end">Начислено</th></tr></thead><tbody>{% for row in data.details %}<tr><td>{{ row.employee }}</td><td>{{ row.customer|default:"—" }} · {{ row.document }}</td><td>{{ row.role }}</td><td class="text-end">{{ row.base|money }}</td><td>{{ row.rate }}</td><td class="text-end">{% widthratio row.share 0.01 1 %}%</td><td class="text-end">{{ row.amount|money }}</td></tr>{% empty %}<tr><td colspan="7" class="text-muted">Нет строк.</td></tr>{% endfor %}</tbody></table></div></details>
+    </div>
+
+  {% elif selected_tab == "settings" %}
+    {% if can_manage_rules and scheme and not data.closed %}
+    <details class="card card-soft p-3 mb-3" open><summary class="fw-semibold">Ставки и фиксированные суммы · версия {{ scheme.version }}</summary>
+      <form method="post" class="row g-2 mt-2">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="save_scheme"><input type="hidden" name="return_tab" value="settings">
+        <div class="col-md-4"><label class="form-label">Розничный чек, ₽</label><input class="form-control" name="documentation_retail_fixed" value="{{ scheme.documentation_retail_fixed }}"></div>
+        <div class="col-md-4"><label class="form-label">Комплект документов, ₽</label><input class="form-control" name="documentation_document_fixed" value="{{ scheme.documentation_document_fixed }}"></div>
+        <div class="col-md-4"><label class="form-label">Продажа, % ВП</label><input class="form-control" name="sale_rate" value="{% widthratio scheme.sale_rate 0.01 1 %}"></div>
+        <div class="col-md-4"><label class="form-label">Проект / расчёт, % ВП</label><input class="form-control" name="project_rate" value="{% widthratio scheme.project_rate 0.01 1 %}"></div>
+        <div class="col-md-4"><label class="form-label">Выполнение работ, % ВП</label><input class="form-control" name="work_rate" value="{% widthratio scheme.work_rate 0.01 1 %}"></div>
+        <div class="col-md-4"><label class="form-label">Менеджер клиента, % ВП</label><input class="form-control" name="client_manager_rate" value="{% widthratio scheme.client_manager_rate 0.01 1 %}"></div>
+        <div class="col-12"><button class="btn btn-outline-primary">Создать новую версию правил</button></div>
       </form>
     </details>
-    <script>
-    (()=>{const select=document.getElementById('reward-document-key');if(!select)return;const sync=()=>{document.querySelectorAll('.reward-lines').forEach(x=>{x.hidden=x.dataset.documentKey!==select.value;x.querySelectorAll('input').forEach(i=>{if(x.hidden)i.checked=false;});});};select.addEventListener('change',sync);sync();const template=document.getElementById('reward-template-select');if(template){template.addEventListener('change',()=>{const option=template.selectedOptions[0];if(!option||!option.value)return;const form=template.closest('form');form.querySelector('[name="role"]').value=option.dataset.role;form.querySelector('[name="employee_id"]').value=option.dataset.employee;form.querySelector('[name="share_percent"]').value=option.dataset.share;});}})();
-    </script>
-  </section>
-  {% endif %}
+    {% endif %}
 
-  {% if participations %}
-  <section class="card card-soft p-3 mb-4">
-    <h2 class="h5">Участники и вознаграждения</h2>
-    <div class="small text-muted mb-2">Назначения хранят устойчивый ключ исходного документа и строк. Автор 1С создаёт только предложение на оформление; подтверждение — отдельно.</div>
-    {% if can_manage_participation %}<form id="mass-confirm-form" method="post" action="{% url 'finance_employee_reward_confirm_preview' %}">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"></form>{% endif %}
-    <div class="table-responsive"><table class="table table-sm mb-0" style="min-width:1040px"><thead><tr>{% if can_manage_participation %}<th style="width:36px"></th>{% endif %}<th>Документ</th><th>Роль</th><th>Сотрудник</th><th>Источник</th><th class="text-end">Доля</th><th>Статус</th><th></th></tr></thead><tbody>
-    {% for item in participations %}<tr>{% if can_manage_participation %}<td>{% if item.employee_id and item.status != "confirmed" and item.status != "not_applicable" %}<input class="form-check-input" type="checkbox" name="participation_id" value="{{ item.id }}" form="mass-confirm-form">{% endif %}</td>{% endif %}<td>{{ item.source_document_number|default:item.source_document_key }}</td><td>{{ item.get_role_display }}</td><td>{{ item.employee.display_name|default:"Требует сопоставления" }}</td><td>{{ item.get_assignment_source_display }}</td><td class="text-end">{% if can_manage_participation and item.status != "not_applicable" and not data.closed %}<form method="post" class="d-inline-flex input-group input-group-sm" style="width:130px">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="update_share"><input type="hidden" name="participation_id" value="{{ item.id }}"><input class="form-control text-end" type="number" min="0.01" max="100" step="0.01" name="share_percent" value="{% widthratio item.share 0.01 1 %}"><span class="input-group-text">%</span><button class="btn btn-outline-secondary">✓</button></form>{% else %}{{ item.share|floatformat:2 }}{% endif %}</td><td>{{ item.get_status_display }}</td><td>{% if can_manage_participation and not data.closed and item.role == "documentation" and item.status == "required" and not item.employee_id and not item.author_identity_id %}<details class="d-inline-block me-1"><summary class="btn btn-sm btn-outline-warning">Разрешить автора</summary><form method="post" class="border rounded p-2 mt-1" style="min-width:300px">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="resolve_missing_author"><input type="hidden" name="participation_id" value="{{ item.id }}"><select class="form-select form-select-sm mb-2" name="employee_id"><option value="">Выберите оформителя</option>{% for employee in employees %}<option value="{{ employee.id }}">{{ employee.display_name }}</option>{% endfor %}</select><div class="d-flex gap-1"><button class="btn btn-sm btn-outline-primary" name="resolution" value="assign">Назначить</button><button class="btn btn-sm btn-outline-secondary" name="resolution" value="not_applicable">Не применяется</button></div></form></details>{% endif %}{% if can_manage_participation and not data.closed and item.status == "pending" and item.assignment_source != "onec_author" %}<form method="post" class="d-inline">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="cancel_pending"><input type="hidden" name="participation_id" value="{{ item.id }}"><button class="btn btn-sm btn-outline-danger">Отменить</button></form>{% endif %}{% if can_manage_participation and item.status != "confirmed" and item.employee_id %}<form method="post" class="d-inline">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="confirm"><input type="hidden" name="participation_id" value="{{ item.id }}"><button class="btn btn-sm btn-outline-success">Подтвердить</button></form>{% endif %}{% if can_manage_participation and not data.closed and item.role == "documentation" and item.employee_id and item.status != "not_applicable" and item.status != "required" %}<details class="d-inline-block ms-1"><summary class="btn btn-sm btn-outline-secondary">+ оформитель</summary><form method="post" class="border rounded p-2 mt-1" style="min-width:260px">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="add_co_documenter"><input type="hidden" name="participation_id" value="{{ item.id }}"><select class="form-select form-select-sm mb-1" name="employee_id" required>{% for employee in employees %}<option value="{{ employee.id }}">{{ employee.display_name }}</option>{% endfor %}</select><div class="input-group input-group-sm"><input class="form-control" type="number" min="0.01" max="100" step="0.01" name="share_percent" value="50"><span class="input-group-text">%</span><button class="btn btn-outline-primary">Добавить</button></div></form></details>{% endif %}</td></tr>{% endfor %}
-    </tbody></table></div>
-    {% if can_manage_participation %}<button class="btn btn-outline-success btn-sm mt-3" type="submit" form="mass-confirm-form">Предпросмотр массового подтверждения</button>{% endif %}
-  </section>
-  {% endif %}
+    {% if can_manage_participation and not data.closed %}
+    <section class="card card-soft p-3 mb-3">
+      <h2 class="h5">Закрепление клиента / объекта</h2>
+      <p class="small text-muted">Менеджер клиента применяется автоматически только к заказам с явной связью 1С → Client Service2. Объектное правило имеет приоритет над правилом клиента. Для продаж, проекта и работ правило остаётся только предложением.</p>
+      <form method="post" class="row g-2 align-items-end">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="create_template"><input type="hidden" name="return_tab" value="settings">
+        <div class="col-lg-3"><label class="form-label">Клиент Service2</label><select class="form-select form-select-sm" name="client_id"><option value="">—</option>{% for client in clients %}<option value="{{ client.id }}">{{ client.name }}</option>{% endfor %}</select></div>
+        <div class="col-lg-3"><label class="form-label">Объект</label><select class="form-select form-select-sm" name="pool_id"><option value="">Любой / не указан</option>{% for pool in pools %}<option value="{{ pool.id }}">{{ pool.client.name }} · {{ pool.address }}</option>{% endfor %}</select></div>
+        <div class="col-lg-2"><label class="form-label">Роль</label><select class="form-select form-select-sm" name="role"><option value="client_manager">Менеджер клиента</option><option value="sale">Продажа</option><option value="project">Проект / расчёт</option><option value="work">Выполнение работ</option></select></div>
+        <div class="col-lg-2"><label class="form-label">Сотрудник</label><select class="form-select form-select-sm" name="employee_id"><option value="">—</option>{% for employee in employees %}<option value="{{ employee.id }}">{{ employee.display_name }}</option>{% endfor %}</select></div>
+        <div class="col-lg-1"><label class="form-label">Доля %</label><input class="form-control form-control-sm" type="number" min="0" max="100" step="0.01" name="share_percent" value="100"></div>
+        <div class="col-lg-1"><button class="btn btn-sm btn-outline-primary w-100">Сохранить</button></div>
+      </form>
+      {% if participant_templates %}<div class="table-responsive mt-3"><table class="table table-sm" style="min-width:760px"><thead><tr><th>Клиент / объект</th><th>Роль</th><th>Сотрудник</th><th class="text-end">Доля</th><th></th></tr></thead><tbody>{% for item in participant_templates %}<tr><td>{{ item.client.name|default:"—" }}{% if item.pool_id %} · {{ item.pool.address }}{% endif %}</td><td>{{ item.get_role_display }}</td><td>{{ item.employee.display_name|default:"—" }}</td><td class="text-end">{% widthratio item.share 0.01 1 %}%</td><td>{% if not item.effective_to %}<form method="post">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="end_template"><input type="hidden" name="template_id" value="{{ item.id }}"><input type="hidden" name="return_tab" value="settings"><button class="btn btn-sm btn-outline-secondary">Завершить после месяца</button></form>{% endif %}</td></tr>{% endfor %}</tbody></table></div>{% endif %}
+    </section>
+    {% endif %}
 
-  {% if can_manage_rules and scheme and not data.closed %}
-  <details class="card card-soft p-3 mb-4"><summary class="fw-semibold">Настройки тестовой схемы · версия {{ scheme.version }}</summary>
-    <form method="post" class="row g-2 mt-2">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="save_scheme">
-      <div class="col-md-4"><label class="form-label">Розничный чек, ₽</label><input class="form-control" name="documentation_retail_fixed" value="{{ scheme.documentation_retail_fixed }}"></div>
-      <div class="col-md-4"><label class="form-label">Комплект документов, ₽</label><input class="form-control" name="documentation_document_fixed" value="{{ scheme.documentation_document_fixed }}"></div>
-      <div class="col-md-4"><label class="form-label">Продажа, % ВП</label><input class="form-control" name="sale_rate" value="{% widthratio scheme.sale_rate 0.01 1 %}"></div>
-      <div class="col-md-4"><label class="form-label">Проект / расчёт, % ВП</label><input class="form-control" name="project_rate" value="{% widthratio scheme.project_rate 0.01 1 %}"></div>
-      <div class="col-md-4"><label class="form-label">Выполнение работ, % ВП</label><input class="form-control" name="work_rate" value="{% widthratio scheme.work_rate 0.01 1 %}"></div>
-      <div class="col-md-4 d-flex align-items-end"><button class="btn btn-outline-primary w-100">Создать новую версию правил</button></div>
-    </form>
-  </details>
-  {% endif %}
+    {% if data.unmapped_authors and can_manage_participation %}
+    <section class="card card-soft p-3 mb-3"><h2 class="h5">Неопределённые оформители</h2><p class="small text-muted">После одного сопоставления новые документы открытого месяца будут получать оформителя автоматически.</p>{% for author in data.unmapped_authors %}<form method="post" class="row g-2 align-items-center mb-2">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="map_author"><input type="hidden" name="identity_id" value="{{ author.id }}"><input type="hidden" name="return_tab" value="settings"><div class="col-md-5 fw-semibold">{{ author.display_name }}</div><div class="col-md-5"><select class="form-select form-select-sm" name="employee_id" required><option value="">Выберите сотрудника</option>{% for employee in employees %}<option value="{{ employee.id }}">{{ employee.display_name }}</option>{% endfor %}</select></div><div class="col-md-2"><button class="btn btn-sm btn-outline-primary w-100">Сопоставить</button></div></form>{% endfor %}</section>
+    {% endif %}
 
-  {% if can_close_period and data.scheme and not data.closed %}
-  <form method="post" class="mb-4">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="close_month"><button class="btn btn-outline-danger">Закрыть тестовый месяц</button></form>
+    <section class="card card-soft p-3 mb-3">
+      <h2 class="h5">Фиксация месяца</h2>
+      {% if data.closed %}<div class="alert alert-info mb-0">Вознаграждения за {{ period_month|date:"m.Y" }} уже зафиксированы.</div>
+      {% elif blocking_issues %}<div class="alert alert-warning mb-2"><div>Заказов: {{ orders|length }}</div><div>Всё заполнено: {{ orders|length|add:"-"|add:attention_orders|length }}</div><div><strong>Требует решения: {{ attention_orders|length }}</strong></div><div class="mt-1">Зафиксировать пока нельзя.</div></div>
+      {% else %}<div class="alert alert-success">Все обязательные назначения заполнены.<br>Итог вознаграждений: <strong>{{ data.total_test_reward|money }}</strong></div>{% if can_close_period %}<form method="post">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="close_month"><input type="hidden" name="return_tab" value="settings"><button class="btn btn-danger">Зафиксировать вознаграждения за {{ period_month|date:"m.Y" }}</button></form>{% endif %}{% endif %}
+    </section>
+
+    <details class="card card-soft p-3 mb-3"><summary class="fw-semibold">Техническая история назначений</summary><div class="small text-muted mt-2">Административный журнал для диагностики и аудита. В обычной работе используется вкладка «Заказы».</div><div class="table-responsive mt-2"><table class="table table-sm" style="min-width:760px"><thead><tr><th>Документ</th><th>Роль</th><th>Сотрудник</th><th>Источник</th><th class="text-end">Доля</th><th>Статус</th></tr></thead><tbody>{% for item in participations %}<tr><td>{{ item.source_document_number|default:"—" }}</td><td>{{ item.get_role_display }}</td><td>{{ item.employee.display_name|default:"Требует решения" }}</td><td>{{ item.get_assignment_source_display }}</td><td class="text-end">{% widthratio item.share 0.01 1 %}%</td><td>{{ item.get_status_display }}</td></tr>{% empty %}<tr><td colspan="6" class="text-muted">История пуста.</td></tr>{% endfor %}</tbody></table></div></details>
   {% endif %}
 </div>
+
+<script>
+document.querySelectorAll('.reward-add-form').forEach(form => {
+  const role = form.querySelector('.reward-role-select');
+  const selector = form.querySelector('.reward-line-selector');
+  const lines = [...form.querySelectorAll('.reward-select-line')];
+  const share = form.querySelector('.reward-share-input');
+  const error = form.querySelector('.reward-form-error');
+  const order = form.closest('.reward-order');
+  const existing = [...order.querySelectorAll('.reward-existing-participant')];
+
+  const syncRole = () => {
+    const value = role.value;
+    const needsLines = value === 'project' || value === 'work';
+    selector.style.display = (value === 'client_manager' || value === 'sale') ? (value === 'sale' ? '' : 'none') : '';
+    lines.forEach(label => {
+      const input = label.querySelector('input');
+      const allowed = value !== 'work' || label.dataset.kind === 'service';
+      label.style.display = allowed ? '' : 'none';
+      if (!allowed) input.checked = false;
+      if (!needsLines && value === 'client_manager') input.checked = false;
+    });
+  };
+  role.addEventListener('change', syncRole);
+  syncRole();
+
+  const selectWork = form.querySelector('.reward-select-work');
+  if (selectWork) selectWork.addEventListener('click', () => {
+    role.value = 'work';
+    syncRole();
+    lines.forEach(label => {
+      if (label.dataset.kind === 'service') label.querySelector('input').checked = true;
+    });
+  });
+
+  form.addEventListener('submit', event => {
+    error.style.display = 'none';
+    const selected = [...form.querySelectorAll('input[name="line_identity"]:checked')]
+      .map(input => input.value).sort();
+    if ((role.value === 'project' || role.value === 'work') && selected.length === 0) {
+      event.preventDefault();
+      error.textContent = 'Для этой роли выберите конкретные позиции.';
+      error.style.display = 'block';
+      return;
+    }
+    const scope = selected.join(',');
+    const used = existing
+      .filter(item => item.dataset.role === role.value && (item.dataset.scopeLines || '').split(',').filter(Boolean).sort().join(',') === scope)
+      .reduce((sum, item) => sum + Number(item.dataset.share || 0), 0);
+    const requested = Number(share.value || 0);
+    if (used + requested > 100.000001) {
+      event.preventDefault();
+      error.textContent = 'Суммарная доля по этой роли и выбранным позициям не может превышать 100%. Уже распределено: ' + used + '%.';
+      error.style.display = 'block';
+    }
+  });
+});
+</script>
 {% endblock %}
