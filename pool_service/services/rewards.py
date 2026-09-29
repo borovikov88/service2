@@ -2008,6 +2008,240 @@ def create_manual_participation(
     return item
 
 
+
+@transaction.atomic
+def create_manual_participations_batch(
+    organization,
+    user,
+    period_month,
+    *,
+    document_key,
+    assignments,
+):
+    """Atomically add several participant rows to one order/check card."""
+    if not assignments:
+        raise ValidationError("Добавьте хотя бы одного участника.")
+    if len(assignments) > 20:
+        raise ValidationError("За один раз можно добавить не более 20 участников.")
+    created = []
+    for assignment in assignments:
+        created.append(
+            create_manual_participation(
+                organization,
+                user,
+                period_month,
+                document_key=document_key,
+                employee=assignment["employee"],
+                role=assignment["role"],
+                share=assignment["share"],
+                line_identities=assignment.get("line_identities") or [],
+                assignment_source=RewardParticipation.SOURCE_MANUAL,
+                basis="Ручное пакетное назначение руководителем в карточке заказа",
+            )
+        )
+    return created
+
+
+def _document_for_participation(organization, period_month, participation):
+    for document in reward_document_options(organization, period_month):
+        keys = {document["scope_key"], *document.get("source_document_keys", [])}
+        if participation.source_document_key in keys:
+            return document
+        if participation.scope_key == document["scope_key"]:
+            return document
+        if participation.scope_key.startswith(f"{document['scope_key']}:"):
+            return document
+    return None
+
+
+@transaction.atomic
+def update_order_participation(
+    participation,
+    user,
+    *,
+    employee,
+    role,
+    share,
+    line_identities=None,
+):
+    """Edit an existing order participant with the same scope/share guards as creation."""
+    if not can_manage_participation(user, participation.organization):
+        raise PermissionDenied
+    organization = participation.organization
+    _lock_reward_organization(organization)
+    participation = _reload_reward_participation(participation)
+    if RewardMonthClose.objects.filter(
+        organization=organization,
+        period_month=participation.period_month,
+    ).exists():
+        raise ValidationError("Закрытый месяц нельзя переписывать.")
+    if participation.status == RewardParticipation.STATUS_NOT_APPLICABLE:
+        raise ValidationError("Неактивное назначение нельзя редактировать.")
+    if employee is None or employee.organization_id != organization.id:
+        raise ValidationError("Нужно выбрать сотрудника этой организации.")
+
+    document = _document_for_participation(
+        organization, participation.period_month, participation
+    )
+    if not document:
+        raise ValidationError(
+            "Заказ больше не найден в активных подтверждённых данных месяца."
+        )
+
+    allowed_roles = {
+        RewardParticipation.ROLE_CLIENT_MANAGER,
+        RewardParticipation.ROLE_SALE,
+        RewardParticipation.ROLE_PROJECT,
+        RewardParticipation.ROLE_WORK,
+    }
+    if participation.role == RewardParticipation.ROLE_DOCUMENTATION:
+        if role != RewardParticipation.ROLE_DOCUMENTATION:
+            raise ValidationError(
+                "Роль «Оформление» нельзя превращать в другую роль. "
+                "Измените сотрудника или долю оформления."
+            )
+    elif role not in allowed_roles:
+        raise ValidationError("Эта роль недоступна для редактирования.")
+
+    if (
+        document.get("source_document_type") == RETAIL_CHECK
+        and role == RewardParticipation.ROLE_SALE
+    ):
+        raise ValidationError(
+            "Для розничного чека используется отдельная ставка «Розничный чек, % ВП»."
+        )
+
+    share = Decimal(str(share)).quantize(Decimal("0.000001"))
+    if share <= 0 or share > ONE:
+        raise ValidationError("Доля должна быть больше 0 и не больше 100%.")
+
+    allowed_lines = {
+        item["identity"]
+        for item in document["lines"]
+        if not item["is_direct_expense"]
+    }
+    selected = list(dict.fromkeys(line_identities or []))
+    if any(identity not in allowed_lines for identity in selected):
+        raise ValidationError(
+            "Выбранная строка не относится к заказу или является прямой затратой."
+        )
+    if role in {
+        RewardParticipation.ROLE_CLIENT_MANAGER,
+        RewardParticipation.ROLE_DOCUMENTATION,
+    }:
+        selected = []
+    if role == RewardParticipation.ROLE_WORK and selected:
+        line_kinds = {
+            item["identity"]: item["kind"]
+            for item in document["lines"]
+            if not item["is_direct_expense"]
+        }
+        if any(line_kinds.get(identity) != "service" for identity in selected):
+            raise ValidationError(
+                "Для роли «Выполнение работ» можно выбирать только работы и услуги."
+            )
+    if (
+        role in {RewardParticipation.ROLE_PROJECT, RewardParticipation.ROLE_WORK}
+        and not selected
+    ):
+        raise ValidationError(
+            "Для проекта или выполнения работ нужно выбрать конкретные позиции/работы."
+        )
+
+    if role == RewardParticipation.ROLE_DOCUMENTATION:
+        target_scope_key = participation.scope_key
+        target_document_key = participation.source_document_key
+    else:
+        target_scope_key = _assignment_scope_key(
+            document["scope_key"], role, selected
+        )
+        target_document_key = document["scope_key"]
+
+    selected_set = set(selected)
+    active_role_scopes = (
+        RewardParticipation.objects.filter(
+            organization=organization,
+            period_month=participation.period_month,
+            source_document_key__in={
+                document["scope_key"],
+                *document.get("source_document_keys", []),
+            },
+            role=role,
+        )
+        .exclude(pk=participation.pk)
+        .exclude(status=RewardParticipation.STATUS_NOT_APPLICABLE)
+    )
+    for current in active_role_scopes:
+        if current.scope_key == target_scope_key:
+            continue
+        current_set = set(current.scope_line_identities or [])
+        overlaps = (
+            not selected_set
+            or not current_set
+            or bool(selected_set.intersection(current_set))
+        )
+        if overlaps:
+            raise ValidationError(
+                "Пересекающиеся наборы позиций в одной роли недопустимы."
+            )
+
+    other_share = (
+        RewardParticipation.objects.filter(
+            organization=organization,
+            period_month=participation.period_month,
+            scope_key=target_scope_key,
+            role=role,
+        )
+        .exclude(pk=participation.pk)
+        .exclude(status=RewardParticipation.STATUS_NOT_APPLICABLE)
+        .aggregate(total=models.Sum("share"))["total"]
+        or Decimal("0")
+    )
+    if other_share + share > ONE:
+        raise ValidationError(
+            "Суммарная доля по этой роли и выбранным позициям не может превышать 100%."
+        )
+    duplicate = (
+        RewardParticipation.objects.filter(
+            organization=organization,
+            period_month=participation.period_month,
+            scope_key=target_scope_key,
+            role=role,
+            employee=employee,
+        )
+        .exclude(pk=participation.pk)
+        .exclude(status=RewardParticipation.STATUS_NOT_APPLICABLE)
+        .exists()
+    )
+    if duplicate:
+        raise ValidationError(
+            "Этот сотрудник уже назначен на ту же роль и тот же объём позиций."
+        )
+
+    before = participation_snapshot(participation)
+    participation.employee = employee
+    participation.role = role
+    participation.share = share
+    participation.scope_key = target_scope_key
+    participation.source_document_key = target_document_key
+    participation.scope_line_identities = selected
+    participation.status = RewardParticipation.STATUS_CONFIRMED
+    participation.assignment_source = RewardParticipation.SOURCE_MANUAL
+    participation.confirmed_by = user
+    participation.confirmed_at = timezone.now()
+    participation.basis = "Назначение отредактировано руководителем в карточке заказа"
+    participation.full_clean()
+    participation.save()
+    RewardParticipationChange.objects.create(
+        participation=participation,
+        actor=user,
+        before=before,
+        after=participation_snapshot(participation),
+        reason="Редактирование участника заказа",
+    )
+    return participation
+
+
 @transaction.atomic
 def resolve_documentation_placeholder(participation, user, *, employee=None, not_applicable=False):
     if not can_manage_participation(user, participation.organization):
@@ -2502,6 +2736,7 @@ def reward_order_workspace(organization, period_month, *, employee_id=None):
                     "base": None if base is None else str(money(base)),
                     "participants": [{
                         "id": item.id,
+                        "employee_id": item.employee_id,
                         "employee": item.employee.display_name if item.employee_id else "Требует сопоставления",
                         "share": str(item.share),
                         "status": item.status,
