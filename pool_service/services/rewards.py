@@ -1090,6 +1090,14 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
         })
     employees.sort(key=lambda x: x["employee"].casefold())
 
+    author_names_by_guid = {}
+    for row in rows:
+        source_data = _source_mapping(row.source_data)
+        author_guid = _source_text(source_data.get("author_guid"))
+        author_name = _source_text(source_data.get("author_name"))
+        if author_guid and author_name:
+            author_names_by_guid.setdefault(author_guid, author_name)
+
     unmapped_authors = list(
         OneCAuthorIdentity.objects.filter(
             organization=organization,
@@ -1102,6 +1110,17 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
             ],
         ).distinct().values("id", "onec_user_id", "raw_name")
     )
+    for author in unmapped_authors:
+        onec_user_id = _source_text(author.get("onec_user_id"))
+        raw_name = _source_text(author.get("raw_name"))
+        if raw_name == onec_user_id:
+            raw_name = ""
+        author["display_name"] = (
+            raw_name
+            or author_names_by_guid.get(onec_user_id)
+            or onec_user_id
+        )
+        author["has_human_name"] = author["display_name"] != onec_user_id
     if unmapped_authors:
         issues.append({"kind": "unmapped_author", "label": "Несопоставленные авторы 1С", "count": len(unmapped_authors)})
 
