@@ -911,7 +911,6 @@ def save_participation(participation, user, *, employee, role, share, status, li
         raise PermissionDenied
     _lock_reward_organization(participation.organization)
     participation = _reload_reward_participation(participation)
-    previous_role = participation.role
     if RewardMonthClose.objects.filter(
         organization=participation.organization, period_month=participation.period_month
     ).exists():
@@ -2319,6 +2318,7 @@ def update_order_participation(
     organization = participation.organization
     _lock_reward_organization(organization)
     participation = _reload_reward_participation(participation)
+    previous_role = participation.role
     if RewardMonthClose.objects.filter(
         organization=organization,
         period_month=participation.period_month,
