@@ -1,5 +1,7 @@
+import re
 from datetime import timedelta
 from decimal import Decimal
+from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -10,29 +12,57 @@ from django.urls import reverse
 from django.utils import timezone
 
 from pool_service.models import Client, Employee, Pool
-from pool_service.reward_models import OneCAuthorIdentity, RewardParticipantTemplate, RewardParticipation, RewardSchemeVersion
+from pool_service.reward_models import (
+    OneCAuthorIdentity,
+    RewardParticipantTemplate,
+    RewardParticipation,
+    RewardSchemeVersion,
+)
 from pool_service.services.permissions import organization_for_user
 from pool_service.services.rewards import (
-    calculate_month,
     add_documentation_participant,
+    calculate_month,
     cancel_pending_participation,
     can_close_period,
     can_manage_participation,
     can_manage_rules,
     can_view_rewards,
     close_month,
-    create_manual_participation,
     confirm_participation,
     confirm_participation_batch,
+    create_manual_participation,
     create_scheme_version,
     ensure_test_scheme,
     map_author,
+    map_customer_identity,
+    map_order_object,
     month_start,
-    reward_document_options,
     resolve_documentation_placeholder,
+    reward_order_workspace,
     sync_author_proposals,
+    sync_reward_rules,
     update_participation_share,
 )
+
+
+BLOCKING_ISSUES = {
+    "missing_scheme",
+    "missing_base",
+    "missing_cost",
+    "month_missing_cost",
+    "share_overflow",
+    "unmapped_author",
+    "unconfirmed",
+    "unallocated",
+    "partial_direct_cost_allocation",
+    "missing_selected_lines",
+    "moved_selected_lines",
+    "moved_all_lines_scope",
+    "author_sync_stale",
+    "missing_sale_role",
+    "missing_documentation_role",
+    "missing_work_role",
+}
 
 
 def _org(request):
@@ -60,6 +90,24 @@ def _period(request):
     return timezone.localdate().replace(day=1)
 
 
+def _rewards_redirect(request, period_month, *, default_tab="orders"):
+    tab = (request.POST.get("return_tab") or default_tab).strip()
+    if tab not in {"orders", "attention", "employees", "settings"}:
+        tab = default_tab
+    params = {"month": f"{period_month:%Y-%m}", "tab": tab}
+    open_order = (request.POST.get("return_open") or "").strip()
+    if open_order:
+        params["open"] = open_order
+    query = (request.POST.get("return_q") or "").strip()
+    if query:
+        params["q"] = query
+    anchor = (request.POST.get("return_anchor") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", anchor):
+        anchor = ""
+    suffix = f"#{anchor}" if anchor else ""
+    return redirect(f"{request.path}?{urlencode(params)}{suffix}")
+
+
 @login_required
 def employee_rewards(request):
     organization = _org(request)
@@ -74,22 +122,66 @@ def employee_rewards(request):
         try:
             if action == "ensure_scheme":
                 ensure_test_scheme(organization, request.user, period_month)
-                messages.success(request, "Тестовая схема создана.")
+                messages.success(request, "Правила вознаграждений созданы.")
             elif action == "sync_authors":
-                result = sync_author_proposals(organization, request.user, period_month)
+                result = sync_author_proposals(
+                    organization, request.user, period_month, enrich_names=True
+                )
                 messages.success(
                     request,
                     (
-                        f"Предложения по авторам: {result['created']}; "
-                        f"требуют данных: {result['issues']}; "
-                        f"имён обновлено: {result['names_updated']}."
+                        f"Оформители обновлены: новых назначений {result['created']}; "
+                        f"требуют решения {result['issues']}; "
+                        f"имён обновлено {result['names_updated']}."
                     ),
                 )
             elif action == "map_author":
-                identity = get_object_or_404(OneCAuthorIdentity, pk=request.POST.get("identity_id"), organization=organization)
-                employee = get_object_or_404(Employee, pk=request.POST.get("employee_id"), organization=organization)
+                identity = get_object_or_404(
+                    OneCAuthorIdentity,
+                    pk=request.POST.get("identity_id"),
+                    organization=organization,
+                )
+                employee = get_object_or_404(
+                    Employee,
+                    pk=request.POST.get("employee_id"),
+                    organization=organization,
+                )
                 map_author(identity, employee, request.user)
-                messages.success(request, "Автор 1С сопоставлен с сотрудником.")
+                messages.success(
+                    request,
+                    "Автор 1С сопоставлен. Открытые назначения оформления подтверждены автоматически.",
+                )
+            elif action == "map_customer":
+                client = get_object_or_404(
+                    Client,
+                    pk=request.POST.get("client_id"),
+                    organization=organization,
+                )
+                map_customer_identity(
+                    organization,
+                    request.user,
+                    period_month,
+                    document_key=request.POST.get("document_key", ""),
+                    client=client,
+                )
+                sync_reward_rules(organization, request.user, period_month)
+                messages.success(request, "Контрагент 1С связан с клиентом Service2.")
+            elif action == "map_order_object":
+                pool = get_object_or_404(
+                    Pool,
+                    pk=request.POST.get("pool_id"),
+                    organization=organization,
+                    is_deleted=False,
+                )
+                map_order_object(
+                    organization,
+                    request.user,
+                    period_month,
+                    document_key=request.POST.get("document_key", ""),
+                    pool=pool,
+                )
+                sync_reward_rules(organization, request.user, period_month)
+                messages.success(request, "Заказ связан с объектом Service2.")
             elif action == "create_template":
                 if not can_manage_participation(request.user, organization):
                     raise PermissionDenied
@@ -97,11 +189,22 @@ def employee_rewards(request):
                 pool = None
                 employee = None
                 if request.POST.get("client_id"):
-                    client = get_object_or_404(Client, pk=request.POST["client_id"], organization=organization)
+                    client = get_object_or_404(
+                        Client, pk=request.POST["client_id"], organization=organization
+                    )
                 if request.POST.get("pool_id"):
-                    pool = get_object_or_404(Pool, pk=request.POST["pool_id"], organization=organization)
+                    pool = get_object_or_404(
+                        Pool,
+                        pk=request.POST["pool_id"],
+                        organization=organization,
+                        is_deleted=False,
+                    )
                 if request.POST.get("employee_id"):
-                    employee = get_object_or_404(Employee, pk=request.POST["employee_id"], organization=organization)
+                    employee = get_object_or_404(
+                        Employee,
+                        pk=request.POST["employee_id"],
+                        organization=organization,
+                    )
                 is_company_client = request.POST.get("is_company_client") == "1"
                 item = RewardParticipantTemplate(
                     organization=organization,
@@ -109,34 +212,51 @@ def employee_rewards(request):
                     pool=pool,
                     employee=employee,
                     role=request.POST.get("role", ""),
-                    share=_percent_value(request.POST.get("share_percent"), "Доля шаблона"),
+                    share=_percent_value(
+                        request.POST.get("share_percent"), "Доля закрепления"
+                    ),
                     effective_from=period_month,
                     is_company_client=is_company_client,
                     created_by=request.user,
                 )
                 item.full_clean()
                 item.save()
-                messages.success(request, "Шаблон участников создан. Он применяется только к будущим назначениям.")
+                sync_reward_rules(organization, request.user, period_month)
+                if item.role == RewardParticipantTemplate.ROLE_CLIENT_MANAGER:
+                    messages.success(
+                        request,
+                        "Закрепление сохранено. Оно применяется только к надёжно связанным открытым заказам.",
+                    )
+                else:
+                    messages.success(
+                        request,
+                        "Предложение роли сохранено. Факт участия всё равно подтверждается по заказу.",
+                    )
             elif action == "end_template":
                 if not can_manage_participation(request.user, organization):
                     raise PermissionDenied
-                item = get_object_or_404(RewardParticipantTemplate, pk=request.POST.get("template_id"), organization=organization)
+                item = get_object_or_404(
+                    RewardParticipantTemplate,
+                    pk=request.POST.get("template_id"),
+                    organization=organization,
+                )
                 if period_month < item.effective_from.replace(day=1):
-                    raise ValidationError("Нельзя завершить шаблон до даты начала его действия.")
+                    raise ValidationError(
+                        "Нельзя завершить правило до даты начала его действия."
+                    )
                 next_month = (period_month.replace(day=28) + timedelta(days=4)).replace(day=1)
                 item.effective_to = next_month - timedelta(days=1)
                 item.save(update_fields=["effective_to"])
-                messages.success(request, "Шаблон завершён после выбранного месяца; история назначений не изменена.")
+                messages.success(
+                    request,
+                    "Правило завершено после выбранного месяца; история назначений не изменена.",
+                )
             elif action == "add_participation":
-                employee = get_object_or_404(Employee, pk=request.POST.get("employee_id"), organization=organization)
-                selected_lines = request.POST.getlist("line_identity")
-                template = None
-                if request.POST.get("template_id"):
-                    template = get_object_or_404(
-                        RewardParticipantTemplate,
-                        pk=request.POST["template_id"],
-                        organization=organization,
-                    )
+                employee = get_object_or_404(
+                    Employee,
+                    pk=request.POST.get("employee_id"),
+                    organization=organization,
+                )
                 create_manual_participation(
                     organization,
                     request.user,
@@ -144,18 +264,14 @@ def employee_rewards(request):
                     document_key=request.POST.get("document_key", ""),
                     employee=employee,
                     role=request.POST.get("role", ""),
-                    share=_percent_value(request.POST.get("share_percent"), "Доля участия"),
-                    line_identities=selected_lines,
-                    assignment_source=(
-                        RewardParticipation.SOURCE_TEMPLATE
-                        if template else RewardParticipation.SOURCE_MANUAL
+                    share=_percent_value(
+                        request.POST.get("share_percent"), "Доля участия"
                     ),
-                    basis=(
-                        f"Предложено шаблоном #{template.id}; фактическое участие уточнено вручную."
-                        if template else "Ручное распределение по подтверждённым строкам ВП"
-                    ),
+                    line_identities=request.POST.getlist("line_identity"),
+                    assignment_source=RewardParticipation.SOURCE_MANUAL,
+                    basis="Ручное назначение руководителем в карточке заказа",
                 )
-                messages.success(request, "Участие добавлено и ожидает подтверждения.")
+                messages.success(request, "Участник сохранён и сразу подтверждён.")
             elif action == "mark_not_applicable":
                 create_manual_participation(
                     organization,
@@ -191,7 +307,7 @@ def employee_rewards(request):
                     employee=employee,
                     not_applicable=mark_na,
                 )
-                messages.success(request, "Оформление без Автор_Key разрешено.")
+                messages.success(request, "Оформитель сохранён.")
             elif action == "add_co_documenter":
                 source = get_object_or_404(
                     RewardParticipation,
@@ -200,14 +316,22 @@ def employee_rewards(request):
                     period_month=period_month,
                     role=RewardParticipation.ROLE_DOCUMENTATION,
                 )
-                employee = get_object_or_404(Employee, pk=request.POST.get("employee_id"), organization=organization)
+                employee = get_object_or_404(
+                    Employee,
+                    pk=request.POST.get("employee_id"),
+                    organization=organization,
+                )
                 add_documentation_participant(
                     source,
                     employee,
-                    _percent_value(request.POST.get("share_percent"), "Доля совместного оформления"),
+                    _percent_value(
+                        request.POST.get("share_percent"), "Доля совместного оформления"
+                    ),
                     request.user,
                 )
-                messages.success(request, "Совместный оформитель добавлен.")
+                messages.success(
+                    request, "Совместный оформитель добавлен и сразу подтверждён."
+                )
             elif action == "cancel_pending":
                 item = get_object_or_404(
                     RewardParticipation,
@@ -216,10 +340,7 @@ def employee_rewards(request):
                     period_month=period_month,
                 )
                 cancel_pending_participation(item, request.user)
-                messages.success(
-                    request,
-                    "Ошибочное назначение отменено. Создайте корректное назначение заново.",
-                )
+                messages.success(request, "Автоматическое предложение отклонено.")
             elif action == "update_share":
                 item = get_object_or_404(
                     RewardParticipation,
@@ -230,117 +351,250 @@ def employee_rewards(request):
                 update_participation_share(
                     item,
                     request.user,
-                    _percent_value(request.POST.get("share_percent"), "Доля участия"),
+                    _percent_value(
+                        request.POST.get("share_percent"), "Доля участия"
+                    ),
                 )
                 messages.success(request, "Доля участия изменена.")
             elif action == "confirm":
                 if not can_manage_participation(request.user, organization):
                     raise PermissionDenied
-                item = get_object_or_404(RewardParticipation, pk=request.POST.get("participation_id"), organization=organization, period_month=period_month)
+                item = get_object_or_404(
+                    RewardParticipation,
+                    pk=request.POST.get("participation_id"),
+                    organization=organization,
+                    period_month=period_month,
+                )
                 confirm_participation(item, request.user)
-                messages.success(request, "Участие подтверждено.")
+                messages.success(request, "Автоматическое предложение подтверждено.")
             elif action == "save_scheme":
                 create_scheme_version(
-                    organization, request.user, effective_from=period_month,
+                    organization,
+                    request.user,
+                    effective_from=period_month,
                     values={
-                        "documentation_retail_fixed": request.POST["documentation_retail_fixed"],
-                        "documentation_document_fixed": request.POST["documentation_document_fixed"],
-                        "sale_rate": _percent_value(request.POST.get("sale_rate"), "Продажа"),
-                        "project_rate": _percent_value(request.POST.get("project_rate"), "Проект / расчёт"),
-                        "work_rate": _percent_value(request.POST.get("work_rate"), "Выполнение работ"),
-                        "client_manager_rate": Decimal("0"),
+                        "documentation_retail_fixed": request.POST[
+                            "documentation_retail_fixed"
+                        ],
+                        "documentation_document_fixed": request.POST[
+                            "documentation_document_fixed"
+                        ],
+                        "sale_rate": _percent_value(
+                            request.POST.get("sale_rate"), "Продажа"
+                        ),
+                        "project_rate": _percent_value(
+                            request.POST.get("project_rate"), "Проект / расчёт"
+                        ),
+                        "work_rate": _percent_value(
+                            request.POST.get("work_rate"), "Выполнение работ"
+                        ),
+                        "client_manager_rate": _percent_value(
+                            request.POST.get("client_manager_rate", "0"),
+                            "Менеджер клиента",
+                        ),
                     },
                 )
-                messages.success(request, "Создана новая версия тестовых правил.")
+                messages.success(request, "Создана новая версия правил вознаграждений.")
             elif action == "close_month":
                 close_month(organization, request.user, period_month)
-                messages.success(request, "Тестовый месяц закрыт и зафиксирован.")
+                messages.success(
+                    request,
+                    f"Вознаграждения за {period_month:%m.%Y} зафиксированы.",
+                )
         except (ValidationError, ValueError, KeyError) as exc:
-            messages.error(request, "; ".join(getattr(exc, "messages", [str(exc)])))
-        return redirect(f"{request.path}?month={period_month:%Y-%m}")
+            messages.error(
+                request, "; ".join(getattr(exc, "messages", [str(exc)]))
+            )
+        return _rewards_redirect(request, period_month)
 
-    data = calculate_month(organization, period_month, employee_id=employee_id)
-    scheme = RewardSchemeVersion.objects.filter(organization=organization, effective_from__lte=period_month).order_by("-effective_from", "-version").first()
-    participations = (
-        RewardParticipation.objects.filter(organization=organization, period_month=period_month)
-        .select_related("employee", "author_identity")
-        .order_by("source_document_date", "source_document_number", "role", "employee__display_name")
+    # Reconcile deterministic saved-data assignments on an open month. No live 1C
+    # call is allowed here; author-name enrichment stays an explicit action.
+    initial = calculate_month(organization, period_month, employee_id=employee_id)
+    if (
+        can_manage_participation(request.user, organization)
+        and not initial.get("closed")
+    ):
+        sync_author_proposals(
+            organization, request.user, period_month, enrich_names=False
+        )
+        sync_reward_rules(organization, request.user, period_month)
+
+    workspace = reward_order_workspace(
+        organization, period_month, employee_id=employee_id
     )
-    employees = Employee.objects.filter(organization=organization, is_active=True).order_by("display_name")
+    data = workspace["data"]
+    query = (request.GET.get("q") or "").strip()
+    query_folded = query.casefold()
+    orders = workspace["orders"]
+    if query_folded:
+        orders = [
+            item
+            for item in orders
+            if query_folded
+            in " ".join(
+                [
+                    item.get("customer") or "",
+                    item.get("client_name") or "",
+                    item.get("pool_label") or "",
+                    item.get("label") or "",
+                    item.get("source_document_number") or "",
+                ]
+            ).casefold()
+        ]
+    attention_keys = {item["scope_key"] for item in workspace["attention"]}
+    attention = [item for item in orders if item["scope_key"] in attention_keys]
+
+    scheme = (
+        RewardSchemeVersion.objects.filter(
+            organization=organization, effective_from__lte=period_month
+        )
+        .order_by("-effective_from", "-version")
+        .first()
+    )
+    participations = (
+        RewardParticipation.objects.filter(
+            organization=organization, period_month=period_month
+        )
+        .select_related("employee", "author_identity")
+        .order_by(
+            "source_document_date",
+            "source_document_number",
+            "role",
+            "employee__display_name",
+        )
+    )
+    employees = Employee.objects.filter(
+        organization=organization, is_active=True
+    ).order_by("display_name")
     clients = Client.objects.filter(organization=organization).order_by("name", "id")
-    pools = Pool.objects.filter(organization=organization, is_deleted=False).select_related("client").order_by("client__name", "address", "id")
+    pools = (
+        Pool.objects.filter(organization=organization, is_deleted=False)
+        .select_related("client")
+        .order_by("client__name", "address", "id")
+    )
     participant_templates = (
         RewardParticipantTemplate.objects.filter(
             organization=organization,
             effective_from__lte=period_month,
-        ).filter(
-            models.Q(effective_to__isnull=True) | models.Q(effective_to__gte=period_month)
-        ).select_related("client", "pool", "employee").order_by("role", "client__name", "pool__address", "employee__display_name", "id")
+        )
+        .filter(
+            models.Q(effective_to__isnull=True)
+            | models.Q(effective_to__gte=period_month)
+        )
+        .select_related("client", "pool", "employee")
+        .order_by(
+            "role",
+            "client__name",
+            "pool__address",
+            "employee__display_name",
+            "id",
+        )
     )
-    document_options = reward_document_options(organization, period_month)
-    selected_document_key = request.GET.get("document_key", "")
-    return render(request, "pool_service/finance/employee_rewards.html", {
-        "data": data,
-        "period_month": period_month,
-        "employees": employees,
-        "clients": clients,
-        "pools": pools,
-        "participant_templates": participant_templates,
-        "document_options": document_options,
-        "selected_document_key": selected_document_key,
-        "participations": participations,
-        "scheme": scheme,
-        "can_manage_participation": can_manage_participation(request.user, organization),
-        "can_manage_rules": can_manage_rules(request.user, organization),
-        "can_close_period": can_close_period(request.user, organization),
-        "active_tab": "finance",
-        "show_add_button": False,
-    })
+    blocking_issues = [
+        issue for issue in data.get("issues", [])
+        if issue.get("kind") in BLOCKING_ISSUES
+    ]
+
+    selected_tab = (request.GET.get("tab") or "orders").strip()
+    if selected_tab not in {"orders", "attention", "employees", "settings"}:
+        selected_tab = "orders"
+
+    return render(
+        request,
+        "pool_service/finance/employee_rewards.html",
+        {
+            "data": data,
+            "orders": orders,
+            "attention_orders": attention,
+            "blocking_issues": blocking_issues,
+            "period_month": period_month,
+            "employees": employees,
+            "clients": clients,
+            "pools": pools,
+            "participant_templates": participant_templates,
+            "participations": participations,
+            "scheme": scheme,
+            "search_query": query,
+            "selected_tab": selected_tab,
+            "open_order": request.GET.get("open", ""),
+            "can_manage_participation": can_manage_participation(
+                request.user, organization
+            ),
+            "can_manage_rules": can_manage_rules(request.user, organization),
+            "can_close_period": can_close_period(request.user, organization),
+            "active_tab": "finance",
+            "show_add_button": False,
+        },
+    )
 
 
 @login_required
 def employee_reward_detail(request, employee_id):
     organization = _org(request)
-    employee = get_object_or_404(Employee, pk=employee_id, organization=organization)
+    employee = get_object_or_404(
+        Employee, pk=employee_id, organization=organization
+    )
     if not can_view_rewards(request.user, organization):
         return render(request, "403.html", status=403)
     period_month = _period(request)
     data = calculate_month(organization, period_month, employee_id=employee.id)
-    return render(request, "pool_service/finance/employee_reward_detail.html", {
-        "employee": employee,
-        "data": data,
-        "period_month": period_month,
-        "active_tab": "finance",
-        "show_add_button": False,
-    })
+    return render(
+        request,
+        "pool_service/finance/employee_reward_detail.html",
+        {
+            "employee": employee,
+            "data": data,
+            "period_month": period_month,
+            "active_tab": "finance",
+            "show_add_button": False,
+        },
+    )
 
 
 @login_required
 def employee_reward_confirm_preview(request):
+    """Legacy/admin confirmation surface retained for automatic proposals."""
     organization = _org(request)
     if not can_manage_participation(request.user, organization):
         return render(request, "403.html", status=403)
     period_month = _period(request)
-    raw_ids = request.POST.getlist("participation_id") if request.method == "POST" else []
+    raw_ids = (
+        request.POST.getlist("participation_id") if request.method == "POST" else []
+    )
     ids = [int(value) for value in raw_ids if str(value).isdigit()]
     items = list(
         RewardParticipation.objects.filter(
             organization=organization,
             period_month=period_month,
             pk__in=ids,
-        ).select_related("employee", "author_identity").order_by("source_document_date", "source_document_number", "role", "id")
+        )
+        .select_related("employee", "author_identity")
+        .order_by(
+            "source_document_date",
+            "source_document_number",
+            "role",
+            "id",
+        )
     )
     if request.method == "POST" and request.POST.get("confirm") == "1":
         try:
-            confirm_participation_batch(organization, request.user, period_month, ids)
+            confirm_participation_batch(
+                organization, request.user, period_month, ids
+            )
         except ValidationError as exc:
             messages.error(request, "; ".join(exc.messages))
         else:
-            messages.success(request, f"Подтверждено назначений: {len(items)}.")
-        return redirect(f"{reverse('finance_employee_rewards')}?month={period_month:%Y-%m}")
-    return render(request, "pool_service/finance/employee_reward_confirm_preview.html", {
-        "period_month": period_month,
-        "items": items,
-        "active_tab": "finance",
-        "show_add_button": False,
-    })
+            messages.success(request, f"Подтверждено предложений: {len(items)}.")
+        return redirect(
+            f"{reverse('finance_employee_rewards')}?month={period_month:%Y-%m}&tab=settings"
+        )
+    return render(
+        request,
+        "pool_service/finance/employee_reward_confirm_preview.html",
+        {
+            "period_month": period_month,
+            "items": items,
+            "active_tab": "finance",
+            "show_add_button": False,
+        },
+    )
