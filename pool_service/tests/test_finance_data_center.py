@@ -131,6 +131,76 @@ class FinanceDataCenterTests(TestCase):
         return_value=(date(2026, 7, 1), date(2026, 9, 1)),
     )
     @patch("pool_service.finance_views.is_odata_target_organization", return_value=True)
+    def test_status_cards_show_latest_successful_refresh_time_not_latest_month_state_time(
+        self, _target, _period
+    ):
+        month = date(2026, 9, 1)
+        profit_batch = self.activate(OneCImportBatch.TYPE_MONTHLY_PROFIT, month)
+        cashflow_batch = self.activate(OneCImportBatch.TYPE_CASHFLOW, month)
+        payroll_batch = self.activate(OneCImportBatch.TYPE_PAYROLL_ACCRUAL, month)
+        old_snapshot = PayrollPlanSnapshot.objects.create(
+            organization=self.organization,
+            period_month=month,
+            source_hash="9" * 64,
+            source_rows=17,
+            source_organization_guids=[],
+            currency_guid=uuid.uuid4(),
+            fetched_by=self.owner,
+        )
+
+        old_time = timezone.now() - timedelta(days=8)
+        current_time = timezone.now()
+        OneCImportBatch.objects.filter(
+            pk__in=[profit_batch.pk, cashflow_batch.pk, payroll_batch.pk]
+        ).update(confirmed_at=old_time)
+        PayrollPlanSnapshot.objects.filter(pk=old_snapshot.pk).update(
+            fetched_at=old_time
+        )
+
+        run = OneCODataSyncRun.objects.create(
+            organization=self.organization,
+            requested_by=self.owner,
+            mode=OneCODataSyncRun.MODE_AUTO_APPLY,
+            status=OneCODataSyncRun.STATUS_COMPLETED,
+            requested_report_types=[
+                OneCImportBatch.TYPE_MONTHLY_PROFIT,
+                OneCImportBatch.TYPE_CASHFLOW,
+                OneCImportBatch.TYPE_PAYROLL_ACCRUAL,
+            ],
+            sync_scope={
+                "monthly_profit": {"start": "2026-09-01", "end": "2026-09-01"},
+                "cashflow": {"start": "2026-09-01", "end": "2026-09-01"},
+                "payroll_accrual": {"start": "2026-09-01", "end": "2026-09-01"},
+            },
+            cursor={},
+            progress={"outcome": "no_change"},
+            result_summary={
+                "payroll_plan_refresh": {
+                    "status": "success",
+                    "snapshot_id": old_snapshot.pk,
+                    "created": False,
+                    "period_month": month.isoformat(),
+                    "fetched_at": old_time.isoformat(),
+                    "error_message": "",
+                }
+            },
+            finished_at=current_time,
+            applied_at=current_time,
+        )
+
+        self.client.force_login(self.owner)
+        response = self.client.get(reverse("finance_data"))
+
+        self.assertEqual(response.status_code, 200)
+        statuses = {row["key"]: row for row in response.context["source_statuses"]}
+        for key in ("profit", "cashflow", "payroll", "payroll_plan"):
+            self.assertEqual(statuses[key]["updated_at"], run.finished_at)
+
+    @patch(
+        "pool_service.finance_views._finance_data_default_period",
+        return_value=(date(2026, 7, 1), date(2026, 9, 1)),
+    )
+    @patch("pool_service.finance_views.is_odata_target_organization", return_value=True)
     def test_data_page_marks_previous_month_as_requiring_update(self, _target, _period):
         month = date(2026, 8, 1)
         self.activate(OneCImportBatch.TYPE_MONTHLY_PROFIT, month)
