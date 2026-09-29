@@ -501,23 +501,9 @@ def employee_rewards(request):
     )
     data = workspace["data"]
     query = (request.GET.get("q") or "").strip()
-    query_folded = query.casefold()
+    # Orders stay fully rendered so the page can use the project-standard live
+    # search without a reload. The query is kept only to restore the field/URL.
     orders = workspace["orders"]
-    if query_folded:
-        orders = [
-            item
-            for item in orders
-            if query_folded
-            in " ".join(
-                [
-                    item.get("customer") or "",
-                    item.get("client_name") or "",
-                    item.get("pool_label") or "",
-                    item.get("label") or "",
-                    item.get("source_document_number") or "",
-                ]
-            ).casefold()
-        ]
     attention_keys = {item["scope_key"] for item in workspace["attention"]}
     attention = [item for item in orders if item["scope_key"] in attention_keys]
 
