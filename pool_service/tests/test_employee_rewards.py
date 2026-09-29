@@ -1,5 +1,6 @@
 from datetime import date
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.test import TestCase
@@ -164,6 +165,79 @@ class EmployeeRewardCalculationTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Автор из 1С")
         self.assertContains(response, author_guid)
+
+    def test_sync_authors_backfills_missing_name_from_explicit_1c_lookup(self):
+        author_guid = "22222222-2222-4222-8222-222222222222"
+        row = self.add_row(1, "1000.00")
+        row.source_data = {
+            **row.source_data,
+            "author_guid": author_guid,
+        }
+        row.save(update_fields=["source_data"])
+
+        with patch(
+            "pool_service.services.rewards.read_odata_author_names",
+            return_value={author_guid: "Автор из 1С"},
+        ) as lookup:
+            result = sync_author_proposals(self.org, self.user, self.month)
+
+        lookup.assert_called_once_with({author_guid})
+        identity = OneCAuthorIdentity.objects.get(
+            organization=self.org,
+            onec_user_id=author_guid,
+        )
+        self.assertEqual(identity.raw_name, "Автор из 1С")
+        self.assertEqual(result["names_updated"], 1)
+
+    def test_rewards_page_get_does_not_query_live_1c_for_author_names(self):
+        OrganizationAccess.objects.create(
+            user=self.user,
+            organization=self.org,
+            role="owner",
+        )
+        author_guid = "22222222-2222-4222-8222-222222222222"
+        row = self.add_row(1, "1000.00")
+        row.source_data = {
+            **row.source_data,
+            "author_guid": author_guid,
+        }
+        row.save(update_fields=["source_data"])
+        identity = OneCAuthorIdentity.objects.create(
+            organization=self.org,
+            onec_user_id=author_guid,
+            raw_name="",
+            status=OneCAuthorIdentity.STATUS_NEEDS_MAPPING,
+        )
+        RewardParticipation.objects.create(
+            organization=self.org,
+            employee=None,
+            author_identity=identity,
+            role=RewardParticipation.ROLE_DOCUMENTATION,
+            status=RewardParticipation.STATUS_REQUIRED,
+            share=Decimal("1.000000"),
+            period_month=self.month,
+            scope_key="author-no-live-get",
+            source_document_key=(
+                "odata-source:%s:Document_РасходнаяНакладная:"
+                "11111111-1111-4111-8111-111111111111" % self.org.id
+            ),
+            source_document_type="Document_РасходнаяНакладная",
+            assignment_source=RewardParticipation.SOURCE_ONEC_AUTHOR,
+            created_by=self.user,
+        )
+        self.client.force_login(self.user)
+
+        with patch(
+            "pool_service.services.rewards.read_odata_author_names",
+            side_effect=AssertionError("GET must not call live 1C"),
+        ) as lookup:
+            response = self.client.get(
+                reverse("finance_employee_rewards"),
+                {"month": "2026-09"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        lookup.assert_not_called()
 
     def test_two_workers_split_one_fund_without_increasing_it(self):
         row = self.add_row(1, "30000.00")
