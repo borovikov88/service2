@@ -22,6 +22,7 @@ from pool_service.services.rewards import (
     resolve_documentation_placeholder,
     scheme_for_month,
     sync_author_proposals,
+    sync_reward_rules,
     update_participation_share,
 )
 
@@ -469,6 +470,69 @@ class EmployeeRewardCalculationTests(TestCase):
         self.assertEqual(item.share, Decimal("0.600000"))
         self.assertTrue(item.changes.filter(reason="Изменение доли участия").exists())
 
+
+    def test_scheme_accepts_localized_fixed_amounts_with_comma(self):
+        updated = create_scheme_version(
+            self.org,
+            self.user,
+            effective_from=self.month,
+            values={
+                "documentation_retail_fixed": "50,00",
+                "retail_check_rate": Decimal("0.01"),
+                "documentation_document_fixed": "200,00",
+                "sale_rate": Decimal("0.05"),
+                "project_rate": Decimal("0.05"),
+                "work_rate": Decimal("0.30"),
+                "client_manager_rate": Decimal("0.01"),
+            },
+        )
+        self.assertEqual(updated.documentation_retail_fixed, Decimal("50.00"))
+        self.assertEqual(updated.documentation_document_fixed, Decimal("200.00"))
+        self.assertEqual(updated.sale_rate, Decimal("0.050000"))
+
+    def test_default_client_manager_is_applied_when_missing(self):
+        default_manager = Employee.objects.create(
+            organization=self.org,
+            display_name="Боровиков Александр Юрьевич",
+        )
+        self.add_row(1, "1000.00")
+        created = sync_reward_rules(self.org, self.user, self.month)
+        self.assertEqual(created, 1)
+        item = RewardParticipation.objects.get(
+            organization=self.org,
+            period_month=self.month,
+            role=RewardParticipation.ROLE_CLIENT_MANAGER,
+        )
+        self.assertEqual(item.employee, default_manager)
+        self.assertEqual(item.share, Decimal("1.000000"))
+        self.assertEqual(item.status, RewardParticipation.STATUS_CONFIRMED)
+        self.assertEqual(item.basis, "Менеджер клиента по умолчанию")
+
+    def test_default_client_manager_does_not_override_manual_assignment(self):
+        Employee.objects.create(
+            organization=self.org,
+            display_name="Боровиков Александр Юрьевич",
+        )
+        self.add_row(1, "1000.00")
+        document = reward_document_options(self.org, self.month)[0]
+        manual = create_manual_participation(
+            self.org,
+            self.user,
+            self.month,
+            document_key=document["scope_key"],
+            employee=self.e1,
+            role=RewardParticipation.ROLE_CLIENT_MANAGER,
+            share=Decimal("1"),
+        )
+        created = sync_reward_rules(self.org, self.user, self.month)
+        self.assertEqual(created, 0)
+        active = RewardParticipation.objects.filter(
+            organization=self.org,
+            period_month=self.month,
+            role=RewardParticipation.ROLE_CLIENT_MANAGER,
+        ).exclude(status=RewardParticipation.STATUS_NOT_APPLICABLE)
+        self.assertEqual(active.count(), 1)
+        self.assertEqual(active.get().id, manual.id)
 
     def test_scheme_rejects_negative_or_over_100_percent_values(self):
         next_month = date(2026, 10, 1)
