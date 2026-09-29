@@ -2008,28 +2008,29 @@ def reward_order_workspace(organization, period_month, *, employee_id=None):
         for role in role_order:
             role_items = [
                 item for item in items
-                if item.role == role and item.status != RewardParticipation.STATUS_NOT_APPLICABLE
+                if item.role == role
+                and item.status != RewardParticipation.STATUS_NOT_APPLICABLE
             ]
-            if not role_items:
-                continue
-            share_total = sum((item.share for item in role_items), Decimal("0"))
-            if share_total < ONE and role in {
-                RewardParticipation.ROLE_SALE,
-                RewardParticipation.ROLE_DOCUMENTATION,
-                RewardParticipation.ROLE_WORK,
-            }:
-                problems.append(
-                    f"{role_labels[role]}: распределено {(share_total * 100):.0f} из 100%"
-                )
-            if share_total > ONE:
-                problems.append(f"{role_labels[role]}: доли превышают 100%")
-            scopes = sorted({item.scope_key for item in role_items})
-            amount_by_employee = defaultdict(Decimal)
-            base = None
-            fund = None
-            calculated_rate = None
-            for scope in scopes:
-                for detail in details_by_scope.get(scope, []):
+            role_scope_groups = defaultdict(list)
+            for item in role_items:
+                role_scope_groups[item.scope_key].append(item)
+            for scope_key, scoped_items in sorted(role_scope_groups.items()):
+                share_total = sum((item.share for item in scoped_items), Decimal("0"))
+                if share_total < ONE and role in {
+                    RewardParticipation.ROLE_SALE,
+                    RewardParticipation.ROLE_DOCUMENTATION,
+                    RewardParticipation.ROLE_WORK,
+                }:
+                    problems.append(
+                        f"{role_labels[role]}: распределено {(share_total * 100):.0f} из 100%"
+                    )
+                if share_total > ONE:
+                    problems.append(f"{role_labels[role]}: доли превышают 100%")
+                amount_by_employee = defaultdict(Decimal)
+                base = None
+                fund = None
+                calculated_rate = None
+                for detail in details_by_scope.get(scope_key, []):
                     amount_by_employee[detail["employee_id"]] += Decimal(detail["amount"])
                     if base is None:
                         base = Decimal(detail["base"])
@@ -2037,25 +2038,26 @@ def reward_order_workspace(organization, period_month, *, employee_id=None):
                         fund = Decimal(detail["role_fund"])
                     if calculated_rate is None:
                         calculated_rate = detail.get("rate")
-            role_rows.append({
-                "role": role,
-                "label": role_labels[role],
-                "rate": calculated_rate or rate_labels[role],
-                "fund": None if fund is None else str(money(fund)),
-                "share_total": str(share_total),
-                "remaining_share": str(max(Decimal("0"), ONE - share_total)),
-                "base": None if base is None else str(money(base)),
-                "participants": [{
-                    "id": item.id,
-                    "employee": item.employee.display_name if item.employee_id else "Требует сопоставления",
-                    "share": str(item.share),
-                    "status": item.status,
-                    "assignment_source": item.assignment_source,
-                    "author_identity_id": item.author_identity_id,
-                    "amount": str(money(amount_by_employee.get(item.employee_id, Decimal("0")))),
-                    "scope_lines": list(item.scope_line_identities or []),
-                } for item in role_items],
-            })
+                role_rows.append({
+                    "role": role,
+                    "label": role_labels[role],
+                    "scope_key": scope_key,
+                    "rate": calculated_rate or rate_labels[role],
+                    "fund": None if fund is None else str(money(fund)),
+                    "share_total": str(share_total),
+                    "remaining_share": str(max(Decimal("0"), ONE - share_total)),
+                    "base": None if base is None else str(money(base)),
+                    "participants": [{
+                        "id": item.id,
+                        "employee": item.employee.display_name if item.employee_id else "Требует сопоставления",
+                        "share": str(item.share),
+                        "status": item.status,
+                        "assignment_source": item.assignment_source,
+                        "author_identity_id": item.author_identity_id,
+                        "amount": str(money(amount_by_employee.get(item.employee_id, Decimal("0")))),
+                        "scope_lines": list(item.scope_line_identities or []),
+                    } for item in scoped_items],
+                })
 
         for item in items:
             for message in technical_by_scope.get(item.scope_key, []):
