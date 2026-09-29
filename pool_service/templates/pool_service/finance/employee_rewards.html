@@ -258,7 +258,7 @@
     <section class="card card-soft p-3 mb-3">
       <h2 class="h5">Фиксация месяца</h2>
       {% if data.closed %}<div class="alert alert-info mb-0">Вознаграждения за {{ period_month|date:"m.Y" }} уже зафиксированы.</div>
-      {% elif blocking_issues %}<div class="alert alert-warning mb-2"><div>Заказов: {{ orders|length }}</div><div>Всё заполнено: {{ orders|length|add:"-"|add:attention_orders|length }}</div><div><strong>Требует решения: {{ attention_orders|length }}</strong></div><div class="mt-1">Зафиксировать пока нельзя.</div></div>
+      {% elif blocking_issues %}<div class="alert alert-warning mb-2"><div>Заказов: {{ orders|length }}</div><div>Всё заполнено: {{ filled_order_count }}</div><div><strong>Требует решения: {{ attention_orders|length }}</strong></div><div class="mt-1">Зафиксировать пока нельзя.</div></div>
       {% else %}<div class="alert alert-success">Все обязательные назначения заполнены.<br>Итог вознаграждений: <strong>{{ data.total_test_reward|money }}</strong></div>{% if can_close_period %}<form method="post">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="close_month"><input type="hidden" name="return_tab" value="settings"><button class="btn btn-danger">Зафиксировать вознаграждения за {{ period_month|date:"m.Y" }}</button></form>{% endif %}{% endif %}
     </section>
 
