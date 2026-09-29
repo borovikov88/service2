@@ -1994,6 +1994,91 @@ def _assignment_scope_key(document_key, role, line_identities):
     return f"{document_key}:{role}:{suffix}"
 
 
+
+def _persist_client_manager_defaults_for_document(
+    organization,
+    user,
+    period_month,
+    document,
+):
+    """Remember the confirmed manager split for future documents of this client."""
+    period_month = month_start(period_month)
+    managers = list(
+        RewardParticipation.objects.filter(
+            organization=organization,
+            period_month=period_month,
+            source_document_key=document["scope_key"],
+            role=RewardParticipation.ROLE_CLIENT_MANAGER,
+            status=RewardParticipation.STATUS_CONFIRMED,
+            employee__isnull=False,
+        )
+        .select_related("employee")
+        .order_by("id")
+    )
+    previous_day = period_month - timedelta(days=1)
+
+    customer_guid = _source_text(document.get("customer_guid")).lower()
+    if customer_guid:
+        active_guid_rules = list(
+            RewardCustomerManagerRule.objects.select_for_update().filter(
+                organization=organization,
+                onec_customer_id=customer_guid,
+                effective_from__lte=period_month,
+            ).filter(
+                models.Q(effective_to__isnull=True)
+                | models.Q(effective_to__gte=period_month)
+            )
+        )
+        for rule in active_guid_rules:
+            if rule.effective_from == period_month:
+                rule.delete()
+            else:
+                rule.effective_to = previous_day
+                rule.save(update_fields=["effective_to", "updated_at"])
+        for item in managers:
+            rule = RewardCustomerManagerRule(
+                organization=organization,
+                onec_customer_id=customer_guid,
+                raw_name=document.get("customer") or "",
+                employee=item.employee,
+                share=item.share,
+                effective_from=period_month,
+                created_by=user,
+            )
+            rule.full_clean()
+            rule.save()
+
+    client_id = document.get("client_id")
+    if client_id:
+        active_client_rules = list(
+            RewardParticipantTemplate.objects.select_for_update().filter(
+                organization=organization,
+                client_id=client_id,
+                pool__isnull=True,
+                role=RewardParticipantTemplate.ROLE_CLIENT_MANAGER,
+                effective_from__lte=period_month,
+            ).filter(models_q_effective(period_month))
+        )
+        for rule in active_client_rules:
+            if rule.effective_from == period_month:
+                rule.delete()
+            else:
+                rule.effective_to = previous_day
+                rule.save(update_fields=["effective_to"])
+        for item in managers:
+            rule = RewardParticipantTemplate(
+                organization=organization,
+                client_id=client_id,
+                employee=item.employee,
+                role=RewardParticipantTemplate.ROLE_CLIENT_MANAGER,
+                share=item.share,
+                effective_from=period_month,
+                created_by=user,
+            )
+            rule.full_clean()
+            rule.save()
+
+
 @transaction.atomic
 def create_manual_participation(
     organization,
@@ -2008,6 +2093,7 @@ def create_manual_participation(
     not_applicable=False,
     assignment_source=RewardParticipation.SOURCE_MANUAL,
     basis="Ручное распределение по подтверждённым строкам ВП",
+    _document=None,
 ):
     if not can_manage_participation(user, organization):
         raise PermissionDenied
@@ -2023,8 +2109,13 @@ def create_manual_participation(
     }
     if role not in roles:
         raise ValidationError("Эта роль недоступна для ручного создания участия.")
-    options = {item["scope_key"]: item for item in reward_document_options(organization, period_month)}
-    document = options.get(document_key)
+    document = _document
+    if document is None:
+        options = {
+            item["scope_key"]: item
+            for item in reward_document_options(organization, period_month)
+        }
+        document = options.get(document_key)
     if document is None:
         raise ValidationError("Документ не относится к активным подтверждённым данным месяца.")
     if (
@@ -2036,19 +2127,22 @@ def create_manual_participation(
             "Для розничного чека используется отдельная ставка «Розничный чек, % ВП», "
             "а не общая ставка продажи."
         )
-    allowed_lines = {item["identity"] for item in document["lines"] if not item["is_direct_expense"]}
-    selected = list(dict.fromkeys(line_identities or []))
-    if any(identity not in allowed_lines for identity in selected):
-        raise ValidationError("Выбранная строка не относится к документу или является прямой затратой.")
-    if role == RewardParticipation.ROLE_WORK and selected:
+    selected_display, selected = _expand_document_line_identities(
+        document, line_identities or []
+    )
+    if role == RewardParticipation.ROLE_WORK and selected_display:
         line_kinds = {
             item["identity"]: item["kind"]
             for item in document["lines"]
             if not item["is_direct_expense"]
         }
-        if any(line_kinds.get(identity) != "service" for identity in selected):
+        if any(line_kinds.get(identity) != "service" for identity in selected_display):
             raise ValidationError("Для роли «Выполнение работ» можно выбирать только работы и услуги.")
-    if role in {RewardParticipation.ROLE_PROJECT, RewardParticipation.ROLE_WORK} and not selected and not not_applicable:
+    if (
+        role in {RewardParticipation.ROLE_PROJECT, RewardParticipation.ROLE_WORK}
+        and not selected_display
+        and not not_applicable
+    ):
         raise ValidationError("Для проекта или выполнения работ нужно выбрать конкретные позиции/работы.")
     if not_applicable:
         employee = None
@@ -2142,6 +2236,13 @@ def create_manual_participation(
         after=participation_snapshot(item),
         reason="Создание назначения",
     )
+    if (
+        role == RewardParticipation.ROLE_CLIENT_MANAGER
+        and status == RewardParticipation.STATUS_CONFIRMED
+    ):
+        _persist_client_manager_defaults_for_document(
+            organization, user, period_month, document
+        )
     return item
 
 
@@ -2160,6 +2261,15 @@ def create_manual_participations_batch(
         raise ValidationError("Добавьте хотя бы одного участника.")
     if len(assignments) > 20:
         raise ValidationError("За один раз можно добавить не более 20 участников.")
+    options = {
+        item["scope_key"]: item
+        for item in reward_document_options(organization, period_month)
+    }
+    document = options.get(document_key)
+    if document is None:
+        raise ValidationError(
+            "Документ не относится к активным подтверждённым данным месяца."
+        )
     created = []
     for assignment in assignments:
         created.append(
@@ -2174,6 +2284,7 @@ def create_manual_participations_batch(
                 line_identities=assignment.get("line_identities") or [],
                 assignment_source=RewardParticipation.SOURCE_MANUAL,
                 basis="Ручное пакетное назначение руководителем в карточке заказа",
+                _document=document,
             )
         )
     return created
