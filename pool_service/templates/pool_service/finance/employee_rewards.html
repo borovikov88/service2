@@ -240,7 +240,7 @@
     {% if can_manage_participation and not data.closed %}
     <section class="card card-soft p-3 mb-3">
       <h2 class="h5">Закрепление клиента / объекта</h2>
-      <p class="small text-muted">Менеджер клиента применяется автоматически только к заказам с явной связью 1С → Client Service2. Объектное правило имеет приоритет над правилом клиента. Для продаж, проекта и работ правило остаётся только предложением.</p>
+      <p class="small text-muted">Менеджер клиента применяется автоматически к следующим документам того же контрагента 1С; при наличии связи с Client Service2 правило также сохраняется на уровне клиента. Объектное правило имеет приоритет. Для продаж, проекта и работ правило остаётся только предложением.</p>
       <form method="post" class="row g-2 align-items-end">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="create_template"><input type="hidden" name="return_tab" value="settings">
         <div class="col-lg-3"><label class="form-label">Клиент Service2</label><select class="form-select form-select-sm" name="client_id"><option value="">—</option>{% for client in clients %}<option value="{{ client.id }}">{{ client.name }}</option>{% endfor %}</select></div>
         <div class="col-lg-3"><label class="form-label">Объект</label><select class="form-select form-select-sm" name="pool_id"><option value="">Любой / не указан</option>{% for pool in pools %}<option value="{{ pool.id }}">{{ pool.client.name }} · {{ pool.address }}</option>{% endfor %}</select></div>
@@ -415,11 +415,12 @@ document.querySelectorAll('.reward-order').forEach(order => {
     const total = form.querySelector('.reward-participants-total');
     let nextIndex = 1;
     const first = rows.querySelector('.reward-batch-row');
+    const rowPrototype = first.cloneNode(true);
     rewardBindRow(first);
 
     form.querySelector('.reward-add-row').addEventListener('click', () => {
       if (nextIndex >= 20) return;
-      const clone = first.cloneNode(true);
+      const clone = rowPrototype.cloneNode(true);
       const index = nextIndex++;
       clone.dataset.index = index;
       clone.dataset.rewardBound = '';
