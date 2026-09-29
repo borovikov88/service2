@@ -16,8 +16,11 @@ from pool_service.finance_imports.odata_profit_drafts import read_odata_author_n
 from pool_service.models import Employee, OneCMonthlyProfit, Organization
 from pool_service.reward_models import (
     OneCAuthorIdentity,
+    OneCCustomerIdentity,
     RewardAdjustment,
     RewardMonthClose,
+    RewardOrderObjectLink,
+    RewardParticipantTemplate,
     RewardParticipation,
     RewardParticipationChange,
     RewardSchemeVersion,
@@ -431,7 +434,7 @@ def _retire_removed_author_proposals(
 
 
 @transaction.atomic
-def sync_author_proposals(organization, user, period_month):
+def sync_author_proposals(organization, user, period_month, *, enrich_names=True):
     if not can_manage_participation(user, organization):
         raise PermissionDenied
     _lock_reward_organization(organization)
@@ -457,7 +460,7 @@ def sync_author_proposals(organization, user, period_month):
         if author_guid and not author_name:
             missing_name_guids.add(author_guid)
     live_author_names = {}
-    if missing_name_guids:
+    if enrich_names and missing_name_guids:
         try:
             live_author_names = read_odata_author_names(missing_name_guids)
         except (ODataPreviewError, ValidationError, OSError):
@@ -510,7 +513,7 @@ def sync_author_proposals(organization, user, period_month):
         if identity.status == OneCAuthorIdentity.STATUS_EXCLUDED:
             continue
         employee = identity.employee if identity.status == OneCAuthorIdentity.STATUS_MAPPED else None
-        status = RewardParticipation.STATUS_PENDING if employee else RewardParticipation.STATUS_REQUIRED
+        status = RewardParticipation.STATUS_CONFIRMED if employee else RewardParticipation.STATUS_REQUIRED
         defaults = {
             "employee": employee,
             "author_identity": identity,
@@ -526,6 +529,8 @@ def sync_author_proposals(organization, user, period_month):
             "basis": "Автор исходного документа 1С",
             "assignment_source": RewardParticipation.SOURCE_ONEC_AUTHOR,
             "created_by": user,
+            "confirmed_by": user if employee else None,
+            "confirmed_at": timezone.now() if employee else None,
         }
         proposal, was_created = RewardParticipation.objects.get_or_create(
             organization=organization,
@@ -536,6 +541,45 @@ def sync_author_proposals(organization, user, period_month):
             author_identity=identity,
             defaults=defaults,
         )
+        if was_created:
+            RewardParticipationChange.objects.create(
+                participation=proposal,
+                actor=user,
+                before={},
+                after=participation_snapshot(proposal),
+                reason=(
+                    "Сопоставленный автор 1С автоматически подтверждён"
+                    if employee
+                    else "Автор 1С требует сопоставления"
+                ),
+            )
+        if (
+            not was_created
+            and employee
+            and proposal.assignment_source == RewardParticipation.SOURCE_ONEC_AUTHOR
+            and proposal.status in {
+                RewardParticipation.STATUS_REQUIRED,
+                RewardParticipation.STATUS_PENDING,
+            }
+        ):
+            before = participation_snapshot(proposal)
+            proposal.employee = employee
+            proposal.status = RewardParticipation.STATUS_CONFIRMED
+            proposal.share = ONE
+            proposal.basis = "Автор исходного документа 1С"
+            proposal.confirmed_by = user
+            proposal.confirmed_at = timezone.now()
+            proposal.save(update_fields=[
+                "employee", "status", "share", "basis",
+                "confirmed_by", "confirmed_at", "updated_at",
+            ])
+            RewardParticipationChange.objects.create(
+                participation=proposal,
+                actor=user,
+                before=before,
+                after=participation_snapshot(proposal),
+                reason="Сопоставленный автор 1С автоматически подтверждён",
+            )
         if (
             not was_created
             and proposal.assignment_source == RewardParticipation.SOURCE_ONEC_AUTHOR
@@ -546,7 +590,12 @@ def sync_author_proposals(organization, user, period_month):
             proposal.status = status
             proposal.share = ONE
             proposal.basis = "Автор исходного документа 1С"
-            proposal.save(update_fields=["employee", "status", "share", "basis", "updated_at"])
+            proposal.confirmed_by = user if employee else None
+            proposal.confirmed_at = timezone.now() if employee else None
+            proposal.save(update_fields=[
+                "employee", "status", "share", "basis",
+                "confirmed_by", "confirmed_at", "updated_at",
+            ])
             RewardParticipationChange.objects.create(
                 participation=proposal,
                 actor=user,
@@ -582,16 +631,32 @@ def map_author(identity, employee, user):
     identity.confirmed_by = user
     identity.confirmed_at = timezone.now()
     identity.save(update_fields=["employee", "status", "confirmed_by", "confirmed_at", "updated_at"])
-    closed_periods = RewardMonthClose.objects.filter(
-        organization=identity.organization
-    ).values_list("period_month", flat=True)
-    identity.reward_participations.filter(
-        status=RewardParticipation.STATUS_REQUIRED
-    ).exclude(period_month__in=closed_periods).update(
-        employee=employee,
-        status=RewardParticipation.STATUS_PENDING,
-        updated_at=timezone.now(),
+    closed_periods = set(
+        RewardMonthClose.objects.filter(
+            organization=identity.organization
+        ).values_list("period_month", flat=True)
     )
+    pending_items = list(
+        identity.reward_participations.select_for_update()
+        .filter(status=RewardParticipation.STATUS_REQUIRED)
+        .exclude(period_month__in=closed_periods)
+    )
+    for item in pending_items:
+        before = participation_snapshot(item)
+        item.employee = employee
+        item.status = RewardParticipation.STATUS_CONFIRMED
+        item.confirmed_by = user
+        item.confirmed_at = timezone.now()
+        item.save(update_fields=[
+            "employee", "status", "confirmed_by", "confirmed_at", "updated_at",
+        ])
+        RewardParticipationChange.objects.create(
+            participation=item,
+            actor=user,
+            before=before,
+            after=participation_snapshot(item),
+            reason="Сопоставленный автор 1С автоматически подтверждён",
+        )
 
 
 @transaction.atomic
@@ -881,6 +946,7 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
         sale_rows = [
             row for row in scope_rows
             if _source_mapping(row.source_data).get("row_kind") != "direct_order_expense"
+            and _source_mapping(row.source_data).get("recorder_type") != MONTH_CLOSE
         ]
         if sale_rows and (business_key, RewardParticipation.ROLE_SALE) not in participation_keys:
             issues.append({
@@ -1014,6 +1080,7 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
             business_line_ids = {
                 row.source_identity for row in full_scope
                 if _source_mapping(row.source_data).get("row_kind") != "direct_order_expense"
+                and _source_mapping(row.source_data).get("recorder_type") != MONTH_CLOSE
             }
             selected_ids = set(confirmed[0].scope_line_identities)
             if direct_cost_rows and selected_ids != business_line_ids:
@@ -1087,6 +1154,7 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
                 "base": str(base),
                 "base_quality": base_quality,
                 "rate": rate_label,
+                "role_fund": str(fund),
                 "share": str(item.share),
                 "amount": str(amount),
                 "status": item.get_status_display(),
@@ -1263,49 +1331,119 @@ def _row_business_scope_key(row):
 
 
 def reward_document_options(organization, period_month):
-    """Read-only assignment scopes built only from active confirmed Service2 profit rows."""
+    """Read-only order workspace built only from active confirmed Service2 profit rows."""
     period_month = month_start(period_month)
     rows = active_profit_rows(organization, period_month)
     groups = defaultdict(list)
     for row in rows:
         groups[_row_business_scope_key(row)].append(row)
+
+    customer_links = {
+        item.onec_customer_id: item
+        for item in OneCCustomerIdentity.objects.filter(organization=organization).select_related("client")
+    }
+    object_links = {
+        item.source_document_key: item
+        for item in RewardOrderObjectLink.objects.filter(organization=organization).select_related("client", "pool")
+    }
+
     result = []
     for scope_key, scope_rows in groups.items():
-        sale_rows = [
+        assignment_rows = [
             row for row in scope_rows
             if _source_mapping(row.source_data).get("row_kind") != "direct_order_expense"
+            and _source_mapping(row.source_data).get("recorder_type") != MONTH_CLOSE
         ]
-        primary = sale_rows[0] if sale_rows else scope_rows[0]
+        if not assignment_rows:
+            # Month-close accounting rows are never standalone reward work items.
+            continue
+        primary = assignment_rows[0]
         data = _source_mapping(primary.source_data)
         label = _source_text(
             data.get("resolved_order_display")
             or data.get("document_display")
             or primary.document_name
-            or scope_key
-        ) or scope_key
+            or "Заказ"
+        ) or "Заказ"
+        customer_guid = _source_text(
+            data.get("resolved_order_customer_guid") or data.get("customer_guid")
+        ).lower()
+        customer_link = customer_links.get(customer_guid)
+        object_link = object_links.get(scope_key)
+
+        revenue = money(sum((Decimal(row.revenue or 0) for row in scope_rows), Decimal("0")))
+        analytical_costs = [
+            row.analytical_cost
+            for row in scope_rows
+            if row.analytical_cost is not None
+        ]
+        cost_missing = any(row.analytical_cost is None for row in scope_rows)
+        cost = None if cost_missing else money(sum(analytical_costs, Decimal("0")))
+        gp_values = [_row_gp(row) for row in scope_rows]
+        gross_profit = (
+            None
+            if any(value is None for value in gp_values)
+            else money(sum(gp_values, Decimal("0")))
+        )
+
         lines = []
+        direct_expenses = []
+        source_document_keys = set()
         for row in scope_rows:
             row_data = _source_mapping(row.source_data)
+            source_document_keys.add(_row_document_key(row))
+            recorder_type = row_data.get("recorder_type")
+            is_direct = row_data.get("row_kind") == "direct_order_expense"
+            if recorder_type == MONTH_CLOSE and not is_direct:
+                continue
             gp = _row_gp(row)
-            lines.append({
+            line = {
                 "identity": row.source_identity,
-                "name": row.nomenclature,
-                "type": row.nomenclature_type,
+                "name": _source_text(
+                    row_data.get("direct_expense_line_name")
+                    or row_data.get("direct_expense_content")
+                    or row.nomenclature
+                ) or "Позиция",
+                "type": "Прямые затраты" if is_direct else row.nomenclature_type,
                 "kind": classify_nomenclature_type(row.nomenclature_type),
                 "revenue": str(money(row.revenue or 0)),
+                "cost": None if row.analytical_cost is None else str(money(row.analytical_cost)),
                 "gross_profit": None if gp is None else str(gp),
                 "cost_missing": gp is None,
-                "is_direct_expense": row_data.get("row_kind") == "direct_order_expense",
-            })
+                "is_direct_expense": is_direct,
+            }
+            if is_direct:
+                direct_expenses.append(line)
+            else:
+                lines.append(line)
+
         result.append({
             "scope_key": scope_key,
             "label": label,
-            "customer": _source_text(primary.customer_name),
-            "source_document_type": data.get("recorder_type") or "",
-            "source_document_guid": str(data.get("recorder") or primary.source_recorder or ""),
-            "source_document_number": data.get("document_number") or data.get("resolved_order_number") or "",
-            "source_document_date": _safe_date(data.get("document_date") or data.get("resolved_order_date") or data.get("source_date")),
+            "customer": _source_text(
+                data.get("resolved_order_customer_name") or primary.customer_name
+            ) or "Покупатель не указан",
+            "customer_guid": customer_guid,
+            "client_id": customer_link.client_id if customer_link else None,
+            "client_name": customer_link.client.name if customer_link else "",
+            "pool_id": object_link.pool_id if object_link else None,
+            "pool_label": object_link.pool.address if object_link else "",
+            "source_document_type": data.get("resolved_order_type") or data.get("recorder_type") or "",
+            "source_document_guid": str(data.get("resolved_order_guid") or data.get("recorder") or primary.source_recorder or ""),
+            "source_document_number": data.get("resolved_order_number") or data.get("document_number") or "",
+            "source_document_date": _safe_date(data.get("resolved_order_date") or data.get("document_date") or data.get("source_date")),
+            "source_document_keys": sorted(source_document_keys),
+            "revenue": str(revenue),
+            "cost": None if cost is None else str(cost),
+            "gross_profit": None if gross_profit is None else str(gross_profit),
+            "cost_missing": cost_missing,
+            "has_work": any(item["kind"] == "service" for item in lines),
             "lines": lines,
+            "direct_expenses": direct_expenses,
+            "direct_expense_total": str(money(sum(
+                (Decimal(item["cost"] or 0) for item in direct_expenses),
+                Decimal("0"),
+            ))),
         })
     result.sort(key=lambda item: (item["customer"].casefold(), item["label"].casefold()))
     return result
@@ -1377,7 +1515,11 @@ def create_manual_participation(
         share_decimal = Decimal(str(share)).quantize(Decimal("0.000001"))
         if share_decimal <= 0 or share_decimal > ONE:
             raise ValidationError("Доля должна быть больше 0 и не больше 100%.")
-        status = RewardParticipation.STATUS_PENDING
+        status = (
+            RewardParticipation.STATUS_CONFIRMED
+            if assignment_source == RewardParticipation.SOURCE_MANUAL
+            else RewardParticipation.STATUS_PENDING
+        )
     scope_key = _assignment_scope_key(document_key, role, selected)
     active_role_scopes = RewardParticipation.objects.filter(
         organization=organization,
@@ -1400,6 +1542,21 @@ def create_manual_participation(
                 "Пересекающиеся наборы позиций в одной роли недопустимы; "
                 "добавьте сотрудника в существующий объём либо выберите непересекающиеся строки."
             )
+    active_share = (
+        RewardParticipation.objects.filter(
+            organization=organization,
+            period_month=period_month,
+            scope_key=scope_key,
+            role=role,
+        )
+        .exclude(status=RewardParticipation.STATUS_NOT_APPLICABLE)
+        .aggregate(total=models.Sum("share"))["total"]
+        or Decimal("0")
+    )
+    if not not_applicable and active_share + share_decimal > ONE:
+        raise ValidationError(
+            "Суммарная доля по этой роли и выбранным позициям не может превышать 100%."
+        )
     existing = RewardParticipation.objects.filter(
         organization=organization,
         period_month=period_month,
@@ -1428,6 +1585,8 @@ def create_manual_participation(
         basis=basis,
         assignment_source=assignment_source,
         created_by=user,
+        confirmed_by=user if status == RewardParticipation.STATUS_CONFIRMED else None,
+        confirmed_at=timezone.now() if status == RewardParticipation.STATUS_CONFIRMED else None,
     )
     item.full_clean()
     item.save()
@@ -1470,9 +1629,11 @@ def resolve_documentation_placeholder(participation, user, *, employee=None, not
         if employee is None or employee.organization_id != participation.organization_id:
             raise ValidationError("Нужно выбрать сотрудника этой организации.")
         participation.employee = employee
-        participation.status = RewardParticipation.STATUS_PENDING
+        participation.status = RewardParticipation.STATUS_CONFIRMED
         participation.share = ONE
         participation.basis = "Автор_Key отсутствовал; оформитель назначен руководителем вручную."
+        participation.confirmed_by = user
+        participation.confirmed_at = timezone.now()
     participation.save()
     RewardParticipationChange.objects.create(
         participation=participation,
@@ -1522,11 +1683,24 @@ def add_documentation_participant(participation, employee, share, user):
     share = Decimal(str(share)).quantize(Decimal("0.000001"))
     if share <= 0 or share > ONE:
         raise ValidationError("Доля должна быть больше 0 и не больше 100%.")
+    current_share = (
+        RewardParticipation.objects.filter(
+            organization=participation.organization,
+            period_month=participation.period_month,
+            scope_key=participation.scope_key,
+            role=participation.role,
+        )
+        .exclude(status=RewardParticipation.STATUS_NOT_APPLICABLE)
+        .aggregate(total=models.Sum("share"))["total"]
+        or Decimal("0")
+    )
+    if current_share + share > ONE:
+        raise ValidationError("Суммарная доля оформителей не может превышать 100%.")
     item = RewardParticipation.objects.create(
         organization=participation.organization,
         employee=employee,
         role=participation.role,
-        status=RewardParticipation.STATUS_PENDING,
+        status=RewardParticipation.STATUS_CONFIRMED,
         share=share,
         period_month=participation.period_month,
         scope_key=participation.scope_key,
@@ -1541,6 +1715,8 @@ def add_documentation_participant(participation, employee, share, user):
         basis="Совместное оформление комплекта документов",
         assignment_source=RewardParticipation.SOURCE_MANUAL,
         created_by=user,
+        confirmed_by=user,
+        confirmed_at=timezone.now(),
     )
     RewardParticipationChange.objects.create(
         participation=item,
@@ -1577,3 +1753,349 @@ def confirm_participation_batch(organization, user, period_month, participation_
         if item.status != RewardParticipation.STATUS_CONFIRMED:
             confirm_participation(item, user)
     return items
+
+
+def map_customer_identity(organization, user, period_month, *, document_key, client):
+    """Create/update an explicit 1C counterparty -> Service2 client mapping."""
+    if not can_manage_participation(user, organization):
+        raise PermissionDenied
+    if client.organization_id != organization.id:
+        raise ValidationError("Клиент относится к другой организации.")
+    options = {item["scope_key"]: item for item in reward_document_options(organization, period_month)}
+    document = options.get(document_key)
+    if not document or not document.get("customer_guid"):
+        raise ValidationError("У заказа нет надёжного GUID контрагента 1С для сопоставления.")
+    identity, _ = OneCCustomerIdentity.objects.update_or_create(
+        organization=organization,
+        onec_customer_id=document["customer_guid"],
+        defaults={
+            "raw_name": document["customer"],
+            "client": client,
+            "confirmed_by": user,
+            "confirmed_at": timezone.now(),
+        },
+    )
+    return identity
+
+
+def map_order_object(organization, user, period_month, *, document_key, pool):
+    """Link one stable order scope to a Service2 object without guessing by text."""
+    if not can_manage_participation(user, organization):
+        raise PermissionDenied
+    if pool.organization_id != organization.id:
+        raise ValidationError("Объект относится к другой организации.")
+    options = {item["scope_key"]: item for item in reward_document_options(organization, period_month)}
+    document = options.get(document_key)
+    if not document:
+        raise ValidationError("Заказ не относится к активным подтверждённым данным месяца.")
+    if not document.get("client_id"):
+        raise ValidationError("Сначала сопоставьте контрагента 1С с клиентом Service2.")
+    if pool.client_id != document["client_id"]:
+        raise ValidationError("Объект относится к другому клиенту.")
+    link, _ = RewardOrderObjectLink.objects.update_or_create(
+        organization=organization,
+        source_document_key=document_key,
+        defaults={
+            "client_id": document["client_id"],
+            "pool": pool,
+            "linked_by": user,
+        },
+    )
+    link.full_clean()
+    return link
+
+
+@transaction.atomic
+def sync_reward_rules(organization, user, period_month):
+    """Apply only deterministic client-manager rules to reliably linked open orders."""
+    if not can_manage_participation(user, organization):
+        raise PermissionDenied
+    period_month = month_start(period_month)
+    _lock_reward_organization(organization)
+    if RewardMonthClose.objects.filter(
+        organization=organization, period_month=period_month
+    ).exists():
+        return 0
+
+    documents = reward_document_options(organization, period_month)
+    templates = list(
+        RewardParticipantTemplate.objects.filter(
+            organization=organization,
+            role=RewardParticipantTemplate.ROLE_CLIENT_MANAGER,
+            effective_from__lte=period_month,
+        )
+        .filter(models_q_effective(period_month))
+        .select_related("client", "pool", "employee")
+    )
+    created = 0
+    for document in documents:
+        client_id = document.get("client_id")
+        if not client_id:
+            continue
+        pool_id = document.get("pool_id")
+        object_rules = [
+            item for item in templates
+            if item.client_id == client_id and item.pool_id == pool_id and pool_id
+        ]
+        client_rules = [
+            item for item in templates
+            if item.client_id == client_id and item.pool_id is None
+        ]
+        applicable = object_rules or client_rules
+        if not applicable:
+            continue
+
+        manual_exists = RewardParticipation.objects.filter(
+            organization=organization,
+            period_month=period_month,
+            source_document_key=document["scope_key"],
+            role=RewardParticipation.ROLE_CLIENT_MANAGER,
+        ).exclude(
+            status=RewardParticipation.STATUS_NOT_APPLICABLE
+        ).exclude(
+            assignment_source=RewardParticipation.SOURCE_TEMPLATE
+        ).exists()
+        if manual_exists:
+            continue
+
+        desired_ids = {item.employee_id for item in applicable if item.employee_id}
+        stale = RewardParticipation.objects.filter(
+            organization=organization,
+            period_month=period_month,
+            source_document_key=document["scope_key"],
+            role=RewardParticipation.ROLE_CLIENT_MANAGER,
+            assignment_source=RewardParticipation.SOURCE_TEMPLATE,
+        ).exclude(status=RewardParticipation.STATUS_NOT_APPLICABLE)
+        for item in stale:
+            if item.employee_id not in desired_ids:
+                before = participation_snapshot(item)
+                item.status = RewardParticipation.STATUS_NOT_APPLICABLE
+                item.basis = "Закрепление клиента/объекта изменено."
+                item.save(update_fields=["status", "basis", "updated_at"])
+                RewardParticipationChange.objects.create(
+                    participation=item, actor=user, before=before,
+                    after=participation_snapshot(item),
+                    reason="Автоматическое закрепление изменено",
+                )
+
+        scope_key = _assignment_scope_key(
+            document["scope_key"], RewardParticipation.ROLE_CLIENT_MANAGER, []
+        )
+        existing_share = (
+            RewardParticipation.objects.filter(
+                organization=organization,
+                period_month=period_month,
+                scope_key=scope_key,
+                role=RewardParticipation.ROLE_CLIENT_MANAGER,
+                assignment_source=RewardParticipation.SOURCE_TEMPLATE,
+                status=RewardParticipation.STATUS_CONFIRMED,
+            ).aggregate(total=models.Sum("share"))["total"] or Decimal("0")
+        )
+        for template in applicable:
+            if not template.employee_id:
+                continue
+            if RewardParticipation.objects.filter(
+                organization=organization,
+                period_month=period_month,
+                scope_key=scope_key,
+                role=RewardParticipation.ROLE_CLIENT_MANAGER,
+                employee_id=template.employee_id,
+                assignment_source=RewardParticipation.SOURCE_TEMPLATE,
+                status=RewardParticipation.STATUS_CONFIRMED,
+            ).exists():
+                continue
+            if existing_share + template.share > ONE:
+                raise ValidationError(
+                    f"Закрепления менеджера клиента для «{document['customer']}» превышают 100%."
+                )
+            item = RewardParticipation.objects.create(
+                organization=organization,
+                employee_id=template.employee_id,
+                role=RewardParticipation.ROLE_CLIENT_MANAGER,
+                status=RewardParticipation.STATUS_CONFIRMED,
+                share=template.share,
+                period_month=period_month,
+                scope_key=scope_key,
+                source_document_key=document["scope_key"],
+                source_document_type=document["source_document_type"],
+                source_document_guid=document["source_document_guid"],
+                source_document_number=document["source_document_number"],
+                source_document_date=document["source_document_date"],
+                scope_line_identities=[],
+                customer_name=document["customer"],
+                object_label=document.get("pool_label") or "",
+                basis=(
+                    "Автоматическое закрепление объекта"
+                    if template.pool_id else "Автоматическое закрепление клиента"
+                ),
+                assignment_source=RewardParticipation.SOURCE_TEMPLATE,
+                created_by=user,
+                confirmed_by=user,
+                confirmed_at=timezone.now(),
+            )
+            RewardParticipationChange.objects.create(
+                participation=item, actor=user, before={},
+                after=participation_snapshot(item),
+                reason=item.basis,
+            )
+            existing_share += template.share
+            created += 1
+    return created
+
+
+def reward_order_workspace(organization, period_month, *, employee_id=None):
+    """Presentation-only order workspace; does not reimplement GP/reward formulas."""
+    data = calculate_month(organization, period_month, employee_id=employee_id)
+    documents = reward_document_options(organization, period_month)
+    participations = list(
+        RewardParticipation.objects.filter(
+            organization=organization, period_month=month_start(period_month)
+        ).select_related("employee", "author_identity")
+    )
+    details_by_scope = defaultdict(list)
+    for detail in data.get("details", []):
+        details_by_scope[detail.get("scope_key")].append(detail)
+
+    technical_by_scope = defaultdict(list)
+    human_issue = {
+        "missing_sale_role": "Не указано, кто продал",
+        "missing_work_role": "Есть работы, но не указаны исполнители",
+        "missing_documentation_role": "Не определён оформитель",
+        "unallocated": "Доли распределены не полностью",
+        "share_overflow": "Доли превышают 100%",
+        "missing_cost": "Отсутствует себестоимость",
+        "month_missing_cost": "Есть позиции без себестоимости",
+        "missing_selected_lines": "Изменились строки заказа после назначения",
+        "moved_selected_lines": "Выбранные позиции перенесены в другой заказ",
+        "moved_all_lines_scope": "Состав заказа изменился после назначения",
+        "partial_direct_cost_allocation": "Прямые затраты нельзя точно отнести к выбранной части заказа",
+        "unconfirmed": "Автоматическое предложение требует решения",
+        "author_sync_stale": "Данные об оформителе требуют обновления",
+        "unmapped_author": "Не определён оформитель",
+    }
+    for issue in data.get("issues", []):
+        technical_by_scope[issue.get("label", "")].append(
+            human_issue.get(issue.get("kind"), "")
+        )
+
+    role_order = [
+        RewardParticipation.ROLE_CLIENT_MANAGER,
+        RewardParticipation.ROLE_SALE,
+        RewardParticipation.ROLE_DOCUMENTATION,
+        RewardParticipation.ROLE_PROJECT,
+        RewardParticipation.ROLE_WORK,
+    ]
+    role_labels = dict(RewardParticipation.ROLE_CHOICES)
+    scheme = data.get("scheme") or {}
+    rate_labels = {
+        RewardParticipation.ROLE_CLIENT_MANAGER: f"{Decimal(scheme.get('client_manager_rate') or 0) * 100:.2f}%",
+        RewardParticipation.ROLE_SALE: f"{Decimal(scheme.get('sale_rate') or 0) * 100:.2f}%",
+        RewardParticipation.ROLE_PROJECT: f"{Decimal(scheme.get('project_rate') or 0) * 100:.2f}%",
+        RewardParticipation.ROLE_WORK: f"{Decimal(scheme.get('work_rate') or 0) * 100:.2f}%",
+        RewardParticipation.ROLE_DOCUMENTATION: "фиксированная сумма",
+    }
+
+    orders = []
+    attention = []
+    for document in documents:
+        keys = {document["scope_key"], *document.get("source_document_keys", [])}
+        items = [item for item in participations if item.source_document_key in keys]
+        role_rows = []
+        problems = []
+
+        active_sale = [x for x in items if x.role == RewardParticipation.ROLE_SALE and x.status != RewardParticipation.STATUS_NOT_APPLICABLE]
+        if not active_sale:
+            problems.append("Не указано, кто продал")
+        active_work = [x for x in items if x.role == RewardParticipation.ROLE_WORK and x.status != RewardParticipation.STATUS_NOT_APPLICABLE]
+        if document["has_work"] and not active_work:
+            problems.append("Есть работы, но не указаны исполнители")
+        doc_items = [x for x in items if x.role == RewardParticipation.ROLE_DOCUMENTATION and x.status != RewardParticipation.STATUS_NOT_APPLICABLE]
+        if any(x.status == RewardParticipation.STATUS_REQUIRED or not x.employee_id for x in doc_items):
+            problems.append("Не определён оформитель")
+        if document["cost_missing"]:
+            problems.append("Отсутствует себестоимость")
+
+        for role in role_order:
+            role_items = [
+                item for item in items
+                if item.role == role
+                and item.status != RewardParticipation.STATUS_NOT_APPLICABLE
+            ]
+            role_scope_groups = defaultdict(list)
+            for item in role_items:
+                role_scope_groups[item.scope_key].append(item)
+            for scope_key, scoped_items in sorted(role_scope_groups.items()):
+                share_total = sum((item.share for item in scoped_items), Decimal("0"))
+                if share_total < ONE and role in {
+                    RewardParticipation.ROLE_SALE,
+                    RewardParticipation.ROLE_DOCUMENTATION,
+                    RewardParticipation.ROLE_WORK,
+                }:
+                    problems.append(
+                        f"{role_labels[role]}: распределено {(share_total * 100):.0f} из 100%"
+                    )
+                if share_total > ONE:
+                    problems.append(f"{role_labels[role]}: доли превышают 100%")
+                amount_by_employee = defaultdict(Decimal)
+                base = None
+                fund = None
+                calculated_rate = None
+                for detail in details_by_scope.get(scope_key, []):
+                    amount_by_employee[detail["employee_id"]] += Decimal(detail["amount"])
+                    if base is None:
+                        base = Decimal(detail["base"])
+                    if fund is None and detail.get("role_fund") is not None:
+                        fund = Decimal(detail["role_fund"])
+                    if calculated_rate is None:
+                        calculated_rate = detail.get("rate")
+                role_rows.append({
+                    "role": role,
+                    "label": role_labels[role],
+                    "scope_key": scope_key,
+                    "rate": calculated_rate or rate_labels[role],
+                    "fund": None if fund is None else str(money(fund)),
+                    "share_total": str(share_total),
+                    "remaining_share": str(max(Decimal("0"), ONE - share_total)),
+                    "base": None if base is None else str(money(base)),
+                    "participants": [{
+                        "id": item.id,
+                        "employee": item.employee.display_name if item.employee_id else "Требует сопоставления",
+                        "share": str(item.share),
+                        "status": item.status,
+                        "assignment_source": item.assignment_source,
+                        "author_identity_id": item.author_identity_id,
+                        "author_name": (
+                            item.author_identity.raw_name
+                            if item.author_identity_id and item.author_identity.raw_name
+                            else ""
+                        ),
+                        "author_guid": (
+                            item.author_identity.onec_user_id
+                            if item.author_identity_id
+                            else ""
+                        ),
+                        "amount": str(money(amount_by_employee.get(item.employee_id, Decimal("0")))),
+                        "scope_lines": list(item.scope_line_identities or []),
+                    } for item in scoped_items],
+                })
+
+        for item in items:
+            for message in technical_by_scope.get(item.scope_key, []):
+                if message:
+                    problems.append(message)
+        problems = list(dict.fromkeys(problems))
+        order = {
+            **document,
+            "roles": role_rows,
+            "problems": problems,
+            "status_ok": not problems,
+        }
+        orders.append(order)
+        if problems:
+            attention.append(order)
+
+    return {
+        "data": data,
+        "orders": orders,
+        "attention": attention,
+    }

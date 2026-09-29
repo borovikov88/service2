@@ -37,6 +37,93 @@ class OneCAuthorIdentity(models.Model):
             raise ValidationError({"employee": "Сотрудник относится к другой организации."})
 
 
+class OneCCustomerIdentity(models.Model):
+    """Explicit, auditable 1C counterparty -> Service2 client link."""
+
+    organization = models.ForeignKey(
+        "Organization", on_delete=models.CASCADE, related_name="onec_customer_identities"
+    )
+    onec_customer_id = models.CharField(max_length=120)
+    raw_name = models.CharField(max_length=500, blank=True)
+    client = models.ForeignKey(
+        "Client", on_delete=models.PROTECT, related_name="onec_customer_identities"
+    )
+    confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="confirmed_onec_customers",
+    )
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "onec_customer_id"],
+                name="unique_onec_customer_per_org",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=["organization", "client"],
+                name="onec_customer_org_client_idx",
+            )
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.client_id and self.client.organization_id != self.organization_id:
+            raise ValidationError({"client": "Клиент относится к другой организации."})
+
+
+class RewardOrderObjectLink(models.Model):
+    """Explicit order -> Service2 object link used only for deterministic reward rules."""
+
+    organization = models.ForeignKey(
+        "Organization", on_delete=models.CASCADE, related_name="reward_order_object_links"
+    )
+    source_document_key = models.CharField(max_length=255)
+    client = models.ForeignKey(
+        "Client", on_delete=models.PROTECT, related_name="reward_order_object_links"
+    )
+    pool = models.ForeignKey(
+        "Pool", on_delete=models.PROTECT, related_name="reward_order_object_links"
+    )
+    linked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="linked_reward_order_objects",
+    )
+    linked_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "source_document_key"],
+                name="unique_reward_order_object_link",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=["organization", "pool"],
+                name="reward_order_pool_idx",
+            )
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.client_id and self.client.organization_id != self.organization_id:
+            raise ValidationError({"client": "Клиент относится к другой организации."})
+        if self.pool_id:
+            if self.pool.organization_id != self.organization_id:
+                raise ValidationError({"pool": "Объект относится к другой организации."})
+            if self.client_id and self.pool.client_id != self.client_id:
+                raise ValidationError({"pool": "Объект относится к другому клиенту."})
+
+
 class RewardSchemeVersion(models.Model):
     organization = models.ForeignKey("Organization", on_delete=models.CASCADE, related_name="reward_scheme_versions")
     name = models.CharField(max_length=120, default="Тестовая схема №1")

@@ -515,7 +515,7 @@ class EmployeeRewardCalculationTests(TestCase):
         )
         placeholder.refresh_from_db()
         self.assertEqual(placeholder.employee, self.e1)
-        self.assertEqual(placeholder.status, RewardParticipation.STATUS_PENDING)
+        self.assertEqual(placeholder.status, RewardParticipation.STATUS_CONFIRMED)
 
     def test_changed_author_retires_previous_proposal(self):
         row = self.add_row(1, "1000.00")
@@ -724,7 +724,7 @@ class EmployeeRewardCalculationTests(TestCase):
             placeholder, self.user, employee=self.e1
         )
         placeholder.refresh_from_db()
-        self.assertEqual(placeholder.status, RewardParticipation.STATUS_PENDING)
+        self.assertEqual(placeholder.status, RewardParticipation.STATUS_CONFIRMED)
 
         row.source_data = {
             **row.source_data,
@@ -1007,8 +1007,8 @@ class EmployeeRewardCalculationTests(TestCase):
                 values={"documentation_retail_fixed": "NaN"},
             )
 
-    def test_pending_manual_assignment_can_be_cancelled_and_recreated(self):
-        row = self.add_row(1, "1000.00")
+    def test_manual_assignment_is_confirmed_immediately_and_overflow_is_rejected(self):
+        row = self.add_row(1, "1000.00", kind="Работа")
         document = reward_document_options(self.org, self.month)[0]
         item = create_manual_participation(
             self.org,
@@ -1016,25 +1016,42 @@ class EmployeeRewardCalculationTests(TestCase):
             self.month,
             document_key=document["scope_key"],
             employee=self.e1,
-            role=RewardParticipation.ROLE_SALE,
+            role=RewardParticipation.ROLE_WORK,
             share=Decimal("1"),
-            line_identities=[],
+            line_identities=[row.source_identity],
         )
-        cancel_pending_participation(item, self.user)
-        item.refresh_from_db()
-        self.assertEqual(item.status, RewardParticipation.STATUS_NOT_APPLICABLE)
-        replacement = create_manual_participation(
-            self.org,
-            self.user,
-            self.month,
-            document_key=document["scope_key"],
-            employee=self.e2,
-            role=RewardParticipation.ROLE_SALE,
-            share=Decimal("1"),
-            line_identities=[],
+        self.assertEqual(item.status, RewardParticipation.STATUS_CONFIRMED)
+        self.assertEqual(item.confirmed_by, self.user)
+        self.assertIsNotNone(item.confirmed_at)
+        self.assertEqual(
+            item.changes.get().after["status"],
+            RewardParticipation.STATUS_CONFIRMED,
         )
-        self.assertEqual(replacement.status, RewardParticipation.STATUS_PENDING)
-        self.assertEqual(replacement.employee, self.e2)
+        with self.assertRaisesMessage(Exception, "не может превышать 100%"):
+            create_manual_participation(
+                self.org,
+                self.user,
+                self.month,
+                document_key=document["scope_key"],
+                employee=self.e2,
+                role=RewardParticipation.ROLE_WORK,
+                share=Decimal("1"),
+                line_identities=[row.source_identity],
+            )
+
+    def test_month_close_only_document_is_not_reward_order(self):
+        row = self.add_row(1, "-500.00")
+        row.source_data = {
+            **row.source_data,
+            "recorder_type": "Document_ЗакрытиеМесяца",
+            "author_guid": "",
+        }
+        row.save(update_fields=["source_data"])
+        self.assertEqual(reward_document_options(self.org, self.month), [])
+        kinds = {item["kind"] for item in calculate_month(self.org, self.month)["issues"]}
+        self.assertNotIn("missing_sale_role", kinds)
+        self.assertNotIn("missing_work_role", kinds)
+        self.assertNotIn("missing_documentation_role", kinds)
 
     def test_co_documenter_rejected_for_inactive_source(self):
         row = self.add_row(1, "1000.00")
