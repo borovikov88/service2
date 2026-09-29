@@ -1876,49 +1876,41 @@ def reward_document_options(organization, period_month):
             else money(sum(gp_values, Decimal("0")))
         )
 
-        lines = []
+        source_document_keys = {
+            _row_document_key(row)
+            for row in scope_rows
+        }
+        display_rows = [
+            row for row in scope_rows
+            if _source_mapping(row.source_data).get("row_kind") != "direct_order_expense"
+            and _source_mapping(row.source_data).get("recorder_type") != MONTH_CLOSE
+        ]
+        lines = _compact_reward_lines(display_rows)
         direct_expenses = []
-        source_document_keys = set()
         for row in scope_rows:
             row_data = _source_mapping(row.source_data)
-            source_document_keys.add(_row_document_key(row))
-            recorder_type = row_data.get("recorder_type")
-            is_direct = row_data.get("row_kind") == "direct_order_expense"
-            if recorder_type == MONTH_CLOSE and not is_direct:
+            if row_data.get("row_kind") != "direct_order_expense":
                 continue
             gp = _row_gp(row)
-            line = {
+            direct_expenses.append({
                 "identity": row.source_identity,
+                "source_identities": [row.source_identity],
                 "name": (
-                    (
-                        "Возврат · "
-                        + (
-                            _source_text(row.nomenclature)
-                            or "Позиция"
-                        )
+                    _source_text(
+                        row_data.get("direct_expense_line_name")
+                        or row_data.get("direct_expense_content")
+                        or row.nomenclature
                     )
-                    if recorder_type == RETAIL_RETURN
-                    else (
-                        _source_text(
-                            row_data.get("direct_expense_line_name")
-                            or row_data.get("direct_expense_content")
-                            or row.nomenclature
-                        )
-                        or "Позиция"
-                    )
+                    or "Прямые затраты"
                 ),
-                "type": "Прямые затраты" if is_direct else row.nomenclature_type,
+                "type": "Прямые затраты",
                 "kind": classify_nomenclature_type(row.nomenclature_type),
                 "revenue": str(money(row.revenue or 0)),
                 "cost": None if row.analytical_cost is None else str(money(row.analytical_cost)),
                 "gross_profit": None if gp is None else str(gp),
                 "cost_missing": gp is None,
-                "is_direct_expense": is_direct,
-            }
-            if is_direct:
-                direct_expenses.append(line)
-            else:
-                lines.append(line)
+                "is_direct_expense": True,
+            })
 
         result.append({
             "scope_key": scope_key,
