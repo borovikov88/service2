@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import copy
 from collections import defaultdict
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -31,6 +32,7 @@ MONEY = Decimal("0.01")
 ONE = Decimal("1.000000")
 MAX_FIXED_REWARD = Decimal("1000000.00")
 RETAIL_CHECK = "Document_ЧекККМ"
+RETAIL_RETURN = "Document_ЧекККМВозврат"
 RETAIL_REPORT = "Document_ОтчетОРозничныхПродажах"
 MONTH_CLOSE = "Document_ЗакрытиеМесяца"
 REALIZATION = "Document_РасходнаяНакладная"
@@ -166,59 +168,107 @@ def create_scheme_version(organization, user, *, effective_from, values):
         raise PermissionDenied
     effective_from = month_start(effective_from)
     _lock_reward_organization(organization)
-    latest = (
-        RewardSchemeVersion.objects.filter(organization=organization, name="Тестовая схема №1")
-        .order_by("-version")
-        .first()
-    )
-    version = (latest.version if latest else 0) + 1
-    if latest and effective_from <= latest.effective_from:
-        raise ValidationError("Новая версия правил должна начинаться позже предыдущей версии.")
     if RewardMonthClose.objects.filter(
         organization=organization,
-        period_month__gte=effective_from,
+        period_month=effective_from,
     ).exists():
-        raise ValidationError("Нельзя менять правила задним числом через уже закрытый месяц.")
-    if latest and (latest.effective_to is None or latest.effective_to >= effective_from):
-        previous_day = effective_from - timedelta(days=1)
-        latest.effective_to = previous_day
-        latest.save(update_fields=["effective_to"])
+        raise ValidationError("Зафиксированный месяц нельзя менять. Используйте корректировку.")
+    if RewardMonthClose.objects.filter(
+        organization=organization,
+        period_month__gt=effective_from,
+    ).exists():
+        raise ValidationError(
+            "Нельзя менять правила задним числом через уже закрытый месяц."
+        )
+
+    versions = RewardSchemeVersion.objects.filter(
+        organization=organization,
+        name="Тестовая схема №1",
+    )
+    latest_version = versions.order_by("-version").first()
+    version = (latest_version.version if latest_version else 0) + 1
+    next_scheme = (
+        versions.filter(effective_from__gt=effective_from)
+        .order_by("effective_from", "version")
+        .first()
+    )
+    effective_to = (
+        next_scheme.effective_from - timedelta(days=1)
+        if next_scheme else None
+    )
+
+    previous = (
+        versions.filter(effective_from__lt=effective_from)
+        .order_by("-effective_from", "-version")
+        .first()
+    )
+    if previous and (
+        previous.effective_to is None
+        or previous.effective_to >= effective_from
+    ):
+        previous.effective_to = effective_from - timedelta(days=1)
+        previous.save(update_fields=["effective_to"])
+
     allowed = {
-        "documentation_retail_fixed", "documentation_document_fixed",
-        "sale_rate", "project_rate", "work_rate", "client_manager_rate",
+        "documentation_retail_fixed", "retail_check_rate",
+        "documentation_document_fixed", "sale_rate", "project_rate",
+        "work_rate", "client_manager_rate",
     }
     try:
-        fields = {key: Decimal(str(value)) for key, value in values.items() if key in allowed}
+        fields = {
+            key: Decimal(str(value))
+            for key, value in values.items()
+            if key in allowed
+        }
     except (ValueError, ArithmeticError) as exc:
-        raise ValidationError("Ставки и фиксированные суммы должны быть числовыми.") from exc
-    fixed_fields = ("documentation_retail_fixed", "documentation_document_fixed")
-    rate_fields = ("sale_rate", "project_rate", "work_rate", "client_manager_rate")
+        raise ValidationError(
+            "Ставки и фиксированные суммы должны быть числовыми."
+        ) from exc
+    fixed_fields = (
+        "documentation_retail_fixed",
+        "documentation_document_fixed",
+    )
+    rate_fields = (
+        "retail_check_rate",
+        "sale_rate",
+        "project_rate",
+        "work_rate",
+        "client_manager_rate",
+    )
     for key, value in fields.items():
         if not value.is_finite():
             raise ValidationError(
                 "Значения ставок и фиксированных сумм должны быть конечными числами."
             )
     for key in fixed_fields:
-        if key in fields and (fields[key] < 0 or fields[key] > MAX_FIXED_REWARD):
-            raise ValidationError("Фиксированная сумма должна быть от 0 до 1 000 000 ₽.")
+        if key in fields and (
+            fields[key] < 0 or fields[key] > MAX_FIXED_REWARD
+        ):
+            raise ValidationError(
+                "Фиксированная сумма должна быть от 0 до 1 000 000 ₽."
+            )
     for key in rate_fields:
         if key in fields and (fields[key] < 0 or fields[key] > ONE):
-            raise ValidationError("Процентная ставка должна быть от 0% до 100%.")
+            raise ValidationError(
+                "Процентная ставка должна быть от 0% до 100%."
+            )
     return RewardSchemeVersion.objects.create(
         organization=organization,
         name="Тестовая схема №1",
         version=version,
         effective_from=effective_from,
+        effective_to=effective_to,
         created_by=user,
         **fields,
     )
-
 
 def _is_documentation_reward_source(row):
     data = _source_mapping(row.source_data)
     return (
         data.get("row_kind") != "direct_order_expense"
-        and data.get("recorder_type") not in {RETAIL_REPORT, MONTH_CLOSE}
+        and data.get("recorder_type") not in {
+            RETAIL_REPORT, RETAIL_RETURN, MONTH_CLOSE
+        }
     )
 
 
@@ -266,6 +316,199 @@ def active_profit_rows(organization, period_month):
         .select_related("import_batch")
         .order_by("source_row_number", "id")
     )
+
+
+
+def _retail_item_key(row):
+    data = _source_mapping(row.source_data)
+    guid = _source_text(data.get("nomenclature_guid")).lower()
+    if guid:
+        return ("guid", guid)
+    return (
+        "text",
+        _source_text(row.nomenclature).casefold(),
+        _source_text(row.article).casefold(),
+        _source_text(row.nomenclature_type).casefold(),
+    )
+
+
+def _split_signed_money(total, weighted_rows):
+    """Allocate a signed money total using signed quantity/revenue weights."""
+    total = money(total)
+    if not weighted_rows:
+        return None
+    quantity_weights = [Decimal(row.quantity or 0) for row in weighted_rows]
+    denominator = sum(quantity_weights, Decimal("0"))
+    weights = quantity_weights
+    if denominator == 0:
+        revenue_weights = [Decimal(row.revenue or 0) for row in weighted_rows]
+        denominator = sum(revenue_weights, Decimal("0"))
+        weights = revenue_weights
+    if denominator == 0:
+        return None
+    result = []
+    allocated = Decimal("0")
+    for index, weight in enumerate(weights):
+        if index == len(weights) - 1:
+            amount = money(total - allocated)
+        else:
+            amount = money(total * weight / denominator)
+            allocated += amount
+        result.append(amount)
+    return result
+
+
+def reward_profit_rows(organization, period_month):
+    """Return reward-only retail rows while preserving the confirmed finance total.
+
+    1C posts retail revenue by individual Check KKM rows and daily cost by
+    Report on retail sales rows. For rewards we deterministically fold each
+    report's cost back into the individual check/return rows by nomenclature and
+    signed quantity (revenue is a fallback weight). No live 1C call is made.
+    """
+    rows = active_profit_rows(organization, period_month)
+    by_day = defaultdict(list)
+    untouched = []
+    for row in rows:
+        data = _source_mapping(row.source_data)
+        recorder_type = data.get("recorder_type")
+        if recorder_type in {RETAIL_CHECK, RETAIL_RETURN, RETAIL_REPORT}:
+            day_key = (
+                _source_text(data.get("organization_guid")).lower(),
+                _source_text(data.get("source_date")),
+            )
+            by_day[day_key].append(row)
+        else:
+            untouched.append(row)
+
+    result = list(untouched)
+    for day_rows in by_day.values():
+        reports = [
+            row for row in day_rows
+            if _source_mapping(row.source_data).get("recorder_type")
+            == RETAIL_REPORT
+        ]
+        transactions = [
+            row for row in day_rows
+            if _source_mapping(row.source_data).get("recorder_type")
+            in {RETAIL_CHECK, RETAIL_RETURN}
+        ]
+        report_recorders = {
+            _source_text(_source_mapping(row.source_data).get("recorder")).lower()
+            for row in reports
+        }
+        mapped_checks = [
+            row for row in transactions
+            if _source_mapping(row.source_data).get("recorder_type") == RETAIL_CHECK
+            and _source_mapping(row.source_data).get("document_group_recorder_type")
+            == RETAIL_REPORT
+            and _source_text(
+                _source_mapping(row.source_data).get("document_group_recorder")
+            ).lower() in report_recorders
+        ]
+        only_returns = bool(transactions) and all(
+            _source_mapping(row.source_data).get("recorder_type")
+            == RETAIL_RETURN
+            for row in transactions
+        )
+        if (
+            not reports
+            or not transactions
+            or (not mapped_checks and not only_returns)
+            or len(report_recorders) != 1
+            or any(Decimal(row.revenue or 0) != 0 for row in reports)
+        ):
+            result.extend(day_rows)
+            continue
+
+        report_by_item = defaultdict(list)
+        transaction_by_item = defaultdict(list)
+        for row in reports:
+            report_by_item[_retail_item_key(row)].append(row)
+        for row in transactions:
+            transaction_by_item[_retail_item_key(row)].append(row)
+
+        allocations = {}
+        allocation_quality = {}
+        failed = False
+        for item_key, cost_rows in report_by_item.items():
+            target_rows = transaction_by_item.get(item_key, [])
+            if not target_rows:
+                failed = True
+                break
+            if any(row.analytical_cost is None for row in cost_rows):
+                failed = True
+                break
+            total_cost = sum(
+                (Decimal(row.analytical_cost or 0) for row in cost_rows),
+                Decimal("0"),
+            )
+            split = _split_signed_money(total_cost, target_rows)
+            if split is None and total_cost != 0:
+                failed = True
+                break
+            split = split or [Decimal("0")] * len(target_rows)
+            quality = (
+                OneCMonthlyProfit.COST_SOURCE_CALCULATED
+                if any(
+                    row.cost_source == OneCMonthlyProfit.COST_SOURCE_CALCULATED
+                    for row in cost_rows
+                )
+                else OneCMonthlyProfit.COST_SOURCE_ACTUAL
+            )
+            for target, amount in zip(target_rows, split):
+                allocations[target.source_identity] = (
+                    allocations.get(target.source_identity, Decimal("0"))
+                    + amount
+                )
+                if (
+                    allocation_quality.get(target.source_identity)
+                    == OneCMonthlyProfit.COST_SOURCE_CALCULATED
+                    or quality == OneCMonthlyProfit.COST_SOURCE_CALCULATED
+                ):
+                    allocation_quality[target.source_identity] = (
+                        OneCMonthlyProfit.COST_SOURCE_CALCULATED
+                    )
+                else:
+                    allocation_quality[target.source_identity] = quality
+
+        if failed:
+            result.extend(day_rows)
+            continue
+
+        for row in transactions:
+            adjusted = copy(row)
+            allocated_cost = allocations.get(row.source_identity, Decimal("0"))
+            own_cost = row.analytical_cost
+            if own_cost is None:
+                adjusted.cost_source = OneCMonthlyProfit.COST_SOURCE_UNDEFINED
+                adjusted.calculated_cost = None
+                adjusted.analytical_gross_profit = None
+            else:
+                total_cost = money(Decimal(own_cost) + allocated_cost)
+                quality = allocation_quality.get(
+                    row.source_identity, row.cost_source
+                )
+                if (
+                    row.cost_source == OneCMonthlyProfit.COST_SOURCE_CALCULATED
+                    or quality == OneCMonthlyProfit.COST_SOURCE_CALCULATED
+                ):
+                    adjusted.cost_source = OneCMonthlyProfit.COST_SOURCE_CALCULATED
+                    adjusted.calculated_cost = total_cost
+                else:
+                    adjusted.cost_source = OneCMonthlyProfit.COST_SOURCE_ACTUAL
+                    adjusted.cost = total_cost
+                    adjusted.calculated_cost = None
+                adjusted.gross_profit = money(
+                    Decimal(adjusted.revenue or 0) - total_cost
+                )
+                adjusted.analytical_gross_profit = adjusted.gross_profit
+            adjusted.source_data = dict(_source_mapping(row.source_data))
+            adjusted.source_data["reward_retail_cost_allocated"] = True
+            result.append(adjusted)
+
+    result.sort(key=lambda row: (row.source_row_number, row.id))
+    return result
 
 
 def _resolve_stale_author_proposals(organization, user, period_month, key, current_author_guid):
@@ -910,7 +1153,7 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
         return snapshot
 
     scheme = scheme_for_month(organization, period_month)
-    rows = active_profit_rows(organization, period_month)
+    rows = reward_profit_rows(organization, period_month)
     rows_by_identity = {row.source_identity: row for row in rows}
     rows_by_document = defaultdict(list)
     for row in rows:
@@ -948,7 +1191,17 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
             if _source_mapping(row.source_data).get("row_kind") != "direct_order_expense"
             and _source_mapping(row.source_data).get("recorder_type") != MONTH_CLOSE
         ]
-        if sale_rows and (business_key, RewardParticipation.ROLE_SALE) not in participation_keys:
+        is_retail_scope = any(
+            _source_mapping(row.source_data).get("recorder_type")
+            in {RETAIL_CHECK, RETAIL_RETURN}
+            for row in sale_rows
+        )
+        if (
+            sale_rows
+            and not is_retail_scope
+            and (business_key, RewardParticipation.ROLE_SALE)
+            not in participation_keys
+        ):
             issues.append({
                 "kind": "missing_sale_role",
                 "label": (
@@ -992,8 +1245,9 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
 
     employee_totals = defaultdict(lambda: {
         "documentation_count": 0, "seller_revenue": Decimal("0"), "seller_gp": Decimal("0"),
-        "documentation_reward": Decimal("0"), "sale_reward": Decimal("0"),
-        "project_reward": Decimal("0"), "work_reward": Decimal("0"),
+        "documentation_reward": Decimal("0"), "retail_reward": Decimal("0"),
+        "sale_reward": Decimal("0"), "project_reward": Decimal("0"),
+        "work_reward": Decimal("0"),
         "adjustments": Decimal("0"), "review_count": 0,
     })
 
@@ -1122,18 +1376,66 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
             issues.append({"kind": "unallocated", "label": scope_key, "share": str(ONE - share_total)})
 
         document_type = confirmed[0].source_document_type
+        fixed_allocations = {}
+        retail_allocations = {}
         if role == RewardParticipation.ROLE_DOCUMENTATION:
-            fund = money(_fixed_for(document_type, scheme))
+            fixed_fund = money(_fixed_for(document_type, scheme))
+            retail_fund = Decimal("0")
+            if document_type == RETAIL_CHECK:
+                gp_values = [_row_gp(row) for row in scope_rows]
+                if any(value is None for value in gp_values):
+                    issues.append({
+                        "kind": "missing_cost",
+                        "label": scope_key,
+                        "count": 1,
+                    })
+                    for x in confirmed:
+                        employee_totals[x.employee_id]["review_count"] += 1
+                    continue
+                retail_fund = money(
+                    max(base, Decimal("0"))
+                    * Decimal(scheme.retail_check_rate or 0)
+                )
+            fixed_parts = _allocate(
+                fixed_fund, confirmed, full=(share_total == ONE)
+            )
+            retail_parts = _allocate(
+                retail_fund, confirmed, full=(share_total == ONE)
+            )
+            fixed_allocations = {item.id: amount for item, amount in fixed_parts}
+            retail_allocations = {item.id: amount for item, amount in retail_parts}
+            fund = money(fixed_fund + retail_fund)
+            allocations = [
+                (
+                    item,
+                    money(
+                        fixed_allocations.get(item.id, Decimal("0"))
+                        + retail_allocations.get(item.id, Decimal("0"))
+                    ),
+                )
+                for item in confirmed
+            ]
         else:
             rate = _rate_for(role, scheme)
             fund = money(max(base, Decimal("0")) * Decimal(rate or 0))
-        allocations = _allocate(fund, confirmed, full=(share_total == ONE))
+            allocations = _allocate(
+                fund, confirmed, full=(share_total == ONE)
+            )
         for item, amount in allocations:
             totals = employee_totals[item.employee_id]
             if role == RewardParticipation.ROLE_DOCUMENTATION:
+                fixed_amount = fixed_allocations.get(item.id, amount)
+                retail_amount = retail_allocations.get(item.id, Decimal("0"))
                 totals["documentation_count"] += 1
-                totals["documentation_reward"] += amount
-                rate_label = f"{_fixed_for(document_type, scheme):.2f} ₽"
+                totals["documentation_reward"] += fixed_amount
+                totals["retail_reward"] += retail_amount
+                if document_type == RETAIL_CHECK:
+                    rate_label = (
+                        f"{_fixed_for(document_type, scheme):.2f} ₽ + "
+                        f"{(scheme.retail_check_rate * 100):.2f}% ВП"
+                    )
+                else:
+                    rate_label = f"{_fixed_for(document_type, scheme):.2f} ₽"
             else:
                 rate = _rate_for(role, scheme) or Decimal("0")
                 rate_label = f"{(rate * 100):.2f}%"
@@ -1173,7 +1475,8 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
         if employee_id and eid != employee_id:
             continue
         total = money(
-            totals["documentation_reward"] + totals["sale_reward"] + totals["project_reward"]
+            totals["documentation_reward"] + totals["retail_reward"]
+            + totals["sale_reward"] + totals["project_reward"]
             + totals["work_reward"] + totals["adjustments"]
         )
         employees.append({
@@ -1283,6 +1586,7 @@ def _scheme_payload(scheme):
         "id": scheme.id, "name": scheme.name, "version": scheme.version,
         "effective_from": scheme.effective_from.isoformat(),
         "documentation_retail_fixed": str(scheme.documentation_retail_fixed),
+        "retail_check_rate": str(scheme.retail_check_rate),
         "documentation_document_fixed": str(scheme.documentation_document_fixed),
         "sale_rate": str(scheme.sale_rate), "project_rate": str(scheme.project_rate),
         "work_rate": str(scheme.work_rate), "client_manager_rate": str(scheme.client_manager_rate),
@@ -1322,18 +1626,31 @@ def close_month(organization, user, period_month):
 
 
 def _row_business_scope_key(row):
-    """Stable order scope when available; otherwise the original sale document."""
+    """Stable order/check scope without exposing daily retail reports as work items."""
     data = _source_mapping(row.source_data)
-    order_guid = data.get("resolved_order_guid") or data.get("direct_expense_order_guid")
+    order_guid = (
+        data.get("resolved_order_guid")
+        or data.get("direct_expense_order_guid")
+    )
     if order_guid:
         return f"odata-order:{row.organization_id}:{str(order_guid).lower()}"
+    recorder_type = data.get("recorder_type")
+    if (
+        recorder_type == RETAIL_RETURN
+        and data.get("document_type") == RETAIL_CHECK
+        and data.get("document_guid")
+    ):
+        return (
+            f"odata-source:{row.organization_id}:{RETAIL_CHECK}:"
+            f"{str(data['document_guid']).lower()}"
+        )
     return _row_document_key(row)
 
 
 def reward_document_options(organization, period_month):
     """Read-only order workspace built only from active confirmed Service2 profit rows."""
     period_month = month_start(period_month)
-    rows = active_profit_rows(organization, period_month)
+    rows = reward_profit_rows(organization, period_month)
     groups = defaultdict(list)
     for row in rows:
         groups[_row_business_scope_key(row)].append(row)
@@ -1357,14 +1674,40 @@ def reward_document_options(organization, period_month):
         if not assignment_rows:
             # Month-close accounting rows are never standalone reward work items.
             continue
-        primary = assignment_rows[0]
+        retail_check_row = next(
+            (
+                row for row in assignment_rows
+                if _source_mapping(row.source_data).get("recorder_type")
+                == RETAIL_CHECK
+            ),
+            None,
+        )
+        primary = retail_check_row or assignment_rows[0]
         data = _source_mapping(primary.source_data)
-        label = _source_text(
-            data.get("resolved_order_display")
-            or data.get("document_display")
-            or primary.document_name
-            or "Заказ"
-        ) or "Заказ"
+        is_retail_check = retail_check_row is not None
+        if is_retail_check:
+            number = _source_text(data.get("document_number"))
+            check_date = _safe_date(
+                data.get("document_date") or data.get("source_date")
+            )
+            if number and check_date:
+                label = f"Чек ККМ №{number} от {check_date:%d.%m.%Y}"
+            elif number:
+                label = f"Чек ККМ №{number}"
+            else:
+                label = "Чек ККМ"
+        elif (
+            _source_mapping(primary.source_data).get("recorder_type")
+            == RETAIL_RETURN
+        ):
+            label = "Возврат по чеку ККМ"
+        else:
+            label = _source_text(
+                data.get("resolved_order_display")
+                or data.get("document_display")
+                or primary.document_name
+                or "Заказ"
+            ) or "Заказ"
         customer_guid = _source_text(
             data.get("resolved_order_customer_guid") or data.get("customer_guid")
         ).lower()
@@ -1399,11 +1742,24 @@ def reward_document_options(organization, period_month):
             gp = _row_gp(row)
             line = {
                 "identity": row.source_identity,
-                "name": _source_text(
-                    row_data.get("direct_expense_line_name")
-                    or row_data.get("direct_expense_content")
-                    or row.nomenclature
-                ) or "Позиция",
+                "name": (
+                    (
+                        "Возврат · "
+                        + (
+                            _source_text(row.nomenclature)
+                            or "Позиция"
+                        )
+                    )
+                    if recorder_type == RETAIL_RETURN
+                    else (
+                        _source_text(
+                            row_data.get("direct_expense_line_name")
+                            or row_data.get("direct_expense_content")
+                            or row.nomenclature
+                        )
+                        or "Позиция"
+                    )
+                ),
                 "type": "Прямые затраты" if is_direct else row.nomenclature_type,
                 "kind": classify_nomenclature_type(row.nomenclature_type),
                 "revenue": str(money(row.revenue or 0)),
@@ -1428,10 +1784,51 @@ def reward_document_options(organization, period_month):
             "client_name": customer_link.client.name if customer_link else "",
             "pool_id": object_link.pool_id if object_link else None,
             "pool_label": object_link.pool.address if object_link else "",
-            "source_document_type": data.get("resolved_order_type") or data.get("recorder_type") or "",
-            "source_document_guid": str(data.get("resolved_order_guid") or data.get("recorder") or primary.source_recorder or ""),
-            "source_document_number": data.get("resolved_order_number") or data.get("document_number") or "",
-            "source_document_date": _safe_date(data.get("resolved_order_date") or data.get("document_date") or data.get("source_date")),
+            "source_document_type": (
+                RETAIL_CHECK
+                if is_retail_check
+                else (
+                    data.get("resolved_order_type")
+                    or (
+                        RETAIL_CHECK
+                        if data.get("recorder_type") == RETAIL_RETURN
+                        and data.get("document_type") == RETAIL_CHECK
+                        else data.get("recorder_type")
+                    )
+                    or ""
+                )
+            ),
+            "source_document_guid": str(
+                (
+                    data.get("recorder")
+                    if is_retail_check
+                    else data.get("resolved_order_guid")
+                    or (
+                        data.get("document_guid")
+                        if data.get("recorder_type") == RETAIL_RETURN
+                        and data.get("document_type") == RETAIL_CHECK
+                        else data.get("recorder")
+                    )
+                )
+                or primary.source_recorder
+                or ""
+            ),
+            "source_document_number": (
+                data.get("document_number")
+                if is_retail_check
+                else data.get("resolved_order_number")
+                or data.get("document_number")
+                or ""
+            ),
+            "source_document_date": _safe_date(
+                (
+                    data.get("document_date")
+                    if is_retail_check
+                    else data.get("resolved_order_date")
+                    or data.get("document_date")
+                    or data.get("source_date")
+                )
+            ),
             "source_document_keys": sorted(source_document_keys),
             "revenue": str(revenue),
             "cost": None if cost is None else str(cost),
@@ -1491,6 +1888,15 @@ def create_manual_participation(
     document = options.get(document_key)
     if document is None:
         raise ValidationError("Документ не относится к активным подтверждённым данным месяца.")
+    if (
+        document.get("source_document_type") == RETAIL_CHECK
+        and role == RewardParticipation.ROLE_SALE
+        and not not_applicable
+    ):
+        raise ValidationError(
+            "Для розничного чека используется отдельная ставка «Розничный чек, % ВП», "
+            "а не общая ставка продажи."
+        )
     allowed_lines = {item["identity"] for item in document["lines"] if not item["is_direct_expense"]}
     selected = list(dict.fromkeys(line_identities or []))
     if any(identity not in allowed_lines for identity in selected):

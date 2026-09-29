@@ -18,7 +18,9 @@ from pool_service.services.rewards import (
     create_scheme_version,
     ensure_test_scheme,
     reward_document_options,
+    reward_profit_rows,
     resolve_documentation_placeholder,
+    scheme_for_month,
     sync_author_proposals,
     update_participation_share,
 )
@@ -62,6 +64,72 @@ class EmployeeRewardCalculationTests(TestCase):
             analytical_gross_profit=Decimal(gp) if cost_source != OneCMonthlyProfit.COST_SOURCE_UNDEFINED else None,
             cost_source=cost_source,
             source_data={"source":"odata","recorder":"11111111-1111-4111-8111-111111111111","recorder_type":"Document_РасходнаяНакладная","document_group_key":doc},
+        )
+
+    def add_retail_row(
+        self,
+        *,
+        recorder,
+        recorder_type,
+        line,
+        source_date,
+        nomenclature_guid,
+        quantity,
+        revenue,
+        cost,
+        document_number=None,
+        document_guid=None,
+        report_recorder=None,
+    ):
+        source_data = {
+            "source": "odata",
+            "recorder": recorder,
+            "recorder_type": recorder_type,
+            "organization_guid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "source_date": source_date.isoformat(),
+            "nomenclature_guid": nomenclature_guid,
+            "document_guid": document_guid,
+            "document_type": (
+                "Document_ЧекККМ" if document_guid else recorder_type
+            ),
+        }
+        if document_number:
+            source_data.update({
+                "document_number": document_number,
+                "document_date": source_date.isoformat(),
+            })
+        if report_recorder:
+            source_data.update({
+                "document_group_recorder": report_recorder,
+                "document_group_recorder_type": "Document_ОтчетОРозничныхПродажах",
+                "document_group_key": (
+                    f"odata-document:{self.org.id}:"
+                    f"Document_ОтчетОРозничныхПродажах:{report_recorder}"
+                ),
+                "document_display": "Отчёт о розничных продажах",
+            })
+        return OneCMonthlyProfit.objects.create(
+            import_batch=self.batch,
+            organization=self.org,
+            period_month=self.month,
+            source_recorder=recorder,
+            source_row_number=line,
+            manager_name="",
+            customer_name="Без контрагента",
+            document_name=(
+                "Отчёт о розничных продажах"
+                if recorder_type == "Document_ОтчетОРозничныхПродажах"
+                else "Чек ККМ"
+            ),
+            nomenclature="Розничный товар",
+            nomenclature_type="Товар",
+            quantity=Decimal(str(quantity)),
+            revenue=Decimal(str(revenue)),
+            cost=Decimal(str(cost)),
+            gross_profit=Decimal(str(revenue)) - Decimal(str(cost)),
+            analytical_gross_profit=Decimal(str(revenue)) - Decimal(str(cost)),
+            cost_source=OneCMonthlyProfit.COST_SOURCE_ACTUAL,
+            source_data=source_data,
         )
 
     def participation(self, employee, role, share, *, lines=None, scope="scope-a"):
@@ -1052,6 +1120,252 @@ class EmployeeRewardCalculationTests(TestCase):
         self.assertNotIn("missing_sale_role", kinds)
         self.assertNotIn("missing_work_role", kinds)
         self.assertNotIn("missing_documentation_role", kinds)
+
+    def test_retail_report_cost_is_folded_into_individual_check(self):
+        check_guid = "22222222-2222-4222-8222-222222222222"
+        report_guid = "33333333-3333-4333-8333-333333333333"
+        item_guid = "44444444-4444-4444-8444-444444444444"
+        self.add_retail_row(
+            recorder=check_guid,
+            recorder_type="Document_ЧекККМ",
+            line=1,
+            source_date=date(2026, 9, 9),
+            nomenclature_guid=item_guid,
+            quantity="1",
+            revenue="2800.00",
+            cost="0.00",
+            document_number="НФНФ-001057",
+            report_recorder=report_guid,
+        )
+        self.add_retail_row(
+            recorder=report_guid,
+            recorder_type="Document_ОтчетОРозничныхПродажах",
+            line=2,
+            source_date=date(2026, 9, 9),
+            nomenclature_guid=item_guid,
+            quantity="0",
+            revenue="0.00",
+            cost="1651.00",
+            report_recorder=report_guid,
+        )
+
+        rows = reward_profit_rows(self.org, self.month)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].source_recorder.hex, check_guid.replace("-", ""))
+        self.assertEqual(rows[0].analytical_cost, Decimal("1651.00"))
+        self.assertEqual(rows[0].displayed_gross_profit, Decimal("1149.00"))
+
+        documents = reward_document_options(self.org, self.month)
+        self.assertEqual(len(documents), 1)
+        self.assertEqual(
+            documents[0]["label"],
+            "Чек ККМ №НФНФ-001057 от 09.09.2026",
+        )
+        self.assertEqual(documents[0]["revenue"], "2800.00")
+        self.assertEqual(documents[0]["cost"], "1651.00")
+        self.assertEqual(documents[0]["gross_profit"], "1149.00")
+
+    def test_retail_check_gets_fixed_plus_separate_gp_percent(self):
+        check_guid = "22222222-2222-4222-8222-222222222222"
+        report_guid = "33333333-3333-4333-8333-333333333333"
+        item_guid = "44444444-4444-4444-8444-444444444444"
+        self.add_retail_row(
+            recorder=check_guid,
+            recorder_type="Document_ЧекККМ",
+            line=1,
+            source_date=date(2026, 9, 9),
+            nomenclature_guid=item_guid,
+            quantity="1",
+            revenue="2800.00",
+            cost="0.00",
+            document_number="НФНФ-001057",
+            report_recorder=report_guid,
+        )
+        self.add_retail_row(
+            recorder=report_guid,
+            recorder_type="Document_ОтчетОРозничныхПродажах",
+            line=2,
+            source_date=date(2026, 9, 9),
+            nomenclature_guid=item_guid,
+            quantity="0",
+            revenue="0.00",
+            cost="1651.00",
+            report_recorder=report_guid,
+        )
+        key = (
+            f"odata-source:{self.org.id}:Document_ЧекККМ:{check_guid}"
+        )
+        RewardParticipation.objects.create(
+            organization=self.org,
+            employee=self.e1,
+            role=RewardParticipation.ROLE_DOCUMENTATION,
+            status=RewardParticipation.STATUS_CONFIRMED,
+            share=Decimal("1.000000"),
+            period_month=self.month,
+            scope_key=key,
+            source_document_key=key,
+            source_document_type="Document_ЧекККМ",
+            source_document_guid=check_guid,
+            source_document_number="НФНФ-001057",
+            source_document_date=date(2026, 9, 9),
+            assignment_source=RewardParticipation.SOURCE_ONEC_AUTHOR,
+            created_by=self.user,
+            confirmed_by=self.user,
+        )
+
+        data = calculate_month(self.org, self.month)
+        employee = next(
+            item for item in data["employees"]
+            if item["employee_id"] == self.e1.id
+        )
+        self.assertEqual(employee["documentation_reward"], "50.00")
+        self.assertEqual(employee["retail_reward"], "11.49")
+        self.assertEqual(employee["total"], "61.49")
+        self.assertFalse(any(
+            issue["kind"] == "missing_sale_role"
+            for issue in data["issues"]
+        ))
+
+    def test_retail_return_reduces_original_check_gp_and_percent(self):
+        check_guid = "22222222-2222-4222-8222-222222222222"
+        sale_report = "33333333-3333-4333-8333-333333333333"
+        return_guid = "55555555-5555-4555-8555-555555555555"
+        return_report = "66666666-6666-4666-8666-666666666666"
+        item_guid = "44444444-4444-4444-8444-444444444444"
+        self.add_retail_row(
+            recorder=check_guid,
+            recorder_type="Document_ЧекККМ",
+            line=1,
+            source_date=date(2026, 9, 10),
+            nomenclature_guid=item_guid,
+            quantity="2",
+            revenue="1000.00",
+            cost="0.00",
+            document_number="НФНФ-001062",
+            report_recorder=sale_report,
+        )
+        self.add_retail_row(
+            recorder=sale_report,
+            recorder_type="Document_ОтчетОРозничныхПродажах",
+            line=2,
+            source_date=date(2026, 9, 10),
+            nomenclature_guid=item_guid,
+            quantity="0",
+            revenue="0.00",
+            cost="400.00",
+            report_recorder=sale_report,
+        )
+        self.add_retail_row(
+            recorder=return_guid,
+            recorder_type="Document_ЧекККМВозврат",
+            line=3,
+            source_date=date(2026, 9, 14),
+            nomenclature_guid=item_guid,
+            quantity="-1",
+            revenue="-500.00",
+            cost="0.00",
+            document_guid=check_guid,
+        )
+        self.add_retail_row(
+            recorder=return_report,
+            recorder_type="Document_ОтчетОРозничныхПродажах",
+            line=4,
+            source_date=date(2026, 9, 14),
+            nomenclature_guid=item_guid,
+            quantity="0",
+            revenue="0.00",
+            cost="-200.00",
+            report_recorder=return_report,
+        )
+        # The return-day report has no positive check, so mirror the confirmed
+        # report link used by import grouping with a zero-value check row.
+        self.add_retail_row(
+            recorder="77777777-7777-4777-8777-777777777777",
+            recorder_type="Document_ЧекККМ",
+            line=5,
+            source_date=date(2026, 9, 14),
+            nomenclature_guid="88888888-8888-4888-8888-888888888888",
+            quantity="1",
+            revenue="100.00",
+            cost="0.00",
+            document_number="НФНФ-001063",
+            report_recorder=return_report,
+        )
+
+        documents = reward_document_options(self.org, self.month)
+        original = next(
+            item for item in documents
+            if item["source_document_guid"] == check_guid
+        )
+        self.assertEqual(original["revenue"], "500.00")
+        self.assertEqual(original["cost"], "200.00")
+        self.assertEqual(original["gross_profit"], "300.00")
+        self.assertTrue(any(
+            line["name"].startswith("Возврат · ")
+            for line in original["lines"]
+        ))
+
+    def test_general_sale_role_is_rejected_for_retail_check(self):
+        check_guid = "22222222-2222-4222-8222-222222222222"
+        report_guid = "33333333-3333-4333-8333-333333333333"
+        item_guid = "44444444-4444-4444-8444-444444444444"
+        self.add_retail_row(
+            recorder=check_guid,
+            recorder_type="Document_ЧекККМ",
+            line=1,
+            source_date=date(2026, 9, 9),
+            nomenclature_guid=item_guid,
+            quantity="1",
+            revenue="1000.00",
+            cost="0.00",
+            document_number="НФНФ-001057",
+            report_recorder=report_guid,
+        )
+        self.add_retail_row(
+            recorder=report_guid,
+            recorder_type="Document_ОтчетОРозничныхПродажах",
+            line=2,
+            source_date=date(2026, 9, 9),
+            nomenclature_guid=item_guid,
+            quantity="0",
+            revenue="0.00",
+            cost="400.00",
+            report_recorder=report_guid,
+        )
+        document = reward_document_options(self.org, self.month)[0]
+        with self.assertRaisesMessage(Exception, "отдельная ставка"):
+            create_manual_participation(
+                self.org,
+                self.user,
+                self.month,
+                document_key=document["scope_key"],
+                employee=self.e1,
+                role=RewardParticipation.ROLE_SALE,
+                share=Decimal("1"),
+            )
+
+    def test_same_open_month_can_create_new_test_scheme_version(self):
+        updated = create_scheme_version(
+            self.org,
+            self.user,
+            effective_from=self.month,
+            values={
+                "documentation_retail_fixed": "50.00",
+                "retail_check_rate": "0.02",
+                "documentation_document_fixed": "200.00",
+                "sale_rate": "0.07",
+                "project_rate": "0.05",
+                "work_rate": "0.30",
+                "client_manager_rate": "0.01",
+            },
+        )
+        self.assertEqual(updated.effective_from, self.month)
+        self.assertEqual(updated.version, self.scheme.version + 1)
+        self.assertEqual(updated.retail_check_rate, Decimal("0.020000"))
+        self.assertEqual(
+            scheme_for_month(self.org, self.month).id,
+            updated.id,
+        )
 
     def test_co_documenter_rejected_for_inactive_source(self):
         row = self.add_row(1, "1000.00")

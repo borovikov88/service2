@@ -376,6 +376,10 @@ def employee_rewards(request):
                         "documentation_retail_fixed": request.POST[
                             "documentation_retail_fixed"
                         ],
+                        "retail_check_rate": _percent_value(
+                            request.POST.get("retail_check_rate"),
+                            "Розничный чек",
+                        ),
                         "documentation_document_fixed": request.POST[
                             "documentation_document_fixed"
                         ],
@@ -446,7 +450,12 @@ def employee_rewards(request):
 
     scheme = (
         RewardSchemeVersion.objects.filter(
-            organization=organization, effective_from__lte=period_month
+            organization=organization,
+            effective_from__lte=period_month,
+        )
+        .filter(
+            models.Q(effective_to__isnull=True)
+            | models.Q(effective_to__gte=period_month)
         )
         .order_by("-effective_from", "-version")
         .first()
