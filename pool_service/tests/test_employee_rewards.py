@@ -7,7 +7,12 @@ from django.test import TestCase
 from django.urls import reverse
 
 from pool_service.models import Employee, OneCImportBatch, OneCMonthlyProfit, OneCReportPeriodState, Organization, OrganizationAccess
-from pool_service.reward_models import OneCAuthorIdentity, RewardParticipation, RewardSchemeVersion
+from pool_service.reward_models import (
+    OneCAuthorIdentity,
+    RewardCustomerManagerRule,
+    RewardParticipation,
+    RewardSchemeVersion,
+)
 from pool_service.reward_views import _percent_value
 from pool_service.services.rewards import (
     add_documentation_participant,
@@ -563,6 +568,168 @@ class EmployeeRewardCalculationTests(TestCase):
         self.assertTrue(
             item.changes.filter(reason="Редактирование участника заказа").exists()
         )
+
+    def _add_split_movement_rows(self, *, recorder, customer_guid, line_start=200):
+        common = {
+            "source": "odata",
+            "recorder": recorder,
+            "recorder_type": "Document_РасходнаяНакладная",
+            "source_date": "2026-09-15",
+            "customer_guid": customer_guid,
+            "nomenclature_guid": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        }
+        revenue_row = OneCMonthlyProfit.objects.create(
+            import_batch=self.batch,
+            organization=self.org,
+            period_month=self.month,
+            source_recorder=recorder,
+            source_row_number=line_start,
+            manager_name="",
+            customer_name="Клиент с GUID",
+            document_name="Расходная накладная",
+            nomenclature="Насос",
+            nomenclature_type="Товар",
+            quantity=Decimal("1"),
+            revenue=Decimal("1000.00"),
+            cost=Decimal("0.00"),
+            gross_profit=Decimal("1000.00"),
+            analytical_gross_profit=Decimal("1000.00"),
+            cost_source=OneCMonthlyProfit.COST_SOURCE_ACTUAL,
+            source_data={**common, "line_number": line_start},
+        )
+        cost_row = OneCMonthlyProfit.objects.create(
+            import_batch=self.batch,
+            organization=self.org,
+            period_month=self.month,
+            source_recorder=recorder,
+            source_row_number=line_start + 1,
+            manager_name="",
+            customer_name="Клиент с GUID",
+            document_name="Расходная накладная",
+            nomenclature="Насос",
+            nomenclature_type="Товар",
+            quantity=Decimal("1"),
+            revenue=Decimal("0.00"),
+            cost=Decimal("400.00"),
+            gross_profit=Decimal("-400.00"),
+            analytical_gross_profit=Decimal("-400.00"),
+            cost_source=OneCMonthlyProfit.COST_SOURCE_ACTUAL,
+            source_data={**common, "line_number": line_start + 1},
+        )
+        return revenue_row, cost_row
+
+    def test_reward_document_compacts_revenue_and_cost_movements(self):
+        revenue_row, cost_row = self._add_split_movement_rows(
+            recorder="22222222-2222-4222-8222-222222222222",
+            customer_guid="99999999-9999-4999-8999-999999999999",
+        )
+        document = reward_document_options(self.org, self.month)[0]
+        self.assertEqual(len(document["lines"]), 1)
+        line = document["lines"][0]
+        self.assertEqual(line["name"], "Насос")
+        self.assertEqual(line["revenue"], "1000.00")
+        self.assertEqual(line["cost"], "400.00")
+        self.assertEqual(line["gross_profit"], "600.00")
+        self.assertEqual(
+            set(line["source_identities"]),
+            {revenue_row.source_identity, cost_row.source_identity},
+        )
+
+    def test_compact_line_selection_expands_to_source_movements(self):
+        revenue_row, cost_row = self._add_split_movement_rows(
+            recorder="22222222-2222-4222-8222-222222222222",
+            customer_guid="99999999-9999-4999-8999-999999999999",
+        )
+        document = reward_document_options(self.org, self.month)[0]
+        item = create_manual_participation(
+            self.org,
+            self.user,
+            self.month,
+            document_key=document["scope_key"],
+            employee=self.e1,
+            role=RewardParticipation.ROLE_PROJECT,
+            share=Decimal("1"),
+            line_identities=[document["lines"][0]["identity"]],
+        )
+        self.assertEqual(
+            set(item.scope_line_identities),
+            {revenue_row.source_identity, cost_row.source_identity},
+        )
+
+    def test_manual_client_manager_is_reused_for_next_1c_document(self):
+        customer_guid = "99999999-9999-4999-8999-999999999999"
+        self._add_split_movement_rows(
+            recorder="22222222-2222-4222-8222-222222222222",
+            customer_guid=customer_guid,
+            line_start=200,
+        )
+        self._add_split_movement_rows(
+            recorder="33333333-3333-4333-8333-333333333333",
+            customer_guid=customer_guid,
+            line_start=210,
+        )
+        documents = reward_document_options(self.org, self.month)
+        self.assertEqual(len(documents), 2)
+        first, second = documents
+        create_manual_participation(
+            self.org,
+            self.user,
+            self.month,
+            document_key=first["scope_key"],
+            employee=self.e2,
+            role=RewardParticipation.ROLE_CLIENT_MANAGER,
+            share=Decimal("1"),
+        )
+        self.assertTrue(
+            RewardCustomerManagerRule.objects.filter(
+                organization=self.org,
+                onec_customer_id=customer_guid,
+                employee=self.e2,
+                effective_from=self.month,
+            ).exists()
+        )
+
+        sync_reward_rules(self.org, self.user, self.month)
+
+        auto = RewardParticipation.objects.get(
+            organization=self.org,
+            period_month=self.month,
+            source_document_key=second["scope_key"],
+            role=RewardParticipation.ROLE_CLIENT_MANAGER,
+            assignment_source=RewardParticipation.SOURCE_TEMPLATE,
+            status=RewardParticipation.STATUS_CONFIRMED,
+        )
+        self.assertEqual(auto.employee, self.e2)
+        self.assertEqual(auto.share, Decimal("1.000000"))
+
+    def test_batch_builds_reward_document_options_only_once(self):
+        row = self.add_row(300, "10000.00", kind="Работа")
+        document = reward_document_options(self.org, self.month)[0]
+        with patch(
+            "pool_service.services.rewards.reward_document_options",
+            wraps=reward_document_options,
+        ) as mocked:
+            create_manual_participations_batch(
+                self.org,
+                self.user,
+                self.month,
+                document_key=document["scope_key"],
+                assignments=[
+                    {
+                        "employee": self.e1,
+                        "role": RewardParticipation.ROLE_WORK,
+                        "share": Decimal("0.5"),
+                        "line_identities": [document["lines"][0]["identity"]],
+                    },
+                    {
+                        "employee": self.e2,
+                        "role": RewardParticipation.ROLE_WORK,
+                        "share": Decimal("0.5"),
+                        "line_identities": [document["lines"][0]["identity"]],
+                    },
+                ],
+            )
+        self.assertEqual(mocked.call_count, 1)
 
     def test_scheme_accepts_localized_fixed_amounts_with_comma(self):
         updated = create_scheme_version(
