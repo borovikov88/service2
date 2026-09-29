@@ -157,8 +157,6 @@ def ensure_test_scheme(organization, user, period_month):
         effective_from=period_month,
         effective_to=effective_to,
         created_by=user,
-        confirmed_by=user if status == RewardParticipation.STATUS_CONFIRMED else None,
-        confirmed_at=timezone.now() if status == RewardParticipation.STATUS_CONFIRMED else None,
     )
 
 
@@ -2066,6 +2064,16 @@ def reward_order_workspace(organization, period_month, *, employee_id=None):
                         "status": item.status,
                         "assignment_source": item.assignment_source,
                         "author_identity_id": item.author_identity_id,
+                        "author_name": (
+                            item.author_identity.raw_name
+                            if item.author_identity_id and item.author_identity.raw_name
+                            else ""
+                        ),
+                        "author_guid": (
+                            item.author_identity.onec_user_id
+                            if item.author_identity_id
+                            else ""
+                        ),
                         "amount": str(money(amount_by_employee.get(item.employee_id, Decimal("0")))),
                         "scope_lines": list(item.scope_line_identities or []),
                     } for item in scoped_items],
