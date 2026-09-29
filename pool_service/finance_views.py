@@ -931,7 +931,7 @@ def finance_overview(request):
     })
 
 
-def _finance_data_latest_state(organization, report_types):
+def _finance_data_state_queryset(organization, report_types):
     return (
         OneCReportPeriodState.objects.filter(
             organization=organization,
@@ -941,9 +941,76 @@ def _finance_data_latest_state(organization, report_types):
         )
         .filter(active_batch__import_type=F("report_type"))
         .select_related("active_batch")
+    )
+
+
+def _finance_data_latest_state(organization, report_types):
+    return (
+        _finance_data_state_queryset(organization, report_types)
         .order_by("-period_month", "-updated_at")
         .first()
     )
+
+
+def _finance_data_latest_confirmed_at(organization, report_types):
+    return (
+        _finance_data_state_queryset(organization, report_types)
+        .exclude(active_batch__confirmed_at__isnull=True)
+        .order_by("-active_batch__confirmed_at")
+        .values_list("active_batch__confirmed_at", flat=True)
+        .first()
+    )
+
+
+def _finance_data_latest_refresh_times(organization):
+    latest = {}
+    runs = (
+        OneCODataSyncRun.objects.filter(
+            organization=organization,
+            mode=OneCODataSyncRun.MODE_AUTO_APPLY,
+            status=OneCODataSyncRun.STATUS_COMPLETED,
+            finished_at__isnull=False,
+        )
+        .only("requested_report_types", "result_summary", "finished_at")
+        .order_by("-finished_at")
+    )
+    for run in runs:
+        requested = set(run.requested_report_types or [])
+        for report_type in requested:
+            latest.setdefault(report_type, run.finished_at)
+        payroll_plan = (
+            (run.result_summary or {}).get("payroll_plan_refresh", {})
+            if isinstance(run.result_summary, dict)
+            else {}
+        )
+        if (
+            isinstance(payroll_plan, dict)
+            and payroll_plan.get("status") == "success"
+        ):
+            latest.setdefault("payroll_plan", run.finished_at)
+        if {
+            OneCImportBatch.TYPE_MONTHLY_PROFIT,
+            OneCImportBatch.TYPE_CASHFLOW,
+            OneCImportBatch.TYPE_PAYROLL_ACCRUAL,
+            "payroll_plan",
+        }.issubset(latest):
+            break
+    return latest
+
+
+def _finance_data_source_updated_at(
+    organization,
+    report_types,
+    refresh_times,
+):
+    candidates = [
+        _finance_data_latest_confirmed_at(organization, report_types),
+        *(
+            refresh_times.get(report_type)
+            for report_type in report_types
+        ),
+    ]
+    return max((value for value in candidates if value is not None), default=None)
 
 
 def _finance_data_freshness(period_month, expected_month):
@@ -967,46 +1034,67 @@ def _finance_data_freshness(period_month, expected_month):
 
 
 def _finance_data_status_rows(organization, expected_month):
-    profit = _finance_data_latest_state(
-        organization, [OneCImportBatch.TYPE_MONTHLY_PROFIT]
-    )
-    cashflow = _finance_data_latest_state(
-        organization, [OneCImportBatch.TYPE_CASHFLOW]
-    )
-    payroll = _finance_data_latest_state(
-        organization,
-        [OneCImportBatch.TYPE_PAYROLL_ACCRUAL, OneCImportBatch.TYPE_PAYROLL],
-    )
+    profit_types = [OneCImportBatch.TYPE_MONTHLY_PROFIT]
+    cashflow_types = [OneCImportBatch.TYPE_CASHFLOW]
+    payroll_types = [
+        OneCImportBatch.TYPE_PAYROLL_ACCRUAL,
+        OneCImportBatch.TYPE_PAYROLL,
+    ]
+    refresh_times = _finance_data_latest_refresh_times(organization)
+
+    profit = _finance_data_latest_state(organization, profit_types)
+    cashflow = _finance_data_latest_state(organization, cashflow_types)
+    payroll = _finance_data_latest_state(organization, payroll_types)
     plan = (
         PayrollPlanSnapshot.objects.filter(organization=organization)
         .select_related("fetched_by")
         .order_by("-fetched_at", "-id")
         .first()
     )
+
+    plan_updated_at = plan.fetched_at if plan else None
+    plan_refresh_at = refresh_times.get("payroll_plan")
+    if plan_refresh_at and (
+        plan_updated_at is None or plan_refresh_at > plan_updated_at
+    ):
+        plan_updated_at = plan_refresh_at
+
     sources = [
         {
             "key": "profit",
             "label": "Валовая прибыль",
             "period_month": profit.period_month if profit else None,
-            "updated_at": profit.updated_at if profit else None,
+            "updated_at": _finance_data_source_updated_at(
+                organization,
+                profit_types,
+                refresh_times,
+            ),
         },
         {
             "key": "cashflow",
             "label": "ДДС",
             "period_month": cashflow.period_month if cashflow else None,
-            "updated_at": cashflow.updated_at if cashflow else None,
+            "updated_at": _finance_data_source_updated_at(
+                organization,
+                cashflow_types,
+                refresh_times,
+            ),
         },
         {
             "key": "payroll",
             "label": "ФОТ",
             "period_month": payroll.period_month if payroll else None,
-            "updated_at": payroll.updated_at if payroll else None,
+            "updated_at": _finance_data_source_updated_at(
+                organization,
+                payroll_types,
+                refresh_times,
+            ),
         },
         {
             "key": "payroll_plan",
             "label": "Оклады сотрудников",
             "period_month": plan.period_month if plan else None,
-            "updated_at": plan.fetched_at if plan else None,
+            "updated_at": plan_updated_at,
         },
     ]
     for source in sources:
