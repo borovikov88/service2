@@ -543,6 +543,18 @@ def sync_author_proposals(organization, user, period_month, *, enrich_names=True
             author_identity=identity,
             defaults=defaults,
         )
+        if was_created:
+            RewardParticipationChange.objects.create(
+                participation=proposal,
+                actor=user,
+                before={},
+                after=participation_snapshot(proposal),
+                reason=(
+                    "Сопоставленный автор 1С автоматически подтверждён"
+                    if employee
+                    else "Автор 1С требует сопоставления"
+                ),
+            )
         if (
             not was_created
             and employee
