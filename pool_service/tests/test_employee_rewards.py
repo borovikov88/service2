@@ -361,13 +361,18 @@ class EmployeeRewardCalculationTests(TestCase):
         self.assertEqual(Decimal(detail["base"]), Decimal("6000.00"))
         self.assertEqual(Decimal(detail["amount"]), Decimal("600.00"))
 
-    def test_negative_total_base_creates_zero_percentage_reward(self):
+    def test_negative_total_sale_base_creates_negative_percentage_reward(self):
         r1 = self.add_row(1, "1000.00")
         r2 = self.add_row(2, "-2000.00")
-        self.participation(self.e1, RewardParticipation.ROLE_SALE, "1.000000", lines=[r1.source_identity, r2.source_identity])
+        self.participation(
+            self.e1,
+            RewardParticipation.ROLE_SALE,
+            "1.000000",
+            lines=[r1.source_identity, r2.source_identity],
+        )
         detail = calculate_month(self.org, self.month)["details"][0]
         self.assertEqual(Decimal(detail["base"]), Decimal("-1000.00"))
-        self.assertEqual(Decimal(detail["amount"]), Decimal("0.00"))
+        self.assertEqual(Decimal(detail["amount"]), Decimal("-100.00"))
 
     def test_unknown_cost_is_visible_and_not_treated_as_zero(self):
         row = self.add_row(1, "1000.00", cost_source=OneCMonthlyProfit.COST_SOURCE_UNDEFINED)
