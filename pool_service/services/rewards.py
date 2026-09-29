@@ -2158,32 +2158,33 @@ def update_order_participation(
         target_document_key = document["scope_key"]
 
     selected_set = set(selected)
-    active_role_scopes = (
-        RewardParticipation.objects.filter(
-            organization=organization,
-            period_month=participation.period_month,
-            source_document_key__in={
-                document["scope_key"],
-                *document.get("source_document_keys", []),
-            },
-            role=role,
-        )
-        .exclude(pk=participation.pk)
-        .exclude(status=RewardParticipation.STATUS_NOT_APPLICABLE)
-    )
-    for current in active_role_scopes:
-        if current.scope_key == target_scope_key:
-            continue
-        current_set = set(current.scope_line_identities or [])
-        overlaps = (
-            not selected_set
-            or not current_set
-            or bool(selected_set.intersection(current_set))
-        )
-        if overlaps:
-            raise ValidationError(
-                "Пересекающиеся наборы позиций в одной роли недопустимы."
+    if role != RewardParticipation.ROLE_DOCUMENTATION:
+        active_role_scopes = (
+            RewardParticipation.objects.filter(
+                organization=organization,
+                period_month=participation.period_month,
+                source_document_key__in={
+                    document["scope_key"],
+                    *document.get("source_document_keys", []),
+                },
+                role=role,
             )
+            .exclude(pk=participation.pk)
+            .exclude(status=RewardParticipation.STATUS_NOT_APPLICABLE)
+        )
+        for current in active_role_scopes:
+            if current.scope_key == target_scope_key:
+                continue
+            current_set = set(current.scope_line_identities or [])
+            overlaps = (
+                not selected_set
+                or not current_set
+                or bool(selected_set.intersection(current_set))
+            )
+            if overlaps:
+                raise ValidationError(
+                    "Пересекающиеся наборы позиций в одной роли недопустимы."
+                )
 
     other_share = (
         RewardParticipation.objects.filter(
