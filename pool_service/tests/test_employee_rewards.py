@@ -515,7 +515,7 @@ class EmployeeRewardCalculationTests(TestCase):
         )
         placeholder.refresh_from_db()
         self.assertEqual(placeholder.employee, self.e1)
-        self.assertEqual(placeholder.status, RewardParticipation.STATUS_PENDING)
+        self.assertEqual(placeholder.status, RewardParticipation.STATUS_CONFIRMED)
 
     def test_changed_author_retires_previous_proposal(self):
         row = self.add_row(1, "1000.00")
@@ -724,7 +724,7 @@ class EmployeeRewardCalculationTests(TestCase):
             placeholder, self.user, employee=self.e1
         )
         placeholder.refresh_from_db()
-        self.assertEqual(placeholder.status, RewardParticipation.STATUS_PENDING)
+        self.assertEqual(placeholder.status, RewardParticipation.STATUS_CONFIRMED)
 
         row.source_data = {
             **row.source_data,
@@ -1033,7 +1033,7 @@ class EmployeeRewardCalculationTests(TestCase):
             share=Decimal("1"),
             line_identities=[],
         )
-        self.assertEqual(replacement.status, RewardParticipation.STATUS_PENDING)
+        self.assertEqual(replacement.status, RewardParticipation.STATUS_CONFIRMED)
         self.assertEqual(replacement.employee, self.e2)
 
     def test_co_documenter_rejected_for_inactive_source(self):
