@@ -1655,14 +1655,40 @@ def reward_document_options(organization, period_month):
         if not assignment_rows:
             # Month-close accounting rows are never standalone reward work items.
             continue
-        primary = assignment_rows[0]
+        retail_check_row = next(
+            (
+                row for row in assignment_rows
+                if _source_mapping(row.source_data).get("recorder_type")
+                == RETAIL_CHECK
+            ),
+            None,
+        )
+        primary = retail_check_row or assignment_rows[0]
         data = _source_mapping(primary.source_data)
-        label = _source_text(
-            data.get("resolved_order_display")
-            or data.get("document_display")
-            or primary.document_name
-            or "Заказ"
-        ) or "Заказ"
+        is_retail_check = retail_check_row is not None
+        if is_retail_check:
+            number = _source_text(data.get("document_number"))
+            check_date = _safe_date(
+                data.get("document_date") or data.get("source_date")
+            )
+            if number and check_date:
+                label = f"Чек ККМ №{number} от {check_date:%d.%m.%Y}"
+            elif number:
+                label = f"Чек ККМ №{number}"
+            else:
+                label = "Чек ККМ"
+        elif (
+            _source_mapping(primary.source_data).get("recorder_type")
+            == RETAIL_RETURN
+        ):
+            label = "Возврат по чеку ККМ"
+        else:
+            label = _source_text(
+                data.get("resolved_order_display")
+                or data.get("document_display")
+                or primary.document_name
+                or "Заказ"
+            ) or "Заказ"
         customer_guid = _source_text(
             data.get("resolved_order_customer_guid") or data.get("customer_guid")
         ).lower()
@@ -1697,11 +1723,24 @@ def reward_document_options(organization, period_month):
             gp = _row_gp(row)
             line = {
                 "identity": row.source_identity,
-                "name": _source_text(
-                    row_data.get("direct_expense_line_name")
-                    or row_data.get("direct_expense_content")
-                    or row.nomenclature
-                ) or "Позиция",
+                "name": (
+                    (
+                        "Возврат · "
+                        + (
+                            _source_text(row.nomenclature)
+                            or "Позиция"
+                        )
+                    )
+                    if recorder_type == RETAIL_RETURN
+                    else (
+                        _source_text(
+                            row_data.get("direct_expense_line_name")
+                            or row_data.get("direct_expense_content")
+                            or row.nomenclature
+                        )
+                        or "Позиция"
+                    )
+                ),
                 "type": "Прямые затраты" if is_direct else row.nomenclature_type,
                 "kind": classify_nomenclature_type(row.nomenclature_type),
                 "revenue": str(money(row.revenue or 0)),
@@ -1726,10 +1765,51 @@ def reward_document_options(organization, period_month):
             "client_name": customer_link.client.name if customer_link else "",
             "pool_id": object_link.pool_id if object_link else None,
             "pool_label": object_link.pool.address if object_link else "",
-            "source_document_type": data.get("resolved_order_type") or data.get("recorder_type") or "",
-            "source_document_guid": str(data.get("resolved_order_guid") or data.get("recorder") or primary.source_recorder or ""),
-            "source_document_number": data.get("resolved_order_number") or data.get("document_number") or "",
-            "source_document_date": _safe_date(data.get("resolved_order_date") or data.get("document_date") or data.get("source_date")),
+            "source_document_type": (
+                RETAIL_CHECK
+                if is_retail_check
+                else (
+                    data.get("resolved_order_type")
+                    or (
+                        RETAIL_CHECK
+                        if data.get("recorder_type") == RETAIL_RETURN
+                        and data.get("document_type") == RETAIL_CHECK
+                        else data.get("recorder_type")
+                    )
+                    or ""
+                )
+            ),
+            "source_document_guid": str(
+                (
+                    data.get("recorder")
+                    if is_retail_check
+                    else data.get("resolved_order_guid")
+                    or (
+                        data.get("document_guid")
+                        if data.get("recorder_type") == RETAIL_RETURN
+                        and data.get("document_type") == RETAIL_CHECK
+                        else data.get("recorder")
+                    )
+                )
+                or primary.source_recorder
+                or ""
+            ),
+            "source_document_number": (
+                data.get("document_number")
+                if is_retail_check
+                else data.get("resolved_order_number")
+                or data.get("document_number")
+                or ""
+            ),
+            "source_document_date": _safe_date(
+                (
+                    data.get("document_date")
+                    if is_retail_check
+                    else data.get("resolved_order_date")
+                    or data.get("document_date")
+                    or data.get("source_date")
+                )
+            ),
             "source_document_keys": sorted(source_document_keys),
             "revenue": str(revenue),
             "cost": None if cost is None else str(cost),
