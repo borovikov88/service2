@@ -161,14 +161,14 @@
               </div>
               <div class="mt-2">
                 {% for p in role.participants %}
-                  <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center py-1 reward-existing-participant" data-participation-id="{{ p.id }}" data-role="{{ role.role }}" data-share="{% widthratio p.share 0.01 1 %}" data-scope-lines="{{ p.scope_lines|join:',' }}">
+                  <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center py-1 reward-existing-participant" data-participation-id="{{ p.id }}" data-scope-key="{{ role.scope_key }}" data-role="{{ role.role }}" data-share="{% widthratio p.share 0.01 1 %}" data-scope-lines="{{ p.scope_lines|join:',' }}">
                     <span>{% if p.author_name and p.status == "required" %}{{ p.author_name }}{% else %}{{ p.employee }}{% endif %} — <strong>{% widthratio p.share 0.01 1 %}%</strong>{% if p.status == "pending" or p.status == "required" %} <span class="badge text-bg-warning">требует решения</span>{% endif %}{% if p.author_guid and p.status == "required" %}<span class="d-block small text-muted">ID 1С: {{ p.author_guid }}</span>{% endif %}</span>
                     <span>{{ p.amount|money }}</span>
                   </div>
                   {% if can_manage_participation and not data.closed and p.status == "confirmed" %}
                   <details class="reward-edit-panel">
                     <summary class="btn btn-sm btn-outline-secondary">Редактировать</summary>
-                    <form method="post" class="row g-2 mt-2 reward-participant-editor" data-participation-id="{{ p.id }}">{% csrf_token %}
+                    <form method="post" class="row g-2 mt-2 reward-participant-editor" data-participation-id="{{ p.id }}" data-scope-key="{{ role.scope_key }}">{% csrf_token %}
                       <input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="edit_participation"><input type="hidden" name="participation_id" value="{{ p.id }}"><input type="hidden" name="return_open" value="{{ order.scope_key }}"><input type="hidden" name="return_anchor" value="reward-{{ order.source_document_guid|slugify }}"><input type="hidden" name="return_q" value="{{ search_query }}">
                       <div class="col-md-4"><label class="form-label small">Сотрудник</label><select class="form-select form-select-sm" name="employee_id" required>{% for employee in employees %}<option value="{{ employee.id }}" {% if employee.id == p.employee_id %}selected{% endif %}>{{ employee.display_name }}</option>{% endfor %}</select></div>
                       <div class="col-md-4"><label class="form-label small">Роль</label>{% if role.role == "documentation" %}<input type="hidden" name="role" value="documentation"><input class="form-control form-control-sm" value="Оформление" disabled>{% else %}<select class="form-select form-select-sm reward-role-select" name="role" required><option value="client_manager" {% if role.role == "client_manager" %}selected{% endif %}>Менеджер клиента</option>{% if order.source_document_type != "Document_ЧекККМ" %}<option value="sale" {% if role.role == "sale" %}selected{% endif %}>Продажа</option>{% endif %}<option value="project" {% if role.role == "project" %}selected{% endif %}>Проект / расчёт</option><option value="work" {% if role.role == "work" %}selected{% endif %}>Выполнение работ</option></select>{% endif %}</div>
@@ -357,7 +357,13 @@ function rewardValidateContainer(container, existing, ignoreId = null) {
   const share = Number(container.querySelector('.reward-share-input')?.value || 0);
   const used = existing
     .filter(item => String(item.dataset.participationId) !== String(ignoreId))
-    .filter(item => item.dataset.role === role && (item.dataset.scopeLines || '').split(',').filter(Boolean).sort().join(',') === scope)
+    .filter(item => {
+      if (item.dataset.role !== role) return false;
+      if (role === 'documentation') {
+        return item.dataset.scopeKey === container.dataset.scopeKey;
+      }
+      return (item.dataset.scopeLines || '').split(',').filter(Boolean).sort().join(',') === scope;
+    })
     .reduce((sum, item) => sum + Number(item.dataset.share || 0), 0);
   if (used + share > 100.000001) {
     error.textContent = 'Суммарная доля по этой роли и выбранным позициям не может превышать 100%. Уже распределено: ' + used + '%.';
