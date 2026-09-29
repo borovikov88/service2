@@ -545,6 +545,33 @@ def sync_author_proposals(organization, user, period_month, *, enrich_names=True
         )
         if (
             not was_created
+            and employee
+            and proposal.assignment_source == RewardParticipation.SOURCE_ONEC_AUTHOR
+            and proposal.status in {
+                RewardParticipation.STATUS_REQUIRED,
+                RewardParticipation.STATUS_PENDING,
+            }
+        ):
+            before = participation_snapshot(proposal)
+            proposal.employee = employee
+            proposal.status = RewardParticipation.STATUS_CONFIRMED
+            proposal.share = ONE
+            proposal.basis = "Автор исходного документа 1С"
+            proposal.confirmed_by = user
+            proposal.confirmed_at = timezone.now()
+            proposal.save(update_fields=[
+                "employee", "status", "share", "basis",
+                "confirmed_by", "confirmed_at", "updated_at",
+            ])
+            RewardParticipationChange.objects.create(
+                participation=proposal,
+                actor=user,
+                before=before,
+                after=participation_snapshot(proposal),
+                reason="Сопоставленный автор 1С автоматически подтверждён",
+            )
+        if (
+            not was_created
             and proposal.assignment_source == RewardParticipation.SOURCE_ONEC_AUTHOR
             and proposal.status == RewardParticipation.STATUS_NOT_APPLICABLE
         ):
@@ -1043,6 +1070,7 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
             business_line_ids = {
                 row.source_identity for row in full_scope
                 if _source_mapping(row.source_data).get("row_kind") != "direct_order_expense"
+                and _source_mapping(row.source_data).get("recorder_type") != MONTH_CLOSE
             }
             selected_ids = set(confirmed[0].scope_line_identities)
             if direct_cost_rows and selected_ids != business_line_ids:
@@ -1116,6 +1144,7 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
                 "base": str(base),
                 "base_quality": base_quality,
                 "rate": rate_label,
+                "role_fund": str(fund),
                 "share": str(item.share),
                 "amount": str(amount),
                 "status": item.get_status_display(),
@@ -1546,6 +1575,8 @@ def create_manual_participation(
         basis=basis,
         assignment_source=assignment_source,
         created_by=user,
+        confirmed_by=user if status == RewardParticipation.STATUS_CONFIRMED else None,
+        confirmed_at=timezone.now() if status == RewardParticipation.STATUS_CONFIRMED else None,
     )
     item.full_clean()
     item.save()
@@ -1995,15 +2026,22 @@ def reward_order_workspace(organization, period_month, *, employee_id=None):
             scopes = sorted({item.scope_key for item in role_items})
             amount_by_employee = defaultdict(Decimal)
             base = None
+            fund = None
+            calculated_rate = None
             for scope in scopes:
                 for detail in details_by_scope.get(scope, []):
                     amount_by_employee[detail["employee_id"]] += Decimal(detail["amount"])
                     if base is None:
                         base = Decimal(detail["base"])
+                    if fund is None and detail.get("role_fund") is not None:
+                        fund = Decimal(detail["role_fund"])
+                    if calculated_rate is None:
+                        calculated_rate = detail.get("rate")
             role_rows.append({
                 "role": role,
                 "label": role_labels[role],
-                "rate": rate_labels[role],
+                "rate": calculated_rate or rate_labels[role],
+                "fund": None if fund is None else str(money(fund)),
                 "share_total": str(share_total),
                 "remaining_share": str(max(Decimal("0"), ONE - share_total)),
                 "base": None if base is None else str(money(base)),
@@ -2012,6 +2050,8 @@ def reward_order_workspace(organization, period_month, *, employee_id=None):
                     "employee": item.employee.display_name if item.employee_id else "Требует сопоставления",
                     "share": str(item.share),
                     "status": item.status,
+                    "assignment_source": item.assignment_source,
+                    "author_identity_id": item.author_identity_id,
                     "amount": str(money(amount_by_employee.get(item.employee_id, Decimal("0")))),
                     "scope_lines": list(item.scope_line_identities or []),
                 } for item in role_items],
