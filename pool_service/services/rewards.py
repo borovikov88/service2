@@ -1135,7 +1135,7 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
         return snapshot
 
     scheme = scheme_for_month(organization, period_month)
-    rows = active_profit_rows(organization, period_month)
+    rows = reward_profit_rows(organization, period_month)
     rows_by_identity = {row.source_identity: row for row in rows}
     rows_by_document = defaultdict(list)
     for row in rows:
@@ -1173,7 +1173,17 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
             if _source_mapping(row.source_data).get("row_kind") != "direct_order_expense"
             and _source_mapping(row.source_data).get("recorder_type") != MONTH_CLOSE
         ]
-        if sale_rows and (business_key, RewardParticipation.ROLE_SALE) not in participation_keys:
+        is_retail_scope = any(
+            _source_mapping(row.source_data).get("recorder_type")
+            in {RETAIL_CHECK, RETAIL_RETURN}
+            for row in sale_rows
+        )
+        if (
+            sale_rows
+            and not is_retail_scope
+            and (business_key, RewardParticipation.ROLE_SALE)
+            not in participation_keys
+        ):
             issues.append({
                 "kind": "missing_sale_role",
                 "label": (
@@ -1217,8 +1227,9 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
 
     employee_totals = defaultdict(lambda: {
         "documentation_count": 0, "seller_revenue": Decimal("0"), "seller_gp": Decimal("0"),
-        "documentation_reward": Decimal("0"), "sale_reward": Decimal("0"),
-        "project_reward": Decimal("0"), "work_reward": Decimal("0"),
+        "documentation_reward": Decimal("0"), "retail_reward": Decimal("0"),
+        "sale_reward": Decimal("0"), "project_reward": Decimal("0"),
+        "work_reward": Decimal("0"),
         "adjustments": Decimal("0"), "review_count": 0,
     })
 
@@ -1347,18 +1358,66 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
             issues.append({"kind": "unallocated", "label": scope_key, "share": str(ONE - share_total)})
 
         document_type = confirmed[0].source_document_type
+        fixed_allocations = {}
+        retail_allocations = {}
         if role == RewardParticipation.ROLE_DOCUMENTATION:
-            fund = money(_fixed_for(document_type, scheme))
+            fixed_fund = money(_fixed_for(document_type, scheme))
+            retail_fund = Decimal("0")
+            if document_type == RETAIL_CHECK:
+                gp_values = [_row_gp(row) for row in scope_rows]
+                if any(value is None for value in gp_values):
+                    issues.append({
+                        "kind": "missing_cost",
+                        "label": scope_key,
+                        "count": 1,
+                    })
+                    for x in confirmed:
+                        employee_totals[x.employee_id]["review_count"] += 1
+                    continue
+                retail_fund = money(
+                    max(base, Decimal("0"))
+                    * Decimal(scheme.retail_check_rate or 0)
+                )
+            fixed_parts = _allocate(
+                fixed_fund, confirmed, full=(share_total == ONE)
+            )
+            retail_parts = _allocate(
+                retail_fund, confirmed, full=(share_total == ONE)
+            )
+            fixed_allocations = {item.id: amount for item, amount in fixed_parts}
+            retail_allocations = {item.id: amount for item, amount in retail_parts}
+            fund = money(fixed_fund + retail_fund)
+            allocations = [
+                (
+                    item,
+                    money(
+                        fixed_allocations.get(item.id, Decimal("0"))
+                        + retail_allocations.get(item.id, Decimal("0"))
+                    ),
+                )
+                for item in confirmed
+            ]
         else:
             rate = _rate_for(role, scheme)
             fund = money(max(base, Decimal("0")) * Decimal(rate or 0))
-        allocations = _allocate(fund, confirmed, full=(share_total == ONE))
+            allocations = _allocate(
+                fund, confirmed, full=(share_total == ONE)
+            )
         for item, amount in allocations:
             totals = employee_totals[item.employee_id]
             if role == RewardParticipation.ROLE_DOCUMENTATION:
+                fixed_amount = fixed_allocations.get(item.id, amount)
+                retail_amount = retail_allocations.get(item.id, Decimal("0"))
                 totals["documentation_count"] += 1
-                totals["documentation_reward"] += amount
-                rate_label = f"{_fixed_for(document_type, scheme):.2f} ₽"
+                totals["documentation_reward"] += fixed_amount
+                totals["retail_reward"] += retail_amount
+                if document_type == RETAIL_CHECK:
+                    rate_label = (
+                        f"{_fixed_for(document_type, scheme):.2f} ₽ + "
+                        f"{(scheme.retail_check_rate * 100):.2f}% ВП"
+                    )
+                else:
+                    rate_label = f"{_fixed_for(document_type, scheme):.2f} ₽"
             else:
                 rate = _rate_for(role, scheme) or Decimal("0")
                 rate_label = f"{(rate * 100):.2f}%"
@@ -1398,7 +1457,8 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
         if employee_id and eid != employee_id:
             continue
         total = money(
-            totals["documentation_reward"] + totals["sale_reward"] + totals["project_reward"]
+            totals["documentation_reward"] + totals["retail_reward"]
+            + totals["sale_reward"] + totals["project_reward"]
             + totals["work_reward"] + totals["adjustments"]
         )
         employees.append({
@@ -1547,18 +1607,31 @@ def close_month(organization, user, period_month):
 
 
 def _row_business_scope_key(row):
-    """Stable order scope when available; otherwise the original sale document."""
+    """Stable order/check scope without exposing daily retail reports as work items."""
     data = _source_mapping(row.source_data)
-    order_guid = data.get("resolved_order_guid") or data.get("direct_expense_order_guid")
+    order_guid = (
+        data.get("resolved_order_guid")
+        or data.get("direct_expense_order_guid")
+    )
     if order_guid:
         return f"odata-order:{row.organization_id}:{str(order_guid).lower()}"
+    recorder_type = data.get("recorder_type")
+    if (
+        recorder_type == RETAIL_RETURN
+        and data.get("document_type") == RETAIL_CHECK
+        and data.get("document_guid")
+    ):
+        return (
+            f"odata-source:{row.organization_id}:{RETAIL_CHECK}:"
+            f"{str(data['document_guid']).lower()}"
+        )
     return _row_document_key(row)
 
 
 def reward_document_options(organization, period_month):
     """Read-only order workspace built only from active confirmed Service2 profit rows."""
     period_month = month_start(period_month)
-    rows = active_profit_rows(organization, period_month)
+    rows = reward_profit_rows(organization, period_month)
     groups = defaultdict(list)
     for row in rows:
         groups[_row_business_scope_key(row)].append(row)
