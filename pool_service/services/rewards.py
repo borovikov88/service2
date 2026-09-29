@@ -36,6 +36,7 @@ RETAIL_RETURN = "Document_ЧекККМВозврат"
 RETAIL_REPORT = "Document_ОтчетОРозничныхПродажах"
 MONTH_CLOSE = "Document_ЗакрытиеМесяца"
 REALIZATION = "Document_РасходнаяНакладная"
+DEFAULT_CLIENT_MANAGER_NAME = "Боровиков Александр Юрьевич"
 
 
 def money(value):
@@ -215,11 +216,12 @@ def create_scheme_version(organization, user, *, effective_from, values):
         "work_rate", "client_manager_rate",
     }
     try:
-        fields = {
-            key: Decimal(str(value))
-            for key, value in values.items()
-            if key in allowed
-        }
+        fields = {}
+        for key, value in values.items():
+            if key not in allowed:
+                continue
+            normalized = str(value).strip().replace("\u00a0", "").replace(" ", "").replace(",", ".")
+            fields[key] = Decimal(normalized)
     except (ValueError, ArithmeticError) as exc:
         raise ValidationError(
             "Ставки и фиксированные суммы должны быть числовыми."
@@ -2233,22 +2235,35 @@ def sync_reward_rules(organization, user, period_month):
         .filter(models_q_effective(period_month))
         .select_related("client", "pool", "employee")
     )
+    fallback_employee = (
+        Employee.objects.filter(
+            organization=organization,
+            is_active=True,
+            display_name__iexact=DEFAULT_CLIENT_MANAGER_NAME,
+        )
+        .order_by("id")
+        .first()
+    )
     created = 0
     for document in documents:
         client_id = document.get("client_id")
-        if not client_id:
-            continue
         pool_id = document.get("pool_id")
         object_rules = [
             item for item in templates
-            if item.client_id == client_id and item.pool_id == pool_id and pool_id
+            if client_id
+            and item.client_id == client_id
+            and item.pool_id == pool_id
+            and pool_id
         ]
         client_rules = [
             item for item in templates
-            if item.client_id == client_id and item.pool_id is None
+            if client_id
+            and item.client_id == client_id
+            and item.pool_id is None
         ]
         applicable = object_rules or client_rules
-        if not applicable:
+        use_fallback = not applicable and fallback_employee is not None
+        if not applicable and not use_fallback:
             continue
 
         manual_exists = RewardParticipation.objects.filter(
@@ -2264,7 +2279,11 @@ def sync_reward_rules(organization, user, period_month):
         if manual_exists:
             continue
 
-        desired_ids = {item.employee_id for item in applicable if item.employee_id}
+        desired_ids = (
+            {fallback_employee.id}
+            if use_fallback
+            else {item.employee_id for item in applicable if item.employee_id}
+        )
         stale = RewardParticipation.objects.filter(
             organization=organization,
             period_month=period_month,
@@ -2297,29 +2316,44 @@ def sync_reward_rules(organization, user, period_month):
                 status=RewardParticipation.STATUS_CONFIRMED,
             ).aggregate(total=models.Sum("share"))["total"] or Decimal("0")
         )
-        for template in applicable:
-            if not template.employee_id:
-                continue
+        rule_rows = (
+            [(fallback_employee.id, ONE, "Менеджер клиента по умолчанию")]
+            if use_fallback
+            else [
+                (
+                    template.employee_id,
+                    template.share,
+                    (
+                        "Автоматическое закрепление объекта"
+                        if template.pool_id
+                        else "Автоматическое закрепление клиента"
+                    ),
+                )
+                for template in applicable
+                if template.employee_id
+            ]
+        )
+        for employee_id, share, basis in rule_rows:
             if RewardParticipation.objects.filter(
                 organization=organization,
                 period_month=period_month,
                 scope_key=scope_key,
                 role=RewardParticipation.ROLE_CLIENT_MANAGER,
-                employee_id=template.employee_id,
+                employee_id=employee_id,
                 assignment_source=RewardParticipation.SOURCE_TEMPLATE,
                 status=RewardParticipation.STATUS_CONFIRMED,
             ).exists():
                 continue
-            if existing_share + template.share > ONE:
+            if existing_share + share > ONE:
                 raise ValidationError(
                     f"Закрепления менеджера клиента для «{document['customer']}» превышают 100%."
                 )
             item = RewardParticipation.objects.create(
                 organization=organization,
-                employee_id=template.employee_id,
+                employee_id=employee_id,
                 role=RewardParticipation.ROLE_CLIENT_MANAGER,
                 status=RewardParticipation.STATUS_CONFIRMED,
-                share=template.share,
+                share=share,
                 period_month=period_month,
                 scope_key=scope_key,
                 source_document_key=document["scope_key"],
@@ -2330,10 +2364,7 @@ def sync_reward_rules(organization, user, period_month):
                 scope_line_identities=[],
                 customer_name=document["customer"],
                 object_label=document.get("pool_label") or "",
-                basis=(
-                    "Автоматическое закрепление объекта"
-                    if template.pool_id else "Автоматическое закрепление клиента"
-                ),
+                basis=basis,
                 assignment_source=RewardParticipation.SOURCE_TEMPLATE,
                 created_by=user,
                 confirmed_by=user,
@@ -2344,7 +2375,7 @@ def sync_reward_rules(organization, user, period_month):
                 after=participation_snapshot(item),
                 reason=item.basis,
             )
-            existing_share += template.share
+            existing_share += share
             created += 1
     return created
 
@@ -2410,7 +2441,10 @@ def reward_order_workspace(organization, period_month, *, employee_id=None):
         problems = []
 
         active_sale = [x for x in items if x.role == RewardParticipation.ROLE_SALE and x.status != RewardParticipation.STATUS_NOT_APPLICABLE]
-        if not active_sale:
+        if (
+            document.get("source_document_type") != RETAIL_CHECK
+            and not active_sale
+        ):
             problems.append("Не указано, кто продал")
         active_work = [x for x in items if x.role == RewardParticipation.ROLE_WORK and x.status != RewardParticipation.STATUS_NOT_APPLICABLE]
         if document["has_work"] and not active_work:
