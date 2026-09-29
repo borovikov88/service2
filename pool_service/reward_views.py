@@ -506,6 +506,7 @@ def employee_rewards(request):
             "data": data,
             "orders": orders,
             "attention_orders": attention,
+            "filled_order_count": max(0, len(orders) - len(attention)),
             "blocking_issues": blocking_issues,
             "period_month": period_month,
             "employees": employees,
