@@ -2723,6 +2723,17 @@ def sync_reward_rules(organization, user, period_month):
         .filter(models_q_effective(period_month))
         .select_related("client", "pool", "employee")
     )
+    customer_manager_rules = list(
+        RewardCustomerManagerRule.objects.filter(
+            organization=organization,
+            effective_from__lte=period_month,
+        )
+        .filter(
+            models.Q(effective_to__isnull=True)
+            | models.Q(effective_to__gte=period_month)
+        )
+        .select_related("employee")
+    )
     fallback_employee = (
         Employee.objects.filter(
             organization=organization,
@@ -2749,12 +2760,48 @@ def sync_reward_rules(organization, user, period_month):
             and item.client_id == client_id
             and item.pool_id is None
         ]
-        applicable = [
+        template_rules = [
             item for item in (object_rules or client_rules)
             if item.employee_id
         ]
-        use_fallback = not applicable and fallback_employee is not None
-        if not applicable and not use_fallback:
+        customer_guid = _source_text(document.get("customer_guid")).lower()
+        guid_rules = [
+            item for item in customer_manager_rules
+            if customer_guid
+            and item.onec_customer_id.lower() == customer_guid
+            and item.employee_id
+        ]
+        if template_rules:
+            rule_rows = [
+                (
+                    item.employee_id,
+                    item.share,
+                    (
+                        "Автоматическое закрепление объекта"
+                        if item.pool_id
+                        else "Автоматическое закрепление клиента"
+                    ),
+                )
+                for item in template_rules
+            ]
+        elif guid_rules:
+            rule_rows = [
+                (
+                    item.employee_id,
+                    item.share,
+                    "Менеджер контрагента 1С по умолчанию",
+                )
+                for item in guid_rules
+            ]
+        elif fallback_employee is not None:
+            rule_rows = [
+                (
+                    fallback_employee.id,
+                    ONE,
+                    "Менеджер клиента по умолчанию",
+                )
+            ]
+        else:
             continue
 
         manual_exists = RewardParticipation.objects.filter(
@@ -2770,11 +2817,7 @@ def sync_reward_rules(organization, user, period_month):
         if manual_exists:
             continue
 
-        desired_ids = (
-            {fallback_employee.id}
-            if use_fallback
-            else {item.employee_id for item in applicable if item.employee_id}
-        )
+        desired_ids = {employee_id for employee_id, _, _ in rule_rows}
         stale = RewardParticipation.objects.filter(
             organization=organization,
             period_month=period_month,
@@ -2806,23 +2849,6 @@ def sync_reward_rules(organization, user, period_month):
                 assignment_source=RewardParticipation.SOURCE_TEMPLATE,
                 status=RewardParticipation.STATUS_CONFIRMED,
             ).aggregate(total=models.Sum("share"))["total"] or Decimal("0")
-        )
-        rule_rows = (
-            [(fallback_employee.id, ONE, "Менеджер клиента по умолчанию")]
-            if use_fallback
-            else [
-                (
-                    template.employee_id,
-                    template.share,
-                    (
-                        "Автоматическое закрепление объекта"
-                        if template.pool_id
-                        else "Автоматическое закрепление клиента"
-                    ),
-                )
-                for template in applicable
-                if template.employee_id
-            ]
         )
         for employee_id, share, basis in rule_rows:
             if RewardParticipation.objects.filter(
