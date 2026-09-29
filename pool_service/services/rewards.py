@@ -1887,6 +1887,15 @@ def create_manual_participation(
     document = options.get(document_key)
     if document is None:
         raise ValidationError("Документ не относится к активным подтверждённым данным месяца.")
+    if (
+        document.get("source_document_type") == RETAIL_CHECK
+        and role == RewardParticipation.ROLE_SALE
+        and not not_applicable
+    ):
+        raise ValidationError(
+            "Для розничного чека используется отдельная ставка «Розничный чек, % ВП», "
+            "а не общая ставка продажи."
+        )
     allowed_lines = {item["identity"] for item in document["lines"] if not item["is_direct_expense"]}
     selected = list(dict.fromkeys(line_identities or []))
     if any(identity not in allowed_lines for identity in selected):
