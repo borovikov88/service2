@@ -66,6 +66,21 @@ def _avito_connection(request, public_id, webhook_token):
     return connection if connection.check_api_token(webhook_token) else None
 
 
+def _mark_avito_webhook_event(connection, result, *, error=""):
+    with transaction.atomic():
+        locked = ChannelConnection.objects.select_for_update().get(pk=connection.pk)
+        settings_data = dict(locked.settings or {})
+        settings_data["avito_webhook_last_received_at"] = timezone.now().isoformat()
+        settings_data["avito_webhook_last_result"] = result
+        if error:
+            settings_data["avito_webhook_last_error"] = error[:120]
+        else:
+            settings_data.pop("avito_webhook_last_error", None)
+        locked.settings = settings_data
+        locked.save(update_fields=["settings"])
+        connection.settings = settings_data
+
+
 def _payload(request):
     if int(request.META.get("CONTENT_LENGTH") or 0) > MAX_BODY_BYTES:
         raise ValueError("payload_too_large")
@@ -264,9 +279,15 @@ def avito_webhook(request, public_id, webhook_token):
         payload = _payload(request)
         message, created = ingest_webhook(connection, payload)
     except (ValueError, AvitoError) as exc:
-        return _error(str(exc))
+        # Avito requires the registered webhook endpoint to answer HTTP 200.
+        # Provider-contract errors are therefore acknowledged while a sanitized
+        # diagnostic marker is retained for the owner.
+        _mark_avito_webhook_event(connection, "error", error=str(exc))
+        return JsonResponse({"accepted": True, "created": False, "error": str(exc)})
+    result = "created" if created else ("duplicate" if message else "ignored")
+    _mark_avito_webhook_event(connection, result)
     return JsonResponse({
         "accepted": True,
         "created": created,
         "message_id": message.pk if message else None,
-    }, status=201 if created else 200)
+    })

@@ -19,8 +19,10 @@ from django.views.decorators.debug import sensitive_post_parameters
 
 from pool_service.communication_avito import (
     AvitoError,
+    authorized_account_id as avito_authorized_account_id,
     subscribe_webhook as avito_subscribe_webhook,
     unsubscribe_webhook as avito_unsubscribe_webhook,
+    verify_messenger_access as avito_verify_messenger_access,
     webhook_subscriptions as avito_webhook_subscriptions,
 )
 from pool_service.communication_forms import CommunicationConnectionForm, TelephonyConnectionForm
@@ -385,6 +387,18 @@ def channels(request):
                 connection.avito_webhook_checked_at = (connection.settings or {}).get(
                     "avito_webhook_checked_at", ""
                 )
+                connection.avito_webhook_last_received_at = (connection.settings or {}).get(
+                    "avito_webhook_last_received_at", ""
+                )
+                connection.avito_webhook_last_result = (connection.settings or {}).get(
+                    "avito_webhook_last_result", ""
+                )
+                connection.avito_webhook_error = (connection.settings or {}).get(
+                    "avito_webhook_error", ""
+                )
+                connection.avito_webhook_last_error = (connection.settings or {}).get(
+                    "avito_webhook_last_error", ""
+                )
             provider_connections[channel.kind].append(connection)
 
     providers = [
@@ -656,16 +670,50 @@ def communication_avito_connect(request, connection_id):
 
     force_reconnect = request.POST.get("force") == "1"
     try:
+        provider_account_id = avito_authorized_account_id(connection)
+        if provider_account_id != str(connection.external_id):
+            duplicate = ChannelConnection.objects.filter(
+                channel=connection.channel,
+                external_id=provider_account_id,
+            ).exclude(pk=connection.pk).exists()
+            if duplicate:
+                raise AvitoError("provider_account_already_connected")
+            previous_account_id = connection.external_id
+            connection.external_id = provider_account_id
+            connection.save(update_fields=["external_id"])
+            messages.info(
+                request,
+                f"Service2 исправил ID Авито: {previous_account_id} → {provider_account_id}.",
+            )
+        avito_verify_messenger_access(connection, provider_account_id)
+    except AvitoError as exc:
+        _set_avito_webhook_status(connection, "error", error=str(exc))
+        if str(exc) in {"provider_http_402", "provider_http_403"}:
+            messages.error(
+                request,
+                "Avito Messenger API недоступен для этих ключей. Проверьте выданный доступ/тариф Messenger API.",
+            )
+        else:
+            messages.error(
+                request,
+                "Не удалось подтвердить аккаунт Авито и доступ Messenger API. Проверьте ключи и повторите подключение.",
+            )
+        return redirect("communications_channels")
+
+    try:
         existing_urls = avito_webhook_subscriptions(connection)
-        if not force_reconnect:
-            for value in existing_urls:
-                token = _avito_subscription_token(request, connection, value)
-                if token and connection.check_api_token(token):
-                    _set_avito_webhook_status(connection, "connected")
-                    messages.success(request, "Авито уже подключено. Webhook подтверждён.")
-                    return redirect("communications_channels")
     except AvitoError:
+        # A temporary subscription-list failure must not block a fresh
+        # registration; the new subscription is verified after registration.
         existing_urls = []
+
+    if not force_reconnect:
+        for value in existing_urls:
+            token = _avito_subscription_token(request, connection, value)
+            if token and connection.check_api_token(token):
+                _set_avito_webhook_status(connection, "connected")
+                messages.success(request, "Авито уже подключено. Webhook подтверждён.")
+                return redirect("communications_channels")
 
     token = secrets.token_urlsafe(32)
     try:
@@ -754,6 +802,17 @@ def communication_avito_check(request, connection_id):
         channel__kind=CommunicationChannel.KIND_AVITO,
     )
     try:
+        provider_account_id = avito_authorized_account_id(connection)
+        if provider_account_id != str(connection.external_id):
+            duplicate = ChannelConnection.objects.filter(
+                channel=connection.channel,
+                external_id=provider_account_id,
+            ).exclude(pk=connection.pk).exists()
+            if duplicate:
+                raise AvitoError("provider_account_already_connected")
+            connection.external_id = provider_account_id
+            connection.save(update_fields=["external_id"])
+        avito_verify_messenger_access(connection, provider_account_id)
         urls = avito_webhook_subscriptions(connection)
         connected = any(
             token and connection.check_api_token(token)
@@ -764,7 +823,13 @@ def communication_avito_check(request, connection_id):
         )
     except AvitoError as exc:
         _set_avito_webhook_status(connection, "error", error=str(exc))
-        messages.error(request, "Не удалось проверить подключение Авито.")
+        if str(exc) in {"provider_http_402", "provider_http_403"}:
+            messages.error(
+                request,
+                "Avito Messenger API недоступен для этих ключей. Проверьте выданный доступ/тариф Messenger API.",
+            )
+        else:
+            messages.error(request, "Не удалось проверить подключение Авито.")
         return redirect("communications_channels")
 
     if connected:
