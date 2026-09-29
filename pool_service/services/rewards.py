@@ -2851,7 +2851,7 @@ def sync_reward_rules(organization, user, period_month):
             ).aggregate(total=models.Sum("share"))["total"] or Decimal("0")
         )
         for employee_id, share, basis in rule_rows:
-            if RewardParticipation.objects.filter(
+            existing_item = RewardParticipation.objects.filter(
                 organization=organization,
                 period_month=period_month,
                 scope_key=scope_key,
@@ -2859,7 +2859,26 @@ def sync_reward_rules(organization, user, period_month):
                 employee_id=employee_id,
                 assignment_source=RewardParticipation.SOURCE_TEMPLATE,
                 status=RewardParticipation.STATUS_CONFIRMED,
-            ).exists():
+            ).first()
+            if existing_item is not None:
+                candidate_share = existing_share - existing_item.share + share
+                if candidate_share > ONE:
+                    raise ValidationError(
+                        f"Закрепления менеджера клиента для «{document['customer']}» превышают 100%."
+                    )
+                if existing_item.share != share or existing_item.basis != basis:
+                    before = participation_snapshot(existing_item)
+                    existing_item.share = share
+                    existing_item.basis = basis
+                    existing_item.save(update_fields=["share", "basis", "updated_at"])
+                    RewardParticipationChange.objects.create(
+                        participation=existing_item,
+                        actor=user,
+                        before=before,
+                        after=participation_snapshot(existing_item),
+                        reason="Автоматическое закрепление обновлено",
+                    )
+                existing_share = candidate_share
                 continue
             if existing_share + share > ONE:
                 raise ValidationError(
