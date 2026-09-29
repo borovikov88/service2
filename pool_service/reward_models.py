@@ -132,6 +132,7 @@ class RewardSchemeVersion(models.Model):
     effective_to = models.DateField(null=True, blank=True)
     is_test = models.BooleanField(default=True)
     documentation_retail_fixed = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("50.00"))
+    retail_check_rate = models.DecimalField(max_digits=7, decimal_places=6, default=Decimal("0.010000"))
     documentation_document_fixed = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("200.00"))
     sale_rate = models.DecimalField(max_digits=7, decimal_places=6, default=Decimal("0.100000"))
     project_rate = models.DecimalField(max_digits=7, decimal_places=6, default=Decimal("0.050000"))
