@@ -1,7 +1,7 @@
 from datetime import timedelta
 from importlib import import_module
 import logging
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.apps import apps
 from django.contrib.auth.models import Permission, User
@@ -17,6 +17,7 @@ from pool_service.communication_avito import (
     AvitoError,
     AvitoRetryableError,
     AvitoSyncResult,
+    _json_list_request,
     access_token,
     authorized_account_id,
     send_message,
@@ -1365,6 +1366,24 @@ class AvitoCommunicationTests(TestCase):
         second = sync_recent_messages(self.connection)
         self.assertEqual(second.messages_created, 0)
         self.assertEqual(second.messages_existing, 1)
+
+    def test_message_list_request_accepts_wrapped_messages_payload(self):
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = (
+            b'{"messages":[{"id":"m1","direction":"in","type":"text","content":{"text":"hello"}}]}'
+        )
+        with patch("pool_service.communication_avito.urlopen", return_value=response):
+            messages = _json_list_request("https://api.avito.ru/test")
+        self.assertEqual(messages[0]["id"], "m1")
+
+    def test_message_list_request_rejects_unknown_object_payload(self):
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"ok":true}'
+        with patch("pool_service.communication_avito.urlopen", return_value=response):
+            with self.assertRaisesMessage(
+                AvitoError, "provider_messages_invalid_response"
+            ):
+                _json_list_request("https://api.avito.ru/test")
 
     @patch("pool_service.communication_avito._json_request")
     def test_webhook_provider_helpers_validate_contract(self, request):
