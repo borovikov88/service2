@@ -170,6 +170,29 @@ class EmployeeRewardCalculationTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
 
+    def test_rewards_page_keeps_orders_for_live_search_and_restores_details_structure(self):
+        OrganizationAccess.objects.create(
+            user=self.user,
+            organization=self.org,
+            role="owner",
+        )
+        self.add_row(1, "1000.00")
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse("finance_employee_rewards"),
+            {"month": "2026-09", "q": "ничего-не-найдёт-на-сервере"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        html = response.content.decode("utf-8")
+        order_start = html.index('class="reward-order ')
+        summary_close = html.index("</summary>", order_start)
+        body_start = html.index('class="reward-order-body"', order_start)
+        self.assertLess(summary_close, body_start)
+        self.assertIn('id="reward-live-search"', html)
+        self.assertIn('data-search-text=', html)
+
     def test_rewards_page_get_normalizes_non_string_source_labels_and_author_id(self):
         OrganizationAccess.objects.create(
             user=self.user,
@@ -338,13 +361,18 @@ class EmployeeRewardCalculationTests(TestCase):
         self.assertEqual(Decimal(detail["base"]), Decimal("6000.00"))
         self.assertEqual(Decimal(detail["amount"]), Decimal("600.00"))
 
-    def test_negative_total_base_creates_zero_percentage_reward(self):
+    def test_negative_total_sale_base_creates_negative_percentage_reward(self):
         r1 = self.add_row(1, "1000.00")
         r2 = self.add_row(2, "-2000.00")
-        self.participation(self.e1, RewardParticipation.ROLE_SALE, "1.000000", lines=[r1.source_identity, r2.source_identity])
+        self.participation(
+            self.e1,
+            RewardParticipation.ROLE_SALE,
+            "1.000000",
+            lines=[r1.source_identity, r2.source_identity],
+        )
         detail = calculate_month(self.org, self.month)["details"][0]
         self.assertEqual(Decimal(detail["base"]), Decimal("-1000.00"))
-        self.assertEqual(Decimal(detail["amount"]), Decimal("0.00"))
+        self.assertEqual(Decimal(detail["amount"]), Decimal("-100.00"))
 
     def test_unknown_cost_is_visible_and_not_treated_as_zero(self):
         row = self.add_row(1, "1000.00", cost_source=OneCMonthlyProfit.COST_SOURCE_UNDEFINED)
@@ -1628,6 +1656,98 @@ class EmployeeRewardCalculationTests(TestCase):
             line["name"].startswith("Возврат · ")
             for line in original["lines"]
         ))
+
+    def test_negative_sale_gp_creates_negative_sale_reward(self):
+        row = self.add_row(
+            1700,
+            "-100.00",
+            revenue="-100.00",
+            kind="Товар",
+        )
+        self.participation(
+            self.e1,
+            RewardParticipation.ROLE_SALE,
+            "1.000000",
+            lines=[row.source_identity],
+            scope="negative-sale",
+        )
+
+        data = calculate_month(self.org, self.month)
+        employee = next(
+            item for item in data["employees"]
+            if item["employee_id"] == self.e1.id
+        )
+        self.assertEqual(employee["seller_gp"], "-100.00")
+        self.assertEqual(employee["sale_reward"], "-10.00")
+
+    def test_negative_retail_gp_keeps_fixed_fee_but_percent_is_negative(self):
+        check_guid = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+        report_guid = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
+        item_guid = "cccccccc-3333-4333-8333-cccccccccccc"
+        self.add_retail_row(
+            recorder=check_guid,
+            recorder_type="Document_ЧекККМ",
+            line=1710,
+            source_date=date(2026, 9, 20),
+            nomenclature_guid=item_guid,
+            quantity="1",
+            revenue="100.00",
+            cost="0.00",
+            document_number="НФНФ-001100",
+            report_recorder=report_guid,
+        )
+        self.add_retail_row(
+            recorder=report_guid,
+            recorder_type="Document_ОтчетОРозничныхПродажах",
+            line=1711,
+            source_date=date(2026, 9, 20),
+            nomenclature_guid=item_guid,
+            quantity="1",
+            revenue="0.00",
+            cost="200.00",
+            report_recorder=report_guid,
+        )
+        key = f"odata-source:{self.org.id}:Document_ЧекККМ:{check_guid}"
+        RewardParticipation.objects.create(
+            organization=self.org,
+            employee=self.e1,
+            role=RewardParticipation.ROLE_DOCUMENTATION,
+            status=RewardParticipation.STATUS_CONFIRMED,
+            share=Decimal("1.000000"),
+            period_month=self.month,
+            scope_key=key,
+            source_document_key=key,
+            source_document_type="Document_ЧекККМ",
+            source_document_guid=check_guid,
+            source_document_number="НФНФ-001100",
+            source_document_date=date(2026, 9, 20),
+            assignment_source=RewardParticipation.SOURCE_MANUAL,
+            created_by=self.user,
+            confirmed_by=self.user,
+        )
+
+        data = calculate_month(self.org, self.month)
+        employee = next(
+            item for item in data["employees"]
+            if item["employee_id"] == self.e1.id
+        )
+        self.assertEqual(employee["documentation_reward"], "50.00")
+        self.assertEqual(employee["retail_reward"], "-1.00")
+        self.assertEqual(employee["total"], "49.00")
+
+    def test_standalone_retail_report_is_not_a_reward_document(self):
+        self.add_retail_row(
+            recorder="dddddddd-4444-4444-8444-dddddddddddd",
+            recorder_type="Document_ОтчетОРозничныхПродажах",
+            line=1720,
+            source_date=date(2026, 9, 21),
+            nomenclature_guid="eeeeeeee-5555-4555-8555-eeeeeeeeeeee",
+            quantity="1",
+            revenue="500.00",
+            cost="300.00",
+            report_recorder="dddddddd-4444-4444-8444-dddddddddddd",
+        )
+        self.assertEqual(reward_document_options(self.org, self.month), [])
 
     def test_general_sale_role_is_rejected_for_retail_check(self):
         check_guid = "22222222-2222-4222-8222-222222222222"

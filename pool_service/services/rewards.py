@@ -1192,7 +1192,8 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
         sale_rows = [
             row for row in scope_rows
             if _source_mapping(row.source_data).get("row_kind") != "direct_order_expense"
-            and _source_mapping(row.source_data).get("recorder_type") != MONTH_CLOSE
+            and _source_mapping(row.source_data).get("recorder_type")
+            not in {MONTH_CLOSE, RETAIL_REPORT}
         ]
         is_retail_scope = any(
             _source_mapping(row.source_data).get("recorder_type")
@@ -1396,8 +1397,7 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
                         employee_totals[x.employee_id]["review_count"] += 1
                     continue
                 retail_fund = money(
-                    max(base, Decimal("0"))
-                    * Decimal(scheme.retail_check_rate or 0)
+                    base * Decimal(scheme.retail_check_rate or 0)
                 )
             fixed_parts = _allocate(
                 fixed_fund, confirmed, full=(share_total == ONE)
@@ -1420,7 +1420,12 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
             ]
         else:
             rate = _rate_for(role, scheme)
-            fund = money(max(base, Decimal("0")) * Decimal(rate or 0))
+            reward_base = (
+                base
+                if role == RewardParticipation.ROLE_SALE
+                else max(base, Decimal("0"))
+            )
+            fund = money(reward_base * Decimal(rate or 0))
             allocations = _allocate(
                 fund, confirmed, full=(share_total == ONE)
             )
@@ -1816,7 +1821,8 @@ def reward_document_options(organization, period_month):
         assignment_rows = [
             row for row in scope_rows
             if _source_mapping(row.source_data).get("row_kind") != "direct_order_expense"
-            and _source_mapping(row.source_data).get("recorder_type") != MONTH_CLOSE
+            and _source_mapping(row.source_data).get("recorder_type")
+            not in {MONTH_CLOSE, RETAIL_REPORT}
         ]
         if not assignment_rows:
             # Month-close accounting rows are never standalone reward work items.
@@ -1883,7 +1889,8 @@ def reward_document_options(organization, period_month):
         display_rows = [
             row for row in scope_rows
             if _source_mapping(row.source_data).get("row_kind") != "direct_order_expense"
-            and _source_mapping(row.source_data).get("recorder_type") != MONTH_CLOSE
+            and _source_mapping(row.source_data).get("recorder_type")
+            not in {MONTH_CLOSE, RETAIL_REPORT}
         ]
         lines = _compact_reward_lines(display_rows)
         direct_expenses = []

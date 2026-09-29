@@ -79,17 +79,16 @@
   </div>
 
   {% if selected_tab == "orders" %}
-    <form method="get" class="row g-2 mb-3">
-      <input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}">
-      <input type="hidden" name="tab" value="orders">
-      <div class="col-md-8"><input class="form-control" name="q" value="{{ search_query }}" placeholder="Поиск по клиенту, номеру заказа или объекту"></div>
-      <div class="col-md-auto"><button class="btn btn-outline-primary w-100">Найти</button></div>
-      {% if search_query %}<div class="col-md-auto"><a class="btn btn-outline-secondary w-100" href="?month={{ period_month|date:'Y-m' }}&tab=orders">Сбросить</a></div>{% endif %}
-    </form>
+    <div class="row g-2 mb-3 align-items-center">
+      <div class="col-md-8">
+        <input class="form-control" type="search" id="reward-live-search" value="{{ search_query }}" placeholder="Поиск по клиенту, номеру заказа или объекту" autocomplete="off">
+      </div>
+      <div class="col-md-auto small text-muted" id="reward-search-summary"></div>
+    </div>
 
     <div id="orders-list">
     {% for order in orders %}
-      <details class="reward-order {% if order.problems %}reward-attention{% endif %}" id="reward-{{ order.source_document_guid|slugify }}" {% if open_order == order.scope_key %}open{% endif %}>
+      <details class="reward-order {% if order.problems %}reward-attention{% endif %}" data-search-text="{{ order.customer }} {{ order.client_name }} {{ order.pool_label }} {{ order.label }} {{ order.source_document_number }}" id="reward-{{ order.source_document_guid|slugify }}" {% if open_order == order.scope_key %}open{% endif %}>
         <summary>
           <div class="reward-order-title">
             <div>
@@ -105,6 +104,70 @@
             <div class="reward-kpi"><small>Валовая прибыль</small><strong>{% if order.gross_profit == None %}не определена{% else %}{{ order.gross_profit|money }}{% endif %}</strong></div>
           </div>
           <div class="reward-badges">
+            {% for role in order.roles %}
+              {% for p in role.participants %}{% if p.status == "confirmed" %}<span class="badge text-bg-light border">{{ role.label }} · {{ p.employee }} · {% widthratio p.share 0.01 1 %}%</span>{% endif %}{% endfor %}
+            {% empty %}<span class="small text-muted">Участники ещё не назначены.</span>{% endfor %}
+          </div>
+        </summary>
+
+        <div class="reward-order-body">
+          {% if order.problems %}
+          <div class="alert alert-warning py-2">
+            {% for problem in order.problems %}<div>⚠ {{ problem }}</div>{% endfor %}
+          </div>
+          {% endif %}
+
+          {% if can_manage_participation and not data.closed %}
+          <div class="row g-2 mb-3">
+            {% if not order.client_id and order.customer_guid %}
+            <div class="col-lg-6">
+              <form method="post" class="d-flex gap-2 align-items-end">{% csrf_token %}
+                <input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="map_customer"><input type="hidden" name="document_key" value="{{ order.scope_key }}"><input type="hidden" name="return_open" value="{{ order.scope_key }}"><input type="hidden" name="return_anchor" value="reward-{{ order.source_document_guid|slugify }}"><input type="hidden" name="return_q" value="{{ search_query }}">
+                <div class="flex-grow-1"><label class="form-label small">Связать с клиентом Service2</label><select class="form-select form-select-sm" name="client_id" required><option value="">Выберите клиента</option>{% for client in clients %}<option value="{{ client.id }}">{{ client.name }}</option>{% endfor %}</select></div>
+                <button class="btn btn-sm btn-outline-primary">Связать</button>
+              </form>
+            </div>
+            {% elif order.client_id and not order.pool_id %}
+            <div class="col-lg-6">
+              <form method="post" class="d-flex gap-2 align-items-end reward-pool-link">{% csrf_token %}
+                <input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="map_order_object"><input type="hidden" name="document_key" value="{{ order.scope_key }}"><input type="hidden" name="return_open" value="{{ order.scope_key }}"><input type="hidden" name="return_anchor" value="reward-{{ order.source_document_guid|slugify }}"><input type="hidden" name="return_q" value="{{ search_query }}">
+                <div class="flex-grow-1"><label class="form-label small">Объект Service2, если применимо</label><select class="form-select form-select-sm" name="pool_id" data-client="{{ order.client_id }}" required><option value="">Выберите объект</option>{% for pool in pools %}{% if pool.client_id == order.client_id %}<option value="{{ pool.id }}">{{ pool.address }}</option>{% endif %}{% endfor %}</select></div>
+                <button class="btn btn-sm btn-outline-primary">Связать</button>
+              </form>
+            </div>
+            {% endif %}
+          </div>
+          {% endif %}
+
+          <h2 class="h6">Позиции заказа</h2>
+          <div class="table-responsive reward-lines-table mb-3">
+            <table class="table table-sm align-middle mb-0">
+              <thead><tr><th>Номенклатура</th><th>Тип</th><th class="text-end">Выручка</th><th class="text-end">Себестоимость</th><th class="text-end">ВП</th></tr></thead>
+              <tbody>{% for line in order.lines %}<tr><td>{{ line.name }}</td><td>{{ line.type|default:"—" }}</td><td class="text-end">{{ line.revenue|money }}</td><td class="text-end">{% if line.cost == None %}—{% else %}{{ line.cost|money }}{% endif %}</td><td class="text-end">{% if line.gross_profit == None %}—{% else %}{{ line.gross_profit|money }}{% endif %}</td></tr>{% empty %}<tr><td colspan="5" class="text-muted">Нет рабочих позиций.</td></tr>{% endfor %}</tbody>
+            </table>
+          </div>
+          <div class="reward-lines-mobile mb-3">
+            {% for line in order.lines %}<div class="reward-line-card"><div class="fw-semibold">{{ line.name }}</div><div class="small text-muted">{{ line.type|default:"—" }}</div><div class="d-flex justify-content-between small mt-1"><span>Выручка {{ line.revenue|money }}</span><span>Себестоимость {% if line.cost == None %}—{% else %}{{ line.cost|money }}{% endif %}</span></div><div class="small"><strong>ВП {% if line.gross_profit == None %}—{% else %}{{ line.gross_profit|money }}{% endif %}</strong></div></div>{% endfor %}
+          </div>
+
+          {% if order.direct_expenses %}
+          <div class="border rounded p-2 mb-3">
+            <div class="fw-semibold mb-1">Прямые затраты · {{ order.direct_expense_total|money }}</div>
+            {% for line in order.direct_expenses %}<div class="d-flex justify-content-between gap-2 small"><span>{{ line.name }}</span><strong>{% if line.cost == None %}—{% else %}{{ line.cost|money }}{% endif %}</strong></div>{% endfor %}
+          </div>
+          {% endif %}
+
+          <template class="reward-line-template">
+            {% for line in order.lines %}
+            <label class="d-flex gap-2 align-items-start py-1 reward-select-line" data-kind="{{ line.kind }}" data-source-identities="{{ line.source_identities|join:',' }}">
+              <input class="form-check-input mt-1" type="checkbox" value="{{ line.identity }}">
+              <span><strong>{{ line.name }}</strong><span class="d-block small text-muted">{{ line.type }} · ВП {% if line.gross_profit == None %}не определена{% else %}{{ line.gross_profit|money }}{% endif %}</span></span>
+            </label>
+            {% endfor %}
+          </template>
+
+          <h2 class="h6">Участники заказа</h2>
+          <div class="reward-existing">
             {% for role in order.roles %}
             <div class="reward-role">
               <div class="reward-role-head">
@@ -269,6 +332,41 @@
 </div>
 
 <script>
+(function () {
+  const input = document.getElementById('reward-live-search');
+  const list = document.getElementById('orders-list');
+  const summary = document.getElementById('reward-search-summary');
+  if (!input || !list) return;
+
+  const cards = [...list.querySelectorAll('.reward-order')];
+  let timer = null;
+
+  function applySearch() {
+    const query = input.value.trim().toLocaleLowerCase('ru-RU');
+    let visible = 0;
+    cards.forEach(card => {
+      const haystack = (card.dataset.searchText || '').toLocaleLowerCase('ru-RU');
+      const show = !query || haystack.includes(query);
+      card.hidden = !show;
+      if (show) visible += 1;
+    });
+    if (summary) summary.textContent = query ? `Найдено: ${visible}` : '';
+    const params = new URLSearchParams(window.location.search);
+    params.set('month', '{{ period_month|date:"Y-m" }}');
+    params.set('tab', 'orders');
+    if (query) params.set('q', input.value.trim()); else params.delete('q');
+    params.delete('open');
+    const next = `${window.location.pathname}?${params.toString()}`;
+    window.history.replaceState({}, '', next);
+  }
+
+  input.addEventListener('input', () => {
+    if (timer) window.clearTimeout(timer);
+    timer = window.setTimeout(applySearch, 250);
+  });
+  applySearch();
+})();
+
 function rewardHydrateLines(container) {
   const selector = container.querySelector('.reward-line-selector');
   if (!selector) return;
