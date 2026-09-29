@@ -79,6 +79,52 @@ class OneCCustomerIdentity(models.Model):
             raise ValidationError({"client": "Клиент относится к другой организации."})
 
 
+class RewardCustomerManagerRule(models.Model):
+    """Default client manager keyed by stable 1C counterparty GUID."""
+
+    organization = models.ForeignKey(
+        "Organization",
+        on_delete=models.CASCADE,
+        related_name="reward_customer_manager_rules",
+    )
+    onec_customer_id = models.CharField(max_length=120)
+    raw_name = models.CharField(max_length=500, blank=True)
+    employee = models.ForeignKey(
+        "Employee",
+        on_delete=models.PROTECT,
+        related_name="reward_customer_manager_rules",
+    )
+    share = models.DecimalField(
+        max_digits=7,
+        decimal_places=6,
+        default=Decimal("1.000000"),
+    )
+    effective_from = models.DateField()
+    effective_to = models.DateField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="created_reward_customer_manager_rules",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(
+                fields=["organization", "onec_customer_id", "effective_from"],
+                name="reward_cust_mgr_lookup_idx",
+            )
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.share <= 0 or self.share > 1:
+            raise ValidationError({"share": "Доля должна быть больше 0 и не больше 1."})
+        if self.employee_id and self.employee.organization_id != self.organization_id:
+            raise ValidationError({"employee": "Сотрудник относится к другой организации."})
+
+
 class RewardOrderObjectLink(models.Model):
     """Explicit order -> Service2 object link used only for deterministic reward rules."""
 
