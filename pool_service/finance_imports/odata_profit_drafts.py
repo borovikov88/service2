@@ -304,6 +304,37 @@ def _reference_lookup_kwargs(
     return kwargs
 
 
+def read_odata_author_names(author_guids, *, config=None, opener=None):
+    """Resolve optional 1C user display names for explicit author reconciliation.
+
+    This is intended for an explicit management action, never for page rendering.
+    Missing/unreadable author records are omitted rather than blocking rewards.
+    """
+    normalized = {
+        normalize_guid(value, field="Author Ref_Key")
+        for value in author_guids
+        if value not in (None, "", ZERO_GUID)
+    }
+    if not normalized:
+        return {}
+    config = validate_config(config or config_from_settings())
+    client = opener or build_opener(NoRedirectHandler())
+    found = _read_reference_map(
+        config,
+        "author",
+        normalized,
+        opener=client,
+        page_budget={"used": 0},
+        allow_deleted_author=True,
+        allow_missing=True,
+    )
+    return {
+        guid: item["description"]
+        for guid, item in found.items()
+        if item.get("description")
+    }
+
+
 def _document_date(value):
     if not isinstance(value, str) or len(value) > 80:
         raise ODataPreviewError("1C document date is invalid")

@@ -77,7 +77,14 @@ def employee_rewards(request):
                 messages.success(request, "Тестовая схема создана.")
             elif action == "sync_authors":
                 result = sync_author_proposals(organization, request.user, period_month)
-                messages.success(request, f"Предложения по авторам: {result['created']}; требуют данных: {result['issues']}.")
+                messages.success(
+                    request,
+                    (
+                        f"Предложения по авторам: {result['created']}; "
+                        f"требуют данных: {result['issues']}; "
+                        f"имён обновлено: {result['names_updated']}."
+                    ),
+                )
             elif action == "map_author":
                 identity = get_object_or_404(OneCAuthorIdentity, pk=request.POST.get("identity_id"), organization=organization)
                 employee = get_object_or_404(Employee, pk=request.POST.get("employee_id"), organization=organization)

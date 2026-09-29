@@ -11,6 +11,8 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from pool_service.finance_imports.monthly_profit_parser import classify_nomenclature_type
+from pool_service.finance_imports.odata_profit import ODataPreviewError
+from pool_service.finance_imports.odata_profit_drafts import read_odata_author_names
 from pool_service.models import Employee, OneCMonthlyProfit, Organization
 from pool_service.reward_models import (
     OneCAuthorIdentity,
@@ -447,12 +449,31 @@ def sync_author_proposals(organization, user, period_month):
     _retire_removed_author_proposals(
         organization, user, period_month, set(by_doc)
     )
+    missing_name_guids = set()
+    for row in by_doc.values():
+        source_data = _source_mapping(row.source_data)
+        author_guid = _source_text(source_data.get("author_guid"))
+        author_name = _source_text(source_data.get("author_name"))
+        if author_guid and not author_name:
+            missing_name_guids.add(author_guid)
+    live_author_names = {}
+    if missing_name_guids:
+        try:
+            live_author_names = read_odata_author_names(missing_name_guids)
+        except (ODataPreviewError, ValidationError, OSError):
+            # Name enrichment is helpful for the manager but must not block
+            # reconciliation of the stable 1C author GUID.
+            live_author_names = {}
     created = 0
     issues = 0
+    names_updated = 0
     for key, row in by_doc.items():
         data = _source_mapping(row.source_data)
         author_guid = _source_text(data.get("author_guid"))
-        author_name = _source_text(data.get("author_name"))
+        author_name = (
+            _source_text(data.get("author_name"))
+            or live_author_names.get(author_guid, "")
+        )
         if not author_guid:
             _resolve_stale_author_proposals(
                 organization, user, period_month, key, None
@@ -476,6 +497,7 @@ def sync_author_proposals(organization, user, period_month):
         if author_name and identity.raw_name != author_name:
             identity.raw_name = author_name
             identity.save(update_fields=["raw_name", "updated_at"])
+            names_updated += 1
         if identity.status == OneCAuthorIdentity.STATUS_TECHNICAL:
             _, was_created = _ensure_required_documentation(
                 organization, user, period_month, key, row,
@@ -533,7 +555,11 @@ def sync_author_proposals(organization, user, period_month):
                 reason="Автор_Key снова соответствует ранее созданному предложению",
             )
         created += int(was_created)
-    return {"created": created, "issues": issues}
+    return {
+        "created": created,
+        "issues": issues,
+        "names_updated": names_updated,
+    }
 
 
 def _safe_date(value):
