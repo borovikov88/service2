@@ -158,7 +158,7 @@
               <div class="mt-2">
                 {% for p in role.participants %}
                   <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center py-1 reward-existing-participant" data-role="{{ role.role }}" data-share="{% widthratio p.share 0.01 1 %}" data-scope-lines="{{ p.scope_lines|join:',' }}">
-                    <span>{{ p.employee }} — <strong>{% widthratio p.share 0.01 1 %}%</strong>{% if p.status == "pending" or p.status == "required" %} <span class="badge text-bg-warning">требует решения</span>{% endif %}</span>
+                    <span>{% if p.author_name and p.status == "required" %}{{ p.author_name }}{% else %}{{ p.employee }}{% endif %} — <strong>{% widthratio p.share 0.01 1 %}%</strong>{% if p.status == "pending" or p.status == "required" %} <span class="badge text-bg-warning">требует решения</span>{% endif %}{% if p.author_guid and p.status == "required" %}<span class="d-block small text-muted">ID 1С: {{ p.author_guid }}</span>{% endif %}</span>
                     <span>{{ p.amount|money }}</span>
                   </div>
                   {% if can_manage_participation and not data.closed and p.status == "required" %}
