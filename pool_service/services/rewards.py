@@ -1586,6 +1586,7 @@ def _scheme_payload(scheme):
         "id": scheme.id, "name": scheme.name, "version": scheme.version,
         "effective_from": scheme.effective_from.isoformat(),
         "documentation_retail_fixed": str(scheme.documentation_retail_fixed),
+        "retail_check_rate": str(scheme.retail_check_rate),
         "documentation_document_fixed": str(scheme.documentation_document_fixed),
         "sale_rate": str(scheme.sale_rate), "project_rate": str(scheme.project_rate),
         "work_rate": str(scheme.work_rate), "client_manager_rate": str(scheme.client_manager_rate),
