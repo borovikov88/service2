@@ -170,6 +170,29 @@ class EmployeeRewardCalculationTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
 
+    def test_rewards_page_keeps_orders_for_live_search_and_restores_details_structure(self):
+        OrganizationAccess.objects.create(
+            user=self.user,
+            organization=self.org,
+            role="owner",
+        )
+        self.add_row(1, "1000.00")
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse("finance_employee_rewards"),
+            {"month": "2026-09", "q": "ничего-не-найдёт-на-сервере"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        html = response.content.decode("utf-8")
+        order_start = html.index('class="reward-order ')
+        summary_close = html.index("</summary>", order_start)
+        body_start = html.index('class="reward-order-body"', order_start)
+        self.assertLess(summary_close, body_start)
+        self.assertIn('id="reward-live-search"', html)
+        self.assertIn('data-search-text=', html)
+
     def test_rewards_page_get_normalizes_non_string_source_labels_and_author_id(self):
         OrganizationAccess.objects.create(
             user=self.user,
