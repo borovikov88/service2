@@ -2261,7 +2261,10 @@ def sync_reward_rules(organization, user, period_month):
             and item.client_id == client_id
             and item.pool_id is None
         ]
-        applicable = object_rules or client_rules
+        applicable = [
+            item for item in (object_rules or client_rules)
+            if item.employee_id
+        ]
         use_fallback = not applicable and fallback_employee is not None
         if not applicable and not use_fallback:
             continue
