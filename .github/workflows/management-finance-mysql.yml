@@ -5,6 +5,11 @@ on:
     branches: [main]
     paths:
       - "pool_service/models.py"
+      - "pool_service/reward_models.py"
+      - "pool_service/reward_views.py"
+      - "pool_service/services/rewards.py"
+      - "pool_service/migrations/0117_reward_order_links.py"
+      - "pool_service/tests/test_employee_rewards.py"
       - "pool_service/identity_normalization.py"
       - "pool_service/finance_imports/**"
       - "pool_service/migrations/0093_management_finance_foundation.py"
