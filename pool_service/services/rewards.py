@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import copy
 from collections import defaultdict
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -31,6 +32,7 @@ MONEY = Decimal("0.01")
 ONE = Decimal("1.000000")
 MAX_FIXED_REWARD = Decimal("1000000.00")
 RETAIL_CHECK = "Document_ЧекККМ"
+RETAIL_RETURN = "Document_ЧекККМВозврат"
 RETAIL_REPORT = "Document_ОтчетОРозничныхПродажах"
 MONTH_CLOSE = "Document_ЗакрытиеМесяца"
 REALIZATION = "Document_РасходнаяНакладная"
@@ -166,59 +168,100 @@ def create_scheme_version(organization, user, *, effective_from, values):
         raise PermissionDenied
     effective_from = month_start(effective_from)
     _lock_reward_organization(organization)
-    latest = (
-        RewardSchemeVersion.objects.filter(organization=organization, name="Тестовая схема №1")
-        .order_by("-version")
-        .first()
-    )
-    version = (latest.version if latest else 0) + 1
-    if latest and effective_from <= latest.effective_from:
-        raise ValidationError("Новая версия правил должна начинаться позже предыдущей версии.")
     if RewardMonthClose.objects.filter(
         organization=organization,
-        period_month__gte=effective_from,
+        period_month=effective_from,
     ).exists():
-        raise ValidationError("Нельзя менять правила задним числом через уже закрытый месяц.")
-    if latest and (latest.effective_to is None or latest.effective_to >= effective_from):
-        previous_day = effective_from - timedelta(days=1)
-        latest.effective_to = previous_day
-        latest.save(update_fields=["effective_to"])
+        raise ValidationError("Зафиксированный месяц нельзя менять. Используйте корректировку.")
+
+    versions = RewardSchemeVersion.objects.filter(
+        organization=organization,
+        name="Тестовая схема №1",
+    )
+    latest_version = versions.order_by("-version").first()
+    version = (latest_version.version if latest_version else 0) + 1
+    next_scheme = (
+        versions.filter(effective_from__gt=effective_from)
+        .order_by("effective_from", "version")
+        .first()
+    )
+    effective_to = (
+        next_scheme.effective_from - timedelta(days=1)
+        if next_scheme else None
+    )
+
+    previous = (
+        versions.filter(effective_from__lt=effective_from)
+        .order_by("-effective_from", "-version")
+        .first()
+    )
+    if previous and (
+        previous.effective_to is None
+        or previous.effective_to >= effective_from
+    ):
+        previous.effective_to = effective_from - timedelta(days=1)
+        previous.save(update_fields=["effective_to"])
+
     allowed = {
-        "documentation_retail_fixed", "documentation_document_fixed",
-        "sale_rate", "project_rate", "work_rate", "client_manager_rate",
+        "documentation_retail_fixed", "retail_check_rate",
+        "documentation_document_fixed", "sale_rate", "project_rate",
+        "work_rate", "client_manager_rate",
     }
     try:
-        fields = {key: Decimal(str(value)) for key, value in values.items() if key in allowed}
+        fields = {
+            key: Decimal(str(value))
+            for key, value in values.items()
+            if key in allowed
+        }
     except (ValueError, ArithmeticError) as exc:
-        raise ValidationError("Ставки и фиксированные суммы должны быть числовыми.") from exc
-    fixed_fields = ("documentation_retail_fixed", "documentation_document_fixed")
-    rate_fields = ("sale_rate", "project_rate", "work_rate", "client_manager_rate")
+        raise ValidationError(
+            "Ставки и фиксированные суммы должны быть числовыми."
+        ) from exc
+    fixed_fields = (
+        "documentation_retail_fixed",
+        "documentation_document_fixed",
+    )
+    rate_fields = (
+        "retail_check_rate",
+        "sale_rate",
+        "project_rate",
+        "work_rate",
+        "client_manager_rate",
+    )
     for key, value in fields.items():
         if not value.is_finite():
             raise ValidationError(
                 "Значения ставок и фиксированных сумм должны быть конечными числами."
             )
     for key in fixed_fields:
-        if key in fields and (fields[key] < 0 or fields[key] > MAX_FIXED_REWARD):
-            raise ValidationError("Фиксированная сумма должна быть от 0 до 1 000 000 ₽.")
+        if key in fields and (
+            fields[key] < 0 or fields[key] > MAX_FIXED_REWARD
+        ):
+            raise ValidationError(
+                "Фиксированная сумма должна быть от 0 до 1 000 000 ₽."
+            )
     for key in rate_fields:
         if key in fields and (fields[key] < 0 or fields[key] > ONE):
-            raise ValidationError("Процентная ставка должна быть от 0% до 100%.")
+            raise ValidationError(
+                "Процентная ставка должна быть от 0% до 100%."
+            )
     return RewardSchemeVersion.objects.create(
         organization=organization,
         name="Тестовая схема №1",
         version=version,
         effective_from=effective_from,
+        effective_to=effective_to,
         created_by=user,
         **fields,
     )
-
 
 def _is_documentation_reward_source(row):
     data = _source_mapping(row.source_data)
     return (
         data.get("row_kind") != "direct_order_expense"
-        and data.get("recorder_type") not in {RETAIL_REPORT, MONTH_CLOSE}
+        and data.get("recorder_type") not in {
+            RETAIL_REPORT, RETAIL_RETURN, MONTH_CLOSE
+        }
     )
 
 
@@ -266,6 +309,188 @@ def active_profit_rows(organization, period_month):
         .select_related("import_batch")
         .order_by("source_row_number", "id")
     )
+
+
+
+def _retail_item_key(row):
+    data = _source_mapping(row.source_data)
+    guid = _source_text(data.get("nomenclature_guid")).lower()
+    if guid:
+        return ("guid", guid)
+    return (
+        "text",
+        _source_text(row.nomenclature).casefold(),
+        _source_text(row.article).casefold(),
+        _source_text(row.nomenclature_type).casefold(),
+    )
+
+
+def _split_signed_money(total, weighted_rows):
+    """Allocate a signed money total using signed quantity/revenue weights."""
+    total = money(total)
+    if not weighted_rows:
+        return None
+    quantity_weights = [Decimal(row.quantity or 0) for row in weighted_rows]
+    denominator = sum(quantity_weights, Decimal("0"))
+    weights = quantity_weights
+    if denominator == 0:
+        revenue_weights = [Decimal(row.revenue or 0) for row in weighted_rows]
+        denominator = sum(revenue_weights, Decimal("0"))
+        weights = revenue_weights
+    if denominator == 0:
+        return None
+    result = []
+    allocated = Decimal("0")
+    for index, weight in enumerate(weights):
+        if index == len(weights) - 1:
+            amount = money(total - allocated)
+        else:
+            amount = money(total * weight / denominator)
+            allocated += amount
+        result.append(amount)
+    return result
+
+
+def reward_profit_rows(organization, period_month):
+    """Return reward-only retail rows while preserving the confirmed finance total.
+
+    1C posts retail revenue by individual Check KKM rows and daily cost by
+    Report on retail sales rows. For rewards we deterministically fold each
+    report's cost back into the individual check/return rows by nomenclature and
+    signed quantity (revenue is a fallback weight). No live 1C call is made.
+    """
+    rows = active_profit_rows(organization, period_month)
+    by_day = defaultdict(list)
+    untouched = []
+    for row in rows:
+        data = _source_mapping(row.source_data)
+        recorder_type = data.get("recorder_type")
+        if recorder_type in {RETAIL_CHECK, RETAIL_RETURN, RETAIL_REPORT}:
+            day_key = (
+                _source_text(data.get("organization_guid")).lower(),
+                _source_text(data.get("source_date")),
+            )
+            by_day[day_key].append(row)
+        else:
+            untouched.append(row)
+
+    result = list(untouched)
+    for day_rows in by_day.values():
+        reports = [
+            row for row in day_rows
+            if _source_mapping(row.source_data).get("recorder_type")
+            == RETAIL_REPORT
+        ]
+        transactions = [
+            row for row in day_rows
+            if _source_mapping(row.source_data).get("recorder_type")
+            in {RETAIL_CHECK, RETAIL_RETURN}
+        ]
+        report_recorders = {
+            _source_text(_source_mapping(row.source_data).get("recorder")).lower()
+            for row in reports
+        }
+        mapped_checks = [
+            row for row in transactions
+            if _source_mapping(row.source_data).get("recorder_type") == RETAIL_CHECK
+            and _source_mapping(row.source_data).get("document_group_recorder_type")
+            == RETAIL_REPORT
+            and _source_text(
+                _source_mapping(row.source_data).get("document_group_recorder")
+            ).lower() in report_recorders
+        ]
+        if not reports or not transactions or not mapped_checks or len(report_recorders) != 1:
+            result.extend(day_rows)
+            continue
+
+        report_by_item = defaultdict(list)
+        transaction_by_item = defaultdict(list)
+        for row in reports:
+            report_by_item[_retail_item_key(row)].append(row)
+        for row in transactions:
+            transaction_by_item[_retail_item_key(row)].append(row)
+
+        allocations = {}
+        allocation_quality = {}
+        failed = False
+        for item_key, cost_rows in report_by_item.items():
+            target_rows = transaction_by_item.get(item_key, [])
+            if not target_rows:
+                failed = True
+                break
+            if any(row.analytical_cost is None for row in cost_rows):
+                failed = True
+                break
+            total_cost = sum(
+                (Decimal(row.analytical_cost or 0) for row in cost_rows),
+                Decimal("0"),
+            )
+            split = _split_signed_money(total_cost, target_rows)
+            if split is None and total_cost != 0:
+                failed = True
+                break
+            split = split or [Decimal("0")] * len(target_rows)
+            quality = (
+                OneCMonthlyProfit.COST_SOURCE_CALCULATED
+                if any(
+                    row.cost_source == OneCMonthlyProfit.COST_SOURCE_CALCULATED
+                    for row in cost_rows
+                )
+                else OneCMonthlyProfit.COST_SOURCE_ACTUAL
+            )
+            for target, amount in zip(target_rows, split):
+                allocations[target.source_identity] = (
+                    allocations.get(target.source_identity, Decimal("0"))
+                    + amount
+                )
+                if (
+                    allocation_quality.get(target.source_identity)
+                    == OneCMonthlyProfit.COST_SOURCE_CALCULATED
+                    or quality == OneCMonthlyProfit.COST_SOURCE_CALCULATED
+                ):
+                    allocation_quality[target.source_identity] = (
+                        OneCMonthlyProfit.COST_SOURCE_CALCULATED
+                    )
+                else:
+                    allocation_quality[target.source_identity] = quality
+
+        if failed:
+            result.extend(day_rows)
+            continue
+
+        for row in transactions:
+            adjusted = copy(row)
+            allocated_cost = allocations.get(row.source_identity, Decimal("0"))
+            own_cost = row.analytical_cost
+            if own_cost is None:
+                adjusted.cost_source = OneCMonthlyProfit.COST_SOURCE_UNDEFINED
+                adjusted.calculated_cost = None
+                adjusted.analytical_gross_profit = None
+            else:
+                total_cost = money(Decimal(own_cost) + allocated_cost)
+                quality = allocation_quality.get(
+                    row.source_identity, row.cost_source
+                )
+                if (
+                    row.cost_source == OneCMonthlyProfit.COST_SOURCE_CALCULATED
+                    or quality == OneCMonthlyProfit.COST_SOURCE_CALCULATED
+                ):
+                    adjusted.cost_source = OneCMonthlyProfit.COST_SOURCE_CALCULATED
+                    adjusted.calculated_cost = total_cost
+                else:
+                    adjusted.cost_source = OneCMonthlyProfit.COST_SOURCE_ACTUAL
+                    adjusted.cost = total_cost
+                    adjusted.calculated_cost = None
+                adjusted.gross_profit = money(
+                    Decimal(adjusted.revenue or 0) - total_cost
+                )
+                adjusted.analytical_gross_profit = adjusted.gross_profit
+            adjusted.source_data = dict(_source_mapping(row.source_data))
+            adjusted.source_data["reward_retail_cost_allocated"] = True
+            result.append(adjusted)
+
+    result.sort(key=lambda row: (row.source_row_number, row.id))
+    return result
 
 
 def _resolve_stale_author_proposals(organization, user, period_month, key, current_author_guid):
