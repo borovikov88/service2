@@ -16,10 +16,12 @@ from pool_service.communication_models import AvitoCredential, CommunicationAcce
 from pool_service.communication_avito import (
     AvitoError,
     AvitoRetryableError,
+    AvitoSyncResult,
     access_token,
     authorized_account_id,
     send_message,
     subscribe_webhook,
+    sync_recent_messages,
     unsubscribe_webhook,
     verify_messenger_access,
     webhook_subscriptions,
@@ -603,6 +605,32 @@ class CommunicationsTests(TestCase):
         )
         subscriptions.assert_not_called()
 
+    @patch("pool_service.communication_views.avito_sync_recent_messages")
+    def test_owner_can_run_avito_pull_sync(self, syncer):
+        syncer.return_value = AvitoSyncResult(
+            chats_checked=2,
+            messages_checked=4,
+            messages_created=1,
+            messages_existing=2,
+            messages_skipped=1,
+        )
+        AvitoCredential.objects.create(
+            connection=self.connection,
+            client_id_encrypted=encrypt_secret("client"),
+            client_secret_encrypted=encrypt_secret("secret"),
+        )
+        self.client.login(username="owner", password="test")
+        response = self.client.post(
+            reverse("communication_avito_sync", args=[self.connection.pk]),
+            secure=True,
+        )
+        self.assertEqual(response.status_code, 302)
+        syncer.assert_called_once_with(self.connection)
+        self.connection.refresh_from_db()
+        self.assertTrue(self.connection.settings["avito_pull_last_checked_at"])
+        self.assertEqual(self.connection.settings["avito_pull_last_created"], 1)
+        self.assertEqual(self.connection.settings["avito_pull_last_existing"], 2)
+
     def test_manager_cannot_open_channel_setup_pages(self):
         self.client.login(username="worker", password="test")
         self.assertEqual(
@@ -629,6 +657,13 @@ class CommunicationsTests(TestCase):
         self.assertEqual(
             self.client.post(
                 reverse("communication_avito_check", args=[self.connection.pk]),
+                secure=True,
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.post(
+                reverse("communication_avito_sync", args=[self.connection.pk]),
                 secure=True,
             ).status_code,
             403,
@@ -1255,6 +1290,81 @@ class AvitoCommunicationTests(TestCase):
             "/messenger/v2/accounts/7986565/chats?limit=1&offset=0",
             request.call_args_list[1].args[0],
         )
+
+    @patch("pool_service.services.notifications.send_push_to_users")
+    @patch("pool_service.communication_avito._json_list_request")
+    @patch("pool_service.communication_avito._json_request")
+    def test_pull_sync_recovers_recent_inbound_messages(
+        self, request, list_request, _send_push
+    ):
+        AvitoCredential.objects.create(
+            connection=self.connection,
+            client_id_encrypted=encrypt_secret("client-id"),
+            client_secret_encrypted=encrypt_secret("client-secret"),
+            access_token_encrypted=encrypt_secret("cached-token"),
+            access_token_expires_at=timezone.now() + timedelta(hours=1),
+        )
+        now_ts = int(timezone.now().timestamp())
+        request.side_effect = [
+            {"id": 12345},
+            {
+                "chats": [
+                    {
+                        "id": "chat-recovery",
+                        "users": [
+                            {
+                                "name": "Клиент",
+                                "public_user_profile": {"user_id": 67890},
+                            }
+                        ],
+                    }
+                ]
+            },
+            {"id": 12345},
+            {
+                "chats": [
+                    {
+                        "id": "chat-recovery",
+                        "users": [
+                            {
+                                "name": "Клиент",
+                                "public_user_profile": {"user_id": 67890},
+                            }
+                        ],
+                    }
+                ]
+            },
+        ]
+        list_request.return_value = [
+            {
+                "id": "out-1",
+                "author_id": 12345,
+                "created": now_ts,
+                "direction": "out",
+                "type": "text",
+                "content": {"text": "Наш ответ"},
+            },
+            {
+                "id": "in-1",
+                "author_id": 67890,
+                "created": now_ts,
+                "direction": "in",
+                "type": "text",
+                "content": {"text": "Тестовое входящее"},
+            },
+        ]
+        result = sync_recent_messages(self.connection)
+        self.assertEqual(result.chats_checked, 1)
+        self.assertEqual(result.messages_created, 1)
+        self.assertEqual(result.messages_skipped, 1)
+        message = ConversationMessage.objects.get(external_id="in-1")
+        self.assertEqual(message.body, "Тестовое входящее")
+        self.assertEqual(message.conversation.external_id, "chat-recovery")
+        self.assertEqual(message.conversation.participant_name, "Клиент")
+
+        second = sync_recent_messages(self.connection)
+        self.assertEqual(second.messages_created, 0)
+        self.assertEqual(second.messages_existing, 1)
 
     @patch("pool_service.communication_avito._json_request")
     def test_webhook_provider_helpers_validate_contract(self, request):

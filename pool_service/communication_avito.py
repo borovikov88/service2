@@ -38,6 +38,15 @@ class AvitoInboundMessage:
     participant_name: str
 
 
+@dataclass(frozen=True)
+class AvitoSyncResult:
+    chats_checked: int
+    messages_checked: int
+    messages_created: int
+    messages_existing: int
+    messages_skipped: int
+
+
 def parse_webhook(payload, account_id):
     """Validate the documented Avito Messenger v3 message webhook shape."""
     if not isinstance(payload, dict) or not isinstance(payload.get("payload"), dict):
@@ -109,6 +118,28 @@ def _json_request(url, *, method="GET", headers=None, data=None, timeout=15, amb
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise AvitoError("provider_invalid_json") from exc
     if not isinstance(value, dict):
+        raise AvitoError("provider_invalid_response")
+    return value
+
+
+def _json_list_request(url, *, method="GET", headers=None, data=None, timeout=15):
+    request = Request(url, method=method, headers=headers or {}, data=data)
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            raw = response.read(1024 * 1024 + 1)
+    except HTTPError as exc:
+        if exc.code == 429 or 500 <= exc.code <= 599:
+            raise AvitoRetryableError(f"provider_http_{exc.code}") from exc
+        raise AvitoError(f"provider_http_{exc.code}") from exc
+    except (URLError, TimeoutError) as exc:
+        raise AvitoRetryableError("provider_unavailable") from exc
+    if len(raw) > 1024 * 1024:
+        raise AvitoError("provider_response_too_large")
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise AvitoError("provider_invalid_json") from exc
+    if not isinstance(value, list):
         raise AvitoError("provider_invalid_response")
     return value
 
@@ -191,6 +222,132 @@ def verify_messenger_access(connection, account_id=None):
     if not isinstance(response.get("chats", []), list):
         raise AvitoError("provider_chats_invalid")
     return True
+
+
+def _message_body(message):
+    if not isinstance(message, dict):
+        return None
+    content = message.get("content")
+    if not isinstance(content, dict):
+        return None
+    message_type = message.get("type")
+    if message_type == "text":
+        text = content.get("text")
+        return str(text)[:10000] if isinstance(text, str) and text.strip() else None
+    if message_type in {"image", "item", "link", "location", "voice", "call"}:
+        text = content.get("text")
+        if isinstance(text, str) and text.strip():
+            return text[:10000]
+        return f"[{message_type}]"
+    return None
+
+
+def _chat_participant_name(chat, account_id):
+    if not isinstance(chat, dict):
+        return "Клиент Авито"
+    users = chat.get("users")
+    if not isinstance(users, list):
+        return "Клиент Авито"
+    fallback = ""
+    for user in users:
+        if not isinstance(user, dict):
+            continue
+        name = user.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        fallback = fallback or name.strip()[:255]
+        public_profile = user.get("public_user_profile")
+        provider_user_id = public_profile.get("user_id") if isinstance(public_profile, dict) else None
+        if provider_user_id is not None and str(provider_user_id) == str(account_id):
+            continue
+        return name.strip()[:255]
+    return fallback or "Клиент Авито"
+
+
+def sync_recent_messages(connection, *, chat_limit=20, messages_per_chat=50, max_age_hours=48):
+    """Pull recent inbound messages as a recovery path when webhook delivery is absent."""
+    account_id = authorized_account_id(connection)
+    token = access_token(connection)
+    encoded_account_id = quote(str(account_id), safe="")
+    chats_response = _json_request(
+        f"{_provider_root()}/messenger/v2/accounts/{encoded_account_id}/chats?limit={int(chat_limit)}&offset=0",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        },
+    )
+    chats = chats_response.get("chats")
+    if not isinstance(chats, list):
+        raise AvitoError("provider_chats_invalid")
+
+    cutoff = int((timezone.now() - timedelta(hours=max_age_hours)).timestamp())
+    checked = created = existing = skipped = 0
+    chats_checked = 0
+    for chat in chats[:chat_limit]:
+        if not isinstance(chat, dict):
+            skipped += 1
+            continue
+        chat_id = chat.get("id")
+        if not isinstance(chat_id, str) or not chat_id or len(chat_id) > 255:
+            skipped += 1
+            continue
+        chats_checked += 1
+        encoded_chat_id = quote(chat_id, safe="")
+        provider_messages = _json_list_request(
+            f"{_provider_root()}/messenger/v3/accounts/{encoded_account_id}/chats/{encoded_chat_id}/messages/?limit={int(messages_per_chat)}&offset=0",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+            },
+        )
+        participant_name = _chat_participant_name(chat, account_id)
+        recent_messages = []
+        for item in provider_messages[:messages_per_chat]:
+            if not isinstance(item, dict):
+                skipped += 1
+                continue
+            created_ts = item.get("created")
+            if isinstance(created_ts, (int, float)) and int(created_ts) < cutoff:
+                continue
+            recent_messages.append(item)
+        recent_messages.sort(key=lambda item: item.get("created") or 0)
+
+        for item in recent_messages:
+            checked += 1
+            message_id = item.get("id")
+            if not isinstance(message_id, str) or not message_id or len(message_id) > 255:
+                skipped += 1
+                continue
+            direction = item.get("direction")
+            author_id = item.get("author_id")
+            if direction == "out" or (
+                direction not in {"in", "out"} and str(author_id or "") == str(account_id)
+            ):
+                skipped += 1
+                continue
+            body = _message_body(item)
+            if not body:
+                skipped += 1
+                continue
+            _, was_created = receive_message(
+                connection=connection,
+                external_conversation_id=chat_id,
+                participant_name=participant_name,
+                body=body,
+                external_message_id=message_id,
+            )
+            if was_created:
+                created += 1
+            else:
+                existing += 1
+
+    return AvitoSyncResult(
+        chats_checked=chats_checked,
+        messages_checked=checked,
+        messages_created=created,
+        messages_existing=existing,
+        messages_skipped=skipped,
+    )
 
 
 def _webhook_url(value):

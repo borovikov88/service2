@@ -95,6 +95,15 @@
                   {% if connection.avito_webhook_last_error %}
                     <div class="small text-danger mt-1">Webhook: {{ connection.avito_webhook_last_error }}</div>
                   {% endif %}
+                  {% if connection.avito_pull_last_checked_at %}
+                    <div class="small text-muted mt-1">
+                      Последняя синхронизация: {{ connection.avito_pull_last_checked_at }}
+                      {% if connection.avito_pull_last_created != "" %}· новых {{ connection.avito_pull_last_created }}{% endif %}
+                    </div>
+                  {% endif %}
+                  {% if connection.avito_pull_last_error %}
+                    <div class="small text-danger mt-1">Синхронизация: {{ connection.avito_pull_last_error }}</div>
+                  {% endif %}
                 {% endif %}
               </div>
               <div class="d-flex flex-wrap gap-2">
@@ -112,6 +121,10 @@
                 <form method="post" action="{% url 'communication_avito_check' connection.pk %}">
                   {% csrf_token %}
                   <button class="btn btn-sm btn-outline-secondary" type="submit">Проверить</button>
+                </form>
+                <form method="post" action="{% url 'communication_avito_sync' connection.pk %}">
+                  {% csrf_token %}
+                  <button class="btn btn-sm btn-outline-success" type="submit">Синхронизировать сообщения</button>
                 </form>
                 {% endif %}
                 <form method="post" action="{% url 'communication_connection_set_active' connection.pk %}">

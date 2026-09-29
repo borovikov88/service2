@@ -21,6 +21,7 @@ from pool_service.communication_avito import (
     AvitoError,
     authorized_account_id as avito_authorized_account_id,
     subscribe_webhook as avito_subscribe_webhook,
+    sync_recent_messages as avito_sync_recent_messages,
     unsubscribe_webhook as avito_unsubscribe_webhook,
     verify_messenger_access as avito_verify_messenger_access,
     webhook_subscriptions as avito_webhook_subscriptions,
@@ -398,6 +399,15 @@ def channels(request):
                 )
                 connection.avito_webhook_last_error = (connection.settings or {}).get(
                     "avito_webhook_last_error", ""
+                )
+                connection.avito_pull_last_checked_at = (connection.settings or {}).get(
+                    "avito_pull_last_checked_at", ""
+                )
+                connection.avito_pull_last_created = (connection.settings or {}).get(
+                    "avito_pull_last_created", ""
+                )
+                connection.avito_pull_last_error = (connection.settings or {}).get(
+                    "avito_pull_last_error", ""
                 )
             provider_connections[channel.kind].append(connection)
 
@@ -839,6 +849,64 @@ def communication_avito_check(request, connection_id):
         _set_avito_webhook_status(connection, "not_connected")
         messages.warning(request, "Webhook Service2 не найден в активных подписках Авито.")
     return redirect("communications_channels")
+
+
+@login_required
+@require_POST
+def communication_avito_sync(request, connection_id):
+    organization = _context(request, "can_manage_channels")
+    connection = get_object_or_404(
+        ChannelConnection.objects.select_related("channel"),
+        pk=connection_id,
+        channel__organization=organization,
+        channel__kind=CommunicationChannel.KIND_AVITO,
+    )
+    if not connection.is_active or not connection.channel.is_active:
+        messages.error(request, "Сначала включите канал и подключение Авито.")
+        return redirect("communications_channels")
+    if not AvitoCredential.objects.filter(connection=connection).exists():
+        messages.error(request, "Сначала сохраните client_id и client_secret Авито.")
+        return redirect("communication_connection_edit", connection_id=connection.pk)
+
+    try:
+        result = avito_sync_recent_messages(connection)
+    except AvitoError as exc:
+        with transaction.atomic():
+            locked = ChannelConnection.objects.select_for_update().get(pk=connection.pk)
+            settings_data = dict(locked.settings or {})
+            settings_data["avito_pull_last_checked_at"] = timezone.now().isoformat()
+            settings_data["avito_pull_last_error"] = str(exc)[:120]
+            locked.settings = settings_data
+            locked.save(update_fields=["settings"])
+        if str(exc) in {"provider_http_402", "provider_http_403"}:
+            messages.error(
+                request,
+                "Avito Messenger API не даёт читать сообщения этими ключами. Нужен доступ/тариф Messenger API.",
+            )
+        else:
+            messages.error(request, f"Не удалось синхронизировать сообщения Авито: {exc}")
+        return redirect("communications_channels")
+
+    with transaction.atomic():
+        locked = ChannelConnection.objects.select_for_update().get(pk=connection.pk)
+        settings_data = dict(locked.settings or {})
+        settings_data["avito_pull_last_checked_at"] = timezone.now().isoformat()
+        settings_data["avito_pull_last_created"] = result.messages_created
+        settings_data["avito_pull_last_existing"] = result.messages_existing
+        settings_data["avito_pull_last_checked_messages"] = result.messages_checked
+        settings_data["avito_pull_last_chats"] = result.chats_checked
+        settings_data.pop("avito_pull_last_error", None)
+        locked.settings = settings_data
+        locked.save(update_fields=["settings"])
+
+    messages.success(
+        request,
+        (
+            f"Синхронизация Авито завершена: новых сообщений {result.messages_created}, "
+            f"уже были {result.messages_existing}, проверено чатов {result.chats_checked}."
+        ),
+    )
+    return redirect("communications_conversations")
 
 
 @login_required
