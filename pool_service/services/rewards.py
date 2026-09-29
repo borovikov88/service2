@@ -173,6 +173,13 @@ def create_scheme_version(organization, user, *, effective_from, values):
         period_month=effective_from,
     ).exists():
         raise ValidationError("Зафиксированный месяц нельзя менять. Используйте корректировку.")
+    if RewardMonthClose.objects.filter(
+        organization=organization,
+        period_month__gt=effective_from,
+    ).exists():
+        raise ValidationError(
+            "Нельзя менять правила задним числом через уже закрытый месяц."
+        )
 
     versions = RewardSchemeVersion.objects.filter(
         organization=organization,
