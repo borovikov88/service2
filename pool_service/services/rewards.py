@@ -911,6 +911,7 @@ def save_participation(participation, user, *, employee, role, share, status, li
         raise PermissionDenied
     _lock_reward_organization(participation.organization)
     participation = _reload_reward_participation(participation)
+    previous_role = participation.role
     if RewardMonthClose.objects.filter(
         organization=participation.organization, period_month=participation.period_month
     ).exists():
@@ -2363,34 +2364,28 @@ def update_order_participation(
     if share <= 0 or share > ONE:
         raise ValidationError("Доля должна быть больше 0 и не больше 100%.")
 
-    allowed_lines = {
-        item["identity"]
-        for item in document["lines"]
-        if not item["is_direct_expense"]
-    }
-    selected = list(dict.fromkeys(line_identities or []))
-    if any(identity not in allowed_lines for identity in selected):
-        raise ValidationError(
-            "Выбранная строка не относится к заказу или является прямой затратой."
-        )
+    selected_display, selected = _expand_document_line_identities(
+        document, line_identities or []
+    )
     if role in {
         RewardParticipation.ROLE_CLIENT_MANAGER,
         RewardParticipation.ROLE_DOCUMENTATION,
     }:
+        selected_display = []
         selected = []
-    if role == RewardParticipation.ROLE_WORK and selected:
+    if role == RewardParticipation.ROLE_WORK and selected_display:
         line_kinds = {
             item["identity"]: item["kind"]
             for item in document["lines"]
             if not item["is_direct_expense"]
         }
-        if any(line_kinds.get(identity) != "service" for identity in selected):
+        if any(line_kinds.get(identity) != "service" for identity in selected_display):
             raise ValidationError(
                 "Для роли «Выполнение работ» можно выбирать только работы и услуги."
             )
     if (
         role in {RewardParticipation.ROLE_PROJECT, RewardParticipation.ROLE_WORK}
-        and not selected
+        and not selected_display
     ):
         raise ValidationError(
             "Для проекта или выполнения работ нужно выбрать конкретные позиции/работы."
@@ -2488,6 +2483,16 @@ def update_order_participation(
         after=participation_snapshot(participation),
         reason="Редактирование участника заказа",
     )
+    if (
+        role == RewardParticipation.ROLE_CLIENT_MANAGER
+        or previous_role == RewardParticipation.ROLE_CLIENT_MANAGER
+    ):
+        _persist_client_manager_defaults_for_document(
+            organization,
+            user,
+            participation.period_month,
+            document,
+        )
     return participation
 
 
