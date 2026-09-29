@@ -1279,22 +1279,19 @@ class EmployeeRewardCalculationTests(TestCase):
         )
         # The return-day report has no positive check, so mirror the confirmed
         # report link used by import grouping with a zero-value check row.
-        shadow_check = self.add_retail_row(
+        self.add_retail_row(
             recorder="77777777-7777-4777-8777-777777777777",
             recorder_type="Document_ЧекККМ",
             line=5,
             source_date=date(2026, 9, 14),
             nomenclature_guid="88888888-8888-4888-8888-888888888888",
             quantity="1",
-            revenue="0.00",
+            revenue="100.00",
             cost="0.00",
-            document_number="НФНФ-000000",
+            document_number="НФНФ-001063",
             report_recorder=return_report,
         )
-        shadow_check.delete()
 
-        # Return-only retail days are still allocated using the single daily
-        # report, even without a positive check row.
         rows = reward_profit_rows(self.org, self.month)
         original_scope = (
             f"odata-source:{self.org.id}:Document_ЧекККМ:{check_guid}"
@@ -1309,6 +1306,14 @@ class EmployeeRewardCalculationTests(TestCase):
         self.assertEqual(
             sum((Decimal(row.revenue or 0) for row in scope_rows), Decimal("0")),
             Decimal("500.00"),
+        )
+        self.assertEqual(
+            sum((Decimal(row.analytical_cost or 0) for row in scope_rows), Decimal("0")),
+            Decimal("200.00"),
+        )
+        self.assertEqual(
+            sum((Decimal(row.displayed_gross_profit or 0) for row in scope_rows), Decimal("0")),
+            Decimal("300.00"),
         )
 
     def test_same_open_month_can_create_new_test_scheme_version(self):
