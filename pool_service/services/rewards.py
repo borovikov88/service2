@@ -2897,6 +2897,16 @@ def sync_reward_rules(organization, user, period_month):
     return created
 
 
+
+def _display_scope_lines(document, raw_identities):
+    raw = set(raw_identities or [])
+    return [
+        line["identity"]
+        for line in document.get("lines", [])
+        if raw.intersection(line.get("source_identities") or [line["identity"]])
+    ]
+
+
 def reward_order_workspace(organization, period_month, *, employee_id=None):
     """Presentation-only order workspace; does not reimplement GP/reward formulas."""
     data = calculate_month(organization, period_month, employee_id=employee_id)
@@ -3014,6 +3024,10 @@ def reward_order_workspace(organization, period_month, *, employee_id=None):
                     "share_total": str(share_total),
                     "remaining_share": str(max(Decimal("0"), ONE - share_total)),
                     "base": None if base is None else str(money(base)),
+                    "has_editable": any(
+                        item.status == RewardParticipation.STATUS_CONFIRMED
+                        for item in scoped_items
+                    ),
                     "participants": [{
                         "id": item.id,
                         "employee_id": item.employee_id,
@@ -3034,6 +3048,9 @@ def reward_order_workspace(organization, period_month, *, employee_id=None):
                         ),
                         "amount": str(money(amount_by_employee.get(item.employee_id, Decimal("0")))),
                         "scope_lines": list(item.scope_line_identities or []),
+                        "display_scope_lines": _display_scope_lines(
+                            document, item.scope_line_identities
+                        ),
                     } for item in scoped_items],
                 })
 
