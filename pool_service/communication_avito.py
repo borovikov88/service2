@@ -139,9 +139,14 @@ def _json_list_request(url, *, method="GET", headers=None, data=None, timeout=15
         value = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise AvitoError("provider_invalid_json") from exc
-    if not isinstance(value, list):
-        raise AvitoError("provider_invalid_response")
-    return value
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        messages = value.get("messages")
+        if isinstance(messages, list):
+            return messages
+        raise AvitoError("provider_messages_invalid_response")
+    raise AvitoError("provider_invalid_response")
 
 
 def access_token(connection):
