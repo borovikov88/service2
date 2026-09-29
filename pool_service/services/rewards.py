@@ -19,6 +19,7 @@ from pool_service.reward_models import (
     OneCAuthorIdentity,
     OneCCustomerIdentity,
     RewardAdjustment,
+    RewardCustomerManagerRule,
     RewardMonthClose,
     RewardOrderObjectLink,
     RewardParticipantTemplate,
@@ -1647,6 +1648,150 @@ def _row_business_scope_key(row):
             f"{str(data['document_guid']).lower()}"
         )
     return _row_document_key(row)
+
+
+
+def _reward_display_item_key(row):
+    data = _source_mapping(row.source_data)
+    nomenclature_guid = _source_text(data.get("nomenclature_guid")).lower()
+    item_identity = (
+        ("guid", nomenclature_guid)
+        if nomenclature_guid
+        else (
+            "text",
+            _source_text(row.nomenclature).casefold(),
+            _source_text(row.article).casefold(),
+        )
+    )
+    return (
+        _source_text(data.get("source_date")),
+        item_identity,
+        row.nomenclature_type,
+        row.manager_name,
+        data.get("recorder_type") == RETAIL_RETURN,
+    )
+
+
+def _reward_display_quantity_compatible(revenue_row, cost_rows):
+    revenue_quantity = revenue_row.quantity
+    cost_quantities = [
+        row.quantity for row in cost_rows if row.quantity not in (None, 0)
+    ]
+    if revenue_quantity not in (None, 0):
+        return all(
+            quantity in {revenue_quantity, -revenue_quantity}
+            for quantity in cost_quantities
+        )
+    if not cost_quantities:
+        return True
+    quantity = cost_quantities[0]
+    return all(
+        candidate in {quantity, -quantity}
+        for candidate in cost_quantities[1:]
+    )
+
+
+def _reward_line_payload(rows):
+    primary = next(
+        (row for row in rows if Decimal(row.revenue or 0) != 0),
+        rows[0],
+    )
+    data = _source_mapping(primary.source_data)
+    recorder_type = data.get("recorder_type")
+    identities = [row.source_identity for row in rows]
+    gp_values = [_row_gp(row) for row in rows]
+    cost_missing = any(row.analytical_cost is None for row in rows)
+    gross_profit = (
+        None
+        if any(value is None for value in gp_values)
+        else money(sum(gp_values, Decimal("0")))
+    )
+    cost = (
+        None
+        if cost_missing
+        else money(sum(
+            (Decimal(row.analytical_cost or 0) for row in rows),
+            Decimal("0"),
+        ))
+    )
+    return {
+        "identity": primary.source_identity,
+        "source_identities": identities,
+        "name": (
+            "Возврат · " + (_source_text(primary.nomenclature) or "Позиция")
+            if recorder_type == RETAIL_RETURN
+            else (_source_text(primary.nomenclature) or "Позиция")
+        ),
+        "type": primary.nomenclature_type,
+        "kind": classify_nomenclature_type(primary.nomenclature_type),
+        "revenue": str(money(sum(
+            (Decimal(row.revenue or 0) for row in rows),
+            Decimal("0"),
+        ))),
+        "cost": None if cost is None else str(cost),
+        "gross_profit": None if gross_profit is None else str(gross_profit),
+        "cost_missing": gross_profit is None,
+        "is_direct_expense": False,
+    }
+
+
+def _compact_reward_lines(rows):
+    """Collapse revenue-only + cost-only accounting movements for display/selection."""
+    buckets = {}
+    order = []
+    for row in rows:
+        key = _reward_display_item_key(row)
+        if key not in buckets:
+            buckets[key] = []
+            order.append(key)
+        buckets[key].append(row)
+
+    result = []
+    for key in order:
+        bucket = buckets[key]
+        if len(bucket) < 2:
+            result.append(_reward_line_payload(bucket))
+            continue
+        revenue_rows = [
+            row for row in bucket
+            if Decimal(row.revenue or 0) != 0
+            and Decimal(row.analytical_cost or 0) == 0
+        ]
+        cost_rows = [
+            row for row in bucket
+            if Decimal(row.revenue or 0) == 0
+            and row.analytical_cost not in (None, 0)
+        ]
+        can_merge = (
+            len(revenue_rows) == 1
+            and bool(cost_rows)
+            and len(revenue_rows) + len(cost_rows) == len(bucket)
+            and all(row.analytical_cost is not None for row in bucket)
+            and all(_row_gp(row) is not None for row in bucket)
+            and _reward_display_quantity_compatible(revenue_rows[0], cost_rows)
+        )
+        if can_merge:
+            result.append(_reward_line_payload(bucket))
+        else:
+            result.extend(_reward_line_payload([row]) for row in bucket)
+    return result
+
+
+def _expand_document_line_identities(document, selected):
+    selected = list(dict.fromkeys(selected or []))
+    line_map = {
+        line["identity"]: list(line.get("source_identities") or [line["identity"]])
+        for line in document["lines"]
+        if not line["is_direct_expense"]
+    }
+    if any(identity not in line_map for identity in selected):
+        raise ValidationError(
+            "Выбранная строка не относится к заказу или является прямой затратой."
+        )
+    expanded = []
+    for identity in selected:
+        expanded.extend(line_map[identity])
+    return selected, list(dict.fromkeys(expanded))
 
 
 def reward_document_options(organization, period_month):
