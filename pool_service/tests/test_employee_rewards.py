@@ -174,6 +174,12 @@ class EmployeeRewardCalculationTests(TestCase):
             "author_guid": author_guid,
         }
         row.save(update_fields=["source_data"])
+        OneCAuthorIdentity.objects.create(
+            organization=self.org,
+            onec_user_id=author_guid,
+            raw_name="",
+            status=OneCAuthorIdentity.STATUS_NEEDS_MAPPING,
+        )
 
         with patch(
             "pool_service.services.rewards.read_odata_author_names",
