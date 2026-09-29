@@ -17,6 +17,13 @@
 .reward-badges{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.6rem}
 .reward-role{border:1px solid var(--bs-border-color);border-radius:.6rem;padding:.75rem;margin-bottom:.6rem}
 .reward-role-head{display:flex;justify-content:space-between;gap:.75rem;align-items:flex-start}
+.reward-role-title{display:flex;align-items:center;gap:.35rem}
+.reward-edit-icon{display:inline-flex;align-items:center;justify-content:center;width:1.65rem;height:1.65rem;padding:0;border:0;background:transparent;color:var(--bs-secondary-color);border-radius:.35rem}
+.reward-edit-icon:hover{background:var(--bs-tertiary-bg);color:var(--bs-body-color)}
+.reward-edit-icon svg{width:.9rem;height:.9rem}
+.reward-role-editors{border-top:1px dashed var(--bs-border-color);padding-top:.65rem;margin-top:.55rem}
+.reward-lines-table .table>:not(caption)>*>*{padding:.3rem .42rem;font-size:.875rem}
+.reward-line-options{max-height:16rem;overflow:auto}
 .reward-lines-mobile{display:none}
 .reward-add-panel{background:var(--bs-tertiary-bg);border-radius:.65rem;padding:.8rem}
 .reward-form-error{display:none}
@@ -99,90 +106,28 @@
           </div>
           <div class="reward-badges">
             {% for role in order.roles %}
-              {% for p in role.participants %}{% if p.status == "confirmed" %}<span class="badge text-bg-light border">{{ role.label }} · {{ p.employee }} · {% widthratio p.share 0.01 1 %}%</span>{% endif %}{% endfor %}
-            {% empty %}<span class="small text-muted">Участники ещё не назначены.</span>{% endfor %}
-          </div>
-        </summary>
-
-        <div class="reward-order-body">
-          {% if order.problems %}
-          <div class="alert alert-warning py-2">
-            {% for problem in order.problems %}<div>⚠ {{ problem }}</div>{% endfor %}
-          </div>
-          {% endif %}
-
-          {% if can_manage_participation and not data.closed %}
-          <div class="row g-2 mb-3">
-            {% if not order.client_id and order.customer_guid %}
-            <div class="col-lg-6">
-              <form method="post" class="d-flex gap-2 align-items-end">{% csrf_token %}
-                <input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="map_customer"><input type="hidden" name="document_key" value="{{ order.scope_key }}"><input type="hidden" name="return_open" value="{{ order.scope_key }}"><input type="hidden" name="return_anchor" value="reward-{{ order.source_document_guid|slugify }}"><input type="hidden" name="return_q" value="{{ search_query }}">
-                <div class="flex-grow-1"><label class="form-label small">Связать с клиентом Service2</label><select class="form-select form-select-sm" name="client_id" required><option value="">Выберите клиента</option>{% for client in clients %}<option value="{{ client.id }}">{{ client.name }}</option>{% endfor %}</select></div>
-                <button class="btn btn-sm btn-outline-primary">Связать</button>
-              </form>
-            </div>
-            {% elif order.client_id and not order.pool_id %}
-            <div class="col-lg-6">
-              <form method="post" class="d-flex gap-2 align-items-end reward-pool-link">{% csrf_token %}
-                <input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="map_order_object"><input type="hidden" name="document_key" value="{{ order.scope_key }}"><input type="hidden" name="return_open" value="{{ order.scope_key }}"><input type="hidden" name="return_anchor" value="reward-{{ order.source_document_guid|slugify }}"><input type="hidden" name="return_q" value="{{ search_query }}">
-                <div class="flex-grow-1"><label class="form-label small">Объект Service2, если применимо</label><select class="form-select form-select-sm" name="pool_id" data-client="{{ order.client_id }}" required><option value="">Выберите объект</option>{% for pool in pools %}{% if pool.client_id == order.client_id %}<option value="{{ pool.id }}">{{ pool.address }}</option>{% endif %}{% endfor %}</select></div>
-                <button class="btn btn-sm btn-outline-primary">Связать</button>
-              </form>
-            </div>
-            {% endif %}
-          </div>
-          {% endif %}
-
-          <h2 class="h6">Позиции заказа</h2>
-          <div class="table-responsive reward-lines-table mb-3">
-            <table class="table table-sm align-middle mb-0">
-              <thead><tr><th>Номенклатура</th><th>Тип</th><th class="text-end">Выручка</th><th class="text-end">Себестоимость</th><th class="text-end">ВП</th></tr></thead>
-              <tbody>{% for line in order.lines %}<tr><td>{{ line.name }}</td><td>{{ line.type|default:"—" }}</td><td class="text-end">{{ line.revenue|money }}</td><td class="text-end">{% if line.cost == None %}—{% else %}{{ line.cost|money }}{% endif %}</td><td class="text-end">{% if line.gross_profit == None %}—{% else %}{{ line.gross_profit|money }}{% endif %}</td></tr>{% empty %}<tr><td colspan="5" class="text-muted">Нет рабочих позиций.</td></tr>{% endfor %}</tbody>
-            </table>
-          </div>
-          <div class="reward-lines-mobile mb-3">
-            {% for line in order.lines %}<div class="reward-line-card"><div class="fw-semibold">{{ line.name }}</div><div class="small text-muted">{{ line.type|default:"—" }}</div><div class="d-flex justify-content-between small mt-1"><span>Выручка {{ line.revenue|money }}</span><span>Себестоимость {% if line.cost == None %}—{% else %}{{ line.cost|money }}{% endif %}</span></div><div class="small"><strong>ВП {% if line.gross_profit == None %}—{% else %}{{ line.gross_profit|money }}{% endif %}</strong></div></div>{% endfor %}
-          </div>
-
-          {% if order.direct_expenses %}
-          <div class="border rounded p-2 mb-3">
-            <div class="fw-semibold mb-1">Прямые затраты · {{ order.direct_expense_total|money }}</div>
-            {% for line in order.direct_expenses %}<div class="d-flex justify-content-between gap-2 small"><span>{{ line.name }}</span><strong>{% if line.cost == None %}—{% else %}{{ line.cost|money }}{% endif %}</strong></div>{% endfor %}
-          </div>
-          {% endif %}
-
-          <h2 class="h6">Участники заказа</h2>
-          <div class="reward-existing">
-          {% for role in order.roles %}
             <div class="reward-role">
               <div class="reward-role-head">
-                <div><div class="fw-semibold">{{ role.label }}</div><div class="small text-muted">База: {% if role.base == None %}—{% else %}{{ role.base|money }}{% endif %} · Ставка: {{ role.rate }}{% if role.fund != None %} · Фонд роли: {{ role.fund|money }}{% endif %}</div></div>
+                <div>
+                  <div class="reward-role-title">
+                    <div class="fw-semibold">{{ role.label }}</div>
+                    {% if can_manage_participation and not data.closed and role.has_editable %}
+                    <button type="button" class="reward-edit-icon reward-role-edit-toggle" data-role-editor-id="reward-edit-{{ forloop.parentloop.counter }}-{{ forloop.counter }}" title="Редактировать {{ role.label }}" aria-label="Редактировать {{ role.label }}">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg>
+                    </button>
+                    {% endif %}
+                  </div>
+                  <div class="small text-muted">База: {% if role.base == None %}—{% else %}{{ role.base|money }}{% endif %} · Ставка: {{ role.rate }}{% if role.fund != None %} · Фонд роли: {{ role.fund|money }}{% endif %}</div>
+                </div>
                 <div class="small"><strong>Распределено: {% widthratio role.share_total 0.01 1 %} из 100%</strong>{% if role.remaining_share != "0.000000" %}<br><span class="text-warning">Осталось: {% widthratio role.remaining_share 0.01 1 %}%</span>{% endif %}</div>
               </div>
+
               <div class="mt-2">
                 {% for p in role.participants %}
-                  <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center py-1 reward-existing-participant" data-participation-id="{{ p.id }}" data-scope-key="{{ role.scope_key }}" data-role="{{ role.role }}" data-share="{% widthratio p.share 0.01 1 %}" data-scope-lines="{{ p.scope_lines|join:',' }}">
+                  <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center py-1 reward-existing-participant" data-participation-id="{{ p.id }}" data-scope-key="{{ role.scope_key }}" data-role="{{ role.role }}" data-share="{% widthratio p.share 0.01 1 %}" data-scope-lines="{{ p.display_scope_lines|join:',' }}">
                     <span>{% if p.author_name and p.status == "required" %}{{ p.author_name }}{% else %}{{ p.employee }}{% endif %} — <strong>{% widthratio p.share 0.01 1 %}%</strong>{% if p.status == "pending" or p.status == "required" %} <span class="badge text-bg-warning">требует решения</span>{% endif %}{% if p.author_guid and p.status == "required" %}<span class="d-block small text-muted">ID 1С: {{ p.author_guid }}</span>{% endif %}</span>
                     <span>{{ p.amount|money }}</span>
                   </div>
-                  {% if can_manage_participation and not data.closed and p.status == "confirmed" %}
-                  <details class="reward-edit-panel">
-                    <summary class="btn btn-sm btn-outline-secondary">Редактировать</summary>
-                    <form method="post" class="row g-2 mt-2 reward-participant-editor" data-participation-id="{{ p.id }}" data-scope-key="{{ role.scope_key }}">{% csrf_token %}
-                      <input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="edit_participation"><input type="hidden" name="participation_id" value="{{ p.id }}"><input type="hidden" name="return_open" value="{{ order.scope_key }}"><input type="hidden" name="return_anchor" value="reward-{{ order.source_document_guid|slugify }}"><input type="hidden" name="return_q" value="{{ search_query }}">
-                      <div class="col-md-4"><label class="form-label small">Сотрудник</label><select class="form-select form-select-sm" name="employee_id" required>{% for employee in employees %}<option value="{{ employee.id }}" {% if employee.id == p.employee_id %}selected{% endif %}>{{ employee.display_name }}</option>{% endfor %}</select></div>
-                      <div class="col-md-4"><label class="form-label small">Роль</label>{% if role.role == "documentation" %}<input type="hidden" name="role" value="documentation"><input class="form-control form-control-sm" value="Оформление" disabled>{% else %}<select class="form-select form-select-sm reward-role-select" name="role" required><option value="client_manager" {% if role.role == "client_manager" %}selected{% endif %}>Менеджер клиента</option>{% if order.source_document_type != "Document_ЧекККМ" %}<option value="sale" {% if role.role == "sale" %}selected{% endif %}>Продажа</option>{% endif %}<option value="project" {% if role.role == "project" %}selected{% endif %}>Проект / расчёт</option><option value="work" {% if role.role == "work" %}selected{% endif %}>Выполнение работ</option></select>{% endif %}</div>
-                      <div class="col-md-4"><label class="form-label small">Доля внутри фонда роли, %</label><input class="form-control form-control-sm reward-share-input" type="number" min="0.01" max="100" step="0.01" name="share_percent" value="{% widthratio p.share 0.01 1 %}" required></div>
-                      {% if role.role != "documentation" %}
-                      <div class="col-12 reward-line-selector">
-                        <div class="d-flex justify-content-between align-items-center"><label class="form-label small mb-1">Позиции участия</label><button type="button" class="btn btn-sm btn-link reward-select-work">Выбрать все работы</button></div>
-                        <div class="border rounded p-2">{% for line in order.lines %}<label class="d-flex gap-2 align-items-start py-1 reward-select-line" data-kind="{{ line.kind }}"><input class="form-check-input mt-1" type="checkbox" name="line_identity" value="{{ line.identity }}" {% if line.identity in p.scope_lines %}checked{% endif %}><span><strong>{{ line.name }}</strong><span class="d-block small text-muted">{{ line.type }} · ВП {% if line.gross_profit == None %}не определена{% else %}{{ line.gross_profit|money }}{% endif %}</span></span></label>{% endfor %}</div>
-                      </div>
-                      {% endif %}
-                      <div class="col-12"><div class="alert alert-danger py-2 reward-form-error"></div><button class="btn btn-sm btn-primary">Сохранить изменения</button></div>
-                    </form>
-                  </details>
-                  {% endif %}
                   {% if can_manage_participation and not data.closed and p.status == "required" %}
                     {% if p.author_identity_id %}
                     <form method="post" class="row g-2 mt-1">{% csrf_token %}<input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="map_author"><input type="hidden" name="identity_id" value="{{ p.author_identity_id }}"><input type="hidden" name="return_open" value="{{ order.scope_key }}"><input type="hidden" name="return_anchor" value="reward-{{ order.source_document_guid|slugify }}"><div class="col"><select class="form-select form-select-sm" name="employee_id" required><option value="">Сопоставить автора с сотрудником</option>{% for employee in employees %}<option value="{{ employee.id }}">{{ employee.display_name }}</option>{% endfor %}</select></div><div class="col-auto"><button class="btn btn-sm btn-outline-primary">Сопоставить</button></div></form>
@@ -195,6 +140,28 @@
                   {% endif %}
                 {% endfor %}
               </div>
+
+              {% if can_manage_participation and not data.closed and role.has_editable %}
+              <div class="reward-role-editors d-none" id="reward-edit-{{ forloop.parentloop.counter }}-{{ forloop.counter }}">
+                {% for p in role.participants %}
+                  {% if p.status == "confirmed" %}
+                  <form method="post" class="row g-2 mb-2 reward-participant-editor" data-participation-id="{{ p.id }}" data-scope-key="{{ role.scope_key }}" data-current-lines="{{ p.scope_lines|join:',' }}">{% csrf_token %}
+                    <input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="edit_participation"><input type="hidden" name="participation_id" value="{{ p.id }}"><input type="hidden" name="return_open" value="{{ order.scope_key }}"><input type="hidden" name="return_anchor" value="reward-{{ order.source_document_guid|slugify }}"><input type="hidden" name="return_q" value="{{ search_query }}">
+                    <div class="col-md-4"><label class="form-label small">Сотрудник</label><select class="form-select form-select-sm" name="employee_id" required>{% for employee in employees %}<option value="{{ employee.id }}" {% if employee.id == p.employee_id %}selected{% endif %}>{{ employee.display_name }}</option>{% endfor %}</select></div>
+                    <div class="col-md-4"><label class="form-label small">Роль</label>{% if role.role == "documentation" %}<input type="hidden" name="role" value="documentation"><input class="form-control form-control-sm" value="Оформление" disabled>{% else %}<select class="form-select form-select-sm reward-role-select" name="role" required><option value="client_manager" {% if role.role == "client_manager" %}selected{% endif %}>Менеджер клиента</option>{% if order.source_document_type != "Document_ЧекККМ" %}<option value="sale" {% if role.role == "sale" %}selected{% endif %}>Продажа</option>{% endif %}<option value="project" {% if role.role == "project" %}selected{% endif %}>Проект / расчёт</option><option value="work" {% if role.role == "work" %}selected{% endif %}>Выполнение работ</option></select>{% endif %}</div>
+                    <div class="col-md-4"><label class="form-label small">Доля внутри фонда роли, %</label><input class="form-control form-control-sm reward-share-input" type="number" min="0.01" max="100" step="0.01" name="share_percent" value="{% widthratio p.share 0.01 1 %}" required></div>
+                    {% if role.role != "documentation" %}
+                    <div class="col-12 reward-line-selector" data-line-input-name="line_identity">
+                      <div class="d-flex justify-content-between align-items-center"><label class="form-label small mb-1">Позиции участия</label><button type="button" class="btn btn-sm btn-link reward-select-work">Выбрать все работы</button></div>
+                      <div class="border rounded p-2 reward-line-options"></div>
+                    </div>
+                    {% endif %}
+                    <div class="col-12"><div class="alert alert-danger py-2 reward-form-error"></div><button class="btn btn-sm btn-primary reward-submit-button">Сохранить изменения</button></div>
+                  </form>
+                  {% endif %}
+                {% endfor %}
+              </div>
+              {% endif %}
             </div>
           {% empty %}<p class="text-muted small">Участники ещё не назначены.</p>{% endfor %}
           </div>
@@ -211,9 +178,9 @@
                     <div class="col-md-4"><label class="form-label">Роль</label><select class="form-select reward-role-select" name="participant_0_role" required><option value="client_manager">Менеджер клиента</option>{% if order.source_document_type != "Document_ЧекККМ" %}<option value="sale">Продажа</option>{% endif %}<option value="project">Проект / расчёт</option><option value="work">Выполнение работ</option></select></div>
                     <div class="col-md-3"><label class="form-label">Доля внутри фонда роли, %</label><input class="form-control reward-share-input" type="number" min="0.01" max="100" step="0.01" name="participant_0_share_percent" value="100" required></div>
                     <div class="col-md-1 d-flex align-items-end"><button type="button" class="btn btn-outline-danger w-100 reward-remove-row" disabled>×</button></div>
-                    <div class="col-12 reward-line-selector">
+                    <div class="col-12 reward-line-selector" data-line-input-name="participant_0_line_identity">
                       <div class="d-flex justify-content-between align-items-center"><label class="form-label mb-1">Позиции, к которым относится участие</label><button type="button" class="btn btn-sm btn-link reward-select-work">Выбрать все работы</button></div>
-                      <div class="border rounded p-2">{% for line in order.lines %}<label class="d-flex gap-2 align-items-start py-1 reward-select-line" data-kind="{{ line.kind }}"><input class="form-check-input mt-1" type="checkbox" name="participant_0_line_identity" value="{{ line.identity }}"><span><strong>{{ line.name }}</strong><span class="d-block small text-muted">{{ line.type }} · ВП {% if line.gross_profit == None %}не определена{% else %}{{ line.gross_profit|money }}{% endif %}</span></span></label>{% endfor %}</div>
+                      <div class="border rounded p-2 reward-line-options"></div>
                       <div class="form-text">Для менеджера клиента позиции не выбираются. Для продажи по умолчанию используется весь заказ. Для проекта выберите позиции; для выполнения доступны только работы/услуги.</div>
                     </div>
                   </div>
@@ -221,7 +188,7 @@
               </div>
               <div class="d-flex flex-wrap gap-2 mt-2">
                 <button type="button" class="btn btn-outline-primary reward-add-row">+ Ещё участник</button>
-                <button class="btn btn-primary">Сохранить всех</button>
+                <button class="btn btn-primary reward-submit-button">Сохранить всех</button>
               </div>
               {% if order.source_document_type == "Document_ЧекККМ" %}<div class="form-text mt-2">Продажа по чеку считается автоматически по отдельной ставке розницы.</div>{% endif %}
               {% if order.direct_expenses %}<div class="alert alert-secondary py-2 mt-2 mb-0 small">У заказа есть прямые затраты {{ order.direct_expense_total|money }}, относящиеся ко всему заказу. Если выбран только фрагмент позиций, система не распределит эти затраты молча и потребует отдельного решения.</div>{% endif %}
@@ -302,24 +269,53 @@
 </div>
 
 <script>
+function rewardHydrateLines(container) {
+  const selector = container.querySelector('.reward-line-selector');
+  if (!selector) return;
+  const options = selector.querySelector('.reward-line-options');
+  if (!options || options.dataset.hydrated === '1') return;
+  const template = container.closest('.reward-order')?.querySelector('.reward-line-template');
+  if (!template) return;
+
+  options.appendChild(template.content.cloneNode(true));
+  const inputName = selector.dataset.lineInputName || 'line_identity';
+  const current = new Set(
+    (container.dataset.currentLines || '').split(',').filter(Boolean)
+  );
+  options.querySelectorAll('.reward-select-line').forEach(label => {
+    const input = label.querySelector('input[type="checkbox"]');
+    input.name = inputName;
+    const raw = (label.dataset.sourceIdentities || input.value)
+      .split(',').filter(Boolean);
+    if (current.has(input.value) || raw.some(identity => current.has(identity))) {
+      input.checked = true;
+    }
+  });
+  options.dataset.hydrated = '1';
+}
+
 function rewardConfigureRole(container) {
   const role = container.querySelector('.reward-role-select');
   const selector = container.querySelector('.reward-line-selector');
   if (!role || !selector) return;
-  const lines = [...container.querySelectorAll('.reward-select-line')];
   const value = role.value;
-  const needsLines = value === 'project' || value === 'work';
-  selector.style.display = (value === 'client_manager') ? 'none' : '';
-  lines.forEach(label => {
+  if (value === 'client_manager') {
+    selector.style.display = 'none';
+    return;
+  }
+  selector.style.display = '';
+  rewardHydrateLines(container);
+  container.querySelectorAll('.reward-select-line').forEach(label => {
     const input = label.querySelector('input[type="checkbox"]');
     const allowed = value !== 'work' || label.dataset.kind === 'service';
     label.style.display = allowed ? '' : 'none';
     if (!allowed) input.checked = false;
-    if (!needsLines && value === 'client_manager') input.checked = false;
   });
 }
 
 function rewardBindRow(container) {
+  if (container.dataset.rewardBound === '1') return;
+  container.dataset.rewardBound = '1';
   const role = container.querySelector('.reward-role-select');
   if (role) {
     role.addEventListener('change', () => rewardConfigureRole(container));
@@ -373,17 +369,44 @@ function rewardValidateContainer(container, existing, ignoreId = null) {
   return true;
 }
 
+function rewardMarkSubmitting(form) {
+  const button = form.querySelector('.reward-submit-button');
+  if (!button) return;
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Сохраняю…';
+  window.setTimeout(() => {
+    if (document.body.contains(button)) {
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }, 15000);
+}
+
 document.querySelectorAll('.reward-order').forEach(order => {
   const existing = [...order.querySelectorAll('.reward-existing-participant')];
 
+  order.querySelectorAll('.reward-role-edit-toggle').forEach(toggle => {
+    toggle.addEventListener('click', () => {
+      const panel = document.getElementById(toggle.dataset.roleEditorId);
+      if (!panel) return;
+      panel.classList.toggle('d-none');
+      if (!panel.classList.contains('d-none')) {
+        panel.querySelectorAll('.reward-participant-editor').forEach(rewardBindRow);
+      }
+    });
+  });
+
   order.querySelectorAll('.reward-participant-editor').forEach(form => {
-    rewardBindRow(form);
     form.addEventListener('submit', event => {
       const error = form.querySelector('.reward-form-error');
       error.style.display = 'none';
+      rewardBindRow(form);
       if (!rewardValidateContainer(form, existing, form.dataset.participationId)) {
         event.preventDefault();
+        return;
       }
+      rewardMarkSubmitting(form);
     });
   });
 
@@ -399,15 +422,21 @@ document.querySelectorAll('.reward-order').forEach(order => {
       const clone = first.cloneNode(true);
       const index = nextIndex++;
       clone.dataset.index = index;
-      clone.innerHTML = clone.innerHTML
-        .replaceAll('participant_0_employee_id', 'participant_' + index + '_employee_id')
-        .replaceAll('participant_0_role', 'participant_' + index + '_role')
-        .replaceAll('participant_0_share_percent', 'participant_' + index + '_share_percent')
-        .replaceAll('participant_0_line_identity', 'participant_' + index + '_line_identity');
+      clone.dataset.rewardBound = '';
+      clone.dataset.currentLines = '';
+      clone.querySelector('.reward-line-options').innerHTML = '';
+      clone.querySelector('.reward-line-options').dataset.hydrated = '';
+      clone.querySelector('.reward-line-selector').dataset.lineInputName =
+        'participant_' + index + '_line_identity';
+      clone.querySelector('.reward-employee-select').name =
+        'participant_' + index + '_employee_id';
+      clone.querySelector('.reward-role-select').name =
+        'participant_' + index + '_role';
+      clone.querySelector('.reward-share-input').name =
+        'participant_' + index + '_share_percent';
       clone.querySelector('.reward-employee-select').value = '';
       clone.querySelector('.reward-role-select').value = 'client_manager';
       clone.querySelector('.reward-share-input').value = '100';
-      clone.querySelectorAll('input[type="checkbox"]').forEach(input => input.checked = false);
       const remove = clone.querySelector('.reward-remove-row');
       remove.disabled = false;
       remove.addEventListener('click', () => clone.remove());
@@ -423,6 +452,7 @@ document.querySelectorAll('.reward-order').forEach(order => {
       const staged = [];
       let valid = true;
       for (const row of batchRows) {
+        rewardBindRow(row);
         if (!rewardValidateContainer(row, existing)) {
           valid = false;
           break;
@@ -430,7 +460,8 @@ document.querySelectorAll('.reward-order').forEach(order => {
         const {role, scope} = rewardScopeKey(row);
         const share = Number(row.querySelector('.reward-share-input').value || 0);
         const key = role + '|' + scope;
-        const prior = staged.filter(item => item.key === key).reduce((sum, item) => sum + item.share, 0);
+        const prior = staged.filter(item => item.key === key)
+          .reduce((sum, item) => sum + item.share, 0);
         const already = existing
           .filter(item => item.dataset.role === role && (item.dataset.scopeLines || '').split(',').filter(Boolean).sort().join(',') === scope)
           .reduce((sum, item) => sum + Number(item.dataset.share || 0), 0);
@@ -442,7 +473,11 @@ document.querySelectorAll('.reward-order').forEach(order => {
         }
         staged.push({key, share});
       }
-      if (!valid) event.preventDefault();
+      if (!valid) {
+        event.preventDefault();
+        return;
+      }
+      rewardMarkSubmitting(form);
     });
   });
 });
