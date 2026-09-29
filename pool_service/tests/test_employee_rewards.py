@@ -1292,29 +1292,57 @@ class EmployeeRewardCalculationTests(TestCase):
             report_recorder=return_report,
         )
 
-        rows = reward_profit_rows(self.org, self.month)
-        original_scope = (
-            f"odata-source:{self.org.id}:Document_ЧекККМ:{check_guid}"
+        documents = reward_document_options(self.org, self.month)
+        original = next(
+            item for item in documents
+            if item["source_document_guid"] == check_guid
         )
-        scope_rows = [
-            row for row in rows
-            if __import__(
-                "pool_service.services.rewards",
-                fromlist=["_row_business_scope_key"],
-            )._row_business_scope_key(row) == original_scope
-        ]
-        self.assertEqual(
-            sum((Decimal(row.revenue or 0) for row in scope_rows), Decimal("0")),
-            Decimal("500.00"),
+        self.assertEqual(original["revenue"], "500.00")
+        self.assertEqual(original["cost"], "200.00")
+        self.assertEqual(original["gross_profit"], "300.00")
+        self.assertTrue(any(
+            line["name"].startswith("Возврат · ")
+            for line in original["lines"]
+        ))
+
+    def test_general_sale_role_is_rejected_for_retail_check(self):
+        check_guid = "22222222-2222-4222-8222-222222222222"
+        report_guid = "33333333-3333-4333-8333-333333333333"
+        item_guid = "44444444-4444-4444-8444-444444444444"
+        self.add_retail_row(
+            recorder=check_guid,
+            recorder_type="Document_ЧекККМ",
+            line=1,
+            source_date=date(2026, 9, 9),
+            nomenclature_guid=item_guid,
+            quantity="1",
+            revenue="1000.00",
+            cost="0.00",
+            document_number="НФНФ-001057",
+            report_recorder=report_guid,
         )
-        self.assertEqual(
-            sum((Decimal(row.analytical_cost or 0) for row in scope_rows), Decimal("0")),
-            Decimal("200.00"),
+        self.add_retail_row(
+            recorder=report_guid,
+            recorder_type="Document_ОтчетОРозничныхПродажах",
+            line=2,
+            source_date=date(2026, 9, 9),
+            nomenclature_guid=item_guid,
+            quantity="0",
+            revenue="0.00",
+            cost="400.00",
+            report_recorder=report_guid,
         )
-        self.assertEqual(
-            sum((Decimal(row.displayed_gross_profit or 0) for row in scope_rows), Decimal("0")),
-            Decimal("300.00"),
-        )
+        document = reward_document_options(self.org, self.month)[0]
+        with self.assertRaisesMessage(Exception, "отдельная ставка"):
+            create_manual_participation(
+                self.org,
+                self.user,
+                self.month,
+                document_key=document["scope_key"],
+                employee=self.e1,
+                role=RewardParticipation.ROLE_SALE,
+                share=Decimal("1"),
+            )
 
     def test_same_open_month_can_create_new_test_scheme_version(self):
         updated = create_scheme_version(
