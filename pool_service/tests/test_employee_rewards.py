@@ -117,6 +117,54 @@ class EmployeeRewardCalculationTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
 
+    def test_rewards_page_shows_saved_author_name_before_technical_guid(self):
+        OrganizationAccess.objects.create(
+            user=self.user,
+            organization=self.org,
+            role="owner",
+        )
+        author_guid = "22222222-2222-4222-8222-222222222222"
+        row = self.add_row(1, "1000.00")
+        row.source_data = {
+            **row.source_data,
+            "author_guid": author_guid,
+            "author_name": "Автор из 1С",
+        }
+        row.save(update_fields=["source_data"])
+        identity = OneCAuthorIdentity.objects.create(
+            organization=self.org,
+            onec_user_id=author_guid,
+            raw_name="",
+            status=OneCAuthorIdentity.STATUS_NEEDS_MAPPING,
+        )
+        RewardParticipation.objects.create(
+            organization=self.org,
+            employee=None,
+            author_identity=identity,
+            role=RewardParticipation.ROLE_DOCUMENTATION,
+            status=RewardParticipation.STATUS_REQUIRED,
+            share=Decimal("1.000000"),
+            period_month=self.month,
+            scope_key="author-display",
+            source_document_key=(
+                "odata-source:%s:Document_РасходнаяНакладная:"
+                "11111111-1111-4111-8111-111111111111" % self.org.id
+            ),
+            source_document_type="Document_РасходнаяНакладная",
+            assignment_source=RewardParticipation.SOURCE_ONEC_AUTHOR,
+            created_by=self.user,
+        )
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse("finance_employee_rewards"),
+            {"month": "2026-09"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Автор из 1С")
+        self.assertContains(response, author_guid)
+
     def test_two_workers_split_one_fund_without_increasing_it(self):
         row = self.add_row(1, "30000.00")
         self.participation(self.e1, RewardParticipation.ROLE_WORK, "0.600000", lines=[row.source_identity])
