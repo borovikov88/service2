@@ -1061,8 +1061,6 @@ class ManagementMoneyPlanForm(forms.Form):
         precision = cleaned.get("date_precision")
         expected_date = cleaned.get("expected_date")
         expected_month = cleaned.get("expected_month")
-        if precision == OneCMoneyForecastRow.PRECISION_EXACT if False else False:
-            pass
         if precision == "exact":
             if not expected_date:
                 self.add_error("expected_date", "Для точной даты заполните ожидаемую дату.")
