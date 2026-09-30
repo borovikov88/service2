@@ -205,6 +205,26 @@
       {% endfor %}
     </div>
 
+    {% if money.forecast.near_term_exact %}
+      <details class="card card-soft p-3 mt-3" open>
+        <summary class="fw-semibold">Ближайшие 12 недель · точные даты</summary>
+        {% for item in money.forecast.near_term_exact %}
+          <div class="money-item">
+            <div class="d-flex justify-content-between gap-2">
+              <strong>{{ item.expected_date|date:"d.m.Y" }} · {{ item.counterparty_name|default:"Контрагент" }}</strong>
+              <strong>{{ item.remaining_amount|money }}</strong>
+            </div>
+            <div>{{ item.order_reference|default:"Без номера" }}</div>
+            <div class="money-meta">
+              {% if item.direction == "receipt" %}ожидаем поступление{% else %}предстоящий платёж{% endif %}
+              · {{ item.basis }}
+              {% if item.confirmation_status != "confirmed" %} · требует проверки{% endif %}
+            </div>
+          </div>
+        {% endfor %}
+      </details>
+    {% endif %}
+
     <div class="row g-3 mt-1">
       <div class="col-12 col-lg-4">
         <details class="card card-soft p-3">
@@ -237,16 +257,17 @@
     <h2 class="h5 mb-2" id="money-payments-title">Предстоящие платежи</h2>
     <div class="card card-soft p-3">
       {% for month in money.forecast.months %}
-        {% if month.payments %}
-          <div class="money-item">
-            <div class="d-flex justify-content-between"><strong>{{ month.month|date:"m.Y" }}</strong><strong>{{ month.payments|money }}</strong></div>
-            {% for item in month.items %}
-              {% if item.direction == "payment" %}
-                <div class="money-meta mt-1">{{ item.counterparty_name|default:"Получатель" }} · {{ item.remaining_amount|money }} · {{ item.basis }}</div>
-              {% endif %}
-            {% endfor %}
-          </div>
-        {% endif %}
+        {% for item in month.items %}
+          {% if item.direction == "payment" %}
+            <div class="money-item">
+              <div class="d-flex justify-content-between gap-2">
+                <strong>{{ item.expected_date|date:"d.m.Y"|default:month.month|date:"m.Y" }} · {{ item.counterparty_name|default:"Получатель" }}</strong>
+                <strong>{{ item.remaining_amount|money }}</strong>
+              </div>
+              <div class="money-meta">{{ item.basis }}{% if item.confirmation_status != "confirmed" %} · требует проверки{% endif %}</div>
+            </div>
+          {% endif %}
+        {% endfor %}
       {% empty %}<div class="text-muted">Будущие платежи не заполнены.</div>{% endfor %}
       <div class="money-meta mt-2">Платежи поставщикам не называются себестоимостью заказа. Уже выполненные платежи повторно не вычитаются.</div>
     </div>
