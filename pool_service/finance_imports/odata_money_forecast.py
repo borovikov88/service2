@@ -364,10 +364,12 @@ def read_money_forecast(now, *, config=None, opener=None):
             ))
             continue
 
-        # A live agreed order without a schedule/due date is visible, but the
-        # document amount is intentionally not treated as an unpaid forecast.
-        if confirmation == "confirmed":
-            review_count += 1
+        # Orders without schedule/due remain visible without inventing an
+        # unpaid amount. Possible sales are separated from the main forecast.
+        if confirmation in {"confirmed", "possible"}:
+            row_confirmation = "review" if confirmation == "confirmed" else "possible"
+            if row_confirmation == "review":
+                review_count += 1
             rows.append(MoneyForecastSourceRow(
                 direction="receipt",
                 item_kind="order_due",
@@ -388,7 +390,7 @@ def read_money_forecast(now, *, config=None, opener=None):
                 expected_month=None,
                 date_precision="unknown",
                 basis="Согласованный заказ без графика и срока оплаты",
-                confirmation_status="review",
+                confirmation_status=row_confirmation,
                 source_updated_at=_datetime(raw.get("ДатаИзменения")),
                 source_payload={"document_amount": str(total), "order_prepayment": str(prepaid)},
             ))
@@ -401,9 +403,10 @@ def read_money_forecast(now, *, config=None, opener=None):
         for item in schedule:
             amount = _decimal(item.get("СуммаОплаты"), "СуммаОплаты")
             pay_date = _date(item.get("ДатаОплаты"))
-            row_confirmation = "confirmed" if pay_date else "review"
-            if row_confirmation == "review":
-                review_count += 1
+            # A supplier schedule is a future obligation candidate, but until
+            # the factual payment link is checked it must not reduce cash twice.
+            row_confirmation = "review"
+            review_count += 1
             rows.append(MoneyForecastSourceRow(
                 direction="payment",
                 item_kind="supplier_schedule",
@@ -418,7 +421,7 @@ def read_money_forecast(now, *, config=None, opener=None):
                 expected_amount=amount,
                 matched_paid_amount=None,
                 remaining_amount=amount if pay_date else None,
-                payment_match_status="not_checked",
+                payment_match_status="payment_match_required",
                 contractual_due_date=pay_date,
                 expected_date=pay_date,
                 expected_month=pay_date.replace(day=1) if pay_date else None,
