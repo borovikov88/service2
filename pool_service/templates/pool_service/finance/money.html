@@ -97,9 +97,9 @@
           {% for row in money.fact_categories.grouped %}
             <tr>
               <td>{{ row.management_category|default:"Без категории" }}</td>
-              <td class="text-end">{{ row.receipts|money }}</td>
-              <td class="text-end">{{ row.payments|money }}</td>
-              <td class="text-end">{{ row.net_cash_flow|money }}</td>
+              <td class="text-end">{{ row.totals.receipts|money }}</td>
+              <td class="text-end">{{ row.totals.payments|money }}</td>
+              <td class="text-end">{{ row.totals.net_cash_flow|money }}</td>
             </tr>
           {% empty %}
             <tr><td colspan="4" class="text-muted">Детализация недоступна.</td></tr>
