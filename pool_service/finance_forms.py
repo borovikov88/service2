@@ -1082,4 +1082,9 @@ class ManagementMoneyPlanForm(forms.Form):
                 self.add_error("service_period_start", "Для обслуживания укажите период договора.")
             elif start > end:
                 self.add_error("service_period_end", "Окончание договора раньше начала.")
+            if not cleaned.get("service_active_months"):
+                self.add_error(
+                    "service_active_months",
+                    "Укажите активные месяцы договора; для круглогодичного — 1,2,...,12.",
+                )
         return cleaned
