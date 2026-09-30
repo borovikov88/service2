@@ -97,7 +97,8 @@ def _reward_order_groups(orders, open_order=""):
     groups = {}
     sequence = []
 
-    for order in orders:
+    for ui_index, order in enumerate(orders, start=1):
+        order["ui_index"] = ui_index
         is_expense_invoice = (
             order.get("source_document_type") == "Document_РасходнаяНакладная"
         )
