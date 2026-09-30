@@ -31,6 +31,7 @@ from pool_service.finance_imports.finance_position import (
     get_settlement_position_breakdown as canonical_settlement_position_breakdown,
 )
 from pool_service.models import Organization
+from pool_service.finance_imports.money_forecast import management_money_data
 
 
 MAX_MONTHS = 24
@@ -737,6 +738,52 @@ def get_profit_breakdown(
     return envelope
 
 
+
+
+def _money_contract_value(value):
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    if isinstance(value, (date,)):
+        return value.isoformat()
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: _money_contract_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_money_contract_value(item) for item in value]
+    return value
+
+
+def get_management_money(
+    principal, start_month: str, end_month: str, organization_ids=None
+):
+    """Expose the exact same Money-page server contract to Finance MCP."""
+    first, last = validate_month_range(start_month, end_month)
+    organizations = organizations_for_principal(principal, organization_ids)
+    results = []
+    for organization in organizations:
+        raw = management_money_data(
+            organization,
+            period_start=first,
+            period_end=last,
+        )
+        results.append({
+            "organization": _organization_descriptor(organization),
+            "data": _money_contract_value(raw),
+        })
+    return {
+        "as_of": timezone.now().isoformat(),
+        "organizations": [_organization_descriptor(o) for o in organizations],
+        "period": {"from": first.isoformat(), "to": last.isoformat()},
+        "organization_results": results,
+        "source": {
+            "contract_version": "management_money.v1",
+            "calculation": "pool_service.finance_imports.money_forecast.management_money_data",
+            "source_scope": "same_server_contract_as_money_page",
+        },
+    }
+
+
 __all__ = [
     "FinanceAdvisorScopeDenied",
     "FinanceAdvisorValidationError",
@@ -747,6 +794,7 @@ __all__ = [
     "get_finance_data_status",
     "get_finance_position",
     "get_monthly_finance",
+    "get_management_money",
     "get_profit_breakdown",
     "get_settlement_position_breakdown",
     "organizations_for_principal",

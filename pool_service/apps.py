@@ -42,6 +42,7 @@ class PoolServiceConfig(AppConfig):
         # Auxiliary model modules belong to the existing pool_service app and
         # must be registered before migration state/checks are evaluated.
         import pool_service.finance_position_models  # noqa: F401
+        import pool_service.money_models  # noqa: F401
         import pool_service.onec_diagnostic_mcp_models  # noqa: F401
         import pool_service.communication_models  # noqa: F401
 

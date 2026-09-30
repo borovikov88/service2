@@ -27,6 +27,7 @@ from pool_service.models import (
     Employee,
     EmployeeCompensationMonth,
 )
+from pool_service.money_models import ManagementMoneyPlan
 from pool_service.services.finance import (
     finance_staff,
     finance_reviewers,
@@ -953,3 +954,143 @@ class PayrollAccrualConfirmForm(forms.Form):
         label="Проверил сумму и охват организаций. Подтверждаю начисления за этот месяц.",
         required=True,
     )
+
+
+
+class ManagementMoneyPlanForm(forms.Form):
+    """Explicit management expectation. Never mutates a primary 1C document."""
+
+    direction = forms.ChoiceField(
+        choices=ManagementMoneyPlan.DIRECTION_CHOICES,
+        label="Направление",
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
+    source_type = forms.ChoiceField(
+        choices=ManagementMoneyPlan.SOURCE_CHOICES,
+        label="Основание",
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
+    counterparty_name = forms.CharField(
+        max_length=300, required=False, label="Клиент / получатель",
+        widget=forms.TextInput(attrs={"class": "form-control"}),
+    )
+    order_reference = forms.CharField(
+        max_length=160, required=False, label="Заказ / договор",
+        widget=forms.TextInput(attrs={"class": "form-control"}),
+    )
+    linked_order_guid = forms.UUIDField(
+        required=False, label="GUID заказа 1С",
+        widget=forms.TextInput(attrs={"class": "form-control"}),
+    )
+    amount = forms.DecimalField(
+        required=False, max_digits=24, decimal_places=2, min_value=Decimal("0.01"),
+        label="Сумма (если подтверждена)",
+        widget=forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
+    )
+    contractual_due_date = forms.DateField(
+        required=False, label="Договорный срок",
+        widget=forms.DateInput(attrs={"class": "form-control", "type": "date"}),
+    )
+    date_precision = forms.ChoiceField(
+        choices=ManagementMoneyPlan.PRECISION_CHOICES,
+        label="Точность ожидания",
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
+    expected_date = forms.DateField(
+        required=False, label="Ожидаемая дата",
+        widget=forms.DateInput(attrs={"class": "form-control", "type": "date"}),
+    )
+    expected_month = forms.DateField(
+        required=False, input_formats=["%Y-%m", "%Y-%m-%d"],
+        label="Ожидаемый месяц",
+        widget=forms.DateInput(format="%Y-%m", attrs={"class": "form-control", "type": "month"}),
+    )
+    basis = forms.CharField(
+        max_length=300, label="Почему ожидаем",
+        widget=forms.TextInput(attrs={"class": "form-control"}),
+    )
+    confirmation_status = forms.ChoiceField(
+        choices=ManagementMoneyPlan.CONFIRMATION_CHOICES,
+        label="Статус",
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
+    note = forms.CharField(
+        required=False, label="Комментарий",
+        widget=forms.Textarea(attrs={"class": "form-control", "rows": 2}),
+    )
+    service_period_start = forms.DateField(
+        required=False, label="Обслуживание с",
+        widget=forms.DateInput(attrs={"class": "form-control", "type": "date"}),
+    )
+    service_period_end = forms.DateField(
+        required=False, label="Обслуживание по",
+        widget=forms.DateInput(attrs={"class": "form-control", "type": "date"}),
+    )
+    service_active_months = forms.CharField(
+        required=False, max_length=80, label="Активные месяцы",
+        help_text="Например: 5,6,7,8,9. Пусто — только если календарь не задан.",
+        widget=forms.TextInput(attrs={"class": "form-control", "placeholder": "5,6,7,8,9"}),
+    )
+    service_payment_offset_months = forms.IntegerField(
+        required=False, min_value=-12, max_value=12,
+        label="Сдвиг месяца оплаты",
+        widget=forms.NumberInput(attrs={"class": "form-control"}),
+    )
+    service_price_rule = forms.CharField(
+        required=False, max_length=300, label="Правило цены",
+        widget=forms.TextInput(attrs={"class": "form-control"}),
+    )
+    price_effective_from = forms.DateField(
+        required=False, label="Цена действует с",
+        widget=forms.DateInput(attrs={"class": "form-control", "type": "date"}),
+    )
+
+    def clean_service_active_months(self):
+        raw = (self.cleaned_data.get("service_active_months") or "").strip()
+        if not raw:
+            return []
+        try:
+            months = sorted({int(part.strip()) for part in raw.split(",") if part.strip()})
+        except ValueError:
+            raise forms.ValidationError("Месяцы указываются числами от 1 до 12.") from None
+        if not months or any(month < 1 or month > 12 for month in months):
+            raise forms.ValidationError("Месяцы указываются числами от 1 до 12.")
+        return months
+
+    def clean(self):
+        cleaned = super().clean()
+        precision = cleaned.get("date_precision")
+        expected_date = cleaned.get("expected_date")
+        expected_month = cleaned.get("expected_month")
+        if precision == "exact":
+            if not expected_date:
+                self.add_error("expected_date", "Для точной даты заполните ожидаемую дату.")
+            cleaned["expected_month"] = expected_date.replace(day=1) if expected_date else None
+        elif precision == "month":
+            if not expected_month:
+                self.add_error("expected_month", "Для месячной оценки укажите месяц.")
+            elif expected_month:
+                cleaned["expected_month"] = expected_month.replace(day=1)
+            cleaned["expected_date"] = None
+        elif precision == "unknown":
+            cleaned["expected_date"] = None
+            cleaned["expected_month"] = None
+
+        if cleaned.get("source_type") == ManagementMoneyPlan.SOURCE_SERVICE:
+            start = cleaned.get("service_period_start")
+            end = cleaned.get("service_period_end")
+            if not start or not end:
+                self.add_error("service_period_start", "Для обслуживания укажите период договора.")
+            elif start > end:
+                self.add_error("service_period_end", "Окончание договора раньше начала.")
+            if not cleaned.get("service_active_months"):
+                self.add_error(
+                    "service_active_months",
+                    "Укажите активные месяцы договора; для круглогодичного — 1,2,...,12.",
+                )
+            if cleaned.get("amount") is None and not cleaned.get("service_price_rule"):
+                self.add_error(
+                    "amount",
+                    "Для обслуживания укажите сумму либо проверяемое правило цены.",
+                )
+        return cleaned

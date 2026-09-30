@@ -8,7 +8,10 @@ status without exposing stored OData/transport details.
 """
 from django.http import JsonResponse
 
-from pool_service.finance_imports.odata_daily_sync import finalize_finance_position_step
+from pool_service.finance_imports.odata_daily_sync import (
+    finalize_finance_position_step,
+    finalize_money_forecast_step,
+)
 from pool_service.finance_views import (
     _auto_run_payload,
     finance_onec_refresh_apply_detail as _base_detail,
@@ -30,6 +33,11 @@ def _safe_payload(run):
         if state in {"retryable_error", "failed"}:
             progress["finance_position_error"] = SAFE_FINANCE_POSITION_ERROR
             payload["message"] = SAFE_FINANCE_POSITION_ERROR
+    forecast_state = (run.progress or {}).get("money_forecast_state")
+    if forecast_state in VISIBLE_FINANCE_POSITION_STATES:
+        progress["money_forecast_state"] = forecast_state
+        if forecast_state in {"retryable_error", "failed"}:
+            progress["money_forecast_error"] = "План денег не обновлён; предыдущий снимок сохранён."
     payload["progress"] = progress
     return payload
 
@@ -53,6 +61,8 @@ def finance_onec_refresh_apply_step(request, run_id):
         # Idempotent on success; on retryable_error this retries ONLY the
         # point-in-time Balance layer and never reruns the completed monthly sync.
         finalize_finance_position_step(run)
+        run.refresh_from_db()
+        finalize_money_forecast_step(run)
         run.refresh_from_db()
     return JsonResponse(_safe_payload(run))
 

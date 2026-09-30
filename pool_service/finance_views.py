@@ -46,6 +46,7 @@ from pool_service.finance_forms import (
     EmployeeIdentityMappingForm,
     EmployeeCompensationMonthForm,
     CashFlowArticleMappingForm,
+    ManagementMoneyPlanForm,
 )
 from pool_service.models import (
     AccountableTransaction,
@@ -206,6 +207,8 @@ from pool_service.finance_imports.management_finance import (
 from pool_service.finance_imports.overview import finance_overview_data
 from pool_service.finance_imports.finance_position_dashboard import finance_position_dashboard_data
 from pool_service.finance_imports.finance_position import get_finance_position
+from pool_service.finance_imports.money_forecast import management_money_data
+from pool_service.money_models import ManagementMoneyPlan, ManagementMoneyPlanChange
 from pool_service.services.permissions import is_org_access_blocked, organization_for_user
 
 logger = logging.getLogger(__name__)
@@ -930,6 +933,142 @@ def finance_overview(request):
         "show_add_button": False,
     })
 
+
+
+def _money_plan_snapshot(plan):
+    return {
+        "direction": plan.direction,
+        "source_type": plan.source_type,
+        "linked_order_guid": str(plan.linked_order_guid) if plan.linked_order_guid else None,
+        "counterparty_name": plan.counterparty_name,
+        "order_reference": plan.order_reference,
+        "amount": str(plan.amount),
+        "contractual_due_date": plan.contractual_due_date.isoformat() if plan.contractual_due_date else None,
+        "expected_date": plan.expected_date.isoformat() if plan.expected_date else None,
+        "expected_month": plan.expected_month.isoformat() if plan.expected_month else None,
+        "date_precision": plan.date_precision,
+        "basis": plan.basis,
+        "confirmation_status": plan.confirmation_status,
+        "note": plan.note,
+        "service_period_start": plan.service_period_start.isoformat() if plan.service_period_start else None,
+        "service_period_end": plan.service_period_end.isoformat() if plan.service_period_end else None,
+        "service_active_months": plan.service_active_months,
+        "service_payment_offset_months": plan.service_payment_offset_months,
+        "service_price_rule": plan.service_price_rule,
+        "price_effective_from": plan.price_effective_from.isoformat() if plan.price_effective_from else None,
+        "is_active": plan.is_active,
+    }
+
+
+@login_required
+def finance_money(request):
+    organization, denied = _capability_guard(
+        request, can_access_finance_overview,
+        denied_message="Недостаточно прав для страницы «Деньги».",
+    )
+    if denied:
+        return denied
+
+    current_month = timezone.localdate().strftime("%Y-%m")
+    first_month = request.GET.get("from") or current_month
+    last_month = request.GET.get("to") or first_month
+
+    edit_plan = None
+    edit_id = request.GET.get("edit")
+    if edit_id:
+        edit_plan = ManagementMoneyPlan.objects.filter(
+            pk=edit_id, organization=organization, is_active=True
+        ).first()
+
+    if request.method == "POST":
+        plan_id = request.POST.get("plan_id")
+        plan = None
+        if plan_id:
+            plan = get_object_or_404(
+                ManagementMoneyPlan, pk=plan_id, organization=organization
+            )
+        form = ManagementMoneyPlanForm(request.POST)
+        if form.is_valid():
+            with transaction.atomic():
+                if plan is None:
+                    plan = ManagementMoneyPlan(
+                        organization=organization,
+                        created_by=request.user,
+                    )
+                else:
+                    ManagementMoneyPlanChange.objects.create(
+                        plan=plan,
+                        actor=request.user,
+                        snapshot=_money_plan_snapshot(plan),
+                    )
+                for field in (
+                    "direction", "source_type", "linked_order_guid",
+                    "counterparty_name", "order_reference", "amount",
+                    "contractual_due_date", "expected_date", "expected_month",
+                    "date_precision", "basis", "confirmation_status", "note",
+                    "service_period_start", "service_period_end",
+                    "service_active_months", "service_payment_offset_months",
+                    "service_price_rule", "price_effective_from",
+                ):
+                    setattr(plan, field, form.cleaned_data.get(field))
+                plan.updated_by = request.user
+                plan.is_active = True
+                plan.save()
+                ManagementMoneyPlanChange.objects.create(
+                    plan=plan,
+                    actor=request.user,
+                    snapshot=_money_plan_snapshot(plan),
+                )
+            messages.success(request, "Плановая строка сохранена.")
+            return redirect(
+                f"{reverse('finance_money')}?from={first_month}&to={last_month}"
+            )
+    else:
+        initial = None
+        if edit_plan:
+            initial = {
+                field: getattr(edit_plan, field)
+                for field in (
+                    "direction", "source_type", "linked_order_guid",
+                    "counterparty_name", "order_reference", "amount",
+                    "contractual_due_date", "expected_date", "expected_month",
+                    "date_precision", "basis", "confirmation_status", "note",
+                    "service_period_start", "service_period_end",
+                    "service_active_months", "service_payment_offset_months",
+                    "service_price_rule", "price_effective_from",
+                )
+            }
+            initial["service_active_months"] = ",".join(
+                str(value) for value in edit_plan.service_active_months or []
+            )
+        form = ManagementMoneyPlanForm(initial=initial)
+
+    try:
+        money = management_money_data(
+            organization,
+            period_start=first_month,
+            period_end=last_month,
+        )
+    except ValueError:
+        first_month = current_month
+        last_month = current_month
+        money = management_money_data(
+            organization,
+            period_start=first_month,
+            period_end=last_month,
+        )
+        messages.warning(request, "Некорректный период заменён текущим месяцем.")
+
+    return render(request, "pool_service/finance/money.html", {
+        "organization": organization,
+        "money": money,
+        "plan_form": form,
+        "edit_plan": edit_plan,
+        "period_from": first_month,
+        "period_to": last_month,
+        "active_tab": "finance",
+        "show_add_button": False,
+    })
 
 def _finance_data_state_queryset(organization, report_types):
     return (

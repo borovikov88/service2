@@ -231,6 +231,7 @@ def management_finance_navigation(user, organization, *, current_route=""):
     analytics = []
     if can_access_finance_overview(user, organization):
         analytics.append(_finance_nav_item("Обзор", "finance_overview"))
+        analytics.append(_finance_nav_item("Деньги", "finance_money"))
     if can_view_gross_profit(user, organization):
         analytics.append(_finance_nav_item(
             "Валовая прибыль",
