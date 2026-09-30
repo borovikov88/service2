@@ -35,7 +35,7 @@ class Migration(migrations.Migration):
                 ("linked_order_guid", models.UUIDField(blank=True, null=True)),
                 ("counterparty_name", models.CharField(blank=True, max_length=300)),
                 ("order_reference", models.CharField(blank=True, max_length=160)),
-                ("amount", models.DecimalField(decimal_places=2, max_digits=24)),
+                ("amount", models.DecimalField(blank=True, decimal_places=2, max_digits=24, null=True)),
                 ("contractual_due_date", models.DateField(blank=True, null=True)),
                 ("expected_date", models.DateField(blank=True, null=True)),
                 ("expected_month", models.DateField(blank=True, null=True)),
