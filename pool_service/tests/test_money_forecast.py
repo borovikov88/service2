@@ -50,7 +50,7 @@ def _config():
     )
 
 
-def _customer_order(*, state=STATE_WORK, due="0001-01-01T00:00:00"):
+def _customer_order(*, state=STATE_WORK, due="0001-01-01T00:00:00", cancelled=False):
     return {
         "Ref_Key": ORDER_GUID,
         "Date": "2026-07-01T13:05:01",
@@ -68,17 +68,20 @@ def _customer_order(*, state=STATE_WORK, due="0001-01-01T00:00:00"):
         "ЗапланироватьОплату": False,
         "ОплатаДо": due,
         "СуммаДокумента": "243695.00",
-        "ПричинаОтмены_Key": "00000000-0000-0000-0000-000000000000",
+        "ПричинаОтмены_Key": (
+            "44444444-4444-4444-4444-444444444444"
+            if cancelled else "00000000-0000-0000-0000-000000000000"
+        ),
     }
 
 
-def _reader_side_effect(*, schedule=None, prepayment=None, state=STATE_WORK):
+def _reader_side_effect(*, schedule=None, prepayment=None, state=STATE_WORK, cancelled=False):
     schedule = list(schedule or [])
     prepayment = list(prepayment or [])
 
     def read(_config_value, entity, _fields, **_kwargs):
         if entity == CUSTOMER_ORDER:
-            return [_customer_order(state=state)]
+            return [_customer_order(state=state, cancelled=cancelled)]
         if entity == SUPPLIER_ORDER:
             return []
         if entity == CUSTOMER_SCHEDULE:
@@ -210,6 +213,33 @@ class MoneyForecastReaderTests(TestCase):
             row.payment_match_status == "ambiguous_prepayment_allocation"
             for row in result.rows
         ))
+
+    def test_cancelled_order_future_amount_is_excluded_from_main_forecast(self):
+        schedule = [{
+            "Ref_Key": ORDER_GUID,
+            "LineNumber": 1,
+            "ДатаОплаты": "2026-10-31T00:00:00",
+            "СуммаОплаты": "243695.00",
+            "ПроцентОплаты": "100.00",
+        }]
+        with (
+            patch(
+                "pool_service.finance_imports.odata_money_forecast._read",
+                side_effect=_reader_side_effect(schedule=schedule, cancelled=True),
+            ),
+            patch(
+                "pool_service.finance_imports.odata_money_forecast._lookup_descriptions",
+                side_effect=_lookups,
+            ),
+        ):
+            result = read_money_forecast(
+                datetime(2026, 9, 30, 10, 0, tzinfo=timezone.utc),
+                config=_config(),
+                opener=object(),
+            )
+        row = result.rows[0]
+        self.assertEqual(row.confirmation_status, "excluded")
+        self.assertIn("отмен", row.basis)
 
     def test_invoice_only_order_is_possible_sale_not_main_forecast(self):
         with (
