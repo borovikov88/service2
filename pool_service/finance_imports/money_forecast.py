@@ -290,10 +290,10 @@ def management_money_data(
     position = get_finance_position(organization)
     cash_rows = get_cash_position_breakdown(organization)
     receivables = get_settlement_position_breakdown(
-        organization, side="customer", classification="receivable", limit=500
+        organization, side="customer", classification="receivable", limit=200
     )
     payables = get_settlement_position_breakdown(
-        organization, side="supplier", classification="payable", limit=500
+        organization, side="supplier", classification="payable", limit=200
     )
 
     snapshot = _active_snapshot(organization)
