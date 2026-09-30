@@ -20,9 +20,9 @@ from pool_service.finance_imports.odata_money_forecast import (
     CUSTOMER_STATES,
     SUPPLIER_ORDER,
     SUPPLIER_SCHEDULE,
-    ODataConfig,
     read_money_forecast,
 )
+from pool_service.finance_imports.odata_profit import ODataConfig
 from pool_service.money_models import (
     ManagementMoneyPlan,
     OneCMoneyForecastRow,
