@@ -983,8 +983,9 @@ class ManagementMoneyPlanForm(forms.Form):
         widget=forms.TextInput(attrs={"class": "form-control"}),
     )
     amount = forms.DecimalField(
-        max_digits=24, decimal_places=2, min_value=Decimal("0.01"),
-        label="Сумма", widget=forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
+        required=False, max_digits=24, decimal_places=2, min_value=Decimal("0.01"),
+        label="Сумма (если подтверждена)",
+        widget=forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
     )
     contractual_due_date = forms.DateField(
         required=False, label="Договорный срок",
@@ -1086,5 +1087,10 @@ class ManagementMoneyPlanForm(forms.Form):
                 self.add_error(
                     "service_active_months",
                     "Укажите активные месяцы договора; для круглогодичного — 1,2,...,12.",
+                )
+            if cleaned.get("amount") is None and not cleaned.get("service_price_rule"):
+                self.add_error(
+                    "amount",
+                    "Для обслуживания укажите сумму либо проверяемое правило цены.",
                 )
         return cleaned
