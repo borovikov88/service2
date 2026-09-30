@@ -1,0 +1,336 @@
+{% extends "pool_service/base.html" %}
+{% load finance_tags %}
+{% block title %}Деньги{% endblock %}
+{% block content %}
+{% include "pool_service/finance/_desktop_workspace_styles.html" %}
+<style>
+  .money-kpi-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+  .money-month-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+  .money-value{font-size:1.35rem;font-weight:700}
+  .money-meta{font-size:.83rem;color:var(--bs-secondary-color)}
+  .money-item{border-top:1px solid var(--bs-border-color);padding:.7rem 0}
+  .money-item:first-child{border-top:0}
+  .money-pill{font-size:.75rem}
+  @media(max-width:991.98px){
+    .money-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .money-month-grid{grid-template-columns:1fr}
+  }
+  @media(max-width:575.98px){
+    .money-kpi-grid{grid-template-columns:1fr}
+    .money-table-desktop{display:none}
+    .money-mobile-card{display:block}
+  }
+  @media(min-width:576px){.money-mobile-card{display:none}}
+</style>
+
+<div class="finance-desktop">
+  <div class="finance-page-header d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4">
+    <div>
+      <div class="text-muted small mb-1">Управленческие финансы</div>
+      <h1 class="h3 mb-1">Деньги</h1>
+      <div class="text-muted">Факт, остатки, ожидаемые поступления, предстоящие платежи и полнота прогноза.</div>
+    </div>
+    <form method="get" class="d-flex flex-wrap gap-2 align-items-end">
+      <div>
+        <label class="form-label small mb-1">Факт с</label>
+        <input type="month" name="from" value="{{ period_from }}" class="form-control form-control-sm">
+      </div>
+      <div>
+        <label class="form-label small mb-1">по</label>
+        <input type="month" name="to" value="{{ period_to }}" class="form-control form-control-sm">
+      </div>
+      <button class="btn btn-outline-primary btn-sm">Показать</button>
+    </form>
+  </div>
+
+  {% for warning in money.warnings %}
+    <div class="alert alert-warning py-2">
+      {{ warning.message }}{% if warning.count %} · {{ warning.count }}{% endif %}
+    </div>
+  {% endfor %}
+
+  <section class="mb-4" aria-labelledby="money-fact-title">
+    <div class="d-flex justify-content-between gap-2 align-items-end mb-2">
+      <div>
+        <div class="text-muted small">Подтверждённые данные Service2</div>
+        <h2 class="h5 mb-0" id="money-fact-title">Фактически за период</h2>
+      </div>
+      <div class="money-meta">
+        ДДС: {{ money.fact.metadata.data_through.cashflow|date:"d.m.Y" }}
+      </div>
+    </div>
+    <div class="money-kpi-grid">
+      <article class="card card-soft p-3">
+        <div class="text-muted small">Операционные поступления</div>
+        <div class="money-value">{{ money.fact.totals.cashflow.operating.receipts|money }}</div>
+        <div class="money-meta">Без внутренних переводов и оборота тела депозитов.</div>
+      </article>
+      <article class="card card-soft p-3">
+        <div class="text-muted small">Операционные платежи</div>
+        <div class="money-value">{{ money.fact.totals.cashflow.operating.payments|money }}</div>
+        <div class="money-meta">По действующей управленческой классификации.</div>
+      </article>
+      <article class="card card-soft p-3">
+        <div class="text-muted small">Чистый операционный поток</div>
+        <div class="money-value">{{ money.fact.totals.cashflow.operating.net_cash_flow|money }}</div>
+        <div class="money-meta">Поступления минус платежи.</div>
+      </article>
+      <article class="card card-soft p-3">
+        <div class="text-muted small">Полный внешний поток</div>
+        <div class="money-value">{{ money.fact.totals.cashflow.external.net_cash_flow|money }}</div>
+        <div class="money-meta">Операционный + инвестиционный + финансовый + ликвидность + внешние неизвестные.</div>
+      </article>
+    </div>
+
+    <details class="card card-soft p-3 mt-3">
+      <summary class="fw-semibold">Состав внешнего потока и основные категории</summary>
+      <div class="money-kpi-grid mt-3">
+        <div><div class="small text-muted">Инвестиции</div><strong>{{ money.fact.totals.cashflow.investing.net_cash_flow|money }}</strong></div>
+        <div><div class="small text-muted">Кредиты / собственники</div><strong>{{ money.fact.totals.cashflow.financing.net_cash_flow|money }}</strong></div>
+        <div><div class="small text-muted">Размещение / возврат депозитов</div><strong>{{ money.fact.totals.cashflow.liquidity.net_cash_flow|money }}</strong></div>
+        <div><div class="small text-muted">Внешние неизвестные</div><strong>{{ money.fact.totals.cashflow.external_unclassified.net_cash_flow|money }}</strong></div>
+      </div>
+      <div class="table-responsive mt-3">
+        <table class="table table-sm align-middle mb-0">
+          <thead><tr><th>Категория</th><th class="text-end">Поступило</th><th class="text-end">Ушло</th><th class="text-end">Чистый поток</th></tr></thead>
+          <tbody>
+          {% for row in money.fact_categories.grouped %}
+            <tr>
+              <td>{{ row.management_category|default:"Без категории" }}</td>
+              <td class="text-end">{{ row.receipts|money }}</td>
+              <td class="text-end">{{ row.payments|money }}</td>
+              <td class="text-end">{{ row.net_cash_flow|money }}</td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="4" class="text-muted">Детализация недоступна.</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  </section>
+
+  <section class="mb-4" aria-labelledby="money-position-title">
+    <div class="d-flex justify-content-between gap-2 align-items-end mb-2">
+      <div>
+        <div class="text-muted small">Текущий снимок, не исторический остаток выбранного месяца</div>
+        <h2 class="h5 mb-0" id="money-position-title">Остатки на дату</h2>
+      </div>
+      <div class="money-meta">
+        {% if money.position.snapshot_at %}{{ money.position.snapshot_at|date:"d.m.Y H:i" }}{% else %}снимок недоступен{% endif %}
+      </div>
+    </div>
+    <div class="money-kpi-grid">
+      <article class="card card-soft p-3">
+        <div class="text-muted small">Деньги в снимке</div>
+        <div class="money-value">{{ money.position.cash_total|money }}</div>
+        <div class="money-meta">Не называются «свободными» без проверки ограничений.</div>
+      </article>
+      <article class="card card-soft p-3">
+        <div class="text-muted small">Счета и кассы</div>
+        <div class="money-value">{{ money.position.cash_regular|money }}</div>
+      </article>
+      <article class="card card-soft p-3">
+        <div class="text-muted small">ККМ</div>
+        <div class="money-value">{{ money.position.cash_kkm|money }}</div>
+      </article>
+      <article class="card card-soft p-3">
+        <div class="text-muted small">Деньги в пути</div>
+        <div class="money-value">{{ money.position.cash_in_transit|money }}</div>
+      </article>
+    </div>
+
+    <div class="row g-3 mt-1">
+      <div class="col-12 col-lg-6">
+        <details class="card card-soft p-3 h-100">
+          <summary class="fw-semibold">Где находятся деньги</summary>
+          {% for row in money.cash_rows %}
+            <div class="money-item d-flex justify-content-between gap-3">
+              <div>{{ row.display_name }}<div class="money-meta">{{ row.source_kind }}</div></div>
+              <strong class="text-nowrap">{{ row.amount|money }}</strong>
+            </div>
+          {% empty %}<div class="text-muted mt-2">Нет детализации.</div>{% endfor %}
+        </details>
+      </div>
+      <div class="col-12 col-lg-6">
+        <div class="card card-soft p-3 h-100">
+          <div class="fw-semibold mb-2">Состав снимка</div>
+          <div class="d-flex justify-content-between"><span>Депозиты отдельно</span><span class="text-muted">недоступно</span></div>
+          <div class="d-flex justify-content-between mt-2"><span>Средства с подтверждёнными ограничениями</span><span class="text-muted">недоступно</span></div>
+          <div class="money-meta mt-3">Пока эти источники не синхронизированы отдельно, общий остаток не трактуется как полностью доступный.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="mb-4" aria-labelledby="money-forecast-title">
+    <div class="d-flex flex-column flex-md-row justify-content-between gap-2 align-items-md-end mb-2">
+      <div>
+        <div class="text-muted small">План отдельно от фактического ДДС</div>
+        <h2 class="h5 mb-0" id="money-forecast-title">Ожидаемые поступления · 12 месяцев</h2>
+      </div>
+      <div class="money-meta">
+        {% if money.forecast.last_updated %}План обновлён {{ money.forecast.last_updated|date:"d.m.Y H:i" }}{% else %}план 1С ещё не синхронизирован{% endif %}
+      </div>
+    </div>
+
+    <div class="money-month-grid">
+      {% for month in money.forecast.months %}
+        <details class="card card-soft p-3" {% if month.items %}open{% endif %}>
+          <summary>
+            <span class="fw-semibold">{{ month.month|date:"m.Y" }}</span>
+            <span class="float-end">{{ month.receipts|money }}</span>
+          </summary>
+          {% for item in month.items %}
+            {% if item.direction == "receipt" %}
+              <div class="money-item">
+                <div class="d-flex justify-content-between gap-2">
+                  <strong>{{ item.counterparty_name|default:"Контрагент не определён" }}</strong>
+                  <strong>{{ item.remaining_amount|money }}</strong>
+                </div>
+                <div>{{ item.order_reference|default:"Без номера заказа" }}</div>
+                <div class="money-meta">
+                  {% if item.expected_date %}ожидаем {{ item.expected_date|date:"d.m.Y" }}
+                  {% else %}месяц {{ item.expected_month|date:"m.Y" }}{% endif %}
+                  · {{ item.basis }}
+                  {% if item.order_state %} · {{ item.order_state }}{% endif %}
+                </div>
+                <div class="money-meta">Ответственный: {{ item.responsible|default:"не указан" }} · актуализация {{ item.last_updated|date:"d.m.Y H:i" }}</div>
+              </div>
+            {% endif %}
+          {% empty %}
+            <div class="text-muted small mt-2">Подтверждённых ожиданий нет.</div>
+          {% endfor %}
+        </details>
+      {% endfor %}
+    </div>
+
+    <div class="row g-3 mt-1">
+      <div class="col-12 col-lg-4">
+        <details class="card card-soft p-3">
+          <summary class="fw-semibold">Просроченные ожидания · {{ money.forecast.overdue|length }}</summary>
+          {% for item in money.forecast.overdue %}
+            <div class="money-item"><strong>{{ item.counterparty_name|default:"Контрагент" }}</strong><div>{{ item.remaining_amount|money }} · {{ item.expected_date|date:"d.m.Y" }}</div><div class="money-meta">{{ item.basis }}</div></div>
+          {% empty %}<div class="text-muted small mt-2">Нет.</div>{% endfor %}
+        </details>
+      </div>
+      <div class="col-12 col-lg-4">
+        <details class="card card-soft p-3">
+          <summary class="fw-semibold">Не назначена дата оплаты · {{ money.forecast.undated|length }}</summary>
+          {% for item in money.forecast.undated %}
+            <div class="money-item"><strong>{{ item.counterparty_name|default:"Контрагент" }}</strong><div>{{ item.order_reference }}</div><div class="money-meta">{{ item.basis }}</div></div>
+          {% empty %}<div class="text-muted small mt-2">Нет.</div>{% endfor %}
+        </details>
+      </div>
+      <div class="col-12 col-lg-4">
+        <details class="card card-soft p-3">
+          <summary class="fw-semibold">Возможные продажи · {{ money.forecast.possible|length }}</summary>
+          {% for item in money.forecast.possible %}
+            <div class="money-item"><strong>{{ item.counterparty_name|default:"Контрагент" }}</strong><div>{{ item.order_reference }}</div><div class="money-meta">Не входит в основной прогноз.</div></div>
+          {% empty %}<div class="text-muted small mt-2">Нет.</div>{% endfor %}
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section class="mb-4" aria-labelledby="money-payments-title">
+    <h2 class="h5 mb-2" id="money-payments-title">Предстоящие платежи</h2>
+    <div class="card card-soft p-3">
+      {% for month in money.forecast.months %}
+        {% if month.payments %}
+          <div class="money-item">
+            <div class="d-flex justify-content-between"><strong>{{ month.month|date:"m.Y" }}</strong><strong>{{ month.payments|money }}</strong></div>
+            {% for item in month.items %}
+              {% if item.direction == "payment" %}
+                <div class="money-meta mt-1">{{ item.counterparty_name|default:"Получатель" }} · {{ item.remaining_amount|money }} · {{ item.basis }}</div>
+              {% endif %}
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% empty %}<div class="text-muted">Будущие платежи не заполнены.</div>{% endfor %}
+      <div class="money-meta mt-2">Платежи поставщикам не называются себестоимостью заказа. Уже выполненные платежи повторно не вычитаются.</div>
+    </div>
+  </section>
+
+  <section class="mb-4" aria-labelledby="money-balance-title">
+    <h2 class="h5 mb-2" id="money-balance-title">Прогноз остатка</h2>
+    <div class="card card-soft p-3">
+      {% if money.forecast.balance_available %}
+        <div class="money-value">{{ money.forecast.balance|money }}</div>
+        <div class="money-meta">Текущий остаток + подтверждённые будущие поступления − подтверждённые будущие платежи.</div>
+      {% else %}
+        <div class="fw-semibold">Пока не рассчитывается</div>
+        <div class="text-muted mt-1">Подтверждено поступлений: {{ money.forecast.confirmed_receipts|money }}. Полнота будущих платежей ещё не подтверждена, поэтому система не показывает ложный остаток.</div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="mb-4" aria-labelledby="money-attention-title">
+    <h2 class="h5 mb-2" id="money-attention-title">Требует внимания</h2>
+    <div class="card card-soft p-3">
+      {% for item in money.forecast.attention %}
+        <div class="money-item">
+          <div class="d-flex justify-content-between gap-2">
+            <strong>{{ item.counterparty_name|default:"Контрагент не определён" }}</strong>
+            <span class="badge text-bg-warning money-pill">проверить</span>
+          </div>
+          <div>{{ item.order_reference|default:"Без ссылки на заказ" }}</div>
+          <div class="money-meta">{{ item.basis }} · {{ item.payment_match_status|default:"связь с оплатой не проверена" }}</div>
+        </div>
+      {% empty %}<div class="text-muted">Нет строк, требующих проверки.</div>{% endfor %}
+    </div>
+  </section>
+
+  <section class="mb-4" aria-labelledby="money-debt-title">
+    <h2 class="h5 mb-2" id="money-debt-title">Текущая дебиторская и кредиторская задолженность</h2>
+    <div class="row g-3">
+      <div class="col-12 col-lg-6">
+        <details class="card card-soft p-3">
+          <summary class="fw-semibold">Нам должны · {{ money.receivables.count }}</summary>
+          {% for row in money.receivables.items %}
+            <div class="money-item d-flex justify-content-between gap-2"><span>{{ row.counterparty_name }}</span><strong>{{ row.amount|money }}</strong></div>
+          {% empty %}<div class="text-muted small mt-2">Нет.</div>{% endfor %}
+        </details>
+      </div>
+      <div class="col-12 col-lg-6">
+        <details class="card card-soft p-3">
+          <summary class="fw-semibold">Мы должны поставщикам · {{ money.payables.count }}</summary>
+          {% for row in money.payables.items %}
+            <div class="money-item d-flex justify-content-between gap-2"><span>{{ row.counterparty_name }}</span><strong>{{ row.amount|money }}</strong></div>
+          {% empty %}<div class="text-muted small mt-2">Нет.</div>{% endfor %}
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section class="mb-4" aria-labelledby="money-plan-form-title">
+    <details class="card card-soft p-3" {% if plan_form.errors or edit_plan %}open{% endif %}>
+      <summary class="fw-semibold" id="money-plan-form-title">{% if edit_plan %}Изменить управленческое ожидание{% else %}Добавить управленческое ожидание или платёж{% endif %}</summary>
+      <div class="text-muted small mt-2">Используется только когда срок/план нельзя однозначно взять из 1С. Первичные документы 1С не меняются.</div>
+      <form method="post" action="?from={{ period_from }}&to={{ period_to }}{% if edit_plan %}&edit={{ edit_plan.id }}{% endif %}" class="mt-3">
+        {% csrf_token %}
+        {% if edit_plan %}<input type="hidden" name="plan_id" value="{{ edit_plan.id }}">{% endif %}
+        {% if plan_form.non_field_errors %}<div class="alert alert-danger">{{ plan_form.non_field_errors }}</div>{% endif %}
+        <div class="row g-3">
+          {% for field in plan_form %}
+            <div class="col-12 col-md-6 {% if field.name == 'note' or field.name == 'basis' %}col-lg-12{% else %}col-lg-4{% endif %}">
+              <label class="form-label">{{ field.label }}</label>
+              {{ field }}
+              {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+              {% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+            </div>
+          {% endfor %}
+        </div>
+        <div class="d-flex gap-2 mt-3">
+          <button type="submit" class="btn btn-primary">Сохранить</button>
+          {% if edit_plan %}<a href="{% url 'finance_money' %}?from={{ period_from }}&to={{ period_to }}" class="btn btn-outline-secondary">Отмена</a>{% endif %}
+        </div>
+      </form>
+    </details>
+  </section>
+
+  <div class="text-muted small pb-4">
+    Источники: подтверждённый ДДС Service2, текущий снимок расчётов Service2 и отдельный плановый снимок 1С/Service2. Страница не обращается в 1С при открытии.
+  </div>
+</div>
+{% endblock %}
