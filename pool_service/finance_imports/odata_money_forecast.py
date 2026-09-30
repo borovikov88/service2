@@ -280,6 +280,11 @@ def read_money_forecast(now, *, config=None, opener=None):
         state_guid = _guid(raw.get("СостояниеЗаказа"), "СостояниеЗаказа", optional=True)
         state = states.get(state_guid, "")
         confirmation = _customer_confirmation(state)
+        cancelled = _guid(
+            raw.get("ПричинаОтмены_Key"), "ПричинаОтмены_Key", optional=True
+        ) is not None
+        if cancelled:
+            confirmation = "excluded"
         if confirmation == "possible":
             possible_count += 1
         total = _decimal(raw.get("СуммаДокумента"), "СуммаДокумента")
@@ -330,7 +335,10 @@ def read_money_forecast(now, *, config=None, opener=None):
                     expected_date=pay_date,
                     expected_month=pay_date.replace(day=1) if pay_date else None,
                     date_precision="exact" if pay_date else "unknown",
-                    basis="График оплаты заказа в 1С",
+                    basis=(
+                        "График оплаты заказа в 1С"
+                        + (" · заказ отмечен отменой; будущая часть исключена" if cancelled else "")
+                    ),
                     confirmation_status=row_confirmation,
                     source_updated_at=_datetime(raw.get("ДатаИзменения")),
                     source_payload={"order_amount": str(total), "order_prepayment": str(prepaid)},
@@ -357,7 +365,10 @@ def read_money_forecast(now, *, config=None, opener=None):
                 expected_date=due,
                 expected_month=due.replace(day=1),
                 date_precision="exact",
-                basis="Срок ОплатаДо заказа в 1С",
+                basis=(
+                    "Срок ОплатаДо заказа в 1С"
+                    + (" · заказ отмечен отменой; будущая часть исключена" if cancelled else "")
+                ),
                 confirmation_status=confirmation,
                 source_updated_at=_datetime(raw.get("ДатаИзменения")),
                 source_payload={"order_amount": str(total), "order_prepayment": str(prepaid)},
@@ -366,8 +377,10 @@ def read_money_forecast(now, *, config=None, opener=None):
 
         # Orders without schedule/due remain visible without inventing an
         # unpaid amount. Possible sales are separated from the main forecast.
-        if confirmation in {"confirmed", "possible"}:
-            row_confirmation = "review" if confirmation == "confirmed" else "possible"
+        if confirmation in {"confirmed", "possible", "excluded"}:
+            row_confirmation = (
+                "review" if confirmation == "confirmed" else confirmation
+            )
             if row_confirmation == "review":
                 review_count += 1
             rows.append(MoneyForecastSourceRow(
@@ -389,7 +402,10 @@ def read_money_forecast(now, *, config=None, opener=None):
                 expected_date=None,
                 expected_month=None,
                 date_precision="unknown",
-                basis="Согласованный заказ без графика и срока оплаты",
+                basis=(
+                    "Согласованный заказ без графика и срока оплаты"
+                    + (" · заказ отмечен отменой; будущая часть исключена" if cancelled else "")
+                ),
                 confirmation_status=row_confirmation,
                 source_updated_at=_datetime(raw.get("ДатаИзменения")),
                 source_payload={"document_amount": str(total), "order_prepayment": str(prepaid)},
