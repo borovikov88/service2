@@ -28,6 +28,11 @@
 .reward-add-panel{background:var(--bs-tertiary-bg);border-radius:.65rem;padding:.8rem}
 .reward-form-error{display:none}
 .reward-batch-row{border:1px solid var(--bs-border-color);border-radius:.6rem;padding:.75rem;background:var(--bs-body-bg)}
+.reward-share-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.4rem}
+.reward-share-grid .form-control,.reward-share-grid .btn{min-width:0;min-height:38px}
+.reward-share-grid .btn{padding-left:.25rem;padding-right:.25rem}
+.reward-batch-actions{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
+.reward-remove-last{width:2.5rem;min-width:2.5rem;padding-left:0;padding-right:0}
 .reward-edit-panel{margin-top:.35rem}
 .reward-edit-panel>summary{list-style:none;display:inline-block}
 .reward-edit-panel>summary::-webkit-details-marker{display:none}
@@ -212,10 +217,10 @@
                     <input type="hidden" name="month" value="{{ period_month|date:'Y-m' }}"><input type="hidden" name="action" value="edit_participation"><input type="hidden" name="participation_id" value="{{ p.id }}"><input type="hidden" name="return_open" value="{{ order.scope_key }}"><input type="hidden" name="return_anchor" value="reward-{{ order.source_document_guid|slugify }}"><input type="hidden" name="return_q" value="{{ search_query }}">
                     <div class="col-md-4"><label class="form-label small">Сотрудник</label><select class="form-select form-select-sm" name="employee_id" required>{% for employee in employees %}<option value="{{ employee.id }}" {% if employee.id == p.employee_id %}selected{% endif %}>{{ employee.display_name }}</option>{% endfor %}</select></div>
                     <div class="col-md-4"><label class="form-label small">Роль</label>{% if role.role == "documentation" %}<input type="hidden" name="role" value="documentation"><input class="form-control form-control-sm" value="Оформление" disabled>{% else %}<select class="form-select form-select-sm reward-role-select" name="role" required><option value="client_manager" {% if role.role == "client_manager" %}selected{% endif %}>Менеджер клиента</option>{% if order.source_document_type != "Document_ЧекККМ" %}<option value="sale" {% if role.role == "sale" %}selected{% endif %}>Продажа</option>{% endif %}<option value="project" {% if role.role == "project" %}selected{% endif %}>Проект / расчёт</option><option value="work" {% if role.role == "work" %}selected{% endif %}>Выполнение работ</option></select>{% endif %}</div>
-                    <div class="col-md-4"><label class="form-label small">Доля внутри фонда роли, %</label><input class="form-control form-control-sm reward-share-input" type="number" min="0.01" max="100" step="0.01" name="share_percent" value="{% widthratio p.share 0.01 1 %}" required></div>
+                    <div class="col-md-4"><label class="form-label small">Доля внутри фонда роли, %</label><div class="reward-share-grid"><input class="form-control form-control-sm reward-share-input" type="number" min="0.01" max="100" step="0.01" name="share_percent" value="{% widthratio p.share 0.01 1 %}" required><button type="button" class="btn btn-sm btn-outline-secondary reward-share-preset" data-share-value="25" data-no-loading>25%</button><button type="button" class="btn btn-sm btn-outline-secondary reward-share-preset" data-share-value="50" data-no-loading>50%</button><button type="button" class="btn btn-sm btn-outline-secondary reward-share-preset" data-share-value="100" data-no-loading>100%</button></div></div>
                     {% if role.role != "documentation" %}
                     <div class="col-12 reward-line-selector" data-line-input-name="line_identity">
-                      <div class="d-flex justify-content-between align-items-center"><label class="form-label small mb-1">Позиции участия</label><button type="button" class="btn btn-sm btn-link reward-select-work">Выбрать все работы</button></div>
+                      <div class="d-flex justify-content-between align-items-center"><label class="form-label small mb-1">Позиции участия</label><button type="button" class="btn btn-sm btn-link reward-select-work" data-no-loading>Выбрать все работы</button></div>
                       <div class="border rounded p-2 reward-line-options"></div>
                     </div>
                     {% endif %}
@@ -239,18 +244,18 @@
                   <div class="row g-2">
                     <div class="col-md-4"><label class="form-label">Сотрудник</label><select class="form-select reward-employee-select" name="participant_0_employee_id" required><option value="">Выберите сотрудника</option>{% for employee in employees %}<option value="{{ employee.id }}">{{ employee.display_name }}</option>{% endfor %}</select></div>
                     <div class="col-md-4"><label class="form-label">Роль</label><select class="form-select reward-role-select" name="participant_0_role" required><option value="client_manager">Менеджер клиента</option>{% if order.source_document_type != "Document_ЧекККМ" %}<option value="sale">Продажа</option>{% endif %}<option value="project">Проект / расчёт</option><option value="work">Выполнение работ</option></select></div>
-                    <div class="col-md-3"><label class="form-label">Доля внутри фонда роли, %</label><input class="form-control reward-share-input" type="number" min="0.01" max="100" step="0.01" name="participant_0_share_percent" value="100" required></div>
-                    <div class="col-md-1 d-flex align-items-end"><button type="button" class="btn btn-outline-danger w-100 reward-remove-row" disabled>×</button></div>
+                    <div class="col-md-4"><label class="form-label">Доля внутри фонда роли, %</label><div class="reward-share-grid"><input class="form-control reward-share-input" type="number" min="0.01" max="100" step="0.01" name="participant_0_share_percent" value="100" required><button type="button" class="btn btn-outline-secondary reward-share-preset" data-share-value="25" data-no-loading>25%</button><button type="button" class="btn btn-outline-secondary reward-share-preset" data-share-value="50" data-no-loading>50%</button><button type="button" class="btn btn-outline-secondary reward-share-preset" data-share-value="100" data-no-loading>100%</button></div></div>
                     <div class="col-12 reward-line-selector" data-line-input-name="participant_0_line_identity">
-                      <div class="d-flex justify-content-between align-items-center"><label class="form-label mb-1">Позиции, к которым относится участие</label><button type="button" class="btn btn-sm btn-link reward-select-work">Выбрать все работы</button></div>
+                      <div class="d-flex justify-content-between align-items-center"><label class="form-label mb-1">Позиции, к которым относится участие</label><button type="button" class="btn btn-sm btn-link reward-select-work" data-no-loading>Выбрать все работы</button></div>
                       <div class="border rounded p-2 reward-line-options"></div>
                       <div class="form-text">Для менеджера клиента позиции не выбираются. Для продажи по умолчанию используется весь заказ. Для проекта выберите позиции; для выполнения доступны только работы/услуги.</div>
                     </div>
                   </div>
                 </div>
               </div>
-              <div class="d-flex flex-wrap gap-2 mt-2">
-                <button type="button" class="btn btn-outline-primary reward-add-row">+ Ещё участник</button>
+              <div class="reward-batch-actions mt-2">
+                <button type="button" class="btn btn-outline-primary reward-add-row" data-no-loading>+ Ещё участник</button>
+                <button type="button" class="btn btn-sm btn-outline-danger reward-remove-last" data-no-loading disabled aria-label="Удалить последнего участника" title="Удалить последнего участника">×</button>
                 <button class="btn btn-primary reward-submit-button">Сохранить всех</button>
               </div>
               {% if order.source_document_type == "Document_ЧекККМ" %}<div class="form-text mt-2">Продажа по чеку считается автоматически по отдельной ставке розницы.</div>{% endif %}
@@ -367,6 +372,45 @@
   applySearch();
 })();
 
+const REWARD_SCROLL_KEY = 'reward-scroll:' + window.location.pathname + ':{{ period_month|date:"Y-m" }}';
+
+function rewardStoreScroll(form) {
+  const order = form.closest('.reward-order');
+  const addPanel = form.closest('.reward-add-panel');
+  const state = {
+    y: window.scrollY,
+    orderId: order?.id || '',
+    addOpen: Boolean(addPanel?.open),
+  };
+  try {
+    window.sessionStorage.setItem(REWARD_SCROLL_KEY, JSON.stringify(state));
+  } catch (_error) {}
+}
+
+(function rewardRestoreScroll() {
+  let state = null;
+  try {
+    const raw = window.sessionStorage.getItem(REWARD_SCROLL_KEY);
+    if (!raw) return;
+    window.sessionStorage.removeItem(REWARD_SCROLL_KEY);
+    state = JSON.parse(raw);
+  } catch (_error) {
+    return;
+  }
+  if (!state) return;
+  const order = state.orderId ? document.getElementById(state.orderId) : null;
+  if (order) {
+    order.open = true;
+    if (state.addOpen) {
+      const addPanel = order.querySelector('.reward-add-panel');
+      if (addPanel) addPanel.open = true;
+    }
+  }
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => window.scrollTo(0, Number(state.y) || 0));
+  });
+})();
+
 function rewardHydrateLines(container) {
   const selector = container.querySelector('.reward-line-selector');
   if (!selector) return;
@@ -421,7 +465,8 @@ function rewardBindRow(container) {
   }
   const selectWork = container.querySelector('.reward-select-work');
   if (selectWork) {
-    selectWork.addEventListener('click', () => {
+    selectWork.addEventListener('click', event => {
+      event.preventDefault();
       if (role) role.value = 'work';
       rewardConfigureRole(container);
       container.querySelectorAll('.reward-select-line').forEach(label => {
@@ -431,6 +476,15 @@ function rewardBindRow(container) {
       });
     });
   }
+  container.querySelectorAll('.reward-share-preset').forEach(button => {
+    button.addEventListener('click', event => {
+      event.preventDefault();
+      const input = container.querySelector('.reward-share-input');
+      if (!input) return;
+      input.value = button.dataset.shareValue || '';
+      input.dispatchEvent(new Event('input', {bubbles: true}));
+    });
+  });
 }
 
 function rewardScopeKey(container) {
@@ -504,6 +558,7 @@ document.querySelectorAll('.reward-order').forEach(order => {
         event.preventDefault();
         return;
       }
+      rewardStoreScroll(form);
       rewardMarkSubmitting(form);
     });
   });
@@ -511,12 +566,20 @@ document.querySelectorAll('.reward-order').forEach(order => {
   order.querySelectorAll('.reward-batch-form').forEach(form => {
     const rows = form.querySelector('.reward-batch-rows');
     const total = form.querySelector('.reward-participants-total');
+    const removeLast = form.querySelector('.reward-remove-last');
     let nextIndex = 1;
     const first = rows.querySelector('.reward-batch-row');
     const rowPrototype = first.cloneNode(true);
     rewardBindRow(first);
 
-    form.querySelector('.reward-add-row').addEventListener('click', () => {
+    const updateRemoveButton = () => {
+      if (removeLast) {
+        removeLast.disabled = rows.querySelectorAll('.reward-batch-row').length <= 1;
+      }
+    };
+
+    form.querySelector('.reward-add-row').addEventListener('click', event => {
+      event.preventDefault();
       if (nextIndex >= 20) return;
       const clone = rowPrototype.cloneNode(true);
       const index = nextIndex++;
@@ -536,13 +599,23 @@ document.querySelectorAll('.reward-order').forEach(order => {
       clone.querySelector('.reward-employee-select').value = '';
       clone.querySelector('.reward-role-select').value = 'client_manager';
       clone.querySelector('.reward-share-input').value = '100';
-      const remove = clone.querySelector('.reward-remove-row');
-      remove.disabled = false;
-      remove.addEventListener('click', () => clone.remove());
       rows.appendChild(clone);
       total.value = nextIndex;
       rewardBindRow(clone);
+      updateRemoveButton();
     });
+
+    removeLast?.addEventListener('click', event => {
+      event.preventDefault();
+      const batchRows = rows.querySelectorAll('.reward-batch-row');
+      if (batchRows.length <= 1) return;
+      batchRows[batchRows.length - 1].remove();
+      nextIndex = Math.max(1, nextIndex - 1);
+      total.value = nextIndex;
+      updateRemoveButton();
+    });
+
+    updateRemoveButton();
 
     form.addEventListener('submit', event => {
       const error = form.querySelector('.reward-form-error');
@@ -576,6 +649,7 @@ document.querySelectorAll('.reward-order').forEach(order => {
         event.preventDefault();
         return;
       }
+      rewardStoreScroll(form);
       rewardMarkSubmitting(form);
     });
   });
