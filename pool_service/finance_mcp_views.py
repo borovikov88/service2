@@ -45,6 +45,7 @@ from pool_service.services.finance_advisor import (
     get_finance_data_status,
     get_finance_position,
     get_monthly_finance,
+    get_management_money,
     get_profit_breakdown,
     get_settlement_position_breakdown,
     organizations_for_principal,
@@ -58,6 +59,7 @@ TOOL_NAMES = (
     "list_finance_organizations",
     "get_finance_data_status",
     "get_monthly_finance",
+    "get_management_money",
     "get_cashflow_breakdown",
     "get_profit_breakdown",
     "get_finance_position",
@@ -253,6 +255,16 @@ def _tool_definitions():
             required=("start_month", "end_month"),
         ),
         _tool_definition(
+            "get_management_money",
+            "Returns the same server-calculated factual cash, current position and separate forecast contract as the owner Money page.",
+            {
+                "start_month": month,
+                "end_month": month,
+                "organization_ids": organization_ids,
+            },
+            required=("start_month", "end_month"),
+        ),
+        _tool_definition(
             "get_cashflow_breakdown",
             "Returns paginated classified cash-flow receipts, payments and net flow from active confirmed versions.",
             {
@@ -378,6 +390,14 @@ def _tool_dispatch(principal, name, arguments):
     if name == "get_monthly_finance":
         _reject_unknown_arguments(arguments, {"start_month", "end_month", "organization_ids"})
         return get_monthly_finance(
+            principal,
+            _as_month(arguments.get("start_month"), "start_month"),
+            _as_month(arguments.get("end_month"), "end_month"),
+            _as_optional_organization_ids(arguments),
+        )
+    if name == "get_management_money":
+        _reject_unknown_arguments(arguments, {"start_month", "end_month", "organization_ids"})
+        return get_management_money(
             principal,
             _as_month(arguments.get("start_month"), "start_month"),
             _as_month(arguments.get("end_month"), "end_month"),
