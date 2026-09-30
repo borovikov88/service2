@@ -166,6 +166,16 @@ def _identity(*parts):
     ).hexdigest()
 
 
+def _read_for_refs(config, entity, fields, refs, opener):
+    refs = sorted(set(refs))
+    rows = []
+    for start in range(0, len(refs), 40):
+        chunk = refs[start:start + 40]
+        expr = " or ".join(f"Ref_Key eq guid'{g}'" for g in chunk)
+        rows.extend(_read(config, entity, fields, filters=expr, opener=opener))
+    return rows
+
+
 def _lookup_descriptions(config, entity, guids, opener):
     values = sorted({g for g in guids if g})
     if not values:
@@ -200,14 +210,16 @@ def read_money_forecast(now, *, config=None, opener=None):
     client = opener or build_opener(NoRedirectHandler())
     org_filter = _organization_filter(config)
 
+    history_start = date(max(1, now.date().year - 2), 1, 1)
+    date_filter = f"Date ge datetime'{history_start.isoformat()}T00:00:00'"
     customer_orders_raw = _read(
         config, CUSTOMER_ORDER, CUSTOMER_ORDER_FIELDS,
-        filters=f"Posted eq true and DeletionMark eq false and ({org_filter})",
+        filters=f"Posted eq true and DeletionMark eq false and {date_filter} and ({org_filter})",
         opener=client,
     )
     supplier_orders_raw = _read(
         config, SUPPLIER_ORDER, SUPPLIER_ORDER_FIELDS,
-        filters=f"Posted eq true and DeletionMark eq false and ({org_filter})",
+        filters=f"Posted eq true and DeletionMark eq false and {date_filter} and ({org_filter})",
         opener=client,
     )
     customer_order_refs = {
@@ -217,22 +229,14 @@ def read_money_forecast(now, *, config=None, opener=None):
         _guid(r.get("Ref_Key"), "Ref_Key") for r in supplier_orders_raw
     }
 
-    def ref_filter(refs):
-        if not refs:
-            return "Ref_Key eq guid'00000000-0000-0000-0000-000000000000'"
-        return " or ".join(f"Ref_Key eq guid'{g}'" for g in sorted(refs))
-
-    customer_schedule = _read(
-        config, CUSTOMER_SCHEDULE, SCHEDULE_FIELDS,
-        filters=ref_filter(customer_order_refs), opener=client,
+    customer_schedule = _read_for_refs(
+        config, CUSTOMER_SCHEDULE, SCHEDULE_FIELDS, customer_order_refs, client
     )
-    customer_prepayment = _read(
-        config, CUSTOMER_PREPAYMENT, PREPAYMENT_FIELDS,
-        filters=ref_filter(customer_order_refs), opener=client,
+    customer_prepayment = _read_for_refs(
+        config, CUSTOMER_PREPAYMENT, PREPAYMENT_FIELDS, customer_order_refs, client
     )
-    supplier_schedule = _read(
-        config, SUPPLIER_SCHEDULE, SCHEDULE_FIELDS,
-        filters=ref_filter(supplier_order_refs), opener=client,
+    supplier_schedule = _read_for_refs(
+        config, SUPPLIER_SCHEDULE, SCHEDULE_FIELDS, supplier_order_refs, client
     )
 
     counterparty_guids = {
