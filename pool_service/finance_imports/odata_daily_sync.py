@@ -12,6 +12,7 @@ from django.utils import timezone
 
 from pool_service.models import OneCODataSyncRun, Organization
 from .finance_position import sync_finance_position
+from .money_forecast import sync_money_forecast
 from .odata_finance_position import calendar_timezone
 from .odata_payroll_drafts import auto_coverage_config
 from .odata_profit import ODataPreviewError, validate_config
@@ -242,6 +243,53 @@ def finalize_finance_position_step(run, now=None):
     return "completed"
 
 
+
+def finalize_money_forecast_step(run, now=None):
+    """Refresh planning inputs after a completed normal finance sync.
+
+    Failures preserve the previous active forecast snapshot and are surfaced
+    independently from factual finance-position refreshes.
+    """
+    run.refresh_from_db()
+    progress = run.progress or {}
+    if run.status != OneCODataSyncRun.STATUS_COMPLETED:
+        return progress.get("money_forecast_state")
+    if progress.get("money_forecast_state") in {"completed", "failed"}:
+        return progress.get("money_forecast_state")
+    now = now or timezone.now()
+    try:
+        user = _actor(run.requested_by_id, run.organization, run.requested_report_types)
+    except PermissionDenied:
+        _position_note(
+            run.pk,
+            state=progress.get("finance_position_state"),
+            money_forecast_state="failed",
+            money_forecast_error="План денег не обновлён; предыдущий снимок сохранён.",
+        )
+        return "failed"
+    try:
+        snapshot = sync_money_forecast(
+            run.organization, user, now=now, sync_run=run
+        )
+    except (ValidationError, ODataPreviewError):
+        _position_note(
+            run.pk,
+            state=progress.get("finance_position_state"),
+            money_forecast_state="retryable_error",
+            money_forecast_error="План денег не обновлён; предыдущий снимок сохранён.",
+        )
+        return "retryable_error"
+    _position_note(
+        run.pk,
+        state=progress.get("finance_position_state"),
+        money_forecast_state="completed",
+        money_forecast_snapshot_id=snapshot.pk,
+        money_forecast_snapshot_at=snapshot.source_at.isoformat(),
+        money_forecast_fetched_at=snapshot.fetched_at.isoformat(),
+    )
+    return "completed"
+
+
 def worker_tick(*, max_steps=4, max_seconds=240, now=None):
     if not 1 <= max_steps <= 100 or not 1 <= max_seconds <= 240:
         raise DailyConfigError("Недопустимый лимит worker.")
@@ -304,6 +352,8 @@ def worker_tick(*, max_steps=4, max_seconds=240, now=None):
     run.refresh_from_db()
     position_state = finalize_finance_position_step(run, now)
     run.refresh_from_db()
+    forecast_state = finalize_money_forecast_step(run, now)
+    run.refresh_from_db()
     visible_state = (
         position_state
         if run.status == OneCODataSyncRun.STATUS_COMPLETED
@@ -315,4 +365,5 @@ def worker_tick(*, max_steps=4, max_seconds=240, now=None):
         "run": str(run.pk),
         "steps": steps,
         "finance_position_state": position_state,
+        "money_forecast_state": forecast_state,
     }
