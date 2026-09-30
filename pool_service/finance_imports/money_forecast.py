@@ -149,6 +149,53 @@ def _plan_item(plan):
     }
 
 
+
+def _add_months(value, months):
+    total = value.year * 12 + value.month - 1 + months
+    return date(total // 12, total % 12 + 1, 1)
+
+
+def _service_plan_items(plan):
+    """Expand only the explicit contract calendar; never infer a season."""
+    if not plan.service_period_start or not plan.service_period_end:
+        return [_plan_item(plan)]
+    active_months = set(plan.service_active_months or [])
+    if not active_months:
+        # Missing contract calendar is intentionally non-countable.
+        item = _plan_item(plan)
+        item["confirmation_status"] = "review"
+        item["date_precision"] = "unknown"
+        item["expected_date"] = None
+        item["expected_month"] = None
+        item["basis"] = f"{item['basis']} · не задан календарь обслуживания"
+        return [item]
+
+    exceptions = {
+        str(value)[:7] for value in (plan.service_exceptions or [])
+        if value
+    }
+    current = plan.service_period_start.replace(day=1)
+    end = plan.service_period_end.replace(day=1)
+    result = []
+    while current <= end:
+        if current.month in active_months and current.strftime("%Y-%m") not in exceptions:
+            payment_month = _add_months(
+                current, plan.service_payment_offset_months or 0
+            )
+            item = _plan_item(plan)
+            item.update({
+                "id": f"{plan.pk}:{current.isoformat()}",
+                "service_month": current,
+                "expected_date": None,
+                "expected_month": payment_month,
+                "date_precision": "month",
+                "basis": f"{plan.basis} · обслуживание {current:%m.%Y}",
+            })
+            result.append(item)
+        current = _next_month(current)
+    return result
+
+
 def _synced_item(row):
     return {
         "source": "onec",
@@ -184,16 +231,18 @@ def _deduplicated_forecast(organization, snapshot):
     synced = []
     if snapshot:
         synced = [_synced_item(row) for row in snapshot.rows.all()]
-    manual = [
-        _plan_item(plan)
-        for plan in (
-            ManagementMoneyPlan.objects.filter(
-                organization=organization, is_active=True
-            )
-            .select_related("pool", "updated_by")
-            .order_by("expected_date", "expected_month", "id")
+    manual = []
+    for plan in (
+        ManagementMoneyPlan.objects.filter(
+            organization=organization, is_active=True
         )
-    ]
+        .select_related("pool", "updated_by")
+        .order_by("expected_date", "expected_month", "id")
+    ):
+        if plan.source_type == ManagementMoneyPlan.SOURCE_SERVICE:
+            manual.extend(_service_plan_items(plan))
+        else:
+            manual.append(_plan_item(plan))
 
     # 1C schedule/due date has priority. A linked Service2 expectation only
     # becomes countable when there is no amount-bearing 1C planning row.
