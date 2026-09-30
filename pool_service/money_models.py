@@ -155,7 +155,7 @@ class ManagementMoneyPlan(models.Model):
 
     counterparty_name = models.CharField(max_length=300, blank=True)
     order_reference = models.CharField(max_length=160, blank=True)
-    amount = models.DecimalField(max_digits=24, decimal_places=2)
+    amount = models.DecimalField(max_digits=24, decimal_places=2, null=True, blank=True)
     contractual_due_date = models.DateField(null=True, blank=True)
     expected_date = models.DateField(null=True, blank=True)
     expected_month = models.DateField(null=True, blank=True)
