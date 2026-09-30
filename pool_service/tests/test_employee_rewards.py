@@ -193,6 +193,29 @@ class EmployeeRewardCalculationTests(TestCase):
         self.assertIn('id="reward-live-search"', html)
         self.assertIn('data-search-text=', html)
 
+    def test_rewards_page_has_non_loading_participant_controls_and_share_presets(self):
+        OrganizationAccess.objects.create(
+            user=self.user,
+            organization=self.org,
+            role="owner",
+        )
+        self.add_row(1, "1000.00")
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse("finance_employee_rewards"),
+            {"month": "2026-09"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'class="btn btn-outline-primary reward-add-row" data-no-loading')
+        self.assertContains(response, 'class="btn btn-sm btn-link reward-select-work" data-no-loading')
+        self.assertContains(response, 'data-share-value="25" data-no-loading')
+        self.assertContains(response, 'data-share-value="50" data-no-loading')
+        self.assertContains(response, 'data-share-value="100" data-no-loading')
+        self.assertContains(response, 'class="btn btn-sm btn-outline-danger reward-remove-last"')
+        self.assertContains(response, "rewardStoreScroll(form)")
+
     def test_rewards_page_get_normalizes_non_string_source_labels_and_author_id(self):
         OrganizationAccess.objects.create(
             user=self.user,
@@ -373,6 +396,25 @@ class EmployeeRewardCalculationTests(TestCase):
         detail = calculate_month(self.org, self.month)["details"][0]
         self.assertEqual(Decimal(detail["base"]), Decimal("-1000.00"))
         self.assertEqual(Decimal(detail["amount"]), Decimal("-100.00"))
+
+    def test_negative_client_manager_base_creates_negative_reward(self):
+        self.scheme.client_manager_rate = Decimal("0.050000")
+        self.scheme.save(update_fields=["client_manager_rate"])
+        row = self.add_row(3, "-1000.00")
+        self.participation(
+            self.e1,
+            RewardParticipation.ROLE_CLIENT_MANAGER,
+            "1.000000",
+            lines=[row.source_identity],
+            scope="negative-client-manager",
+        )
+        detail = next(
+            item
+            for item in calculate_month(self.org, self.month)["details"]
+            if item["role"] == "Менеджер клиента"
+        )
+        self.assertEqual(Decimal(detail["base"]), Decimal("-1000.00"))
+        self.assertEqual(Decimal(detail["amount"]), Decimal("-50.00"))
 
     def test_unknown_cost_is_visible_and_not_treated_as_zero(self):
         row = self.add_row(1, "1000.00", cost_source=OneCMonthlyProfit.COST_SOURCE_UNDEFINED)

@@ -1422,7 +1422,10 @@ def calculate_month(organization, period_month, *, employee_id=None, use_closed=
             rate = _rate_for(role, scheme)
             reward_base = (
                 base
-                if role == RewardParticipation.ROLE_SALE
+                if role in {
+                    RewardParticipation.ROLE_SALE,
+                    RewardParticipation.ROLE_CLIENT_MANAGER,
+                }
                 else max(base, Decimal("0"))
             )
             fund = money(reward_base * Decimal(rate or 0))
