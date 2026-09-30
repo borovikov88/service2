@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from django.db import transaction
@@ -350,6 +350,20 @@ def management_money_data(
     forecast = _bucket_forecast(
         forecast_items, today=today, forecast_months=forecast_months
     )
+    near_term_end = today + timedelta(weeks=12)
+    near_term_exact = sorted(
+        [
+            item for item in forecast_items
+            if item.get("expected_date")
+            and today <= item["expected_date"] <= near_term_end
+            and item.get("confirmation_status") != "possible"
+        ],
+        key=lambda item: (
+            item["expected_date"],
+            0 if item["direction"] == "receipt" else 1,
+            item.get("counterparty_name") or "",
+        ),
+    )
 
     confirmed_receipts = sum(
         (item["receipts"] for item in forecast["months"]), ZERO
@@ -418,6 +432,8 @@ def management_money_data(
             "payment_coverage_complete": payment_coverage_complete,
             "snapshot_at": snapshot.source_at if snapshot else None,
             "last_updated": snapshot.fetched_at if snapshot else None,
+            "near_term_exact": near_term_exact,
+            "near_term_end": near_term_end,
         },
         "warnings": warnings,
         "source": {
