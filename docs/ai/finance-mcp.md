@@ -56,8 +56,10 @@ MCP endpoint и canonical OAuth resource намеренно совпадают �
   `redirect_uri` из серверного allowlist;
 - access token — непрозрачный и короткоживущий (по умолчанию 10 минут);
 - при `offline_access` выдаётся refresh token; он ротируется при каждом обмене;
-- повторное использование старого refresh token отзывает весь grant и его
-  access tokens;
+- повторное использование старого refresh token отзывает только связанный grant и его
+  access tokens; другие независимые ChatGPT-подключения того же public client не отзываются;
+- повторная OAuth-авторизация создаёт отдельный grant и не инвалидирует уже действующие
+  параллельные подключения;
 - в БД есть только SHA-256 hashes кодов/tokens, не их значения;
 - токены никогда не передаются в URL, Git, CI, application logs или audit.
 

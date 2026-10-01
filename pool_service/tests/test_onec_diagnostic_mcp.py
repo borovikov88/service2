@@ -25,6 +25,7 @@ from pool_service.models import (
 from pool_service.onec_diagnostic import OneCDiagnosticError
 from pool_service.onec_diagnostic_mcp_auth import (
     DIAGNOSTIC_READ_SCOPE,
+    OneCDiagnosticMcpOAuthError,
     authenticate_bearer_header,
     authorization_is_allowed,
     exchange_token,
@@ -408,6 +409,83 @@ class OneCDiagnosticMcpTests(TestCase):
             "Bearer " + token_response["access_token"]
         )
         self.assertEqual(authenticated.grant.resource, DIAGNOSTIC_RESOURCE)
+
+
+    def test_parallel_diagnostic_authorizations_keep_existing_grant_valid(self):
+        def authorize_connection(state, verifier):
+            authorization = validate_authorization_request({
+                "response_type": "code",
+                "client_id": CHATGPT_CLIENT_ID_METADATA_URL,
+                "redirect_uri": REDIRECT_URI,
+                "scope": f"{DIAGNOSTIC_READ_SCOPE} offline_access",
+                "state": state,
+                "code_challenge": _pkce(verifier),
+                "code_challenge_method": "S256",
+                "resource": DIAGNOSTIC_RESOURCE,
+            })
+            code = issue_authorization_code(
+                authorization=authorization,
+                user=self.owner,
+            )
+            return exchange_token({
+                "grant_type": "authorization_code",
+                "code": code,
+                "client_id": CHATGPT_CLIENT_ID_METADATA_URL,
+                "redirect_uri": REDIRECT_URI,
+                "code_verifier": verifier,
+                "resource": DIAGNOSTIC_RESOURCE,
+            })
+
+        first = authorize_connection("diag-parallel-1", "c" * 64)
+        first_token = FinanceMcpAccessToken.objects.get(
+            token_hash=_hash(first["access_token"])
+        )
+        first_grant = first_token.grant
+
+        second = authorize_connection("diag-parallel-2", "d" * 64)
+        second_token = FinanceMcpAccessToken.objects.get(
+            token_hash=_hash(second["access_token"])
+        )
+        second_grant = second_token.grant
+
+        self.assertNotEqual(first_grant.pk, second_grant.pk)
+        first_grant.refresh_from_db()
+        second_grant.refresh_from_db()
+        self.assertIsNone(first_grant.revoked_at)
+        self.assertIsNone(second_grant.revoked_at)
+
+        authenticated_first = authenticate_bearer_header(
+            "Bearer " + first["access_token"]
+        )
+        authenticated_second = authenticate_bearer_header(
+            "Bearer " + second["access_token"]
+        )
+        self.assertEqual(authenticated_first.grant.pk, first_grant.pk)
+        self.assertEqual(authenticated_second.grant.pk, second_grant.pk)
+
+        rotated = exchange_token({
+            "grant_type": "refresh_token",
+            "refresh_token": first["refresh_token"],
+            "client_id": CHATGPT_CLIENT_ID_METADATA_URL,
+            "resource": DIAGNOSTIC_RESOURCE,
+        })
+        self.assertIn("refresh_token", rotated)
+        with self.assertRaises(OneCDiagnosticMcpOAuthError):
+            exchange_token({
+                "grant_type": "refresh_token",
+                "refresh_token": first["refresh_token"],
+                "client_id": CHATGPT_CLIENT_ID_METADATA_URL,
+                "resource": DIAGNOSTIC_RESOURCE,
+            })
+
+        first_grant.refresh_from_db()
+        second_grant.refresh_from_db()
+        self.assertIsNotNone(first_grant.revoked_at)
+        self.assertIsNone(second_grant.revoked_at)
+        authenticated_second_after_replay = authenticate_bearer_header(
+            "Bearer " + second["access_token"]
+        )
+        self.assertEqual(authenticated_second_after_replay.grant.pk, second_grant.pk)
 
     def test_inactive_authorizer_invalidates_existing_diagnostic_token(self):
         token = self._create_access_token(

@@ -516,19 +516,11 @@ def issue_authorization_code(*, authorization, user):
     now = timezone.now()
     raw_code = _random_secret()
     with transaction.atomic():
-        # Fresh consent invalidates every earlier active grant for this exact
-        # client/principal.  This prevents an old refresh-token family from
-        # silently surviving a deliberate re-authorization.
-        _revoke_grants(
-            FinanceMcpGrant.objects.filter(
-                client=client,
-                principal=client.principal,
-                resource=authorization["resource"],
-                revoked_at__isnull=True,
-            ),
-            now=now,
-            reason="re-authorized",
-        )
+        # One public ChatGPT client may have multiple independently stored
+        # connector links.  Each consent therefore creates its own grant;
+        # re-authorizing one link must not revoke sibling grants/tokens.
+        # Explicit revoke and refresh-token replay protection remain scoped to
+        # the affected grant.
         grant = FinanceMcpGrant.objects.create(
             client=client,
             principal=client.principal,

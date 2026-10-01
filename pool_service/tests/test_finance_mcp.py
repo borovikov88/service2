@@ -747,6 +747,101 @@ class FinanceMcpTests(TestCase):
         latest_grant = FinanceMcpGrant.objects.order_by("-id").first()
         self.assertIsNotNone(latest_grant.revoked_at)
 
+
+    def test_parallel_chatgpt_connections_do_not_revoke_each_other(self):
+        self.client.force_login(self.owner)
+
+        def authorize_connection(state, verifier):
+            challenge = base64.urlsafe_b64encode(
+                hashlib.sha256(verifier.encode("ascii")).digest()
+            ).rstrip(b"=").decode("ascii")
+            params = {
+                "response_type": "code",
+                "client_id": self.oauth_client.client_id,
+                "redirect_uri": self.redirect_uri,
+                "state": state,
+                "scope": f"{FINANCE_READ_SCOPE} {OFFLINE_ACCESS_SCOPE}",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "resource": MCP_SETTINGS["ADVISOR_FINANCE_MCP_RESOURCE_URL"],
+            }
+            approved = self.client.post(
+                reverse("finance_mcp_authorize"), {**params, "decision": "approve"}
+            )
+            self.assertEqual(approved.status_code, 302)
+            code = parse_qs(urlsplit(approved["Location"]).query)["code"][0]
+            token_response = self.client.post(
+                reverse("finance_mcp_token"),
+                data=urlencode({
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "client_id": self.oauth_client.client_id,
+                    "redirect_uri": self.redirect_uri,
+                    "code_verifier": verifier,
+                    "resource": MCP_SETTINGS["ADVISOR_FINANCE_MCP_RESOURCE_URL"],
+                }),
+                content_type="application/x-www-form-urlencoded",
+            )
+            self.assertEqual(token_response.status_code, 200)
+            return token_response.json()
+
+        first = authorize_connection("parallel-1", "a" * 43)
+        first_token = FinanceMcpAccessToken.objects.get(
+            token_hash=_hash(first["access_token"])
+        )
+        first_grant_id = first_token.grant_id
+
+        second = authorize_connection("parallel-2", "b" * 43)
+        second_token = FinanceMcpAccessToken.objects.get(
+            token_hash=_hash(second["access_token"])
+        )
+        second_grant_id = second_token.grant_id
+
+        self.assertNotEqual(first_grant_id, second_grant_id)
+        first_grant = FinanceMcpGrant.objects.get(pk=first_grant_id)
+        second_grant = FinanceMcpGrant.objects.get(pk=second_grant_id)
+        self.assertIsNone(first_grant.revoked_at)
+        self.assertIsNone(second_grant.revoked_at)
+
+        first_use = self._mcp_post(
+            {"jsonrpc": "2.0", "id": 90, "method": "tools/list", "params": {}},
+            token=first["access_token"],
+        )
+        self.assertEqual(first_use.status_code, 200)
+
+        rotated = self.client.post(
+            reverse("finance_mcp_token"),
+            data=urlencode({
+                "grant_type": "refresh_token",
+                "refresh_token": first["refresh_token"],
+                "client_id": self.oauth_client.client_id,
+                "resource": MCP_SETTINGS["ADVISOR_FINANCE_MCP_RESOURCE_URL"],
+            }),
+            content_type="application/x-www-form-urlencoded",
+        )
+        self.assertEqual(rotated.status_code, 200)
+        replay = self.client.post(
+            reverse("finance_mcp_token"),
+            data=urlencode({
+                "grant_type": "refresh_token",
+                "refresh_token": first["refresh_token"],
+                "client_id": self.oauth_client.client_id,
+                "resource": MCP_SETTINGS["ADVISOR_FINANCE_MCP_RESOURCE_URL"],
+            }),
+            content_type="application/x-www-form-urlencoded",
+        )
+        self.assertEqual(replay.status_code, 400)
+
+        first_grant.refresh_from_db()
+        second_grant.refresh_from_db()
+        self.assertIsNotNone(first_grant.revoked_at)
+        self.assertIsNone(second_grant.revoked_at)
+        second_use = self._mcp_post(
+            {"jsonrpc": "2.0", "id": 91, "method": "tools/list", "params": {}},
+            token=second["access_token"],
+        )
+        self.assertEqual(second_use.status_code, 200)
+
     def test_valid_oauth_request_without_finance_permission_redirects_access_denied_with_iss(self):
         unprivileged = User.objects.create_user("mcp-no-finance-right", password="pass")
         _verifier, params = self._authorization_params(state="state-denied-with-iss")

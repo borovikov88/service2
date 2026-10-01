@@ -410,18 +410,10 @@ def issue_authorization_code(*, authorization, user):
     now = timezone.now()
     raw_code = _random_secret()
     with transaction.atomic():
-        # Reauthorization revokes only Diagnostic grants. Finance grants for the
-        # same principal/client remain isolated and valid.
-        _revoke_diagnostic_grants(
-            FinanceMcpGrant.objects.filter(
-                client=client,
-                principal=client.principal,
-                resource=authorization["resource"],
-                revoked_at__isnull=True,
-            ),
-            now=now,
-            reason="diagnostic re-authorized",
-        )
+        # Multiple ChatGPT connector links may share this public client while
+        # remaining independent grants.  Re-authorizing one Diagnostic link
+        # must not revoke sibling Diagnostic grants or Finance grants.
+        # Explicit revoke and refresh-token replay handling stay grant-scoped.
         grant = FinanceMcpGrant.objects.create(
             client=client,
             principal=client.principal,

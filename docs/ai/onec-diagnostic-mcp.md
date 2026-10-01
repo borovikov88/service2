@@ -15,7 +15,7 @@ Data path:
 - Only an authenticated Service2 user explicitly listed in `ADVISOR_ONEC_DIAGNOSTIC_MCP_ALLOWED_USER_IDS` may authorize a Diagnostic MCP grant.
 - That allowlisted user must also have `owner`, `admin`, or `accountant` access to `ONEC_ODATA_TARGET_ORGANIZATION_ID` (or be an explicitly allowlisted active superuser); `manager`, `service`, `installer`, other-org users, and all non-allowlisted users are denied.
 - Finance MCP tokens must never authorize Diagnostic MCP calls; Diagnostic MCP tokens must never authorize Finance MCP calls.
-- Reuse the already proven MCP OAuth client/principal/token storage only as transport infrastructure. Diagnostic authorization creates a separate grant and separate access/refresh token records with the Diagnostic resource and scope. Audience/resource and scope must be checked on every bearer authentication.
+- Reuse the already proven MCP OAuth client/principal/token storage only as transport infrastructure. Diagnostic authorization creates a separate grant and separate access/refresh token records with the Diagnostic resource and scope. Parallel ChatGPT connector links remain separate grants; re-authorizing one link must not revoke sibling Diagnostic grants. Audience/resource and scope must be checked on every bearer authentication.
 - Never accept credentials, bearer tokens or organization scope from MCP tool arguments.
 
 ## OAuth/resource isolation
