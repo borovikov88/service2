@@ -25,6 +25,7 @@ from pool_service.models import (
 from pool_service.onec_diagnostic import OneCDiagnosticError
 from pool_service.onec_diagnostic_mcp_auth import (
     DIAGNOSTIC_READ_SCOPE,
+    OneCDiagnosticMcpOAuthError,
     authenticate_bearer_header,
     authorization_is_allowed,
     exchange_token,
@@ -461,6 +462,30 @@ class OneCDiagnosticMcpTests(TestCase):
         )
         self.assertEqual(authenticated_first.grant.pk, first_grant.pk)
         self.assertEqual(authenticated_second.grant.pk, second_grant.pk)
+
+        rotated = exchange_token({
+            "grant_type": "refresh_token",
+            "refresh_token": first["refresh_token"],
+            "client_id": CHATGPT_CLIENT_ID_METADATA_URL,
+            "resource": DIAGNOSTIC_RESOURCE,
+        })
+        self.assertIn("refresh_token", rotated)
+        with self.assertRaises(OneCDiagnosticMcpOAuthError):
+            exchange_token({
+                "grant_type": "refresh_token",
+                "refresh_token": first["refresh_token"],
+                "client_id": CHATGPT_CLIENT_ID_METADATA_URL,
+                "resource": DIAGNOSTIC_RESOURCE,
+            })
+
+        first_grant.refresh_from_db()
+        second_grant.refresh_from_db()
+        self.assertIsNotNone(first_grant.revoked_at)
+        self.assertIsNone(second_grant.revoked_at)
+        authenticated_second_after_replay = authenticate_bearer_header(
+            "Bearer " + second["access_token"]
+        )
+        self.assertEqual(authenticated_second_after_replay.grant.pk, second_grant.pk)
 
     def test_inactive_authorizer_invalidates_existing_diagnostic_token(self):
         token = self._create_access_token(
