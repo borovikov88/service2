@@ -1,7 +1,9 @@
 import json
 from datetime import datetime, timezone as datetime_timezone
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.db import transaction
 from django.http import FileResponse, JsonResponse
@@ -406,7 +408,13 @@ def _megafon_started_at(value):
         raise ValueError("invalid_start")
     if raw.endswith("Z"):
         return parsed.replace(tzinfo=datetime_timezone.utc)
-    return timezone.make_aware(parsed, timezone.get_current_timezone())
+    try:
+        provider_timezone = ZoneInfo(
+            getattr(settings, "COMMUNICATION_TIME_ZONE", "UTC")
+        )
+    except ZoneInfoNotFoundError:
+        provider_timezone = datetime_timezone.utc
+    return timezone.make_aware(parsed, provider_timezone)
 
 
 def _remember_megafon_recording_host(telephony, recording_ref):
