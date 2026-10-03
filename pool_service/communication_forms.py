@@ -77,8 +77,13 @@ class TelephonyConnectionForm(forms.Form):
         widget=forms.TextInput(attrs={"class": "form-control"}),
     )
     external_id = forms.CharField(
-        label="Идентификатор линии / аккаунта",
+        label="Внутренний ID линии",
         max_length=255,
+        initial="megafon-main",
+        help_text=(
+            "Это внутренний идентификатор Service2. Для основной ВАТС оставьте "
+            "megafon-main — искать этот ID в кабинете МегаФона не нужно."
+        ),
         widget=forms.TextInput(attrs={"class": "form-control"}),
     )
     recording_allowed_hosts = forms.CharField(

@@ -186,12 +186,17 @@
                     Последнее live-событие: {{ connection.megafon_last_event_at }}
                     {% if connection.megafon_last_event_type %}· {{ connection.megafon_last_event_type }}{% endif %}
                     {% if connection.megafon_last_event_phone %}· {{ connection.megafon_last_event_phone }}{% endif %}
+                    {% if connection.megafon_last_event_user %}· user={{ connection.megafon_last_event_user }}{% endif %}
+                    {% if connection.megafon_last_event_ext %}· ext={{ connection.megafon_last_event_ext }}{% endif %}
                   </div>
                 {% endif %}
                 {% if connection.megafon_last_received_at %}
                   <div class="small text-muted mt-1">
                     Последняя история звонка: {{ connection.megafon_last_received_at }}
                     {% if connection.megafon_last_result %}· {{ connection.megafon_last_result }}{% endif %}
+                    {% if connection.megafon_last_history_status %}· {{ connection.megafon_last_history_status }}{% endif %}
+                    {% if connection.megafon_last_history_user %}· user={{ connection.megafon_last_history_user }}{% endif %}
+                    {% if connection.megafon_last_history_ext %}· ext={{ connection.megafon_last_history_ext }}{% endif %}
                   </div>
                 {% endif %}
               </div>

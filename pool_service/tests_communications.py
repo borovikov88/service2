@@ -734,7 +734,8 @@ class CommunicationsTests(TestCase):
         self.assertTrue(provider_connection.check_api_token("megafon-crm-token"))
 
         webhook_url = reverse("megafon_webhook", args=[provider_connection.public_id])
-        response = self.client.post(
+        webhook_client = Client()
+        response = webhook_client.post(
             webhook_url,
             {
                 "cmd": "history",
@@ -755,13 +756,14 @@ class CommunicationsTests(TestCase):
         self.assertEqual(call.contact_name, "Тестовый клиент")
         self.assertEqual(call.result, PhoneCall.RESULT_ANSWERED)
         self.assertEqual(call.duration_seconds, 91)
+        self.assertEqual(call.started_at.isoformat(), "2026-10-03T09:00:00+00:00")
         self.assertEqual(call.recording_ref, "https://records.megapbx.ru/call-123.mp3")
         telephony.refresh_from_db()
         self.assertIn("records.megapbx.ru", telephony.recording_allowed_hosts)
         provider_connection.refresh_from_db()
         self.assertTrue(provider_connection.settings["megafon_last_received_at"])
 
-        live_event = self.client.post(
+        live_event = webhook_client.post(
             webhook_url,
             {
                 "cmd": "event",
@@ -769,7 +771,9 @@ class CommunicationsTests(TestCase):
                 "callid": "event-123",
                 "phone": "+79001112233",
                 "type": "INCOMING",
-                "ext": "worker",
+                "ext": "601",
+                "user": "worker",
+                "direction": "in",
             },
         )
         self.assertEqual(live_event.status_code, 200)
@@ -783,8 +787,37 @@ class CommunicationsTests(TestCase):
             provider_connection.settings["megafon_last_event_phone"],
             "+79001112233",
         )
+        self.assertEqual(
+            provider_connection.settings["megafon_last_event_user"],
+            "worker",
+        )
+        self.assertEqual(
+            provider_connection.settings["megafon_last_event_ext"],
+            "601",
+        )
 
-        duplicate = self.client.post(
+        transferred = webhook_client.post(
+            webhook_url,
+            {
+                "cmd": "event",
+                "crm_token": "megafon-crm-token",
+                "callid": "event-transfer-123",
+                "phone": "+79001112233",
+                "type": "TRANSFERRED",
+                "ext": "602",
+                "user": "worker",
+                "direction": "in",
+                "second_callid": "event-transfer-456",
+            },
+        )
+        self.assertEqual(transferred.status_code, 200)
+        provider_connection.refresh_from_db()
+        self.assertEqual(
+            provider_connection.settings["megafon_last_event_type"],
+            "TRANSFERRED",
+        )
+
+        duplicate = webhook_client.post(
             webhook_url,
             {
                 "cmd": "history",
@@ -810,7 +843,7 @@ class CommunicationsTests(TestCase):
             "https://records.megapbx.ru/call-123.mp3",
         )
 
-        unauthorized = self.client.post(
+        unauthorized = webhook_client.post(
             webhook_url,
             {
                 "cmd": "history",
