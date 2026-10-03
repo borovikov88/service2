@@ -32,7 +32,7 @@ from pool_service.communication_services import receive_message, users_with_conv
 from pool_service.communication_services import conversation_capability
 from pool_service.communication_api import _payload
 from pool_service.management.commands.send_avito_outbox import claim_message
-from pool_service.models import Notification, Organization, OrganizationAccess
+from pool_service.models import Client as ServiceClient, Notification, Organization, OrganizationAccess
 from service_site.logging_handlers import RedactCommunicationWebhookSecretFilter
 
 
@@ -701,6 +701,102 @@ class CommunicationsTests(TestCase):
         )
         self.assertEqual(invalid.status_code, 200)
         self.assertContains(invalid, "только доменное имя")
+
+    def test_owner_can_connect_megafon_vats_and_receive_call_history(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон офис",
+            external_id="megafon-office",
+        )
+        ServiceClient.objects.create(
+            organization=self.organization,
+            name="Тестовый клиент",
+            phone="+7 (900) 111-22-33",
+        )
+        self.client.login(username="owner", password="test")
+        with patch(
+            "pool_service.communication_views.secrets.token_urlsafe",
+            return_value="megafon-crm-token",
+        ):
+            setup = self.client.post(
+                reverse("communication_telephony_connect", args=[telephony.pk]),
+                secure=True,
+            )
+        self.assertEqual(setup.status_code, 200)
+        self.assertContains(setup, "megafon-crm-token")
+        self.assertEqual(setup["Cache-Control"], "no-store")
+
+        provider_connection = ChannelConnection.objects.get(
+            channel__organization=self.organization,
+            channel__kind=CommunicationChannel.KIND_MEGAFON,
+            external_id="megafon-office",
+        )
+        self.assertTrue(provider_connection.check_api_token("megafon-crm-token"))
+
+        webhook_url = reverse("megafon_webhook", args=[provider_connection.public_id])
+        response = self.client.post(
+            webhook_url,
+            {
+                "cmd": "history",
+                "crm_token": "megafon-crm-token",
+                "callid": "call-123",
+                "phone": "+79001112233",
+                "type": "in",
+                "start": "20261003T160000Z",
+                "duration": "91",
+                "status": "Success",
+                "user": "worker",
+                "link": "https://records.megapbx.ru/call-123.mp3",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        call = PhoneCall.objects.get(connection=telephony, external_id="call-123")
+        self.assertEqual(call.employee, self.worker)
+        self.assertEqual(call.contact_name, "Тестовый клиент")
+        self.assertEqual(call.result, PhoneCall.RESULT_ANSWERED)
+        self.assertEqual(call.duration_seconds, 91)
+        self.assertEqual(call.recording_ref, "https://records.megapbx.ru/call-123.mp3")
+        telephony.refresh_from_db()
+        self.assertIn("records.megapbx.ru", telephony.recording_allowed_hosts)
+        provider_connection.refresh_from_db()
+        self.assertTrue(provider_connection.settings["megafon_last_received_at"])
+
+        duplicate = self.client.post(
+            webhook_url,
+            {
+                "cmd": "history",
+                "crm_token": "megafon-crm-token",
+                "callid": "call-123",
+                "phone": "+79001112233",
+                "type": "in",
+                "start": "20261003T160000Z",
+                "duration": "92",
+                "status": "Success",
+                "user": "worker",
+            },
+        )
+        self.assertEqual(duplicate.status_code, 200)
+        self.assertEqual(
+            PhoneCall.objects.filter(connection=telephony, external_id="call-123").count(),
+            1,
+        )
+        call.refresh_from_db()
+        self.assertEqual(call.duration_seconds, 92)
+
+        unauthorized = self.client.post(
+            webhook_url,
+            {
+                "cmd": "history",
+                "crm_token": "wrong-token",
+                "callid": "call-unauthorized",
+                "phone": "+79001112233",
+                "type": "in",
+            },
+        )
+        self.assertEqual(unauthorized.status_code, 401)
+        self.assertFalse(
+            PhoneCall.objects.filter(connection=telephony, external_id="call-unauthorized").exists()
+        )
 
     def test_channel_settings_are_organization_scoped(self):
         foreign_organization = Organization.objects.create(name="Foreign setup org")
