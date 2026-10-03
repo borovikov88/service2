@@ -387,6 +387,18 @@ def _telephony_provider_connection(telephony):
     return connection
 
 
+
+def _save_megafon_api_settings(provider_connection, form):
+    settings_data = dict(provider_connection.settings or {})
+    settings_data["megafon_api_base_url"] = form.cleaned_data["ats_base_url"]
+    if form.cleaned_data.get("ats_api_key"):
+        settings_data["megafon_api_key_encrypted"] = encrypt_secret(
+            form.cleaned_data["ats_api_key"]
+        )
+    provider_connection.settings = settings_data
+    provider_connection.save(update_fields=["settings"])
+
+
 def _communication_provider_channel(organization, kind):
     channel = (
         CommunicationChannel.objects.filter(organization=organization, kind=kind)
@@ -1043,7 +1055,10 @@ def communication_telephony_connect(request, connection_id):
 @transaction.atomic
 def communication_telephony_create(request):
     organization = _context(request, "can_manage_channels")
-    form = TelephonyConnectionForm(request.POST or None)
+    form = TelephonyConnectionForm(
+        request.POST or None,
+        require_ats_api_key=True,
+    )
     if request.method == "POST" and form.is_valid():
         external_id = form.cleaned_data["external_id"].strip()
         if TelephonyConnection.objects.filter(
@@ -1058,8 +1073,12 @@ def communication_telephony_create(request):
                 recording_allowed_hosts=form.cleaned_data["recording_allowed_hosts"],
                 is_active=form.cleaned_data["is_active"],
             )
-            _telephony_provider_connection(telephony)
-            messages.success(request, "Подключение Мегафона добавлено. Теперь нажмите «Подключить ВАТС».")
+            provider_connection = _telephony_provider_connection(telephony)
+            _save_megafon_api_settings(provider_connection, form)
+            messages.success(
+                request,
+                "Данные АТС МегаФона сохранены. Теперь настройте обратную отправку событий в Service2.",
+            )
             return redirect("communications_channels")
     return render(
         request,
@@ -1077,13 +1096,22 @@ def communication_telephony_edit(request, connection_id):
         pk=connection_id,
         organization=organization,
     )
+    provider_connection = _telephony_provider_connection(connection)
+    provider_settings = dict(provider_connection.settings or {})
     initial = {
         "name": connection.name,
         "external_id": connection.external_id,
+        "ats_base_url": provider_settings.get("megafon_api_base_url", ""),
         "recording_allowed_hosts": "\n".join(connection.recording_allowed_hosts or []),
         "is_active": connection.is_active,
     }
-    form = TelephonyConnectionForm(request.POST or None, initial=initial)
+    form = TelephonyConnectionForm(
+        request.POST or None,
+        initial=initial,
+        require_ats_api_key=not bool(
+            provider_settings.get("megafon_api_key_encrypted")
+        ),
+    )
     if request.method == "POST" and form.is_valid():
         external_id = form.cleaned_data["external_id"].strip()
         duplicate = TelephonyConnection.objects.filter(
@@ -1121,8 +1149,9 @@ def communication_telephony_edit(request, connection_id):
                     provider_connection.save(
                         update_fields=["external_id", "name", "is_active"]
                     )
-            _telephony_provider_connection(connection)
-            messages.success(request, "Настройки Мегафона сохранены.")
+            provider_connection = _telephony_provider_connection(connection)
+            _save_megafon_api_settings(provider_connection, form)
+            messages.success(request, "Настройки МегаФона сохранены.")
             return redirect("communications_channels")
     return render(
         request,
