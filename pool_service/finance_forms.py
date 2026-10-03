@@ -821,6 +821,30 @@ class EmployeeCompensationMonthForm(forms.ModelForm):
             "note": forms.Textarea(attrs={"class": "form-control", "rows": 2}),
         }
 
+class EmployeeEmploymentStatusForm(forms.ModelForm):
+    class Meta:
+        model = Employee
+        fields = ["employment_status", "dismissed_at"]
+        labels = {
+            "employment_status": "Статус",
+            "dismissed_at": "Дата увольнения",
+        }
+        widgets = {
+            "employment_status": forms.Select(attrs={"class": "form-select"}),
+            "dismissed_at": forms.DateInput(
+                format="%Y-%m-%d",
+                attrs={"class": "form-control", "type": "date"},
+            ),
+        }
+
+    def clean(self):
+        cleaned = super().clean()
+        status = cleaned.get("employment_status")
+        if status != Employee.STATUS_DISMISSED:
+            cleaned["dismissed_at"] = None
+        return cleaned
+
+
 class EmployeeIdentityMappingForm(forms.Form):
     employee = forms.ModelChoiceField(
         queryset=Employee.objects.none(),
