@@ -513,6 +513,11 @@ def megafon_webhook(request, public_id):
             },
         )
         _remember_megafon_recording_host(telephony, recording_ref)
+        settings_data = dict(connection.settings or {})
+        settings_data["megafon_last_received_at"] = timezone.now().isoformat()
+        settings_data["megafon_last_result"] = "created" if created else "updated"
+        connection.settings = settings_data
+        connection.save(update_fields=["settings"])
 
     return JsonResponse({
         "accepted": True,
