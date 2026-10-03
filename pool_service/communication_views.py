@@ -1044,6 +1044,16 @@ def communication_telephony_connect(request, connection_id):
         organization=organization,
     )
     provider_connection = _telephony_provider_connection(telephony)
+    provider_settings = dict(provider_connection.settings or {})
+    if not (
+        provider_settings.get("megafon_api_base_url")
+        and provider_settings.get("megafon_api_key_encrypted")
+    ):
+        messages.error(
+            request,
+            "Сначала скопируйте из МегаФона «Адрес АТС» и «Ключ для авторизации в АТС».",
+        )
+        return redirect("communication_telephony_edit", connection_id=telephony.pk)
     token = secrets.token_urlsafe(32)
     provider_connection.set_api_token(token)
     provider_connection.is_active = True
