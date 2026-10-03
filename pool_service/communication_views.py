@@ -343,6 +343,50 @@ def _connection_setup_result(request, connection, secret_value, *, secret_kind):
     return response
 
 
+def _telephony_setup_result(request, telephony, provider_connection, token):
+    callback_url = request.build_absolute_uri(
+        reverse("megafon_webhook", args=[provider_connection.public_id])
+    )
+    response = render(
+        request,
+        "pool_service/communications/telephony_secret.html",
+        {
+            "active_tab": "communications",
+            "telephony": telephony,
+            "callback_url": callback_url,
+            "crm_token": token,
+        },
+    )
+    response["Cache-Control"] = "no-store"
+    response["Pragma"] = "no-cache"
+    response["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+def _telephony_provider_connection(telephony):
+    channel = _communication_provider_channel(
+        telephony.organization, CommunicationChannel.KIND_MEGAFON
+    )
+    connection, _ = ChannelConnection.objects.get_or_create(
+        channel=channel,
+        external_id=telephony.external_id,
+        defaults={
+            "name": telephony.name,
+            "is_active": telephony.is_active,
+        },
+    )
+    changed = []
+    if connection.name != telephony.name:
+        connection.name = telephony.name
+        changed.append("name")
+    if connection.is_active != telephony.is_active:
+        connection.is_active = telephony.is_active
+        changed.append("is_active")
+    if changed:
+        connection.save(update_fields=changed)
+    return connection
+
+
 def _communication_provider_channel(organization, kind):
     channel = (
         CommunicationChannel.objects.filter(organization=organization, kind=kind)
@@ -427,9 +471,32 @@ def channels(request):
             "connections": provider_connections["avito"],
         },
     ]
-    telephony_connections = TelephonyConnection.objects.filter(
-        organization=organization
-    ).order_by("pk")
+    telephony_connections = list(
+        TelephonyConnection.objects.filter(organization=organization).order_by("pk")
+    )
+    megafon_connections = {
+        item.external_id: item
+        for item in ChannelConnection.objects.filter(
+            channel__organization=organization,
+            channel__kind=CommunicationChannel.KIND_MEGAFON,
+        )
+    }
+    for telephony in telephony_connections:
+        provider_connection = megafon_connections.get(telephony.external_id)
+        telephony.provider_connection = provider_connection
+        telephony.megafon_configured = bool(
+            provider_connection and provider_connection.api_token_hash
+        )
+        telephony.megafon_last_received_at = (
+            (provider_connection.settings or {}).get("megafon_last_received_at", "")
+            if provider_connection
+            else ""
+        )
+        telephony.megafon_last_result = (
+            (provider_connection.settings or {}).get("megafon_last_result", "")
+            if provider_connection
+            else ""
+        )
     return render(
         request,
         "pool_service/communications/channels.html",
@@ -910,6 +977,29 @@ def communication_avito_sync(request, connection_id):
 
 
 @login_required
+@require_POST
+@transaction.atomic
+def communication_telephony_connect(request, connection_id):
+    organization = _context(request, "can_manage_channels")
+    telephony = get_object_or_404(
+        TelephonyConnection.objects.select_for_update(),
+        pk=connection_id,
+        organization=organization,
+    )
+    provider_connection = _telephony_provider_connection(telephony)
+    token = secrets.token_urlsafe(32)
+    provider_connection.set_api_token(token)
+    provider_connection.is_active = True
+    provider_connection.save(update_fields=["api_token_hash", "is_active"])
+    return _telephony_setup_result(
+        request,
+        telephony,
+        provider_connection,
+        token,
+    )
+
+
+@login_required
 @transaction.atomic
 def communication_telephony_create(request):
     organization = _context(request, "can_manage_channels")
@@ -921,14 +1011,15 @@ def communication_telephony_create(request):
         ).exists():
             form.add_error("external_id", "Линия с таким идентификатором уже существует.")
         else:
-            TelephonyConnection.objects.create(
+            telephony = TelephonyConnection.objects.create(
                 organization=organization,
                 name=form.cleaned_data["name"].strip(),
                 external_id=external_id,
                 recording_allowed_hosts=form.cleaned_data["recording_allowed_hosts"],
                 is_active=form.cleaned_data["is_active"],
             )
-            messages.success(request, "Подключение Мегафона добавлено.")
+            _telephony_provider_connection(telephony)
+            messages.success(request, "Подключение Мегафона добавлено. Теперь нажмите «Подключить ВАТС».")
             return redirect("communications_channels")
     return render(
         request,
@@ -973,6 +1064,7 @@ def communication_telephony_edit(request, connection_id):
                     "is_active",
                 ]
             )
+            _telephony_provider_connection(connection)
             messages.success(request, "Настройки Мегафона сохранены.")
             return redirect("communications_channels")
     return render(
@@ -1003,6 +1095,10 @@ def communication_telephony_set_active(request, connection_id):
     if connection.is_active != desired:
         connection.is_active = desired
         connection.save(update_fields=["is_active"])
+    provider_connection = _telephony_provider_connection(connection)
+    if provider_connection.is_active != desired:
+        provider_connection.is_active = desired
+        provider_connection.save(update_fields=["is_active"])
     messages.success(
         request,
         "Подключение Мегафона включено." if desired else "Подключение Мегафона отключено.",
