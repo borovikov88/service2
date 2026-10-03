@@ -289,6 +289,55 @@ class EmployeeHRCardTests(TestCase):
         self.assertContains(profile, "Бонусы")
         self.assertContains(profile, "История зарплаты по месяцам")
 
+    def test_owner_can_mark_local_employee_dismissed_from_hr_card(self):
+        self.grant_hr()
+        local_employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Алёна (техничка)",
+            employment_status=Employee.STATUS_EMPLOYED,
+            is_active=True,
+        )
+
+        response = self.client.post(
+            reverse(
+                "finance_payroll_employee_status_update",
+                args=[local_employee.pk],
+            ),
+            {
+                "employment_status": Employee.STATUS_DISMISSED,
+                "dismissed_at": "",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        local_employee.refresh_from_db()
+        self.assertFalse(local_employee.is_active)
+        self.assertEqual(
+            local_employee.employment_status,
+            Employee.STATUS_DISMISSED,
+        )
+        self.assertEqual(local_employee.dismissed_at, timezone.localdate())
+
+    def test_hr_card_renders_manual_status_control_for_manager(self):
+        self.grant_hr()
+
+        response = self.client.get(
+            reverse(
+                "finance_payroll_employee_profile",
+                args=[self.employee.pk],
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Изменить кадровый статус")
+        self.assertContains(
+            response,
+            reverse(
+                "finance_payroll_employee_status_update",
+                args=[self.employee.pk],
+            ),
+        )
+
     def test_latest_snapshot_without_employee_does_not_resurrect_old_salary(self):
         month = date(2026, 9, 1)
         older = PayrollPlanSnapshot.objects.create(

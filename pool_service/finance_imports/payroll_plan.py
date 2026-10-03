@@ -27,7 +27,9 @@ from pool_service.finance_imports.odata_payroll_drafts import (
 from pool_service.finance_imports.odata_finance_position import calendar_timezone
 from pool_service.models import (
     DataAuditLog,
+    Employee,
     EmployeeCompensationMonth,
+    EmployeeOneCIdentity,
     PayrollPlanItem,
     PayrollPlanSnapshot,
 )
@@ -81,7 +83,7 @@ def _configured_scope(config):
     return organizations, currency
 
 
-def _read_plan_payload(config, as_of):
+def _read_plan_payload(config, as_of, *, employee_guids=()):
     environment = os.environ.copy()
     environment.update(config)
     command = [
@@ -93,6 +95,8 @@ def _read_plan_payload(config, as_of):
         "--as-of",
         as_of.isoformat(),
     ]
+    for employee_guid in sorted(set(employee_guids)):
+        command.extend(["--employee-guid", employee_guid])
     try:
         result = subprocess.run(
             command,
@@ -185,14 +189,136 @@ def _validated_items(payload, as_of, organizations, currency):
     return items
 
 
+def _validated_employee_statuses(payload):
+    raw_statuses = payload.get("employee_statuses")
+    if not isinstance(raw_statuses, list):
+        raise PayrollPlanSyncError("Структура статусов сотрудников из 1С изменилась.")
+
+    statuses = {}
+    for item in raw_statuses:
+        if not isinstance(item, dict):
+            raise PayrollPlanSyncError("Некорректный статус сотрудника из 1С.")
+        try:
+            employee_guid = guid(item.get("employee_guid"))
+        except PayrollError:
+            raise PayrollPlanSyncError(
+                "Некорректный идентификатор сотрудника в статусах 1С."
+            ) from None
+        flags = (
+            item.get("deletion_mark"),
+            item.get("inactive"),
+            item.get("archived"),
+        )
+        if (
+            employee_guid in statuses
+            or any(type(value) is not bool for value in flags)
+        ):
+            raise PayrollPlanSyncError("Некорректный статус сотрудника из 1С.")
+        statuses[employee_guid] = {
+            "active": not any(flags),
+            "deletion_mark": flags[0],
+            "inactive": flags[1],
+            "archived": flags[2],
+        }
+    return statuses
+
+
+def _sync_onec_employee_statuses(organization, user, statuses):
+    identities = list(
+        EmployeeOneCIdentity.objects.filter(
+            organization=organization,
+            employee__isnull=False,
+            onec_employee_id__isnull=False,
+        )
+        .exclude(onec_employee_id="")
+        .select_related("employee")
+        .order_by("employee_id", "id")
+    )
+    by_employee = {}
+    for identity in identities:
+        by_employee.setdefault(identity.employee_id, []).append(identity)
+
+    deactivated = []
+    for employee_id, rows in by_employee.items():
+        row_statuses = []
+        complete = True
+        for identity in rows:
+            try:
+                key = guid(identity.onec_employee_id)
+            except PayrollError:
+                complete = False
+                break
+            status = statuses.get(key)
+            if status is None:
+                complete = False
+                break
+            row_statuses.append(status)
+        if (
+            not complete
+            or not row_statuses
+            or not all(not status["active"] for status in row_statuses)
+        ):
+            continue
+
+        employee = Employee.objects.select_for_update().get(
+            pk=employee_id,
+            organization=organization,
+        )
+        before = {
+            "is_active": employee.is_active,
+            "employment_status": employee.employment_status,
+        }
+        employee.is_active = False
+        employee.employment_status = Employee.STATUS_DISMISSED
+        after = {
+            "is_active": employee.is_active,
+            "employment_status": employee.employment_status,
+        }
+        changed_fields = [
+            key for key in before if before[key] != after[key]
+        ]
+        if not changed_fields:
+            continue
+        employee.save(update_fields=[*changed_fields, "updated_at"])
+        DataAuditLog.objects.create(
+            entity_type="Employee",
+            entity_id=str(employee.pk),
+            action=DataAuditLog.ACTION_UPDATE,
+            organization=organization,
+            actor=user,
+            before=before,
+            after={
+                **after,
+                "source": "1c_employee_catalog",
+            },
+            changed_fields=changed_fields,
+        )
+        deactivated.append(employee.pk)
+    return deactivated
+
+
 def refresh_payroll_plan_snapshot(organization, user, *, as_of=None):
     _require_access(organization, user)
     auto_coverage_config()
     config = config_from_settings()
     organizations, currency = _configured_scope(config)
     as_of = as_of or current_payroll_plan_date()
-    payload = _read_plan_payload(config, as_of)
+    mapped_employee_guids = list(
+        EmployeeOneCIdentity.objects.filter(
+            organization=organization,
+            onec_employee_id__isnull=False,
+        )
+        .exclude(onec_employee_id="")
+        .values_list("onec_employee_id", flat=True)
+        .distinct()
+    )
+    payload = _read_plan_payload(
+        config,
+        as_of,
+        employee_guids=mapped_employee_guids,
+    )
     items = _validated_items(payload, as_of, organizations, currency)
+    employee_statuses = _validated_employee_statuses(payload)
 
     fingerprint_payload = [
         {
@@ -217,6 +343,11 @@ def refresh_payroll_plan_snapshot(organization, user, *, as_of=None):
     ).hexdigest()
 
     with transaction.atomic():
+        _sync_onec_employee_statuses(
+            organization,
+            user,
+            employee_statuses,
+        )
         existing = PayrollPlanSnapshot.objects.filter(
             organization=organization,
             period_month=_month_start(as_of),
