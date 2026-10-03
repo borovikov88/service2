@@ -504,6 +504,10 @@ def megafon_webhook(request, public_id):
     )
 
     with transaction.atomic():
+        existing_call = PhoneCall.objects.filter(
+            connection=telephony,
+            external_id=call_id,
+        ).first()
         phone_call, created = PhoneCall.objects.update_or_create(
             connection=telephony,
             external_id=call_id,
@@ -516,7 +520,10 @@ def megafon_webhook(request, public_id):
                 "started_at": started_at,
                 "duration_seconds": duration_seconds,
                 "result": result,
-                "recording_ref": recording_ref,
+                "recording_ref": (
+                    recording_ref
+                    or (existing_call.recording_ref if existing_call else "")
+                ),
             },
         )
         _remember_megafon_recording_host(telephony, recording_ref)
