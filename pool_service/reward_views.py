@@ -92,6 +92,25 @@ def _period(request):
     return timezone.localdate().replace(day=1)
 
 
+def _reward_selectable_employees(organization):
+    """Employees currently available for new reward assignments."""
+    today = timezone.localdate()
+    return (
+        Employee.objects.filter(
+            organization=organization,
+            is_active=True,
+            employment_status=Employee.STATUS_EMPLOYED,
+        )
+        .filter(
+            models.Q(hired_at__isnull=True) | models.Q(hired_at__lte=today)
+        )
+        .filter(
+            models.Q(dismissed_at__isnull=True) | models.Q(dismissed_at__gt=today)
+        )
+        .order_by("display_name")
+    )
+
+
 def _rewards_redirect(request, period_month, *, default_tab="orders"):
     tab = (request.POST.get("return_tab") or default_tab).strip()
     if tab not in {"orders", "attention", "employees", "settings"}:
@@ -144,9 +163,8 @@ def employee_rewards(request):
                     organization=organization,
                 )
                 employee = get_object_or_404(
-                    Employee,
+                    _reward_selectable_employees(organization),
                     pk=request.POST.get("employee_id"),
-                    organization=organization,
                 )
                 map_author(identity, employee, request.user)
                 messages.success(
@@ -203,9 +221,8 @@ def employee_rewards(request):
                     )
                 if request.POST.get("employee_id"):
                     employee = get_object_or_404(
-                        Employee,
+                        _reward_selectable_employees(organization),
                         pk=request.POST["employee_id"],
-                        organization=organization,
                     )
                 is_company_client = request.POST.get("is_company_client") == "1"
                 item = RewardParticipantTemplate(
@@ -255,9 +272,8 @@ def employee_rewards(request):
                 )
             elif action == "add_participation":
                 employee = get_object_or_404(
-                    Employee,
+                    _reward_selectable_employees(organization),
                     pk=request.POST.get("employee_id"),
-                    organization=organization,
                 )
                 create_manual_participation(
                     organization,
@@ -297,9 +313,8 @@ def employee_rewards(request):
                     if not employee_id and not role and not share_raw:
                         continue
                     employee = get_object_or_404(
-                        Employee,
+                        _reward_selectable_employees(organization),
                         pk=employee_id,
-                        organization=organization,
                     )
                     assignments.append({
                         "employee": employee,
@@ -329,9 +344,8 @@ def employee_rewards(request):
                     period_month=period_month,
                 )
                 employee = get_object_or_404(
-                    Employee,
+                    _reward_selectable_employees(organization),
                     pk=request.POST.get("employee_id"),
-                    organization=organization,
                 )
                 update_order_participation(
                     item,
@@ -370,9 +384,8 @@ def employee_rewards(request):
                 employee = None
                 if not mark_na:
                     employee = get_object_or_404(
-                        Employee,
+                        _reward_selectable_employees(organization),
                         pk=request.POST.get("employee_id"),
-                        organization=organization,
                     )
                 resolve_documentation_placeholder(
                     item,
@@ -390,9 +403,8 @@ def employee_rewards(request):
                     role=RewardParticipation.ROLE_DOCUMENTATION,
                 )
                 employee = get_object_or_404(
-                    Employee,
+                    _reward_selectable_employees(organization),
                     pk=request.POST.get("employee_id"),
-                    organization=organization,
                 )
                 add_documentation_participant(
                     source,
@@ -531,9 +543,7 @@ def employee_rewards(request):
             "employee__display_name",
         )
     )
-    employees = Employee.objects.filter(
-        organization=organization, is_active=True
-    ).order_by("display_name")
+    employees = _reward_selectable_employees(organization)
     clients = Client.objects.filter(organization=organization).order_by("name", "id")
     pools = (
         Pool.objects.filter(organization=organization, is_deleted=False)

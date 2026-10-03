@@ -13,7 +13,7 @@ from pool_service.reward_models import (
     RewardParticipation,
     RewardSchemeVersion,
 )
-from pool_service.reward_views import _percent_value
+from pool_service.reward_views import _percent_value, _reward_selectable_employees
 from pool_service.services.rewards import (
     add_documentation_participant,
     calculate_month,
@@ -214,7 +214,59 @@ class EmployeeRewardCalculationTests(TestCase):
         self.assertContains(response, 'data-share-value="50" data-no-loading')
         self.assertContains(response, 'data-share-value="100" data-no-loading')
         self.assertContains(response, 'class="btn btn-sm btn-outline-danger reward-remove-last"')
+        self.assertContains(
+            response,
+            'class="btn btn-primary reward-submit-button" data-no-loading',
+        )
+        self.assertContains(response, "window.resetButtonLoading")
         self.assertContains(response, "rewardStoreScroll(form)")
+
+    def test_reward_employee_selector_excludes_not_current_workers(self):
+        current = Employee.objects.create(
+            organization=self.org,
+            display_name="Текущий сотрудник",
+            employment_status=Employee.STATUS_EMPLOYED,
+            is_active=True,
+            hired_at=date(2026, 1, 1),
+        )
+        dismissed = Employee.objects.create(
+            organization=self.org,
+            display_name="Уволенный сотрудник",
+            employment_status=Employee.STATUS_DISMISSED,
+            is_active=True,
+            dismissed_at=date(2026, 8, 31),
+        )
+        on_leave = Employee.objects.create(
+            organization=self.org,
+            display_name="Временно отсутствует",
+            employment_status=Employee.STATUS_ON_LEAVE,
+            is_active=True,
+        )
+        inactive = Employee.objects.create(
+            organization=self.org,
+            display_name="Неактивный сотрудник",
+            employment_status=Employee.STATUS_EMPLOYED,
+            is_active=False,
+        )
+        future = Employee.objects.create(
+            organization=self.org,
+            display_name="Будущий сотрудник",
+            employment_status=Employee.STATUS_EMPLOYED,
+            is_active=True,
+            hired_at=date(2026, 10, 1),
+        )
+
+        with patch("pool_service.reward_views.timezone.localdate", return_value=date(2026, 9, 15)):
+            ids = set(
+                _reward_selectable_employees(self.org)
+                .values_list("id", flat=True)
+            )
+
+        self.assertIn(current.id, ids)
+        self.assertNotIn(dismissed.id, ids)
+        self.assertNotIn(on_leave.id, ids)
+        self.assertNotIn(inactive.id, ids)
+        self.assertNotIn(future.id, ids)
 
     def test_rewards_page_get_normalizes_non_string_source_labels_and_author_id(self):
         OrganizationAccess.objects.create(
@@ -592,13 +644,13 @@ class EmployeeRewardCalculationTests(TestCase):
                 {
                     "employee": self.e1,
                     "role": RewardParticipation.ROLE_WORK,
-                    "share": Decimal("0.5"),
+                    "share": Decimal("0.75"),
                     "line_identities": [row.source_identity],
                 },
                 {
                     "employee": self.e2,
                     "role": RewardParticipation.ROLE_WORK,
-                    "share": Decimal("0.5"),
+                    "share": Decimal("0.25"),
                     "line_identities": [row.source_identity],
                 },
             ],
