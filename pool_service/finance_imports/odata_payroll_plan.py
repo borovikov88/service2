@@ -51,6 +51,7 @@ PLAN_FIELDS = (
     "СчетЗатрат_Key",
 )
 MAX_PLAN_ROWS = 10000
+MAX_EMPLOYEE_STATUS_ROWS = 1000
 
 
 def _normalize_name(value):
@@ -99,7 +100,61 @@ def _catalog_rows(reader, entity, ids, fields, *, kind):
     return result
 
 
-def read_current_plan(config, as_of, *, organization_guids=(), opener=None):
+def _employee_status_rows(reader, ids):
+    result = {}
+    ordered = sorted(ids)
+    if len(ordered) > MAX_EMPLOYEE_STATUS_ROWS:
+        raise PayrollError("RESPONSE_LIMIT", "employee_status")
+    for start in range(0, len(ordered), 40):
+        requested = set(ordered[start:start + 40])
+        if not requested:
+            continue
+        filter_value = " or ".join(
+            "Ref_Key eq guid'%s'" % key for key in sorted(requested)
+        )
+        for rows in reader.pages_for(
+            EMPLOYEE_CATALOG,
+            {
+                "$format": "json",
+                "$select": (
+                    "Ref_Key,Description,DeletionMark,"
+                    "Недействителен,ВАрхиве"
+                ),
+                "$filter": "(" + filter_value + ")",
+            },
+        ):
+            for row in rows:
+                key = guid(row.get("Ref_Key"))
+                if key not in requested or key in result:
+                    raise PayrollError("CATALOG_INVALID", "employee_status")
+                flags = (
+                    row.get("DeletionMark"),
+                    row.get("Недействителен"),
+                    row.get("ВАрхиве"),
+                )
+                if any(type(value) is not bool for value in flags):
+                    raise PayrollError("CATALOG_INVALID", "employee_status")
+                description = row.get("Description")
+                if not isinstance(description, str) or len(description) > 500:
+                    raise PayrollError("CATALOG_INVALID", "employee_status")
+                result[key] = {
+                    "employee_guid": key,
+                    "employee_name": description.strip(),
+                    "deletion_mark": flags[0],
+                    "inactive": flags[1],
+                    "archived": flags[2],
+                }
+    return result
+
+
+def read_current_plan(
+    config,
+    as_of,
+    *,
+    organization_guids=(),
+    employee_guids=(),
+    opener=None,
+):
     if not isinstance(as_of, date):
         raise PayrollError("INVALID_DATE", "config")
     raw_orgs = config.get("ONEC_ODATA_ORGANIZATION_GUIDS") or ""
@@ -123,6 +178,9 @@ def read_current_plan(config, as_of, *, organization_guids=(), opener=None):
     ):
         raise PayrollError("INVALID_CONFIG", "config")
     currency = guid(config.get("ONEC_ODATA_PAYROLL_CURRENCY_GUID"))
+    tracked_employee_guids = {guid(value) for value in employee_guids}
+    if len(tracked_employee_guids) > MAX_EMPLOYEE_STATUS_ROWS:
+        raise PayrollError("RESPONSE_LIMIT", "employee_status")
     reader = Reader(config, opener)
 
     next_day = date.fromordinal(as_of.toordinal() + 1)
@@ -187,6 +245,10 @@ def read_current_plan(config, as_of, *, organization_guids=(), opener=None):
         ("Ref_Key", "Description", "Тип", "IsFolder", "DeletionMark"),
         kind="type",
     )
+    employee_status_catalog = _employee_status_rows(
+        reader,
+        employees | tracked_employee_guids,
+    )
 
     latest_period = {}
     for org, employee, kind, account, period, actual, value in records:
@@ -246,6 +308,10 @@ def read_current_plan(config, as_of, *, organization_guids=(), opener=None):
         "currency_guid": currency,
         "source_rows": len(records),
         "items": items,
+        "employee_statuses": [
+            employee_status_catalog[key]
+            for key in sorted(employee_status_catalog)
+        ],
     }
     reader.check_time()
     raw = (json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n").encode()
@@ -258,6 +324,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app-dir", required=True)
     parser.add_argument("--as-of", required=True)
+    parser.add_argument("--employee-guid", action="append", default=[])
     args = parser.parse_args(argv)
 
     stage = "runtime"
@@ -277,7 +344,11 @@ def main(argv=None):
         except ValueError:
             raise PayrollError("INVALID_DATE", "config") from None
         config = {**dotenv_values(Path(args.app_dir) / ".env"), **os.environ}
-        result = read_current_plan(config, as_of)
+        result = read_current_plan(
+            config,
+            as_of,
+            employee_guids=args.employee_guid,
+        )
         stage = "output"
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0
