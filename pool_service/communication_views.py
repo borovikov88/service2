@@ -496,8 +496,13 @@ def channels(request):
     for telephony in telephony_connections:
         provider_connection = megafon_connections.get(telephony.external_id)
         telephony.provider_connection = provider_connection
-        telephony.megafon_configured = bool(
+        telephony.megafon_webhook_configured = bool(
             provider_connection and provider_connection.api_token_hash
+        )
+        telephony.megafon_api_configured = bool(
+            provider_connection
+            and (provider_connection.settings or {}).get("megafon_api_base_url")
+            and (provider_connection.settings or {}).get("megafon_api_key_encrypted")
         )
         telephony.megafon_last_received_at = (
             (provider_connection.settings or {}).get("megafon_last_received_at", "")
