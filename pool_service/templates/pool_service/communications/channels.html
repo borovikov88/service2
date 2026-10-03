@@ -163,7 +163,10 @@
         </div>
 
         <div class="alert alert-light border small">
-          Service2 принимает события ВАТС и сохраняет завершённые звонки в разделе «Звонки». Сначала настройте линию, затем нажмите «Подключить ВАТС» и перенесите выданный URL и ключ в кабинет МегаФона.
+          Интеграция двусторонняя. <strong>1)</strong> В «Настройки» скопируйте из кабинета МегаФона неизменяемые
+          «Адрес АТС» и «Ключ для авторизации в АТС» — это Service2 → АТС.
+          <strong>2)</strong> Затем нажмите «Данные для МегаФона» и вставьте выданные Service2 адрес и ключ
+          в редактируемые поля «Адрес вашей CRM» и «Ключ для авторизации в вашей CRM» — это АТС → Service2.
         </div>
 
         <div class="d-flex flex-column gap-2">
@@ -177,8 +180,11 @@
                   <span class="badge {% if connection.is_active %}bg-success{% else %}bg-secondary{% endif %}">
                     {% if connection.is_active %}Активно{% else %}Отключено{% endif %}
                   </span>
-                  <span class="badge {% if connection.megafon_configured %}bg-primary{% else %}bg-warning text-dark{% endif %}">
-                    {% if connection.megafon_configured %}ВАТС настроена{% else %}ВАТС не подключена{% endif %}
+                  <span class="badge {% if connection.megafon_api_configured %}bg-primary{% else %}bg-warning text-dark{% endif %}">
+                    {% if connection.megafon_api_configured %}API АТС сохранён{% else %}Нужны адрес и ключ АТС{% endif %}
+                  </span>
+                  <span class="badge {% if connection.megafon_webhook_configured %}bg-success{% else %}bg-secondary{% endif %}">
+                    {% if connection.megafon_webhook_configured %}События в Service2 настроены{% else %}Нужно настроить события{% endif %}
                   </span>
                 </div>
                 {% if connection.megafon_last_event_at %}
@@ -204,10 +210,10 @@
                 <form method="post" action="{% url 'communication_telephony_connect' connection.pk %}">
                   {% csrf_token %}
                   <button class="btn btn-sm btn-primary" type="submit">
-                    {% if connection.megafon_configured %}Переподключить ВАТС{% else %}Подключить ВАТС{% endif %}
+                    {% if connection.megafon_webhook_configured %}Обновить данные для МегаФона{% else %}Данные для МегаФона{% endif %}
                   </button>
                 </form>
-                <a class="btn btn-sm btn-outline-primary" href="{% url 'communication_telephony_edit' connection.pk %}">Настройки</a>
+                <a class="btn btn-sm btn-outline-primary" href="{% url 'communication_telephony_edit' connection.pk %}">Адрес и ключ АТС</a>
                 <form method="post" action="{% url 'communication_telephony_set_active' connection.pk %}">
                   {% csrf_token %}
                   <input type="hidden" name="active" value="{% if connection.is_active %}0{% else %}1{% endif %}">

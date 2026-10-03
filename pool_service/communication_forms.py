@@ -1,3 +1,5 @@
+from urllib.parse import urlsplit
+
 from django import forms
 
 
@@ -86,6 +88,33 @@ class TelephonyConnectionForm(forms.Form):
         ),
         widget=forms.TextInput(attrs={"class": "form-control"}),
     )
+    ats_base_url = forms.CharField(
+        label="Адрес АТС",
+        max_length=500,
+        help_text=(
+            "Скопируйте неизменяемое поле «Адрес АТС» из кабинета МегаФона. "
+            "Например: https://aqualine22.megapbx.ru/crmapi/v1"
+        ),
+        widget=forms.URLInput(
+            attrs={
+                "class": "form-control",
+                "placeholder": "https://aqualine22.megapbx.ru/crmapi/v1",
+            }
+        ),
+    )
+    ats_api_key = forms.CharField(
+        label="Ключ для авторизации в АТС",
+        max_length=2000,
+        required=False,
+        help_text=(
+            "Скопируйте неизменяемый ключ из кабинета МегаФона. "
+            "Service2 хранит его только в зашифрованном виде."
+        ),
+        widget=forms.PasswordInput(
+            render_value=False,
+            attrs={"class": "form-control", "autocomplete": "new-password"},
+        ),
+    )
     recording_allowed_hosts = forms.CharField(
         label="Разрешённые хосты записей разговоров",
         required=False,
@@ -98,6 +127,41 @@ class TelephonyConnectionForm(forms.Form):
         initial=True,
         widget=forms.CheckboxInput(attrs={"class": "form-check-input"}),
     )
+
+
+    def __init__(self, *args, require_ats_api_key=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.require_ats_api_key = require_ats_api_key
+
+    def clean_ats_base_url(self):
+        raw = (self.cleaned_data.get("ats_base_url") or "").strip().rstrip("/")
+        try:
+            parsed = urlsplit(raw)
+            parsed.port
+        except ValueError as exc:
+            raise forms.ValidationError("Некорректный адрес АТС.") from exc
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or parsed.port not in (None, 443)
+        ):
+            raise forms.ValidationError(
+                "Укажите HTTPS-адрес АТС без логина, пароля, query-параметров и нестандартного порта."
+            )
+        return raw
+
+    def clean(self):
+        cleaned = super().clean()
+        if self.require_ats_api_key and not cleaned.get("ats_api_key"):
+            self.add_error(
+                "ats_api_key",
+                "Скопируйте ключ для авторизации в АТС из кабинета МегаФона.",
+            )
+        return cleaned
 
     def clean_recording_allowed_hosts(self):
         raw = self.cleaned_data.get("recording_allowed_hosts", "")

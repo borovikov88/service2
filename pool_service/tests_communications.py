@@ -677,6 +677,8 @@ class CommunicationsTests(TestCase):
             {
                 "name": "Мегафон офис",
                 "external_id": "line-1",
+                "ats_base_url": "https://aqualine22.megapbx.ru/crmapi/v1",
+                "ats_api_key": "megafon-ats-secret",
                 "recording_allowed_hosts": "records.megafon.example\nmedia.megafon.example",
                 "is_active": "on",
             },
@@ -689,12 +691,26 @@ class CommunicationsTests(TestCase):
             line.recording_allowed_hosts,
             ["records.megafon.example", "media.megafon.example"],
         )
+        provider_connection = ChannelConnection.objects.get(
+            channel__organization=self.organization,
+            channel__kind=CommunicationChannel.KIND_MEGAFON,
+            external_id="line-1",
+        )
+        self.assertEqual(
+            provider_connection.settings["megafon_api_base_url"],
+            "https://aqualine22.megapbx.ru/crmapi/v1",
+        )
+        encrypted_key = provider_connection.settings["megafon_api_key_encrypted"]
+        self.assertNotEqual(encrypted_key, "megafon-ats-secret")
+        self.assertEqual(decrypt_secret(encrypted_key), "megafon-ats-secret")
 
         invalid = self.client.post(
             reverse("communication_telephony_edit", args=[line.pk]),
             {
                 "name": "Мегафон офис",
                 "external_id": "line-1",
+                "ats_base_url": "https://aqualine22.megapbx.ru/crmapi/v1",
+                "ats_api_key": "",
                 "recording_allowed_hosts": "https://records.example/path",
                 "is_active": "on",
             },
@@ -712,6 +728,20 @@ class CommunicationsTests(TestCase):
             organization=self.organization,
             name="Тестовый клиент",
             phone="+7 (900) 111-22-33",
+        )
+        megafon_channel = CommunicationChannel.objects.create(
+            organization=self.organization,
+            kind=CommunicationChannel.KIND_MEGAFON,
+            name="МегаФон",
+        )
+        ChannelConnection.objects.create(
+            channel=megafon_channel,
+            name="МегаФон офис",
+            external_id="megafon-office",
+            settings={
+                "megafon_api_base_url": "https://aqualine22.megapbx.ru/crmapi/v1",
+                "megafon_api_key_encrypted": encrypt_secret("megafon-ats-secret"),
+            },
         )
         self.client.login(username="owner", password="test")
         with patch(
