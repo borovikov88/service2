@@ -228,6 +228,7 @@ def _sync_onec_employee_statuses(organization, user, statuses):
         EmployeeOneCIdentity.objects.filter(
             organization=organization,
             employee__isnull=False,
+            onec_employee_id__isnull=False,
         )
         .exclude(onec_employee_id="")
         .select_related("employee")
@@ -303,7 +304,10 @@ def refresh_payroll_plan_snapshot(organization, user, *, as_of=None):
     organizations, currency = _configured_scope(config)
     as_of = as_of or current_payroll_plan_date()
     mapped_employee_guids = list(
-        EmployeeOneCIdentity.objects.filter(organization=organization)
+        EmployeeOneCIdentity.objects.filter(
+            organization=organization,
+            onec_employee_id__isnull=False,
+        )
         .exclude(onec_employee_id="")
         .values_list("onec_employee_id", flat=True)
         .distinct()
