@@ -531,3 +531,320 @@ html[data-theme="dark"] .theme-choice__text strong {
 html[data-theme="dark"] .theme-choice__text small {
   color: #93a4b8;
 }
+
+
+/* Dark theme refinement: calmer surfaces, stronger text contrast, finance-specific fixes. */
+
+html[data-theme="dark"] {
+  --bs-body-color: #e7edf5;
+  --bs-body-color-rgb: 231, 237, 245;
+  --bs-body-bg: #0f1724;
+  --bs-body-bg-rgb: 15, 23, 36;
+  --bs-border-color: #34465c;
+  --bs-border-color-translucent: rgba(154, 170, 188, 0.26);
+  --bs-link-color: #69adff;
+  --bs-link-hover-color: #91c4ff;
+  --bs-light: #1a2638;
+  --bs-light-rgb: 26, 38, 56;
+  --bs-secondary-bg: #182436;
+  --bs-tertiary-bg: #172233;
+  --bs-emphasis-color: #f2f6fb;
+  --app-bg-start: #0f1724;
+  --app-bg-end: #121c2a;
+  --app-header-bg: #141f2e;
+  --bottom-nav-bg: rgba(20, 31, 46, 0.96);
+  --menu-bg-start: #141f2e;
+  --menu-bg-end: #0f1724;
+  --menu-item-bg: rgba(27, 40, 59, 0.9);
+  --menu-item-hover: rgba(36, 52, 75, 0.98);
+}
+
+html[data-theme="dark"] body {
+  color: #e7edf5;
+  background: linear-gradient(180deg, #0f1724 0%, #111a28 58%, #121c2a 100%);
+}
+
+@media (min-width: 992px) {
+  html[data-theme="dark"] body:not(.app-embedded) {
+    background: #0f1724;
+  }
+}
+
+html[data-theme="dark"] .app-header {
+  background: #141f2e;
+  border-color: #2f4055;
+  box-shadow: 0 5px 18px rgba(0, 0, 0, 0.22);
+}
+
+@media (max-width: 991.98px) {
+  html[data-theme="dark"] .app-logo {
+    mix-blend-mode: normal;
+    filter: brightness(0) invert(1);
+    opacity: 0.92;
+  }
+}
+
+html[data-theme="dark"] .card,
+html[data-theme="dark"] .card-soft,
+html[data-theme="dark"] .modal-content,
+html[data-theme="dark"] .offcanvas,
+html[data-theme="dark"] .dropdown-menu,
+html[data-theme="dark"] .list-group-item,
+html[data-theme="dark"] .accordion-item,
+html[data-theme="dark"] .toast,
+html[data-theme="dark"] .popover {
+  color: #e7edf5;
+  background-color: #151f2e;
+  border-color: #304158;
+}
+
+html[data-theme="dark"] .card-header,
+html[data-theme="dark"] .card-footer,
+html[data-theme="dark"] .modal-header,
+html[data-theme="dark"] .modal-footer,
+html[data-theme="dark"] .accordion-button {
+  color: #e7edf5;
+  background-color: #151f2e;
+  border-color: #304158;
+}
+
+html[data-theme="dark"] .bg-white {
+  background-color: #151f2e !important;
+}
+
+html[data-theme="dark"] .bg-light {
+  background-color: #1a2638 !important;
+}
+
+html[data-theme="dark"] .text-dark {
+  color: #e7edf5 !important;
+}
+
+html[data-theme="dark"] .text-muted,
+html[data-theme="dark"] .form-text {
+  color: #9daec0 !important;
+}
+
+html[data-theme="dark"] .border,
+html[data-theme="dark"] .border-top,
+html[data-theme="dark"] .border-bottom,
+html[data-theme="dark"] .border-start,
+html[data-theme="dark"] .border-end {
+  border-color: #34465c !important;
+}
+
+html[data-theme="dark"] .form-control,
+html[data-theme="dark"] .form-select,
+html[data-theme="dark"] .input-group-text,
+html[data-theme="dark"] .form-check-input {
+  color: #e7edf5;
+  background-color: #111a28;
+  border-color: #3a4c63;
+}
+
+html[data-theme="dark"] .form-control:focus,
+html[data-theme="dark"] .form-select:focus,
+html[data-theme="dark"] .form-check-input:focus {
+  color: #f7faff;
+  background-color: #141f2e;
+  border-color: #5c9eea;
+  box-shadow: 0 0 0 0.22rem rgba(92, 158, 234, 0.16);
+}
+
+html[data-theme="dark"] .finance-filter-card,
+html[data-theme="dark"] .finance-data-card,
+html[data-theme="dark"] .finance-secondary-card {
+  background-color: #151f2e;
+}
+
+html[data-theme="dark"] .finance-kpi-card,
+html[data-theme="dark"] .finance-secondary-kpi,
+html[data-theme="dark"] .owner-kpi {
+  background-color: #182436 !important;
+  border-color: #33465d;
+}
+
+html[data-theme="dark"] .finance-desktop h1,
+html[data-theme="dark"] .finance-desktop h2,
+html[data-theme="dark"] .finance-desktop h3,
+html[data-theme="dark"] .finance-desktop h4,
+html[data-theme="dark"] .finance-desktop h5 {
+  color: #e7edf5;
+}
+
+html[data-theme="dark"] .finance-desktop .finance-filter-card .form-label,
+html[data-theme="dark"] .finance-desktop .finance-secondary-card .form-label {
+  color: #a7b5c6;
+}
+
+html[data-theme="dark"] .table > thead > tr > th,
+html[data-theme="dark"] .finance-desktop .finance-data-card thead th,
+html[data-theme="dark"] .finance-desktop .finance-secondary-card thead th {
+  color: #b9c6d6 !important;
+  background: #1b283a !important;
+  border-color: #3a4c62 !important;
+}
+
+html[data-theme="dark"] .table > tbody > tr > td {
+  color: #dfe7f1;
+  border-color: #304158;
+}
+
+html[data-theme="dark"] .table > tbody > tr:hover > * {
+  background-color: rgba(105, 173, 255, 0.045);
+}
+
+html[data-theme="dark"] .alert-warning {
+  color: #dbe4ee;
+  background-color: #1a2535;
+  border-color: #5a4b2d;
+}
+
+html[data-theme="dark"] .alert-warning strong {
+  color: #e7c56f;
+}
+
+html[data-theme="dark"] .alert-info {
+  color: #d2e2ef;
+  background-color: #172838;
+  border-color: #315872;
+}
+
+html[data-theme="dark"] .alert-success {
+  color: #d7e9e1;
+  background-color: #172a25;
+  border-color: #356657;
+}
+
+html[data-theme="dark"] .alert-danger {
+  color: #ecd8df;
+  background-color: #2a1b22;
+  border-color: #704152;
+}
+
+html[data-theme="dark"] .badge.bg-warning,
+html[data-theme="dark"] .badge.text-bg-warning,
+html[data-theme="dark"] .bg-warning {
+  color: #dfc678 !important;
+  background-color: #2a3442 !important;
+  border: 1px solid #46566a;
+}
+
+html[data-theme="dark"] .owner-dashboard {
+  --owner-navy: #e8eef7;
+  --owner-blue: #65adf5;
+  --owner-teal: #61c8c2;
+  --owner-green: #72c99a;
+  --owner-red: #e58691;
+  --owner-amber: #d4a85b;
+  --owner-muted: #98a9bc;
+}
+
+html[data-theme="dark"] .owner-dashboard h1,
+html[data-theme="dark"] .owner-dashboard h2 {
+  color: var(--owner-navy);
+}
+
+html[data-theme="dark"] .owner-scope {
+  color: #aab8c8;
+  background: #151f2e;
+  border-color: #34465c;
+}
+
+html[data-theme="dark"] .owner-period-button,
+html[data-theme="dark"] .owner-more-periods summary {
+  color: #b8c5d4;
+  background: #172335;
+  border-color: #34465c;
+}
+
+html[data-theme="dark"] .owner-period-button:hover,
+html[data-theme="dark"] .owner-period-button:focus-visible,
+html[data-theme="dark"] .owner-more-periods summary:hover {
+  color: #dce8f6;
+  background: #1d2b40;
+  border-color: #4b6686;
+}
+
+html[data-theme="dark"] .owner-period-button.active {
+  color: #f6f9fd;
+  background: #2f78b8;
+  border-color: #4a8dca;
+}
+
+html[data-theme="dark"] .owner-preliminary {
+  color: #cbd6e3;
+  background: #182435;
+  border-color: #40536a;
+}
+
+html[data-theme="dark"] .owner-preliminary strong {
+  color: #e8eef7;
+}
+
+html[data-theme="dark"] .owner-preliminary-icon {
+  color: #f6f0df;
+  background: #80683a;
+}
+
+html[data-theme="dark"] .owner-kpi {
+  border-top-color: #355b7e;
+}
+
+html[data-theme="dark"] .owner-kpi-label,
+html[data-theme="dark"] .owner-comparison,
+html[data-theme="dark"] .owner-section-help,
+html[data-theme="dark"] .owner-freshness,
+html[data-theme="dark"] .owner-no-comparison,
+html[data-theme="dark"] .owner-signal-detail {
+  color: #95a6b9;
+}
+
+html[data-theme="dark"] .owner-kpi-value,
+html[data-theme="dark"] .owner-comparison strong,
+html[data-theme="dark"] .owner-mini-chart-head,
+html[data-theme="dark"] .owner-signal-title {
+  color: #e3ebf5;
+}
+
+html[data-theme="dark"] .owner-badge {
+  border: 1px solid #43556b;
+  background: #223044;
+}
+
+html[data-theme="dark"] .owner-badge.preliminary {
+  color: #d9bd70;
+  background: #223044;
+}
+
+html[data-theme="dark"] .owner-badge.partial {
+  color: #b9cde2;
+  background: #223044;
+}
+
+html[data-theme="dark"] .owner-mini-chart,
+html[data-theme="dark"] .owner-empty-chart {
+  background: #172335;
+  border-color: #34465c;
+}
+
+html[data-theme="dark"] .owner-season-tab {
+  color: #aebdcd;
+  background: #172335;
+  border-color: #34465c;
+}
+
+html[data-theme="dark"] .owner-season-tab.active {
+  color: #f5f8fc;
+  background: #294f75;
+  border-color: #4778a6;
+}
+
+html[data-theme="dark"] .owner-signal {
+  border-color: #34465c;
+}
+
+html[data-theme="dark"] .owner-signal:hover {
+  background: #182436;
+  border-color: #4b617c;
+}
