@@ -133,6 +133,22 @@
           <div class="col-md-6"><div class="text-muted small">Дата приёма</div><div class="fw-semibold">{{ employee.hired_at|date:"d.m.Y"|default:"не загружена" }}</div></div>
           <div class="col-md-6"><div class="text-muted small">Дата увольнения</div><div class="fw-semibold">{{ employee.dismissed_at|date:"d.m.Y"|default:"—" }}</div></div>
         </div>
+        {% if can_edit_employment_status %}
+        <details class="mt-3">
+          <summary class="btn btn-sm btn-outline-primary">Изменить кадровый статус</summary>
+          <form method="post" action="{% url 'finance_payroll_employee_status_update' employee.id %}" class="border rounded p-3 mt-2">
+            {% csrf_token %}
+            <div class="row g-2 align-items-end">
+              <div class="col-md-5"><label class="form-label">{{ employment_status_form.employment_status.label }}</label>{{ employment_status_form.employment_status }}</div>
+              <div class="col-md-4"><label class="form-label">{{ employment_status_form.dismissed_at.label }}</label>{{ employment_status_form.dismissed_at }}</div>
+              <div class="col-md-3"><button class="btn btn-primary w-100" type="submit">Сохранить статус</button></div>
+            </div>
+            <div class="small text-muted mt-2">
+              Для сотрудников, связанных с 1С, статус «Недействителен» будет автоматически перенесён при обновлении ФОТ. Локальные записи можно изменить здесь вручную.
+            </div>
+          </form>
+        </details>
+        {% endif %}
       </div>
     </div>
     <div class="col-lg-6">
