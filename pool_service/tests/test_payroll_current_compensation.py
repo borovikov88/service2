@@ -138,6 +138,49 @@ class PayrollPlanReaderTests(TestCase):
         reader.check_time.assert_called_once()
 
     @patch("pool_service.finance_imports.odata_payroll_plan.Reader")
+    def test_reader_checks_tracked_employee_status_without_current_plan_rows(
+        self, reader_cls
+    ):
+        reader = reader_cls.return_value
+
+        def pages(entity, options):
+            if entity == "InformationRegister_ПлановыеНачисленияИУдержания_RecordType":
+                return [[]]
+            if entity == "Catalog_Сотрудники":
+                self.assertIn("Недействителен", options.get("$select", ""))
+                return [[{
+                    "Ref_Key": EMPLOYEE_GUID,
+                    "Description": "Алексеев Иван Алексеевич",
+                    "DeletionMark": False,
+                    "Недействителен": True,
+                    "ВАрхиве": False,
+                }]]
+            raise AssertionError(entity)
+
+        reader.pages_for.side_effect = pages
+
+        result = read_current_plan(
+            {
+                "ONEC_ODATA_ORGANIZATION_GUIDS": ORG_GUID,
+                "ONEC_ODATA_PAYROLL_CURRENCY_GUID": CURRENCY_GUID,
+            },
+            date(2026, 9, 20),
+            employee_guids=[EMPLOYEE_GUID],
+        )
+
+        self.assertEqual(result["items"], [])
+        self.assertEqual(
+            result["employee_statuses"],
+            [{
+                "employee_guid": EMPLOYEE_GUID,
+                "employee_name": "Алексеев Иван Алексеевич",
+                "deletion_mark": False,
+                "inactive": True,
+                "archived": False,
+            }],
+        )
+
+    @patch("pool_service.finance_imports.odata_payroll_plan.Reader")
     def test_reader_does_not_resurrect_cancelled_salary(self, reader_cls):
         reader = reader_cls.return_value
 
