@@ -44,10 +44,12 @@ class OneCMoneyForecastRow(models.Model):
 
     KIND_ORDER_SCHEDULE = "order_schedule"
     KIND_ORDER_DUE = "order_due"
+    KIND_REALIZATION_DUE = "realization_due"
     KIND_SUPPLIER_SCHEDULE = "supplier_schedule"
     KIND_CHOICES = [
         (KIND_ORDER_SCHEDULE, "График оплаты заказа покупателя"),
         (KIND_ORDER_DUE, "Срок оплаты заказа покупателя"),
+        (KIND_REALIZATION_DUE, "Срок оплаты реализации по договору"),
         (KIND_SUPPLIER_SCHEDULE, "График оплаты заказа поставщику"),
     ]
 
@@ -79,6 +81,8 @@ class OneCMoneyForecastRow(models.Model):
     source_identity = models.CharField(max_length=96)
 
     order_guid = models.UUIDField(null=True, blank=True)
+    document_guid = models.UUIDField(null=True, blank=True)
+    document_type = models.CharField(max_length=80, blank=True)
     agreement_guid = models.UUIDField(null=True, blank=True)
     counterparty_guid = models.UUIDField(null=True, blank=True)
     counterparty_name = models.CharField(max_length=300, blank=True)
@@ -116,6 +120,7 @@ class OneCMoneyForecastRow(models.Model):
             models.Index(fields=["snapshot", "direction", "confirmation_status"], name="money_fc_dir_status_idx"),
             models.Index(fields=["snapshot", "expected_month"], name="money_fc_month_idx"),
             models.Index(fields=["snapshot", "order_guid"], name="money_fc_order_idx"),
+            models.Index(fields=["snapshot", "document_guid"], name="money_fc_document_idx"),
         ]
 
 
