@@ -497,6 +497,21 @@ def channels(request):
             if provider_connection
             else ""
         )
+        telephony.megafon_last_event_at = (
+            (provider_connection.settings or {}).get("megafon_last_event_at", "")
+            if provider_connection
+            else ""
+        )
+        telephony.megafon_last_event_type = (
+            (provider_connection.settings or {}).get("megafon_last_event_type", "")
+            if provider_connection
+            else ""
+        )
+        telephony.megafon_last_event_phone = (
+            (provider_connection.settings or {}).get("megafon_last_event_phone", "")
+            if provider_connection
+            else ""
+        )
     return render(
         request,
         "pool_service/communications/channels.html",
