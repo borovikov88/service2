@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -16,6 +17,10 @@ from pool_service.finance_imports.finance_position import (
 from pool_service.finance_imports.management_finance import (
     get_cashflow_breakdown,
     get_monthly_finance,
+)
+from pool_service.finance_position_models import (
+    OneCFinancePositionSnapshot,
+    SettlementPositionRow,
 )
 from pool_service.money_models import (
     ManagementMoneyPlan,
@@ -85,6 +90,8 @@ def persist_money_forecast(organization, user, source, *, sync_run=None):
             item_kind=row.item_kind,
             source_identity=row.source_identity,
             order_guid=row.order_guid,
+            document_guid=row.document_guid,
+            document_type=row.document_type,
             agreement_guid=row.agreement_guid,
             counterparty_guid=row.counterparty_guid,
             counterparty_name=row.counterparty_name,
@@ -109,12 +116,74 @@ def persist_money_forecast(organization, user, source, *, sync_run=None):
     return snapshot
 
 
+def _match_realization_receivables(organization, source):
+    """Confirm realization forecast amounts only from the active factual AR snapshot."""
+    position = (
+        OneCFinancePositionSnapshot.objects.filter(
+            organization=organization, is_active=True
+        )
+        .order_by("-snapshot_at", "-id")
+        .first()
+    )
+    if position is None:
+        return source
+
+    receivables = defaultdict(list)
+    for row in position.settlement_rows.filter(
+        side=SettlementPositionRow.SIDE_CUSTOMER,
+        management_classification=SettlementPositionRow.CLASS_RECEIVABLE,
+    ).exclude(document_guid__isnull=True):
+        receivables[str(row.document_guid)].append(row)
+
+    matched_rows = []
+    for row in source.rows:
+        if row.item_kind != OneCMoneyForecastRow.KIND_REALIZATION_DUE or not row.document_guid:
+            matched_rows.append(row)
+            continue
+        matches = receivables.get(str(row.document_guid), [])
+        if len(matches) == 1:
+            remaining = abs(matches[0].amount)
+            paid = (
+                max((row.expected_amount or ZERO) - remaining, ZERO)
+                if row.expected_amount is not None else None
+            )
+            matched_rows.append(replace(
+                row,
+                matched_paid_amount=paid,
+                remaining_amount=remaining,
+                payment_match_status="receivable_document_matched",
+                confirmation_status="confirmed",
+                basis=f"{row.basis} · остаток по дебиторке 1С",
+            ))
+        elif len(matches) > 1:
+            matched_rows.append(replace(
+                row,
+                payment_match_status="ambiguous_receivable_document",
+                confirmation_status="review",
+            ))
+        elif row.order_date and position.snapshot_at.date() >= row.order_date:
+            # A posted realization absent from a later/equal factual AR snapshot
+            # is treated as settled, not as a future receipt.
+            matched_rows.append(replace(
+                row,
+                matched_paid_amount=row.expected_amount,
+                remaining_amount=ZERO,
+                payment_match_status="no_current_receivable",
+                confirmation_status="excluded",
+                basis=f"{row.basis} · текущей дебиторки по реализации нет",
+            ))
+        else:
+            matched_rows.append(row)
+    return replace(source, rows=tuple(matched_rows))
+
+
 def sync_money_forecast(organization, user, *, now=None, sync_run=None, config=None, opener=None):
     """Refresh planning inputs after the normal 1C sync; never called by page views."""
     from pool_service.finance_imports.odata_money_forecast import read_money_forecast
 
     now = now or timezone.now()
     source = read_money_forecast(now, config=config, opener=opener)
+    source = _match_realization_receivables(organization, source)
     return persist_money_forecast(
         organization, user, source, sync_run=sync_run
     )
@@ -203,6 +272,8 @@ def _synced_item(row):
         "direction": row.direction,
         "source_type": row.item_kind,
         "order_guid": str(row.order_guid) if row.order_guid else None,
+        "document_guid": str(row.document_guid) if row.document_guid else None,
+        "document_type": row.document_type,
         "counterparty_name": row.counterparty_name,
         "object_name": row.object_name,
         "order_reference": (
