@@ -224,7 +224,7 @@
                       <div class="border rounded p-2 reward-line-options"></div>
                     </div>
                     {% endif %}
-                    <div class="col-12"><div class="alert alert-danger py-2 reward-form-error"></div><button class="btn btn-sm btn-primary reward-submit-button">Сохранить изменения</button></div>
+                    <div class="col-12"><div class="alert alert-danger py-2 reward-form-error"></div><button type="submit" class="btn btn-sm btn-primary reward-submit-button" data-no-loading>Сохранить изменения</button></div>
                   </form>
                   {% endif %}
                 {% endfor %}
@@ -256,7 +256,7 @@
               <div class="reward-batch-actions mt-2">
                 <button type="button" class="btn btn-outline-primary reward-add-row" data-no-loading>+ Ещё участник</button>
                 <button type="button" class="btn btn-sm btn-outline-danger reward-remove-last" data-no-loading disabled aria-label="Удалить последнего участника" title="Удалить последнего участника">×</button>
-                <button class="btn btn-primary reward-submit-button">Сохранить всех</button>
+                <button type="submit" class="btn btn-primary reward-submit-button" data-no-loading>Сохранить всех</button>
               </div>
               {% if order.source_document_type == "Document_ЧекККМ" %}<div class="form-text mt-2">Продажа по чеку считается автоматически по отдельной ставке розницы.</div>{% endif %}
               {% if order.direct_expenses %}<div class="alert alert-secondary py-2 mt-2 mb-0 small">У заказа есть прямые затраты {{ order.direct_expense_total|money }}, относящиеся ко всему заказу. Если выбран только фрагмент позиций, система не распределит эти затраты молча и потребует отдельного решения.</div>{% endif %}
@@ -556,6 +556,9 @@ document.querySelectorAll('.reward-order').forEach(order => {
       rewardBindRow(form);
       if (!rewardValidateContainer(form, existing, form.dataset.participationId)) {
         event.preventDefault();
+        if (event.submitter && window.resetButtonLoading) {
+          window.resetButtonLoading(event.submitter);
+        }
         return;
       }
       rewardStoreScroll(form);
@@ -647,6 +650,9 @@ document.querySelectorAll('.reward-order').forEach(order => {
       }
       if (!valid) {
         event.preventDefault();
+        if (event.submitter && window.resetButtonLoading) {
+          window.resetButtonLoading(event.submitter);
+        }
         return;
       }
       rewardStoreScroll(form);
