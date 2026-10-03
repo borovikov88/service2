@@ -67,6 +67,7 @@ from django.contrib.sitemaps.views import sitemap as sitemap_view
 from pool_service.services.finance import can_configure_automatic_lock, format_money
 from pool_service.security import mark_password_login_fresh
 from pool_service.pool_details_forms import PoolServiceDetailsForm
+from pool_service.theme import THEME_VALUES, set_theme_cookie
 
 import uuid
 
@@ -9122,6 +9123,17 @@ def profile_view(request):
     )
 
 
+
+    if request.method == "POST" and request.POST.get("theme_settings") == "1":
+        theme_preference = (request.POST.get("theme") or "").strip().lower()
+        if theme_preference not in THEME_VALUES:
+            messages.error(request, "Выберите корректную тему интерфейса.")
+            return redirect("profile")
+
+        response = redirect("profile")
+        set_theme_cookie(response, theme_preference, request=request)
+        messages.success(request, "Тема интерфейса сохранена для этого устройства.")
+        return response
 
     if request.method == "POST" and request.POST.get("automatic_lock_settings") == "1":
         if not can_configure_auto_lock:
