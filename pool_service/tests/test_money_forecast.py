@@ -18,6 +18,8 @@ from pool_service.finance_imports.odata_money_forecast import (
     CUSTOMER_PREPAYMENT,
     CUSTOMER_SCHEDULE,
     CUSTOMER_STATES,
+    REALIZATION,
+    AGREEMENTS,
     SUPPLIER_ORDER,
     SUPPLIER_SCHEDULE,
     read_money_forecast,
@@ -34,6 +36,8 @@ from pool_service.models import Organization
 ORG_GUID = "11111111-1111-1111-1111-111111111111"
 ORDER_GUID = "fa80360c-7124-11f1-89a3-fa163e1420a5"
 PARTY_GUID = "22222222-2222-2222-2222-222222222222"
+AGREEMENT_GUID = "33333333-3333-3333-3333-333333333333"
+REALIZATION_GUID = "44444444-4444-4444-4444-444444444444"
 STATE_WORK = "b0987b32-c07f-11ef-9fc3-fa163e1420a5"
 STATE_INVOICE = "b09a10e6-c07f-11ef-9fc3-fa163e1420a5"
 
@@ -75,9 +79,14 @@ def _customer_order(*, state=STATE_WORK, due="0001-01-01T00:00:00", cancelled=Fa
     }
 
 
-def _reader_side_effect(*, schedule=None, prepayment=None, state=STATE_WORK, cancelled=False):
+def _reader_side_effect(
+    *, schedule=None, prepayment=None, state=STATE_WORK, cancelled=False,
+    realizations=None, agreements=None,
+):
     schedule = list(schedule or [])
     prepayment = list(prepayment or [])
+    realizations = list(realizations or [])
+    agreements = list(agreements or [])
 
     def read(_config_value, entity, _fields, **_kwargs):
         if entity == CUSTOMER_ORDER:
@@ -90,6 +99,10 @@ def _reader_side_effect(*, schedule=None, prepayment=None, state=STATE_WORK, can
             return prepayment
         if entity == SUPPLIER_SCHEDULE:
             return []
+        if entity == REALIZATION:
+            return realizations
+        if entity == AGREEMENTS:
+            return agreements
         return []
 
     return read
@@ -107,6 +120,55 @@ def _lookups(_config_value, entity, guids, _opener):
 
 
 class MoneyForecastReaderTests(TestCase):
+    def test_realization_uses_contract_payment_term_without_inventing_payment(self):
+        realization = {
+            "Ref_Key": REALIZATION_GUID,
+            "Date": "2026-09-28T15:03:50",
+            "DeletionMark": False,
+            "Posted": True,
+            "Number": "НФНФ-000349",
+            "Организация_Key": ORG_GUID,
+            "Контрагент_Key": PARTY_GUID,
+            "Договор_Key": AGREEMENT_GUID,
+            "Заказ": "00000000-0000-0000-0000-000000000000",
+            "Заказ_Type": "StandardODATA.Document_ЗаказПокупателя",
+            "СуммаДокумента": "28086.00",
+            "Ответственный_Key": "00000000-0000-0000-0000-000000000000",
+        }
+        agreement = {
+            "Ref_Key": AGREEMENT_GUID,
+            "Description": "Основной договор",
+            "DeletionMark": False,
+            "Недействителен": False,
+            "СрокОплатыПокупателя": "30",
+        }
+        with (
+            patch(
+                "pool_service.finance_imports.odata_money_forecast._read",
+                side_effect=_reader_side_effect(
+                    realizations=[realization], agreements=[agreement]
+                ),
+            ),
+            patch(
+                "pool_service.finance_imports.odata_money_forecast._lookup_descriptions",
+                side_effect=_lookups,
+            ),
+        ):
+            result = read_money_forecast(
+                datetime(2026, 10, 3, 10, 0, tzinfo=timezone.utc),
+                config=_config(),
+                opener=object(),
+            )
+        rows = [row for row in result.rows if row.item_kind == "realization_due"]
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row.document_guid, REALIZATION_GUID)
+        self.assertEqual(row.expected_amount, Decimal("28086.00"))
+        self.assertEqual(row.expected_date, date(2026, 10, 28))
+        self.assertIsNone(row.remaining_amount)
+        self.assertEqual(row.confirmation_status, "review")
+        self.assertEqual(row.payment_match_status, "receivable_match_required")
+
     def test_control_order_without_schedule_or_due_is_not_assumed_unpaid(self):
         with (
             patch(
@@ -343,7 +405,9 @@ class MoneyForecastPlanTests(TestCase):
             forecast_months=[date(2026, 9, 1), date(2026, 10, 1)],
         )
         self.assertEqual(len(result["overdue"]), 1)
-        self.assertEqual(result["months"][0]["receipts"], Decimal("0.00"))
+        self.assertEqual(result["months"][0]["receipts"], Decimal("10.00"))
+        self.assertTrue(result["months"][0]["items"][0]["is_overdue"])
+        self.assertEqual(result["months"][0]["items"][0]["original_expected_date"], date(2026, 9, 1))
         self.assertEqual(result["months"][1]["receipts"], Decimal("0.00"))
 
     def test_onec_schedule_has_priority_over_manual_duplicate(self):
