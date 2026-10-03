@@ -769,7 +769,9 @@ class CommunicationsTests(TestCase):
                 "callid": "event-123",
                 "phone": "+79001112233",
                 "type": "INCOMING",
-                "ext": "worker",
+                "ext": "601",
+                "user": "worker",
+                "direction": "in",
             },
         )
         self.assertEqual(live_event.status_code, 200)
@@ -782,6 +784,35 @@ class CommunicationsTests(TestCase):
         self.assertEqual(
             provider_connection.settings["megafon_last_event_phone"],
             "+79001112233",
+        )
+        self.assertEqual(
+            provider_connection.settings["megafon_last_event_user"],
+            "worker",
+        )
+        self.assertEqual(
+            provider_connection.settings["megafon_last_event_ext"],
+            "601",
+        )
+
+        transferred = self.client.post(
+            webhook_url,
+            {
+                "cmd": "event",
+                "crm_token": "megafon-crm-token",
+                "callid": "event-transfer-123",
+                "phone": "+79001112233",
+                "type": "TRANSFERRED",
+                "ext": "602",
+                "user": "worker",
+                "direction": "in",
+                "second_callid": "event-transfer-456",
+            },
+        )
+        self.assertEqual(transferred.status_code, 200)
+        provider_connection.refresh_from_db()
+        self.assertEqual(
+            provider_connection.settings["megafon_last_event_type"],
+            "TRANSFERRED",
         )
 
         duplicate = self.client.post(
