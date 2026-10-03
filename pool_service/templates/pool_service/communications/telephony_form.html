@@ -27,6 +27,7 @@
       <div class="mb-3">
         <label class="form-label" for="{{ form.external_id.id_for_label }}">{{ form.external_id.label }}</label>
         {{ form.external_id }}
+        {% if form.external_id.help_text %}<div class="form-text">{{ form.external_id.help_text }}</div>{% endif %}
         {% for error in form.external_id.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
       </div>
       <div class="mb-3">
