@@ -384,9 +384,8 @@ def employee_rewards(request):
                 employee = None
                 if not mark_na:
                     employee = get_object_or_404(
-                        Employee,
+                        _reward_selectable_employees(organization),
                         pk=request.POST.get("employee_id"),
-                        organization=organization,
                     )
                 resolve_documentation_placeholder(
                     item,
