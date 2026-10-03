@@ -34,6 +34,16 @@ class ThemePreferenceTests(TestCase):
         self.assertEqual(cookie["samesite"], "Lax")
         self.assertTrue(cookie["httponly"])
 
+        secure_response = self.client.post(
+            reverse("profile"),
+            {
+                "theme_settings": "1",
+                "theme": "light",
+            },
+            secure=True,
+        )
+        self.assertTrue(secure_response.cookies[THEME_COOKIE_NAME]["secure"])
+
         follow_up = self.client.get(reverse("profile"))
         self.assertContains(follow_up, 'data-theme-preference="dark"')
         self.assertContains(follow_up, 'name="theme" value="dark" checked')
