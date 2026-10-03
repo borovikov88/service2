@@ -221,11 +221,13 @@ from .communication_views import (
     communication_connection_rotate_token,
     communication_connection_set_active,
     communication_telephony_create,
+    communication_telephony_connect,
     communication_telephony_edit,
     communication_telephony_set_active,
 )
 from .communication_api import (
     avito_webhook,
+    megafon_webhook,
     website_chat_attachment,
     website_chat_message,
     website_outbox,
@@ -235,6 +237,7 @@ from .communication_api import (
 
 urlpatterns = [
     path("api/communications/avito/<uuid:public_id>/<str:webhook_token>/webhook/", avito_webhook, name="avito_webhook"),
+    path("api/communications/megafon/<uuid:public_id>/webhook/", megafon_webhook, name="megafon_webhook"),
     path("api/communications/website/<uuid:public_id>/chat/messages/", website_chat_message, name="website_chat_message"),
     path("api/communications/website/<uuid:public_id>/requests/", website_request_create, name="website_request_create"),
     path("api/communications/website/<uuid:public_id>/chat/<str:session_id>/outbox/", website_outbox, name="website_chat_outbox"),
@@ -252,6 +255,7 @@ urlpatterns = [
     path("communications/connections/<int:connection_id>/rotate-token/", communication_connection_rotate_token, name="communication_connection_rotate_token"),
     path("communications/connections/<int:connection_id>/active/", communication_connection_set_active, name="communication_connection_set_active"),
     path("communications/telephony/new/", communication_telephony_create, name="communication_telephony_create"),
+    path("communications/telephony/<int:connection_id>/connect/", communication_telephony_connect, name="communication_telephony_connect"),
     path("communications/telephony/<int:connection_id>/edit/", communication_telephony_edit, name="communication_telephony_edit"),
     path("communications/telephony/<int:connection_id>/active/", communication_telephony_set_active, name="communication_telephony_set_active"),
     path("communications/<uuid:conversation_uuid>/reply/", conversation_reply, name="communication_reply"),

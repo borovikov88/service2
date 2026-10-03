@@ -1,4 +1,8 @@
 import json
+from datetime import datetime, timezone as datetime_timezone
+from urllib.parse import urlsplit
+
+from django.contrib.auth.models import User
 from django.db import transaction
 from django.http import FileResponse, JsonResponse
 from django.core.cache import cache
@@ -8,8 +12,17 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods, require_POST
 
-from pool_service.communication_models import ChannelConnection, Conversation, ConversationMessage, MessageAttachment, WebsiteRequest
+from pool_service.communication_models import (
+    ChannelConnection,
+    Conversation,
+    ConversationMessage,
+    MessageAttachment,
+    PhoneCall,
+    TelephonyConnection,
+    WebsiteRequest,
+)
 from pool_service.communication_services import receive_message
+from pool_service.models import Client, OrganizationAccess
 from pool_service.communication_avito import AvitoError, ingest_webhook
 
 
@@ -290,4 +303,238 @@ def avito_webhook(request, public_id, webhook_token):
         "accepted": True,
         "created": created,
         "message_id": message.pk if message else None,
+    })
+
+
+def _megafon_payload(request):
+    content_type = (request.content_type or "").lower()
+    if content_type.startswith("application/json"):
+        return _payload(request)
+    if int(request.META.get("CONTENT_LENGTH") or 0) > MAX_BODY_BYTES:
+        raise ValueError("payload_too_large")
+    data = request.POST.dict()
+    if not data:
+        raise ValueError("invalid_payload")
+    return data
+
+
+def _megafon_connection(request, public_id, data):
+    remote_address = request.META.get("REMOTE_ADDR", "unknown")
+    throttle_key = f"megafon-webhook:{public_id}:{remote_address}"
+    if cache.add(throttle_key, 1, timeout=60):
+        request_count = 1
+    else:
+        try:
+            request_count = cache.incr(throttle_key)
+        except ValueError:
+            cache.set(throttle_key, 1, timeout=60)
+            request_count = 1
+    if request_count > 600:
+        return None, None
+
+    connection = get_object_or_404(
+        ChannelConnection.objects.select_related("channel__organization"),
+        public_id=public_id,
+        is_active=True,
+        channel__is_active=True,
+        channel__kind="megafon",
+    )
+    crm_token = str(data.get("crm_token", "") or "").strip()
+    if not connection.check_api_token(crm_token):
+        return None, None
+    telephony = get_object_or_404(
+        TelephonyConnection,
+        organization=connection.channel.organization,
+        external_id=connection.external_id,
+        is_active=True,
+    )
+    return connection, telephony
+
+
+def _normalize_phone(value):
+    digits = "".join(character for character in str(value or "") if character.isdigit())
+    if len(digits) >= 10:
+        return digits[-10:]
+    return digits
+
+
+def _megafon_contact(organization, phone):
+    normalized = _normalize_phone(phone)
+    if not normalized:
+        return None
+    for client in Client.objects.filter(organization=organization).only("id", "name", "phone"):
+        if _normalize_phone(client.phone) == normalized:
+            return client
+    return None
+
+
+def _megafon_employee(organization, provider_user, extension=""):
+    candidates = {
+        str(provider_user or "").strip().casefold(),
+        str(extension or "").strip().casefold(),
+    }
+    candidates.discard("")
+    if not candidates:
+        return None
+    user_ids = OrganizationAccess.objects.filter(
+        organization=organization
+    ).values_list("user_id", flat=True)
+    for user in User.objects.filter(pk__in=user_ids):
+        identifiers = {
+            user.username.strip().casefold(),
+            user.get_full_name().strip().casefold(),
+            user.email.strip().casefold(),
+        }
+        identifiers.discard("")
+        if identifiers & candidates:
+            return user
+    return None
+
+
+def _megafon_started_at(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return timezone.now()
+    parsed = None
+    for value_format in ("%Y-%m-%d %H:%M:%S", "%Y%m%dT%H%M%SZ"):
+        try:
+            parsed = datetime.strptime(raw, value_format)
+            break
+        except ValueError:
+            continue
+    if parsed is None:
+        raise ValueError("invalid_start")
+    if raw.endswith("Z"):
+        return parsed.replace(tzinfo=datetime_timezone.utc)
+    return timezone.make_aware(parsed, timezone.get_current_timezone())
+
+
+def _remember_megafon_recording_host(telephony, recording_ref):
+    if not recording_ref:
+        return
+    try:
+        parsed = urlsplit(recording_ref)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError:
+        return
+    if (
+        parsed.scheme != "https"
+        or not hostname
+        or parsed.port not in (None, 443)
+        or parsed.username
+        or parsed.password
+        or not (hostname == "megapbx.ru" or hostname.endswith(".megapbx.ru"))
+    ):
+        return
+    host = hostname.lower()
+    hosts = telephony.recording_allowed_hosts
+    if not isinstance(hosts, list):
+        hosts = []
+    normalized = [str(item).strip().lower() for item in hosts if isinstance(item, str) and item.strip()]
+    if host in normalized:
+        return
+    normalized.append(host)
+    TelephonyConnection.objects.filter(pk=telephony.pk).update(recording_allowed_hosts=normalized)
+    telephony.recording_allowed_hosts = normalized
+
+
+@csrf_exempt
+@require_POST
+def megafon_webhook(request, public_id):
+    try:
+        data = _megafon_payload(request)
+    except ValueError as exc:
+        return _error(str(exc))
+
+    connection, telephony = _megafon_connection(request, public_id, data)
+    if not connection:
+        return _error("Invalid token", 401)
+
+    cmd = str(data.get("cmd", "") or "").strip().lower()
+    if cmd == "event":
+        return JsonResponse({"accepted": True})
+
+    if cmd == "contact":
+        phone = str(data.get("phone", "") or "").strip()
+        client = _megafon_contact(connection.channel.organization, phone)
+        return JsonResponse({"contact_name": client.name} if client else {})
+
+    if cmd != "history":
+        return JsonResponse({"accepted": True, "ignored": True})
+
+    call_id = str(data.get("callid", "") or "").strip()
+    phone = str(data.get("phone", "") or "").strip()
+    direction = str(data.get("type", "") or "").strip().lower()
+    status = str(data.get("status", "") or "").strip()
+    provider_user = str(data.get("user", "") or "").strip()
+    extension = str(data.get("ext", "") or "").strip()
+    recording_ref = str(data.get("link", "") or "").strip()
+
+    if not call_id or len(call_id) > 255:
+        return _error("invalid_callid")
+    if not phone or len(phone) > 40:
+        return _error("invalid_phone")
+    if direction not in {PhoneCall.DIRECTION_IN, PhoneCall.DIRECTION_OUT}:
+        return _error("invalid_type")
+    if len(recording_ref) > 500:
+        return _error("invalid_link")
+
+    try:
+        duration_seconds = int(data.get("duration", 0))
+    except (TypeError, ValueError):
+        return _error("invalid_duration")
+    if duration_seconds < 0 or duration_seconds > 7 * 24 * 60 * 60:
+        return _error("invalid_duration")
+    try:
+        started_at = _megafon_started_at(data.get("start"))
+    except ValueError as exc:
+        return _error(str(exc))
+
+    employee = _megafon_employee(
+        connection.channel.organization,
+        provider_user,
+        extension,
+    )
+    client = _megafon_contact(connection.channel.organization, phone)
+    result = (
+        PhoneCall.RESULT_ANSWERED
+        if status.casefold() == "success"
+        else PhoneCall.RESULT_MISSED
+    )
+
+    with transaction.atomic():
+        existing_call = PhoneCall.objects.filter(
+            connection=telephony,
+            external_id=call_id,
+        ).first()
+        phone_call, created = PhoneCall.objects.update_or_create(
+            connection=telephony,
+            external_id=call_id,
+            defaults={
+                "organization": connection.channel.organization,
+                "employee": employee,
+                "contact_name": client.name if client else "",
+                "phone_number": phone,
+                "direction": direction,
+                "started_at": started_at,
+                "duration_seconds": duration_seconds,
+                "result": result,
+                "recording_ref": (
+                    recording_ref
+                    or (existing_call.recording_ref if existing_call else "")
+                ),
+            },
+        )
+        _remember_megafon_recording_host(telephony, recording_ref)
+        settings_data = dict(connection.settings or {})
+        settings_data["megafon_last_received_at"] = timezone.now().isoformat()
+        settings_data["megafon_last_result"] = "created" if created else "updated"
+        connection.settings = settings_data
+        connection.save(update_fields=["settings"])
+
+    return JsonResponse({
+        "accepted": True,
+        "created": created,
+        "call_id": phone_call.pk,
     })
