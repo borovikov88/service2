@@ -139,7 +139,6 @@ def _employee_status_rows(reader, ids):
                     raise PayrollError("CATALOG_INVALID", "employee_status")
                 result[key] = {
                     "employee_guid": key,
-                    "employee_name": description.strip(),
                     "deletion_mark": flags[0],
                     "inactive": flags[1],
                     "archived": flags[2],
