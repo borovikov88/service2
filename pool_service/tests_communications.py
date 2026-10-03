@@ -761,6 +761,29 @@ class CommunicationsTests(TestCase):
         provider_connection.refresh_from_db()
         self.assertTrue(provider_connection.settings["megafon_last_received_at"])
 
+        live_event = self.client.post(
+            webhook_url,
+            {
+                "cmd": "event",
+                "crm_token": "megafon-crm-token",
+                "callid": "event-123",
+                "phone": "+79001112233",
+                "type": "INCOMING",
+                "ext": "worker",
+            },
+        )
+        self.assertEqual(live_event.status_code, 200)
+        self.assertEqual(live_event.json()["contact_name"], "Тестовый клиент")
+        provider_connection.refresh_from_db()
+        self.assertEqual(
+            provider_connection.settings["megafon_last_event_type"],
+            "INCOMING",
+        )
+        self.assertEqual(
+            provider_connection.settings["megafon_last_event_phone"],
+            "+79001112233",
+        )
+
         duplicate = self.client.post(
             webhook_url,
             {
