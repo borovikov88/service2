@@ -1,4 +1,7 @@
+from pathlib import Path
+
 from django.contrib.auth.models import User
+from django.contrib.staticfiles import finders
 from django.test import TestCase
 from django.urls import reverse
 
@@ -59,3 +62,15 @@ class ThemePreferenceTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertNotIn(THEME_COOKIE_NAME, response.cookies)
+
+
+    def test_dark_theme_has_readable_finance_and_warning_overrides(self):
+        css_path = finders.find("assets/css/theme.css")
+        self.assertIsNotNone(css_path)
+        css = Path(css_path).read_text(encoding="utf-8")
+
+        self.assertIn('html[data-theme="dark"] .alert-warning', css)
+        self.assertIn('html[data-theme="dark"] .owner-dashboard', css)
+        self.assertIn('html[data-theme="dark"] .owner-badge.preliminary', css)
+        self.assertIn('html[data-theme="dark"] .finance-desktop .finance-data-card thead th', css)
+        self.assertIn('html[data-theme="dark"] .app-logo', css)
