@@ -456,19 +456,36 @@ def megafon_webhook(request, public_id):
         event_type = str(data.get("type", "") or "").strip().upper()
         phone = str(data.get("phone", "") or "").strip()
         extension = str(data.get("ext", "") or "").strip()
+        provider_user = str(data.get("user", "") or "").strip()
+        direction = str(data.get("direction", "") or "").strip().lower()
         call_id = str(data.get("callid", "") or "").strip()
-        allowed_event_types = {"INCOMING", "ACCEPTED", "COMPLETED", "CANCELLED", "OUTGOING"}
+        allowed_event_types = {
+            "INCOMING",
+            "ACCEPTED",
+            "COMPLETED",
+            "CANCELLED",
+            "OUTGOING",
+            "TRANSFERRED",
+        }
         if event_type not in allowed_event_types:
             return _error("invalid_event_type")
         if not phone or len(phone) > 40:
             return _error("invalid_phone")
-        if len(extension) > 255 or len(call_id) > 255:
+        if direction and direction not in {"in", "out"}:
+            return _error("invalid_direction")
+        if (
+            len(extension) > 255
+            or len(provider_user) > 255
+            or len(call_id) > 255
+        ):
             return _error("invalid_event")
         settings_data = dict(connection.settings or {})
         settings_data["megafon_last_event_at"] = timezone.now().isoformat()
         settings_data["megafon_last_event_type"] = event_type
         settings_data["megafon_last_event_phone"] = phone
         settings_data["megafon_last_event_ext"] = extension
+        settings_data["megafon_last_event_user"] = provider_user
+        settings_data["megafon_last_event_direction"] = direction
         settings_data["megafon_last_event_callid"] = call_id
         connection.settings = settings_data
         connection.save(update_fields=["settings"])
@@ -554,6 +571,9 @@ def megafon_webhook(request, public_id):
         settings_data = dict(connection.settings or {})
         settings_data["megafon_last_received_at"] = timezone.now().isoformat()
         settings_data["megafon_last_result"] = "created" if created else "updated"
+        settings_data["megafon_last_history_user"] = provider_user
+        settings_data["megafon_last_history_ext"] = extension
+        settings_data["megafon_last_history_status"] = status
         connection.settings = settings_data
         connection.save(update_fields=["settings"])
 
