@@ -405,7 +405,9 @@ class MoneyForecastPlanTests(TestCase):
             forecast_months=[date(2026, 9, 1), date(2026, 10, 1)],
         )
         self.assertEqual(len(result["overdue"]), 1)
-        self.assertEqual(result["months"][0]["receipts"], Decimal("0.00"))
+        self.assertEqual(result["months"][0]["receipts"], Decimal("10.00"))
+        self.assertTrue(result["months"][0]["items"][0]["is_overdue"])
+        self.assertEqual(result["months"][0]["items"][0]["original_expected_date"], date(2026, 9, 1))
         self.assertEqual(result["months"][1]["receipts"], Decimal("0.00"))
 
     def test_onec_schedule_has_priority_over_manual_duplicate(self):
