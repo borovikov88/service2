@@ -512,6 +512,31 @@ def channels(request):
             if provider_connection
             else ""
         )
+        telephony.megafon_last_event_user = (
+            (provider_connection.settings or {}).get("megafon_last_event_user", "")
+            if provider_connection
+            else ""
+        )
+        telephony.megafon_last_event_ext = (
+            (provider_connection.settings or {}).get("megafon_last_event_ext", "")
+            if provider_connection
+            else ""
+        )
+        telephony.megafon_last_history_user = (
+            (provider_connection.settings or {}).get("megafon_last_history_user", "")
+            if provider_connection
+            else ""
+        )
+        telephony.megafon_last_history_ext = (
+            (provider_connection.settings or {}).get("megafon_last_history_ext", "")
+            if provider_connection
+            else ""
+        )
+        telephony.megafon_last_history_status = (
+            (provider_connection.settings or {}).get("megafon_last_history_status", "")
+            if provider_connection
+            else ""
+        )
     return render(
         request,
         "pool_service/communications/channels.html",
