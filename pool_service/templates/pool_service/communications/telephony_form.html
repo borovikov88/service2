@@ -7,13 +7,16 @@
       <div>
         <div class="text-muted">Коммуникации · Каналы связи</div>
         <h1 class="h3 mb-1">{% if editing %}Настройки Мегафона{% else %}Добавить линию Мегафона{% endif %}</h1>
-        <div class="text-muted">Настройки линии и безопасных адресов записей разговоров.</div>
+        <div class="text-muted">Данные для запросов Service2 → АТС МегаФона и настройки записей разговоров.</div>
       </div>
       <a href="{% url 'communications_channels' %}" class="btn btn-outline-secondary">Назад</a>
     </div>
 
     <div class="alert alert-light border">
-      Автоматическая загрузка звонков из API Мегафона пока не включена. Эта страница готовит линию и ограничения для записей разговоров без хранения секретов провайдера в открытом виде.
+      <strong>Сначала копируем данные из МегаФона в Service2.</strong>
+      В кабинете ВАТС поля «Адрес АТС» и «Ключ для авторизации в АТС» нельзя редактировать —
+      их нужно скопировать сюда. Они используются, когда Service2 обращается к API АТС.
+      Обратное направление АТС → Service2 настраивается отдельно на странице каналов.
     </div>
 
     <form method="post" class="card card-body">
@@ -30,6 +33,24 @@
         {% if form.external_id.help_text %}<div class="form-text">{{ form.external_id.help_text }}</div>{% endif %}
         {% for error in form.external_id.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
       </div>
+      <hr class="my-4">
+      <div class="small text-uppercase text-muted fw-semibold mb-3">Service2 → АТС МегаФона</div>
+      <div class="mb-3">
+        <label class="form-label" for="{{ form.ats_base_url.id_for_label }}">{{ form.ats_base_url.label }}</label>
+        {{ form.ats_base_url }}
+        {% if form.ats_base_url.help_text %}<div class="form-text">{{ form.ats_base_url.help_text }}</div>{% endif %}
+        {% for error in form.ats_base_url.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="{{ form.ats_api_key.id_for_label }}">{{ form.ats_api_key.label }}</label>
+        {{ form.ats_api_key }}
+        {% if editing %}<div class="form-text">Если ключ уже сохранён и менять его не нужно — оставьте поле пустым.</div>{% endif %}
+        {% if form.ats_api_key.help_text %}<div class="form-text">{{ form.ats_api_key.help_text }}</div>{% endif %}
+        {% for error in form.ats_api_key.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+      </div>
+
+      <hr class="my-4">
+      <div class="small text-uppercase text-muted fw-semibold mb-3">Записи разговоров</div>
       <div class="mb-3">
         <label class="form-label" for="{{ form.recording_allowed_hosts.id_for_label }}">{{ form.recording_allowed_hosts.label }}</label>
         {{ form.recording_allowed_hosts }}
