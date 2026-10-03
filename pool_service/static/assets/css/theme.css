@@ -723,8 +723,7 @@ html[data-theme="dark"] .alert-danger {
 }
 
 html[data-theme="dark"] .badge.bg-warning,
-html[data-theme="dark"] .badge.text-bg-warning,
-html[data-theme="dark"] .bg-warning {
+html[data-theme="dark"] .badge.text-bg-warning {
   color: #dfc678 !important;
   background-color: #2a3442 !important;
   border: 1px solid #46566a;
