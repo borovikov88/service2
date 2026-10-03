@@ -21,6 +21,10 @@ Service2 принимает REST-события Виртуальной АТС М
 
 ## Что сохраняется
 
+ВАТС отправляет webhook как `application/x-www-form-urlencoded`; Service2 также принимает JSON для тестов и совместимости.
+
+Для команды `event` поддерживаются типы `INCOMING`, `ACCEPTED`, `COMPLETED`, `CANCELLED`, `OUTGOING`, `TRANSFERRED`. Для диагностики сохраняются `user`, `ext`, направление и номер клиента.
+
 Для команды `history` Service2 принимает:
 - `callid` — внешний идентификатор звонка;
 - `type` — `in` / `out`;
@@ -28,7 +32,7 @@ Service2 принимает REST-события Виртуальной АТС М
 - `phone` — номер клиента;
 - `start` — начало звонка;
 - `duration` — длительность в секундах;
-- `status` — результат;
+- `status` — результат (`Success`, `Busy`, `Missed`, `NotAvailable`, `NotAllowed` и другие значения провайдера);
 - `link` — HTTPS-ссылка на запись;
 - `crm_token` — ключ авторизации.
 
