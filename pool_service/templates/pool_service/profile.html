@@ -193,6 +193,60 @@
 
             <div class="card card-soft mb-4">
                 <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
+                        <div>
+                            <h5 class="card-title mb-1">Тема интерфейса</h5>
+                            <p class="text-muted mb-0">Выберите светлую, тёмную тему или автоматическое переключение по настройке устройства.</p>
+                        </div>
+                        <span class="badge bg-light text-dark border">Это устройство</span>
+                    </div>
+                    <form method="post" class="theme-choice-form">
+                        {% csrf_token %}
+                        <input type="hidden" name="theme_settings" value="1">
+                        <div class="theme-choice-grid" role="radiogroup" aria-label="Тема интерфейса">
+                            <label class="theme-choice">
+                                <input type="radio" name="theme" value="light" {% if theme_preference == 'light' %}checked{% endif %} onchange="this.form.submit()">
+                                <span class="theme-choice__body">
+                                    <i class="bi bi-sun theme-choice__icon" aria-hidden="true"></i>
+                                    <span class="theme-choice__text">
+                                        <strong>Светлая</strong>
+                                        <small>Всегда светлая</small>
+                                    </span>
+                                    <i class="bi bi-check-circle-fill theme-choice__check" aria-hidden="true"></i>
+                                </span>
+                            </label>
+                            <label class="theme-choice">
+                                <input type="radio" name="theme" value="dark" {% if theme_preference == 'dark' %}checked{% endif %} onchange="this.form.submit()">
+                                <span class="theme-choice__body">
+                                    <i class="bi bi-moon-stars theme-choice__icon" aria-hidden="true"></i>
+                                    <span class="theme-choice__text">
+                                        <strong>Тёмная</strong>
+                                        <small>Всегда тёмная</small>
+                                    </span>
+                                    <i class="bi bi-check-circle-fill theme-choice__check" aria-hidden="true"></i>
+                                </span>
+                            </label>
+                            <label class="theme-choice">
+                                <input type="radio" name="theme" value="auto" {% if theme_preference == 'auto' %}checked{% endif %} onchange="this.form.submit()">
+                                <span class="theme-choice__body">
+                                    <i class="bi bi-circle-half theme-choice__icon" aria-hidden="true"></i>
+                                    <span class="theme-choice__text">
+                                        <strong>Авто</strong>
+                                        <small>Как на устройстве</small>
+                                    </span>
+                                    <i class="bi bi-check-circle-fill theme-choice__check" aria-hidden="true"></i>
+                                </span>
+                            </label>
+                        </div>
+                        <noscript>
+                            <button type="submit" class="btn btn-primary mt-3">Сохранить тему</button>
+                        </noscript>
+                    </form>
+                </div>
+            </div>
+
+            <div class="card card-soft mb-4">
+                <div class="card-body">
                     <h5 class="card-title mb-1">Часовой пояс</h5>
                     <p class="text-muted mb-3">Указывается для уведомлений, календаря, задач, CRM и архива.</p>
                     <form method="post" class="row g-3 align-items-end">

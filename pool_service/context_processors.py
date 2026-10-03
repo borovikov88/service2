@@ -1,6 +1,7 @@
 from django.urls import reverse
 
 from .seo import is_indexable_host
+from .theme import get_theme_preference
 
 
 BRAND_TAGLINE = "Система управления"
@@ -137,6 +138,7 @@ def brand_context(request):
     return {
         "brand_name": brand["name"],
         "brand_tagline": BRAND_TAGLINE,
+        "theme_preference": get_theme_preference(request),
         "brand_logo": brand["logo"],
         "brand_favicon": brand["favicon"],
         "brand_icon_192": brand.get("icon_192", default_brand["icon_192"]),
