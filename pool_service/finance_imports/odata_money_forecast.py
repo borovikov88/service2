@@ -1,6 +1,6 @@
 """Safe GET-only 1C reader for management money planning inputs."""
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
@@ -22,6 +22,8 @@ CUSTOMER_SCHEDULE = "Document_ЗаказПокупателя_Платежный�
 CUSTOMER_PREPAYMENT = "Document_ЗаказПокупателя_Предоплата"
 SUPPLIER_ORDER = "Document_ЗаказПоставщику"
 SUPPLIER_SCHEDULE = "Document_ЗаказПоставщику_ПлатежныйКалендарь"
+REALIZATION = "Document_РасходнаяНакладная"
+AGREEMENTS = "Catalog_ДоговорыКонтрагентов"
 COUNTERPARTIES = "Catalog_Контрагенты"
 CUSTOMER_STATES = "Catalog_СостоянияЗаказовПокупателей"
 
@@ -43,6 +45,15 @@ PREPAYMENT_FIELDS = (
     "Ref_Key", "LineNumber", "Документ", "Документ_Type", "СуммаПлатежа",
     "СуммаРасчетов", "ЭтоПредоплатаБезЗаказа",
 )
+REALIZATION_FIELDS = (
+    "Ref_Key", "Date", "DeletionMark", "Posted", "Number", "Организация_Key",
+    "Контрагент_Key", "Договор_Key", "Заказ", "Заказ_Type", "СуммаДокумента",
+    "Ответственный_Key",
+)
+AGREEMENT_FIELDS = (
+    "Ref_Key", "Description", "DeletionMark", "Недействителен",
+    "СрокОплатыПокупателя",
+)
 
 INCLUDED_CUSTOMER_STATES = frozenset({"В работе", "На выполнении", "Завершен"})
 POSSIBLE_CUSTOMER_STATES = frozenset({"Не обработан", "Выставлен счет"})
@@ -54,6 +65,8 @@ class MoneyForecastSourceRow:
     item_kind: str
     source_identity: str
     order_guid: str | None
+    document_guid: str | None
+    document_type: str
     agreement_guid: str | None
     counterparty_guid: str | None
     counterparty_name: str
@@ -95,7 +108,8 @@ def _organization_filter(config):
 def _entity_url(config, entity, fields, *, filters=None):
     allowed = {
         CUSTOMER_ORDER, CUSTOMER_SCHEDULE, CUSTOMER_PREPAYMENT,
-        SUPPLIER_ORDER, SUPPLIER_SCHEDULE, COUNTERPARTIES, CUSTOMER_STATES,
+        SUPPLIER_ORDER, SUPPLIER_SCHEDULE, REALIZATION, AGREEMENTS,
+        COUNTERPARTIES, CUSTOMER_STATES,
     }
     if entity not in allowed:
         raise MoneyForecastReadError("1C planning entity is not allowed")
@@ -222,6 +236,11 @@ def read_money_forecast(now, *, config=None, opener=None):
         filters=f"Posted eq true and DeletionMark eq false and {date_filter} and ({org_filter})",
         opener=client,
     )
+    realizations_raw = _read(
+        config, REALIZATION, REALIZATION_FIELDS,
+        filters=f"Posted eq true and DeletionMark eq false and {date_filter} and ({org_filter})",
+        opener=client,
+    )
     customer_order_refs = {
         _guid(r.get("Ref_Key"), "Ref_Key") for r in customer_orders_raw
     }
@@ -238,10 +257,29 @@ def read_money_forecast(now, *, config=None, opener=None):
     supplier_schedule = _read_for_refs(
         config, SUPPLIER_SCHEDULE, SCHEDULE_FIELDS, supplier_order_refs, client
     )
+    agreement_refs = {
+        _guid(r.get("Договор_Key"), "Договор_Key", optional=True)
+        for r in realizations_raw
+    }
+    agreement_rows = _read_for_refs(
+        config, AGREEMENTS, AGREEMENT_FIELDS, agreement_refs, client
+    )
+    agreements = {}
+    for raw in agreement_rows:
+        ref = _guid(raw.get("Ref_Key"), "Ref_Key")
+        try:
+            term = int(raw.get("СрокОплатыПокупателя") or 0)
+        except (TypeError, ValueError):
+            term = 0
+        if raw.get("DeletionMark") is not True and raw.get("Недействителен") is not True and 0 < term <= 3650:
+            agreements[ref] = {
+                "days": term,
+                "description": _text(raw.get("Description")),
+            }
 
     counterparty_guids = {
         _guid(r.get("Контрагент_Key"), "Контрагент_Key", optional=True)
-        for r in customer_orders_raw + supplier_orders_raw
+        for r in customer_orders_raw + supplier_orders_raw + realizations_raw
     }
     state_guids = {
         _guid(r.get("СостояниеЗаказа"), "СостояниеЗаказа", optional=True)
@@ -321,6 +359,8 @@ def read_money_forecast(now, *, config=None, opener=None):
                     item_kind="order_schedule",
                     source_identity=_identity("customer_schedule", ref, item.get("LineNumber")),
                     order_guid=ref,
+                    document_guid=None,
+                    document_type="",
                     agreement_guid=agreement,
                     counterparty_guid=party,
                     counterparty_name=counterparties.get(party, ""),
@@ -351,6 +391,8 @@ def read_money_forecast(now, *, config=None, opener=None):
                 item_kind="order_due",
                 source_identity=_identity("customer_due", ref),
                 order_guid=ref,
+                document_guid=None,
+                document_type="",
                 agreement_guid=agreement,
                 counterparty_guid=party,
                 counterparty_name=counterparties.get(party, ""),
@@ -388,6 +430,8 @@ def read_money_forecast(now, *, config=None, opener=None):
                 item_kind="order_due",
                 source_identity=_identity("customer_unknown_due", ref),
                 order_guid=ref,
+                document_guid=None,
+                document_type="",
                 agreement_guid=agreement,
                 counterparty_guid=party,
                 counterparty_name=counterparties.get(party, ""),
@@ -411,6 +455,61 @@ def read_money_forecast(now, *, config=None, opener=None):
                 source_payload={"document_amount": str(total), "order_prepayment": str(prepaid)},
             ))
 
+    customer_orders_with_plan = {
+        ref for ref, values in customer_schedule_by_order.items() if values
+    }
+    customer_orders_with_plan.update(
+        _guid(raw.get("Ref_Key"), "Ref_Key")
+        for raw in customer_orders_raw
+        if _date(raw.get("ОплатаДо"))
+    )
+    for raw in realizations_raw:
+        agreement = _guid(raw.get("Договор_Key"), "Договор_Key", optional=True)
+        terms = agreements.get(agreement)
+        if not terms:
+            continue
+        ref = _guid(raw.get("Ref_Key"), "Ref_Key")
+        party = _guid(raw.get("Контрагент_Key"), "Контрагент_Key", optional=True)
+        order_ref = _guid(raw.get("Заказ"), "Заказ", optional=True)
+        if order_ref and order_ref in customer_orders_with_plan:
+            continue
+        realization_date = _date(raw.get("Date"))
+        if not realization_date:
+            continue
+        due = realization_date + timedelta(days=terms["days"])
+        amount = _decimal(raw.get("СуммаДокумента"), "СуммаДокумента")
+        rows.append(MoneyForecastSourceRow(
+            direction="receipt",
+            item_kind="realization_due",
+            source_identity=_identity("realization_due", ref),
+            order_guid=order_ref,
+            document_guid=ref,
+            document_type="Document_РасходнаяНакладная",
+            agreement_guid=agreement,
+            counterparty_guid=party,
+            counterparty_name=counterparties.get(party, ""),
+            order_number=_text(raw.get("Number"), 80),
+            order_date=realization_date,
+            order_state="",
+            expected_amount=amount,
+            matched_paid_amount=None,
+            remaining_amount=None,
+            payment_match_status="receivable_match_required",
+            contractual_due_date=due,
+            expected_date=due,
+            expected_month=due.replace(day=1),
+            date_precision="exact",
+            basis=f"Отсрочка {terms['days']} дн. по договору 1С",
+            confirmation_status="review",
+            source_updated_at=None,
+            source_payload={
+                "realization_amount": str(amount),
+                "agreement_description": terms["description"],
+                "payment_term_days": terms["days"],
+            },
+        ))
+        review_count += 1
+
     for raw in supplier_orders_raw:
         ref = _guid(raw.get("Ref_Key"), "Ref_Key")
         party = _guid(raw.get("Контрагент_Key"), "Контрагент_Key", optional=True)
@@ -428,6 +527,8 @@ def read_money_forecast(now, *, config=None, opener=None):
                 item_kind="supplier_schedule",
                 source_identity=_identity("supplier_schedule", ref, item.get("LineNumber")),
                 order_guid=ref,
+                document_guid=None,
+                document_type="",
                 agreement_guid=agreement,
                 counterparty_guid=party,
                 counterparty_name=counterparties.get(party, ""),
@@ -458,6 +559,9 @@ def read_money_forecast(now, *, config=None, opener=None):
             "customer_prepayment_rows": len(customer_prepayment),
             "supplier_orders": len(supplier_orders_raw),
             "supplier_schedule_rows": len(supplier_schedule),
+            "realizations_with_contract_terms": sum(
+                1 for row in rows if row.item_kind == "realization_due"
+            ),
             "review_rows": review_count,
             "possible_orders": possible_count,
             "payment_coverage_complete": False,
