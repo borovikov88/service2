@@ -729,6 +729,20 @@ class CommunicationsTests(TestCase):
             name="Тестовый клиент",
             phone="+7 (900) 111-22-33",
         )
+        megafon_channel = CommunicationChannel.objects.create(
+            organization=self.organization,
+            kind=CommunicationChannel.KIND_MEGAFON,
+            name="МегаФон",
+        )
+        ChannelConnection.objects.create(
+            channel=megafon_channel,
+            name="МегаФон офис",
+            external_id="megafon-office",
+            settings={
+                "megafon_api_base_url": "https://aqualine22.megapbx.ru/crmapi/v1",
+                "megafon_api_key_encrypted": encrypt_secret("megafon-ats-secret"),
+            },
+        )
         self.client.login(username="owner", password="test")
         with patch(
             "pool_service.communication_views.secrets.token_urlsafe",
