@@ -395,11 +395,18 @@ def _megafon_started_at(value):
     raw = str(value or "").strip()
     if not raw:
         return timezone.now()
-    try:
-        parsed = datetime.strptime(raw, "%Y%m%dT%H%M%SZ")
-    except ValueError as exc:
-        raise ValueError("invalid_start") from exc
-    return parsed.replace(tzinfo=datetime_timezone.utc)
+    parsed = None
+    for value_format in ("%Y-%m-%d %H:%M:%S", "%Y%m%dT%H%M%SZ"):
+        try:
+            parsed = datetime.strptime(raw, value_format)
+            break
+        except ValueError:
+            continue
+    if parsed is None:
+        raise ValueError("invalid_start")
+    if raw.endswith("Z"):
+        return parsed.replace(tzinfo=datetime_timezone.utc)
+    return timezone.make_aware(parsed, timezone.get_current_timezone())
 
 
 def _remember_megafon_recording_host(telephony, recording_ref):
