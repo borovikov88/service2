@@ -63,7 +63,6 @@ class ThemePreferenceTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertNotIn(THEME_COOKIE_NAME, response.cookies)
 
-
     def test_dark_theme_has_readable_finance_and_warning_overrides(self):
         css_path = finders.find("assets/css/theme.css")
         self.assertIsNotNone(css_path)
