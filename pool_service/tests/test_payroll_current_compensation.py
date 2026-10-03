@@ -173,7 +173,6 @@ class PayrollPlanReaderTests(TestCase):
             result["employee_statuses"],
             [{
                 "employee_guid": EMPLOYEE_GUID,
-                "employee_name": "Алексеев Иван Алексеевич",
                 "deletion_mark": False,
                 "inactive": True,
                 "archived": False,
@@ -393,7 +392,6 @@ class PayrollCurrentCompensationTests(TestCase):
             "employee_statuses": [
                 {
                     "employee_guid": EMPLOYEE_GUID,
-                    "employee_name": "Иванов Иван Иванович",
                     "deletion_mark": False,
                     "inactive": False,
                     "archived": False,
@@ -403,7 +401,6 @@ class PayrollCurrentCompensationTests(TestCase):
                 {
                     "organization_guid": ORG_GUID,
                     "employee_guid": EMPLOYEE_GUID,
-                    "employee_name": "Иванов Иван Иванович",
                     "accrual_type_guid": TYPE_GUID,
                     "accrual_type_name": "Оклад",
                     "amount": "60000.00",
@@ -458,8 +455,7 @@ class PayrollCurrentCompensationTests(TestCase):
                 {
                     "organization_guid": ORG_GUID,
                     "employee_guid": EMPLOYEE_GUID,
-                    "employee_name": identity.raw_name,
-                    "accrual_type_guid": TYPE_GUID,
+                        "accrual_type_guid": TYPE_GUID,
                     "accrual_type_name": "Оклад",
                     "amount": "60000.00",
                     "source_period": "2026-06-04",
@@ -472,7 +468,6 @@ class PayrollCurrentCompensationTests(TestCase):
             **base_payload,
             "employee_statuses": [{
                 "employee_guid": EMPLOYEE_GUID,
-                "employee_name": identity.raw_name,
                 "deletion_mark": False,
                 "inactive": False,
                 "archived": False,
@@ -482,7 +477,6 @@ class PayrollCurrentCompensationTests(TestCase):
             **base_payload,
             "employee_statuses": [{
                 "employee_guid": EMPLOYEE_GUID,
-                "employee_name": identity.raw_name,
                 "deletion_mark": False,
                 "inactive": True,
                 "archived": False,
@@ -549,14 +543,12 @@ class PayrollCurrentCompensationTests(TestCase):
             "employee_statuses": [
                 {
                     "employee_guid": EMPLOYEE_GUID,
-                    "employee_name": employee.display_name,
                     "deletion_mark": False,
                     "inactive": True,
                     "archived": False,
                 },
                 {
                     "employee_guid": second_guid,
-                    "employee_name": employee.display_name,
                     "deletion_mark": False,
                     "inactive": False,
                     "archived": False,
