@@ -782,6 +782,10 @@ class CommunicationsTests(TestCase):
         )
         call.refresh_from_db()
         self.assertEqual(call.duration_seconds, 92)
+        self.assertEqual(
+            call.recording_ref,
+            "https://records.megapbx.ru/call-123.mp3",
+        )
 
         unauthorized = self.client.post(
             webhook_url,
