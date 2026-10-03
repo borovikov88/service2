@@ -401,6 +401,7 @@ class PayrollCurrentCompensationTests(TestCase):
                 {
                     "organization_guid": ORG_GUID,
                     "employee_guid": EMPLOYEE_GUID,
+                    "employee_name": "Иванов Иван Иванович",
                     "accrual_type_guid": TYPE_GUID,
                     "accrual_type_name": "Оклад",
                     "amount": "60000.00",
@@ -455,7 +456,8 @@ class PayrollCurrentCompensationTests(TestCase):
                 {
                     "organization_guid": ORG_GUID,
                     "employee_guid": EMPLOYEE_GUID,
-                        "accrual_type_guid": TYPE_GUID,
+                    "employee_name": identity.raw_name,
+                    "accrual_type_guid": TYPE_GUID,
                     "accrual_type_name": "Оклад",
                     "amount": "60000.00",
                     "source_period": "2026-06-04",
