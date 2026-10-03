@@ -181,9 +181,16 @@
                     {% if connection.megafon_configured %}ВАТС настроена{% else %}ВАТС не подключена{% endif %}
                   </span>
                 </div>
-                {% if connection.megafon_last_received_at %}
+                {% if connection.megafon_last_event_at %}
                   <div class="small text-muted mt-2">
-                    Последний звонок от ВАТС: {{ connection.megafon_last_received_at }}
+                    Последнее live-событие: {{ connection.megafon_last_event_at }}
+                    {% if connection.megafon_last_event_type %}· {{ connection.megafon_last_event_type }}{% endif %}
+                    {% if connection.megafon_last_event_phone %}· {{ connection.megafon_last_event_phone }}{% endif %}
+                  </div>
+                {% endif %}
+                {% if connection.megafon_last_received_at %}
+                  <div class="small text-muted mt-1">
+                    Последняя история звонка: {{ connection.megafon_last_received_at }}
                     {% if connection.megafon_last_result %}· {{ connection.megafon_last_result }}{% endif %}
                   </div>
                 {% endif %}
