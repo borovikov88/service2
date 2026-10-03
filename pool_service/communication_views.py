@@ -1052,6 +1052,7 @@ def communication_telephony_edit(request, connection_id):
         if duplicate:
             form.add_error("external_id", "Линия с таким идентификатором уже существует.")
         else:
+            previous_external_id = connection.external_id
             connection.name = form.cleaned_data["name"].strip()
             connection.external_id = external_id
             connection.recording_allowed_hosts = form.cleaned_data["recording_allowed_hosts"]
@@ -1064,6 +1065,22 @@ def communication_telephony_edit(request, connection_id):
                     "is_active",
                 ]
             )
+            if previous_external_id != external_id:
+                provider_connection = ChannelConnection.objects.filter(
+                    channel__organization=organization,
+                    channel__kind=CommunicationChannel.KIND_MEGAFON,
+                    external_id=previous_external_id,
+                ).first()
+                if provider_connection and not ChannelConnection.objects.filter(
+                    channel=provider_connection.channel,
+                    external_id=external_id,
+                ).exclude(pk=provider_connection.pk).exists():
+                    provider_connection.external_id = external_id
+                    provider_connection.name = connection.name
+                    provider_connection.is_active = connection.is_active
+                    provider_connection.save(
+                        update_fields=["external_id", "name", "is_active"]
+                    )
             _telephony_provider_connection(connection)
             messages.success(request, "Настройки Мегафона сохранены.")
             return redirect("communications_channels")
