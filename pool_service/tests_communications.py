@@ -756,6 +756,7 @@ class CommunicationsTests(TestCase):
         self.assertEqual(call.contact_name, "Тестовый клиент")
         self.assertEqual(call.result, PhoneCall.RESULT_ANSWERED)
         self.assertEqual(call.duration_seconds, 91)
+        self.assertEqual(call.started_at.isoformat(), "2026-10-03T09:00:00+00:00")
         self.assertEqual(call.recording_ref, "https://records.megapbx.ru/call-123.mp3")
         telephony.refresh_from_db()
         self.assertIn("records.megapbx.ru", telephony.recording_allowed_hosts)
