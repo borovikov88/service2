@@ -155,7 +155,7 @@
               <i class="bi bi-telephone fs-4"></i>
               <h2 class="h5 mb-0">Мегафон</h2>
             </div>
-            <div class="text-muted mt-2">Линии телефонии, права на записи разговоров и подготовка подключения API.</div>
+            <div class="text-muted mt-2">Линии телефонии, запись разговоров и подключение ВАТС к Service2.</div>
           </div>
           <a class="btn btn-primary" href="{% url 'communication_telephony_create' %}">
             <i class="bi bi-plus-lg me-1"></i>Добавить линию
@@ -163,7 +163,7 @@
         </div>
 
         <div class="alert alert-light border small">
-          Интерфейс настройки линии уже доступен. Автоматическое получение звонков из API Мегафона будет подключаться отдельным адаптером; создание линии само по себе не запускает синхронизацию.
+          Service2 принимает события ВАТС и сохраняет завершённые звонки в разделе «Звонки». Сначала настройте линию, затем нажмите «Подключить ВАТС» и перенесите выданный URL и ключ в кабинет МегаФона.
         </div>
 
         <div class="d-flex flex-column gap-2">
@@ -173,13 +173,28 @@
               <div>
                 <div class="fw-semibold">{{ connection.name }}</div>
                 <div class="small text-muted mt-1">ID: {{ connection.external_id }}</div>
-                <div class="mt-2">
+                <div class="mt-2 d-flex flex-wrap gap-2">
                   <span class="badge {% if connection.is_active %}bg-success{% else %}bg-secondary{% endif %}">
                     {% if connection.is_active %}Активно{% else %}Отключено{% endif %}
                   </span>
+                  <span class="badge {% if connection.megafon_configured %}bg-primary{% else %}bg-warning text-dark{% endif %}">
+                    {% if connection.megafon_configured %}ВАТС настроена{% else %}ВАТС не подключена{% endif %}
+                  </span>
                 </div>
+                {% if connection.megafon_last_received_at %}
+                  <div class="small text-muted mt-2">
+                    Последний звонок от ВАТС: {{ connection.megafon_last_received_at }}
+                    {% if connection.megafon_last_result %}· {{ connection.megafon_last_result }}{% endif %}
+                  </div>
+                {% endif %}
               </div>
               <div class="d-flex flex-wrap gap-2">
+                <form method="post" action="{% url 'communication_telephony_connect' connection.pk %}">
+                  {% csrf_token %}
+                  <button class="btn btn-sm btn-primary" type="submit">
+                    {% if connection.megafon_configured %}Переподключить ВАТС{% else %}Подключить ВАТС{% endif %}
+                  </button>
+                </form>
                 <a class="btn btn-sm btn-outline-primary" href="{% url 'communication_telephony_edit' connection.pk %}">Настройки</a>
                 <form method="post" action="{% url 'communication_telephony_set_active' connection.pk %}">
                   {% csrf_token %}
