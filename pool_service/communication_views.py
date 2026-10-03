@@ -1067,6 +1067,7 @@ def communication_telephony_connect(request, connection_id):
 
 
 @login_required
+@sensitive_post_parameters("ats_api_key")
 @transaction.atomic
 def communication_telephony_create(request):
     organization = _context(request, "can_manage_channels")
@@ -1103,6 +1104,7 @@ def communication_telephony_create(request):
 
 
 @login_required
+@sensitive_post_parameters("ats_api_key")
 @transaction.atomic
 def communication_telephony_edit(request, connection_id):
     organization = _context(request, "can_manage_channels")
