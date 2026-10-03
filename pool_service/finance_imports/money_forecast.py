@@ -335,6 +335,7 @@ def _deduplicated_forecast(organization, snapshot):
 def _bucket_forecast(items, *, today, forecast_months):
     months = {month: {"month": month, "receipts": ZERO, "payments": ZERO, "items": []}
               for month in forecast_months}
+    current_month = today.replace(day=1)
     overdue = []
     undated = []
     attention = []
@@ -349,10 +350,22 @@ def _bucket_forecast(items, *, today, forecast_months):
         if item["date_precision"] == "unknown" or not item["expected_month"]:
             undated.append(item)
             continue
-        if item["expected_date"] and item["expected_date"] < today:
+        is_overdue = bool(item["expected_date"] and item["expected_date"] < today)
+        if is_overdue:
             overdue.append(item)
-            continue
-        month = item["expected_month"]
+            # Unpaid overdue receipts stay visible in the current cash forecast
+            # instead of disappearing into a separate historical bucket.
+            if item["direction"] != "receipt":
+                continue
+            item = {
+                **item,
+                "is_overdue": True,
+                "original_expected_date": item["expected_date"],
+                "forecast_carried_to": current_month,
+            }
+            month = current_month
+        else:
+            month = item["expected_month"]
         if month not in months:
             continue
         months[month]["items"].append(item)

@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
+import re
 from urllib.parse import quote
 from urllib.request import build_opener
 
@@ -190,6 +191,52 @@ def _read_for_refs(config, entity, fields, refs, opener):
     return rows
 
 
+def _short_counterparty_name(description, full_name=""):
+    description = _text(description)
+    full_name = _text(full_name)
+    if len(description) <= 48:
+        return description
+    candidates = re.findall(r'["«]([^"»]{2,48})["»]', full_name)
+    if candidates:
+        value = candidates[-1].strip()
+        return value.title() if value.isupper() else value
+    legal = {
+        "ООО", "АО", "ПАО", "ИП", "МАОУ", "МАДОУ", "МБОУ", "ГБУ", "КГБУ",
+        "КГБУСО", "МУП", "ФГБУ", "ГКУ", "АНО",
+    }
+    words = [part.strip('«»"(),') for part in description.split()]
+    meaningful = [part for part in words if part and part.upper() not in legal]
+    if description.isupper() and meaningful:
+        value = meaningful[-1]
+        return value.title() if value.isupper() else value
+    return description[:45].rstrip() + "…"
+
+
+def _lookup_counterparty_names(config, guids, opener):
+    values = sorted({g for g in guids if g})
+    if not values:
+        return {}
+    result = {}
+    for start in range(0, len(values), 40):
+        chunk = values[start:start + 40]
+        expr = " or ".join(f"Ref_Key eq guid'{g}'" for g in chunk)
+        rows = _read(
+            config,
+            COUNTERPARTIES,
+            ("Ref_Key", "Description", "НаименованиеПолное", "DeletionMark"),
+            filters=expr,
+            opener=opener,
+        )
+        for raw in rows:
+            key = _guid(raw.get("Ref_Key"), "Ref_Key")
+            if raw.get("DeletionMark") is True:
+                continue
+            result[key] = _short_counterparty_name(
+                raw.get("Description"), raw.get("НаименованиеПолное")
+            )
+    return result
+
+
 def _lookup_descriptions(config, entity, guids, opener):
     values = sorted({g for g in guids if g})
     if not values:
@@ -285,8 +332,8 @@ def read_money_forecast(now, *, config=None, opener=None):
         _guid(r.get("СостояниеЗаказа"), "СостояниеЗаказа", optional=True)
         for r in customer_orders_raw
     }
-    counterparties = _lookup_descriptions(
-        config, COUNTERPARTIES, counterparty_guids, client
+    counterparties = _lookup_counterparty_names(
+        config, counterparty_guids, client
     )
     states = _lookup_descriptions(config, CUSTOMER_STATES, state_guids, client)
 
