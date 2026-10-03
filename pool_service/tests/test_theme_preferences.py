@@ -34,6 +34,10 @@ class ThemePreferenceTests(TestCase):
         self.assertEqual(cookie["samesite"], "Lax")
         self.assertTrue(cookie["httponly"])
 
+        follow_up = self.client.get(reverse("profile"))
+        self.assertContains(follow_up, 'data-theme-preference="dark"')
+        self.assertContains(follow_up, 'name="theme" value="dark" checked')
+
         secure_response = self.client.post(
             reverse("profile"),
             {
@@ -43,10 +47,6 @@ class ThemePreferenceTests(TestCase):
             secure=True,
         )
         self.assertTrue(secure_response.cookies[THEME_COOKIE_NAME]["secure"])
-
-        follow_up = self.client.get(reverse("profile"))
-        self.assertContains(follow_up, 'data-theme-preference="dark"')
-        self.assertContains(follow_up, 'name="theme" value="dark" checked')
 
     def test_invalid_theme_is_rejected_without_setting_cookie(self):
         response = self.client.post(
