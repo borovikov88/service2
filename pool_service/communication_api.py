@@ -12,6 +12,7 @@ from django.shortcuts import get_object_or_404
 from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.debug import sensitive_post_parameters
 from django.views.decorators.http import require_http_methods, require_POST
 
 from pool_service.communication_models import (
@@ -448,6 +449,7 @@ def _remember_megafon_recording_host(telephony, recording_ref):
 
 
 @csrf_exempt
+@sensitive_post_parameters("crm_token")
 @require_POST
 def megafon_webhook(request, public_id):
     try:
