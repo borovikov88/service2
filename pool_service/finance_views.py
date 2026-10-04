@@ -44,9 +44,14 @@ from pool_service.finance_forms import (
     PayrollUploadForm,
     PayrollConfirmForm,
     EmployeeIdentityMappingForm,
+    EmployeeServiceUserMappingForm,
     EmployeeCompensationMonthForm,
     CashFlowArticleMappingForm,
     ManagementMoneyPlanForm,
+)
+from pool_service.communication_models import (
+    TelephonyConnection,
+    TelephonyEmployeeIdentity,
 )
 from pool_service.models import (
     AccountableTransaction,
@@ -196,6 +201,14 @@ from pool_service.services.employee_hr import (
     employee_compensation_history,
     employee_current_plan,
     employee_monthly_compensation,
+)
+from pool_service.services.employee_identity_sync import (
+    EmployeeIdentitySyncError,
+    map_employee_service2_user,
+    map_telephony_identity,
+    sync_all_employee_identities,
+    sync_megafon_employee_identities,
+    sync_onec_employee_identities,
 )
 from pool_service.services.cashflow_classification import (
     canonical_article_key,
@@ -4652,14 +4665,197 @@ def finance_payroll_employee_mapping(request):
     organization, denied = _payroll_access(request, can_manage_employee_mapping)
     if denied:
         return denied
-    employees = Employee.objects.filter(organization=organization, is_active=True).order_by("display_name", "id")
+
+    employees = list(
+        Employee.objects.filter(organization=organization)
+        .select_related("user")
+        .prefetch_related("onec_identities", "telephony_identities__connection")
+        .order_by("-is_active", "display_name", "id")
+    )
+    active_employees = [employee for employee in employees if employee.is_active]
+    employee_rows = []
+    for employee in employees:
+        employee_rows.append({
+            "employee": employee,
+            "onec_identities": list(employee.onec_identities.all()),
+            "telephony_identities": list(employee.telephony_identities.all()),
+        })
+
+    onec_identities = list(payroll_identity_rows(organization))
+    telephony_identities = list(
+        TelephonyEmployeeIdentity.objects.filter(organization=organization)
+        .select_related("employee", "connection", "confirmed_by")
+        .order_by("-is_active", "raw_name", "extension", "id")
+    )
+    telephony_connections = list(
+        TelephonyConnection.objects.filter(
+            organization=organization,
+            is_active=True,
+        ).order_by("name", "id")
+    )
+    service_users = list(
+        User.objects.filter(
+            id__in=organization.accesses.filter(
+                user__is_active=True,
+            ).values_list("user_id", flat=True),
+            is_active=True,
+        )
+        .distinct()
+        .order_by("last_name", "first_name", "username", "id")
+    )
+
     return render(request, "pool_service/finance/payroll_employee_mapping.html", {
-        "identities": payroll_identity_rows(organization),
-        "employees": employees,
-        "employee_count": employees.count(),
+        "employee_rows": employee_rows,
+        "identities": onec_identities,
+        "telephony_identities": telephony_identities,
+        "telephony_connections": telephony_connections,
+        "employees": active_employees,
+        "employee_count": len(active_employees),
+        "service_users": service_users,
         "can_view_employee_hr": can_view_employee_hr(request.user, organization),
         "active_tab": "finance",
     })
+
+
+@require_POST
+@login_required
+def finance_employee_identity_sync(request):
+    organization, denied = _payroll_access(request, can_manage_employee_mapping)
+    if denied:
+        return denied
+
+    source = (request.POST.get("source") or "all").strip().lower()
+    try:
+        if source == "onec":
+            result = sync_onec_employee_identities(organization, actor=request.user)
+            messages.success(
+                request,
+                (
+                    f"1С: синхронизировано {result['synced']} сотрудников, "
+                    f"активных {result['active']}, неактивных {result['inactive']}."
+                ),
+            )
+        elif source == "megafon":
+            connection_id = (request.POST.get("connection_id") or "").strip()
+            if connection_id:
+                if not connection_id.isdigit():
+                    raise EmployeeIdentitySyncError("Некорректная линия телефонии.")
+                connections = [
+                    get_object_or_404(
+                        TelephonyConnection,
+                        pk=int(connection_id),
+                        organization=organization,
+                        is_active=True,
+                    )
+                ]
+            else:
+                connections = list(
+                    TelephonyConnection.objects.filter(
+                        organization=organization,
+                        is_active=True,
+                    ).order_by("id")
+                )
+            if not connections:
+                raise EmployeeIdentitySyncError("Активная линия МегаФона не найдена.")
+            synced_total = auto_total = unmapped_total = 0
+            for telephony in connections:
+                result = sync_megafon_employee_identities(
+                    telephony,
+                    actor=request.user,
+                )
+                synced_total += result["synced"]
+                auto_total += result["auto_matched"]
+                unmapped_total += result["needs_mapping"]
+            messages.success(
+                request,
+                (
+                    f"МегаФон: получено {synced_total} сотрудников, "
+                    f"сопоставлено {auto_total}, требуют сопоставления {unmapped_total}."
+                ),
+            )
+        elif source == "all":
+            result = sync_all_employee_identities(organization, actor=request.user)
+            telephony_total = sum(item["synced"] for item in result["telephony"])
+            telephony_unmapped = sum(
+                item["needs_mapping"] for item in result["telephony"]
+            )
+            messages.success(
+                request,
+                (
+                    f"Синхронизация завершена: 1С — {result['onec']['synced']}, "
+                    f"МегаФон — {telephony_total}; "
+                    f"в телефонии требуют сопоставления {telephony_unmapped}."
+                ),
+            )
+        else:
+            raise EmployeeIdentitySyncError("Неизвестный источник синхронизации.")
+    except EmployeeIdentitySyncError as exc:
+        messages.error(request, "; ".join(exc.messages))
+    return redirect("finance_payroll_employee_mapping")
+
+
+@require_POST
+@login_required
+def finance_employee_service_user_map(request, employee_id):
+    organization, denied = _payroll_access(request, can_manage_employee_mapping)
+    if denied:
+        return denied
+    employee = get_object_or_404(
+        Employee,
+        pk=employee_id,
+        organization=organization,
+        is_active=True,
+    )
+    form = EmployeeServiceUserMappingForm(
+        request.POST,
+        organization=organization,
+        employee=employee,
+    )
+    if not form.is_valid():
+        messages.error(request, "Выберите свободный активный аккаунт Service2.")
+        return redirect("finance_payroll_employee_mapping")
+    try:
+        map_employee_service2_user(
+            employee,
+            form.cleaned_data["user"],
+            request.user,
+        )
+    except EmployeeIdentitySyncError as exc:
+        messages.error(request, "; ".join(exc.messages))
+    else:
+        messages.success(request, "Аккаунт Service2 сопоставлен с сотрудником.")
+    return redirect("finance_payroll_employee_mapping")
+
+
+@require_POST
+@login_required
+def finance_telephony_employee_map(request, identity_id):
+    organization, denied = _payroll_access(request, can_manage_employee_mapping)
+    if denied:
+        return denied
+    identity = get_object_or_404(
+        TelephonyEmployeeIdentity,
+        pk=identity_id,
+        organization=organization,
+    )
+    form = EmployeeIdentityMappingForm(request.POST, organization=organization)
+    if not form.is_valid():
+        messages.error(request, "Выберите активного сотрудника этой организации.")
+        return redirect("finance_payroll_employee_mapping")
+    try:
+        map_telephony_identity(
+            identity,
+            form.cleaned_data["employee"],
+            request.user,
+        )
+    except EmployeeIdentitySyncError as exc:
+        messages.error(request, "; ".join(exc.messages))
+    else:
+        messages.success(
+            request,
+            "Сотрудник МегаФона сопоставлен; связанные звонки обновлены.",
+        )
+    return redirect("finance_payroll_employee_mapping")
 
 
 @require_POST
