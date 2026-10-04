@@ -458,9 +458,27 @@ class PhoneCall(models.Model):
 
 
 class CallAnalysis(models.Model):
-    """Reserved extension point; analysis is never applied to customer data automatically."""
+    STATUS_PENDING = "pending"
+    STATUS_PROCESSING = "processing"
+    STATUS_READY = "ready"
+    STATUS_FAILED = "failed"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Ожидает расшифровки"),
+        (STATUS_PROCESSING, "Обрабатывается"),
+        (STATUS_READY, "Готово"),
+        (STATUS_FAILED, "Ошибка"),
+    ]
+
     call = models.OneToOneField(PhoneCall, on_delete=models.CASCADE, related_name="analysis")
     transcript = models.TextField(blank=True)
     summary = models.TextField(blank=True)
     facts = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    error = models.CharField(max_length=500, blank=True)
+    transcription_model = models.CharField(max_length=80, blank=True)
+    analysis_model = models.CharField(max_length=80, blank=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    processing_started_at = models.DateTimeField(null=True, blank=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
