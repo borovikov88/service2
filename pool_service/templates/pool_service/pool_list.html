@@ -448,6 +448,83 @@
     background: #e6f1fa;
     color: #0d6efd;
   }
+
+
+  /* Full dark-theme audit: objects list. */
+  @media (min-width: 992px) {
+    html[data-theme="dark"] .pool-controls {
+      background: #151f2e;
+      border-color: #304158;
+      box-shadow: 0 8px 22px rgba(0, 0, 0, 0.18);
+    }
+    html[data-theme="dark"] #pool-results .pool-object-card {
+      background: #151f2e;
+      border-color: #304158;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
+    }
+    html[data-theme="dark"] #pool-results .pool-card:hover .pool-object-card {
+      background: #182436;
+      border-color: #49627f;
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
+    }
+    html[data-theme="dark"] .pool-object-card__desktop {
+      border-top-color: #34465c;
+    }
+    html[data-theme="dark"] .pool-object-status--active {
+      color: #84d4aa;
+      background: #183127;
+    }
+    html[data-theme="dark"] .pool-object-status--suspended {
+      color: #b5c2d2;
+      background: #263243;
+    }
+    html[data-theme="dark"] .pool-object-status--winterized {
+      color: #9dc7ff;
+      background: #172a45;
+    }
+    html[data-theme="dark"] .pool-object-status--stopped {
+      color: #efa3ad;
+      background: #321f27;
+    }
+    html[data-theme="dark"] .pool-object-type,
+    html[data-theme="dark"] .pool-object-fact__label {
+      color: #93a4b8;
+    }
+    html[data-theme="dark"] .pool-object-fact__value {
+      color: #dce6f2;
+    }
+  }
+  html[data-theme="dark"] .pool-sort-trigger,
+  html[data-theme="dark"] .pool-per-page-trigger {
+    color: #aebdcd;
+    border-bottom-color: #3a4c62;
+  }
+  html[data-theme="dark"] .pool-sort-trigger:focus,
+  html[data-theme="dark"] .pool-sort-trigger:hover,
+  html[data-theme="dark"] .pool-per-page-trigger:focus,
+  html[data-theme="dark"] .pool-per-page-trigger:hover {
+    color: #e6edf7;
+    border-bottom-color: #5c9eea;
+  }
+  html[data-theme="dark"] .pool-sort-menu {
+    background: #151f2e;
+    border-color: #34465c;
+    box-shadow: 0 14px 32px rgba(0, 0, 0, 0.32);
+  }
+  html[data-theme="dark"] .pool-sort-menu .dropdown-item {
+    color: #dce6f2;
+  }
+  html[data-theme="dark"] .pool-sort-menu .dropdown-item:hover,
+  html[data-theme="dark"] .pool-sort-menu .dropdown-item:focus {
+    color: #f3f7fb;
+    background: #1b2b40;
+  }
+  html[data-theme="dark"] .pool-sort-menu .dropdown-item.active,
+  html[data-theme="dark"] .pool-sort-menu .dropdown-item.active:focus {
+    color: #a8ceff;
+    background: #1d3555;
+  }
+
 </style>
 {% endif %}
 {% endblock %}
