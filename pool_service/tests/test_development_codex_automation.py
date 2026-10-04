@@ -1243,6 +1243,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
             "development-codex-chatgpt-repo-canary.yml",
         }
         allowed_automatic_workflows = {
+            "call-recordings-sync.yml",
             "ci-deploy.yml",
             "direct-pr-review.yml",
             "finance-sync.yml",
@@ -1262,7 +1263,9 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         for workflow in workflows:
             with self.subTest(workflow=workflow.name):
                 text = workflow.read_text(encoding="utf-8")
-                if workflow.name == "ci-deploy.yml":
+                if workflow.name == "call-recordings-sync.yml":
+                    expected_triggers = ["push", "schedule", "workflow_dispatch"]
+                elif workflow.name == "ci-deploy.yml":
                     expected_triggers = ["pull_request", "push", "workflow_dispatch"]
                 elif workflow.name == "direct-pr-review.yml":
                     expected_triggers = ["workflow_dispatch"]
