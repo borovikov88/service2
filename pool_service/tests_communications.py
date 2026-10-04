@@ -44,7 +44,7 @@ from pool_service.services.employee_identity_sync import (
     sync_onec_employee_identities,
 )
 from pool_service.communication_api import _payload
-from pool_service.finance_imports.odata_profit import ODataConfig
+from pool_service.finance_imports.odata_profit import ODataConfig, ODataPreviewError
 from pool_service.management.commands.send_avito_outbox import claim_message
 from pool_service.models import Client as ServiceClient, Employee, EmployeeOneCIdentity, Notification, Organization, OrganizationAccess
 from service_site.logging_handlers import RedactCommunicationWebhookSecretFilter
