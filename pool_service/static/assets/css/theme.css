@@ -579,8 +579,10 @@ html[data-theme="dark"] .app-header {
 @media (max-width: 991.98px) {
   html[data-theme="dark"] .app-logo {
     mix-blend-mode: normal;
-    filter: brightness(0) invert(1);
-    opacity: 0.92;
+    filter: brightness(1.22) saturate(1.18);
+    opacity: 1;
+    background: #101a28;
+    border-radius: 0.55rem;
   }
 }
 
