@@ -678,6 +678,12 @@ def megafon_webhook(request, public_id):
         if preserve_existing_ownership:
             effective_employee = existing_call.employee
             effective_employee_profile = existing_call.employee_profile
+        effective_provider_user = provider_user or (
+            existing_call.provider_user if existing_call else ""
+        )
+        effective_provider_extension = extension or (
+            existing_call.provider_extension if existing_call else ""
+        )
 
         phone_call, created = PhoneCall.objects.update_or_create(
             connection=telephony,
@@ -686,8 +692,8 @@ def megafon_webhook(request, public_id):
                 "organization": connection.channel.organization,
                 "employee": effective_employee,
                 "employee_profile": effective_employee_profile,
-                "provider_user": provider_user,
-                "provider_extension": extension,
+                "provider_user": effective_provider_user,
+                "provider_extension": effective_provider_extension,
                 "contact_name": client.name if client else "",
                 "phone_number": phone,
                 "direction": direction,

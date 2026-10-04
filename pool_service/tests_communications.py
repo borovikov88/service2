@@ -1166,6 +1166,26 @@ class CommunicationsTests(TestCase):
             TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
         )
 
+        replay_without_provider_keys = webhook_client.post(
+            webhook_url,
+            {
+                "cmd": "history",
+                "crm_token": "megafon-crm-token",
+                "callid": "call-123",
+                "phone": "+79001112233",
+                "type": "in",
+                "start": "2026-10-03 16:00:00",
+                "duration": "95",
+                "status": "Success",
+            },
+        )
+        self.assertEqual(replay_without_provider_keys.status_code, 200)
+        call.refresh_from_db()
+        self.assertEqual(call.provider_extension, "999")
+        self.assertEqual(call.provider_user, "worker")
+        self.assertEqual(call.employee_profile, old_profile)
+        self.assertEqual(call.employee, self.worker)
+
         legacy_call = PhoneCall.objects.create(
             organization=self.organization,
             connection=telephony,
