@@ -242,7 +242,7 @@ def calls(request):
         "employee",
         "employee_profile",
         "analysis",
-    )
+    ).defer("analysis__transcript")
     if not can_view_all:
         queryset = queryset.filter(employee=request.user)
     try:
@@ -270,6 +270,25 @@ def calls(request):
         "can_listen": conversation_capability(request.user, "can_listen_calls", organization),
         "can_view_all": can_view_all,
     })
+
+
+@login_required
+def call_analysis_transcript(request, call_id):
+    organization = _context(request, "can_listen_calls")
+    call = get_object_or_404(
+        PhoneCall.objects.select_related("analysis"),
+        pk=call_id,
+        organization=organization,
+    )
+    if (
+        not conversation_capability(request.user, "can_view_all_calls", organization)
+        and call.employee_id != request.user.id
+    ):
+        raise PermissionDenied
+    analysis = getattr(call, "analysis", None)
+    if not analysis or analysis.status != CallAnalysis.STATUS_READY:
+        raise Http404
+    return JsonResponse({"transcript": analysis.transcript})
 
 
 @login_required
