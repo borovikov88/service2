@@ -31,7 +31,7 @@ from pool_service.communication_avito import (
     webhook_subscriptions,
 )
 from pool_service.communication_recordings import download_call_recording
-from pool_service.services.call_ai import _ffmpeg_executable, process_call_analysis
+from pool_service.services.call_ai import _ffmpeg_executable, process_call_analysis, request_call_analysis
 from pool_service.communication_secrets import decrypt_secret, encrypt_secret
 from pool_service.communication_services import receive_message, users_with_conversation_access
 from pool_service.communication_services import conversation_capability
@@ -662,8 +662,8 @@ class CommunicationsTests(TestCase):
             reverse("communication_call_analysis_retry", args=[call.pk]),
         )
 
-    @patch("pool_service.communication_views.process_call_analysis", return_value=True)
-    def test_call_analysis_retry_requires_call_access_and_runs_only_on_button(self, process_analysis):
+    @patch("pool_service.communication_views.request_call_analysis", return_value=True)
+    def test_call_analysis_retry_requires_call_access_and_queues_only_on_button(self, request_analysis):
         telephony = TelephonyConnection.objects.create(
             organization=self.organization,
             name="МегаФон",
@@ -695,7 +695,7 @@ class CommunicationsTests(TestCase):
             reverse("communication_call_analysis_retry", args=[call.pk])
         )
         self.assertRedirects(response, reverse("communications_calls"))
-        process_analysis.assert_called_once_with(call.pk, reset_existing=True)
+        request_analysis.assert_called_once_with(call.pk)
 
         self.client.logout()
         self.client.login(username="worker", password="test")
@@ -704,12 +704,7 @@ class CommunicationsTests(TestCase):
         )
         self.assertEqual(forbidden.status_code, 403)
 
-    @override_settings(
-        OPENAI_API_KEY="test-key",
-        OPENAI_CALL_ANALYSIS_MODEL="gpt-5.6-luna",
-    )
-    @patch("pool_service.services.call_ai._client")
-    def test_manual_retry_does_not_duplicate_fresh_processing_request(self, client_factory):
+    def test_manual_request_does_not_duplicate_fresh_processing_request(self):
         telephony = TelephonyConnection.objects.create(
             organization=self.organization,
             name="МегаФон",
@@ -736,15 +731,12 @@ class CommunicationsTests(TestCase):
             transcript="A: Уже обрабатывается.",
         )
 
-        self.assertFalse(process_call_analysis(call.pk, reset_existing=True))
-        client_factory.assert_not_called()
+        self.assertFalse(request_call_analysis(call.pk))
+        analysis = CallAnalysis.objects.get(call=call)
+        self.assertEqual(analysis.status, CallAnalysis.STATUS_PROCESSING)
+        self.assertIsNone(analysis.requested_at)
 
-    @override_settings(
-        OPENAI_API_KEY="test-key",
-        OPENAI_CALL_ANALYSIS_MODEL="gpt-5.6-luna",
-    )
-    @patch("pool_service.services.call_ai._client")
-    def test_manual_retry_recovers_stale_processing_request(self, client_factory):
+    def test_manual_request_recovers_stale_processing_request(self):
         telephony = TelephonyConnection.objects.create(
             organization=self.organization,
             name="МегаФон",
@@ -772,17 +764,12 @@ class CommunicationsTests(TestCase):
             transcription_model="gpt-4o-transcribe-diarize",
             confirmed_at=timezone.now(),
         )
-        client = client_factory.return_value
-        client.responses.create.return_value = MagicMock(
-            output_text='{"summary":"Обработка восстановлена.","facts":{"request":"Проверка"}}'
-        )
-
-        self.assertTrue(process_call_analysis(call.pk, reset_existing=True))
+        self.assertTrue(request_call_analysis(call.pk))
         analysis.refresh_from_db()
-        self.assertEqual(analysis.status, CallAnalysis.STATUS_READY)
-        self.assertEqual(analysis.summary, "Обработка восстановлена.")
+        self.assertEqual(analysis.status, CallAnalysis.STATUS_PENDING)
+        self.assertIsNotNone(analysis.requested_at)
         self.assertIsNone(analysis.confirmed_at)
-        client.audio.transcriptions.create.assert_not_called()
+        self.assertEqual(analysis.transcript, "A: Сохранённая расшифровка.")
 
     def test_calls_page_allows_retry_while_processing(self):
         telephony = TelephonyConnection.objects.create(
@@ -818,6 +805,55 @@ class CommunicationsTests(TestCase):
             response,
             reverse("communication_call_analysis_retry", args=[call.pk]),
         )
+
+    @patch(
+        "pool_service.management.commands.process_requested_call_analyses.process_call_analysis",
+        return_value=True,
+    )
+    def test_requested_call_worker_ignores_unrequested_recordings(self, process_analysis):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-ai-worker",
+        )
+        requested_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-worker-requested",
+            employee=self.owner,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=25,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        requested_call.recording_file.save("ai-worker-requested.mp3", ContentFile(b"ID3test"), save=True)
+        unrequested_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-worker-unrequested",
+            employee=self.owner,
+            phone_number="+79001112234",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=25,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        unrequested_call.recording_file.save("ai-worker-unrequested.mp3", ContentFile(b"ID3test"), save=True)
+        CallAnalysis.objects.create(
+            call=requested_call,
+            status=CallAnalysis.STATUS_PENDING,
+            requested_at=timezone.now(),
+        )
+        CallAnalysis.objects.create(
+            call=unrequested_call,
+            status=CallAnalysis.STATUS_PENDING,
+        )
+
+        call_command("process_requested_call_analyses", "--limit", "1")
+        process_analysis.assert_called_once_with(requested_call.pk)
 
     def test_calls_page_offers_manual_transcription_for_unanalysed_recording(self):
         telephony = TelephonyConnection.objects.create(
