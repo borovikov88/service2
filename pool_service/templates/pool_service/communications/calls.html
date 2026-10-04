@@ -41,6 +41,41 @@
     padding-bottom:.25rem;
   }
   .call-recording-state{font-size:.82rem;white-space:nowrap}
+  .call-analysis{
+    background:var(--bs-tertiary-bg);
+    border-top:1px solid var(--bs-border-color);
+    padding:1rem;
+  }
+  .call-analysis__summary{max-width:1100px}
+  .call-analysis__facts{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+    gap:.55rem 1rem;
+    margin-top:.75rem;
+  }
+  .call-analysis__fact{
+    min-width:0;
+    font-size:.88rem;
+  }
+  .call-analysis__label{
+    color:var(--bs-secondary-color);
+    font-size:.75rem;
+    display:block;
+    margin-bottom:.1rem;
+  }
+  .call-analysis__transcript{
+    white-space:pre-wrap;
+    overflow-wrap:anywhere;
+    max-height:420px;
+    overflow:auto;
+    padding:.75rem;
+    border:1px solid var(--bs-border-color);
+    border-radius:.5rem;
+    background:var(--bs-body-bg);
+    color:var(--bs-body-color);
+    font-size:.86rem;
+    line-height:1.45;
+  }
   @media (max-width:767.98px){
     .call-player{min-width:300px;max-width:100%}
     .call-player__time{min-width:68px}
@@ -190,6 +225,67 @@
             {% endif %}
           </td>
         </tr>
+        {% if can_listen and call.recording_file %}
+          <tr>
+            <td colspan="7" class="p-0">
+              <div class="call-analysis">
+                {% if call.analysis and call.analysis.status == 'ready' %}
+                  <div class="d-flex flex-wrap align-items-start justify-content-between gap-2">
+                    <div class="call-analysis__summary">
+                      <div class="fw-semibold mb-1">Итоги разговора</div>
+                      <div>{{ call.analysis.summary }}</div>
+                    </div>
+                    <form method="post" action="{% url 'communication_call_analysis_retry' call.pk %}">
+                      {% csrf_token %}
+                      <button class="btn btn-outline-secondary btn-sm" type="submit">
+                        <i class="bi bi-arrow-clockwise me-1"></i>Расшифровать заново
+                      </button>
+                    </form>
+                  </div>
+
+                  <div class="call-analysis__facts">
+                    {% with facts=call.analysis.facts %}
+                      {% if facts.client_name %}<div class="call-analysis__fact"><span class="call-analysis__label">Клиент</span>{{ facts.client_name }}</div>{% endif %}
+                      {% if facts.company %}<div class="call-analysis__fact"><span class="call-analysis__label">Компания</span>{{ facts.company }}</div>{% endif %}
+                      {% if facts.phone %}<div class="call-analysis__fact"><span class="call-analysis__label">Телефон</span>{{ facts.phone }}</div>{% endif %}
+                      {% if facts.address %}<div class="call-analysis__fact"><span class="call-analysis__label">Адрес / объект</span>{{ facts.address }}</div>{% endif %}
+                      {% if facts.object_type %}<div class="call-analysis__fact"><span class="call-analysis__label">Тип объекта</span>{{ facts.object_type }}</div>{% endif %}
+                      {% if facts.request %}<div class="call-analysis__fact"><span class="call-analysis__label">Что требуется</span>{{ facts.request }}</div>{% endif %}
+                      {% if facts.dimensions %}<div class="call-analysis__fact"><span class="call-analysis__label">Размеры / характеристики</span>{{ facts.dimensions }}</div>{% endif %}
+                      {% if facts.technical_details %}<div class="call-analysis__fact"><span class="call-analysis__label">Технические нюансы</span>{{ facts.technical_details }}</div>{% endif %}
+                      {% if facts.timeline %}<div class="call-analysis__fact"><span class="call-analysis__label">Сроки</span>{{ facts.timeline }}</div>{% endif %}
+                      {% if facts.budget %}<div class="call-analysis__fact"><span class="call-analysis__label">Бюджет / цена</span>{{ facts.budget }}</div>{% endif %}
+                      {% if facts.existing_equipment %}<div class="call-analysis__fact"><span class="call-analysis__label">Что уже есть</span>{{ facts.existing_equipment }}</div>{% endif %}
+                      {% if facts.problems %}<div class="call-analysis__fact"><span class="call-analysis__label">Проблемы / пожелания</span>{{ facts.problems }}</div>{% endif %}
+                      {% if facts.agreements %}<div class="call-analysis__fact"><span class="call-analysis__label">Договорённости</span>{{ facts.agreements }}</div>{% endif %}
+                      {% if facts.send_to_client %}<div class="call-analysis__fact"><span class="call-analysis__label">Что отправить клиенту</span>{{ facts.send_to_client }}</div>{% endif %}
+                      {% if facts.next_step %}<div class="call-analysis__fact"><span class="call-analysis__label">Следующий шаг</span>{{ facts.next_step }}</div>{% endif %}
+                      {% if facts.next_contact_at %}<div class="call-analysis__fact"><span class="call-analysis__label">Следующий контакт</span>{{ facts.next_contact_at }}</div>{% endif %}
+                      {% if facts.responsible %}<div class="call-analysis__fact"><span class="call-analysis__label">Ответственный</span>{{ facts.responsible }}</div>{% endif %}
+                    {% endwith %}
+                  </div>
+
+                  <details class="mt-3">
+                    <summary class="fw-semibold">Полная расшифровка</summary>
+                    <div class="call-analysis__transcript mt-2">{{ call.analysis.transcript }}</div>
+                  </details>
+                {% elif call.analysis and call.analysis.status == 'processing' %}
+                  <span class="text-muted"><span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>Расшифровываем разговор…</span>
+                {% elif call.analysis and call.analysis.status == 'failed' %}
+                  <div class="d-flex flex-wrap align-items-center gap-2">
+                    <span class="text-warning">Не удалось расшифровать разговор.</span>
+                    <form method="post" action="{% url 'communication_call_analysis_retry' call.pk %}">
+                      {% csrf_token %}
+                      <button class="btn btn-outline-secondary btn-sm" type="submit">Повторить</button>
+                    </form>
+                  </div>
+                {% else %}
+                  <span class="text-muted">Ожидает автоматической расшифровки.</span>
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+        {% endif %}
       {% empty %}
         <tr>
           <td colspan="7" class="text-center text-muted p-4">Звонков не найдено.</td>
