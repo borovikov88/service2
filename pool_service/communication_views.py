@@ -299,12 +299,14 @@ def call_recording(request, call_id):
     except (OSError, ValueError):
         raise Http404
 
+    download_requested = request.GET.get("download") == "1"
     range_header = request.headers.get("Range", "").strip()
-    if not range_header:
+
+    if download_requested or not range_header:
         response = FileResponse(
             open(file_path, "rb"),
             content_type="audio/mpeg",
-            as_attachment=False,
+            as_attachment=download_requested,
             filename=os.path.basename(file_path),
         )
         response["Accept-Ranges"] = "bytes"
