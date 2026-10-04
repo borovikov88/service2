@@ -1098,6 +1098,54 @@ class CommunicationsTests(TestCase):
             PhoneCall.objects.filter(connection=telephony, external_id="call-unauthorized").exists()
         )
 
+        oversized_user = webhook_client.post(
+            webhook_url,
+            {
+                "cmd": "history",
+                "crm_token": "megafon-crm-token",
+                "callid": "call-long-user",
+                "phone": "+79001112233",
+                "type": "in",
+                "start": "2026-10-03 16:00:00",
+                "duration": "1",
+                "status": "Success",
+                "user": "u" * 256,
+                "ext": "601",
+            },
+        )
+        self.assertEqual(oversized_user.status_code, 400)
+        self.assertEqual(oversized_user.json()["error"], "invalid_user")
+        self.assertFalse(
+            PhoneCall.objects.filter(
+                connection=telephony,
+                external_id="call-long-user",
+            ).exists()
+        )
+
+        oversized_ext = webhook_client.post(
+            webhook_url,
+            {
+                "cmd": "history",
+                "crm_token": "megafon-crm-token",
+                "callid": "call-long-ext",
+                "phone": "+79001112233",
+                "type": "in",
+                "start": "2026-10-03 16:00:00",
+                "duration": "1",
+                "status": "Success",
+                "user": "worker",
+                "ext": "6" * 65,
+            },
+        )
+        self.assertEqual(oversized_ext.status_code, 400)
+        self.assertEqual(oversized_ext.json()["error"], "invalid_ext")
+        self.assertFalse(
+            PhoneCall.objects.filter(
+                connection=telephony,
+                external_id="call-long-ext",
+            ).exists()
+        )
+
     def test_megafon_account_sync_auto_matches_employee_and_backfills_calls(self):
         self.worker.first_name = "Дарья"
         self.worker.last_name = "Крафт"
@@ -1178,6 +1226,14 @@ class CommunicationsTests(TestCase):
             max_pages=10,
             max_rows=100,
         )
+        legacy_identity = EmployeeOneCIdentity.objects.create(
+            organization=self.organization,
+            raw_name="Сотрудник только из старого импорта",
+            normalized_name="сотрудник только из старого импорта",
+            source_identity_key="legacy-unseen-employee",
+            status=EmployeeOneCIdentity.STATUS_NOT_FOUND,
+            source_active=True,
+        )
         rows = [
             {
                 "Ref_Key": "22222222-2222-2222-2222-222222222222",
@@ -1228,6 +1284,9 @@ class CommunicationsTests(TestCase):
         )
         self.assertFalse(inactive_identity.source_active)
         self.assertIsNotNone(inactive_identity.last_seen_at)
+        legacy_identity.refresh_from_db()
+        self.assertFalse(legacy_identity.source_active)
+        self.assertIsNone(legacy_identity.last_seen_at)
 
     def test_manual_telephony_mapping_updates_existing_calls(self):
         employee = Employee.objects.create(
