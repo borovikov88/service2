@@ -1670,6 +1670,47 @@ class CommunicationsTests(TestCase):
         self.assertEqual(by_id[broken.pk]["synced"], 0)
         self.assertIn("Ключ АТС", by_id[broken.pk]["error"])
 
+    def test_manual_megafon_sync_isolates_failed_lines(self):
+        configured = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="Рабочая линия",
+            external_id="manual-configured-line",
+        )
+        broken = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="Линия без ключа",
+            external_id="manual-broken-line",
+        )
+        self.organization.paid_until = timezone.now() + timedelta(days=30)
+        self.organization.save(update_fields=["paid_until"])
+        self.client.login(username="owner", password="test")
+
+        def fake_sync(telephony, actor=None):
+            if telephony.pk == broken.pk:
+                raise EmployeeIdentitySyncError("Ключ АТС не настроен.")
+            return {
+                "synced": 4,
+                "auto_matched": 3,
+                "needs_mapping": 1,
+                "synced_at": timezone.now(),
+            }
+
+        with patch(
+            "pool_service.finance_views.sync_megafon_employee_identities",
+            side_effect=fake_sync,
+        ) as sync_mock:
+            response = self.client.post(
+                reverse("finance_employee_identity_sync"),
+                {"source": "megafon"},
+                follow=True,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(sync_mock.call_count, 2)
+        self.assertContains(response, "МегаФон: получено 4 сотрудников")
+        self.assertContains(response, "Линия без ключа")
+        self.assertContains(response, "Ключ АТС не настроен")
+
     def test_manual_telephony_mapping_updates_existing_calls(self):
         employee = Employee.objects.create(
             organization=self.organization,
