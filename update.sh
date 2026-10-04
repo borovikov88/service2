@@ -28,8 +28,8 @@ if [[ ! -d ../venv || ! -x ../venv/bin/python || ! -d ../tmp || ! -w ../tmp ]]; 
     exit 67
 fi
 if [[ "$MODE" == "deploy" ]]; then
-    # Keep deployment mutually exclusive with the manual call-AI worker.
-    # Lock order is always AI -> deploy, matching the scheduled workflow.
+    # Keep deployment mutually exclusive with the call-AI worker.
+    # Deployment owns both locks for the full mutating phase.
     exec 8>../tmp/service2-call-ai.lock
     if ! flock -n 8; then
         echo "Active call analysis is running; retry deployment after it finishes" >&2
