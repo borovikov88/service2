@@ -220,7 +220,7 @@
             </tr>
           {% empty %}
             <tr>
-              <td colspan="6" class="text-muted text-center p-4">
+              <td colspan="7" class="text-muted text-center p-4">
                 Сотрудники ВАТС ещё не загружены. Нажмите «Обновить МегаФон».
               </td>
             </tr>
@@ -250,6 +250,7 @@
             <th>Идентификаторы</th>
             <th>Источник</th>
             <th>Статус сопоставления</th>
+            <th>Активные строки / период</th>
             <th>Сотрудник</th>
             <th>Сопоставить</th>
           </tr>
@@ -274,6 +275,11 @@
                 {% endif %}
               </td>
               <td>{{ identity.get_status_display }}</td>
+              <td>
+                {{ identity.active_payroll_row_count }} ·
+                {{ identity.first_active_period|date:'m.Y'|default:'—' }} –
+                {{ identity.last_active_period|date:'m.Y'|default:'—' }}
+              </td>
               <td>
                 {% if identity.employee %}
                   {% if can_view_employee_hr %}
