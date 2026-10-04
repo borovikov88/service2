@@ -31,7 +31,7 @@ from pool_service.communication_avito import (
     webhook_subscriptions,
 )
 from pool_service.communication_recordings import download_call_recording
-from pool_service.services.call_ai import _ffmpeg_executable, process_call_analysis, request_call_analysis
+from pool_service.services.call_ai import _ffmpeg_executable, process_call_analysis, request_call_analysis, start_requested_call_analysis_worker
 from pool_service.communication_secrets import decrypt_secret, encrypt_secret
 from pool_service.communication_services import receive_message, users_with_conversation_access
 from pool_service.communication_services import conversation_capability
@@ -708,8 +708,13 @@ class CommunicationsTests(TestCase):
         )
         self.assertEqual(response.status_code, 403)
 
+    @patch("pool_service.communication_views.start_requested_call_analysis_worker", return_value=True)
     @patch("pool_service.communication_views.request_call_analysis", return_value=True)
-    def test_call_analysis_retry_requires_call_access_and_queues_only_on_button(self, request_analysis):
+    def test_call_analysis_retry_requires_call_access_and_queues_only_on_button(
+        self,
+        request_analysis,
+        start_worker,
+    ):
         telephony = TelephonyConnection.objects.create(
             organization=self.organization,
             name="МегаФон",
@@ -742,6 +747,7 @@ class CommunicationsTests(TestCase):
         )
         self.assertRedirects(response, reverse("communications_calls"))
         request_analysis.assert_called_once_with(call.pk)
+        start_worker.assert_called_once_with()
 
         self.client.logout()
         self.client.login(username="worker", password="test")
@@ -749,6 +755,19 @@ class CommunicationsTests(TestCase):
             reverse("communication_call_analysis_retry", args=[call.pk])
         )
         self.assertEqual(forbidden.status_code, 403)
+
+    @patch("pool_service.services.call_ai.subprocess.Popen")
+    @patch("pool_service.services.call_ai.shutil.which", return_value="/bin/bash")
+    def test_requested_call_worker_starts_detached_from_web_process(self, _which, popen):
+        self.assertTrue(start_requested_call_analysis_worker())
+        popen.assert_called_once()
+        command = popen.call_args.args[0]
+        kwargs = popen.call_args.kwargs
+        self.assertEqual(command[0], "/bin/bash")
+        self.assertTrue(command[1].endswith("scripts/run_call_ai_worker.sh"))
+        self.assertTrue(kwargs["start_new_session"])
+        self.assertTrue(kwargs["close_fds"])
+        self.assertTrue(kwargs["env"]["SERVICE2_PYTHON"])
 
     def test_manual_request_does_not_duplicate_fresh_processing_request(self):
         telephony = TelephonyConnection.objects.create(
