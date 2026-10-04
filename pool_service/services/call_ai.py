@@ -14,6 +14,7 @@ from django.db import transaction
 from django.db.models import F
 from django.utils import timezone
 from openai import OpenAI
+import imageio_ffmpeg
 
 from pool_service.communication_models import CallAnalysis, PhoneCall
 
@@ -139,6 +140,20 @@ def _recording_size(call):
             raise CallAnalysisError("recording_file_unavailable") from exc
 
 
+def _ffmpeg_executable():
+    system_ffmpeg = shutil.which("ffmpeg")
+    if system_ffmpeg:
+        return system_ffmpeg
+    try:
+        bundled_ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception as exc:
+        logger.warning("Bundled ffmpeg is unavailable: %s", exc)
+        return ""
+    if bundled_ffmpeg and os.path.isfile(bundled_ffmpeg) and os.access(bundled_ffmpeg, os.X_OK):
+        return bundled_ffmpeg
+    return ""
+
+
 @contextmanager
 def _transcription_file(call):
     max_bytes = int(
@@ -157,7 +172,7 @@ def _transcription_file(call):
                 pass
         return
 
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = _ffmpeg_executable()
     if not ffmpeg:
         raise CallAnalysisError("recording_too_large_ffmpeg_missing")
 
