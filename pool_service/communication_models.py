@@ -7,7 +7,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.contrib.auth.hashers import check_password, make_password
 
-from pool_service.models import Organization, OrganizationAccess
+from pool_service.models import Employee, Organization, OrganizationAccess
 from pool_service.storage import private_media_storage
 
 
@@ -293,6 +293,99 @@ class TelephonyConnection(models.Model):
             raise ValidationError("Recording allowed hosts must be a list of hostnames without scheme or port.")
 
 
+class TelephonyEmployeeIdentity(models.Model):
+    STATUS_AUTO_MATCHED = "auto_matched"
+    STATUS_MANUALLY_MATCHED = "manually_matched"
+    STATUS_NEEDS_MAPPING = "needs_mapping"
+    STATUS_EXCLUDED = "excluded"
+    STATUS_CHOICES = [
+        (STATUS_AUTO_MATCHED, "Сопоставлен автоматически"),
+        (STATUS_MANUALLY_MATCHED, "Сопоставлен вручную"),
+        (STATUS_NEEDS_MAPPING, "Требует сопоставления"),
+        (STATUS_EXCLUDED, "Исключён"),
+    ]
+    MATCH_EXACT_NAME = "exact_name"
+    MATCH_EXTENSION = "extension"
+    MATCH_MANUAL = "manual"
+    MATCH_NONE = "none"
+    MATCH_CHOICES = [
+        (MATCH_EXACT_NAME, "Точное ФИО"),
+        (MATCH_EXTENSION, "Внутренний номер"),
+        (MATCH_MANUAL, "Вручную"),
+        (MATCH_NONE, "Нет сопоставления"),
+    ]
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="telephony_employee_identities",
+    )
+    connection = models.ForeignKey(
+        TelephonyConnection,
+        on_delete=models.CASCADE,
+        related_name="employee_identities",
+    )
+    employee = models.ForeignKey(
+        Employee,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="telephony_identities",
+    )
+    raw_name = models.CharField(max_length=500, blank=True)
+    normalized_name = models.CharField(max_length=500, blank=True, db_index=True)
+    extension = models.CharField(max_length=64)
+    external_user = models.CharField(max_length=255, blank=True)
+    is_active = models.BooleanField(default=True)
+    status = models.CharField(
+        max_length=24,
+        choices=STATUS_CHOICES,
+        default=STATUS_NEEDS_MAPPING,
+    )
+    match_method = models.CharField(
+        max_length=24,
+        choices=MATCH_CHOICES,
+        default=MATCH_NONE,
+    )
+    confirmed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="confirmed_telephony_employee_identities",
+    )
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["raw_name", "extension", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["connection", "extension"],
+                name="telephony_employee_connection_ext_uniq",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["organization", "status"],
+                name="tel_emp_org_status_idx",
+            ),
+            models.Index(
+                fields=["connection", "external_user"],
+                name="tel_emp_conn_user_idx",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.connection_id and self.connection.organization_id != self.organization_id:
+            raise ValidationError("Telephony identity belongs to another organization.")
+        if self.employee_id and self.employee.organization_id != self.organization_id:
+            raise ValidationError("Employee belongs to another organization.")
+
+
 class PhoneCall(models.Model):
     DIRECTION_IN = "in"
     DIRECTION_OUT = "out"
@@ -314,6 +407,15 @@ class PhoneCall(models.Model):
     connection = models.ForeignKey(TelephonyConnection, on_delete=models.PROTECT, related_name="calls")
     external_id = models.CharField(max_length=255)
     employee = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="phone_calls")
+    employee_profile = models.ForeignKey(
+        Employee,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="phone_calls",
+    )
+    provider_user = models.CharField(max_length=255, blank=True)
+    provider_extension = models.CharField(max_length=64, blank=True)
     contact_name = models.CharField(max_length=255, blank=True)
     phone_number = models.CharField(max_length=40)
     direction = models.CharField(max_length=3, choices=[(DIRECTION_IN, "Входящий"), (DIRECTION_OUT, "Исходящий")])
@@ -346,6 +448,11 @@ class PhoneCall(models.Model):
             raise ValidationError("Telephony connection belongs to another organization.")
         if self.employee_id and not self.employee.organizationaccess_set.filter(organization_id=self.organization_id).exists():
             raise ValidationError("Call employee must belong to the organization.")
+        if (
+            self.employee_profile_id
+            and self.employee_profile.organization_id != self.organization_id
+        ):
+            raise ValidationError("Call employee profile must belong to the organization.")
 
 
 class CallAnalysis(models.Model):
