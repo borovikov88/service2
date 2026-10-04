@@ -82,6 +82,33 @@
     .seo-grid p {
         margin-bottom: 8px;
     }
+
+
+    /* Full dark-theme audit: public landing when dark preference is active. */
+    html[data-theme="dark"] .hero-shell {
+        background:
+          radial-gradient(1200px 600px at 10% -10%, rgba(59, 130, 246, 0.13), transparent 60%),
+          radial-gradient(900px 500px at 90% 0%, rgba(45, 184, 198, 0.12), transparent 55%),
+          linear-gradient(180deg, #141f2e 0%, #111a28 100%);
+        border: 1px solid #304158;
+    }
+    html[data-theme="dark"] .stat-card,
+    html[data-theme="dark"] .feature-card,
+    html[data-theme="dark"] .pricing-card {
+        color: #e7edf5;
+        background: #151f2e;
+        border-color: #304158;
+    }
+    html[data-theme="dark"] .hero-chip,
+    html[data-theme="dark"] .pricing-tag {
+        color: #a8ceff;
+        background: #1d3555;
+    }
+    html[data-theme="dark"] .pricing-tag.secondary {
+        color: #83d1a8;
+        background: #183127;
+    }
+
 </style>
 
 {% if not user.is_authenticated %}
