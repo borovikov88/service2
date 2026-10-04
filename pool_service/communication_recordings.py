@@ -127,7 +127,10 @@ def _claim_recording(call_id, *, force=False):
     stale_before = now - timedelta(minutes=30)
     queryset = PhoneCall.objects.filter(pk=call_id, recording_file="")
     if not force:
-        queryset = queryset.filter(
+        max_attempts = int(
+            getattr(settings, "COMMUNICATION_RECORDING_MAX_ATTEMPTS", 20)
+        )
+        queryset = queryset.filter(recording_attempts__lt=max_attempts).filter(
             Q(
                 recording_status__in=[
                     PhoneCall.RECORDING_NONE,
