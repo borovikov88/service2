@@ -36,7 +36,7 @@ from pool_service.communication_models import (
 )
 from pool_service.communication_secrets import encrypt_secret
 from pool_service.communication_services import conversation_capability, optimize_message_image, organization_access
-from pool_service.services.call_ai import request_call_analysis
+from pool_service.services.call_ai import request_call_analysis, start_requested_call_analysis_worker
 from pool_service.models import Notification, OrganizationAccess
 
 
@@ -309,7 +309,13 @@ def call_analysis_retry(request, call_id):
         messages.error(request, "Сначала должна быть сохранена запись звонка.")
         return redirect("communications_calls")
     if request_call_analysis(call.pk):
-        messages.success(request, "Звонок поставлен в очередь на расшифровку и анализ.")
+        if start_requested_call_analysis_worker():
+            messages.success(request, "Расшифровка и анализ запущены.")
+        else:
+            messages.warning(
+                request,
+                "Звонок поставлен в очередь. Резервный обработчик подхватит его позже.",
+            )
     else:
         messages.info(request, "Этот звонок уже обрабатывается.")
     return redirect("communications_calls")
