@@ -15,7 +15,7 @@ from django.test import Client, RequestFactory, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from pool_service.communication_models import AvitoCredential, CommunicationAccess, CommunicationChannel, ChannelConnection, Conversation, ConversationMessage, MessageAttachment, PhoneCall, TelephonyConnection, TelephonyEmployeeIdentity, WebsiteRequest
+from pool_service.communication_models import AvitoCredential, CallAnalysis, CommunicationAccess, CommunicationChannel, ChannelConnection, Conversation, ConversationMessage, MessageAttachment, PhoneCall, TelephonyConnection, TelephonyEmployeeIdentity, WebsiteRequest
 from pool_service.communication_avito import (
     AvitoError,
     AvitoRetryableError,
@@ -31,6 +31,7 @@ from pool_service.communication_avito import (
     webhook_subscriptions,
 )
 from pool_service.communication_recordings import download_call_recording
+from pool_service.services.call_ai import process_call_analysis
 from pool_service.communication_secrets import decrypt_secret, encrypt_secret
 from pool_service.communication_services import receive_message, users_with_conversation_access
 from pool_service.communication_services import conversation_capability
@@ -310,6 +311,151 @@ class CommunicationsTests(TestCase):
         self.assertEqual(download["Content-Type"], "audio/mpeg")
         self.assertIn("attachment", download["Content-Disposition"])
         self.assertEqual(b"".join(download.streaming_content), payload)
+
+    @override_settings(
+        OPENAI_API_KEY="test-key",
+        OPENAI_CALL_TRANSCRIPTION_MODEL="gpt-4o-transcribe-diarize",
+        OPENAI_CALL_ANALYSIS_MODEL="gpt-5.6-luna",
+    )
+    @patch("pool_service.services.call_ai._client")
+    def test_call_ai_transcribes_speakers_and_extracts_structured_summary(self, client_factory):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-ai",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-call",
+            employee=self.owner,
+            contact_name="Иван",
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=75,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        call.recording_file.save(
+            "ai-call.mp3",
+            ContentFile(b"ID3" + b"x" * 64),
+            save=True,
+        )
+
+        segment_a = MagicMock(speaker="A", text="Здравствуйте, меня зовут Иван.")
+        segment_b = MagicMock(speaker="B", text="Что хотите построить?")
+        transcription = MagicMock(
+            text="Здравствуйте, меня зовут Иван. Что хотите построить?",
+            segments=[segment_a, segment_b],
+        )
+        response = MagicMock(
+            output_text='{"summary":"Иван хочет обсудить бассейн.","facts":{"client_name":"Иван","phone":"+79001112233","request":"Бассейн","address":"Барнаул","next_step":"Уточнить размеры"}}'
+        )
+        client = client_factory.return_value
+        client.audio.transcriptions.create.return_value = transcription
+        client.responses.create.return_value = response
+
+        self.assertTrue(process_call_analysis(call.pk))
+        analysis = CallAnalysis.objects.get(call=call)
+        self.assertEqual(analysis.status, CallAnalysis.STATUS_READY)
+        self.assertIn("A: Здравствуйте", analysis.transcript)
+        self.assertIn("B: Что хотите", analysis.transcript)
+        self.assertEqual(analysis.summary, "Иван хочет обсудить бассейн.")
+        self.assertEqual(analysis.facts["client_name"], "Иван")
+        self.assertEqual(analysis.facts["request"], "Бассейн")
+        self.assertEqual(analysis.transcription_model, "gpt-4o-transcribe-diarize")
+        self.assertEqual(analysis.analysis_model, "gpt-5.6-luna")
+
+        kwargs = client.audio.transcriptions.create.call_args.kwargs
+        self.assertEqual(kwargs["response_format"], "diarized_json")
+        self.assertEqual(kwargs["chunking_strategy"], "auto")
+
+    def test_calls_page_shows_ai_summary_transcript_and_retry(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-ai-ui",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-ui-call",
+            employee=self.owner,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=70,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        call.recording_file.save("ai-ui-call.mp3", ContentFile(b"ID3test"), save=True)
+        CallAnalysis.objects.create(
+            call=call,
+            status=CallAnalysis.STATUS_READY,
+            summary="Клиент хочет бассейн 6×3 м.",
+            transcript="A: Нужен бассейн 6 на 3.\nB: Уточним адрес.",
+            facts={
+                "client_name": "Иван",
+                "address": "Барнаул",
+                "request": "Бассейн 6×3 м",
+                "next_step": "Перезвонить после замера",
+            },
+        )
+
+        self.client.login(username="owner", password="test")
+        response = self.client.get(reverse("communications_calls"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Итоги разговора")
+        self.assertContains(response, "Клиент хочет бассейн 6×3 м.")
+        self.assertContains(response, "Полная расшифровка")
+        self.assertContains(response, "Перезвонить после замера")
+        self.assertContains(
+            response,
+            reverse("communication_call_analysis_retry", args=[call.pk]),
+        )
+
+    def test_call_analysis_retry_requires_call_access_and_resets_failed_state(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-ai-retry",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-retry-call",
+            employee=self.owner,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=30,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        call.recording_file.save("ai-retry-call.mp3", ContentFile(b"ID3test"), save=True)
+        analysis = CallAnalysis.objects.create(
+            call=call,
+            status=CallAnalysis.STATUS_FAILED,
+            error="openai_processing_failed",
+            attempts=1,
+        )
+
+        self.client.login(username="owner", password="test")
+        response = self.client.post(
+            reverse("communication_call_analysis_retry", args=[call.pk])
+        )
+        self.assertRedirects(response, reverse("communications_calls"))
+        analysis.refresh_from_db()
+        self.assertEqual(analysis.status, CallAnalysis.STATUS_PENDING)
+        self.assertEqual(analysis.error, "")
+
+        self.client.logout()
+        self.client.login(username="worker", password="test")
+        forbidden = self.client.post(
+            reverse("communication_call_analysis_retry", args=[call.pk])
+        )
+        self.assertEqual(forbidden.status_code, 403)
 
     @override_settings(
         COMMUNICATION_RECORDING_DOWNLOAD_TIMEOUT_SECONDS=2,
