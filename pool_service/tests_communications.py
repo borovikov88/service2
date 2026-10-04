@@ -199,6 +199,39 @@ class CommunicationsTests(TestCase):
             f'href="{communications_url}" class="list-group-item list-group-item-action',
         )
 
+    def test_calls_page_handles_unmapped_employee_and_uses_shared_navigation(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-main",
+        )
+        PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="unmapped-call",
+            employee=None,
+            contact_name="Клиент без сопоставленного сотрудника",
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=42,
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+
+        self.client.login(username="owner", password="test")
+        calls_page = self.client.get(reverse("communications_calls"))
+        self.assertEqual(calls_page.status_code, 200)
+        self.assertContains(calls_page, "Не сопоставлен")
+        self.assertContains(calls_page, 'bi bi-gear')
+        self.assertContains(calls_page, reverse("communications_channels"))
+        self.assertContains(calls_page, "communications-tabs")
+
+        dialogs_page = self.client.get(reverse("communications_conversations"))
+        self.assertEqual(dialogs_page.status_code, 200)
+        self.assertContains(dialogs_page, 'bi bi-gear')
+        self.assertContains(dialogs_page, reverse("communications_channels"))
+        self.assertContains(dialogs_page, "communications-tabs")
+
     def test_manager_does_not_see_communications_navigation_during_rollout(self):
         self.client.login(username="worker", password="test")
         response = self.client.get(reverse("pool_list"))
