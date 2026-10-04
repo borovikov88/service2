@@ -1,9 +1,7 @@
-import base64
 import json
-import re
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
-from urllib.request import Request, build_opener
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -58,6 +56,11 @@ MAX_MEGAFON_RESPONSE_BYTES = 512 * 1024
 
 class EmployeeIdentitySyncError(ValidationError):
     pass
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def _employee_display_name(employee):
@@ -175,6 +178,7 @@ def map_employee_service2_user(employee, user, actor):
             after={"user_id": user.pk},
             changed_fields=["user_id"] if before["user_id"] != user.pk else [],
         )
+    employee.refresh_from_db()
     backfill_employee_calls(employee)
     return locked
 
@@ -363,7 +367,7 @@ def _read_megafon_accounts(telephony):
         getattr(settings, "COMMUNICATION_MEGAFON_API_TIMEOUT_SECONDS", 10)
     )
     try:
-        with build_opener().open(request, timeout=timeout) as response:
+        with build_opener(_NoRedirect()).open(request, timeout=timeout) as response:
             raw = response.read(MAX_MEGAFON_RESPONSE_BYTES + 1)
             if response.status != 200:
                 raise EmployeeIdentitySyncError(
@@ -436,8 +440,8 @@ def apply_telephony_identity_to_calls(identity):
         selector |= Q(provider_user=identity.external_user)
     matches = matches.filter(selector)
     return matches.update(
-        employee_profile=employee,
-        employee=employee.user if employee.user_id else None,
+        employee_profile_id=employee.pk,
+        employee_id=employee.user_id,
     )
 
 
