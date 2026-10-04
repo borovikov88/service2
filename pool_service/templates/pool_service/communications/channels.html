@@ -187,6 +187,16 @@
                     {% if connection.megafon_webhook_configured %}События в Service2 настроены{% else %}Нужно настроить события{% endif %}
                   </span>
                 </div>
+                {% if connection.megafon_api_last_checked_at %}
+                  <div class="small {% if connection.megafon_api_last_error %}text-danger{% else %}text-muted{% endif %} mt-2">
+                    Проверка API: {{ connection.megafon_api_last_checked_at }}
+                    {% if connection.megafon_api_last_error %}
+                      · ошибка {{ connection.megafon_api_last_error }}
+                    {% else %}
+                      · сотрудников {{ connection.megafon_api_accounts_count }}
+                    {% endif %}
+                  </div>
+                {% endif %}
                 {% if connection.megafon_last_event_at %}
                   <div class="small text-muted mt-2">
                     Последнее live-событие: {{ connection.megafon_last_event_at }}
@@ -207,6 +217,12 @@
                 {% endif %}
               </div>
               <div class="d-flex flex-wrap gap-2">
+                {% if connection.megafon_api_configured %}
+                <form method="post" action="{% url 'communication_telephony_check_api' connection.pk %}">
+                  {% csrf_token %}
+                  <button class="btn btn-sm btn-outline-success" type="submit">Проверить API</button>
+                </form>
+                {% endif %}
                 <form method="post" action="{% url 'communication_telephony_connect' connection.pk %}">
                   {% csrf_token %}
                   <button class="btn btn-sm btn-primary" type="submit">

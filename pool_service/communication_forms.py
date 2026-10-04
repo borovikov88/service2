@@ -140,9 +140,11 @@ class TelephonyConnectionForm(forms.Form):
             parsed.port
         except ValueError as exc:
             raise forms.ValidationError("Некорректный адрес АТС.") from exc
+        hostname = (parsed.hostname or "").lower()
         if (
             parsed.scheme != "https"
-            or not parsed.hostname
+            or not hostname
+            or (hostname != "megapbx.ru" and not hostname.endswith(".megapbx.ru"))
             or parsed.username
             or parsed.password
             or parsed.query
@@ -150,7 +152,7 @@ class TelephonyConnectionForm(forms.Form):
             or parsed.port not in (None, 443)
         ):
             raise forms.ValidationError(
-                "Укажите HTTPS-адрес АТС без логина, пароля, query-параметров и нестандартного порта."
+                "Укажите HTTPS-адрес АТС на домене megapbx.ru без логина, пароля, query-параметров и нестандартного порта."
             )
         return raw
 

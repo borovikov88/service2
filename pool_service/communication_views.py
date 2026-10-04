@@ -27,6 +27,10 @@ from pool_service.communication_avito import (
     webhook_subscriptions as avito_webhook_subscriptions,
 )
 from pool_service.communication_forms import CommunicationConnectionForm, TelephonyConnectionForm
+from pool_service.communication_megafon import (
+    MegafonApiError,
+    accounts as megafon_accounts,
+)
 from pool_service.communication_models import (
     AvitoCredential, ChannelConnection, CommunicationChannel, Conversation,
     ConversationAssignment, ConversationMessage, ConversationReadState,
@@ -554,6 +558,21 @@ def channels(request):
             if provider_connection
             else ""
         )
+        telephony.megafon_api_last_checked_at = (
+            (provider_connection.settings or {}).get("megafon_api_last_checked_at", "")
+            if provider_connection
+            else ""
+        )
+        telephony.megafon_api_accounts_count = (
+            (provider_connection.settings or {}).get("megafon_api_accounts_count", "")
+            if provider_connection
+            else ""
+        )
+        telephony.megafon_api_last_error = (
+            (provider_connection.settings or {}).get("megafon_api_last_error", "")
+            if provider_connection
+            else ""
+        )
     return render(
         request,
         "pool_service/communications/channels.html",
@@ -1031,6 +1050,53 @@ def communication_avito_sync(request, connection_id):
         ),
     )
     return redirect("communications_conversations")
+
+
+@login_required
+@require_POST
+def communication_telephony_check_api(request, connection_id):
+    organization = _context(request, "can_manage_channels")
+    telephony = get_object_or_404(
+        TelephonyConnection,
+        pk=connection_id,
+        organization=organization,
+    )
+    provider_connection = _telephony_provider_connection(telephony)
+    try:
+        provider_accounts = megafon_accounts(provider_connection)
+    except MegafonApiError as exc:
+        error_code = str(exc)[:120]
+        with transaction.atomic():
+            locked = ChannelConnection.objects.select_for_update().get(
+                pk=provider_connection.pk
+            )
+            settings_data = dict(locked.settings or {})
+            settings_data["megafon_api_last_checked_at"] = timezone.now().isoformat()
+            settings_data["megafon_api_last_error"] = error_code
+            locked.settings = settings_data
+            locked.save(update_fields=["settings"])
+        messages.error(
+            request,
+            "Не удалось подключиться к API ВАТС МегаФона. Проверьте адрес АТС, ключ и включённый доступ к API.",
+        )
+        return redirect("communications_channels")
+
+    with transaction.atomic():
+        locked = ChannelConnection.objects.select_for_update().get(
+            pk=provider_connection.pk
+        )
+        settings_data = dict(locked.settings or {})
+        settings_data["megafon_api_last_checked_at"] = timezone.now().isoformat()
+        settings_data["megafon_api_accounts_count"] = len(provider_accounts)
+        settings_data["megafon_api_accounts"] = provider_accounts
+        settings_data.pop("megafon_api_last_error", None)
+        locked.settings = settings_data
+        locked.save(update_fields=["settings"])
+    messages.success(
+        request,
+        f"API ВАТС доступно. Получено сотрудников: {len(provider_accounts)}.",
+    )
+    return redirect("communications_channels")
 
 
 @login_required
