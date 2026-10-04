@@ -977,6 +977,78 @@ class CommunicationsTests(TestCase):
         call_command("process_requested_call_analyses", "--limit", "1")
         process_analysis.assert_called_once_with(requested_call.pk)
 
+    @patch(
+        "pool_service.management.commands.process_requested_call_analyses.process_call_analysis"
+    )
+    def test_requested_call_worker_drains_requests_added_while_running(self, process_analysis):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-ai-worker-drain",
+        )
+        first_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-worker-drain-first",
+            employee=self.owner,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=25,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        first_call.recording_file.save(
+            "ai-worker-drain-first.mp3",
+            ContentFile(b"ID3test"),
+            save=True,
+        )
+        second_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-worker-drain-second",
+            employee=self.owner,
+            phone_number="+79001112234",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=25,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        second_call.recording_file.save(
+            "ai-worker-drain-second.mp3",
+            ContentFile(b"ID3test"),
+            save=True,
+        )
+        CallAnalysis.objects.create(
+            call=first_call,
+            status=CallAnalysis.STATUS_PENDING,
+            requested_at=timezone.now(),
+        )
+
+        def process_side_effect(call_id):
+            if call_id == first_call.pk:
+                CallAnalysis.objects.create(
+                    call=second_call,
+                    status=CallAnalysis.STATUS_PENDING,
+                    requested_at=timezone.now(),
+                )
+            return True
+
+        process_analysis.side_effect = process_side_effect
+        call_command(
+            "process_requested_call_analyses",
+            "--limit",
+            "10",
+            "--idle-grace-seconds",
+            "0",
+        )
+
+        self.assertEqual(
+            [item.args[0] for item in process_analysis.call_args_list],
+            [first_call.pk, second_call.pk],
+        )
+
     def test_calls_page_offers_manual_transcription_for_unanalysed_recording(self):
         telephony = TelephonyConnection.objects.create(
             organization=self.organization,
