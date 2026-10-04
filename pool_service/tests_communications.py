@@ -34,8 +34,11 @@ from pool_service.communication_secrets import decrypt_secret, encrypt_secret
 from pool_service.communication_services import receive_message, users_with_conversation_access
 from pool_service.communication_services import conversation_capability
 from pool_service.services.employee_identity_sync import (
+    EmployeeIdentitySyncError,
     map_employee_service2_user,
     map_telephony_identity,
+    resolve_call_employee,
+    sync_all_employee_identities,
     sync_megafon_employee_identities,
     sync_onec_employee_identities,
 )
