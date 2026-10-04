@@ -306,7 +306,6 @@ def sync_onec_employee_identities(organization, actor=None):
 
     EmployeeOneCIdentity.objects.filter(
         organization=organization,
-        last_seen_at__isnull=False,
     ).exclude(pk__in=seen_ids).update(source_active=False)
 
     return {
@@ -455,6 +454,7 @@ def apply_telephony_identity_to_calls(identity):
     matches = PhoneCall.objects.filter(
         organization=identity.organization,
         connection=identity.connection,
+        employee_profile__isnull=True,
     )
     selector = Q(provider_extension=identity.extension)
     if identity.external_user:
@@ -508,30 +508,54 @@ def sync_megafon_employee_identities(telephony, actor=None):
     auto_matched = 0
     needs_mapping = 0
     for account in accounts:
+        normalized_name = normalize_onec_name(account["name"])
         identity, _created = TelephonyEmployeeIdentity.objects.get_or_create(
-            organization=telephony.organization,
             connection=telephony,
             extension=account["ext"],
             defaults={
+                "organization": telephony.organization,
                 "raw_name": account["name"],
-                "normalized_name": normalize_onec_name(account["name"]),
+                "normalized_name": normalized_name,
                 "last_seen_at": now,
             },
         )
+        reassigned_extension = (
+            not _created
+            and not identity.is_active
+            and bool(identity.normalized_name)
+            and identity.normalized_name != normalized_name
+        )
         identity.raw_name = account["name"]
-        identity.normalized_name = normalize_onec_name(account["name"])
+        identity.normalized_name = normalized_name
         identity.is_active = True
         identity.last_seen_at = now
-        identity.save(
-            update_fields=[
-                "raw_name",
-                "normalized_name",
-                "is_active",
-                "last_seen_at",
-                "updated_at",
-            ]
-        )
-        identity = _auto_match_telephony_identity(identity, actor=actor)
+        update_fields = [
+            "raw_name",
+            "normalized_name",
+            "is_active",
+            "last_seen_at",
+            "updated_at",
+        ]
+        if reassigned_extension:
+            identity.employee = None
+            identity.external_user = ""
+            identity.status = TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING
+            identity.match_method = TelephonyEmployeeIdentity.MATCH_NONE
+            identity.confirmed_by = None
+            identity.confirmed_at = None
+            update_fields.extend(
+                [
+                    "employee",
+                    "external_user",
+                    "status",
+                    "match_method",
+                    "confirmed_by",
+                    "confirmed_at",
+                ]
+            )
+        identity.save(update_fields=update_fields)
+        if not reassigned_extension:
+            identity = _auto_match_telephony_identity(identity, actor=actor)
         seen.append(identity.pk)
         if identity.employee_id:
             auto_matched += 1
@@ -612,45 +636,65 @@ def resolve_call_employee(organization, telephony, extension="", external_user="
     extension = (extension or "").strip()
     external_user = (external_user or "").strip()
     identity = None
-    if extension:
-        identity = TelephonyEmployeeIdentity.objects.filter(
-            organization=organization,
-            connection=telephony,
-            extension=extension,
-            is_active=True,
-        ).select_related("employee__user").first()
-    if identity is None and external_user:
-        identity = TelephonyEmployeeIdentity.objects.filter(
-            organization=organization,
-            connection=telephony,
-            external_user=external_user,
-            is_active=True,
-        ).select_related("employee__user").first()
 
-    if identity is None and extension:
+    if extension:
         raw_name = external_user or extension
-        identity = TelephonyEmployeeIdentity.objects.create(
+        identity, created = TelephonyEmployeeIdentity.objects.get_or_create(
+            connection=telephony,
+            extension=extension,
+            defaults={
+                "organization": organization,
+                "raw_name": raw_name,
+                "normalized_name": normalize_onec_name(raw_name),
+                "external_user": external_user,
+                "is_active": True,
+                "status": TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+                "match_method": TelephonyEmployeeIdentity.MATCH_NONE,
+                "last_seen_at": timezone.now(),
+            },
+        )
+        if created:
+            identity = _auto_match_telephony_identity(identity)
+        elif not identity.is_active:
+            # A webhook proves the extension exists again, but it does not prove
+            # the previous holder still owns it. Keep it unmapped until the
+            # accounts sync (or an operator) confirms the current person.
+            identity.is_active = True
+            identity.employee = None
+            identity.status = TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING
+            identity.match_method = TelephonyEmployeeIdentity.MATCH_NONE
+            identity.confirmed_by = None
+            identity.confirmed_at = None
+            identity.external_user = external_user
+            identity.last_seen_at = timezone.now()
+            identity.save(
+                update_fields=[
+                    "is_active",
+                    "employee",
+                    "status",
+                    "match_method",
+                    "confirmed_by",
+                    "confirmed_at",
+                    "external_user",
+                    "last_seen_at",
+                    "updated_at",
+                ]
+            )
+        else:
+            updates = []
+            if external_user and external_user != identity.external_user:
+                identity.external_user = external_user
+                updates.append("external_user")
+            identity.last_seen_at = timezone.now()
+            updates.append("last_seen_at")
+            identity.save(update_fields=[*updates, "updated_at"])
+    elif external_user:
+        identity = TelephonyEmployeeIdentity.objects.filter(
             organization=organization,
             connection=telephony,
-            raw_name=raw_name,
-            normalized_name=normalize_onec_name(raw_name),
-            extension=extension,
             external_user=external_user,
             is_active=True,
-            status=TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
-            match_method=TelephonyEmployeeIdentity.MATCH_NONE,
-            last_seen_at=timezone.now(),
-        )
-        identity = _auto_match_telephony_identity(identity)
-    elif identity is not None:
-        updates = []
-        if external_user and not identity.external_user:
-            identity.external_user = external_user
-            updates.append("external_user")
-        identity.last_seen_at = timezone.now()
-        updates.append("last_seen_at")
-        if updates:
-            identity.save(update_fields=[*updates, "updated_at"])
+        ).select_related("employee__user").first()
 
     if identity and identity.employee_id:
         employee = identity.employee
@@ -662,13 +706,21 @@ def sync_all_employee_identities(organization, actor=None):
     onec = sync_onec_employee_identities(organization, actor=actor)
     telephony_results = []
     for telephony in organization.telephony_connections.filter(is_active=True):
-        telephony_results.append(
-            {
-                "connection_id": telephony.pk,
-                "name": telephony.name,
-                **sync_megafon_employee_identities(telephony, actor=actor),
-            }
-        )
+        base_result = {
+            "connection_id": telephony.pk,
+            "name": telephony.name,
+            "synced": 0,
+            "auto_matched": 0,
+            "needs_mapping": 0,
+            "error": "",
+        }
+        try:
+            result = sync_megafon_employee_identities(telephony, actor=actor)
+        except EmployeeIdentitySyncError as exc:
+            base_result["error"] = "; ".join(exc.messages)
+        else:
+            base_result.update(result)
+        telephony_results.append(base_result)
     for employee in Employee.objects.filter(organization=organization, is_active=True):
         auto_link_service2_user(employee, actor=actor)
     return {"onec": onec, "telephony": telephony_results}
