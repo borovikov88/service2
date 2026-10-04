@@ -2,6 +2,7 @@ from datetime import date
 import os
 import re
 import secrets
+from urllib.parse import urlsplit
 
 from django.contrib import messages
 from django.contrib.auth.models import User
