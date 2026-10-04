@@ -24,6 +24,7 @@ from pool_service.communication_models import (
     TelephonyConnection,
     WebsiteRequest,
 )
+from pool_service.communication_recordings import download_call_recording
 from pool_service.communication_services import receive_message
 from pool_service.models import Client, OrganizationAccess
 from pool_service.communication_avito import AvitoError, ingest_webhook
@@ -587,8 +588,23 @@ def megafon_webhook(request, public_id):
         connection.settings = settings_data
         connection.save(update_fields=["settings"])
 
+        if recording_ref and not phone_call.recording_file:
+            phone_call.recording_status = PhoneCall.RECORDING_PENDING
+            phone_call.recording_error = ""
+            phone_call.save(
+                update_fields=["recording_status", "recording_error"]
+            )
+
+    recording_saved = False
+    if (
+        recording_ref
+        and getattr(settings, "COMMUNICATION_RECORDING_DOWNLOAD_INLINE", True)
+    ):
+        recording_saved = download_call_recording(phone_call.pk)
+
     return JsonResponse({
         "accepted": True,
         "created": created,
         "call_id": phone_call.pk,
+        "recording_saved": recording_saved,
     })

@@ -1,4 +1,5 @@
 from datetime import timedelta
+import io
 from importlib import import_module
 import logging
 from unittest.mock import MagicMock, patch
@@ -7,8 +8,9 @@ from django.apps import apps
 from django.contrib.auth.models import Permission, User
 from django.core.management import call_command
 from django.db import IntegrityError, transaction
+from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import Client, RequestFactory, TestCase
+from django.test import Client, RequestFactory, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -27,6 +29,7 @@ from pool_service.communication_avito import (
     verify_messenger_access,
     webhook_subscriptions,
 )
+from pool_service.communication_recordings import download_call_recording
 from pool_service.communication_secrets import decrypt_secret, encrypt_secret
 from pool_service.communication_services import receive_message, users_with_conversation_access
 from pool_service.communication_services import conversation_capability
@@ -231,6 +234,151 @@ class CommunicationsTests(TestCase):
         self.assertContains(dialogs_page, 'bi bi-gear')
         self.assertContains(dialogs_page, reverse("communications_channels"))
         self.assertContains(dialogs_page, "communications-tabs")
+
+    def test_calls_page_embeds_private_recording_player_and_supports_ranges(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-player",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="stored-call",
+            employee=self.owner,
+            contact_name="Клиент",
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=12,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_ref="https://records.megapbx.ru/stored-call.mp3",
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        payload = b"ID3" + b"recording-bytes"
+        call.recording_file.save(
+            "stored-call.mp3",
+            ContentFile(payload),
+            save=True,
+        )
+
+        self.client.login(username="owner", password="test")
+        page = self.client.get(reverse("communications_calls"))
+        self.assertEqual(page.status_code, 200)
+        self.assertContains(page, "<audio", html=False)
+        recording_url = reverse("communication_call_recording", args=[call.pk])
+        self.assertContains(page, recording_url)
+        self.assertNotContains(page, call.recording_ref)
+
+        full = self.client.get(recording_url)
+        self.assertEqual(full.status_code, 200)
+        self.assertEqual(full["Content-Type"], "audio/mpeg")
+        self.assertEqual(full["Accept-Ranges"], "bytes")
+
+        partial = self.client.get(recording_url, HTTP_RANGE="bytes=3-7")
+        self.assertEqual(partial.status_code, 206)
+        self.assertEqual(partial["Content-Range"], f"bytes 3-7/{len(payload)}")
+        self.assertEqual(b"".join(partial.streaming_content), payload[3:8])
+
+    @override_settings(
+        COMMUNICATION_RECORDING_DOWNLOAD_TIMEOUT_SECONDS=2,
+        COMMUNICATION_RECORDING_MAX_BYTES=1024 * 1024,
+    )
+    def test_recording_downloader_saves_mp3_to_private_storage(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-download",
+            recording_allowed_hosts=["records.megapbx.ru"],
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="download-call",
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=30,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_ref="https://records.megapbx.ru/download-call.mp3",
+            recording_status=PhoneCall.RECORDING_PENDING,
+        )
+        payload = b"ID3" + b"x" * 128
+
+        class FakeResponse(io.BytesIO):
+            def __init__(self, data):
+                super().__init__(data)
+                self.headers = {
+                    "Content-Type": "audio/mpeg",
+                    "Content-Length": str(len(data)),
+                }
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.close()
+                return False
+
+        with patch(
+            "pool_service.communication_recordings._open_recording",
+            return_value=FakeResponse(payload),
+        ):
+            self.assertTrue(download_call_recording(call.pk))
+
+        call.refresh_from_db()
+        self.assertEqual(call.recording_status, PhoneCall.RECORDING_STORED)
+        self.assertTrue(call.recording_file.name)
+        self.assertEqual(call.recording_error, "")
+        self.assertIsNotNone(call.recording_downloaded_at)
+        with call.recording_file.open("rb") as stored:
+            self.assertEqual(stored.read(), payload)
+
+    def test_recording_downloader_rejects_html_instead_of_storing_login_page(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-html",
+            recording_allowed_hosts=["records.megapbx.ru"],
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="html-call",
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=30,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_ref="https://records.megapbx.ru/html-call.mp3",
+            recording_status=PhoneCall.RECORDING_PENDING,
+        )
+
+        class FakeHtmlResponse(io.BytesIO):
+            def __init__(self):
+                super().__init__(b"<html>login</html>")
+                self.headers = {
+                    "Content-Type": "text/html; charset=utf-8",
+                    "Content-Length": "18",
+                }
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.close()
+                return False
+
+        with patch(
+            "pool_service.communication_recordings._open_recording",
+            return_value=FakeHtmlResponse(),
+        ):
+            self.assertFalse(download_call_recording(call.pk))
+
+        call.refresh_from_db()
+        self.assertEqual(call.recording_status, PhoneCall.RECORDING_FAILED)
+        self.assertFalse(call.recording_file)
+        self.assertIn("unexpected_content_type", call.recording_error)
 
     def test_manager_does_not_see_communications_navigation_during_rollout(self):
         self.client.login(username="worker", password="test")
@@ -821,6 +969,7 @@ class CommunicationsTests(TestCase):
         self.assertEqual(call.duration_seconds, 91)
         self.assertEqual(call.started_at.isoformat(), "2026-10-03T09:00:00+00:00")
         self.assertEqual(call.recording_ref, "https://records.megapbx.ru/call-123.mp3")
+        self.assertEqual(call.recording_status, PhoneCall.RECORDING_PENDING)
         telephony.refresh_from_db()
         self.assertIn("records.megapbx.ru", telephony.recording_allowed_hosts)
         provider_connection.refresh_from_db()
@@ -1125,7 +1274,7 @@ class CommunicationsTests(TestCase):
         self.assertEqual(self.client.get(reverse("communications_calls"), {"date_from": "2026-02-02", "date_to": "2026-02-01"}).status_code, 400)
         self.assertEqual(self.client.get(reverse("communications_calls"), {"employee": "not-an-id"}).status_code, 400)
 
-    def test_call_recording_requires_https_without_embedded_credentials(self):
+    def test_call_recording_requires_stored_file_and_scopes_access(self):
         telephony = TelephonyConnection.objects.create(
             organization=self.organization,
             external_id="recordings",
@@ -1140,35 +1289,25 @@ class CommunicationsTests(TestCase):
             direction=PhoneCall.DIRECTION_IN,
             started_at=timezone.now(),
             result=PhoneCall.RESULT_ANSWERED,
-            recording_ref="http://recordings.example.test/call.mp3",
+            recording_ref="https://recordings.example.test/call.mp3",
+            recording_status=PhoneCall.RECORDING_PENDING,
         )
         self.client.login(username="worker", password="test")
         url = reverse("communication_call_recording", args=[call.pk])
         self.assertEqual(self.client.get(url).status_code, 404)
-        call.recording_ref = "https://token:secret@recordings.example.test/call.mp3"
-        call.save(update_fields=["recording_ref"])
-        self.assertEqual(self.client.get(url).status_code, 404)
-        for invalid_url in (
-            "https://[broken",
-            "https://recordings.example.test:notaport/call.mp3",
-            "https://recordings.example.test/call mp3",
-        ):
-            call.recording_ref = invalid_url
-            call.save(update_fields=["recording_ref"])
-            self.assertEqual(self.client.get(url).status_code, 404)
-        call.recording_ref = "https://recordings.example.test/call.mp3"
-        call.save(update_fields=["recording_ref"])
+
+        payload = b"ID3" + b"private-recording"
+        call.recording_file.save(
+            "private-call.mp3",
+            ContentFile(payload),
+            save=True,
+        )
+        call.recording_status = PhoneCall.RECORDING_STORED
+        call.save(update_fields=["recording_status"])
         response = self.client.get(url)
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(response["Location"], call.recording_ref)
-        call.recording_ref = "https://untrusted.example.test/call.mp3"
-        call.save(update_fields=["recording_ref"])
-        self.assertEqual(self.client.get(url).status_code, 404)
-        call.recording_ref = "https://recordings.example.test:8443/call.mp3"
-        call.save(update_fields=["recording_ref"])
-        self.assertEqual(self.client.get(url).status_code, 404)
-        TelephonyConnection.objects.filter(pk=telephony.pk).update(recording_allowed_hosts="not-a-list")
-        self.assertEqual(self.client.get(url).status_code, 404)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "audio/mpeg")
+        self.assertNotIn("recordings.example.test", response.get("Location", ""))
 
         foreign_organization = Organization.objects.create(name="Foreign calls org")
         foreign_owner = User.objects.create_user("foreign-call-owner", password="test")
@@ -1178,6 +1317,29 @@ class CommunicationsTests(TestCase):
         self.client.logout()
         self.client.login(username="foreign-call-owner", password="test")
         self.assertEqual(self.client.get(url).status_code, 404)
+
+    def test_recording_downloader_rejects_untrusted_recording_host(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            external_id="untrusted-recording",
+            recording_allowed_hosts=["records.megapbx.ru"],
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="untrusted-call",
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_ref="https://example.invalid/call.mp3",
+            recording_status=PhoneCall.RECORDING_PENDING,
+        )
+        self.assertFalse(download_call_recording(call.pk))
+        call.refresh_from_db()
+        self.assertEqual(call.recording_status, PhoneCall.RECORDING_FAILED)
+        self.assertEqual(call.recording_error, "untrusted_recording_url")
+        self.assertFalse(call.recording_file)
 
     def test_avito_dialog_shows_delivery_state_and_disables_attachments(self):
         conversation = Conversation.objects.create(
