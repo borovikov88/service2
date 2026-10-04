@@ -648,6 +648,16 @@ class CommunicationsTests(TestCase):
             self.client.get(reverse("communication_telephony_create")).status_code,
             403,
         )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            external_id="manager-forbidden-line",
+        )
+        self.assertEqual(
+            self.client.post(
+                reverse("communication_telephony_check_api", args=[telephony.pk])
+            ).status_code,
+            403,
+        )
         self.assertEqual(
             self.client.post(
                 reverse("communication_avito_connect", args=[self.connection.pk]),
@@ -717,6 +727,56 @@ class CommunicationsTests(TestCase):
         )
         self.assertEqual(invalid.status_code, 200)
         self.assertContains(invalid, "только доменное имя")
+
+    @patch("pool_service.communication_views.megafon_accounts")
+    def test_owner_can_check_megafon_vats_api_and_cache_accounts(self, api_accounts):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон офис",
+            external_id="megafon-api-check",
+        )
+        channel = CommunicationChannel.objects.create(
+            organization=self.organization,
+            kind=CommunicationChannel.KIND_MEGAFON,
+            name="МегаФон",
+        )
+        provider_connection = ChannelConnection.objects.create(
+            channel=channel,
+            name="МегаФон офис",
+            external_id="megafon-api-check",
+            settings={
+                "megafon_api_base_url": "https://aqualine22.megapbx.ru/crmapi/v1",
+                "megafon_api_key_encrypted": encrypt_secret("megafon-ats-secret"),
+            },
+        )
+        api_accounts.return_value = [
+            {"name": "Дарья", "ext": "601"},
+            {"name": "Илья", "ext": "602"},
+        ]
+
+        self.client.login(username="owner", password="test")
+        response = self.client.post(
+            reverse("communication_telephony_check_api", args=[telephony.pk])
+        )
+        self.assertEqual(response.status_code, 302)
+        api_accounts.assert_called_once_with(provider_connection)
+
+        provider_connection.refresh_from_db()
+        self.assertEqual(
+            provider_connection.settings["megafon_api_accounts_count"],
+            2,
+        )
+        self.assertEqual(
+            provider_connection.settings["megafon_api_accounts"][0],
+            {"name": "Дарья", "ext": "601"},
+        )
+        self.assertTrue(
+            provider_connection.settings["megafon_api_last_checked_at"]
+        )
+        self.assertNotIn(
+            "megafon_api_last_error",
+            provider_connection.settings,
+        )
 
     def test_owner_can_connect_megafon_vats_and_receive_call_history(self):
         telephony = TelephonyConnection.objects.create(
