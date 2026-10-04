@@ -1,6 +1,7 @@
 from datetime import date
+import os
+import re
 import secrets
-from urllib.parse import urlsplit
 
 from django.contrib import messages
 from django.contrib.auth.models import User
@@ -9,7 +10,7 @@ from django.core.exceptions import PermissionDenied
 from django.core.files.images import get_image_dimensions
 from django.db import transaction
 from django.db.models import OuterRef, Q, Subquery
-from django.http import FileResponse, Http404, HttpResponseBadRequest, HttpResponseRedirect, JsonResponse
+from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequest, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -265,39 +266,94 @@ def calls(request):
     })
 
 
+def _recording_range_iterator(file_handle, start, length, chunk_size=64 * 1024):
+    try:
+        file_handle.seek(start)
+        remaining = length
+        while remaining > 0:
+            chunk = file_handle.read(min(chunk_size, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            yield chunk
+    finally:
+        file_handle.close()
+
+
 @login_required
 def call_recording(request, call_id):
     organization = _context(request, "can_listen_calls")
     call = get_object_or_404(PhoneCall, pk=call_id, organization=organization)
-    if not conversation_capability(request.user, "can_view_all_calls", organization) and call.employee_id != request.user.id:
-        raise PermissionDenied
-    if not call.recording_ref or any(ord(character) <= 32 or ord(character) == 127 for character in call.recording_ref):
-        raise Http404
-    try:
-        recording_url = urlsplit(call.recording_ref)
-        # Accessing these properties performs bracket and port validation.
-        hostname = recording_url.hostname
-        recording_url.port
-    except ValueError as exc:
-        raise Http404 from exc
-    configured_hosts = call.connection.recording_allowed_hosts
-    if not isinstance(configured_hosts, list):
-        raise Http404
-    allowed_hosts = {
-        str(item).strip().lower()
-        for item in configured_hosts
-        if isinstance(item, str) and item.strip()
-    }
     if (
-        recording_url.scheme != "https"
-        or not hostname
-        or hostname.lower() not in allowed_hosts
-        or recording_url.port not in (None, 443)
-        or recording_url.username
-        or recording_url.password
+        not conversation_capability(request.user, "can_view_all_calls", organization)
+        and call.employee_id != request.user.id
     ):
+        raise PermissionDenied
+    if not call.recording_file:
         raise Http404
-    return HttpResponseRedirect(call.recording_ref)
+
+    try:
+        file_path = call.recording_file.path
+        file_size = os.path.getsize(file_path)
+    except (OSError, ValueError):
+        raise Http404
+
+    range_header = request.headers.get("Range", "").strip()
+    if not range_header:
+        response = FileResponse(
+            open(file_path, "rb"),
+            content_type="audio/mpeg",
+            as_attachment=False,
+            filename=os.path.basename(file_path),
+        )
+        response["Accept-Ranges"] = "bytes"
+        response["Content-Length"] = str(file_size)
+        response["Cache-Control"] = "private, max-age=3600"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header)
+    if not match:
+        response = HttpResponse(status=416)
+        response["Content-Range"] = f"bytes */{file_size}"
+        return response
+
+    start_raw, end_raw = match.groups()
+    if not start_raw and not end_raw:
+        response = HttpResponse(status=416)
+        response["Content-Range"] = f"bytes */{file_size}"
+        return response
+
+    if start_raw:
+        start = int(start_raw)
+        end = int(end_raw) if end_raw else file_size - 1
+    else:
+        suffix_length = int(end_raw)
+        if suffix_length <= 0:
+            response = HttpResponse(status=416)
+            response["Content-Range"] = f"bytes */{file_size}"
+            return response
+        start = max(file_size - suffix_length, 0)
+        end = file_size - 1
+
+    if start >= file_size or start > end:
+        response = HttpResponse(status=416)
+        response["Content-Range"] = f"bytes */{file_size}"
+        return response
+
+    end = min(end, file_size - 1)
+    length = end - start + 1
+    response = StreamingHttpResponse(
+        _recording_range_iterator(open(file_path, "rb"), start, length),
+        status=206,
+        content_type="audio/mpeg",
+    )
+    response["Content-Length"] = str(length)
+    response["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+    response["Accept-Ranges"] = "bytes"
+    response["Cache-Control"] = "private, max-age=3600"
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 def _connection_setup_result(request, connection, secret_value, *, secret_kind):
