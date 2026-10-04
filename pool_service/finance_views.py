@@ -4713,16 +4713,6 @@ def finance_payroll_employee_mapping(request):
             is_active=True,
         ).order_by("name", "id")
     )
-    service_users = list(
-        User.objects.filter(
-            id__in=organization.accesses.filter(
-                user__is_active=True,
-            ).values_list("user_id", flat=True),
-            is_active=True,
-        )
-        .distinct()
-        .order_by("last_name", "first_name", "username", "id")
-    )
 
     return render(request, "pool_service/finance/payroll_employee_mapping.html", {
         "employee_rows": employee_rows,
