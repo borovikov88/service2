@@ -550,12 +550,17 @@ def megafon_webhook(request, public_id):
         settings_data["megafon_last_event_callid"] = call_id
         connection.settings = settings_data
         connection.save(update_fields=["settings"])
-        resolve_call_employee(
-            connection.channel.organization,
-            telephony,
-            extension,
-            provider_user,
-        )
+        historical_retry = bool(call_id) and PhoneCall.objects.filter(
+            connection=telephony,
+            external_id=call_id,
+        ).exists()
+        if not historical_retry:
+            resolve_call_employee(
+                connection.channel.organization,
+                telephony,
+                extension,
+                provider_user,
+            )
         client = _megafon_contact(connection.channel.organization, phone)
         return JsonResponse({
             "accepted": True,
@@ -620,7 +625,15 @@ def megafon_webhook(request, public_id):
             )
             .first()
         )
-        if existing_call:
+        has_stored_provider_identity = existing_call and (
+            existing_call.employee_profile_id
+            or existing_call.provider_extension
+            or existing_call.provider_user
+        )
+        if has_stored_provider_identity:
+            employee_profile = existing_call.employee_profile
+            employee = existing_call.employee
+        elif existing_call:
             employee_profile, employee = _megafon_identity_employee_for_replay(
                 connection.channel.organization,
                 telephony,

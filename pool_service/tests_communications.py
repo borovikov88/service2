@@ -1121,6 +1121,23 @@ class CommunicationsTests(TestCase):
             status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
             match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
         )
+        historical_event = webhook_client.post(
+            webhook_url,
+            {
+                "cmd": "event",
+                "crm_token": "megafon-crm-token",
+                "callid": "call-123",
+                "phone": "+79001112233",
+                "type": "COMPLETED",
+                "ext": "999",
+                "user": "worker",
+                "direction": "in",
+            },
+        )
+        self.assertEqual(historical_event.status_code, 200)
+        current_identity.refresh_from_db()
+        self.assertEqual(current_identity.external_user, "other")
+        self.assertFalse(current_identity.requires_manual_confirmation)
         replay = webhook_client.post(
             webhook_url,
             {
@@ -1180,6 +1197,35 @@ class CommunicationsTests(TestCase):
         self.assertEqual(legacy_call.employee, self.other)
         self.assertEqual(legacy_call.provider_extension, "999")
         self.assertEqual(legacy_call.provider_user, "other")
+
+        unassigned_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="unassigned-historical-call",
+            provider_extension="999",
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now() - timedelta(days=1),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        unassigned_replay = webhook_client.post(
+            webhook_url,
+            {
+                "cmd": "history",
+                "crm_token": "megafon-crm-token",
+                "callid": "unassigned-historical-call",
+                "phone": "+79001112233",
+                "type": "in",
+                "start": "2026-10-02 16:00:00",
+                "duration": "60",
+                "status": "Success",
+                "ext": "999",
+            },
+        )
+        self.assertEqual(unassigned_replay.status_code, 200)
+        unassigned_call.refresh_from_db()
+        self.assertIsNone(unassigned_call.employee_profile)
+        self.assertIsNone(unassigned_call.employee)
 
         pending_profile = Employee.objects.create(
             organization=self.organization,
