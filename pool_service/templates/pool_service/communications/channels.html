@@ -207,6 +207,9 @@
                 {% endif %}
               </div>
               <div class="d-flex flex-wrap gap-2">
+                <a class="btn btn-sm btn-outline-secondary" href="{% url 'finance_payroll_employee_mapping' %}">
+                  <i class="bi bi-people me-1"></i>Сотрудники
+                </a>
                 <form method="post" action="{% url 'communication_telephony_connect' connection.pk %}">
                   {% csrf_token %}
                   <button class="btn btn-sm btn-primary" type="submit">
