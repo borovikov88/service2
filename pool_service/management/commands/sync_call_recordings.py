@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db.models import Q
 from django.utils import timezone
@@ -29,14 +30,34 @@ class Command(BaseCommand):
         if call_id:
             queryset = queryset.filter(pk=call_id)
         elif not force:
-            queryset = queryset.filter(recording_file="").filter(
+            max_attempts = int(
+                getattr(settings, "COMMUNICATION_RECORDING_MAX_ATTEMPTS", 20)
+            )
+            retryable_failures = (
+                Q(recording_error="provider_unavailable")
+                | Q(recording_error="recording_storage_error")
+                | Q(recording_error__in=[
+                    "provider_http_404",
+                    "provider_http_408",
+                    "provider_http_409",
+                    "provider_http_425",
+                    "provider_http_429",
+                ])
+                | Q(recording_error__startswith="provider_http_5")
+            )
+            queryset = queryset.filter(
+                recording_file="",
+                recording_attempts__lt=max_attempts,
+            ).filter(
                 Q(
                     recording_status__in=[
                         PhoneCall.RECORDING_NONE,
                         PhoneCall.RECORDING_PENDING,
-                        PhoneCall.RECORDING_FAILED,
                     ]
                 )
+                | Q(
+                    recording_status=PhoneCall.RECORDING_FAILED,
+                ) & retryable_failures
                 | Q(
                     recording_status=PhoneCall.RECORDING_DOWNLOADING,
                     recording_last_attempt_at__lt=stale_before,
