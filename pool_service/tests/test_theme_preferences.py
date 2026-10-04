@@ -78,6 +78,7 @@ class ThemePreferenceTests(TestCase):
         self.assertIn('html[data-theme="dark"] .multi-select__trigger', css)
         self.assertIn('html[data-theme="dark"] .multi-select__dropdown', css)
         self.assertIn('html[data-theme="dark"] .multi-select__option:has(input:checked)', css)
+        self.assertIn('html[data-theme="dark"] .expense-employee-cell__last', css)
 
 
     def test_calendar_has_dark_theme_overrides(self):
@@ -94,3 +95,14 @@ class ThemePreferenceTests(TestCase):
         self.assertIn('html[data-theme="dark"] .calendar-day', template)
         self.assertIn('html[data-theme="dark"] .calendar-chip--planned', template)
         self.assertIn('html[data-theme="dark"] .calendar-list-section', template)
+
+
+    def test_notifications_and_cash_have_dark_theme_overrides(self):
+        templates_root = Path(__file__).resolve().parents[1] / "templates" / "pool_service"
+        notifications = (templates_root / "notifications.html").read_text(encoding="utf-8")
+        cash = (templates_root / "finance" / "cash_dashboard.html").read_text(encoding="utf-8")
+
+        self.assertIn('html[data-theme="dark"] .tg-panel', notifications)
+        self.assertIn('html[data-theme="dark"] .tg-item.is-unread', notifications)
+        self.assertIn('html[data-theme="dark"] .kkm-metric--primary', cash)
+        self.assertIn('html[data-theme="dark"] .kkm-history-card tbody tr:nth-child(even)', cash)
