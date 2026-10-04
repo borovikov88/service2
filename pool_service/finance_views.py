@@ -4673,12 +4673,32 @@ def finance_payroll_employee_mapping(request):
         .order_by("-is_active", "display_name", "id")
     )
     active_employees = [employee for employee in employees if employee.is_active]
+    linked_user_ids = {
+        employee.user_id
+        for employee in employees
+        if employee.user_id
+    }
+    service_users = list(
+        User.objects.filter(
+            id__in=organization.accesses.filter(
+                user__is_active=True,
+            ).values_list("user_id", flat=True),
+            is_active=True,
+        )
+        .distinct()
+        .order_by("last_name", "first_name", "username", "id")
+    )
     employee_rows = []
     for employee in employees:
         employee_rows.append({
             "employee": employee,
             "onec_identities": list(employee.onec_identities.all()),
             "telephony_identities": list(employee.telephony_identities.all()),
+            "service_user_options": [
+                user
+                for user in service_users
+                if user.pk == employee.user_id or user.pk not in linked_user_ids
+            ],
         })
 
     onec_identities = list(payroll_identity_rows(organization))
