@@ -31,7 +31,7 @@ from pool_service.communication_avito import (
     webhook_subscriptions,
 )
 from pool_service.communication_recordings import download_call_recording
-from pool_service.services.call_ai import process_call_analysis
+from pool_service.services.call_ai import _ffmpeg_executable, process_call_analysis
 from pool_service.communication_secrets import decrypt_secret, encrypt_secret
 from pool_service.communication_services import receive_message, users_with_conversation_access
 from pool_service.communication_services import conversation_capability
@@ -541,6 +541,20 @@ class CommunicationsTests(TestCase):
         self.assertEqual(analysis.processing_token, "newer-token")
         self.assertEqual(analysis.status, CallAnalysis.STATUS_PROCESSING)
         self.assertEqual(analysis.summary, "Новый результат")
+
+    @patch("pool_service.services.call_ai.os.access", return_value=True)
+    @patch("pool_service.services.call_ai.os.path.isfile", return_value=True)
+    @patch("pool_service.services.call_ai.imageio_ffmpeg.get_ffmpeg_exe", return_value="/venv/imageio_ffmpeg/ffmpeg")
+    @patch("pool_service.services.call_ai.shutil.which", return_value=None)
+    def test_ffmpeg_uses_bundled_binary_when_system_binary_is_missing(
+        self,
+        _which,
+        bundled_ffmpeg,
+        _isfile,
+        _access,
+    ):
+        self.assertEqual(_ffmpeg_executable(), "/venv/imageio_ffmpeg/ffmpeg")
+        bundled_ffmpeg.assert_called_once_with()
 
     @override_settings(
         OPENAI_API_KEY="test-key",
