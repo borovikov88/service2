@@ -770,6 +770,41 @@ class CommunicationsTests(TestCase):
         self.assertIsNone(analysis.confirmed_at)
         client.audio.transcriptions.create.assert_not_called()
 
+    def test_calls_page_allows_retry_while_processing(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-ai-processing-ui",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-processing-ui-call",
+            employee=self.owner,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=25,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        call.recording_file.save("ai-processing-ui-call.mp3", ContentFile(b"ID3test"), save=True)
+        CallAnalysis.objects.create(
+            call=call,
+            status=CallAnalysis.STATUS_PROCESSING,
+            processing_started_at=timezone.now(),
+            processing_token="active-token",
+        )
+
+        self.client.login(username="owner", password="test")
+        response = self.client.get(reverse("communications_calls"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Повторить, если зависло")
+        self.assertContains(
+            response,
+            reverse("communication_call_analysis_retry", args=[call.pk]),
+        )
+
     def test_calls_page_offers_manual_transcription_for_unanalysed_recording(self):
         telephony = TelephonyConnection.objects.create(
             organization=self.organization,
