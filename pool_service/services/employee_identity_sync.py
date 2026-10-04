@@ -930,7 +930,19 @@ def resolve_call_employee(organization, telephony, extension="", external_user="
 
 
 def sync_all_employee_identities(organization, actor=None):
-    onec = sync_onec_employee_identities(organization, actor=actor)
+    onec = {
+        "synced": 0,
+        "active": 0,
+        "inactive": 0,
+        "auto_linked_users": 0,
+        "error": "",
+    }
+    try:
+        onec_result = sync_onec_employee_identities(organization, actor=actor)
+    except EmployeeIdentitySyncError as exc:
+        onec["error"] = "; ".join(exc.messages)
+    else:
+        onec.update(onec_result)
     telephony_results = []
     for telephony in organization.telephony_connections.filter(is_active=True):
         base_result = {

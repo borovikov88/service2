@@ -4803,6 +4803,7 @@ def finance_employee_identity_sync(request):
             telephony_errors = [
                 item for item in result["telephony"] if item.get("error")
             ]
+            onec_error = result["onec"].get("error", "")
             messages.success(
                 request,
                 (
@@ -4811,6 +4812,11 @@ def finance_employee_identity_sync(request):
                     f"в телефонии требуют сопоставления {telephony_unmapped}."
                 ),
             )
+            if onec_error:
+                messages.warning(
+                    request,
+                    f"1С не синхронизирована: {onec_error}",
+                )
             if telephony_errors:
                 messages.warning(
                     request,

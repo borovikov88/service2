@@ -1218,6 +1218,40 @@ class CommunicationsTests(TestCase):
         self.assertEqual(legacy_call.provider_extension, "999")
         self.assertEqual(legacy_call.provider_user, "other")
 
+        current_identity.is_active = False
+        current_identity.save(update_fields=["is_active", "updated_at"])
+        inactive_legacy_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="inactive-identity-legacy-replay",
+            employee=self.worker,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        inactive_replay = webhook_client.post(
+            webhook_url,
+            {
+                "cmd": "history",
+                "crm_token": "megafon-crm-token",
+                "callid": "inactive-identity-legacy-replay",
+                "phone": "+79001112233",
+                "type": "in",
+                "start": "2026-10-03 16:00:00",
+                "duration": "30",
+                "status": "Success",
+                "user": "other",
+                "ext": "999",
+            },
+        )
+        self.assertEqual(inactive_replay.status_code, 200)
+        inactive_legacy_call.refresh_from_db()
+        self.assertEqual(inactive_legacy_call.employee_profile, new_profile)
+        self.assertEqual(inactive_legacy_call.employee, self.other)
+        current_identity.is_active = True
+        current_identity.save(update_fields=["is_active", "updated_at"])
+
         unassigned_call = PhoneCall.objects.create(
             organization=self.organization,
             connection=telephony,
@@ -1899,6 +1933,66 @@ class CommunicationsTests(TestCase):
 
         self.assertIn("MegaFon_errors=1", output.getvalue())
         self.assertIn("Недоступная линия", errors.getvalue())
+
+    def test_full_employee_sync_continues_megafon_after_onec_failure(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="Линия после сбоя 1С",
+            external_id="line-after-onec-failure",
+        )
+        with patch(
+            "pool_service.services.employee_identity_sync.sync_onec_employee_identities",
+            side_effect=EmployeeIdentitySyncError("1С временно недоступна"),
+        ), patch(
+            "pool_service.services.employee_identity_sync.sync_megafon_employee_identities",
+            return_value={
+                "synced": 2,
+                "auto_matched": 1,
+                "needs_mapping": 1,
+                "synced_at": timezone.now(),
+            },
+        ) as megafon_sync:
+            result = sync_all_employee_identities(
+                self.organization,
+                actor=self.owner,
+            )
+
+        megafon_sync.assert_called_once_with(telephony, actor=self.owner)
+        self.assertEqual(result["onec"]["synced"], 0)
+        self.assertIn("1С временно недоступна", result["onec"]["error"])
+        self.assertEqual(result["telephony"][0]["synced"], 2)
+
+    def test_employee_identity_command_reports_onec_error_after_other_sources(self):
+        result = {
+            "onec": {"synced": 0, "error": "1С временно недоступна"},
+            "telephony": [
+                {
+                    "name": "Рабочая линия",
+                    "synced": 2,
+                    "needs_mapping": 0,
+                    "error": "",
+                }
+            ],
+        }
+        output = io.StringIO()
+        errors = io.StringIO()
+
+        with override_settings(
+            ONEC_ODATA_TARGET_ORGANIZATION_ID=str(self.organization.pk)
+        ), patch(
+            "pool_service.management.commands.sync_employee_identities.sync_all_employee_identities",
+            return_value=result,
+        ):
+            with self.assertRaises(CommandError):
+                call_command(
+                    "sync_employee_identities",
+                    stdout=output,
+                    stderr=errors,
+                )
+
+        self.assertIn("1C_errors=1", output.getvalue())
+        self.assertIn("MegaFon=2", output.getvalue())
+        self.assertIn("1С временно недоступна", errors.getvalue())
 
     def test_manual_megafon_sync_isolates_failed_lines(self):
         configured = TelephonyConnection.objects.create(
@@ -2726,6 +2820,10 @@ class CommunicationsTests(TestCase):
         self.assertContains(page, "Сидоров Сидор Сидорович")
         self.assertContains(page, "ext 779")
         self.assertContains(page, "0001")
+        self.assertContains(page, 'id="identity-live-search"')
+        self.assertContains(page, "data-identity-search-row")
+        self.assertContains(page, 'url.searchParams.set("q", input.value.trim())')
+        self.assertContains(page, "}, 300);")
 
     def test_channel_settings_are_organization_scoped(self):
         foreign_organization = Organization.objects.create(name="Foreign setup org")

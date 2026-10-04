@@ -410,7 +410,6 @@ def _megafon_identity_employee_for_replay(
                 organization=organization,
                 connection=telephony,
                 extension=extension,
-                is_active=True,
             )
             .select_related("employee__user")
             .first()
@@ -422,13 +421,25 @@ def _megafon_identity_employee_for_replay(
             and identity.external_user != provider_user
         ):
             return None, None
+        if (
+            identity
+            and not identity.is_active
+            and (
+                not provider_user
+                or not identity.external_user
+                or identity.external_user != provider_user
+            )
+        ):
+            # Inactive identities are historical evidence only. Require the
+            # replay to carry the same provider user before repairing a legacy
+            # call; new calls never use this read-only helper.
+            return None, None
     elif provider_user:
         candidates = list(
             TelephonyEmployeeIdentity.objects.filter(
                 organization=organization,
                 connection=telephony,
                 external_user=provider_user,
-                is_active=True,
             )
             .select_related("employee__user")
             .order_by("pk")[:2]

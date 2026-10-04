@@ -69,6 +69,19 @@
   </div>
 
   <div class="finance-secondary-card card card-soft p-3 mb-3">
+    <label class="form-label fw-semibold" for="identity-live-search">Поиск сотрудников</label>
+    <input
+      class="form-control"
+      id="identity-live-search"
+      type="search"
+      autocomplete="off"
+      placeholder="ФИО, аккаунт, табельный номер, extension или линия"
+      aria-describedby="identity-search-status"
+    >
+    <div class="identity-source-note mt-2" id="identity-search-status" aria-live="polite"></div>
+  </div>
+
+  <div class="finance-secondary-card card card-soft p-3 mb-3">
     <div class="d-flex justify-content-between align-items-center mb-2">
       <div>
         <h2 class="h5 mb-1">Единые карточки сотрудников</h2>
@@ -88,7 +101,7 @@
         </thead>
         <tbody>
           {% for row in employee_rows %}
-            <tr>
+            <tr data-identity-search-row data-search-text="{{ row.employee.display_name }} {{ row.employee.first_name }} {{ row.employee.last_name }} {{ row.employee.middle_name }} {{ row.employee.user.username }} {{ row.employee.user.get_full_name }} {% for identity in row.onec_identities %}{{ identity.raw_name }} {{ identity.onec_employee_id }} {{ identity.personnel_number }} {% endfor %}{% for identity in row.telephony_identities %}{{ identity.connection.name }} {{ identity.raw_name }} {{ identity.extension }} {{ identity.external_user }} {% endfor %}">
               <td style="min-width:220px">
                 {% if can_view_employee_hr %}
                   <a class="fw-semibold text-decoration-none" href="{% url 'finance_payroll_employee_profile' row.employee.id %}">
@@ -180,7 +193,7 @@
         </thead>
         <tbody>
           {% for identity in telephony_identities %}
-            <tr>
+            <tr data-identity-search-row data-search-text="{{ identity.connection.name }} {{ identity.raw_name }} {{ identity.extension }} {{ identity.external_user }} {{ identity.employee.display_name }} {{ identity.get_status_display }}">
               <td>{{ identity.connection.name }}</td>
               <td>{{ identity.raw_name|default:'—' }}</td>
               <td><code>{{ identity.extension }}</code>{% if identity.external_user %}<br><small class="text-muted">user={{ identity.external_user }}</small>{% endif %}</td>
@@ -257,7 +270,7 @@
         </thead>
         <tbody>
           {% for identity in identities %}
-            <tr>
+            <tr data-identity-search-row data-search-text="{{ identity.raw_name }} {{ identity.department_name }} {{ identity.onec_employee_id }} {{ identity.personnel_number }} {{ identity.employee.display_name }} {{ identity.get_status_display }}">
               <td>
                 {{ identity.raw_name }}
                 {% if identity.department_name %}<br><small class="text-muted">{{ identity.department_name }}</small>{% endif %}
@@ -319,4 +332,54 @@
     </div>
   </div>
 </div>
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    const input = document.getElementById("identity-live-search");
+    const status = document.getElementById("identity-search-status");
+    const rows = Array.from(document.querySelectorAll("[data-identity-search-row]"));
+    if (!input) return;
+
+    const normalize = (value) => String(value || "")
+      .toLocaleLowerCase("ru-RU")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const applySearch = (updateUrl) => {
+      const query = normalize(input.value);
+      let visible = 0;
+      rows.forEach((row) => {
+        const matches = !query || normalize(row.dataset.searchText).includes(query);
+        row.hidden = !matches;
+        if (matches) visible += 1;
+      });
+      if (status) {
+        status.textContent = query
+          ? `Показано строк: ${visible} из ${rows.length}`
+          : `Строк для поиска: ${rows.length}`;
+      }
+      if (updateUrl) {
+        const url = new URL(window.location.href);
+        if (query) url.searchParams.set("q", input.value.trim());
+        else url.searchParams.delete("q");
+        window.history.replaceState({}, "", url);
+      }
+    };
+
+    const initialQuery = new URL(window.location.href).searchParams.get("q") || "";
+    input.value = initialQuery;
+    applySearch(false);
+
+    let debounceTimer;
+    input.addEventListener("input", function () {
+      window.clearTimeout(debounceTimer);
+      debounceTimer = window.setTimeout(function () {
+        applySearch(true);
+      }, 300);
+    });
+    input.addEventListener("search", function () {
+      window.clearTimeout(debounceTimer);
+      applySearch(true);
+    });
+  });
+</script>
 {% endblock %}
