@@ -375,6 +375,7 @@ def reset_call_analysis(call_id):
     analysis.processing_started_at = None
     analysis.processing_token = ""
     analysis.processed_at = None
+    analysis.confirmed_at = None
     analysis.save(
         update_fields=[
             "status",
@@ -383,6 +384,7 @@ def reset_call_analysis(call_id):
             "processing_started_at",
             "processing_token",
             "processed_at",
+            "confirmed_at",
             "updated_at",
         ]
     )
