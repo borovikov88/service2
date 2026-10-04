@@ -395,7 +395,7 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
         max_attempts = int(
             _setting("OPENAI_CALL_MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS)
         )
-        retryable = analysis.attempts < max_attempts
+        retryable = bool(analysis.requested_at) and analysis.attempts < max_attempts
         CallAnalysis.objects.filter(
             pk=analysis.pk,
             status=CallAnalysis.STATUS_PROCESSING,
