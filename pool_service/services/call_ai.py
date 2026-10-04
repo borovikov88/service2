@@ -129,6 +129,19 @@ def _strip_json_fence(value):
     return match.group(1).strip() if match else text
 
 
+def _normalize_fact_value(value):
+    if value is None:
+        return None
+    if isinstance(value, list):
+        parts = [str(item).strip() for item in value if str(item).strip()]
+        return "; ".join(parts) or None
+    if isinstance(value, dict):
+        parts = [f"{key}: {item}" for key, item in value.items() if item not in (None, "", [])]
+        return "; ".join(parts) or None
+    text = str(value).strip()
+    return text or None
+
+
 def _normalize_facts(value):
     facts = value if isinstance(value, dict) else {}
     keys = [
@@ -150,7 +163,7 @@ def _normalize_facts(value):
         "next_contact_at",
         "responsible",
     ]
-    return {key: facts.get(key) for key in keys}
+    return {key: _normalize_fact_value(facts.get(key)) for key in keys}
 
 
 def _analyze_transcript(client, call, transcript):
