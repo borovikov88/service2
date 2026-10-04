@@ -14,7 +14,7 @@ from django.test import Client, RequestFactory, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from pool_service.communication_models import AvitoCredential, CommunicationAccess, CommunicationChannel, ChannelConnection, Conversation, ConversationMessage, MessageAttachment, PhoneCall, TelephonyConnection, WebsiteRequest
+from pool_service.communication_models import AvitoCredential, CommunicationAccess, CommunicationChannel, ChannelConnection, Conversation, ConversationMessage, MessageAttachment, PhoneCall, TelephonyConnection, TelephonyEmployeeIdentity, WebsiteRequest
 from pool_service.communication_avito import (
     AvitoError,
     AvitoRetryableError,
@@ -33,9 +33,14 @@ from pool_service.communication_recordings import download_call_recording
 from pool_service.communication_secrets import decrypt_secret, encrypt_secret
 from pool_service.communication_services import receive_message, users_with_conversation_access
 from pool_service.communication_services import conversation_capability
+from pool_service.services.employee_identity_sync import (
+    map_employee_service2_user,
+    map_telephony_identity,
+    sync_megafon_employee_identities,
+)
 from pool_service.communication_api import _payload
 from pool_service.management.commands.send_avito_outbox import claim_message
-from pool_service.models import Client as ServiceClient, Notification, Organization, OrganizationAccess
+from pool_service.models import Client as ServiceClient, Employee, EmployeeOneCIdentity, Notification, Organization, OrganizationAccess
 from service_site.logging_handlers import RedactCommunicationWebhookSecretFilter
 
 
