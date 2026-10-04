@@ -1,3 +1,4 @@
+from datetime import timedelta
 import re
 import socket
 import tempfile
@@ -123,7 +124,7 @@ def _mark_failed(call_id, code):
 
 def _claim_recording(call_id, *, force=False):
     now = timezone.now()
-    stale_before = now - timezone.timedelta(minutes=30)
+    stale_before = now - timedelta(minutes=30)
     queryset = PhoneCall.objects.filter(pk=call_id, recording_file="")
     if not force:
         queryset = queryset.filter(
