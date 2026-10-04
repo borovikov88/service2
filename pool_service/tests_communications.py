@@ -1343,6 +1343,8 @@ class CommunicationsTests(TestCase):
             match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
         )
 
+        self.organization.paid_until = timezone.now() + timedelta(days=30)
+        self.organization.save(update_fields=["paid_until"])
         self.client.login(username="owner", password="test")
         page = self.client.get(reverse("finance_payroll_employee_mapping"))
 
