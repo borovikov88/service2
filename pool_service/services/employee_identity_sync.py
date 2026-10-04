@@ -448,7 +448,7 @@ def _read_megafon_accounts(telephony):
 
 
 def apply_telephony_identity_to_calls(identity):
-    if not identity.employee_id:
+    if not identity.employee_id or identity.requires_manual_confirmation:
         return 0
     employee = identity.employee
     matches = PhoneCall.objects.filter(
@@ -468,12 +468,17 @@ def apply_telephony_identity_to_calls(identity):
 
 def backfill_employee_calls(employee):
     total = 0
-    for identity in employee.telephony_identities.filter(is_active=True):
+    for identity in employee.telephony_identities.filter(
+        is_active=True,
+        requires_manual_confirmation=False,
+    ):
         total += apply_telephony_identity_to_calls(identity)
     return total
 
 
 def _auto_match_telephony_identity(identity, actor=None):
+    if identity.requires_manual_confirmation:
+        return identity
     if identity.status == TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED:
         return identity
     candidates = _employee_candidates(identity.organization, identity.raw_name)
@@ -509,7 +514,7 @@ def sync_megafon_employee_identities(telephony, actor=None):
     needs_mapping = 0
     for account in accounts:
         normalized_name = normalize_onec_name(account["name"])
-        identity, _created = TelephonyEmployeeIdentity.objects.get_or_create(
+        identity, created = TelephonyEmployeeIdentity.objects.get_or_create(
             connection=telephony,
             extension=account["ext"],
             defaults={
@@ -519,12 +524,18 @@ def sync_megafon_employee_identities(telephony, actor=None):
                 "last_seen_at": now,
             },
         )
-        reassigned_extension = (
-            not _created
-            and not identity.is_active
-            and bool(identity.normalized_name)
-            and identity.normalized_name != normalized_name
+        previous_normalized_name = identity.normalized_name
+        was_inactive = not identity.is_active
+        was_pending_revalidation = identity.requires_manual_confirmation
+        source_name_changed = (
+            not created
+            and bool(previous_normalized_name)
+            and previous_normalized_name != normalized_name
         )
+        reassigned_extension = source_name_changed and (
+            was_inactive or was_pending_revalidation
+        )
+
         identity.raw_name = account["name"]
         identity.normalized_name = normalized_name
         identity.is_active = True
@@ -536,6 +547,7 @@ def sync_megafon_employee_identities(telephony, actor=None):
             "last_seen_at",
             "updated_at",
         ]
+
         if reassigned_extension:
             identity.employee = None
             identity.external_user = ""
@@ -543,6 +555,7 @@ def sync_megafon_employee_identities(telephony, actor=None):
             identity.match_method = TelephonyEmployeeIdentity.MATCH_NONE
             identity.confirmed_by = None
             identity.confirmed_at = None
+            identity.requires_manual_confirmation = True
             update_fields.extend(
                 [
                     "employee",
@@ -551,13 +564,22 @@ def sync_megafon_employee_identities(telephony, actor=None):
                     "match_method",
                     "confirmed_by",
                     "confirmed_at",
+                    "requires_manual_confirmation",
                 ]
             )
+        elif was_pending_revalidation and not source_name_changed:
+            # The accounts API confirmed the same holder name that existed
+            # before the extension disappeared, so the prior mapping is safe.
+            identity.requires_manual_confirmation = False
+            update_fields.append("requires_manual_confirmation")
+
         identity.save(update_fields=update_fields)
-        if not reassigned_extension:
-            identity = _auto_match_telephony_identity(identity, actor=actor)
+        identity = _auto_match_telephony_identity(identity, actor=actor)
+        if identity.employee_id and not identity.requires_manual_confirmation:
+            apply_telephony_identity_to_calls(identity)
+
         seen.append(identity.pk)
-        if identity.employee_id:
+        if identity.employee_id and not identity.requires_manual_confirmation:
             auto_matched += 1
         else:
             needs_mapping += 1
@@ -593,10 +615,12 @@ def map_telephony_identity(identity, employee, actor):
         )
         before = {
             "employee_id": locked.employee_id,
+            "requires_manual_confirmation": locked.requires_manual_confirmation,
             "status": locked.status,
             "match_method": locked.match_method,
         }
         locked.employee = employee
+        locked.requires_manual_confirmation = False
         locked.status = TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED
         locked.match_method = TelephonyEmployeeIdentity.MATCH_MANUAL
         locked.confirmed_by = actor
@@ -612,6 +636,7 @@ def map_telephony_identity(identity, employee, actor):
             before=before,
             after={
                 "employee_id": locked.employee_id,
+                "requires_manual_confirmation": locked.requires_manual_confirmation,
                 "status": locked.status,
                 "match_method": locked.match_method,
             },
@@ -621,6 +646,7 @@ def map_telephony_identity(identity, employee, actor):
                 if before[key]
                 != {
                     "employee_id": locked.employee_id,
+                    "requires_manual_confirmation": locked.requires_manual_confirmation,
                     "status": locked.status,
                     "match_method": locked.match_method,
                 }[key]
@@ -657,24 +683,17 @@ def resolve_call_employee(organization, telephony, extension="", external_user="
             identity = _auto_match_telephony_identity(identity)
         elif not identity.is_active:
             # A webhook proves the extension exists again, but it does not prove
-            # the previous holder still owns it. Keep it unmapped until the
-            # accounts sync (or an operator) confirms the current person.
+            # the previous holder still owns it. Preserve the old historical
+            # mapping, but do not use it for new calls until accounts confirms
+            # the same holder or an operator maps the extension manually.
             identity.is_active = True
-            identity.employee = None
-            identity.status = TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING
-            identity.match_method = TelephonyEmployeeIdentity.MATCH_NONE
-            identity.confirmed_by = None
-            identity.confirmed_at = None
+            identity.requires_manual_confirmation = True
             identity.external_user = external_user
             identity.last_seen_at = timezone.now()
             identity.save(
                 update_fields=[
                     "is_active",
-                    "employee",
-                    "status",
-                    "match_method",
-                    "confirmed_by",
-                    "confirmed_at",
+                    "requires_manual_confirmation",
                     "external_user",
                     "last_seen_at",
                     "updated_at",
@@ -696,7 +715,11 @@ def resolve_call_employee(organization, telephony, extension="", external_user="
             is_active=True,
         ).select_related("employee__user").first()
 
-    if identity and identity.employee_id:
+    if (
+        identity
+        and identity.employee_id
+        and not identity.requires_manual_confirmation
+    ):
         employee = identity.employee
         return employee, employee.user
     return None, None
