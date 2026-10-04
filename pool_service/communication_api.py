@@ -536,6 +536,10 @@ def megafon_webhook(request, public_id):
         return _error("invalid_phone")
     if direction not in {PhoneCall.DIRECTION_IN, PhoneCall.DIRECTION_OUT}:
         return _error("invalid_type")
+    if len(provider_user) > 255:
+        return _error("invalid_user")
+    if len(extension) > 64:
+        return _error("invalid_ext")
     if len(recording_ref) > 500:
         return _error("invalid_link")
 
