@@ -78,3 +78,19 @@ class ThemePreferenceTests(TestCase):
         self.assertIn('html[data-theme="dark"] .multi-select__trigger', css)
         self.assertIn('html[data-theme="dark"] .multi-select__dropdown', css)
         self.assertIn('html[data-theme="dark"] .multi-select__option:has(input:checked)', css)
+
+
+    def test_calendar_has_dark_theme_overrides(self):
+        template_path = (
+            Path(__file__).resolve().parents[1]
+            / "templates"
+            / "pool_service"
+            / "readings_all.html"
+        )
+        template = template_path.read_text(encoding="utf-8-sig")
+
+        self.assertIn('html[data-theme="dark"] .calendar-toolbar', template)
+        self.assertIn('html[data-theme="dark"] .calendar-weekday', template)
+        self.assertIn('html[data-theme="dark"] .calendar-day', template)
+        self.assertIn('html[data-theme="dark"] .calendar-chip--planned', template)
+        self.assertIn('html[data-theme="dark"] .calendar-list-section', template)
