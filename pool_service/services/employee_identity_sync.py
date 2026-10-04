@@ -627,8 +627,31 @@ def backfill_employee_calls(
     return total
 
 
+def _block_inactive_telephony_employee(identity):
+    if not identity.employee_id or identity.employee.is_active:
+        return False
+    updates = []
+    if not identity.requires_manual_confirmation:
+        identity.requires_manual_confirmation = True
+        updates.append("requires_manual_confirmation")
+    if identity.status != TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING:
+        identity.status = TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING
+        updates.append("status")
+    if identity.match_method != TelephonyEmployeeIdentity.MATCH_NONE:
+        identity.match_method = TelephonyEmployeeIdentity.MATCH_NONE
+        updates.append("match_method")
+    if identity.reassignment_detected_at is None:
+        identity.reassignment_detected_at = timezone.now()
+        updates.append("reassignment_detected_at")
+    if updates:
+        identity.save(update_fields=[*updates, "updated_at"])
+    return True
+
+
 def _auto_match_telephony_identity(identity, actor=None):
     if identity.requires_manual_confirmation:
+        return identity
+    if _block_inactive_telephony_employee(identity):
         return identity
     if identity.status == TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED:
         return identity
@@ -749,6 +772,7 @@ def _sync_megafon_employee_account(telephony, account, now, actor=None):
 
 
 def sync_megafon_employee_identities(telephony, actor=None):
+    snapshot_started_at = timezone.now()
     provider, accounts = _read_megafon_accounts(telephony)
     now = timezone.now()
     seen = []
@@ -771,7 +795,10 @@ def sync_megafon_employee_identities(telephony, actor=None):
     TelephonyEmployeeIdentity.objects.filter(
         organization=telephony.organization,
         connection=telephony,
-    ).exclude(pk__in=seen).update(is_active=False)
+    ).exclude(pk__in=seen).filter(
+        Q(last_seen_at__isnull=True)
+        | Q(last_seen_at__lt=snapshot_started_at)
+    ).update(is_active=False)
 
     settings_data = dict(provider.settings or {})
     settings_data["megafon_accounts_synced_at"] = now.isoformat()
@@ -974,6 +1001,8 @@ def resolve_call_employee(
         if len(candidates) == 1:
             identity = candidates[0]
 
+    if identity and _block_inactive_telephony_employee(identity):
+        return None, None
     if (
         identity
         and identity.employee_id

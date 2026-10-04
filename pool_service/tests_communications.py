@@ -1750,6 +1750,64 @@ class CommunicationsTests(TestCase):
         self.assertEqual(result["auto_matched"], 0)
         self.assertEqual(result["needs_mapping"], 1)
 
+    def test_accounts_snapshot_preserves_identity_seen_after_snapshot_started(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон snapshot boundary",
+            external_id="snapshot-boundary",
+        )
+        channel = CommunicationChannel.objects.create(
+            organization=self.organization,
+            kind=CommunicationChannel.KIND_MEGAFON,
+            name="МегаФон snapshot boundary",
+        )
+        provider = ChannelConnection.objects.create(
+            channel=channel,
+            name="МегаФон snapshot boundary",
+            external_id="snapshot-boundary",
+            settings={
+                "megafon_api_base_url": "https://aqualine22.megapbx.ru/crmapi/v1",
+                "megafon_api_key_encrypted": encrypt_secret("secret"),
+            },
+        )
+        old_seen_at = timezone.now() - timedelta(days=1)
+        recently_seen = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            raw_name="Поздний webhook",
+            normalized_name="поздний webhook",
+            extension="885",
+            is_active=True,
+            last_seen_at=old_seen_at,
+        )
+        stale = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            raw_name="Старая строка",
+            normalized_name="старая строка",
+            extension="886",
+            is_active=True,
+            last_seen_at=old_seen_at,
+        )
+
+        def accounts_response_after_webhook(_telephony):
+            TelephonyEmployeeIdentity.objects.filter(pk=recently_seen.pk).update(
+                is_active=True,
+                last_seen_at=timezone.now(),
+            )
+            return provider, []
+
+        with patch(
+            "pool_service.services.employee_identity_sync._read_megafon_accounts",
+            side_effect=accounts_response_after_webhook,
+        ):
+            sync_megafon_employee_identities(telephony, actor=self.owner)
+
+        recently_seen.refresh_from_db()
+        stale.refresh_from_db()
+        self.assertTrue(recently_seen.is_active)
+        self.assertFalse(stale.is_active)
+
     def test_inactive_extension_webhook_waits_for_accounts_revalidation(self):
         employee = Employee.objects.create(
             organization=self.organization,
@@ -2386,6 +2444,51 @@ class CommunicationsTests(TestCase):
             identity.status,
             TelephonyEmployeeIdentity.STATUS_AUTO_MATCHED,
         )
+
+    def test_inactive_employee_blocks_live_call_resolution(self):
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Бывший сотрудник",
+            is_active=False,
+            user=self.worker,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон inactive employee",
+            external_id="inactive-employee",
+        )
+        identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=employee,
+            raw_name="Бывший сотрудник",
+            normalized_name="бывший сотрудник",
+            extension="887",
+            external_user="former-user",
+            is_active=True,
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+
+        with transaction.atomic():
+            profile, user = resolve_call_employee(
+                self.organization,
+                telephony,
+                "887",
+                "former-user",
+                lock_identity=True,
+            )
+
+        self.assertIsNone(profile)
+        self.assertIsNone(user)
+        identity.refresh_from_db()
+        self.assertTrue(identity.requires_manual_confirmation)
+        self.assertEqual(
+            identity.status,
+            TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+        )
+        self.assertEqual(identity.match_method, TelephonyEmployeeIdentity.MATCH_NONE)
+        self.assertIsNotNone(identity.reassignment_detected_at)
 
     def test_auto_linked_service2_user_backfills_existing_profile_calls(self):
         self.worker.first_name = "Дарья"
