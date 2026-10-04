@@ -36,7 +36,7 @@ from pool_service.communication_models import (
 )
 from pool_service.communication_secrets import encrypt_secret
 from pool_service.communication_services import conversation_capability, optimize_message_image, organization_access
-from pool_service.services.call_ai import reset_call_analysis
+from pool_service.services.call_ai import process_call_analysis, reset_call_analysis
 from pool_service.models import Notification, OrganizationAccess
 
 
@@ -289,8 +289,21 @@ def call_analysis_retry(request, call_id):
     if not call.recording_file:
         messages.error(request, "Сначала должна быть сохранена запись звонка.")
         return redirect("communications_calls")
-    reset_call_analysis(call.pk)
-    messages.success(request, "Звонок поставлен в очередь на повторную расшифровку.")
+    analysis = getattr(call, "analysis", None)
+    if analysis and analysis.status == "processing":
+        messages.info(request, "Этот звонок уже обрабатывается.")
+        return redirect("communications_calls")
+
+    if analysis:
+        reset_call_analysis(call.pk)
+
+    if process_call_analysis(call.pk):
+        messages.success(request, "Расшифровка и анализ звонка готовы.")
+    else:
+        messages.error(
+            request,
+            "Не удалось обработать звонок. Можно повторить позже без повторной отправки аудио, если расшифровка уже сохранена.",
+        )
     return redirect("communications_calls")
 
 
