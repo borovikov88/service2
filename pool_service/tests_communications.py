@@ -312,6 +312,42 @@ class CommunicationsTests(TestCase):
         self.assertIn("attachment", download["Content-Disposition"])
         self.assertEqual(b"".join(download.streaming_content), payload)
 
+    def test_call_analysis_migration_preserves_existing_results_as_ready(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-ai-migration",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-migration-call",
+            employee=self.owner,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=30,
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        analysis = CallAnalysis.objects.create(
+            call=call,
+            status=CallAnalysis.STATUS_PENDING,
+            transcript="A: Уже существующая расшифровка.",
+            summary="Ранее сохранённый итог.",
+            facts={"request": "Существующий запрос"},
+            confirmed_at=timezone.now(),
+        )
+
+        migration = import_module(
+            "pool_service.migrations.0124_callanalysis_processing"
+        )
+        migration.preserve_existing_call_analyses(apps, None)
+
+        analysis.refresh_from_db()
+        self.assertEqual(analysis.status, CallAnalysis.STATUS_READY)
+        self.assertEqual(analysis.summary, "Ранее сохранённый итог.")
+        self.assertEqual(analysis.facts["request"], "Существующий запрос")
+
     @override_settings(
         OPENAI_API_KEY="test-key",
         OPENAI_CALL_TRANSCRIPTION_MODEL="gpt-4o-transcribe-diarize",
