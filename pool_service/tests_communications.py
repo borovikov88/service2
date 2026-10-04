@@ -449,6 +449,7 @@ class CommunicationsTests(TestCase):
         analysis.refresh_from_db()
         self.assertEqual(analysis.status, CallAnalysis.STATUS_PENDING)
         self.assertEqual(analysis.error, "")
+        self.assertEqual(analysis.attempts, 0)
 
         self.client.logout()
         self.client.login(username="worker", password="test")
