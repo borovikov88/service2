@@ -2,6 +2,19 @@ from django.db import migrations, models
 import django.utils.timezone
 
 
+def preserve_existing_call_analyses(apps, schema_editor):
+    CallAnalysis = apps.get_model("pool_service", "CallAnalysis")
+    for analysis in CallAnalysis.objects.all().iterator():
+        has_existing_result = bool(
+            analysis.confirmed_at
+            or (analysis.transcript or "").strip()
+            or (analysis.summary or "").strip()
+            or (analysis.facts or {})
+        )
+        if has_existing_result and analysis.status != "ready":
+            CallAnalysis.objects.filter(pk=analysis.pk).update(status="ready")
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -52,6 +65,10 @@ class Migration(migrations.Migration):
                 default="pending",
                 max_length=16,
             ),
+        ),
+        migrations.RunPython(
+            preserve_existing_call_analyses,
+            migrations.RunPython.noop,
         ),
         migrations.AddField(
             model_name="callanalysis",
