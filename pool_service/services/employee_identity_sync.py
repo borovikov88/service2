@@ -87,8 +87,20 @@ def _employee_candidates(organization, raw_name):
     ]
 
 
+def _name_tokens(value):
+    return {
+        token
+        for token in normalize_onec_name(value)
+        .replace("(", " ")
+        .replace(")", " ")
+        .split()
+        if token
+    }
+
+
 def _service_user_candidates(organization, employee):
     normalized = normalize_onec_name(_employee_display_name(employee))
+    employee_tokens = _name_tokens(_employee_display_name(employee))
     candidates = []
     accesses = (
         OrganizationAccess.objects.filter(
@@ -104,16 +116,25 @@ def _service_user_candidates(organization, employee):
         if user.pk in seen:
             continue
         seen.add(user.pk)
-        values = [
+        name_values = [
             user.get_full_name(),
             " ".join(
                 value
                 for value in (user.last_name, user.first_name)
                 if value
             ),
-            user.username,
         ]
-        if any(normalize_onec_name(value) == normalized for value in values if value):
+        username_match = (
+            bool(user.username)
+            and normalize_onec_name(user.username) == normalized
+        )
+        name_match = any(
+            len(_name_tokens(value)) >= 2
+            and _name_tokens(value).issubset(employee_tokens)
+            for value in name_values
+            if value
+        )
+        if username_match or name_match:
             candidates.append(user)
     return candidates
 
