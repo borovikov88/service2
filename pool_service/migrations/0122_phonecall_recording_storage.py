@@ -47,6 +47,7 @@ class Migration(migrations.Migration):
                 choices=[
                     ("none", "Нет записи"),
                     ("pending", "Ожидает сохранения"),
+                    ("downloading", "Сохраняется"),
                     ("stored", "Сохранена"),
                     ("failed", "Ошибка сохранения"),
                 ],
