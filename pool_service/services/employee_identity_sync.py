@@ -5,7 +5,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
 
@@ -181,6 +181,7 @@ def auto_link_service2_user(employee, *, actor=None):
         after={"user_id": user.pk},
         changed_fields=["user_id"],
     )
+    backfill_employee_calls(employee)
     return True
 
 
@@ -254,23 +255,23 @@ def sync_onec_employee_identities(organization, actor=None):
             "Не удалось подготовить подключение к справочнику сотрудников 1С."
         ) from exc
 
-    now = timezone.now()
-    seen_ids = set()
-    synced = 0
-    active = 0
-    inactive = 0
-    auto_linked_users = 0
-
+    # First read and validate the complete bounded source snapshot. No database
+    # changes are made until every page is valid, so a late provider error
+    # cannot leave Service2 with a half-applied employee catalog.
+    source_rows = []
     try:
-        pages = read_odata_pages(config, initial_url)
-        for rows, _page_number in pages:
+        for rows, _page_number in read_odata_pages(config, initial_url):
             for row in rows:
                 if not isinstance(row, dict):
                     raise ODataPreviewError("Employee catalog row must be an object")
                 if row.get("DeletionMark") is not False:
                     continue
                 raw_name = row.get("Description")
-                if not isinstance(raw_name, str) or not raw_name.strip() or len(raw_name) > 500:
+                if (
+                    not isinstance(raw_name, str)
+                    or not raw_name.strip()
+                    or len(raw_name) > 500
+                ):
                     raise ODataPreviewError("Employee catalog name is invalid")
                 code = row.get("Code")
                 if code is None:
@@ -285,16 +286,38 @@ def sync_onec_employee_identities(organization, actor=None):
                     row.get("Ref_Key"),
                     field="Catalog_Сотрудники.Ref_Key",
                 )
-                source_active = not archived and not invalid
+                source_rows.append(
+                    {
+                        "raw_name": raw_name.strip(),
+                        "code": code.strip(),
+                        "onec_id": onec_id,
+                        "source_active": not archived and not invalid,
+                    }
+                )
+    except (ODataPreviewError, HTTPError, URLError) as exc:
+        raise EmployeeIdentitySyncError(
+            "Не удалось получить справочник сотрудников из 1С."
+        ) from exc
+
+    now = timezone.now()
+    seen_ids = set()
+    synced = 0
+    active = 0
+    inactive = 0
+    auto_linked_users = 0
+
+    try:
+        with transaction.atomic():
+            for row in source_rows:
                 identity = resolve_employee_identity(
                     organization,
-                    raw_name.strip(),
-                    onec_employee_id=onec_id,
-                    personnel_number=code.strip() or None,
+                    row["raw_name"],
+                    onec_employee_id=row["onec_id"],
+                    personnel_number=row["code"] or None,
                 )
-                identity.raw_name = raw_name.strip()
-                identity.normalized_name = normalize_onec_name(raw_name)
-                identity.source_active = source_active
+                identity.raw_name = row["raw_name"]
+                identity.normalized_name = normalize_onec_name(row["raw_name"])
+                identity.source_active = row["source_active"]
                 identity.last_seen_at = now
                 identity.save(
                     update_fields=[
@@ -307,7 +330,7 @@ def sync_onec_employee_identities(organization, actor=None):
                 )
                 seen_ids.add(identity.pk)
                 synced += 1
-                if source_active:
+                if row["source_active"]:
                     active += 1
                     if identity.employee_id and auto_link_service2_user(
                         identity.employee,
@@ -316,14 +339,14 @@ def sync_onec_employee_identities(organization, actor=None):
                         auto_linked_users += 1
                 else:
                     inactive += 1
-    except (ODataPreviewError, HTTPError, URLError) as exc:
-        raise EmployeeIdentitySyncError(
-            "Не удалось получить справочник сотрудников из 1С."
-        ) from exc
 
-    EmployeeOneCIdentity.objects.filter(
-        organization=organization,
-    ).exclude(pk__in=seen_ids).update(source_active=False)
+            EmployeeOneCIdentity.objects.filter(
+                organization=organization,
+            ).exclude(pk__in=seen_ids).update(source_active=False)
+    except (ValidationError, IntegrityError) as exc:
+        raise EmployeeIdentitySyncError(
+            "Не удалось применить справочник сотрудников 1С целиком."
+        ) from exc
 
     return {
         "synced": synced,
@@ -554,11 +577,10 @@ def sync_megafon_employee_identities(telephony, actor=None):
             and bool(previous_normalized_name)
             and previous_normalized_name != normalized_name
         )
-        reassigned_extension = source_name_changed and (
-            identity.employee_id is not None
-            or was_inactive
-            or was_pending_revalidation
-        )
+        # A changed source name on an already mapped extension means the PBX
+        # number may have been reassigned. Never carry the prior employee
+        # mapping forward solely because the extension itself stayed active.
+        reassigned_extension = source_name_changed and identity.employee_id is not None
 
         identity.raw_name = account["name"]
         identity.normalized_name = normalized_name
@@ -733,6 +755,22 @@ def resolve_call_employee(organization, telephony, extension="", external_user="
             if external_user and external_user != identity.external_user:
                 identity.external_user = external_user
                 updates.append("external_user")
+                if identity.employee_id:
+                    # A changed provider user on a still-active extension may
+                    # mean the number was reassigned between account snapshots.
+                    # Keep the historical employee proposal on the identity,
+                    # but block it from new calls until accounts/manual mapping
+                    # confirms the current holder.
+                    identity.requires_manual_confirmation = True
+                    identity.status = TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING
+                    identity.match_method = TelephonyEmployeeIdentity.MATCH_NONE
+                    updates.extend(
+                        [
+                            "requires_manual_confirmation",
+                            "status",
+                            "match_method",
+                        ]
+                    )
             identity.last_seen_at = timezone.now()
             updates.append("last_seen_at")
             identity.save(update_fields=[*updates, "updated_at"])
