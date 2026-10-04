@@ -98,9 +98,31 @@ def _name_tokens(value):
     }
 
 
-def _service_user_candidates(organization, employee):
+def _service_user_matches_employee(user, employee):
     normalized = normalize_onec_name(_employee_display_name(employee))
     employee_tokens = _name_tokens(_employee_display_name(employee))
+    name_values = [
+        user.get_full_name(),
+        " ".join(
+            value
+            for value in (user.last_name, user.first_name)
+            if value
+        ),
+    ]
+    username_match = (
+        bool(user.username)
+        and normalize_onec_name(user.username) == normalized
+    )
+    name_match = any(
+        len(_name_tokens(value)) >= 2
+        and _name_tokens(value).issubset(employee_tokens)
+        for value in name_values
+        if value
+    )
+    return username_match or name_match
+
+
+def _service_user_candidates(organization, employee):
     candidates = []
     accesses = (
         OrganizationAccess.objects.filter(
@@ -116,25 +138,7 @@ def _service_user_candidates(organization, employee):
         if user.pk in seen:
             continue
         seen.add(user.pk)
-        name_values = [
-            user.get_full_name(),
-            " ".join(
-                value
-                for value in (user.last_name, user.first_name)
-                if value
-            ),
-        ]
-        username_match = (
-            bool(user.username)
-            and normalize_onec_name(user.username) == normalized
-        )
-        name_match = any(
-            len(_name_tokens(value)) >= 2
-            and _name_tokens(value).issubset(employee_tokens)
-            for value in name_values
-            if value
-        )
-        if username_match or name_match:
+        if _service_user_matches_employee(user, employee):
             candidates.append(user)
     return candidates
 
@@ -146,6 +150,19 @@ def auto_link_service2_user(employee, *, actor=None):
     if len(candidates) != 1:
         return False
     user = candidates[0]
+    matching_employees = [
+        candidate
+        for candidate in Employee.objects.filter(
+            organization=employee.organization,
+            is_active=True,
+        ).order_by("id")
+        if _service_user_matches_employee(user, candidate)
+    ]
+    if (
+        len(matching_employees) != 1
+        or matching_employees[0].pk != employee.pk
+    ):
+        return False
     if Employee.objects.filter(
         organization=employee.organization,
         user=user,
@@ -538,7 +555,9 @@ def sync_megafon_employee_identities(telephony, actor=None):
             and previous_normalized_name != normalized_name
         )
         reassigned_extension = source_name_changed and (
-            was_inactive or was_pending_revalidation
+            identity.employee_id is not None
+            or was_inactive
+            or was_pending_revalidation
         )
 
         identity.raw_name = account["name"]
