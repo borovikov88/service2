@@ -149,40 +149,70 @@ def auto_link_service2_user(employee, *, actor=None, backfill=True):
     candidates = _service_user_candidates(employee.organization, employee)
     if len(candidates) != 1:
         return False
-    user = candidates[0]
-    matching_employees = [
-        candidate
-        for candidate in Employee.objects.filter(
-            organization=employee.organization,
-            is_active=True,
-        ).order_by("id")
-        if _service_user_matches_employee(user, candidate)
-    ]
-    if (
-        len(matching_employees) != 1
-        or matching_employees[0].pk != employee.pk
-    ):
-        return False
-    if Employee.objects.filter(
-        organization=employee.organization,
-        user=user,
-    ).exclude(pk=employee.pk).exists():
-        return False
-    before = {"user_id": None}
-    employee.user = user
-    employee.save(update_fields=["user", "updated_at"])
-    DataAuditLog.objects.create(
-        entity_type="Employee",
-        entity_id=str(employee.pk),
-        action=DataAuditLog.ACTION_UPDATE,
-        organization=employee.organization,
-        actor=actor,
-        before=before,
-        after={"user_id": user.pk},
-        changed_fields=["user_id"],
-    )
-    if backfill:
-        backfill_employee_calls(employee)
+    candidate_user = candidates[0]
+    with transaction.atomic():
+        access = (
+            OrganizationAccess.objects.select_for_update()
+            .filter(
+                organization=employee.organization,
+                user=candidate_user,
+                user__is_active=True,
+            )
+            .first()
+        )
+        if access is None:
+            return False
+        locked = Employee.objects.select_for_update().get(pk=employee.pk)
+        if locked.user_id:
+            return False
+        user = access.user
+        refreshed_candidates = _service_user_candidates(
+            locked.organization,
+            locked,
+        )
+        if len(refreshed_candidates) != 1 or refreshed_candidates[0].pk != user.pk:
+            return False
+        matching_employees = [
+            candidate
+            for candidate in Employee.objects.filter(
+                organization=locked.organization,
+                is_active=True,
+            ).order_by("id")
+            if _service_user_matches_employee(user, candidate)
+        ]
+        if (
+            len(matching_employees) != 1
+            or matching_employees[0].pk != locked.pk
+        ):
+            return False
+        if Employee.objects.filter(
+            organization=locked.organization,
+            user=user,
+        ).exclude(pk=locked.pk).exists():
+            return False
+        before = {"user_id": None}
+        locked.user = user
+        try:
+            with transaction.atomic():
+                locked.save(update_fields=["user", "updated_at"])
+        except IntegrityError:
+            # A writer outside the identity workflow may still win the unique
+            # constraint race. Automatic linking is best-effort, so leave the
+            # employee unlinked instead of aborting the source synchronization.
+            return False
+        DataAuditLog.objects.create(
+            entity_type="Employee",
+            entity_id=str(locked.pk),
+            action=DataAuditLog.ACTION_UPDATE,
+            organization=locked.organization,
+            actor=actor,
+            before=before,
+            after={"user_id": user.pk},
+            changed_fields=["user_id"],
+        )
+        if backfill:
+            backfill_employee_calls(locked)
+    employee.user_id = user.pk
     return True
 
 
@@ -827,27 +857,49 @@ def map_telephony_identity(identity, employee, actor):
     return locked
 
 
-def resolve_call_employee(organization, telephony, extension="", external_user=""):
+def resolve_call_employee(
+    organization,
+    telephony,
+    extension="",
+    external_user="",
+    *,
+    lock_identity=False,
+):
     extension = (extension or "").strip()
     external_user = (external_user or "").strip()
     identity = None
 
     if extension:
         raw_name = external_user or extension
-        identity, created = TelephonyEmployeeIdentity.objects.get_or_create(
-            connection=telephony,
-            extension=extension,
-            defaults={
-                "organization": organization,
-                "raw_name": raw_name,
-                "normalized_name": normalize_onec_name(raw_name),
-                "external_user": external_user,
-                "is_active": True,
-                "status": TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
-                "match_method": TelephonyEmployeeIdentity.MATCH_NONE,
-                "last_seen_at": timezone.now(),
-            },
-        )
+        identity = None
+        if lock_identity:
+            identity = (
+                TelephonyEmployeeIdentity.objects.select_for_update()
+                .filter(connection=telephony, extension=extension)
+                .first()
+            )
+        if identity is None:
+            identity, created = TelephonyEmployeeIdentity.objects.get_or_create(
+                connection=telephony,
+                extension=extension,
+                defaults={
+                    "organization": organization,
+                    "raw_name": raw_name,
+                    "normalized_name": normalize_onec_name(raw_name),
+                    "external_user": external_user,
+                    "is_active": True,
+                    "status": TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+                    "match_method": TelephonyEmployeeIdentity.MATCH_NONE,
+                    "last_seen_at": timezone.now(),
+                },
+            )
+            if lock_identity and not created:
+                identity = (
+                    TelephonyEmployeeIdentity.objects.select_for_update()
+                    .get(pk=identity.pk)
+                )
+        else:
+            created = False
         if created:
             identity = _auto_match_telephony_identity(identity)
         elif not identity.is_active:
@@ -908,14 +960,17 @@ def resolve_call_employee(organization, telephony, extension="", external_user="
             updates.append("last_seen_at")
             identity.save(update_fields=[*updates, "updated_at"])
     elif external_user:
-        candidates = list(
-            TelephonyEmployeeIdentity.objects.filter(
-                organization=organization,
-                connection=telephony,
-                external_user=external_user,
-                is_active=True,
-            ).select_related("employee__user").order_by("pk")[:2]
-        )
+        candidates_query = TelephonyEmployeeIdentity.objects.filter(
+            organization=organization,
+            connection=telephony,
+            external_user=external_user,
+            is_active=True,
+        ).order_by("pk")
+        if lock_identity:
+            candidates_query = candidates_query.select_for_update()
+        else:
+            candidates_query = candidates_query.select_related("employee__user")
+        candidates = list(candidates_query[:2])
         if len(candidates) == 1:
             identity = candidates[0]
 

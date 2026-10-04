@@ -657,6 +657,7 @@ def megafon_webhook(request, public_id):
                 telephony,
                 extension,
                 provider_user,
+                lock_identity=True,
             )
             unified_identity_exists = (
                 not extension

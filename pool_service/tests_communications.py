@@ -976,22 +976,27 @@ class CommunicationsTests(TestCase):
 
         webhook_url = reverse("megafon_webhook", args=[provider_connection.public_id])
         webhook_client = Client()
-        response = webhook_client.post(
-            webhook_url,
-            {
-                "cmd": "history",
-                "crm_token": "megafon-crm-token",
-                "callid": "call-123",
-                "phone": "+79001112233",
-                "type": "in",
-                "start": "2026-10-03 16:00:00",
-                "duration": "91",
-                "status": "Success",
-                "user": "worker",
-                "link": "https://records.megapbx.ru/call-123.mp3",
-            },
-        )
+        with patch(
+            "pool_service.communication_api.resolve_call_employee",
+            wraps=resolve_call_employee,
+        ) as locked_resolver:
+            response = webhook_client.post(
+                webhook_url,
+                {
+                    "cmd": "history",
+                    "crm_token": "megafon-crm-token",
+                    "callid": "call-123",
+                    "phone": "+79001112233",
+                    "type": "in",
+                    "start": "2026-10-03 16:00:00",
+                    "duration": "91",
+                    "status": "Success",
+                    "user": "worker",
+                    "link": "https://records.megapbx.ru/call-123.mp3",
+                },
+            )
         self.assertEqual(response.status_code, 200)
+        self.assertTrue(locked_resolver.call_args.kwargs["lock_identity"])
         call = PhoneCall.objects.get(connection=telephony, external_id="call-123")
         self.assertEqual(call.employee, self.worker)
         self.assertEqual(call.contact_name, "Тестовый клиент")
@@ -1477,6 +1482,30 @@ class CommunicationsTests(TestCase):
         second.refresh_from_db()
         self.assertIsNone(first.user)
         self.assertIsNone(second.user)
+
+    def test_service2_auto_link_skips_a_unique_constraint_race(self):
+        self.worker.first_name = "Дарья"
+        self.worker.last_name = "Крафт"
+        self.worker.save(update_fields=["first_name", "last_name"])
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Крафт Дарья Валерьевна",
+            first_name="Дарья",
+            last_name="Крафт",
+            middle_name="Валерьевна",
+            is_active=True,
+        )
+
+        with patch.object(
+            Employee,
+            "save",
+            side_effect=IntegrityError("unique_employee_user_per_org"),
+        ):
+            linked = auto_link_service2_user(employee, actor=self.owner)
+
+        self.assertFalse(linked)
+        employee.refresh_from_db()
+        self.assertIsNone(employee.user)
 
     def test_onec_employee_sync_uses_stable_ids_and_source_activity(self):
         employee = Employee.objects.create(
@@ -2339,12 +2368,14 @@ class CommunicationsTests(TestCase):
             match_method=TelephonyEmployeeIdentity.MATCH_EXACT_NAME,
         )
 
-        profile, user = resolve_call_employee(
-            self.organization,
-            telephony,
-            "889",
-            "initial-user",
-        )
+        with transaction.atomic():
+            profile, user = resolve_call_employee(
+                self.organization,
+                telephony,
+                "889",
+                "initial-user",
+                lock_identity=True,
+            )
 
         self.assertEqual(profile, employee)
         self.assertEqual(user, self.worker)
