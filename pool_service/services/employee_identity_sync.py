@@ -567,9 +567,14 @@ def sync_megafon_employee_identities(telephony, actor=None):
                     "requires_manual_confirmation",
                 ]
             )
-        elif was_pending_revalidation and not source_name_changed:
+        elif (
+            was_pending_revalidation
+            and not source_name_changed
+            and identity.employee_id
+        ):
+            # A webhook reactivated an inactive, already-mapped extension.
             # The accounts API confirmed the same holder name that existed
-            # before the extension disappeared, so the prior mapping is safe.
+            # before it disappeared, so the prior mapping is safe to restore.
             identity.requires_manual_confirmation = False
             update_fields.append("requires_manual_confirmation")
 
@@ -687,7 +692,7 @@ def resolve_call_employee(organization, telephony, extension="", external_user="
             # mapping, but do not use it for new calls until accounts confirms
             # the same holder or an operator maps the extension manually.
             identity.is_active = True
-            identity.requires_manual_confirmation = True
+            identity.requires_manual_confirmation = bool(identity.employee_id)
             identity.external_user = external_user
             identity.last_seen_at = timezone.now()
             identity.save(
