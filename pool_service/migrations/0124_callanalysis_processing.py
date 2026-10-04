@@ -26,6 +26,11 @@ class Migration(migrations.Migration):
         ),
         migrations.AddField(
             model_name="callanalysis",
+            name="processing_token",
+            field=models.CharField(blank=True, max_length=36),
+        ),
+        migrations.AddField(
+            model_name="callanalysis",
             name="processed_at",
             field=models.DateTimeField(blank=True, null=True),
         ),
