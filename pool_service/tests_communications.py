@@ -484,7 +484,7 @@ class CommunicationsTests(TestCase):
 
         self.assertFalse(process_call_analysis(call.pk))
         analysis = CallAnalysis.objects.get(call=call)
-        self.assertEqual(analysis.status, CallAnalysis.STATUS_PENDING)
+        self.assertEqual(analysis.status, CallAnalysis.STATUS_FAILED)
         self.assertEqual(analysis.transcript, "Нужен бассейн.")
         self.assertEqual(client.audio.transcriptions.create.call_count, 1)
 
