@@ -338,6 +338,7 @@ class TelephonyEmployeeIdentity(models.Model):
     external_user = models.CharField(max_length=255, blank=True)
     is_active = models.BooleanField(default=True)
     requires_manual_confirmation = models.BooleanField(default=False)
+    reassignment_detected_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(
         max_length=24,
         choices=STATUS_CHOICES,
