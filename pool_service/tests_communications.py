@@ -683,6 +683,7 @@ class CommunicationsTests(TestCase):
         self.assertEqual(analysis.status, CallAnalysis.STATUS_PENDING)
         self.assertEqual(analysis.error, "")
         self.assertEqual(analysis.attempts, 0)
+        self.assertIsNone(analysis.confirmed_at)
 
         self.client.logout()
         self.client.login(username="worker", password="test")
