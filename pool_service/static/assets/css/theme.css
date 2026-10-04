@@ -912,3 +912,19 @@ html[data-theme="dark"] .multi-select__option--locked {
 html[data-theme="dark"] .multi-select__empty {
   color: #91a2b6;
 }
+
+
+/* Dark theme: expense report readability. */
+html[data-theme="dark"] .expense-employee-cell__last,
+html[data-theme="dark"] .expense-purpose-cell__main {
+  color: #e3ebf5;
+}
+
+html[data-theme="dark"] .expense-row-selected > * {
+  background: #1d3555 !important;
+}
+
+html[data-theme="dark"] .expense-report-table tbody tr:hover > * {
+  color: #f3f7fb;
+  background: #192739;
+}
