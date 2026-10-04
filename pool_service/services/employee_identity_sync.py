@@ -467,7 +467,12 @@ def apply_telephony_identity_to_calls(identity):
 
 
 def backfill_employee_calls(employee):
-    total = 0
+    total = PhoneCall.objects.filter(
+        organization=employee.organization,
+        employee_profile=employee,
+    ).exclude(employee_id=employee.user_id).update(
+        employee_id=employee.user_id,
+    )
     for identity in employee.telephony_identities.filter(
         is_active=True,
         requires_manual_confirmation=False,
