@@ -46,6 +46,7 @@ class Migration(migrations.Migration):
                 ("extension", models.CharField(max_length=64)),
                 ("external_user", models.CharField(blank=True, max_length=255)),
                 ("is_active", models.BooleanField(default=True)),
+                ("requires_manual_confirmation", models.BooleanField(default=False)),
                 (
                     "status",
                     models.CharField(
