@@ -280,7 +280,15 @@
                     </form>
                   </div>
                 {% else %}
-                  <span class="text-muted">Ожидает автоматической расшифровки.</span>
+                  <div class="d-flex flex-wrap align-items-center gap-2">
+                    <span class="text-muted">Расшифровка запускается вручную.</span>
+                    <form method="post" action="{% url 'communication_call_analysis_retry' call.pk %}">
+                      {% csrf_token %}
+                      <button class="btn btn-primary btn-sm" type="submit">
+                        <i class="bi bi-stars me-1"></i>Расшифровать и проанализировать
+                      </button>
+                    </form>
+                  </div>
                 {% endif %}
               </div>
             </td>
