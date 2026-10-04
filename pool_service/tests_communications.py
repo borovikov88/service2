@@ -266,19 +266,37 @@ class CommunicationsTests(TestCase):
         page = self.client.get(reverse("communications_calls"))
         self.assertEqual(page.status_code, 200)
         self.assertContains(page, "<audio", html=False)
+        self.assertContains(page, 'data-call-player', html=False)
+        self.assertContains(page, 'data-call-seek', html=False)
+        self.assertContains(page, 'data-call-speed', html=False)
+        self.assertContains(page, 'value="0.5"', html=False)
+        self.assertContains(page, 'value="1.25"', html=False)
+        self.assertContains(page, 'value="1.5"', html=False)
+        self.assertContains(page, 'value="2"', html=False)
         recording_url = reverse("communication_call_recording", args=[call.pk])
         self.assertContains(page, recording_url)
+        self.assertContains(page, f"{recording_url}?download=1")
         self.assertNotContains(page, call.recording_ref)
 
         full = self.client.get(recording_url)
         self.assertEqual(full.status_code, 200)
         self.assertEqual(full["Content-Type"], "audio/mpeg")
         self.assertEqual(full["Accept-Ranges"], "bytes")
+        self.assertIn("inline", full["Content-Disposition"])
 
         partial = self.client.get(recording_url, HTTP_RANGE="bytes=3-7")
         self.assertEqual(partial.status_code, 206)
         self.assertEqual(partial["Content-Range"], f"bytes 3-7/{len(payload)}")
         self.assertEqual(b"".join(partial.streaming_content), payload[3:8])
+
+        download = self.client.get(
+            f"{recording_url}?download=1",
+            HTTP_RANGE="bytes=3-7",
+        )
+        self.assertEqual(download.status_code, 200)
+        self.assertEqual(download["Content-Type"], "audio/mpeg")
+        self.assertIn("attachment", download["Content-Disposition"])
+        self.assertEqual(b"".join(download.streaming_content), payload)
 
     @override_settings(
         COMMUNICATION_RECORDING_DOWNLOAD_TIMEOUT_SECONDS=2,

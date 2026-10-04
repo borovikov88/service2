@@ -3,8 +3,48 @@
 {% block content %}
 {% include "pool_service/communications/_section_nav.html" %}
 <style>
-  .call-audio-player{width:260px;max-width:100%;height:36px;vertical-align:middle}
+  .call-player{
+    display:flex;
+    align-items:center;
+    gap:.5rem;
+    min-width:360px;
+    max-width:520px;
+  }
+  .call-player__play,
+  .call-player__download{
+    width:34px;
+    height:34px;
+    padding:0;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    border-radius:50%;
+    flex:0 0 auto;
+  }
+  .call-player__timeline{
+    flex:1 1 180px;
+    min-width:100px;
+    margin:0;
+  }
+  .call-player__time{
+    font-variant-numeric:tabular-nums;
+    font-size:.78rem;
+    color:var(--bs-secondary-color);
+    white-space:nowrap;
+    min-width:76px;
+    text-align:center;
+  }
+  .call-player__speed{
+    width:72px;
+    min-width:72px;
+    padding-top:.25rem;
+    padding-bottom:.25rem;
+  }
   .call-recording-state{font-size:.82rem;white-space:nowrap}
+  @media (max-width:767.98px){
+    .call-player{min-width:300px;max-width:100%}
+    .call-player__time{min-width:68px}
+  }
 </style>
 
 <form class="card card-body mb-3" method="get">
@@ -85,14 +125,53 @@
           <td>{{ call.get_result_display }}</td>
           <td>
             {% if can_listen and call.recording_file %}
-              <audio
-                class="call-audio-player"
-                controls
-                preload="none"
-                src="{% url 'communication_call_recording' call.pk %}"
-              >
-                Ваш браузер не поддерживает воспроизведение аудио.
-              </audio>
+              <div class="call-player" data-call-player>
+                <audio
+                  class="call-player__audio"
+                  preload="metadata"
+                  src="{% url 'communication_call_recording' call.pk %}"
+                ></audio>
+                <button
+                  class="btn btn-outline-primary btn-sm call-player__play"
+                  type="button"
+                  data-call-play
+                  aria-label="Воспроизвести запись"
+                  title="Воспроизвести"
+                >
+                  <i class="bi bi-play-fill"></i>
+                </button>
+                <input
+                  class="form-range call-player__timeline"
+                  type="range"
+                  min="0"
+                  max="0"
+                  step="0.1"
+                  value="0"
+                  data-call-seek
+                  aria-label="Позиция записи"
+                >
+                <span class="call-player__time" data-call-time>00:00 / 00:00</span>
+                <select
+                  class="form-select form-select-sm call-player__speed"
+                  data-call-speed
+                  aria-label="Скорость воспроизведения"
+                  title="Скорость воспроизведения"
+                >
+                  <option value="0.5">0.5×</option>
+                  <option value="1" selected>1×</option>
+                  <option value="1.25">1.25×</option>
+                  <option value="1.5">1.5×</option>
+                  <option value="2">2×</option>
+                </select>
+                <a
+                  class="btn btn-outline-secondary btn-sm call-player__download"
+                  href="{% url 'communication_call_recording' call.pk %}?download=1"
+                  aria-label="Скачать запись"
+                  title="Скачать запись"
+                >
+                  <i class="bi bi-download"></i>
+                </a>
+              </div>
             {% elif call.recording_ref %}
               {% if call.recording_status == 'failed' %}
                 <span class="call-recording-state text-warning" title="{{ call.recording_error }}">
@@ -114,4 +193,91 @@
     </tbody>
   </table>
 </div>
+
+<script>
+(() => {
+  const formatTime = (seconds) => {
+    if (!Number.isFinite(seconds) || seconds < 0) return "00:00";
+    const whole = Math.floor(seconds);
+    const minutes = Math.floor(whole / 60);
+    const secs = whole % 60;
+    return `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  };
+
+  document.querySelectorAll("[data-call-player]").forEach((player) => {
+    const audio = player.querySelector(".call-player__audio");
+    const playButton = player.querySelector("[data-call-play]");
+    const playIcon = playButton.querySelector("i");
+    const seek = player.querySelector("[data-call-seek]");
+    const time = player.querySelector("[data-call-time]");
+    const speed = player.querySelector("[data-call-speed]");
+
+    const updateDuration = () => {
+      const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+      seek.max = String(duration);
+      time.textContent = `${formatTime(audio.currentTime)} / ${formatTime(duration)}`;
+    };
+
+    const updatePosition = () => {
+      if (!seek.matches(":active")) {
+        seek.value = String(audio.currentTime || 0);
+      }
+      const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+      time.textContent = `${formatTime(audio.currentTime)} / ${formatTime(duration)}`;
+    };
+
+    const setPlayingState = (playing) => {
+      playIcon.className = playing ? "bi bi-pause-fill" : "bi bi-play-fill";
+      playButton.setAttribute(
+        "aria-label",
+        playing ? "Поставить запись на паузу" : "Воспроизвести запись"
+      );
+      playButton.title = playing ? "Пауза" : "Воспроизвести";
+    };
+
+    playButton.addEventListener("click", async () => {
+      if (audio.paused) {
+        document.querySelectorAll("[data-call-player] audio").forEach((other) => {
+          if (other !== audio && !other.paused) other.pause();
+        });
+        try {
+          await audio.play();
+        } catch (_) {
+          setPlayingState(false);
+        }
+      } else {
+        audio.pause();
+      }
+    });
+
+    seek.addEventListener("input", () => {
+      const next = Number.parseFloat(seek.value);
+      if (Number.isFinite(next)) {
+        audio.currentTime = next;
+        updatePosition();
+      }
+    });
+
+    speed.addEventListener("change", () => {
+      const rate = Number.parseFloat(speed.value);
+      audio.playbackRate = Number.isFinite(rate) ? rate : 1;
+    });
+
+    audio.addEventListener("loadedmetadata", updateDuration);
+    audio.addEventListener("durationchange", updateDuration);
+    audio.addEventListener("timeupdate", updatePosition);
+    audio.addEventListener("play", () => setPlayingState(true));
+    audio.addEventListener("pause", () => setPlayingState(false));
+    audio.addEventListener("ended", () => {
+      setPlayingState(false);
+      seek.value = "0";
+      audio.currentTime = 0;
+      updatePosition();
+    });
+
+    updateDuration();
+    setPlayingState(false);
+  });
+})();
+</script>
 {% endblock %}
