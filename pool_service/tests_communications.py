@@ -371,6 +371,203 @@ class CommunicationsTests(TestCase):
         self.assertEqual(kwargs["response_format"], "diarized_json")
         self.assertEqual(kwargs["chunking_strategy"], "auto")
 
+    @override_settings(
+        OPENAI_API_KEY="test-key",
+        OPENAI_CALL_ANALYSIS_MODEL="gpt-5.6-luna",
+    )
+    @patch("pool_service.services.call_ai._client")
+    def test_call_ai_reuses_saved_transcript_without_reuploading_audio(self, client_factory):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-ai-reuse",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-reuse-call",
+            employee=self.owner,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=45,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        call.recording_file.save("ai-reuse-call.mp3", ContentFile(b"ID3test"), save=True)
+        CallAnalysis.objects.create(
+            call=call,
+            status=CallAnalysis.STATUS_FAILED,
+            transcript="A: Нужен бассейн.\nB: Уточним размеры.",
+            transcription_model="gpt-4o-transcribe-diarize",
+            error="analysis_invalid_json",
+            attempts=1,
+        )
+        client = client_factory.return_value
+        client.responses.create.return_value = MagicMock(
+            output_text='{"summary":"Клиенту нужен бассейн.","facts":{"request":"Бассейн"}}'
+        )
+
+        self.assertTrue(process_call_analysis(call.pk))
+        client.audio.transcriptions.create.assert_not_called()
+        analysis = CallAnalysis.objects.get(call=call)
+        self.assertEqual(analysis.status, CallAnalysis.STATUS_READY)
+        self.assertEqual(analysis.summary, "Клиенту нужен бассейн.")
+
+    @override_settings(
+        OPENAI_API_KEY="test-key",
+        OPENAI_CALL_TRANSCRIPTION_MODEL="gpt-4o-transcribe-diarize",
+        OPENAI_CALL_ANALYSIS_MODEL="gpt-5.6-luna",
+    )
+    @patch("pool_service.services.call_ai._client")
+    def test_call_ai_checkpoints_transcript_before_summary_retry(self, client_factory):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-ai-checkpoint",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-checkpoint-call",
+            employee=self.owner,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=60,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        call.recording_file.save("ai-checkpoint-call.mp3", ContentFile(b"ID3test"), save=True)
+        client = client_factory.return_value
+        client.audio.transcriptions.create.return_value = MagicMock(
+            text="Нужен бассейн.",
+            segments=[],
+        )
+        client.responses.create.side_effect = RuntimeError("temporary summary failure")
+
+        self.assertFalse(process_call_analysis(call.pk))
+        analysis = CallAnalysis.objects.get(call=call)
+        self.assertEqual(analysis.status, CallAnalysis.STATUS_FAILED)
+        self.assertEqual(analysis.transcript, "Нужен бассейн.")
+        self.assertEqual(client.audio.transcriptions.create.call_count, 1)
+
+        client.responses.create.side_effect = None
+        client.responses.create.return_value = MagicMock(
+            output_text='{"summary":"Клиенту нужен бассейн.","facts":{"request":"Бассейн"}}'
+        )
+        self.assertTrue(process_call_analysis(call.pk))
+        self.assertEqual(client.audio.transcriptions.create.call_count, 1)
+
+    @override_settings(
+        OPENAI_API_KEY="test-key",
+        OPENAI_CALL_ANALYSIS_MODEL="gpt-5.6-luna",
+    )
+    @patch("pool_service.services.call_ai._client")
+    @patch("pool_service.services.call_ai._analyze_transcript")
+    def test_stale_call_ai_worker_cannot_overwrite_newer_result(self, analyze, client_factory):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-ai-stale",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-stale-call",
+            employee=self.owner,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=40,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        call.recording_file.save("ai-stale-call.mp3", ContentFile(b"ID3test"), save=True)
+        analysis = CallAnalysis.objects.create(
+            call=call,
+            status=CallAnalysis.STATUS_FAILED,
+            transcript="A: Старый текст.",
+            transcription_model="gpt-4o-transcribe-diarize",
+        )
+
+        def replace_owner(*_args, **_kwargs):
+            CallAnalysis.objects.filter(pk=analysis.pk).update(
+                processing_token="newer-token",
+                status=CallAnalysis.STATUS_PROCESSING,
+                summary="Новый результат",
+            )
+            return "Старый результат", {"request": "Старое"}, "gpt-5.6-luna"
+
+        analyze.side_effect = replace_owner
+        self.assertFalse(process_call_analysis(call.pk))
+        analysis.refresh_from_db()
+        self.assertEqual(analysis.processing_token, "newer-token")
+        self.assertEqual(analysis.status, CallAnalysis.STATUS_PROCESSING)
+        self.assertEqual(analysis.summary, "Новый результат")
+
+    @override_settings(
+        OPENAI_API_KEY="test-key",
+        OPENAI_CALL_TRANSCRIPTION_MODEL="gpt-4o-transcribe-diarize",
+        OPENAI_CALL_ANALYSIS_MODEL="gpt-5.6-luna",
+        OPENAI_CALL_TRANSCRIPTION_MAX_BYTES=8,
+    )
+    @patch("pool_service.services.call_ai.shutil.which", return_value="/usr/bin/ffmpeg")
+    @patch("pool_service.services.call_ai.subprocess.run")
+    @patch("pool_service.services.call_ai._client")
+    def test_oversized_call_recording_is_compressed_before_transcription(
+        self,
+        client_factory,
+        run_ffmpeg,
+        _which,
+    ):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-ai-compress",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-compress-call",
+            employee=self.owner,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=120,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        call.recording_file.save(
+            "ai-compress-call.mp3",
+            ContentFile(b"ID3" + b"x" * 32),
+            save=True,
+        )
+
+        def write_compressed(command, **_kwargs):
+            with open(command[-1], "wb") as output:
+                output.write(b"tiny")
+
+        run_ffmpeg.side_effect = write_compressed
+        client = client_factory.return_value
+        client.audio.transcriptions.create.return_value = MagicMock(
+            text="Длинный звонок.",
+            segments=[],
+        )
+        client.responses.create.return_value = MagicMock(
+            output_text='{"summary":"Длинный звонок обработан.","facts":{}}'
+        )
+
+        self.assertTrue(process_call_analysis(call.pk))
+        run_ffmpeg.assert_called_once()
+        command = run_ffmpeg.call_args.args[0]
+        self.assertIn("-ac", command)
+        self.assertIn("1", command)
+        self.assertIn("-ar", command)
+        self.assertIn("16000", command)
+        self.assertIn("-b:a", command)
+        self.assertIn("32k", command)
+
     def test_calls_page_shows_ai_summary_transcript_and_retry(self):
         telephony = TelephonyConnection.objects.create(
             organization=self.organization,
