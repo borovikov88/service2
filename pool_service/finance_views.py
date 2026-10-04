@@ -4767,11 +4767,18 @@ def finance_employee_identity_sync(request):
             if not connections:
                 raise EmployeeIdentitySyncError("Активная линия МегаФона не найдена.")
             synced_total = auto_total = unmapped_total = 0
+            telephony_errors = []
             for telephony in connections:
-                result = sync_megafon_employee_identities(
-                    telephony,
-                    actor=request.user,
-                )
+                try:
+                    result = sync_megafon_employee_identities(
+                        telephony,
+                        actor=request.user,
+                    )
+                except EmployeeIdentitySyncError as exc:
+                    telephony_errors.append(
+                        f"{telephony.name}: {'; '.join(exc.messages)}"
+                    )
+                    continue
                 synced_total += result["synced"]
                 auto_total += result["auto_matched"]
                 unmapped_total += result["needs_mapping"]
@@ -4782,6 +4789,11 @@ def finance_employee_identity_sync(request):
                     f"сопоставлено {auto_total}, требуют сопоставления {unmapped_total}."
                 ),
             )
+            if telephony_errors:
+                messages.warning(
+                    request,
+                    "Не синхронизированы линии: " + "; ".join(telephony_errors),
+                )
         elif source == "all":
             result = sync_all_employee_identities(organization, actor=request.user)
             telephony_total = sum(item["synced"] for item in result["telephony"])
