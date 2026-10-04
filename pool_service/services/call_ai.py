@@ -1,11 +1,17 @@
 import json
 import logging
+import os
 import re
+import shutil
+import subprocess
+import tempfile
+from contextlib import contextmanager
 from datetime import timedelta
+from uuid import uuid4
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import F, Q
+from django.db.models import F
 from django.utils import timezone
 from openai import OpenAI
 
@@ -18,6 +24,7 @@ DEFAULT_TRANSCRIPTION_MODEL = "gpt-4o-transcribe-diarize"
 DEFAULT_ANALYSIS_MODEL = "gpt-5.6-luna"
 DEFAULT_MAX_ATTEMPTS = 5
 PROCESSING_STALE_MINUTES = 30
+DEFAULT_TRANSCRIPTION_MAX_BYTES = 24 * 1024 * 1024
 
 
 class CallAnalysisError(RuntimeError):
@@ -64,10 +71,12 @@ def _claim(call_id, *, force=False):
             ):
                 return None
 
+        token = str(uuid4())
         analysis.status = CallAnalysis.STATUS_PROCESSING
         analysis.error = ""
         analysis.attempts = F("attempts") + 1
         analysis.processing_started_at = now
+        analysis.processing_token = token
         analysis.processed_at = None
         analysis.save(
             update_fields=[
@@ -75,12 +84,13 @@ def _claim(call_id, *, force=False):
                 "error",
                 "attempts",
                 "processing_started_at",
+                "processing_token",
                 "processed_at",
                 "updated_at",
             ]
         )
         analysis.refresh_from_db()
-        return analysis.pk
+        return analysis.pk, token
 
 
 def _speaker_transcript(result):
@@ -97,13 +107,93 @@ def _speaker_transcript(result):
     return (getattr(result, "text", "") or "").strip()
 
 
+def _recording_size(call):
+    try:
+        return int(call.recording_file.size)
+    except (OSError, TypeError, ValueError):
+        try:
+            return os.path.getsize(call.recording_file.path)
+        except (OSError, ValueError) as exc:
+            raise CallAnalysisError("recording_file_unavailable") from exc
+
+
+@contextmanager
+def _transcription_file(call):
+    max_bytes = int(
+        _setting("OPENAI_CALL_TRANSCRIPTION_MAX_BYTES", DEFAULT_TRANSCRIPTION_MAX_BYTES)
+    )
+    size = _recording_size(call)
+
+    if size <= max_bytes:
+        call.recording_file.open("rb")
+        try:
+            yield call.recording_file.file
+        finally:
+            try:
+                call.recording_file.close()
+            except Exception:
+                pass
+        return
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise CallAnalysisError("recording_too_large_ffmpeg_missing")
+
+    try:
+        input_path = call.recording_file.path
+    except (OSError, ValueError) as exc:
+        raise CallAnalysisError("recording_file_unavailable") from exc
+
+    with tempfile.TemporaryDirectory(prefix="service2-call-ai-") as temp_dir:
+        output_path = os.path.join(temp_dir, "compressed.mp3")
+        try:
+            subprocess.run(
+                [
+                    ffmpeg,
+                    "-nostdin",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-i",
+                    input_path,
+                    "-vn",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "16000",
+                    "-b:a",
+                    "32k",
+                    output_path,
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=180,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warning("Call recording compression failed for call_id=%s", call.pk)
+            raise CallAnalysisError("recording_compression_failed") from exc
+
+        try:
+            compressed_size = os.path.getsize(output_path)
+        except OSError as exc:
+            raise CallAnalysisError("recording_compression_failed") from exc
+        if compressed_size <= 0:
+            raise CallAnalysisError("recording_compression_failed")
+        if compressed_size > max_bytes:
+            raise CallAnalysisError("recording_still_too_large")
+
+        with open(output_path, "rb") as compressed:
+            yield compressed
+
+
 def _transcribe(client, call):
     model = _setting("OPENAI_CALL_TRANSCRIPTION_MODEL", DEFAULT_TRANSCRIPTION_MODEL)
-    try:
-        call.recording_file.open("rb")
+    with _transcription_file(call) as audio_file:
         kwargs = {
             "model": model,
-            "file": call.recording_file.file,
+            "file": audio_file,
         }
         if model == "gpt-4o-transcribe-diarize":
             kwargs.update(
@@ -111,11 +201,6 @@ def _transcribe(client, call):
                 chunking_strategy="auto",
             )
         result = client.audio.transcriptions.create(**kwargs)
-    finally:
-        try:
-            call.recording_file.close()
-        except Exception:
-            pass
 
     transcript = _speaker_transcript(result)
     if not transcript:
@@ -216,9 +301,10 @@ def _analyze_transcript(client, call, transcript):
 
 
 def process_call_analysis(call_id, *, force=False):
-    analysis_id = _claim(call_id, force=force)
-    if not analysis_id:
+    claim = _claim(call_id, force=force)
+    if not claim:
         return False
+    analysis_id, token = claim
 
     analysis = (
         CallAnalysis.objects.select_related(
@@ -232,27 +318,50 @@ def process_call_analysis(call_id, *, force=False):
 
     try:
         client = _client()
-        transcript, transcription_model = _transcribe(client, call)
+        transcript = (analysis.transcript or "").strip()
+        transcription_model = analysis.transcription_model
+
+        if not transcript:
+            transcript, transcription_model = _transcribe(client, call)
+            checkpointed = CallAnalysis.objects.filter(
+                pk=analysis.pk,
+                status=CallAnalysis.STATUS_PROCESSING,
+                processing_token=token,
+            ).update(
+                transcript=transcript,
+                transcription_model=transcription_model,
+            )
+            if not checkpointed:
+                return False
+
         summary, facts, analysis_model = _analyze_transcript(client, call, transcript)
-        CallAnalysis.objects.filter(pk=analysis.pk).update(
-            transcript=transcript,
+        completed = CallAnalysis.objects.filter(
+            pk=analysis.pk,
+            status=CallAnalysis.STATUS_PROCESSING,
+            processing_token=token,
+        ).update(
             summary=summary,
             facts=facts,
             status=CallAnalysis.STATUS_READY,
             error="",
-            transcription_model=transcription_model,
             analysis_model=analysis_model,
+            processing_token="",
             processed_at=timezone.now(),
         )
-        return True
+        return bool(completed)
     except Exception as exc:
         code = str(exc)
         if not isinstance(exc, CallAnalysisError):
             logger.exception("Call analysis failed for call_id=%s", call_id)
             code = "openai_processing_failed"
-        CallAnalysis.objects.filter(pk=analysis.pk).update(
+        CallAnalysis.objects.filter(
+            pk=analysis.pk,
+            status=CallAnalysis.STATUS_PROCESSING,
+            processing_token=token,
+        ).update(
             status=CallAnalysis.STATUS_FAILED,
             error=code[:500],
+            processing_token="",
             processed_at=timezone.now(),
         )
         return False
@@ -264,6 +373,7 @@ def reset_call_analysis(call_id):
     analysis.error = ""
     analysis.attempts = 0
     analysis.processing_started_at = None
+    analysis.processing_token = ""
     analysis.processed_at = None
     analysis.save(
         update_fields=[
@@ -271,6 +381,7 @@ def reset_call_analysis(call_id):
             "error",
             "attempts",
             "processing_started_at",
+            "processing_token",
             "processed_at",
             "updated_at",
         ]
