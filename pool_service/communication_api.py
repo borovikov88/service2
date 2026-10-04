@@ -397,6 +397,54 @@ def _megafon_employee(organization, provider_user, extension=""):
     return None
 
 
+def _megafon_identity_employee_for_replay(
+    organization,
+    telephony,
+    extension="",
+    provider_user="",
+):
+    identity = None
+    if extension:
+        identity = (
+            TelephonyEmployeeIdentity.objects.filter(
+                organization=organization,
+                connection=telephony,
+                extension=extension,
+                is_active=True,
+            )
+            .select_related("employee__user")
+            .first()
+        )
+        if (
+            identity
+            and identity.external_user
+            and provider_user
+            and identity.external_user != provider_user
+        ):
+            return None, None
+    elif provider_user:
+        candidates = list(
+            TelephonyEmployeeIdentity.objects.filter(
+                organization=organization,
+                connection=telephony,
+                external_user=provider_user,
+                is_active=True,
+            )
+            .select_related("employee__user")
+            .order_by("pk")[:2]
+        )
+        if len(candidates) == 1:
+            identity = candidates[0]
+
+    if (
+        identity
+        and identity.employee_id
+        and not identity.requires_manual_confirmation
+    ):
+        return identity.employee, identity.employee.user
+    return None, None
+
+
 def _megafon_started_at(value):
     raw = str(value or "").strip()
     if not raw:
@@ -555,27 +603,6 @@ def megafon_webhook(request, public_id):
     except ValueError as exc:
         return _error(str(exc))
 
-    employee_profile, employee = resolve_call_employee(
-        connection.channel.organization,
-        telephony,
-        extension,
-        provider_user,
-    )
-    unified_identity_exists = (
-        not extension
-        and bool(provider_user)
-        and TelephonyEmployeeIdentity.objects.filter(
-            organization=connection.channel.organization,
-            connection=telephony,
-            external_user=provider_user,
-        ).exists()
-    )
-    if employee is None and not extension and not unified_identity_exists:
-        employee = _megafon_employee(
-            connection.channel.organization,
-            provider_user,
-            extension,
-        )
     client = _megafon_contact(connection.channel.organization, phone)
     result = (
         PhoneCall.RESULT_ANSWERED
@@ -585,13 +612,43 @@ def megafon_webhook(request, public_id):
 
     with transaction.atomic():
         existing_call = (
-            PhoneCall.objects.select_related("employee", "employee_profile")
+            PhoneCall.objects.select_for_update()
+            .select_related("employee", "employee_profile")
             .filter(
                 connection=telephony,
                 external_id=call_id,
             )
             .first()
         )
+        if existing_call:
+            employee_profile, employee = _megafon_identity_employee_for_replay(
+                connection.channel.organization,
+                telephony,
+                extension,
+                provider_user,
+            )
+        else:
+            employee_profile, employee = resolve_call_employee(
+                connection.channel.organization,
+                telephony,
+                extension,
+                provider_user,
+            )
+            unified_identity_exists = (
+                not extension
+                and bool(provider_user)
+                and TelephonyEmployeeIdentity.objects.filter(
+                    organization=connection.channel.organization,
+                    connection=telephony,
+                    external_user=provider_user,
+                ).exists()
+            )
+            if employee is None and not extension and not unified_identity_exists:
+                employee = _megafon_employee(
+                    connection.channel.organization,
+                    provider_user,
+                    extension,
+                )
         effective_employee = employee
         effective_employee_profile = employee_profile
         preserve_existing_ownership = existing_call and (

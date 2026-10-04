@@ -811,22 +811,30 @@ def resolve_call_employee(organization, telephony, extension="", external_user="
             # the previous holder still owns it. Preserve the old historical
             # mapping, but do not use it for new calls until accounts confirms
             # the same holder or an operator maps the extension manually.
+            provider_user_changed = bool(
+                identity.external_user
+                and external_user
+                and identity.external_user != external_user
+            )
             identity.is_active = True
             identity.requires_manual_confirmation = bool(identity.employee_id)
             identity.external_user = external_user
             identity.last_seen_at = timezone.now()
+            updates = [
+                "is_active",
+                "requires_manual_confirmation",
+                "reassignment_detected_at",
+                "external_user",
+                "last_seen_at",
+                "updated_at",
+            ]
+            if identity.employee_id and provider_user_changed:
+                identity.status = TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING
+                identity.match_method = TelephonyEmployeeIdentity.MATCH_NONE
+                updates.extend(["status", "match_method"])
             if identity.employee_id and identity.reassignment_detected_at is None:
                 identity.reassignment_detected_at = timezone.now()
-            identity.save(
-                update_fields=[
-                    "is_active",
-                    "requires_manual_confirmation",
-                    "reassignment_detected_at",
-                    "external_user",
-                    "last_seen_at",
-                    "updated_at",
-                ]
-            )
+            identity.save(update_fields=updates)
         else:
             updates = []
             if external_user and external_user != identity.external_user:

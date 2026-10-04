@@ -1108,7 +1108,7 @@ class CommunicationsTests(TestCase):
                 "provider_user",
             ]
         )
-        TelephonyEmployeeIdentity.objects.create(
+        current_identity = TelephonyEmployeeIdentity.objects.create(
             organization=self.organization,
             connection=telephony,
             employee=new_profile,
@@ -1131,7 +1131,7 @@ class CommunicationsTests(TestCase):
                 "start": "2026-10-03 16:00:00",
                 "duration": "93",
                 "status": "Success",
-                "user": "other",
+                "user": "worker",
                 "ext": "999",
             },
         )
@@ -1140,6 +1140,13 @@ class CommunicationsTests(TestCase):
         self.assertEqual(call.duration_seconds, 93)
         self.assertEqual(call.employee_profile, old_profile)
         self.assertEqual(call.employee, self.worker)
+        current_identity.refresh_from_db()
+        self.assertEqual(current_identity.external_user, "other")
+        self.assertFalse(current_identity.requires_manual_confirmation)
+        self.assertEqual(
+            current_identity.status,
+            TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+        )
 
         legacy_call = PhoneCall.objects.create(
             organization=self.organization,
@@ -1696,6 +1703,56 @@ class CommunicationsTests(TestCase):
         self.assertEqual(result["auto_matched"], 1)
         self.assertEqual(call.employee_profile, employee)
         self.assertEqual(call.employee, self.worker)
+
+        changed_identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=employee,
+            raw_name="Иванов Иван Иванович",
+            normalized_name="иванов иван иванович",
+            extension="884",
+            external_user="old-provider-user",
+            is_active=False,
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+
+        changed_profile, changed_user = resolve_call_employee(
+            self.organization,
+            telephony,
+            "884",
+            "new-provider-user",
+        )
+        self.assertIsNone(changed_profile)
+        self.assertIsNone(changed_user)
+        changed_identity.refresh_from_db()
+        self.assertTrue(changed_identity.requires_manual_confirmation)
+        self.assertEqual(
+            changed_identity.status,
+            TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+        )
+
+        with patch(
+            "pool_service.services.employee_identity_sync._read_megafon_accounts",
+            return_value=(
+                provider,
+                [{"name": "Иванов Иван Иванович", "ext": "884"}],
+            ),
+        ):
+            changed_result = sync_megafon_employee_identities(
+                telephony,
+                actor=self.owner,
+            )
+
+        changed_identity.refresh_from_db()
+        self.assertTrue(changed_identity.requires_manual_confirmation)
+        self.assertEqual(
+            changed_identity.status,
+            TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+        )
+        self.assertEqual(changed_identity.external_user, "new-provider-user")
+        self.assertEqual(changed_result["auto_matched"], 0)
+        self.assertEqual(changed_result["needs_mapping"], 1)
 
     def test_full_employee_sync_isolates_unconfigured_telephony_lines(self):
         configured = TelephonyConnection.objects.create(
