@@ -384,6 +384,7 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
             analysis_model=analysis_model,
             processing_token="",
             processed_at=timezone.now(),
+            requested_at=None,
         )
         return bool(completed)
     except Exception as exc:
@@ -400,8 +401,55 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
             error=code[:500],
             processing_token="",
             processed_at=timezone.now(),
+            requested_at=None,
         )
         return False
+
+
+def request_call_analysis(call_id):
+    now = timezone.now()
+    stale_before = now - timedelta(minutes=PROCESSING_STALE_MINUTES)
+
+    with transaction.atomic():
+        call = (
+            PhoneCall.objects.select_for_update()
+            .filter(pk=call_id, recording_file__isnull=False)
+            .exclude(recording_file="")
+            .first()
+        )
+        if call is None:
+            return False
+
+        analysis, _ = CallAnalysis.objects.select_for_update().get_or_create(call=call)
+        if (
+            analysis.status == CallAnalysis.STATUS_PROCESSING
+            and analysis.processing_started_at
+            and analysis.processing_started_at >= stale_before
+        ):
+            return False
+
+        analysis.status = CallAnalysis.STATUS_PENDING
+        analysis.error = ""
+        analysis.attempts = 0
+        analysis.processing_started_at = None
+        analysis.processing_token = ""
+        analysis.processed_at = None
+        analysis.confirmed_at = None
+        analysis.requested_at = now
+        analysis.save(
+            update_fields=[
+                "status",
+                "error",
+                "attempts",
+                "processing_started_at",
+                "processing_token",
+                "processed_at",
+                "confirmed_at",
+                "requested_at",
+                "updated_at",
+            ]
+        )
+        return True
 
 
 def reset_call_analysis(call_id):
