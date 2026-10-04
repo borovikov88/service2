@@ -35,3 +35,5 @@ _TEST_PRIVATE_MEDIA = tempfile.TemporaryDirectory(prefix="service2-test-private-
 _TEST_PUBLIC_MEDIA = tempfile.TemporaryDirectory(prefix="service2-test-media-")
 PRIVATE_MEDIA_ROOT = _TEST_PRIVATE_MEDIA.name
 MEDIA_ROOT = _TEST_PUBLIC_MEDIA.name
+
+COMMUNICATION_RECORDING_DOWNLOAD_INLINE = False
