@@ -66,6 +66,21 @@
       gap: 6px;
     }
   }
+
+
+  /* Full dark-theme audit: cash count form. */
+  html[data-theme="dark"] .cash-count-meta__box {
+    background: #182436;
+    border: 1px solid #34465c;
+  }
+  html[data-theme="dark"] .cash-count-row__label {
+    color: #e3ebf5;
+  }
+  html[data-theme="dark"] .cash-count-total-panel {
+    background: #151f2e;
+    border-top-color: #34465c;
+  }
+
 </style>
 
 <div class="{% if finance_modal %}p-3 p-lg-4{% else %}mx-auto{% endif %}"{% if not finance_modal %} style="max-width:760px;"{% endif %}>

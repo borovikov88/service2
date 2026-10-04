@@ -79,6 +79,9 @@ class ThemePreferenceTests(TestCase):
         self.assertIn('html[data-theme="dark"] .multi-select__dropdown', css)
         self.assertIn('html[data-theme="dark"] .multi-select__option:has(input:checked)', css)
         self.assertIn('html[data-theme="dark"] .expense-employee-cell__last', css)
+        self.assertIn('Full dark-theme audit: shared residual components.', css)
+        self.assertIn('html[data-theme="dark"] .photo-picker-sheet__panel', css)
+        self.assertIn('html[data-theme="dark"] .task-history', css)
 
 
     def test_calendar_has_dark_theme_overrides(self):
@@ -106,3 +109,29 @@ class ThemePreferenceTests(TestCase):
         self.assertIn('html[data-theme="dark"] .tg-item.is-unread', notifications)
         self.assertIn('html[data-theme="dark"] .kkm-metric--primary', cash)
         self.assertIn('html[data-theme="dark"] .kkm-history-card tbody tr:nth-child(even)', cash)
+
+
+    def test_full_dark_theme_audit_covers_remaining_workspaces(self):
+        templates_root = Path(__file__).resolve().parents[1] / "templates" / "pool_service"
+        pool_list = (templates_root / "pool_list.html").read_text(encoding="utf-8")
+        pool_detail = (templates_root / "pool_detail.html").read_text(encoding="utf-8")
+        task_view = (templates_root / "task_view_body.html").read_text(encoding="utf-8")
+        archive = (templates_root / "archive.html").read_text(encoding="utf-8")
+        conversations = (templates_root / "communications" / "conversations.html").read_text(encoding="utf-8")
+        unlock = (templates_root / "security" / "unlock.html").read_text(encoding="utf-8")
+        cash_count = (templates_root / "finance" / "cash_count_form.html").read_text(encoding="utf-8")
+
+        self.assertIn('html[data-theme="dark"] .pool-controls', pool_list)
+        self.assertIn('html[data-theme="dark"] .object-role-strip', pool_detail)
+        self.assertIn('html[data-theme="dark"] .task-view__hero', task_view)
+        self.assertIn('html[data-theme="dark"] .archive-card', archive)
+        self.assertIn('html[data-theme="dark"] .communications-grid', conversations)
+        self.assertIn('html[data-theme="dark"] .unlock-screen', unlock)
+        self.assertIn('html[data-theme="dark"] .cash-count-meta__box', cash_count)
+
+    def test_finance_modal_forms_follow_theme_background(self):
+        templates_root = Path(__file__).resolve().parents[1] / "templates" / "pool_service" / "finance"
+        for name in ("card_transfer_form.html", "expense_form.html", "income_form.html", "transaction_form.html"):
+            template = (templates_root / name).read_text(encoding="utf-8")
+            self.assertIn("background: var(--bs-body-bg)", template)
+            self.assertNotIn("body { background: #fff; }", template)

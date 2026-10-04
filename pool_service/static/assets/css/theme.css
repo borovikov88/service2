@@ -928,3 +928,88 @@ html[data-theme="dark"] .expense-report-table tbody tr:hover > * {
   color: #f3f7fb;
   background: #192739;
 }
+
+
+/* Full dark-theme audit: shared residual components. */
+html[data-theme="dark"] .img-thumbnail {
+  background-color: #151f2e;
+  border-color: #34465c;
+}
+
+html[data-theme="dark"] .hover-shadow:hover {
+  background: #182436;
+}
+
+html[data-theme="dark"] .table tbody tr[data-row-href]:hover > *,
+html[data-theme="dark"] .table tbody tr.clickable-row:hover > * {
+  color: #f3f7fb;
+  background-color: #192739;
+}
+
+html[data-theme="dark"] .task-history {
+  color: #dfe7f1;
+  background: #151f2e;
+  border-color: #304158;
+}
+
+html[data-theme="dark"] .task-history__summary {
+  color: #e3ebf5;
+}
+
+html[data-theme="dark"] .photo-picker__thumb {
+  background: #182436;
+  border-color: #34465c;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+}
+
+html[data-theme="dark"] .photo-picker__file {
+  color: #9daec0;
+}
+
+html[data-theme="dark"] .photo-picker-sheet__panel {
+  background: rgba(21, 31, 46, 0.97);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.4);
+}
+
+html[data-theme="dark"] .photo-picker-sheet__handle {
+  background: #46586f;
+}
+
+html[data-theme="dark"] .photo-picker-sheet__action {
+  color: #e7edf5;
+  background: #182436;
+}
+
+html[data-theme="dark"] .photo-picker-sheet__action--primary {
+  color: #a8ceff;
+  background: #1d3555;
+}
+
+html[data-theme="dark"] .photo-picker-sheet__close {
+  color: #9daec0;
+}
+
+html[data-theme="dark"] .plan-badge--company_paid {
+  color: #b7d7ff;
+  background: #1d3555;
+}
+
+html[data-theme="dark"] .plan-badge--company_expired {
+  color: #efa3ad;
+  background: #321f27;
+}
+
+html[data-theme="dark"] .admin-desktop .admin-card thead th {
+  color: #b9c6d6;
+  background: #1b283a;
+  border-color: #3a4c62;
+}
+
+html[data-theme="dark"] .admin-desktop .admin-form .form-label {
+  color: #a7b5c6;
+}
+
+html[data-theme="dark"] .desktop-sidebar__brand-mark {
+  background: #111a28;
+  border: 1px solid #304158;
+}
