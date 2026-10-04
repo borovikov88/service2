@@ -298,6 +298,16 @@ class PhoneCall(models.Model):
     DIRECTION_OUT = "out"
     RESULT_ANSWERED = "answered"
     RESULT_MISSED = "missed"
+    RECORDING_NONE = "none"
+    RECORDING_PENDING = "pending"
+    RECORDING_STORED = "stored"
+    RECORDING_FAILED = "failed"
+    RECORDING_STATUS_CHOICES = [
+        (RECORDING_NONE, "Нет записи"),
+        (RECORDING_PENDING, "Ожидает сохранения"),
+        (RECORDING_STORED, "Сохранена"),
+        (RECORDING_FAILED, "Ошибка сохранения"),
+    ]
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="phone_calls")
     connection = models.ForeignKey(TelephonyConnection, on_delete=models.PROTECT, related_name="calls")
     external_id = models.CharField(max_length=255)
@@ -309,6 +319,20 @@ class PhoneCall(models.Model):
     duration_seconds = models.PositiveIntegerField(default=0)
     result = models.CharField(max_length=20, choices=[(RESULT_ANSWERED, "Отвечен"), (RESULT_MISSED, "Пропущен")])
     recording_ref = models.CharField(max_length=500, blank=True)
+    recording_file = models.FileField(
+        upload_to="communications/call_recordings/%Y/%m/%d/",
+        storage=private_media_storage,
+        blank=True,
+    )
+    recording_status = models.CharField(
+        max_length=16,
+        choices=RECORDING_STATUS_CHOICES,
+        default=RECORDING_NONE,
+    )
+    recording_error = models.CharField(max_length=500, blank=True)
+    recording_attempts = models.PositiveSmallIntegerField(default=0)
+    recording_last_attempt_at = models.DateTimeField(null=True, blank=True)
+    recording_downloaded_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
