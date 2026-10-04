@@ -1264,7 +1264,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
             with self.subTest(workflow=workflow.name):
                 text = workflow.read_text(encoding="utf-8")
                 if workflow.name == "call-recordings-sync.yml":
-                    expected_triggers = ["push", "schedule", "workflow_dispatch"]
+                    expected_triggers = ["schedule", "workflow_dispatch"]
                 elif workflow.name == "ci-deploy.yml":
                     expected_triggers = ["pull_request", "push", "workflow_dispatch"]
                 elif workflow.name == "direct-pr-review.yml":
