@@ -1370,6 +1370,22 @@ class CommunicationsTests(TestCase):
         )
         self.assertEqual(result["auto_matched"], 0)
         self.assertEqual(result["needs_mapping"], 1)
+
+        # A later hourly sync must not silently auto-match the new holder.
+        with patch(
+            "pool_service.services.employee_identity_sync._read_megafon_accounts",
+            return_value=(provider, [{"name": "Новый Сотрудник", "ext": "880"}]),
+        ):
+            second_result = sync_megafon_employee_identities(
+                telephony,
+                actor=self.owner,
+            )
+        identity.refresh_from_db()
+        self.assertIsNone(identity.employee)
+        self.assertTrue(identity.requires_manual_confirmation)
+        self.assertEqual(second_result["auto_matched"], 0)
+        self.assertEqual(second_result["needs_mapping"], 1)
+
         old_call.refresh_from_db()
         new_call.refresh_from_db()
         self.assertEqual(old_call.employee_profile, old_employee)
