@@ -264,7 +264,12 @@ def sync_onec_employee_identities(organization, actor=None):
             for row in rows:
                 if not isinstance(row, dict):
                     raise ODataPreviewError("Employee catalog row must be an object")
-                if row.get("DeletionMark") is not False:
+                deletion_mark = row.get("DeletionMark")
+                if type(deletion_mark) is not bool:
+                    raise ODataPreviewError(
+                        "Employee catalog deletion flag is invalid"
+                    )
+                if deletion_mark:
                     continue
                 raw_name = row.get("Description")
                 if (
@@ -502,7 +507,15 @@ def apply_telephony_identity_to_calls(
     )
     selector = Q(provider_extension=identity.extension)
     if identity.external_user:
-        selector |= Q(provider_user=identity.external_user)
+        external_user_is_unique = not TelephonyEmployeeIdentity.objects.filter(
+            connection=identity.connection,
+            external_user=identity.external_user,
+        ).exclude(pk=identity.pk).exists()
+        if external_user_is_unique:
+            selector |= Q(
+                provider_extension="",
+                provider_user=identity.external_user,
+            )
     matches = matches.filter(selector)
 
     if previous_employee_id and previous_employee_id != employee.pk:
@@ -816,12 +829,16 @@ def resolve_call_employee(organization, telephony, extension="", external_user="
             updates.append("last_seen_at")
             identity.save(update_fields=[*updates, "updated_at"])
     elif external_user:
-        identity = TelephonyEmployeeIdentity.objects.filter(
-            organization=organization,
-            connection=telephony,
-            external_user=external_user,
-            is_active=True,
-        ).select_related("employee__user").first()
+        candidates = list(
+            TelephonyEmployeeIdentity.objects.filter(
+                organization=organization,
+                connection=telephony,
+                external_user=external_user,
+                is_active=True,
+            ).select_related("employee__user").order_by("pk")[:2]
+        )
+        if len(candidates) == 1:
+            identity = candidates[0]
 
     if (
         identity

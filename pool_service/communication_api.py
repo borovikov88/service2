@@ -22,6 +22,7 @@ from pool_service.communication_models import (
     MessageAttachment,
     PhoneCall,
     TelephonyConnection,
+    TelephonyEmployeeIdentity,
     WebsiteRequest,
 )
 from pool_service.communication_recordings import download_call_recording
@@ -560,7 +561,16 @@ def megafon_webhook(request, public_id):
         extension,
         provider_user,
     )
-    if employee is None and not extension:
+    unified_identity_exists = (
+        not extension
+        and bool(provider_user)
+        and TelephonyEmployeeIdentity.objects.filter(
+            organization=connection.channel.organization,
+            connection=telephony,
+            external_user=provider_user,
+        ).exists()
+    )
+    if employee is None and not extension and not unified_identity_exists:
         employee = _megafon_employee(
             connection.channel.organization,
             provider_user,

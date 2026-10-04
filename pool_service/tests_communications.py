@@ -1141,6 +1141,47 @@ class CommunicationsTests(TestCase):
         self.assertEqual(call.employee_profile, old_profile)
         self.assertEqual(call.employee, self.worker)
 
+        pending_profile = Employee.objects.create(
+            organization=self.organization,
+            display_name="Ожидает подтверждения",
+            is_active=True,
+            user=self.other,
+        )
+        TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=pending_profile,
+            raw_name="Ожидает подтверждения",
+            normalized_name="ожидает подтверждения",
+            extension="998",
+            external_user="other",
+            is_active=True,
+            requires_manual_confirmation=True,
+            status=TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+            match_method=TelephonyEmployeeIdentity.MATCH_NONE,
+        )
+        pending_history = webhook_client.post(
+            webhook_url,
+            {
+                "cmd": "history",
+                "crm_token": "megafon-crm-token",
+                "callid": "pending-extensionless-call",
+                "phone": "+79001112233",
+                "type": "in",
+                "start": "2026-10-03 16:05:00",
+                "duration": "10",
+                "status": "Success",
+                "user": "other",
+            },
+        )
+        self.assertEqual(pending_history.status_code, 200)
+        pending_call = PhoneCall.objects.get(
+            connection=telephony,
+            external_id="pending-extensionless-call",
+        )
+        self.assertIsNone(pending_call.employee_profile)
+        self.assertIsNone(pending_call.employee)
+
         unauthorized = webhook_client.post(
             webhook_url,
             {
@@ -1773,6 +1814,61 @@ class CommunicationsTests(TestCase):
         existing.refresh_from_db()
         self.assertTrue(existing.source_active)
 
+    def test_onec_employee_sync_rejects_malformed_deletion_flags(self):
+        existing = EmployeeOneCIdentity.objects.create(
+            organization=self.organization,
+            raw_name="Существующий сотрудник",
+            normalized_name="существующий сотрудник",
+            source_identity_key="malformed-deletion-existing",
+            status=EmployeeOneCIdentity.STATUS_NOT_FOUND,
+            source_active=True,
+        )
+        config = ODataConfig(
+            base_url="https://example.test/odata/standard.odata/",
+            username="user",
+            password="pass",
+            organization_guids=("11111111-1111-1111-1111-111111111111",),
+            timeout_seconds=5,
+            max_pages=10,
+            max_rows=100,
+        )
+        base_row = {
+            "Ref_Key": "55555555-5555-5555-5555-555555555555",
+            "Code": "000000019",
+            "Description": "Некорректная Запись",
+            "ВАрхиве": False,
+            "Недействителен": False,
+            "ГоловнаяОрганизация_Key": "11111111-1111-1111-1111-111111111111",
+        }
+
+        for deletion_mark in (None, "False"):
+            row = dict(base_row)
+            if deletion_mark is not None:
+                row["DeletionMark"] = deletion_mark
+            with self.subTest(deletion_mark=deletion_mark), patch(
+                "pool_service.services.employee_identity_sync.is_odata_target_organization",
+                return_value=True,
+            ), patch(
+                "pool_service.services.employee_identity_sync.config_from_settings",
+                return_value=config,
+            ), patch(
+                "pool_service.services.employee_identity_sync.read_odata_pages",
+                return_value=iter([([row], 1)]),
+            ):
+                with self.assertRaises(EmployeeIdentitySyncError):
+                    sync_onec_employee_identities(
+                        self.organization,
+                        actor=self.owner,
+                    )
+
+            existing.refresh_from_db()
+            self.assertTrue(existing.source_active)
+            self.assertFalse(
+                EmployeeOneCIdentity.objects.filter(
+                    onec_employee_id="55555555-5555-5555-5555-555555555555"
+                ).exists()
+            )
+
     def test_active_extension_provider_user_change_blocks_new_call_assignment(self):
         employee = Employee.objects.create(
             organization=self.organization,
@@ -1956,6 +2052,101 @@ class CommunicationsTests(TestCase):
         call.refresh_from_db()
         self.assertEqual(call.employee_profile, new_employee)
         self.assertEqual(call.employee, self.other)
+
+    def test_shared_provider_user_does_not_cross_assign_extensions(self):
+        first_employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Первый сотрудник",
+            is_active=True,
+            user=self.worker,
+        )
+        second_employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Второй сотрудник",
+            is_active=True,
+            user=self.other,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="shared-provider-user",
+        )
+        first_identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            raw_name="Первый сотрудник",
+            normalized_name="первый сотрудник",
+            extension="891",
+            external_user="shared-user",
+            status=TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+            match_method=TelephonyEmployeeIdentity.MATCH_NONE,
+        )
+        second_identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            raw_name="Второй сотрудник",
+            normalized_name="второй сотрудник",
+            extension="892",
+            external_user="shared-user",
+            status=TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+            match_method=TelephonyEmployeeIdentity.MATCH_NONE,
+        )
+        first_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="shared-user-first",
+            provider_extension="891",
+            provider_user="shared-user",
+            phone_number="+79001112240",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        second_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="shared-user-second",
+            provider_extension="892",
+            provider_user="shared-user",
+            phone_number="+79001112241",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        extensionless_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="shared-user-extensionless",
+            provider_user="shared-user",
+            phone_number="+79001112242",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+
+        map_telephony_identity(first_identity, first_employee, self.owner)
+
+        first_call.refresh_from_db()
+        second_call.refresh_from_db()
+        extensionless_call.refresh_from_db()
+        self.assertEqual(first_call.employee_profile, first_employee)
+        self.assertEqual(first_call.employee, self.worker)
+        self.assertIsNone(second_call.employee_profile)
+        self.assertIsNone(second_call.employee)
+        self.assertIsNone(extensionless_call.employee_profile)
+        self.assertIsNone(extensionless_call.employee)
+
+        map_telephony_identity(second_identity, second_employee, self.owner)
+
+        first_call.refresh_from_db()
+        second_call.refresh_from_db()
+        extensionless_call.refresh_from_db()
+        self.assertEqual(first_call.employee_profile, first_employee)
+        self.assertEqual(first_call.employee, self.worker)
+        self.assertEqual(second_call.employee_profile, second_employee)
+        self.assertEqual(second_call.employee, self.other)
+        self.assertIsNone(extensionless_call.employee_profile)
+        self.assertIsNone(extensionless_call.employee)
 
     def test_reassignment_mapping_preserves_calls_before_detected_boundary(self):
         old_employee = Employee.objects.create(
