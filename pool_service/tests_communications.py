@@ -31,7 +31,7 @@ from pool_service.communication_avito import (
     webhook_subscriptions,
 )
 from pool_service.communication_recordings import download_call_recording
-from pool_service.services.call_ai import _ffmpeg_executable, process_call_analysis, request_call_analysis, start_requested_call_analysis_worker
+from pool_service.services.call_ai import _ffmpeg_executable, _reap_call_analysis_worker, process_call_analysis, request_call_analysis, start_requested_call_analysis_worker
 from pool_service.communication_secrets import decrypt_secret, encrypt_secret
 from pool_service.communication_services import receive_message, users_with_conversation_access
 from pool_service.communication_services import conversation_capability
@@ -756,9 +756,16 @@ class CommunicationsTests(TestCase):
         )
         self.assertEqual(forbidden.status_code, 403)
 
+    @patch("pool_service.services.call_ai.threading.Thread")
     @patch("pool_service.services.call_ai.subprocess.Popen")
     @patch("pool_service.services.call_ai.shutil.which", return_value="/bin/bash")
-    def test_requested_call_worker_starts_detached_from_web_process(self, _which, popen):
+    def test_requested_call_worker_starts_detached_from_web_process(
+        self,
+        _which,
+        popen,
+        thread,
+    ):
+        process = popen.return_value
         self.assertTrue(start_requested_call_analysis_worker())
         popen.assert_called_once()
         command = popen.call_args.args[0]
@@ -768,6 +775,13 @@ class CommunicationsTests(TestCase):
         self.assertTrue(kwargs["start_new_session"])
         self.assertTrue(kwargs["close_fds"])
         self.assertTrue(kwargs["env"]["SERVICE2_PYTHON"])
+        thread.assert_called_once_with(
+            target=_reap_call_analysis_worker,
+            args=(process,),
+            daemon=True,
+            name="service2-call-ai-reaper",
+        )
+        thread.return_value.start.assert_called_once_with()
 
     def test_manual_request_does_not_duplicate_fresh_processing_request(self):
         telephony = TelephonyConnection.objects.create(
