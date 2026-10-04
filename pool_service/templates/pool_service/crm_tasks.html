@@ -287,6 +287,70 @@
             padding-right: 0.58rem;
         }
     }
+
+    /* CRM dark theme: task table and bulk actions. */
+    html[data-theme="dark"] .crm-tasks-table {
+        background: #151f2e;
+        border-color: #304158;
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22);
+    }
+    html[data-theme="dark"] .crm-tasks-table .table {
+        --bs-table-color: #dfe7f1;
+        --bs-table-bg: transparent;
+        --bs-table-border-color: #304158;
+        --bs-table-hover-color: #f3f7fb;
+        --bs-table-hover-bg: transparent;
+        color: #dfe7f1;
+    }
+    html[data-theme="dark"] .crm-tasks-table .table > :not(caption) > * > * {
+        background-color: transparent;
+        color: inherit;
+        border-color: #304158;
+    }
+    html[data-theme="dark"] .crm-tasks-table thead th {
+        color: #b9c6d6;
+        background: #1b283a !important;
+        border-color: #3a4c62;
+    }
+    html[data-theme="dark"] .crm-tasks-table tbody tr:hover > * {
+        background: #192739;
+        color: #edf3fa;
+    }
+    html[data-theme="dark"] .crm-tasks-table tbody tr.crm-row-selected > * {
+        background: #1d332c;
+    }
+    html[data-theme="dark"] .crm-tasks-row-title {
+        color: #edf3fa;
+    }
+    html[data-theme="dark"] .crm-tasks-row-subtitle,
+    html[data-theme="dark"] .crm-tasks-empty {
+        color: #9daec0;
+    }
+    html[data-theme="dark"] .crm-bulkbar {
+        border-color: #3a4c62;
+        background: rgba(21, 31, 46, 0.96);
+        box-shadow: 0 18px 40px rgba(0, 0, 0, 0.34);
+    }
+    html[data-theme="dark"] .crm-bulkbar__count {
+        background: #1d3555;
+        color: #a8ceff;
+    }
+    html[data-theme="dark"] .crm-tasks-table .crm-stage-pill {
+        background: #1b293b;
+        border-color: #3b4f68;
+        color: #c8d4e2;
+    }
+    html[data-theme="dark"] .crm-tasks-table .crm-stage-pill--done {
+        background: #183127;
+        border-color: #315b49;
+        color: #83d1a8;
+    }
+    @media (min-width: 992px) {
+        html[data-theme="dark"] .ui-toolbar-card {
+            background: #151f2e;
+        }
+    }
+
 </style>
 
 <div class="card ui-toolbar-card p-4 mb-4">
