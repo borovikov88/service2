@@ -206,6 +206,8 @@ from .development_views import (
 )
 from .communication_views import (
     attachment_download,
+    call_analysis_retry,
+    call_analysis_transcript,
     call_recording,
     calls as communication_calls,
     channels as communication_channels,
@@ -248,6 +250,8 @@ urlpatterns = [
     path("api/communications/website/<uuid:public_id>/chat/<str:session_id>/attachments/<int:attachment_id>/", website_chat_attachment, name="website_chat_attachment"),
     path("communications/", communication_conversations, name="communications_conversations"),
     path("communications/calls/", communication_calls, name="communications_calls"),
+    path("communications/calls/<int:call_id>/analysis/transcript/", call_analysis_transcript, name="communication_call_analysis_transcript"),
+
     path("communications/channels/", communication_channels, name="communications_channels"),
     path("communications/channels/new/<str:kind>/", communication_connection_create, name="communication_connection_create"),
     path("communications/channels/<int:channel_id>/active/", communication_channel_set_active, name="communication_channel_set_active"),
@@ -266,6 +270,7 @@ urlpatterns = [
     path("communications/<uuid:conversation_uuid>/update/", conversation_update, name="communication_update"),
     path("communications/attachments/<int:attachment_id>/", attachment_download, name="communication_attachment"),
     path("communications/calls/<int:call_id>/recording/", call_recording, name="communication_call_recording"),
+    path("communications/calls/<int:call_id>/analysis/retry/", call_analysis_retry, name="communication_call_analysis_retry"),
     path("api/communications/notifications/", communication_notification_feed, name="communication_notification_feed"),
     path("api/communications/notifications/<int:notification_id>/resolve/", communication_notification_resolve, name="communication_notification_resolve"),
     path('', home, name='home'),

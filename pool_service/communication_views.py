@@ -32,10 +32,11 @@ from pool_service.communication_forms import CommunicationConnectionForm, Teleph
 from pool_service.communication_models import (
     AvitoCredential, ChannelConnection, CommunicationChannel, Conversation,
     ConversationAssignment, ConversationMessage, ConversationReadState,
-    MessageAttachment, PhoneCall, TelephonyConnection,
+    CallAnalysis, MessageAttachment, PhoneCall, TelephonyConnection,
 )
 from pool_service.communication_secrets import encrypt_secret
 from pool_service.communication_services import conversation_capability, optimize_message_image, organization_access
+from pool_service.services.call_ai import request_call_analysis
 from pool_service.models import Notification, OrganizationAccess
 
 
@@ -240,7 +241,8 @@ def calls(request):
     queryset = PhoneCall.objects.filter(organization=organization).select_related(
         "employee",
         "employee_profile",
-    )
+        "analysis",
+    ).defer("analysis__transcript")
     if not can_view_all:
         queryset = queryset.filter(employee=request.user)
     try:
@@ -268,6 +270,49 @@ def calls(request):
         "can_listen": conversation_capability(request.user, "can_listen_calls", organization),
         "can_view_all": can_view_all,
     })
+
+
+@login_required
+def call_analysis_transcript(request, call_id):
+    organization = _context(request, "can_listen_calls")
+    call = get_object_or_404(
+        PhoneCall.objects.select_related("analysis"),
+        pk=call_id,
+        organization=organization,
+    )
+    if (
+        not conversation_capability(request.user, "can_view_all_calls", organization)
+        and call.employee_id != request.user.id
+    ):
+        raise PermissionDenied
+    analysis = getattr(call, "analysis", None)
+    if not analysis or analysis.status != CallAnalysis.STATUS_READY:
+        raise Http404
+    return JsonResponse({"transcript": analysis.transcript})
+
+
+@login_required
+@require_POST
+def call_analysis_retry(request, call_id):
+    organization = _context(request, "can_listen_calls")
+    call = get_object_or_404(
+        PhoneCall,
+        pk=call_id,
+        organization=organization,
+    )
+    if (
+        not conversation_capability(request.user, "can_view_all_calls", organization)
+        and call.employee_id != request.user.id
+    ):
+        raise PermissionDenied
+    if not call.recording_file:
+        messages.error(request, "Сначала должна быть сохранена запись звонка.")
+        return redirect("communications_calls")
+    if request_call_analysis(call.pk):
+        messages.success(request, "Звонок поставлен в очередь на расшифровку и анализ.")
+    else:
+        messages.info(request, "Этот звонок уже обрабатывается.")
+    return redirect("communications_calls")
 
 
 def _recording_range_iterator(file_handle, start, length, chunk_size=64 * 1024):
