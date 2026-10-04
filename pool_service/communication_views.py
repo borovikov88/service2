@@ -32,7 +32,7 @@ from pool_service.communication_forms import CommunicationConnectionForm, Teleph
 from pool_service.communication_models import (
     AvitoCredential, ChannelConnection, CommunicationChannel, Conversation,
     ConversationAssignment, ConversationMessage, ConversationReadState,
-    CallAnalysis, MessageAttachment, PhoneCall, TelephonyConnection,
+    MessageAttachment, PhoneCall, TelephonyConnection,
 )
 from pool_service.communication_secrets import encrypt_secret
 from pool_service.communication_services import conversation_capability, optimize_message_image, organization_access
