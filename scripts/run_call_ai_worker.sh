@@ -13,29 +13,33 @@ fi
 cd "$APP_DIR"
 
 LIMIT="${1:-10}"
-LOCK_WAIT_SECONDS="${2:-}"
+WAIT_FOR_AI="${2:-1}"
 IDLE_GRACE_SECONDS="${3:-0}"
 
 [[ "$LIMIT" =~ ^[0-9]+$ ]]
-if [[ -n "$LOCK_WAIT_SECONDS" ]]; then
-    [[ "$LOCK_WAIT_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]]
-fi
+[[ "$WAIT_FOR_AI" == "0" || "$WAIT_FOR_AI" == "1" ]]
 [[ "$IDLE_GRACE_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]]
 
-# Keep the lock order identical to update.sh: AI -> deploy.
-# Manual successors wait until the current worker finishes, providing a durable
-# handoff for requests queued during the final item. Scheduled fallback passes
-# zero and remains non-blocking.
-exec 8>"$TMP_DIR/service2-call-ai.lock"
-if [[ -z "$LOCK_WAIT_SECONDS" ]]; then
-    flock 8
-elif [[ "$LOCK_WAIT_SECONDS" == "0" || "$LOCK_WAIT_SECONDS" == "0.0" ]]; then
-    if ! flock -n 8; then
-        exit 0
-    fi
-elif ! flock -w "$LOCK_WAIT_SECONDS" 8; then
+# Allow at most one durable successor to wait behind the active AI worker.
+# Extra button clicks only persist database requests; their launchers exit here.
+exec 7>"$TMP_DIR/service2-call-ai-successor.lock"
+if ! flock -n 7; then
     exit 0
 fi
+
+# Keep the lock order identical to update.sh: AI -> deploy.
+# Manual successor waits durably; scheduled fallback passes 0 and never waits.
+exec 8>"$TMP_DIR/service2-call-ai.lock"
+if [[ "$WAIT_FOR_AI" == "1" ]]; then
+    flock 8
+elif ! flock -n 8; then
+    exit 0
+fi
+
+# This process is now the active worker. Release the successor slot immediately
+# so at most one new launcher may wait behind it while it drains the queue.
+flock -u 7
+exec 7>&-
 
 # Background readers share the deployment guard. update.sh keeps its exclusive
 # lock, so checkout/venv/migrations can never change underneath this process.
