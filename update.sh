@@ -31,8 +31,8 @@ if [[ "$MODE" == "deploy" ]]; then
     # Keep deployment mutually exclusive with the manual call-AI worker.
     # Lock order is always AI -> deploy, matching the scheduled workflow.
     exec 8>../tmp/service2-call-ai.lock
-    if ! flock -w 600 8; then
-        echo "Timed out waiting for active call analysis to finish" >&2
+    if ! flock -n 8; then
+        echo "Active call analysis is running; retry deployment after it finishes" >&2
         exit 75
     fi
     exec 9>../tmp/service2-deploy.lock
