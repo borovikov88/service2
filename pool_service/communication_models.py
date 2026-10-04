@@ -481,5 +481,6 @@ class CallAnalysis(models.Model):
     processing_started_at = models.DateTimeField(null=True, blank=True)
     processing_token = models.CharField(max_length=36, blank=True, default="")
     processed_at = models.DateTimeField(null=True, blank=True)
+    requested_at = models.DateTimeField(null=True, blank=True, db_index=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
