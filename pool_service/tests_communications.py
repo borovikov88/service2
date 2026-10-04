@@ -1145,7 +1145,7 @@ class CommunicationsTests(TestCase):
             organization=self.organization,
             display_name="Ожидает подтверждения",
             is_active=True,
-            user=self.other,
+            user=self.accountant,
         )
         TelephonyEmployeeIdentity.objects.create(
             organization=self.organization,
@@ -1171,7 +1171,7 @@ class CommunicationsTests(TestCase):
                 "start": "2026-10-03 16:05:00",
                 "duration": "10",
                 "status": "Success",
-                "user": "other",
+                "user": "accountant",
             },
         )
         self.assertEqual(pending_history.status_code, 200)
@@ -1868,6 +1868,127 @@ class CommunicationsTests(TestCase):
                     onec_employee_id="55555555-5555-5555-5555-555555555555"
                 ).exists()
             )
+
+    def test_onec_employee_sync_rejects_out_of_scope_organization(self):
+        existing = EmployeeOneCIdentity.objects.create(
+            organization=self.organization,
+            raw_name="Существующий сотрудник",
+            normalized_name="существующий сотрудник",
+            source_identity_key="foreign-organization-existing",
+            status=EmployeeOneCIdentity.STATUS_NOT_FOUND,
+            source_active=True,
+        )
+        config = ODataConfig(
+            base_url="https://example.test/odata/standard.odata/",
+            username="user",
+            password="pass",
+            organization_guids=("11111111-1111-1111-1111-111111111111",),
+            timeout_seconds=5,
+            max_pages=10,
+            max_rows=100,
+        )
+        row = {
+            "Ref_Key": "66666666-6666-6666-6666-666666666666",
+            "Code": "000000020",
+            "Description": "Чужая Организация",
+            "DeletionMark": False,
+            "ВАрхиве": False,
+            "Недействителен": False,
+            "ГоловнаяОрганизация_Key": "22222222-2222-2222-2222-222222222222",
+        }
+
+        with patch(
+            "pool_service.services.employee_identity_sync.is_odata_target_organization",
+            return_value=True,
+        ), patch(
+            "pool_service.services.employee_identity_sync.config_from_settings",
+            return_value=config,
+        ), patch(
+            "pool_service.services.employee_identity_sync.read_odata_pages",
+            return_value=iter([([row], 1)]),
+        ):
+            with self.assertRaises(EmployeeIdentitySyncError):
+                sync_onec_employee_identities(
+                    self.organization,
+                    actor=self.owner,
+                )
+
+        existing.refresh_from_db()
+        self.assertTrue(existing.source_active)
+        self.assertFalse(
+            EmployeeOneCIdentity.objects.filter(
+                onec_employee_id="66666666-6666-6666-6666-666666666666"
+            ).exists()
+        )
+
+    def test_onec_employee_sync_enforces_configured_row_limit(self):
+        existing = EmployeeOneCIdentity.objects.create(
+            organization=self.organization,
+            raw_name="Существующий сотрудник",
+            normalized_name="существующий сотрудник",
+            source_identity_key="row-limit-existing",
+            status=EmployeeOneCIdentity.STATUS_NOT_FOUND,
+            source_active=True,
+        )
+        config = ODataConfig(
+            base_url="https://example.test/odata/standard.odata/",
+            username="user",
+            password="pass",
+            organization_guids=("11111111-1111-1111-1111-111111111111",),
+            timeout_seconds=5,
+            max_pages=10,
+            max_rows=1,
+        )
+        rows = [
+            {
+                "Ref_Key": employee_guid,
+                "Code": code,
+                "Description": name,
+                "DeletionMark": False,
+                "ВАрхиве": False,
+                "Недействителен": False,
+                "ГоловнаяОрганизация_Key": "11111111-1111-1111-1111-111111111111",
+            }
+            for employee_guid, code, name in (
+                (
+                    "77777777-7777-7777-7777-777777777777",
+                    "000000021",
+                    "Первая Запись",
+                ),
+                (
+                    "88888888-8888-8888-8888-888888888888",
+                    "000000022",
+                    "Вторая Запись",
+                ),
+            )
+        ]
+
+        with patch(
+            "pool_service.services.employee_identity_sync.is_odata_target_organization",
+            return_value=True,
+        ), patch(
+            "pool_service.services.employee_identity_sync.config_from_settings",
+            return_value=config,
+        ), patch(
+            "pool_service.services.employee_identity_sync.read_odata_pages",
+            return_value=iter([(rows, 1)]),
+        ):
+            with self.assertRaises(EmployeeIdentitySyncError):
+                sync_onec_employee_identities(
+                    self.organization,
+                    actor=self.owner,
+                )
+
+        existing.refresh_from_db()
+        self.assertTrue(existing.source_active)
+        self.assertFalse(
+            EmployeeOneCIdentity.objects.filter(
+                onec_employee_id__in={
+                    "77777777-7777-7777-7777-777777777777",
+                    "88888888-8888-8888-8888-888888888888",
+                }
+            ).exists()
+        )
 
     def test_active_extension_provider_user_change_blocks_new_call_assignment(self):
         employee = Employee.objects.create(

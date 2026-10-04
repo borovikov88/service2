@@ -259,6 +259,7 @@ def sync_onec_employee_identities(organization, actor=None):
     # changes are made until every page is valid, so a late provider error
     # cannot leave Service2 with a half-applied employee catalog.
     source_rows = []
+    allowed_source_organizations = set(config.organization_guids) | {ZERO_GUID}
     try:
         for rows, _page_number in read_odata_pages(config, initial_url):
             for row in rows:
@@ -271,6 +272,15 @@ def sync_onec_employee_identities(organization, actor=None):
                     )
                 if deletion_mark:
                     continue
+                source_organization = normalize_guid(
+                    row.get("ГоловнаяОрганизация_Key"),
+                    field="Catalog_Сотрудники.ГоловнаяОрганизация_Key",
+                    allow_zero=True,
+                )
+                if source_organization not in allowed_source_organizations:
+                    raise ODataPreviewError(
+                        "Employee catalog organization is outside the configured allowlist"
+                    )
                 raw_name = row.get("Description")
                 if (
                     not isinstance(raw_name, str)
@@ -291,6 +301,10 @@ def sync_onec_employee_identities(organization, actor=None):
                     row.get("Ref_Key"),
                     field="Catalog_Сотрудники.Ref_Key",
                 )
+                if len(source_rows) >= config.max_rows:
+                    raise ODataPreviewError(
+                        "Employee catalog exceeded the configured row limit"
+                    )
                 source_rows.append(
                     {
                         "raw_name": raw_name.strip(),
