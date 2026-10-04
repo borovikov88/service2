@@ -852,6 +852,49 @@ class CommunicationsTests(TestCase):
             reverse("communication_call_analysis_retry", args=[call.pk]),
         )
 
+    @override_settings(
+        OPENAI_API_KEY="test-key",
+        OPENAI_CALL_MAX_ATTEMPTS=2,
+    )
+    @patch("pool_service.services.call_ai._client", side_effect=RuntimeError("temporary"))
+    def test_requested_call_retries_until_attempt_limit(self, _client):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-ai-retry-budget",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-retry-budget-call",
+            employee=self.owner,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=20,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        call.recording_file.save("ai-retry-budget.mp3", ContentFile(b"ID3test"), save=True)
+        requested_at = timezone.now()
+        analysis = CallAnalysis.objects.create(
+            call=call,
+            status=CallAnalysis.STATUS_PENDING,
+            requested_at=requested_at,
+        )
+
+        self.assertFalse(process_call_analysis(call.pk))
+        analysis.refresh_from_db()
+        self.assertEqual(analysis.status, CallAnalysis.STATUS_PENDING)
+        self.assertEqual(analysis.attempts, 1)
+        self.assertEqual(analysis.requested_at, requested_at)
+
+        self.assertFalse(process_call_analysis(call.pk))
+        analysis.refresh_from_db()
+        self.assertEqual(analysis.status, CallAnalysis.STATUS_FAILED)
+        self.assertEqual(analysis.attempts, 2)
+        self.assertIsNone(analysis.requested_at)
+
     @patch(
         "pool_service.management.commands.process_requested_call_analyses.process_call_analysis",
         return_value=True,
