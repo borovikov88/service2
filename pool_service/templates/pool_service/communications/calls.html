@@ -265,9 +265,15 @@
                     {% endwith %}
                   </div>
 
-                  <details class="mt-3">
+                  <details
+                    class="mt-3"
+                    data-call-transcript
+                    data-transcript-url="{% url 'communication_call_analysis_transcript' call.pk %}"
+                  >
                     <summary class="fw-semibold">Полная расшифровка</summary>
-                    <div class="call-analysis__transcript mt-2">{{ call.analysis.transcript }}</div>
+                    <div class="call-analysis__transcript mt-2" data-call-transcript-body>
+                      Нажмите, чтобы загрузить расшифровку.
+                    </div>
                   </details>
                 {% elif call.analysis and call.analysis.status == 'pending' and call.analysis.requested_at %}
                   <span class="text-muted"><i class="bi bi-hourglass-split me-1"></i>Поставлено в очередь на расшифровку.</span>
@@ -322,6 +328,33 @@
     const secs = whole % 60;
     return `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
   };
+
+  document.querySelectorAll("[data-call-transcript]").forEach((details) => {
+    let loaded = false;
+    let loading = false;
+    details.addEventListener("toggle", async () => {
+      if (!details.open || loaded || loading) return;
+      const body = details.querySelector("[data-call-transcript-body]");
+      const url = details.dataset.transcriptUrl;
+      if (!body || !url) return;
+      loading = true;
+      body.textContent = "Загружаем расшифровку…";
+      try {
+        const response = await fetch(url, {
+          headers: {"X-Requested-With": "XMLHttpRequest"},
+          credentials: "same-origin",
+        });
+        if (!response.ok) throw new Error("transcript_load_failed");
+        const payload = await response.json();
+        body.textContent = payload.transcript || "Расшифровка пуста.";
+        loaded = true;
+      } catch (_error) {
+        body.textContent = "Не удалось загрузить расшифровку. Закройте и откройте блок ещё раз.";
+      } finally {
+        loading = false;
+      }
+    });
+  });
 
   document.querySelectorAll("[data-call-player]").forEach((player) => {
     const audio = player.querySelector(".call-player__audio");
