@@ -96,7 +96,7 @@
             {% elif call.recording_ref %}
               {% if call.recording_status == 'failed' %}
                 <span class="call-recording-state text-warning" title="{{ call.recording_error }}">
-                  Запись сохраняется повторно
+                  Не удалось сохранить автоматически
                 </span>
               {% else %}
                 <span class="call-recording-state text-muted">Сохраняем запись…</span>
