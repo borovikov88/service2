@@ -116,15 +116,95 @@ def persist_money_forecast(organization, user, source, *, sync_run=None):
     return snapshot
 
 
-def _match_realization_receivables(organization, source):
-    """Confirm realization forecast amounts only from the active factual AR snapshot."""
-    position = (
+def _active_position_snapshot(organization):
+    return (
         OneCFinancePositionSnapshot.objects.filter(
             organization=organization, is_active=True
         )
         .order_by("-snapshot_at", "-id")
         .first()
     )
+
+
+def _match_order_receivables(organization, source):
+    """Reconcile already-due customer schedule rows to current 1C receivables."""
+    position = _active_position_snapshot(organization)
+    if position is None:
+        return source
+
+    receivable_by_order = defaultdict(lambda: ZERO)
+    for settlement in position.settlement_rows.filter(
+        side=SettlementPositionRow.SIDE_CUSTOMER,
+        management_classification=SettlementPositionRow.CLASS_RECEIVABLE,
+    ).exclude(order_guid__isnull=True):
+        receivable_by_order[str(settlement.order_guid)] += abs(settlement.amount)
+
+    due_by_order = defaultdict(list)
+    snapshot_date = position.snapshot_at.date()
+    for index, row in enumerate(source.rows):
+        if (
+            row.direction == "receipt"
+            and row.item_kind in {
+                OneCMoneyForecastRow.KIND_ORDER_SCHEDULE,
+                OneCMoneyForecastRow.KIND_ORDER_DUE,
+            }
+            and row.order_guid
+            and row.expected_date
+            and row.expected_date <= snapshot_date
+            and row.confirmation_status in {"confirmed", "review"}
+            and row.expected_amount is not None
+        ):
+            due_by_order[str(row.order_guid)].append((index, row))
+
+    replacements = {}
+    for order_guid, rows in due_by_order.items():
+        total_due = sum((row.expected_amount or ZERO for _, row in rows), ZERO)
+        current_receivable = min(receivable_by_order.get(order_guid, ZERO), total_due)
+
+        # 1C normally closes the oldest debt first. Therefore any amount still
+        # outstanding belongs to the latest already-due instalments.
+        not_allocated = current_receivable
+        for index, row in sorted(
+            rows,
+            key=lambda pair: (
+                pair[1].expected_date,
+                pair[1].source_identity,
+            ),
+            reverse=True,
+        ):
+            amount = row.expected_amount or ZERO
+            remaining = min(amount, not_allocated)
+            not_allocated = max(not_allocated - remaining, ZERO)
+            if remaining > ZERO:
+                replacements[index] = replace(
+                    row,
+                    matched_paid_amount=amount - remaining,
+                    remaining_amount=remaining,
+                    payment_match_status="order_receivable_matched",
+                    confirmation_status="confirmed",
+                    basis=f"{row.basis} · остаток по дебиторке 1С",
+                )
+            else:
+                replacements[index] = replace(
+                    row,
+                    matched_paid_amount=amount,
+                    remaining_amount=ZERO,
+                    payment_match_status="order_receivable_settled",
+                    confirmation_status="excluded",
+                    basis=f"{row.basis} · погашено по текущей дебиторке 1С",
+                )
+
+    if not replacements:
+        return source
+    return replace(
+        source,
+        rows=tuple(replacements.get(index, row) for index, row in enumerate(source.rows)),
+    )
+
+
+def _match_realization_receivables(organization, source):
+    """Confirm realization forecast amounts only from the active factual AR snapshot."""
+    position = _active_position_snapshot(organization)
     if position is None:
         return source
 
@@ -183,6 +263,7 @@ def sync_money_forecast(organization, user, *, now=None, sync_run=None, config=N
 
     now = now or timezone.now()
     source = read_money_forecast(now, config=config, opener=opener)
+    source = _match_order_receivables(organization, source)
     source = _match_realization_receivables(organization, source)
     return persist_money_forecast(
         organization, user, source, sync_run=sync_run

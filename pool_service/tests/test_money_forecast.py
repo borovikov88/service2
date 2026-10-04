@@ -10,6 +10,7 @@ from django.utils import timezone as dj_timezone
 from pool_service.finance_imports.money_forecast import (
     _bucket_forecast,
     _deduplicated_forecast,
+    _match_order_receivables,
     _service_plan_items,
 )
 from pool_service.finance_imports.odata_money_forecast import (
@@ -22,9 +23,16 @@ from pool_service.finance_imports.odata_money_forecast import (
     AGREEMENTS,
     SUPPLIER_ORDER,
     SUPPLIER_SCHEDULE,
+    MoneyForecastSourceRow,
+    MoneyForecastSourceSnapshot,
     read_money_forecast,
 )
 from pool_service.finance_imports.odata_profit import ODataConfig
+from pool_service.finance_imports.finance_position import _persist_snapshot
+from pool_service.finance_imports.odata_finance_position import (
+    FinancePositionSourceSnapshot,
+    SettlementPositionSourceRow,
+)
 from pool_service.money_models import (
     ManagementMoneyPlan,
     OneCMoneyForecastRow,
@@ -321,6 +329,122 @@ class MoneyForecastReaderTests(TestCase):
             )
         self.assertEqual(result.rows[0].confirmation_status, "possible")
         self.assertIsNone(result.rows[0].remaining_amount)
+
+
+class MoneyForecastReceivableMatchingTests(TestCase):
+    def setUp(self):
+        self.organization = Organization.objects.create(
+            name="Money receivable test", paid_until=dj_timezone.now()
+        )
+        self.user = User.objects.create_user("money-receivable-owner")
+
+    def _position(self, amount=None):
+        settlements = ()
+        if amount is not None:
+            settlements = (
+                SettlementPositionSourceRow(
+                    side="customer",
+                    settlement_type_raw="Долг",
+                    management_classification="receivable",
+                    organization_guid=ORG_GUID,
+                    counterparty_guid=PARTY_GUID,
+                    counterparty_name="Журавлики",
+                    agreement_guid=None,
+                    document_guid=REALIZATION_GUID,
+                    document_type="Document_РасходнаяНакладная",
+                    order_guid=ORDER_GUID,
+                    order_type="Document_ЗаказПокупателя",
+                    amount=Decimal(amount),
+                    amount_currency=Decimal(amount),
+                    amount_reg=None,
+                    is_sign_anomaly=False,
+                    source_identity=f"debt-{amount}",
+                ),
+            )
+        at = datetime(2026, 10, 4, 5, 0, tzinfo=timezone.utc)
+        return _persist_snapshot(
+            self.organization,
+            self.user,
+            FinancePositionSourceSnapshot(
+                snapshot_at=at,
+                source_timezone="Asia/Barnaul",
+                fetched_at=at,
+                cash_rows=(),
+                settlement_rows=settlements,
+                diagnostics={},
+            ),
+        )
+
+    def _schedule_row(self, identity, due, amount="36047.58"):
+        return MoneyForecastSourceRow(
+            direction="receipt",
+            item_kind="order_schedule",
+            source_identity=identity,
+            order_guid=ORDER_GUID,
+            document_guid=None,
+            document_type="",
+            agreement_guid=None,
+            counterparty_guid=PARTY_GUID,
+            counterparty_name="Журавлики",
+            order_number="НФНФ-000032",
+            order_date=date(2026, 1, 13),
+            order_state="В работе",
+            expected_amount=Decimal(amount),
+            matched_paid_amount=Decimal("0.00"),
+            remaining_amount=Decimal(amount),
+            payment_match_status="no_prepayment",
+            contractual_due_date=due,
+            expected_date=due,
+            expected_month=due.replace(day=1),
+            date_precision="exact",
+            basis="График оплаты заказа в 1С",
+            confirmation_status="confirmed",
+            source_updated_at=None,
+            source_payload={},
+        )
+
+    def _source(self):
+        at = datetime(2026, 10, 4, 5, 0, tzinfo=timezone.utc)
+        return MoneyForecastSourceSnapshot(
+            source_at=at,
+            fetched_at=at,
+            rows=(
+                self._schedule_row("feb", date(2026, 2, 13)),
+                self._schedule_row("sep", date(2026, 9, 13)),
+                self._schedule_row("oct", date(2026, 10, 13)),
+            ),
+            diagnostics={},
+        )
+
+    def test_current_debt_is_allocated_to_latest_due_instalment_only(self):
+        self._position("36047.58")
+        result = _match_order_receivables(self.organization, self._source())
+        feb, sep, oct_row = result.rows
+
+        self.assertEqual(feb.confirmation_status, "excluded")
+        self.assertEqual(feb.remaining_amount, Decimal("0.00"))
+        self.assertEqual(feb.payment_match_status, "order_receivable_settled")
+
+        self.assertEqual(sep.confirmation_status, "confirmed")
+        self.assertEqual(sep.remaining_amount, Decimal("36047.58"))
+        self.assertEqual(sep.payment_match_status, "order_receivable_matched")
+
+        self.assertEqual(oct_row.confirmation_status, "confirmed")
+        self.assertEqual(oct_row.remaining_amount, Decimal("36047.58"))
+        self.assertEqual(oct_row.payment_match_status, "no_prepayment")
+
+    def test_no_current_receivable_closes_past_instalments_but_keeps_future(self):
+        self._position()
+        result = _match_order_receivables(self.organization, self._source())
+        feb, sep, oct_row = result.rows
+
+        self.assertEqual(feb.confirmation_status, "excluded")
+        self.assertEqual(sep.confirmation_status, "excluded")
+        self.assertEqual(feb.remaining_amount, Decimal("0.00"))
+        self.assertEqual(sep.remaining_amount, Decimal("0.00"))
+
+        self.assertEqual(oct_row.confirmation_status, "confirmed")
+        self.assertEqual(oct_row.remaining_amount, Decimal("36047.58"))
 
 
 class MoneyForecastPlanTests(TestCase):
