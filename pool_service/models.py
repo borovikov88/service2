@@ -2288,6 +2288,11 @@ class EmployeeOneCIdentity(models.Model):
     )
     confirmed_at = models.DateTimeField(null=True, blank=True)
     comment = models.TextField(blank=True)
+    source_active = models.BooleanField(
+        default=True,
+        help_text="Активность записи сотрудника в исходной 1С.",
+    )
+    last_seen_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
