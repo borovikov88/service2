@@ -32,11 +32,21 @@ class Command(BaseCommand):
         telephony_unmapped = sum(
             item["needs_mapping"] for item in result["telephony"]
         )
+        telephony_errors = [
+            item for item in result["telephony"] if item.get("error")
+        ]
         self.stdout.write(
             self.style.SUCCESS(
                 "Employee identity sync completed: "
                 f"1C={result['onec']['synced']} "
                 f"MegaFon={telephony_synced} "
-                f"MegaFon_unmapped={telephony_unmapped}"
+                f"MegaFon_unmapped={telephony_unmapped} "
+                f"MegaFon_errors={len(telephony_errors)}"
             )
         )
+        for item in telephony_errors:
+            self.stderr.write(
+                self.style.WARNING(
+                    f"MegaFon line skipped: {item['name']}: {item['error']}"
+                )
+            )
