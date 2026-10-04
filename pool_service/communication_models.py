@@ -300,11 +300,13 @@ class PhoneCall(models.Model):
     RESULT_MISSED = "missed"
     RECORDING_NONE = "none"
     RECORDING_PENDING = "pending"
+    RECORDING_DOWNLOADING = "downloading"
     RECORDING_STORED = "stored"
     RECORDING_FAILED = "failed"
     RECORDING_STATUS_CHOICES = [
         (RECORDING_NONE, "Нет записи"),
         (RECORDING_PENDING, "Ожидает сохранения"),
+        (RECORDING_DOWNLOADING, "Сохраняется"),
         (RECORDING_STORED, "Сохранена"),
         (RECORDING_FAILED, "Ошибка сохранения"),
     ]
