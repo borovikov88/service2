@@ -226,8 +226,7 @@ def map_employee_service2_user(employee, user, actor):
             after={"user_id": user.pk},
             changed_fields=["user_id"] if before["user_id"] != user.pk else [],
         )
-    employee.refresh_from_db()
-    backfill_employee_calls(employee, previous_user_id=before["user_id"])
+        backfill_employee_calls(locked, previous_user_id=before["user_id"])
     return locked
 
 
@@ -794,13 +793,13 @@ def map_telephony_identity(identity, employee, actor):
                 }[key]
             ],
         )
-    auto_link_service2_user(employee, actor=actor)
-    employee.refresh_from_db()
-    apply_telephony_identity_to_calls(
-        locked,
-        previous_employee_id=previous_employee_id,
-        reassignment_boundary=reassignment_boundary,
-    )
+        auto_link_service2_user(employee, actor=actor)
+        employee.refresh_from_db()
+        apply_telephony_identity_to_calls(
+            locked,
+            previous_employee_id=previous_employee_id,
+            reassignment_boundary=reassignment_boundary,
+        )
     return locked
 
 
