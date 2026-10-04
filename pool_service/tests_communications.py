@@ -1160,6 +1160,72 @@ class CommunicationsTests(TestCase):
         self.assertEqual(call.employee_profile, employee)
         self.assertEqual(call.employee, self.worker)
 
+    def test_onec_employee_sync_uses_stable_ids_and_source_activity(self):
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Крафт Дарья Валерьевна",
+            is_active=True,
+        )
+        config = ODataConfig(
+            base_url="https://example.test/odata/standard.odata/",
+            username="user",
+            password="pass",
+            organization_guids=("11111111-1111-1111-1111-111111111111",),
+            timeout_seconds=5,
+            max_pages=10,
+            max_rows=100,
+        )
+        rows = [
+            {
+                "Ref_Key": "22222222-2222-2222-2222-222222222222",
+                "Code": "000000017",
+                "Description": "Крафт Дарья Валерьевна",
+                "DeletionMark": False,
+                "ВАрхиве": False,
+                "Недействителен": False,
+                "ГоловнаяОрганизация_Key": "11111111-1111-1111-1111-111111111111",
+            },
+            {
+                "Ref_Key": "33333333-3333-3333-3333-333333333333",
+                "Code": "000000099",
+                "Description": "Старый Сотрудник",
+                "DeletionMark": False,
+                "ВАрхиве": False,
+                "Недействителен": True,
+                "ГоловнаяОрганизация_Key": "11111111-1111-1111-1111-111111111111",
+            },
+        ]
+
+        with patch(
+            "pool_service.services.employee_identity_sync.is_odata_target_organization",
+            return_value=True,
+        ), patch(
+            "pool_service.services.employee_identity_sync.config_from_settings",
+            return_value=config,
+        ), patch(
+            "pool_service.services.employee_identity_sync.read_odata_pages",
+            return_value=iter([(rows, 1)]),
+        ):
+            result = sync_onec_employee_identities(
+                self.organization,
+                actor=self.owner,
+            )
+
+        self.assertEqual(result["synced"], 2)
+        self.assertEqual(result["active"], 1)
+        self.assertEqual(result["inactive"], 1)
+        active_identity = EmployeeOneCIdentity.objects.get(
+            onec_employee_id="22222222-2222-2222-2222-222222222222"
+        )
+        self.assertEqual(active_identity.employee, employee)
+        self.assertTrue(active_identity.source_active)
+        self.assertEqual(active_identity.personnel_number, "000000017")
+        inactive_identity = EmployeeOneCIdentity.objects.get(
+            onec_employee_id="33333333-3333-3333-3333-333333333333"
+        )
+        self.assertFalse(inactive_identity.source_active)
+        self.assertIsNotNone(inactive_identity.last_seen_at)
+
     def test_manual_telephony_mapping_updates_existing_calls(self):
         employee = Employee.objects.create(
             organization=self.organization,
