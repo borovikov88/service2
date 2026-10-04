@@ -849,3 +849,66 @@ html[data-theme="dark"] .owner-signal:hover {
   background: #182436;
   border-color: #4b617c;
 }
+
+
+/* Dark theme: shared multi-select controls. */
+html[data-theme="dark"] .multi-select__trigger {
+  color: #e7edf5;
+  background: #111a28;
+  border-color: #3a4c63;
+  box-shadow: none;
+}
+
+html[data-theme="dark"] .multi-select__trigger:hover {
+  background: #162235;
+  border-color: #4a607b;
+}
+
+html[data-theme="dark"] .multi-select__trigger:focus {
+  border-color: #5c9eea;
+  box-shadow: 0 0 0 0.22rem rgba(92, 158, 234, 0.16);
+}
+
+html[data-theme="dark"] .multi-select--open .multi-select__trigger {
+  color: #f2f6fb;
+  background: #172436;
+  border-color: #54739a;
+}
+
+html[data-theme="dark"] .multi-select__caret {
+  color: #9daec0;
+}
+
+html[data-theme="dark"] .multi-select__dropdown {
+  color: #dfe7f1;
+  background: #151f2e;
+  border-color: #34465c;
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.34);
+}
+
+html[data-theme="dark"] .multi-select__option {
+  color: #dfe7f1;
+}
+
+html[data-theme="dark"] .multi-select__option:hover {
+  color: #f4f8fc;
+  background: #1b2b40;
+}
+
+html[data-theme="dark"] .multi-select__option:has(input:checked) {
+  color: #eef5ff;
+  background: #1d3555;
+}
+
+html[data-theme="dark"] .multi-select__option input[type="checkbox"] {
+  accent-color: #5c9eea;
+}
+
+html[data-theme="dark"] .multi-select__option--locked {
+  color: #b8c6d6;
+  opacity: 0.86;
+}
+
+html[data-theme="dark"] .multi-select__empty {
+  color: #91a2b6;
+}
