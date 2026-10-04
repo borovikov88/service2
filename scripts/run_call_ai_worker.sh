@@ -12,15 +12,15 @@ fi
 
 cd "$APP_DIR"
 
-# Never run against a checkout while deployment is changing it.
-exec 9>"$TMP_DIR/service2-deploy.lock"
-if ! flock -n 9; then
+# Keep the lock order identical to update.sh: AI -> deploy.
+# Both acquisitions are non-blocking, so workers yield instead of delaying deploys.
+exec 8>"$TMP_DIR/service2-call-ai.lock"
+if ! flock -n 8; then
     exit 0
 fi
 
-# Only one AI worker may claim requested calls at a time.
-exec 8>"$TMP_DIR/service2-call-ai.lock"
-if ! flock -n 8; then
+exec 9>"$TMP_DIR/service2-deploy.lock"
+if ! flock -n 9; then
     exit 0
 fi
 
