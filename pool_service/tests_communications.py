@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from django.apps import apps
 from django.contrib.auth.models import Permission, User
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.db import IntegrityError, transaction
 from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -1801,6 +1802,37 @@ class CommunicationsTests(TestCase):
         self.assertEqual(by_id[configured.pk]["error"], "")
         self.assertEqual(by_id[broken.pk]["synced"], 0)
         self.assertIn("Ключ АТС", by_id[broken.pk]["error"])
+
+    def test_employee_identity_command_fails_after_reporting_line_errors(self):
+        result = {
+            "onec": {"synced": 3},
+            "telephony": [
+                {
+                    "name": "Недоступная линия",
+                    "synced": 0,
+                    "needs_mapping": 0,
+                    "error": "МегаФон не ответил",
+                }
+            ],
+        }
+        output = io.StringIO()
+        errors = io.StringIO()
+
+        with override_settings(
+            ONEC_ODATA_TARGET_ORGANIZATION_ID=str(self.organization.pk)
+        ), patch(
+            "pool_service.management.commands.sync_employee_identities.sync_all_employee_identities",
+            return_value=result,
+        ):
+            with self.assertRaises(CommandError):
+                call_command(
+                    "sync_employee_identities",
+                    stdout=output,
+                    stderr=errors,
+                )
+
+        self.assertIn("MegaFon_errors=1", output.getvalue())
+        self.assertIn("Недоступная линия", errors.getvalue())
 
     def test_manual_megafon_sync_isolates_failed_lines(self):
         configured = TelephonyConnection.objects.create(

@@ -614,26 +614,22 @@ def _auto_match_telephony_identity(identity, actor=None):
     return identity
 
 
-def sync_megafon_employee_identities(telephony, actor=None):
-    provider, accounts = _read_megafon_accounts(telephony)
-    now = timezone.now()
-    seen = []
-    auto_matched = 0
-    needs_mapping = 0
-    for account in accounts:
+def _sync_megafon_employee_account(telephony, account, now, actor=None):
+    with transaction.atomic():
         normalized_name = normalize_onec_name(account["name"])
-        identity, created = TelephonyEmployeeIdentity.objects.get_or_create(
-            connection=telephony,
-            extension=account["ext"],
-            defaults={
-                "organization": telephony.organization,
-                "raw_name": account["name"],
-                "normalized_name": normalized_name,
-                "last_seen_at": now,
-            },
+        identity, created = (
+            TelephonyEmployeeIdentity.objects.select_for_update().get_or_create(
+                connection=telephony,
+                extension=account["ext"],
+                defaults={
+                    "organization": telephony.organization,
+                    "raw_name": account["name"],
+                    "normalized_name": normalized_name,
+                    "last_seen_at": now,
+                },
+            )
         )
         previous_normalized_name = identity.normalized_name
-        was_inactive = not identity.is_active
         was_pending_revalidation = identity.requires_manual_confirmation
         source_name_changed = (
             not created
@@ -698,14 +694,24 @@ def sync_megafon_employee_identities(telephony, actor=None):
 
         identity.save(update_fields=update_fields)
         identity = _auto_match_telephony_identity(identity, actor=actor)
-        with transaction.atomic():
-            identity = (
-                TelephonyEmployeeIdentity.objects.select_for_update()
-                .select_related("employee__user")
-                .get(pk=identity.pk)
-            )
-            if identity.employee_id and not identity.requires_manual_confirmation:
-                apply_telephony_identity_to_calls(identity)
+        if identity.employee_id and not identity.requires_manual_confirmation:
+            apply_telephony_identity_to_calls(identity)
+        return identity
+
+
+def sync_megafon_employee_identities(telephony, actor=None):
+    provider, accounts = _read_megafon_accounts(telephony)
+    now = timezone.now()
+    seen = []
+    auto_matched = 0
+    needs_mapping = 0
+    for account in accounts:
+        identity = _sync_megafon_employee_account(
+            telephony,
+            account,
+            now,
+            actor=actor,
+        )
 
         seen.append(identity.pk)
         if identity.employee_id and not identity.requires_manual_confirmation:

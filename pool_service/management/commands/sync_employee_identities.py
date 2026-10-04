@@ -35,18 +35,22 @@ class Command(BaseCommand):
         telephony_errors = [
             item for item in result["telephony"] if item.get("error")
         ]
-        self.stdout.write(
-            self.style.SUCCESS(
-                "Employee identity sync completed: "
-                f"1C={result['onec']['synced']} "
-                f"MegaFon={telephony_synced} "
-                f"MegaFon_unmapped={telephony_unmapped} "
-                f"MegaFon_errors={len(telephony_errors)}"
-            )
+        summary = (
+            "Employee identity sync completed: "
+            f"1C={result['onec']['synced']} "
+            f"MegaFon={telephony_synced} "
+            f"MegaFon_unmapped={telephony_unmapped} "
+            f"MegaFon_errors={len(telephony_errors)}"
         )
+        summary_style = self.style.WARNING if telephony_errors else self.style.SUCCESS
+        self.stdout.write(summary_style(summary))
         for item in telephony_errors:
             self.stderr.write(
                 self.style.WARNING(
                     f"MegaFon line skipped: {item['name']}: {item['error']}"
                 )
+            )
+        if telephony_errors:
+            raise CommandError(
+                f"Employee identity sync failed for {len(telephony_errors)} MegaFon line(s)."
             )
