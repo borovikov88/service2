@@ -26,6 +26,7 @@ from pool_service.communication_models import (
 )
 from pool_service.communication_recordings import download_call_recording
 from pool_service.communication_services import receive_message
+from pool_service.services.employee_identity_sync import resolve_call_employee
 from pool_service.models import Client, OrganizationAccess
 from pool_service.communication_avito import AvitoError, ingest_webhook
 
@@ -485,7 +486,7 @@ def megafon_webhook(request, public_id):
         if direction and direction not in {"in", "out"}:
             return _error("invalid_direction")
         if (
-            len(extension) > 255
+            len(extension) > 64
             or len(provider_user) > 255
             or len(call_id) > 255
         ):
@@ -500,6 +501,12 @@ def megafon_webhook(request, public_id):
         settings_data["megafon_last_event_callid"] = call_id
         connection.settings = settings_data
         connection.save(update_fields=["settings"])
+        resolve_call_employee(
+            connection.channel.organization,
+            telephony,
+            extension,
+            provider_user,
+        )
         client = _megafon_contact(connection.channel.organization, phone)
         return JsonResponse({
             "accepted": True,
@@ -543,11 +550,18 @@ def megafon_webhook(request, public_id):
     except ValueError as exc:
         return _error(str(exc))
 
-    employee = _megafon_employee(
+    employee_profile, employee = resolve_call_employee(
         connection.channel.organization,
-        provider_user,
+        telephony,
         extension,
+        provider_user,
     )
+    if employee is None:
+        employee = _megafon_employee(
+            connection.channel.organization,
+            provider_user,
+            extension,
+        )
     client = _megafon_contact(connection.channel.organization, phone)
     result = (
         PhoneCall.RESULT_ANSWERED
@@ -566,6 +580,9 @@ def megafon_webhook(request, public_id):
             defaults={
                 "organization": connection.channel.organization,
                 "employee": employee,
+                "employee_profile": employee_profile,
+                "provider_user": provider_user,
+                "provider_extension": extension,
                 "contact_name": client.name if client else "",
                 "phone_number": phone,
                 "direction": direction,
