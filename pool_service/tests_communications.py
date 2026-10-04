@@ -1448,8 +1448,9 @@ class CommunicationsTests(TestCase):
             result = sync_megafon_employee_identities(telephony, actor=self.owner)
 
         identity.refresh_from_db()
-        self.assertIsNone(identity.employee)
+        self.assertEqual(identity.employee, old_employee)
         self.assertTrue(identity.requires_manual_confirmation)
+        self.assertIsNotNone(identity.reassignment_detected_at)
         self.assertEqual(
             identity.status,
             TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
@@ -1467,7 +1468,7 @@ class CommunicationsTests(TestCase):
                 actor=self.owner,
             )
         identity.refresh_from_db()
-        self.assertIsNone(identity.employee)
+        self.assertEqual(identity.employee, old_employee)
         self.assertTrue(identity.requires_manual_confirmation)
         self.assertEqual(second_result["auto_matched"], 0)
         self.assertEqual(second_result["needs_mapping"], 1)
@@ -1529,8 +1530,9 @@ class CommunicationsTests(TestCase):
             result = sync_megafon_employee_identities(telephony, actor=self.owner)
 
         identity.refresh_from_db()
-        self.assertIsNone(identity.employee)
+        self.assertEqual(identity.employee, old_employee)
         self.assertTrue(identity.requires_manual_confirmation)
+        self.assertIsNotNone(identity.reassignment_detected_at)
         self.assertEqual(
             identity.status,
             TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
@@ -1906,6 +1908,123 @@ class CommunicationsTests(TestCase):
         call.refresh_from_db()
         self.assertEqual(call.employee_profile, employee)
         self.assertEqual(call.employee, self.worker)
+
+    def test_manual_mapping_correction_repairs_calls_from_previous_wrong_employee(self):
+        old_employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Ошибочно назначенный",
+            is_active=True,
+            user=self.worker,
+        )
+        new_employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Правильный сотрудник",
+            is_active=True,
+            user=self.other,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="manual-correction",
+        )
+        identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=old_employee,
+            raw_name="Правильный сотрудник",
+            normalized_name="правильный сотрудник",
+            extension="885",
+            is_active=True,
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="wrong-owner-call",
+            employee=self.worker,
+            employee_profile=old_employee,
+            provider_extension="885",
+            phone_number="+79001112237",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+
+        map_telephony_identity(identity, new_employee, self.owner)
+
+        call.refresh_from_db()
+        self.assertEqual(call.employee_profile, new_employee)
+        self.assertEqual(call.employee, self.other)
+
+    def test_reassignment_mapping_preserves_calls_before_detected_boundary(self):
+        old_employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Старый владелец номера",
+            is_active=True,
+            user=self.worker,
+        )
+        new_employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Новый владелец номера",
+            is_active=True,
+            user=self.other,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="reassignment-boundary",
+        )
+        boundary = timezone.now() - timedelta(minutes=5)
+        identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=old_employee,
+            raw_name="Новый владелец номера",
+            normalized_name="новый владелец номера",
+            extension="886",
+            is_active=True,
+            requires_manual_confirmation=True,
+            reassignment_detected_at=boundary,
+            status=TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+            match_method=TelephonyEmployeeIdentity.MATCH_NONE,
+        )
+        old_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="before-reassignment",
+            employee=self.worker,
+            employee_profile=old_employee,
+            provider_extension="886",
+            phone_number="+79001112238",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=boundary - timedelta(days=1),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        recent_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="after-reassignment",
+            employee=self.worker,
+            employee_profile=old_employee,
+            provider_extension="886",
+            phone_number="+79001112239",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=boundary + timedelta(minutes=1),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+
+        mapped = map_telephony_identity(identity, new_employee, self.owner)
+
+        mapped.refresh_from_db()
+        old_call.refresh_from_db()
+        recent_call.refresh_from_db()
+        self.assertFalse(mapped.requires_manual_confirmation)
+        self.assertIsNone(mapped.reassignment_detected_at)
+        self.assertEqual(old_call.employee_profile, old_employee)
+        self.assertEqual(old_call.employee, self.worker)
+        self.assertEqual(recent_call.employee_profile, new_employee)
+        self.assertEqual(recent_call.employee, self.other)
 
     def test_service2_account_mapping_is_unique_and_backfills_calls(self):
         employee = Employee.objects.create(
