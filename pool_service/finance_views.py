@@ -4731,7 +4731,6 @@ def finance_payroll_employee_mapping(request):
         "telephony_connections": telephony_connections,
         "employees": active_employees,
         "employee_count": len(active_employees),
-        "service_users": service_users,
         "can_view_employee_hr": can_view_employee_hr(request.user, organization),
         "active_tab": "finance",
     })
