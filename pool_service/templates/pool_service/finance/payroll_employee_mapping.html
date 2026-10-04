@@ -1,11 +1,316 @@
 {% extends "pool_service/base.html" %}
-{% block title %}Сопоставление сотрудников 1С{% endblock %}
+{% block title %}Сопоставление сотрудников{% endblock %}
 {% block content %}
 {% include "pool_service/finance/_desktop_workspace_styles.html" %}
-<div class="finance-desktop">
-<div class="finance-secondary-header d-flex justify-content-between mb-3"><div><h1 class="h3 mb-1">Сопоставление сотрудников 1С</h1><div class="text-muted">Одна карточка сотрудника может объединять несколько источников 1С и один аккаунт Service2.</div></div><div class="d-flex gap-2">{% if can_view_employee_hr %}<a class="btn btn-outline-primary" href="{% url 'finance_payroll_employee_list' %}">Карточки сотрудников</a>{% endif %}<a class="btn btn-outline-secondary" href="{% url 'finance_payroll_dashboard' %}">К ФОТ</a></div></div>
-{% if not employee_count %}<div class="alert alert-info">В организации пока нет сотрудников для ручного сопоставления. Автоматическое создание отключено.</div>{% endif %}
-<div class="finance-secondary-card card card-soft p-3"><div class="table-responsive"><table class="table table-sm align-middle"><thead><tr><th>Имя в 1С</th><th>Подразделение</th><th>Идентификаторы</th><th>Статус</th><th>Сотрудник</th><th>Активные строки / период</th><th>Сопоставить</th></tr></thead><tbody>{% for identity in identities %}<tr><td>{{ identity.raw_name }}</td><td>{{ identity.department_name|default:'—' }}</td><td>{% if identity.onec_employee_id %}ID 1С: {{ identity.onec_employee_id }}{% endif %}{% if identity.personnel_number %}<br>Таб. №: {{ identity.personnel_number }}{% endif %}{% if not identity.onec_employee_id and not identity.personnel_number %}—{% endif %}</td><td>{{ identity.get_status_display }}</td><td>{% if identity.employee %}{% if can_view_employee_hr %}<a href="{% url 'finance_payroll_employee_profile' identity.employee.id %}">{{ identity.employee.display_name }}</a>{% else %}{{ identity.employee.display_name }}{% endif %}{% else %}—{% endif %}</td><td>{{ identity.active_payroll_row_count }} · {{ identity.first_active_period|date:'m.Y'|default:'—' }} – {{ identity.last_active_period|date:'m.Y'|default:'—' }}</td><td><form method="post" action="{% url 'finance_payroll_employee_map' identity.id %}" class="d-flex gap-1">{% csrf_token %}<select name="employee" class="form-select form-select-sm" required><option value="">Выберите</option>{% for employee in employees %}<option value="{{ employee.id }}" {% if identity.employee_id == employee.id %}selected{% endif %}>{{ employee.display_name }}</option>{% endfor %}</select><input type="hidden" name="comment" value="Ручное сопоставление через интерфейс ФОТ"><button class="btn btn-sm btn-primary" {% if not employee_count %}disabled{% endif %}>Сохранить</button></form></td></tr>{% empty %}<tr><td colspan="7" class="text-muted">Identity пока нет.</td></tr>{% endfor %}</tbody></table></div></div>
+<style>
+  .identity-chip{
+    display:inline-flex;
+    align-items:center;
+    gap:.35rem;
+    padding:.2rem .45rem;
+    margin:.1rem .15rem .1rem 0;
+    border:1px solid var(--bs-border-color);
+    border-radius:999px;
+    background:var(--bs-tertiary-bg);
+    font-size:.82rem;
+    white-space:nowrap;
+  }
+  .identity-dot{
+    width:.45rem;
+    height:.45rem;
+    border-radius:50%;
+    background:var(--bs-secondary-color);
+    flex:0 0 auto;
+  }
+  .identity-dot.is-ok{background:var(--bs-success)}
+  .identity-dot.is-off{background:var(--bs-secondary)}
+  .identity-table td{vertical-align:middle}
+  .identity-source-note{font-size:.8rem;color:var(--bs-secondary-color)}
+  .identity-actions{display:flex;gap:.5rem;flex-wrap:wrap}
+  .identity-account-form{min-width:220px}
+</style>
 
-</div><!-- /finance-desktop -->
+<div class="finance-desktop">
+  <div class="finance-secondary-header d-flex justify-content-between align-items-start gap-3 mb-3">
+    <div>
+      <h1 class="h3 mb-1">Сопоставление сотрудников</h1>
+      <div class="text-muted">
+        Единая карточка Service2 связывает аккаунт Service2, сотрудника 1С и внутренний номер МегаФона.
+      </div>
+    </div>
+    <div class="identity-actions">
+      <form method="post" action="{% url 'finance_employee_identity_sync' %}">
+        {% csrf_token %}
+        <input type="hidden" name="source" value="all">
+        <button class="btn btn-primary">
+          <i class="bi bi-arrow-repeat me-1"></i>Синхронизировать всё
+        </button>
+      </form>
+      <form method="post" action="{% url 'finance_employee_identity_sync' %}">
+        {% csrf_token %}
+        <input type="hidden" name="source" value="onec">
+        <button class="btn btn-outline-primary">Обновить 1С</button>
+      </form>
+      <form method="post" action="{% url 'finance_employee_identity_sync' %}">
+        {% csrf_token %}
+        <input type="hidden" name="source" value="megafon">
+        <button class="btn btn-outline-primary">Обновить МегаФон</button>
+      </form>
+      {% if can_view_employee_hr %}
+        <a class="btn btn-outline-secondary" href="{% url 'finance_payroll_employee_list' %}">Карточки сотрудников</a>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="alert alert-light border">
+    <strong>Service2 — основная карточка сотрудника.</strong>
+    Синхронизация не создаёт дубль по каждому источнику: 1С и телефония привязываются к существующему сотруднику.
+    Точные совпадения ФИО сопоставляются автоматически, неоднозначные — только вручную.
+  </div>
+
+  <div class="finance-secondary-card card card-soft p-3 mb-3">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <div>
+        <h2 class="h5 mb-1">Единые карточки сотрудников</h2>
+        <div class="identity-source-note">Service2 ↔ 1С ↔ МегаФон</div>
+      </div>
+      <span class="badge text-bg-light">{{ employee_rows|length }} карточек</span>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-sm identity-table align-middle mb-0">
+        <thead>
+          <tr>
+            <th>Сотрудник</th>
+            <th>Аккаунт Service2</th>
+            <th>1С</th>
+            <th>МегаФон</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in employee_rows %}
+            <tr>
+              <td style="min-width:220px">
+                {% if can_view_employee_hr %}
+                  <a class="fw-semibold text-decoration-none" href="{% url 'finance_payroll_employee_profile' row.employee.id %}">
+                    {{ row.employee.display_name }}
+                  </a>
+                {% else %}
+                  <span class="fw-semibold">{{ row.employee.display_name }}</span>
+                {% endif %}
+                <div class="mt-1">
+                  {% if row.employee.is_active %}
+                    <span class="badge text-bg-success">Работает</span>
+                  {% else %}
+                    <span class="badge text-bg-secondary">Неактивен</span>
+                  {% endif %}
+                </div>
+              </td>
+              <td style="min-width:260px">
+                {% if row.employee.is_active %}
+                  <form method="post" action="{% url 'finance_employee_service_user_map' row.employee.id %}" class="d-flex gap-1 identity-account-form">
+                    {% csrf_token %}
+                    <select name="user" class="form-select form-select-sm" required>
+                      <option value="">Выберите аккаунт</option>
+                      {% for user in row.service_user_options %}
+                        <option value="{{ user.id }}" {% if row.employee.user_id == user.id %}selected{% endif %}>
+                          {{ user.get_full_name|default:user.username }}{% if user.username %} · {{ user.username }}{% endif %}
+                        </option>
+                      {% endfor %}
+                    </select>
+                    <button class="btn btn-sm btn-outline-primary" title="Сохранить связь Service2">
+                      <i class="bi bi-check2"></i>
+                    </button>
+                  </form>
+                {% elif row.employee.user %}
+                  {{ row.employee.user.get_full_name|default:row.employee.user.username }}
+                {% else %}
+                  <span class="text-muted">—</span>
+                {% endif %}
+              </td>
+              <td style="min-width:260px">
+                {% for identity in row.onec_identities %}
+                  <span class="identity-chip" title="ID 1С: {{ identity.onec_employee_id|default:'—' }}">
+                    <span class="identity-dot {% if identity.source_active %}is-ok{% else %}is-off{% endif %}"></span>
+                    {{ identity.raw_name }}
+                    {% if identity.personnel_number %}· №{{ identity.personnel_number }}{% endif %}
+                  </span>
+                {% empty %}
+                  <span class="text-warning">Не сопоставлен</span>
+                {% endfor %}
+              </td>
+              <td style="min-width:260px">
+                {% for identity in row.telephony_identities %}
+                  <span class="identity-chip" title="{{ identity.connection.name }}">
+                    <span class="identity-dot {% if identity.is_active %}is-ok{% else %}is-off{% endif %}"></span>
+                    {{ identity.raw_name|default:'Без имени' }} · ext {{ identity.extension }}
+                  </span>
+                {% empty %}
+                  <span class="text-warning">Не сопоставлен</span>
+                {% endfor %}
+              </td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="4" class="text-muted text-center p-4">Карточек сотрудников пока нет.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="finance-secondary-card card card-soft p-3 mb-3">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <div>
+        <h2 class="h5 mb-1">Телефония МегаФон</h2>
+        <div class="identity-source-note">
+          Список загружается из команды accounts ВАТС. Внутренний номер ext используется как стабильный идентификатор.
+        </div>
+      </div>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-sm identity-table align-middle mb-0">
+        <thead>
+          <tr>
+            <th>Линия</th>
+            <th>Имя в МегаФоне</th>
+            <th>Внутренний номер</th>
+            <th>Статус</th>
+            <th>Сотрудник Service2</th>
+            <th>Сопоставить</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for identity in telephony_identities %}
+            <tr>
+              <td>{{ identity.connection.name }}</td>
+              <td>{{ identity.raw_name|default:'—' }}</td>
+              <td><code>{{ identity.extension }}</code>{% if identity.external_user %}<br><small class="text-muted">user={{ identity.external_user }}</small>{% endif %}</td>
+              <td>
+                {% if identity.is_active %}
+                  <span class="badge text-bg-success">{{ identity.get_status_display }}</span>
+                {% else %}
+                  <span class="badge text-bg-secondary">Нет в текущем списке ВАТС</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if identity.employee %}
+                  {{ identity.employee.display_name }}
+                {% else %}
+                  <span class="text-warning">Не сопоставлен</span>
+                {% endif %}
+              </td>
+              <td style="min-width:260px">
+                {% if identity.is_active %}
+                  <form method="post" action="{% url 'finance_telephony_employee_map' identity.id %}" class="d-flex gap-1">
+                    {% csrf_token %}
+                    <select name="employee" class="form-select form-select-sm" required>
+                      <option value="">Выберите сотрудника</option>
+                      {% for employee in employees %}
+                        <option value="{{ employee.id }}" {% if identity.employee_id == employee.id %}selected{% endif %}>
+                          {{ employee.display_name }}
+                        </option>
+                      {% endfor %}
+                    </select>
+                    <input type="hidden" name="comment" value="Ручное сопоставление МегаФон ↔ Service2">
+                    <button class="btn btn-sm btn-primary">Сохранить</button>
+                  </form>
+                {% else %}
+                  <span class="text-muted">—</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% empty %}
+            <tr>
+              <td colspan="6" class="text-muted text-center p-4">
+                Сотрудники ВАТС ещё не загружены. Нажмите «Обновить МегаФон».
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="finance-secondary-card card card-soft p-3">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <div>
+        <h2 class="h5 mb-1">Сотрудники 1С</h2>
+        <div class="identity-source-note">
+          Ref_Key и табельный номер сохраняются как стабильные идентификаторы; статус активности берётся из справочника 1С.
+        </div>
+      </div>
+    </div>
+    {% if not employee_count %}
+      <div class="alert alert-info">В Service2 пока нет активных сотрудников для ручного сопоставления.</div>
+    {% endif %}
+    <div class="table-responsive">
+      <table class="table table-sm identity-table align-middle mb-0">
+        <thead>
+          <tr>
+            <th>Имя в 1С</th>
+            <th>Идентификаторы</th>
+            <th>Источник</th>
+            <th>Статус сопоставления</th>
+            <th>Сотрудник</th>
+            <th>Сопоставить</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for identity in identities %}
+            <tr>
+              <td>
+                {{ identity.raw_name }}
+                {% if identity.department_name %}<br><small class="text-muted">{{ identity.department_name }}</small>{% endif %}
+              </td>
+              <td>
+                {% if identity.onec_employee_id %}<small>ID: {{ identity.onec_employee_id }}</small>{% endif %}
+                {% if identity.personnel_number %}<br><small>Таб. №: {{ identity.personnel_number }}</small>{% endif %}
+                {% if not identity.onec_employee_id and not identity.personnel_number %}—{% endif %}
+              </td>
+              <td>
+                {% if identity.source_active %}
+                  <span class="badge text-bg-success">Активен в 1С</span>
+                {% else %}
+                  <span class="badge text-bg-secondary">Неактивен в 1С</span>
+                {% endif %}
+              </td>
+              <td>{{ identity.get_status_display }}</td>
+              <td>
+                {% if identity.employee %}
+                  {% if can_view_employee_hr %}
+                    <a href="{% url 'finance_payroll_employee_profile' identity.employee.id %}">{{ identity.employee.display_name }}</a>
+                  {% else %}
+                    {{ identity.employee.display_name }}
+                  {% endif %}
+                {% else %}
+                  <span class="text-warning">Не сопоставлен</span>
+                {% endif %}
+              </td>
+              <td style="min-width:260px">
+                <form method="post" action="{% url 'finance_payroll_employee_map' identity.id %}" class="d-flex gap-1">
+                  {% csrf_token %}
+                  <select name="employee" class="form-select form-select-sm" required>
+                    <option value="">Выберите сотрудника</option>
+                    {% for employee in employees %}
+                      <option value="{{ employee.id }}" {% if identity.employee_id == employee.id %}selected{% endif %}>
+                        {{ employee.display_name }}
+                      </option>
+                    {% endfor %}
+                  </select>
+                  <input type="hidden" name="comment" value="Ручное сопоставление 1С ↔ Service2">
+                  <button class="btn btn-sm btn-primary" {% if not employee_count %}disabled{% endif %}>Сохранить</button>
+                </form>
+              </td>
+            </tr>
+          {% empty %}
+            <tr>
+              <td colspan="6" class="text-muted text-center p-4">
+                Сотрудники 1С ещё не загружены. Нажмите «Обновить 1С».
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
 {% endblock %}
