@@ -186,23 +186,32 @@ def auto_link_service2_user(employee, *, actor=None):
 
 
 def map_employee_service2_user(employee, user, actor):
-    if not OrganizationAccess.objects.filter(
-        organization=employee.organization,
-        user=user,
-        user__is_active=True,
-    ).exists():
-        raise EmployeeIdentitySyncError(
-            "Пользователь Service2 не относится к этой организации."
-        )
-    conflict = Employee.objects.filter(
-        organization=employee.organization,
-        user=user,
-    ).exclude(pk=employee.pk).first()
-    if conflict:
-        raise EmployeeIdentitySyncError(
-            f"Этот аккаунт Service2 уже связан с сотрудником «{conflict.display_name}»."
-        )
     with transaction.atomic():
+        access = (
+            OrganizationAccess.objects.select_for_update()
+            .filter(
+                organization=employee.organization,
+                user=user,
+                user__is_active=True,
+            )
+            .first()
+        )
+        if access is None:
+            raise EmployeeIdentitySyncError(
+                "Пользователь Service2 не относится к этой организации."
+            )
+        conflict = (
+            Employee.objects.filter(
+                organization=employee.organization,
+                user=user,
+            )
+            .exclude(pk=employee.pk)
+            .first()
+        )
+        if conflict:
+            raise EmployeeIdentitySyncError(
+                f"Этот аккаунт Service2 уже связан с сотрудником «{conflict.display_name}»."
+            )
         locked = Employee.objects.select_for_update().get(pk=employee.pk)
         before = {"user_id": locked.user_id}
         locked.user = user
@@ -689,8 +698,14 @@ def sync_megafon_employee_identities(telephony, actor=None):
 
         identity.save(update_fields=update_fields)
         identity = _auto_match_telephony_identity(identity, actor=actor)
-        if identity.employee_id and not identity.requires_manual_confirmation:
-            apply_telephony_identity_to_calls(identity)
+        with transaction.atomic():
+            identity = (
+                TelephonyEmployeeIdentity.objects.select_for_update()
+                .select_related("employee__user")
+                .get(pk=identity.pk)
+            )
+            if identity.employee_id and not identity.requires_manual_confirmation:
+                apply_telephony_identity_to_calls(identity)
 
         seen.append(identity.pk)
         if identity.employee_id and not identity.requires_manual_confirmation:
