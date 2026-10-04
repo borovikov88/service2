@@ -75,3 +75,6 @@ class ThemePreferenceTests(TestCase):
         self.assertIn('html[data-theme="dark"] .app-logo', css)
         self.assertIn('background: #101a28;', css)
         self.assertNotIn('filter: brightness(0) invert(1);', css)
+        self.assertIn('html[data-theme="dark"] .multi-select__trigger', css)
+        self.assertIn('html[data-theme="dark"] .multi-select__dropdown', css)
+        self.assertIn('html[data-theme="dark"] .multi-select__option:has(input:checked)', css)
