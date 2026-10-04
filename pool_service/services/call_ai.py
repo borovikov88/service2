@@ -300,7 +300,9 @@ def _analyze_transcript(client, call, transcript):
     return summary, facts, model
 
 
-def process_call_analysis(call_id, *, force=False):
+def process_call_analysis(call_id, *, force=False, reset_existing=False):
+    if reset_existing:
+        reset_call_analysis(call_id)
     claim = _claim(call_id, force=force)
     if not claim:
         return False
