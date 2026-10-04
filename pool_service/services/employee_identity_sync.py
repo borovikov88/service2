@@ -546,7 +546,12 @@ def apply_telephony_identity_to_calls(
         )
         matches = matches.filter(ownership_scope)
         if reassignment_boundary is not None:
-            matches = matches.filter(started_at__gte=reassignment_boundary)
+            reassignment_scope = Q(
+                started_at__gte=reassignment_boundary
+            ) | Q(created_at__gte=reassignment_boundary)
+            if identity.external_user:
+                reassignment_scope |= Q(provider_user=identity.external_user)
+            matches = matches.filter(reassignment_scope)
     else:
         matches = matches.filter(employee_profile__isnull=True)
 
@@ -653,7 +658,13 @@ def _sync_megafon_employee_account(telephony, account, now, actor=None):
         ]
 
         if reassigned_extension:
-            identity.external_user = ""
+            preserve_provider_user_evidence = bool(
+                identity.external_user
+                and identity.requires_manual_confirmation
+                and identity.status == TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING
+            )
+            if not preserve_provider_user_evidence:
+                identity.external_user = ""
             identity.status = TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING
             identity.match_method = TelephonyEmployeeIdentity.MATCH_NONE
             identity.confirmed_by = None

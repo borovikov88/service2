@@ -2524,6 +2524,7 @@ class CommunicationsTests(TestCase):
             raw_name="Новый владелец номера",
             normalized_name="новый владелец номера",
             extension="886",
+            external_user="new-provider-user",
             is_active=True,
             requires_manual_confirmation=True,
             reassignment_detected_at=boundary,
@@ -2554,18 +2555,55 @@ class CommunicationsTests(TestCase):
             started_at=boundary + timedelta(minutes=1),
             result=PhoneCall.RESULT_ANSWERED,
         )
+        late_received_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="late-received-reassignment",
+            employee=self.worker,
+            employee_profile=old_employee,
+            provider_extension="886",
+            phone_number="+79001112240",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=boundary - timedelta(hours=1),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        known_new_holder_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="known-new-holder-before-detection",
+            employee=self.worker,
+            employee_profile=old_employee,
+            provider_extension="886",
+            provider_user="new-provider-user",
+            phone_number="+79001112241",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=boundary - timedelta(hours=2),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        PhoneCall.objects.filter(pk=old_call.pk).update(
+            created_at=boundary - timedelta(days=1)
+        )
+        PhoneCall.objects.filter(pk=known_new_holder_call.pk).update(
+            created_at=boundary - timedelta(hours=2)
+        )
 
         mapped = map_telephony_identity(identity, new_employee, self.owner)
 
         mapped.refresh_from_db()
         old_call.refresh_from_db()
         recent_call.refresh_from_db()
+        late_received_call.refresh_from_db()
+        known_new_holder_call.refresh_from_db()
         self.assertFalse(mapped.requires_manual_confirmation)
         self.assertIsNone(mapped.reassignment_detected_at)
         self.assertEqual(old_call.employee_profile, old_employee)
         self.assertEqual(old_call.employee, self.worker)
         self.assertEqual(recent_call.employee_profile, new_employee)
         self.assertEqual(recent_call.employee, self.other)
+        self.assertEqual(late_received_call.employee_profile, new_employee)
+        self.assertEqual(late_received_call.employee, self.other)
+        self.assertEqual(known_new_holder_call.employee_profile, new_employee)
+        self.assertEqual(known_new_holder_call.employee, self.other)
 
     def test_service2_account_mapping_is_unique_and_backfills_calls(self):
         employee = Employee.objects.create(
