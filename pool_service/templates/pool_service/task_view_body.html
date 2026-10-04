@@ -204,6 +204,72 @@
       justify-content: flex-start;
     }
   }
+
+
+  /* Full dark-theme audit: task details. */
+  html[data-theme="dark"] .task-view__hero,
+  html[data-theme="dark"] .task-view__card {
+    background: linear-gradient(180deg, #172333 0%, #151f2e 100%);
+    border-color: #304158;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.2);
+  }
+  html[data-theme="dark"] .task-view__hero-title,
+  html[data-theme="dark"] .task-view__card-title,
+  html[data-theme="dark"] .task-view__value {
+    color: #e7edf5;
+  }
+  html[data-theme="dark"] .task-view__hero-desc,
+  html[data-theme="dark"] .task-view__label {
+    color: #98a9bc;
+  }
+  html[data-theme="dark"] .task-view__participant,
+  html[data-theme="dark"] .task-view__archive-banner {
+    color: #dce6f2;
+    background: #182436;
+    border-color: #34465c;
+  }
+  html[data-theme="dark"] .task-view__archive-banner--deleted {
+    color: #efa3ad;
+    background: #321f27;
+    border-color: #704152;
+  }
+  html[data-theme="dark"] .task-view__archive-banner--completed {
+    color: #83d1a8;
+    background: #183127;
+    border-color: #315b49;
+  }
+  html[data-theme="dark"] .task-view__pill--open,
+  html[data-theme="dark"] .task-view__pill--info,
+  html[data-theme="dark"] .task-view__pill--progress {
+    color: #a8ceff;
+    background: #1d3555;
+    border-color: #38577b;
+  }
+  html[data-theme="dark"] .task-view__pill--waiting,
+  html[data-theme="dark"] .task-view__pill--warning {
+    color: #d8b36c;
+    background: #342b1f;
+    border-color: #66542f;
+  }
+  html[data-theme="dark"] .task-view__pill--done {
+    color: #83d1a8;
+    background: #183127;
+    border-color: #315b49;
+  }
+  html[data-theme="dark"] .task-view__pill--cancelled,
+  html[data-theme="dark"] .task-view__pill--danger,
+  html[data-theme="dark"] .task-view__pill--high {
+    color: #efa3ad;
+    background: #321f27;
+    border-color: #704152;
+  }
+  html[data-theme="dark"] .task-view__pill--normal,
+  html[data-theme="dark"] .task-view__pill--muted {
+    color: #b8c6d6;
+    background: #263243;
+    border-color: #43556b;
+  }
+
 </style>
 
 <div class="task-view d-flex flex-column" data-task-view>
