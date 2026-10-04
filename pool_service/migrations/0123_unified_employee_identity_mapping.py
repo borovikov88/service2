@@ -22,7 +22,7 @@ class Migration(migrations.Migration):
             model_name="employeeonecidentity",
             name="source_active",
             field=models.BooleanField(
-                default=True,
+                default=False,
                 help_text="Активность записи сотрудника в исходной 1С.",
             ),
         ),
