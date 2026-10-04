@@ -35,6 +35,7 @@ from pool_service.communication_services import receive_message, users_with_conv
 from pool_service.communication_services import conversation_capability
 from pool_service.services.employee_identity_sync import (
     EmployeeIdentitySyncError,
+    auto_link_service2_user,
     map_employee_service2_user,
     map_telephony_identity,
     resolve_call_employee,
