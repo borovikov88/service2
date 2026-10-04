@@ -143,7 +143,7 @@ def _service_user_candidates(organization, employee):
     return candidates
 
 
-def auto_link_service2_user(employee, *, actor=None):
+def auto_link_service2_user(employee, *, actor=None, backfill=True):
     if employee.user_id:
         return False
     candidates = _service_user_candidates(employee.organization, employee)
@@ -181,7 +181,8 @@ def auto_link_service2_user(employee, *, actor=None):
         after={"user_id": user.pk},
         changed_fields=["user_id"],
     )
-    backfill_employee_calls(employee)
+    if backfill:
+        backfill_employee_calls(employee)
     return True
 
 
@@ -561,7 +562,12 @@ def apply_telephony_identity_to_calls(
     )
 
 
-def backfill_employee_calls(employee, *, previous_user_id=None):
+def backfill_employee_calls(
+    employee,
+    *,
+    previous_user_id=None,
+    exclude_telephony_identity_id=None,
+):
     total = 0
     if previous_user_id and previous_user_id != employee.user_id:
         total += PhoneCall.objects.filter(
@@ -580,10 +586,13 @@ def backfill_employee_calls(employee, *, previous_user_id=None):
     ).exclude(employee_id=employee.user_id).update(
         employee_id=employee.user_id,
     )
-    for identity in employee.telephony_identities.filter(
+    identities = employee.telephony_identities.filter(
         is_active=True,
         requires_manual_confirmation=False,
-    ):
+    )
+    if exclude_telephony_identity_id is not None:
+        identities = identities.exclude(pk=exclude_telephony_identity_id)
+    for identity in identities:
         total += apply_telephony_identity_to_calls(identity)
     return total
 
@@ -804,8 +813,12 @@ def map_telephony_identity(identity, employee, actor):
                 }[key]
             ],
         )
-        auto_link_service2_user(employee, actor=actor)
+        auto_link_service2_user(employee, actor=actor, backfill=False)
         employee.refresh_from_db()
+        backfill_employee_calls(
+            employee,
+            exclude_telephony_identity_id=locked.pk,
+        )
         apply_telephony_identity_to_calls(
             locked,
             previous_employee_id=previous_employee_id,

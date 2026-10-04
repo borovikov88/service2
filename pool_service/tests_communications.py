@@ -1,3559 +1,35 @@
-from datetime import timedelta
-import io
-from importlib import import_module
-import logging
-from unittest.mock import MagicMock, patch
-
-from django.apps import apps
-from django.contrib.auth.models import Permission, User
-from django.core.management import call_command
-from django.core.management.base import CommandError
-from django.db import IntegrityError, transaction
-from django.core.files.base import ContentFile
-from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import Client, RequestFactory, TestCase, override_settings
-from django.urls import reverse
-from django.utils import timezone
-
-from pool_service.communication_models import AvitoCredential, CommunicationAccess, CommunicationChannel, ChannelConnection, Conversation, ConversationMessage, MessageAttachment, PhoneCall, TelephonyConnection, TelephonyEmployeeIdentity, WebsiteRequest
-from pool_service.communication_avito import (
-    AvitoError,
-    AvitoRetryableError,
-    AvitoSyncResult,
-    _json_list_request,
-    access_token,
-    authorized_account_id,
-    send_message,
-    subscribe_webhook,
-    sync_recent_messages,
-    unsubscribe_webhook,
-    verify_messenger_access,
-    webhook_subscriptions,
-)
-from pool_service.communication_recordings import download_call_recording
-from pool_service.communication_secrets import decrypt_secret, encrypt_secret
-from pool_service.communication_services import receive_message, users_with_conversation_access
-from pool_service.communication_services import conversation_capability
-from pool_service.services.employee_identity_sync import (
-    EmployeeIdentitySyncError,
-    auto_link_service2_user,
-    map_employee_service2_user,
-    map_telephony_identity,
-    resolve_call_employee,
-    sync_all_employee_identities,
-    sync_megafon_employee_identities,
-    sync_onec_employee_identities,
-)
-from pool_service.communication_api import _payload
-from pool_service.finance_imports.odata_profit import ODataConfig, ODataPreviewError
-from pool_service.management.commands.send_avito_outbox import claim_message
-from pool_service.models import Client as ServiceClient, Employee, EmployeeOneCIdentity, Notification, Organization, OrganizationAccess
-from service_site.logging_handlers import RedactCommunicationWebhookSecretFilter
-
-
-class CommunicationsTests(TestCase):
-    def setUp(self):
-        self.organization = Organization.objects.create(name="Test communications org")
-        self.owner = User.objects.create_user("owner", password="test")
-        self.worker = User.objects.create_user("worker", password="test")
-        self.other = User.objects.create_user("other", password="test")
-        self.accountant = User.objects.create_user("accountant", password="test")
-        OrganizationAccess.objects.create(user=self.owner, organization=self.organization, role="owner")
-        OrganizationAccess.objects.create(user=self.worker, organization=self.organization, role="manager")
-        OrganizationAccess.objects.create(user=self.other, organization=self.organization, role="manager")
-        OrganizationAccess.objects.create(user=self.accountant, organization=self.organization, role="accountant")
-        self.channel = CommunicationChannel.objects.create(organization=self.organization, kind="avito", name="ĞĞ²Ğ¸Ñ‚Ğ¾")
-        self.connection = ChannelConnection.objects.create(channel=self.channel, name="ĞĞºĞºĞ°ÑƒĞ½Ñ‚ 1", external_id="one")
-        account_id_patcher = patch(
-            "pool_service.communication_views.avito_authorized_account_id",
-            return_value=self.connection.external_id,
-        )
-        messenger_access_patcher = patch(
-            "pool_service.communication_views.avito_verify_messenger_access",
-            return_value=True,
-        )
-        self.avito_authorized_account_id = account_id_patcher.start()
-        self.avito_verify_messenger_access = messenger_access_patcher.start()
-        self.addCleanup(account_id_patcher.stop)
-        self.addCleanup(messenger_access_patcher.stop)
-
-    @patch("pool_service.services.notifications.send_push_to_users")
-    def test_incoming_message_creates_conversation_and_notifications(self, _send_push):
-        message, created = receive_message(connection=self.connection, external_conversation_id="chat-1", participant_name="Ğ˜Ğ²Ğ°Ğ½", body="Ğ—Ğ´Ñ€Ğ°Ğ²ÑÑ‚Ğ²ÑƒĞ¹Ñ‚Ğµ", external_message_id="message-1")
-        self.assertTrue(created)
-        self.assertEqual(message.conversation.last_message_at, message.created_at)
-        self.assertEqual(Notification.objects.filter(kind="communication").count(), 3)
-        _, duplicate = receive_message(connection=self.connection, external_conversation_id="chat-1", participant_name="Ğ˜Ğ²Ğ°Ğ½", body="Ğ—Ğ´Ñ€Ğ°Ğ²ÑÑ‚Ğ²ÑƒĞ¹Ñ‚Ğµ", external_message_id="message-1")
-        self.assertFalse(duplicate)
-
-    @patch("pool_service.services.notifications.send_push_to_users")
-    def test_accountant_role_transition_revokes_notifications(self, send_push):
-        access = OrganizationAccess.objects.get(user=self.worker, organization=self.organization)
-        access.role = "accountant"
-        access.save(update_fields=["role"])
-        capabilities = CommunicationAccess.objects.get(user=self.worker, organization=self.organization)
-        self.assertFalse(capabilities.can_view_conversations)
-        self.assertNotIn(self.worker, users_with_conversation_access(self.organization))
-
-        receive_message(
-            connection=self.connection,
-            external_conversation_id="private-chat",
-            participant_name="ĞšĞ»Ğ¸ĞµĞ½Ñ‚",
-            body="ĞšĞ¾Ğ½Ñ„Ğ¸Ğ´ĞµĞ½Ñ†Ğ¸Ğ°Ğ»ÑŒĞ½Ğ¾Ğµ ÑĞ¾Ğ¾Ğ±Ñ‰ĞµĞ½Ğ¸Ğµ",
-            external_message_id="private-message",
-        )
-        self.assertFalse(Notification.objects.filter(user=self.worker, kind="communication").exists())
-        pushed_users = {user.pk for call in send_push.call_args_list for user in call.args[0]}
-        self.assertNotIn(self.worker.pk, pushed_users)
-
-    def test_service_role_save_preserves_explicit_capabilities(self):
-        service_user = User.objects.create_user("service-capability", password="test")
-        role = OrganizationAccess.objects.create(
-            user=service_user,
-            organization=self.organization,
-            role="service",
-        )
-        capabilities = CommunicationAccess.objects.get(user=service_user, organization=self.organization)
-        self.assertFalse(capabilities.can_view_conversations)
-        capabilities.can_view_conversations = True
-        capabilities.can_reply_conversations = True
-        capabilities.save(update_fields=["can_view_conversations", "can_reply_conversations"])
-
-        role.save()
-        capabilities.refresh_from_db()
-        self.assertTrue(capabilities.can_view_conversations)
-        self.assertTrue(capabilities.can_reply_conversations)
-
-    def test_admin_downgrade_recomputes_inherited_capabilities(self):
-        user = User.objects.create_user("downgraded-admin", password="test")
-        role = OrganizationAccess.objects.create(
-            user=user,
-            organization=self.organization,
-            role="admin",
-        )
-        capabilities = CommunicationAccess.objects.get(user=user, organization=self.organization)
-        self.assertTrue(capabilities.can_manage_channels)
-        self.assertTrue(capabilities.can_assign_conversation)
-        self.assertTrue(capabilities.can_view_all_calls)
-
-        role.role = "manager"
-        role.save(update_fields=["role"])
-        capabilities.refresh_from_db()
-
-        self.assertTrue(capabilities.can_view_conversations)
-        self.assertTrue(capabilities.can_reply_conversations)
-        self.assertTrue(capabilities.can_take_conversation)
-        self.assertTrue(capabilities.can_view_own_calls)
-        self.assertTrue(capabilities.can_listen_calls)
-        self.assertFalse(capabilities.can_manage_channels)
-        self.assertFalse(capabilities.can_assign_conversation)
-        self.assertFalse(capabilities.can_view_all_calls)
-
-    def test_database_idempotency_allows_null_ids_but_rejects_duplicates(self):
-        conversation = Conversation.objects.create(
-            organization=self.organization,
-            connection=self.connection,
-            external_id="db-idempotency",
-            participant_name="Ğ˜Ğ²Ğ°Ğ½",
-        )
-        ConversationMessage.objects.create(
-            conversation=conversation,
-            direction=ConversationMessage.DIRECTION_OUT,
-            body="ĞŸĞµÑ€Ğ²Ñ‹Ğ¹ Ğ±ĞµĞ· provider id",
-            delivery_status=ConversationMessage.DELIVERY_PENDING,
-        )
-        ConversationMessage.objects.create(
-            conversation=conversation,
-            direction=ConversationMessage.DIRECTION_OUT,
-            body="Ğ’Ñ‚Ğ¾Ñ€Ğ¾Ğ¹ Ğ±ĞµĞ· provider id",
-            delivery_status=ConversationMessage.DELIVERY_PENDING,
-        )
-        ConversationMessage.objects.create(
-            conversation=conversation,
-            external_id="provider-duplicate",
-            direction=ConversationMessage.DIRECTION_IN,
-            body="ĞŸĞµÑ€Ğ²Ñ‹Ğ¹",
-        )
-        with self.assertRaises(IntegrityError):
-            with transaction.atomic():
-                ConversationMessage.objects.create(
-                    conversation=conversation,
-                    external_id="provider-duplicate",
-                    direction=ConversationMessage.DIRECTION_IN,
-                    body="Ğ”ÑƒĞ±Ğ»Ğ¸ĞºĞ°Ñ‚",
-                )
-
-    def test_request_log_filter_redacts_avito_webhook_secret(self):
-        secret = "super-secret-webhook-token"
-        record = logging.LogRecord(
-            name="django.request",
-            level=logging.ERROR,
-            pathname=__file__,
-            lineno=1,
-            msg="Internal Server Error: %s",
-            args=(
-                f"/api/communications/avito/123e4567-e89b-12d3-a456-426614174000/{secret}/webhook/",
-            ),
-            exc_info=None,
-        )
-        self.assertTrue(RedactCommunicationWebhookSecretFilter().filter(record))
-        rendered = record.getMessage()
-        self.assertNotIn(secret, rendered)
-        self.assertIn("[REDACTED]", rendered)
-
-    def test_owner_sees_communications_in_current_desktop_and_mobile_navigation(self):
-        self.client.login(username="owner", password="test")
-        response = self.client.get(reverse("pool_list"))
-        communications_url = reverse("communications_conversations")
-        self.assertContains(
-            response,
-            f'href="{communications_url}" class="desktop-sidebar__link',
-        )
-        self.assertContains(
-            response,
-            f'href="{communications_url}" class="list-group-item list-group-item-action',
-        )
-
-    def test_calls_page_handles_unmapped_employee_and_uses_shared_navigation(self):
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½",
-            external_id="megafon-main",
-        )
-        PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="unmapped-call",
-            employee=None,
-            contact_name="ĞšĞ»Ğ¸ĞµĞ½Ñ‚ Ğ±ĞµĞ· ÑĞ¾Ğ¿Ğ¾ÑÑ‚Ğ°Ğ²Ğ»ĞµĞ½Ğ½Ğ¾Ğ³Ğ¾ ÑĞ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸ĞºĞ°",
-            phone_number="+79001112233",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=timezone.now(),
-            duration_seconds=42,
-            result=PhoneCall.RESULT_ANSWERED,
-        )
-
-        self.client.login(username="owner", password="test")
-        calls_page = self.client.get(reverse("communications_calls"))
-        self.assertEqual(calls_page.status_code, 200)
-        self.assertContains(calls_page, "ĞĞµ ÑĞ¾Ğ¿Ğ¾ÑÑ‚Ğ°Ğ²Ğ»ĞµĞ½")
-        self.assertContains(calls_page, 'bi bi-gear')
-        self.assertContains(calls_page, reverse("communications_channels"))
-        self.assertContains(calls_page, "communications-tabs")
-
-        dialogs_page = self.client.get(reverse("communications_conversations"))
-        self.assertEqual(dialogs_page.status_code, 200)
-        self.assertContains(dialogs_page, 'bi bi-gear')
-        self.assertContains(dialogs_page, reverse("communications_channels"))
-        self.assertContains(dialogs_page, "communications-tabs")
-
-    def test_calls_page_embeds_private_recording_player_and_supports_ranges(self):
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½",
-            external_id="megafon-player",
-        )
-        call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="stored-call",
-            employee=self.owner,
-            contact_name="ĞšĞ»Ğ¸ĞµĞ½Ñ‚",
-            phone_number="+79001112233",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=timezone.now(),
-            duration_seconds=12,
-            result=PhoneCall.RESULT_ANSWERED,
-            recording_ref="https://records.megapbx.ru/stored-call.mp3",
-            recording_status=PhoneCall.RECORDING_STORED,
-        )
-        payload = b"ID3" + b"recording-bytes"
-        call.recording_file.save(
-            "stored-call.mp3",
-            ContentFile(payload),
-            save=True,
-        )
-
-        self.client.login(username="owner", password="test")
-        page = self.client.get(reverse("communications_calls"))
-        self.assertEqual(page.status_code, 200)
-        self.assertContains(page, "<audio", html=False)
-        self.assertContains(page, 'data-call-player', html=False)
-        self.assertContains(page, 'data-call-seek', html=False)
-        self.assertContains(page, 'data-call-speed', html=False)
-        self.assertContains(page, 'value="0.5"', html=False)
-        self.assertContains(page, 'value="1.25"', html=False)
-        self.assertContains(page, 'value="1.5"', html=False)
-        self.assertContains(page, 'value="2"', html=False)
-        recording_url = reverse("communication_call_recording", args=[call.pk])
-        self.assertContains(page, recording_url)
-        self.assertContains(page, f"{recording_url}?download=1")
-        self.assertNotContains(page, call.recording_ref)
-
-        full = self.client.get(recording_url)
-        self.assertEqual(full.status_code, 200)
-        self.assertEqual(full["Content-Type"], "audio/mpeg")
-        self.assertEqual(full["Accept-Ranges"], "bytes")
-        self.assertIn("inline", full["Content-Disposition"])
-
-        partial = self.client.get(recording_url, HTTP_RANGE="bytes=3-7")
-        self.assertEqual(partial.status_code, 206)
-        self.assertEqual(partial["Content-Range"], f"bytes 3-7/{len(payload)}")
-        self.assertEqual(b"".join(partial.streaming_content), payload[3:8])
-
-        download = self.client.get(
-            f"{recording_url}?download=1",
-            HTTP_RANGE="bytes=3-7",
-        )
-        self.assertEqual(download.status_code, 200)
-        self.assertEqual(download["Content-Type"], "audio/mpeg")
-        self.assertIn("attachment", download["Content-Disposition"])
-        self.assertEqual(b"".join(download.streaming_content), payload)
-
-    @override_settings(
-        COMMUNICATION_RECORDING_DOWNLOAD_TIMEOUT_SECONDS=2,
-        COMMUNICATION_RECORDING_MAX_BYTES=1024 * 1024,
-    )
-    def test_recording_downloader_saves_mp3_to_private_storage(self):
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½",
-            external_id="megafon-download",
-            recording_allowed_hosts=["records.megapbx.ru"],
-        )
-        call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="download-call",
-            phone_number="+79001112233",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=timezone.now(),
-            duration_seconds=30,
-            result=PhoneCall.RESULT_ANSWERED,
-            recording_ref="https://records.megapbx.ru/download-call.mp3",
-            recording_status=PhoneCall.RECORDING_PENDING,
-        )
-        payload = b"ID3" + b"x" * 128
-
-        class FakeResponse(io.BytesIO):
-            def __init__(self, data):
-                super().__init__(data)
-                self.headers = {
-                    "Content-Type": "audio/mpeg",
-                    "Content-Length": str(len(data)),
-                }
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                self.close()
-                return False
-
-        with patch(
-            "pool_service.communication_recordings._open_recording",
-            return_value=FakeResponse(payload),
-        ):
-            self.assertTrue(download_call_recording(call.pk))
-
-        call.refresh_from_db()
-        self.assertEqual(call.recording_status, PhoneCall.RECORDING_STORED)
-        self.assertTrue(call.recording_file.name)
-        self.assertEqual(call.recording_error, "")
-        self.assertIsNotNone(call.recording_downloaded_at)
-        with call.recording_file.open("rb") as stored:
-            self.assertEqual(stored.read(), payload)
-
-    def test_recording_downloader_rejects_html_instead_of_storing_login_page(self):
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½",
-            external_id="megafon-html",
-            recording_allowed_hosts=["records.megapbx.ru"],
-        )
-        call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="html-call",
-            phone_number="+79001112233",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=timezone.now(),
-            duration_seconds=30,
-            result=PhoneCall.RESULT_ANSWERED,
-            recording_ref="https://records.megapbx.ru/html-call.mp3",
-            recording_status=PhoneCall.RECORDING_PENDING,
-        )
-
-        class FakeHtmlResponse(io.BytesIO):
-            def __init__(self):
-                super().__init__(b"<html>login</html>")
-                self.headers = {
-                    "Content-Type": "text/html; charset=utf-8",
-                    "Content-Length": "18",
-                }
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                self.close()
-                return False
-
-        with patch(
-            "pool_service.communication_recordings._open_recording",
-            return_value=FakeHtmlResponse(),
-        ):
-            self.assertFalse(download_call_recording(call.pk))
-
-        call.refresh_from_db()
-        self.assertEqual(call.recording_status, PhoneCall.RECORDING_FAILED)
-        self.assertFalse(call.recording_file)
-        self.assertIn("unexpected_content_type", call.recording_error)
-
-    def test_manager_does_not_see_communications_navigation_during_rollout(self):
-        self.client.login(username="worker", password="test")
-        response = self.client.get(reverse("pool_list"))
-        communications_url = reverse("communications_conversations")
-        self.assertNotContains(
-            response,
-            f'href="{communications_url}" class="desktop-sidebar__link',
-        )
-        self.assertNotContains(
-            response,
-            f'href="{communications_url}" class="list-group-item list-group-item-action',
-        )
-        self.assertTrue(response.context["can_access_communications"])
-        self.assertFalse(response.context["show_communications_menu"])
-
-    def test_legacy_role_backfill_creates_defaults_without_overwriting_explicit_access(self):
-        CommunicationAccess.objects.filter(
-            user=self.owner,
-            organization=self.organization,
-        ).delete()
-        worker_access = CommunicationAccess.objects.get(
-            user=self.worker,
-            organization=self.organization,
-        )
-        worker_access.can_manage_channels = True
-        worker_access.save(update_fields=["can_manage_channels"])
-
-        migration = import_module(
-            "pool_service.migrations.0116_backfill_communication_access"
-        )
-        migration.backfill_communication_access(apps, None)
-
-        owner_access = CommunicationAccess.objects.get(
-            user=self.owner,
-            organization=self.organization,
-        )
-        self.assertTrue(owner_access.can_view_conversations)
-        self.assertTrue(owner_access.can_reply_conversations)
-        self.assertTrue(owner_access.can_assign_conversation)
-        self.assertTrue(owner_access.can_view_all_calls)
-        self.assertTrue(owner_access.can_manage_channels)
-
-        worker_access.refresh_from_db()
-        self.assertTrue(worker_access.can_manage_channels)
-
-    def test_first_worker_takes_conversation_atomically(self):
-        conversation = Conversation.objects.create(organization=self.organization, connection=self.connection, external_id="chat", participant_name="Ğ˜Ğ²Ğ°Ğ½")
-        other_notification = Notification.objects.create(
-            user=self.other,
-            organization=self.organization,
-            kind="communication",
-            title="ĞĞ¾Ğ²Ğ¾Ğµ ÑĞ¾Ğ¾Ğ±Ñ‰ĞµĞ½Ğ¸Ğµ",
-            action_url=f"/communications/?conversation={conversation.uuid}",
-        )
-        self.client.login(username="worker", password="test")
-        response = self.client.post(reverse("communication_take", args=[conversation.uuid]))
-        self.assertEqual(response.status_code, 302)
-        conversation.refresh_from_db()
-        self.assertEqual(conversation.assignee, self.worker)
-        self.client.logout(); self.client.login(username="other", password="test")
-        reconciled = self.client.get(
-            reverse("communication_notification_feed"), {"visible": str(other_notification.pk)},
-        ).json()
-        self.assertEqual(reconciled["resolved_ids"], [other_notification.pk])
-        self.assertEqual(self.client.post(reverse("communication_take", args=[conversation.uuid])).status_code, 403)
-
-    def test_accountant_cannot_open_communications(self):
-        permission = Permission.objects.get(codename="can_view_conversations")
-        self.accountant.user_permissions.add(permission)
-        self.client.login(username="accountant", password="test")
-        self.assertFalse(conversation_capability(self.accountant, "can_view_conversations", self.organization))
-        self.assertNotEqual(self.client.get(reverse("communications_conversations")).status_code, 200)
-
-    def test_explicit_capability_deny_and_superuser_only_communication_admin(self):
-        access = CommunicationAccess.objects.get(user=self.worker, organization=self.organization)
-        access.can_view_conversations = False
-        access.save(update_fields=["can_view_conversations"])
-        self.client.login(username="worker", password="test")
-        self.assertEqual(self.client.get(reverse("communications_conversations")).status_code, 403)
-        self.worker.is_staff = True
-        self.worker.save(update_fields=["is_staff"])
-        self.worker.user_permissions.add(Permission.objects.get(codename="view_communicationchannel"))
-        self.client.force_login(self.worker)
-        self.assertEqual(self.client.get(reverse("admin:pool_service_communicationchannel_changelist")).status_code, 403)
-
-    def test_only_channel_manager_can_change_scoped_channel_state(self):
-        channel_url = reverse("communication_channel_set_active", args=[self.channel.pk])
-        connection_url = reverse("communication_connection_set_active", args=[self.connection.pk])
-        self.client.login(username="worker", password="test")
-        self.assertEqual(self.client.post(channel_url, {"active": "0"}).status_code, 403)
-        self.channel.refresh_from_db()
-        self.assertTrue(self.channel.is_active)
-
-        self.client.logout()
-        self.client.login(username="owner", password="test")
-        self.assertEqual(self.client.get(channel_url).status_code, 405)
-        self.assertEqual(self.client.post(channel_url, {"active": "invalid"}).status_code, 400)
-        self.assertEqual(self.client.post(channel_url, {"active": "0"}).status_code, 302)
-        self.assertEqual(self.client.post(connection_url, {"active": "0"}).status_code, 302)
-        self.channel.refresh_from_db()
-        self.connection.refresh_from_db()
-        self.assertFalse(self.channel.is_active)
-        self.assertFalse(self.connection.is_active)
-        page = self.client.get(reverse("communications_channels"))
-        self.assertContains(page, "Ğ’ĞºĞ»ÑÑ‡Ğ¸Ñ‚ÑŒ ĞºĞ°Ğ½Ğ°Ğ»")
-        self.assertContains(page, "Ğ’ĞºĞ»ÑÑ‡Ğ¸Ñ‚ÑŒ")
-
-        csrf_client = Client(enforce_csrf_checks=True)
-        self.assertTrue(csrf_client.login(username="owner", password="test"))
-        csrf_client.get(reverse("communications_channels"))
-        self.assertEqual(csrf_client.post(connection_url, {"active": "1"}).status_code, 403)
-        csrf_token = csrf_client.cookies["csrftoken"].value
-        self.assertEqual(
-            csrf_client.post(connection_url, {"active": "1"}, HTTP_X_CSRFTOKEN=csrf_token).status_code,
-            302,
-        )
-        self.connection.refresh_from_db()
-        self.assertTrue(self.connection.is_active)
-
-        foreign_organization = Organization.objects.create(name="Foreign channels org")
-        foreign_channel = CommunicationChannel.objects.create(
-            organization=foreign_organization, kind="website", name="Foreign site",
-        )
-        foreign_connection = ChannelConnection.objects.create(
-            channel=foreign_channel, name="Foreign widget", external_id="foreign-widget",
-        )
-        self.assertEqual(
-            self.client.post(reverse("communication_channel_set_active", args=[foreign_channel.pk]), {"active": "0"}).status_code,
-            404,
-        )
-        self.assertEqual(
-            self.client.post(reverse("communication_connection_set_active", args=[foreign_connection.pk]), {"active": "0"}).status_code,
-            404,
-        )
-        foreign_channel.refresh_from_db()
-        foreign_connection.refresh_from_db()
-        self.assertTrue(foreign_channel.is_active)
-        self.assertTrue(foreign_connection.is_active)
-
-    def test_owner_can_create_website_connection_and_token_is_shown_once(self):
-        self.client.login(username="owner", password="test")
-        with patch("pool_service.communication_views.secrets.token_urlsafe", return_value="website-one-time-token"):
-            response = self.client.post(
-                reverse("communication_connection_create", args=["website"]),
-                {
-                    "name": "ĞÑĞ½Ğ¾Ğ²Ğ½Ğ¾Ğ¹ ÑĞ°Ğ¹Ñ‚",
-                    "external_id": "aqualine22.ru",
-                    "is_active": "on",
-                },
-            )
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "website-one-time-token")
-        self.assertEqual(response["Cache-Control"], "no-store")
-        self.assertEqual(response["Referrer-Policy"], "no-referrer")
-        connection = ChannelConnection.objects.get(
-            channel__organization=self.organization,
-            channel__kind="website",
-            external_id="aqualine22.ru",
-        )
-        self.assertTrue(connection.check_api_token("website-one-time-token"))
-        edit_page = self.client.get(
-            reverse("communication_connection_edit", args=[connection.pk])
-        )
-        self.assertEqual(edit_page.status_code, 200)
-        self.assertNotContains(edit_page, "website-one-time-token")
-
-    def test_owner_can_create_avito_connection_with_encrypted_credentials(self):
-        self.client.login(username="owner", password="test")
-        response = self.client.post(
-            reverse("communication_connection_create", args=["avito"]),
-            {
-                "name": "ĞÑĞ½Ğ¾Ğ²Ğ½Ğ¾Ğ¹ ĞĞ²Ğ¸Ñ‚Ğ¾",
-                "external_id": "123456789",
-                "client_id": "avito-client-id",
-                "client_secret": "avito-client-secret",
-                "is_active": "on",
-            },
-        )
-        self.assertEqual(response.status_code, 302)
-        connection = ChannelConnection.objects.get(
-            channel=self.channel,
-            external_id="123456789",
-        )
-        credential = AvitoCredential.objects.get(connection=connection)
-        self.assertNotEqual(credential.client_id_encrypted, "avito-client-id")
-        self.assertNotEqual(credential.client_secret_encrypted, "avito-client-secret")
-        self.assertEqual(decrypt_secret(credential.client_id_encrypted), "avito-client-id")
-        self.assertEqual(
-            decrypt_secret(credential.client_secret_encrypted),
-            "avito-client-secret",
-        )
-        self.assertEqual(connection.api_token_hash, "")
-        self.assertEqual(connection.settings["avito_webhook_status"], "not_connected")
-
-    @patch("pool_service.communication_views.avito_unsubscribe_webhook")
-    @patch("pool_service.communication_views.avito_subscribe_webhook")
-    @patch("pool_service.communication_views.avito_webhook_subscriptions")
-    def test_owner_can_connect_avito_webhook_automatically(
-        self, subscriptions, subscribe, unsubscribe
-    ):
-        AvitoCredential.objects.create(
-            connection=self.connection,
-            client_id_encrypted=encrypt_secret("client"),
-            client_secret_encrypted=encrypt_secret("secret"),
-        )
-        callback = (
-            f"https://testserver/api/communications/avito/"
-            f"{self.connection.public_id}/new-webhook-token/webhook/"
-        )
-        subscriptions.side_effect = [[], [callback]]
-        self.avito_authorized_account_id.return_value = "123456789"
-        self.client.login(username="owner", password="test")
-        with patch(
-            "pool_service.communication_views.secrets.token_urlsafe",
-            return_value="new-webhook-token",
-        ):
-            response = self.client.post(
-                reverse("communication_avito_connect", args=[self.connection.pk]),
-                secure=True,
-            )
-        self.assertEqual(response.status_code, 302)
-        self.connection.refresh_from_db()
-        self.assertEqual(self.connection.external_id, "123456789")
-        self.assertTrue(self.connection.check_api_token("new-webhook-token"))
-        self.assertEqual(
-            self.connection.settings["avito_webhook_status"], "connected"
-        )
-        subscribe.assert_called_once_with(self.connection, callback)
-        unsubscribe.assert_not_called()
-
-    @patch("pool_service.communication_views.avito_subscribe_webhook")
-    @patch("pool_service.communication_views.avito_webhook_subscriptions")
-    def test_avito_connect_reuses_existing_valid_subscription(
-        self, subscriptions, subscribe
-    ):
-        AvitoCredential.objects.create(
-            connection=self.connection,
-            client_id_encrypted=encrypt_secret("client"),
-            client_secret_encrypted=encrypt_secret("secret"),
-        )
-        self.connection.set_api_token("current-webhook-token")
-        self.connection.save(update_fields=["api_token_hash"])
-        callback = (
-            f"https://testserver/api/communications/avito/"
-            f"{self.connection.public_id}/current-webhook-token/webhook/"
-        )
-        subscriptions.return_value = [callback]
-        self.client.login(username="owner", password="test")
-        response = self.client.post(
-            reverse("communication_avito_connect", args=[self.connection.pk]),
-            secure=True,
-        )
-        self.assertEqual(response.status_code, 302)
-        self.connection.refresh_from_db()
-        self.assertTrue(self.connection.check_api_token("current-webhook-token"))
-        self.assertEqual(
-            self.connection.settings["avito_webhook_status"], "connected"
-        )
-        subscribe.assert_not_called()
-
-    @patch("pool_service.communication_views.avito_subscribe_webhook")
-    @patch("pool_service.communication_views.avito_webhook_subscriptions")
-    def test_avito_connect_restores_previous_token_on_failure(
-        self, subscriptions, subscribe
-    ):
-        AvitoCredential.objects.create(
-            connection=self.connection,
-            client_id_encrypted=encrypt_secret("client"),
-            client_secret_encrypted=encrypt_secret("secret"),
-        )
-        self.connection.set_api_token("old-webhook-token")
-        self.connection.save(update_fields=["api_token_hash"])
-        subscriptions.return_value = []
-        subscribe.side_effect = AvitoError("provider_http_403")
-        self.client.login(username="owner", password="test")
-        with patch(
-            "pool_service.communication_views.secrets.token_urlsafe",
-            return_value="failed-webhook-token",
-        ):
-            response = self.client.post(
-                reverse("communication_avito_connect", args=[self.connection.pk]),
-                secure=True,
-            )
-        self.assertEqual(response.status_code, 302)
-        self.connection.refresh_from_db()
-        self.assertTrue(self.connection.check_api_token("old-webhook-token"))
-        self.assertFalse(self.connection.check_api_token("failed-webhook-token"))
-        self.assertEqual(self.connection.settings["avito_webhook_status"], "error")
-
-    @patch("pool_service.communication_views.avito_subscribe_webhook")
-    @patch("pool_service.communication_views.avito_webhook_subscriptions")
-    def test_avito_connect_keeps_new_token_when_subscribe_response_is_lost_but_subscription_exists(
-        self, subscriptions, subscribe
-    ):
-        AvitoCredential.objects.create(
-            connection=self.connection,
-            client_id_encrypted=encrypt_secret("client"),
-            client_secret_encrypted=encrypt_secret("secret"),
-        )
-        callback = (
-            f"https://testserver/api/communications/avito/"
-            f"{self.connection.public_id}/ambiguous-webhook-token/webhook/"
-        )
-        subscriptions.side_effect = [[], [callback]]
-        subscribe.side_effect = AvitoError("provider_unavailable")
-        self.client.login(username="owner", password="test")
-        with patch(
-            "pool_service.communication_views.secrets.token_urlsafe",
-            return_value="ambiguous-webhook-token",
-        ):
-            response = self.client.post(
-                reverse("communication_avito_connect", args=[self.connection.pk]),
-                secure=True,
-            )
-        self.assertEqual(response.status_code, 302)
-        self.connection.refresh_from_db()
-        self.assertTrue(self.connection.check_api_token("ambiguous-webhook-token"))
-        self.assertEqual(
-            self.connection.settings["avito_webhook_status"], "connected"
-        )
-
-    @patch("pool_service.communication_views.avito_unsubscribe_webhook")
-    @patch("pool_service.communication_views.avito_subscribe_webhook")
-    @patch("pool_service.communication_views.avito_webhook_subscriptions")
-    def test_explicit_avito_reconnect_rotates_token_and_removes_stale_subscription(
-        self, subscriptions, subscribe, unsubscribe
-    ):
-        AvitoCredential.objects.create(
-            connection=self.connection,
-            client_id_encrypted=encrypt_secret("client"),
-            client_secret_encrypted=encrypt_secret("secret"),
-        )
-        self.connection.set_api_token("old-webhook-token")
-        self.connection.settings = {"avito_webhook_status": "connected"}
-        self.connection.save(update_fields=["api_token_hash", "settings"])
-        old_callback = (
-            f"https://testserver/api/communications/avito/"
-            f"{self.connection.public_id}/old-webhook-token/webhook/"
-        )
-        new_callback = (
-            f"https://testserver/api/communications/avito/"
-            f"{self.connection.public_id}/new-webhook-token/webhook/"
-        )
-        subscriptions.side_effect = [[old_callback], [new_callback]]
-        self.client.login(username="owner", password="test")
-        with patch(
-            "pool_service.communication_views.secrets.token_urlsafe",
-            return_value="new-webhook-token",
-        ):
-            response = self.client.post(
-                reverse("communication_avito_connect", args=[self.connection.pk]),
-                {"force": "1"},
-                secure=True,
-            )
-        self.assertEqual(response.status_code, 302)
-        self.connection.refresh_from_db()
-        self.assertFalse(self.connection.check_api_token("old-webhook-token"))
-        self.assertTrue(self.connection.check_api_token("new-webhook-token"))
-        subscribe.assert_called_once_with(self.connection, new_callback)
-        unsubscribe.assert_called_once_with(self.connection, old_callback)
-
-    @patch("pool_service.communication_views.avito_webhook_subscriptions")
-    def test_owner_can_check_avito_webhook(self, subscriptions):
-        AvitoCredential.objects.create(
-            connection=self.connection,
-            client_id_encrypted=encrypt_secret("client"),
-            client_secret_encrypted=encrypt_secret("secret"),
-        )
-        self.connection.set_api_token("current-webhook-token")
-        self.connection.save(update_fields=["api_token_hash"])
-        callback = (
-            f"https://testserver/api/communications/avito/"
-            f"{self.connection.public_id}/current-webhook-token/webhook/"
-        )
-        subscriptions.return_value = [callback]
-        self.client.login(username="owner", password="test")
-        response = self.client.post(
-            reverse("communication_avito_check", args=[self.connection.pk]),
-            secure=True,
-        )
-        self.assertEqual(response.status_code, 302)
-        self.connection.refresh_from_db()
-        self.assertEqual(
-            self.connection.settings["avito_webhook_status"], "connected"
-        )
-
-    @patch("pool_service.communication_views.avito_webhook_subscriptions")
-    def test_avito_check_surfaces_missing_messenger_access(self, subscriptions):
-        AvitoCredential.objects.create(
-            connection=self.connection,
-            client_id_encrypted=encrypt_secret("client"),
-            client_secret_encrypted=encrypt_secret("secret"),
-        )
-        self.avito_verify_messenger_access.side_effect = AvitoError("provider_http_402")
-        self.client.login(username="owner", password="test")
-        response = self.client.post(
-            reverse("communication_avito_check", args=[self.connection.pk]),
-            secure=True,
-        )
-        self.assertEqual(response.status_code, 302)
-        self.connection.refresh_from_db()
-        self.assertEqual(self.connection.settings["avito_webhook_status"], "error")
-        self.assertEqual(
-            self.connection.settings["avito_webhook_error"], "provider_http_402"
-        )
-        subscriptions.assert_not_called()
-
-    @patch("pool_service.communication_views.avito_sync_recent_messages")
-    def test_owner_can_run_avito_pull_sync(self, syncer):
-        syncer.return_value = AvitoSyncResult(
-            chats_checked=2,
-            messages_checked=4,
-            messages_created=1,
-            messages_existing=2,
-            messages_skipped=1,
-        )
-        AvitoCredential.objects.create(
-            connection=self.connection,
-            client_id_encrypted=encrypt_secret("client"),
-            client_secret_encrypted=encrypt_secret("secret"),
-        )
-        self.client.login(username="owner", password="test")
-        response = self.client.post(
-            reverse("communication_avito_sync", args=[self.connection.pk]),
-            secure=True,
-        )
-        self.assertEqual(response.status_code, 302)
-        syncer.assert_called_once_with(self.connection)
-        self.connection.refresh_from_db()
-        self.assertTrue(self.connection.settings["avito_pull_last_checked_at"])
-        self.assertEqual(self.connection.settings["avito_pull_last_created"], 1)
-        self.assertEqual(self.connection.settings["avito_pull_last_existing"], 2)
-
-    def test_manager_cannot_open_channel_setup_pages(self):
-        self.client.login(username="worker", password="test")
-        self.assertEqual(
-            self.client.get(
-                reverse("communication_connection_create", args=["website"])
-            ).status_code,
-            403,
-        )
-        self.assertEqual(
-            self.client.get(reverse("communication_connection_edit", args=[self.connection.pk])).status_code,
-            403,
-        )
-        self.assertEqual(
-            self.client.get(reverse("communication_telephony_create")).status_code,
-            403,
-        )
-        self.assertEqual(
-            self.client.post(
-                reverse("communication_avito_connect", args=[self.connection.pk]),
-                secure=True,
-            ).status_code,
-            403,
-        )
-        self.assertEqual(
-            self.client.post(
-                reverse("communication_avito_check", args=[self.connection.pk]),
-                secure=True,
-            ).status_code,
-            403,
-        )
-        self.assertEqual(
-            self.client.post(
-                reverse("communication_avito_sync", args=[self.connection.pk]),
-                secure=True,
-            ).status_code,
-            403,
-        )
-
-    def test_owner_can_create_and_edit_megafon_line_with_safe_recording_hosts(self):
-        self.client.login(username="owner", password="test")
-        created = self.client.post(
-            reverse("communication_telephony_create"),
-            {
-                "name": "ĞœĞµĞ³Ğ°Ñ„Ğ¾Ğ½ Ğ¾Ñ„Ğ¸Ñ",
-                "external_id": "line-1",
-                "ats_base_url": "https://aqualine22.megapbx.ru/crmapi/v1",
-                "ats_api_key": "megafon-ats-secret",
-                "recording_allowed_hosts": "records.megafon.example\nmedia.megafon.example",
-                "is_active": "on",
-            },
-        )
-        self.assertEqual(created.status_code, 302)
-        line = TelephonyConnection.objects.get(
-            organization=self.organization, external_id="line-1"
-        )
-        self.assertEqual(
-            line.recording_allowed_hosts,
-            ["records.megafon.example", "media.megafon.example"],
-        )
-        provider_connection = ChannelConnection.objects.get(
-            channel__organization=self.organization,
-            channel__kind=CommunicationChannel.KIND_MEGAFON,
-            external_id="line-1",
-        )
-        self.assertEqual(
-            provider_connection.settings["megafon_api_base_url"],
-            "https://aqualine22.megapbx.ru/crmapi/v1",
-        )
-        encrypted_key = provider_connection.settings["megafon_api_key_encrypted"]
-        self.assertNotEqual(encrypted_key, "megafon-ats-secret")
-        self.assertEqual(decrypt_secret(encrypted_key), "megafon-ats-secret")
-
-        invalid = self.client.post(
-            reverse("communication_telephony_edit", args=[line.pk]),
-            {
-                "name": "ĞœĞµĞ³Ğ°Ñ„Ğ¾Ğ½ Ğ¾Ñ„Ğ¸Ñ",
-                "external_id": "line-1",
-                "ats_base_url": "https://aqualine22.megapbx.ru/crmapi/v1",
-                "ats_api_key": "",
-                "recording_allowed_hosts": "https://records.example/path",
-                "is_active": "on",
-            },
-        )
-        self.assertEqual(invalid.status_code, 200)
-        self.assertContains(invalid, "Ñ‚Ğ¾Ğ»ÑŒĞºĞ¾ Ğ´Ğ¾Ğ¼ĞµĞ½Ğ½Ğ¾Ğµ Ğ¸Ğ¼Ñ")
-
-    def test_owner_can_connect_megafon_vats_and_receive_call_history(self):
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½ Ğ¾Ñ„Ğ¸Ñ",
-            external_id="megafon-office",
-        )
-        ServiceClient.objects.create(
-            organization=self.organization,
-            name="Ğ¢ĞµÑÑ‚Ğ¾Ğ²Ñ‹Ğ¹ ĞºĞ»Ğ¸ĞµĞ½Ñ‚",
-            phone="+7 (900) 111-22-33",
-        )
-        megafon_channel = CommunicationChannel.objects.create(
-            organization=self.organization,
-            kind=CommunicationChannel.KIND_MEGAFON,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½",
-        )
-        ChannelConnection.objects.create(
-            channel=megafon_channel,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½ Ğ¾Ñ„Ğ¸Ñ",
-            external_id="megafon-office",
-            settings={
-                "megafon_api_base_url": "https://aqualine22.megapbx.ru/crmapi/v1",
-                "megafon_api_key_encrypted": encrypt_secret("megafon-ats-secret"),
-            },
-        )
-        self.client.login(username="owner", password="test")
-        with patch(
-            "pool_service.communication_views.secrets.token_urlsafe",
-            return_value="megafon-crm-token",
-        ):
-            setup = self.client.post(
-                reverse("communication_telephony_connect", args=[telephony.pk]),
-                secure=True,
-            )
-        self.assertEqual(setup.status_code, 200)
-        self.assertContains(setup, "megafon-crm-token")
-        self.assertEqual(setup["Cache-Control"], "no-store")
-
-        provider_connection = ChannelConnection.objects.get(
-            channel__organization=self.organization,
-            channel__kind=CommunicationChannel.KIND_MEGAFON,
-            external_id="megafon-office",
-        )
-        self.assertTrue(provider_connection.check_api_token("megafon-crm-token"))
-
-        webhook_url = reverse("megafon_webhook", args=[provider_connection.public_id])
-        webhook_client = Client()
-        response = webhook_client.post(
-            webhook_url,
-            {
-                "cmd": "history",
-                "crm_token": "megafon-crm-token",
-                "callid": "call-123",
-                "phone": "+79001112233",
-                "type": "in",
-                "start": "2026-10-03 16:00:00",
-                "duration": "91",
-                "status": "Success",
-                "user": "worker",
-                "link": "https://records.megapbx.ru/call-123.mp3",
-            },
-        )
-        self.assertEqual(response.status_code, 200)
-        call = PhoneCall.objects.get(connection=telephony, external_id="call-123")
-        self.assertEqual(call.employee, self.worker)
-        self.assertEqual(call.contact_name, "Ğ¢ĞµÑÑ‚Ğ¾Ğ²Ñ‹Ğ¹ ĞºĞ»Ğ¸ĞµĞ½Ñ‚")
-        self.assertEqual(call.result, PhoneCall.RESULT_ANSWERED)
-        self.assertEqual(call.duration_seconds, 91)
-        self.assertEqual(call.started_at.isoformat(), "2026-10-03T09:00:00+00:00")
-        self.assertEqual(call.recording_ref, "https://records.megapbx.ru/call-123.mp3")
-        self.assertEqual(call.recording_status, PhoneCall.RECORDING_PENDING)
-        telephony.refresh_from_db()
-        self.assertIn("records.megapbx.ru", telephony.recording_allowed_hosts)
-        provider_connection.refresh_from_db()
-        self.assertTrue(provider_connection.settings["megafon_last_received_at"])
-
-        live_event = webhook_client.post(
-            webhook_url,
-            {
-                "cmd": "event",
-                "crm_token": "megafon-crm-token",
-                "callid": "event-123",
-                "phone": "+79001112233",
-                "type": "INCOMING",
-                "ext": "601",
-                "user": "worker",
-                "direction": "in",
-            },
-        )
-        self.assertEqual(live_event.status_code, 200)
-        self.assertEqual(live_event.json()["contact_name"], "Ğ¢ĞµÑÑ‚Ğ¾Ğ²Ñ‹Ğ¹ ĞºĞ»Ğ¸ĞµĞ½Ñ‚")
-        provider_connection.refresh_from_db()
-        self.assertEqual(
-            provider_connection.settings["megafon_last_event_type"],
-            "INCOMING",
-        )
-        self.assertEqual(
-            provider_connection.settings["megafon_last_event_phone"],
-            "+79001112233",
-        )
-        self.assertEqual(
-            provider_connection.settings["megafon_last_event_user"],
-            "worker",
-        )
-        self.assertEqual(
-            provider_connection.settings["megafon_last_event_ext"],
-            "601",
-        )
-
-        transferred = webhook_client.post(
-            webhook_url,
-            {
-                "cmd": "event",
-                "crm_token": "megafon-crm-token",
-                "callid": "event-transfer-123",
-                "phone": "+79001112233",
-                "type": "TRANSFERRED",
-                "ext": "602",
-                "user": "worker",
-                "direction": "in",
-                "second_callid": "event-transfer-456",
-            },
-        )
-        self.assertEqual(transferred.status_code, 200)
-        provider_connection.refresh_from_db()
-        self.assertEqual(
-            provider_connection.settings["megafon_last_event_type"],
-            "TRANSFERRED",
-        )
-
-        duplicate = webhook_client.post(
-            webhook_url,
-            {
-                "cmd": "history",
-                "crm_token": "megafon-crm-token",
-                "callid": "call-123",
-                "phone": "+79001112233",
-                "type": "in",
-                "start": "2026-10-03 16:00:00",
-                "duration": "92",
-                "status": "Success",
-                "user": "worker",
-            },
-        )
-        self.assertEqual(duplicate.status_code, 200)
-        self.assertEqual(
-            PhoneCall.objects.filter(connection=telephony, external_id="call-123").count(),
-            1,
-        )
-        call.refresh_from_db()
-        self.assertEqual(call.duration_seconds, 92)
-        self.assertEqual(
-            call.recording_ref,
-            "https://records.megapbx.ru/call-123.mp3",
-        )
-
-        old_profile = Employee.objects.create(
-            organization=self.organization,
-            display_name="Ğ¡Ñ‚Ğ°Ñ€Ñ‹Ğ¹ Ğ²Ğ»Ğ°Ğ´ĞµĞ»ĞµÑ† Ğ·Ğ²Ğ¾Ğ½ĞºĞ°",
-            is_active=True,
-            user=self.worker,
-        )
-        new_profile = Employee.objects.create(
-            organization=self.organization,
-            display_name="ĞĞ¾Ğ²Ñ‹Ğ¹ Ğ²Ğ»Ğ°Ğ´ĞµĞ»ĞµÑ† extension",
-            is_active=True,
-            user=self.other,
-        )
-        call.employee_profile = old_profile
-        call.employee = self.worker
-        call.provider_extension = "999"
-        call.provider_user = "worker"
-        call.save(
-            update_fields=[
-                "employee_profile",
-                "employee",
-                "provider_extension",
-                "provider_user",
-            ]
-        )
-        current_identity = TelephonyEmployeeIdentity.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            employee=new_profile,
-            raw_name="ĞĞ¾Ğ²Ñ‹Ğ¹ Ğ²Ğ»Ğ°Ğ´ĞµĞ»ĞµÑ† extension",
-            normalized_name="Ğ½Ğ¾Ğ²Ñ‹Ğ¹ Ğ²Ğ»Ğ°Ğ´ĞµĞ»ĞµÑ† extension",
-            extension="999",
-            external_user="other",
-            is_active=True,
-            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
-            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
-        )
-        historical_event = webhook_client.post(
-            webhook_url,
-            {
-                "cmd": "event",
-                "crm_token": "megafon-crm-token",
-                "callid": "call-123",
-                "phone": "+79001112233",
-                "type": "COMPLETED",
-                "ext": "999",
-                "user": "worker",
-                "direction": "in",
-            },
-        )
-        self.assertEqual(historical_event.status_code, 200)
-        current_identity.refresh_from_db()
-        self.assertEqual(current_identity.external_user, "other")
-        self.assertFalse(current_identity.requires_manual_confirmation)
-        replay = webhook_client.post(
-            webhook_url,
-            {
-                "cmd": "history",
-                "crm_token": "megafon-crm-token",
-                "callid": "call-123",
-                "phone": "+79001112233",
-                "type": "in",
-                "start": "2026-10-03 16:00:00",
-                "duration": "93",
-                "status": "Success",
-                "user": "worker",
-                "ext": "999",
-            },
-        )
-        self.assertEqual(replay.status_code, 200)
-        call.refresh_from_db()
-        self.assertEqual(call.duration_seconds, 93)
-        self.assertEqual(call.employee_profile, old_profile)
-        self.assertEqual(call.employee, self.worker)
-        current_identity.refresh_from_db()
-        self.assertEqual(current_identity.external_user, "other")
-        self.assertFalse(current_identity.requires_manual_confirmation)
-        self.assertEqual(
-            current_identity.status,
-            TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
-        )
-
-        replay_without_provider_keys = webhook_client.post(
-            webhook_url,
-            {
-                "cmd": "history",
-                "crm_token": "megafon-crm-token",
-                "callid": "call-123",
-                "phone": "+79001112233",
-                "type": "in",
-                "start": "2026-10-03 16:00:00",
-                "duration": "95",
-                "status": "Success",
-            },
-        )
-        self.assertEqual(replay_without_provider_keys.status_code, 200)
-        call.refresh_from_db()
-        self.assertEqual(call.provider_extension, "999")
-        self.assertEqual(call.provider_user, "worker")
-        self.assertEqual(call.employee_profile, old_profile)
-        self.assertEqual(call.employee, self.worker)
-
-        legacy_call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="legacy-replayed-call",
-            employee=self.worker,
-            phone_number="+79001112233",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=timezone.now(),
-            result=PhoneCall.RESULT_ANSWERED,
-        )
-        legacy_replay = webhook_client.post(
-            webhook_url,
-            {
-                "cmd": "history",
-                "crm_token": "megafon-crm-token",
-                "callid": "legacy-replayed-call",
-                "phone": "+79001112233",
-                "type": "in",
-                "start": "2026-10-03 16:00:00",
-                "duration": "94",
-                "status": "Success",
-                "user": "other",
-                "ext": "999",
-            },
-        )
-        self.assertEqual(legacy_replay.status_code, 200)
-        legacy_call.refresh_from_db()
-        self.assertEqual(legacy_call.employee_profile, new_profile)
-        self.assertEqual(legacy_call.employee, self.other)
-        self.assertEqual(legacy_call.provider_extension, "999")
-        self.assertEqual(legacy_call.provider_user, "other")
-
-        unassigned_call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="unassigned-historical-call",
-            provider_extension="999",
-            phone_number="+79001112233",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=timezone.now() - timedelta(days=1),
-            result=PhoneCall.RESULT_ANSWERED,
-        )
-        unassigned_replay = webhook_client.post(
-            webhook_url,
-            {
-                "cmd": "history",
-                "crm_token": "megafon-crm-token",
-                "callid": "unassigned-historical-call",
-                "phone": "+79001112233",
-                "type": "in",
-                "start": "2026-10-02 16:00:00",
-                "duration": "60",
-                "status": "Success",
-                "ext": "999",
-            },
-        )
-        self.assertEqual(unassigned_replay.status_code, 200)
-        unassigned_call.refresh_from_db()
-        self.assertIsNone(unassigned_call.employee_profile)
-        self.assertIsNone(unassigned_call.employee)
-
-        pending_profile = Employee.objects.create(
-            organization=self.organization,
-            display_name="ĞĞ¶Ğ¸Ğ´Ğ°ĞµÑ‚ Ğ¿Ğ¾Ğ´Ñ‚Ğ²ĞµÑ€Ğ¶Ğ´ĞµĞ½Ğ¸Ñ",
-            is_active=True,
-            user=self.accountant,
-        )
-        TelephonyEmployeeIdentity.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            employee=pending_profile,
-            raw_name="ĞĞ¶Ğ¸Ğ´Ğ°ĞµÑ‚ Ğ¿Ğ¾Ğ´Ñ‚Ğ²ĞµÑ€Ğ¶Ğ´ĞµĞ½Ğ¸Ñ",
-            normalized_name="Ğ¾Ğ¶Ğ¸Ğ´Ğ°ĞµÑ‚ Ğ¿Ğ¾Ğ´Ñ‚Ğ²ĞµÑ€Ğ¶Ğ´ĞµĞ½Ğ¸Ñ",
-            extension="998",
-            external_user="accountant",
-            is_active=True,
-            requires_manual_confirmation=True,
-            status=TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
-            match_method=TelephonyEmployeeIdentity.MATCH_NONE,
-        )
-        pending_history = webhook_client.post(
-            webhook_url,
-            {
-                "cmd": "history",
-                "crm_token": "megafon-crm-token",
-                "callid": "pending-extensionless-call",
-                "phone": "+79001112233",
-                "type": "in",
-                "start": "2026-10-03 16:05:00",
-                "duration": "10",
-                "status": "Success",
-                "user": "accountant",
-            },
-        )
-        self.assertEqual(pending_history.status_code, 200)
-        pending_call = PhoneCall.objects.get(
-            connection=telephony,
-            external_id="pending-extensionless-call",
-        )
-        self.assertIsNone(pending_call.employee_profile)
-        self.assertIsNone(pending_call.employee)
-
-        unauthorized = webhook_client.post(
-            webhook_url,
-            {
-                "cmd": "history",
-                "crm_token": "wrong-token",
-                "callid": "call-unauthorized",
-                "phone": "+79001112233",
-                "type": "in",
-            },
-        )
-        self.assertEqual(unauthorized.status_code, 401)
-        self.assertFalse(
-            PhoneCall.objects.filter(connection=telephony, external_id="call-unauthorized").exists()
-        )
-
-        oversized_user = webhook_client.post(
-            webhook_url,
-            {
-                "cmd": "history",
-                "crm_token": "megafon-crm-token",
-                "callid": "call-long-user",
-                "phone": "+79001112233",
-                "type": "in",
-                "start": "2026-10-03 16:00:00",
-                "duration": "1",
-                "status": "Success",
-                "user": "u" * 256,
-                "ext": "601",
-            },
-        )
-        self.assertEqual(oversized_user.status_code, 400)
-        self.assertEqual(oversized_user.json()["error"], "invalid_user")
-        self.assertFalse(
-            PhoneCall.objects.filter(
-                connection=telephony,
-                external_id="call-long-user",
-            ).exists()
-        )
-
-        oversized_ext = webhook_client.post(
-            webhook_url,
-            {
-                "cmd": "history",
-                "crm_token": "megafon-crm-token",
-                "callid": "call-long-ext",
-                "phone": "+79001112233",
-                "type": "in",
-                "start": "2026-10-03 16:00:00",
-                "duration": "1",
-                "status": "Success",
-                "user": "worker",
-                "ext": "6" * 65,
-            },
-        )
-        self.assertEqual(oversized_ext.status_code, 400)
-        self.assertEqual(oversized_ext.json()["error"], "invalid_ext")
-        self.assertFalse(
-            PhoneCall.objects.filter(
-                connection=telephony,
-                external_id="call-long-ext",
-            ).exists()
-        )
-
-    def test_megafon_account_sync_auto_matches_employee_and_backfills_calls(self):
-        self.worker.first_name = "Ğ”Ğ°Ñ€ÑŒÑ"
-        self.worker.last_name = "ĞšÑ€Ğ°Ñ„Ñ‚"
-        self.worker.save(update_fields=["first_name", "last_name"])
-        employee = Employee.objects.create(
-            organization=self.organization,
-            display_name="ĞšÑ€Ğ°Ñ„Ñ‚ Ğ”Ğ°Ñ€ÑŒÑ Ğ’Ğ°Ğ»ĞµÑ€ÑŒĞµĞ²Ğ½Ğ°",
-            first_name="Ğ”Ğ°Ñ€ÑŒÑ",
-            last_name="ĞšÑ€Ğ°Ñ„Ñ‚",
-            middle_name="Ğ’Ğ°Ğ»ĞµÑ€ÑŒĞµĞ²Ğ½Ğ°",
-            is_active=True,
-        )
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½ Ğ¾Ñ„Ğ¸Ñ",
-            external_id="megafon-sync",
-        )
-        channel = CommunicationChannel.objects.create(
-            organization=self.organization,
-            kind=CommunicationChannel.KIND_MEGAFON,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½ sync",
-        )
-        provider = ChannelConnection.objects.create(
-            channel=channel,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½ Ğ¾Ñ„Ğ¸Ñ",
-            external_id="megafon-sync",
-            settings={
-                "megafon_api_base_url": "https://aqualine22.megapbx.ru/crmapi/v1",
-                "megafon_api_key_encrypted": encrypt_secret("secret"),
-            },
-        )
-        call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="sync-call",
-            phone_number="+79001112233",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=timezone.now(),
-            result=PhoneCall.RESULT_ANSWERED,
-            provider_extension="601",
-        )
-
-        with patch(
-            "pool_service.services.employee_identity_sync._read_megafon_accounts",
-            return_value=(provider, [{"name": "ĞšÑ€Ğ°Ñ„Ñ‚ Ğ”Ğ°Ñ€ÑŒÑ Ğ’Ğ°Ğ»ĞµÑ€ÑŒĞµĞ²Ğ½Ğ°", "ext": "601"}]),
-        ):
-            result = sync_megafon_employee_identities(telephony, actor=self.owner)
-
-        self.assertEqual(result["synced"], 1)
-        self.assertEqual(result["auto_matched"], 1)
-        identity = TelephonyEmployeeIdentity.objects.get(
-            connection=telephony,
-            extension="601",
-        )
-        self.assertEqual(identity.employee, employee)
-        self.assertEqual(
-            identity.status,
-            TelephonyEmployeeIdentity.STATUS_AUTO_MATCHED,
-        )
-        employee.refresh_from_db()
-        self.assertEqual(employee.user, self.worker)
-        call.refresh_from_db()
-        self.assertEqual(call.employee_profile, employee)
-        self.assertEqual(call.employee, self.worker)
-
-    def test_service2_auto_link_requires_employee_side_uniqueness(self):
-        self.worker.first_name = "Ğ˜Ğ²Ğ°Ğ½"
-        self.worker.last_name = "Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ²"
-        self.worker.save(update_fields=["first_name", "last_name"])
-        first = Employee.objects.create(
-            organization=self.organization,
-            display_name="Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ² Ğ˜Ğ²Ğ°Ğ½ ĞŸĞµÑ‚Ñ€Ğ¾Ğ²Ğ¸Ñ‡",
-            first_name="Ğ˜Ğ²Ğ°Ğ½",
-            last_name="Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ²",
-            middle_name="ĞŸĞµÑ‚Ñ€Ğ¾Ğ²Ğ¸Ñ‡",
-            is_active=True,
-        )
-        second = Employee.objects.create(
-            organization=self.organization,
-            display_name="Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ² Ğ˜Ğ²Ğ°Ğ½ Ğ¡ĞµÑ€Ğ³ĞµĞµĞ²Ğ¸Ñ‡",
-            first_name="Ğ˜Ğ²Ğ°Ğ½",
-            last_name="Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ²",
-            middle_name="Ğ¡ĞµÑ€Ğ³ĞµĞµĞ²Ğ¸Ñ‡",
-            is_active=True,
-        )
-
-        self.assertFalse(auto_link_service2_user(first, actor=self.owner))
-        self.assertFalse(auto_link_service2_user(second, actor=self.owner))
-        first.refresh_from_db()
-        second.refresh_from_db()
-        self.assertIsNone(first.user)
-        self.assertIsNone(second.user)
-
-    def test_onec_employee_sync_uses_stable_ids_and_source_activity(self):
-        employee = Employee.objects.create(
-            organization=self.organization,
-            display_name="ĞšÑ€Ğ°Ñ„Ñ‚ Ğ”Ğ°Ñ€ÑŒÑ Ğ’Ğ°Ğ»ĞµÑ€ÑŒĞµĞ²Ğ½Ğ°",
-            is_active=True,
-        )
-        config = ODataConfig(
-            base_url="https://example.test/odata/standard.odata/",
-            username="user",
-            password="pass",
-            organization_guids=("11111111-1111-1111-1111-111111111111",),
-            timeout_seconds=5,
-            max_pages=10,
-            max_rows=100,
-        )
-        legacy_identity = EmployeeOneCIdentity.objects.create(
-            organization=self.organization,
-            raw_name="Ğ¡Ğ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº Ñ‚Ğ¾Ğ»ÑŒĞºĞ¾ Ğ¸Ğ· ÑÑ‚Ğ°Ñ€Ğ¾Ğ³Ğ¾ Ğ¸Ğ¼Ğ¿Ğ¾Ñ€Ñ‚Ğ°",
-            normalized_name="ÑĞ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº Ñ‚Ğ¾Ğ»ÑŒĞºĞ¾ Ğ¸Ğ· ÑÑ‚Ğ°Ñ€Ğ¾Ğ³Ğ¾ Ğ¸Ğ¼Ğ¿Ğ¾Ñ€Ñ‚Ğ°",
-            source_identity_key="legacy-unseen-employee",
-            status=EmployeeOneCIdentity.STATUS_NOT_FOUND,
-            source_active=True,
-        )
-        rows = [
-            {
-                "Ref_Key": "22222222-2222-2222-2222-222222222222",
-                "Code": "000000017",
-                "Description": "ĞšÑ€Ğ°Ñ„Ñ‚ Ğ”Ğ°Ñ€ÑŒÑ Ğ’Ğ°Ğ»ĞµÑ€ÑŒĞµĞ²Ğ½Ğ°",
-                "DeletionMark": False,
-                "Ğ’ĞÑ€Ñ…Ğ¸Ğ²Ğµ": False,
-                "ĞĞµĞ´ĞµĞ¹ÑÑ‚Ğ²Ğ¸Ñ‚ĞµĞ»ĞµĞ½": False,
-                "Ğ“Ğ¾Ğ»Ğ¾Ğ²Ğ½Ğ°ÑĞÑ€Ğ³Ğ°Ğ½Ğ¸Ğ·Ğ°Ñ†Ğ¸Ñ_Key": "11111111-1111-1111-1111-111111111111",
-            },
-            {
-                "Ref_Key": "33333333-3333-3333-3333-333333333333",
-                "Code": "000000099",
-                "Description": "Ğ¡Ñ‚Ğ°Ñ€Ñ‹Ğ¹ Ğ¡Ğ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº",
-                "DeletionMark": False,
-                "Ğ’ĞÑ€Ñ…Ğ¸Ğ²Ğµ": False,
-                "ĞĞµĞ´ĞµĞ¹ÑÑ‚Ğ²Ğ¸Ñ‚ĞµĞ»ĞµĞ½": True,
-                "Ğ“Ğ¾Ğ»Ğ¾Ğ²Ğ½Ğ°ÑĞÑ€Ğ³Ğ°Ğ½Ğ¸Ğ·Ğ°Ñ†Ğ¸Ñ_Key": "11111111-1111-1111-1111-111111111111",
-            },
-        ]
-
-        with patch(
-            "pool_service.services.employee_identity_sync.is_odata_target_organization",
-            return_value=True,
-        ), patch(
-            "pool_service.services.employee_identity_sync.config_from_settings",
-            return_value=config,
-        ), patch(
-            "pool_service.services.employee_identity_sync.read_odata_pages",
-            return_value=iter([(rows, 1)]),
-        ):
-            result = sync_onec_employee_identities(
-                self.organization,
-                actor=self.owner,
-            )
-
-        self.assertEqual(result["synced"], 2)
-        self.assertEqual(result["active"], 1)
-        self.assertEqual(result["inactive"], 1)
-        active_identity = EmployeeOneCIdentity.objects.get(
-            onec_employee_id="22222222-2222-2222-2222-222222222222"
-        )
-        self.assertEqual(active_identity.employee, employee)
-        self.assertTrue(active_identity.source_active)
-        self.assertEqual(active_identity.personnel_number, "000000017")
-        inactive_identity = EmployeeOneCIdentity.objects.get(
-            onec_employee_id="33333333-3333-3333-3333-333333333333"
-        )
-        self.assertFalse(inactive_identity.source_active)
-        self.assertIsNotNone(inactive_identity.last_seen_at)
-        legacy_identity.refresh_from_db()
-        self.assertFalse(legacy_identity.source_active)
-        self.assertIsNone(legacy_identity.last_seen_at)
-
-    def test_reused_inactive_extension_requires_manual_remapping(self):
-        old_employee = Employee.objects.create(
-            organization=self.organization,
-            display_name="Ğ¡Ñ‚Ğ°Ñ€Ñ‹Ğ¹ Ğ¡Ğ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº",
-            is_active=True,
-            user=self.worker,
-        )
-        Employee.objects.create(
-            organization=self.organization,
-            display_name="ĞĞ¾Ğ²Ñ‹Ğ¹ Ğ¡Ğ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº",
-            is_active=True,
-        )
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½",
-            external_id="reused-ext",
-        )
-        channel = CommunicationChannel.objects.create(
-            organization=self.organization,
-            kind=CommunicationChannel.KIND_MEGAFON,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½ reused",
-        )
-        provider = ChannelConnection.objects.create(
-            channel=channel,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½ reused",
-            external_id="reused-ext",
-            settings={
-                "megafon_api_base_url": "https://aqualine22.megapbx.ru/crmapi/v1",
-                "megafon_api_key_encrypted": encrypt_secret("secret"),
-            },
-        )
-        identity = TelephonyEmployeeIdentity.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            employee=old_employee,
-            raw_name="Ğ¡Ñ‚Ğ°Ñ€Ñ‹Ğ¹ Ğ¡Ğ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº",
-            normalized_name="ÑÑ‚Ğ°Ñ€Ñ‹Ğ¹ ÑĞ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº",
-            extension="880",
-            is_active=False,
-            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
-            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
-            confirmed_by=self.owner,
-            confirmed_at=timezone.now(),
-        )
-        old_call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="old-holder-call",
-            employee=self.worker,
-            employee_profile=old_employee,
-            provider_extension="880",
-            phone_number="+79001112233",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=timezone.now() - timedelta(days=30),
-            result=PhoneCall.RESULT_ANSWERED,
-        )
-        new_call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="new-holder-call",
-            provider_extension="880",
-            phone_number="+79001112234",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=timezone.now(),
-            result=PhoneCall.RESULT_ANSWERED,
-        )
-
-        with patch(
-            "pool_service.services.employee_identity_sync._read_megafon_accounts",
-            return_value=(provider, [{"name": "ĞĞ¾Ğ²Ñ‹Ğ¹ Ğ¡Ğ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº", "ext": "880"}]),
-        ):
-            result = sync_megafon_employee_identities(telephony, actor=self.owner)
-
-        identity.refresh_from_db()
-        self.assertEqual(identity.employee, old_employee)
-        self.assertTrue(identity.requires_manual_confirmation)
-        self.assertIsNotNone(identity.reassignment_detected_at)
-        self.assertEqual(
-            identity.status,
-            TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
-        )
-        self.assertEqual(result["auto_matched"], 0)
-        self.assertEqual(result["needs_mapping"], 1)
-
-        # A later hourly sync must not silently auto-match the new holder.
-        with patch(
-            "pool_service.services.employee_identity_sync._read_megafon_accounts",
-            return_value=(provider, [{"name": "ĞĞ¾Ğ²Ñ‹Ğ¹ Ğ¡Ğ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº", "ext": "880"}]),
-        ):
-            second_result = sync_megafon_employee_identities(
-                telephony,
-                actor=self.owner,
-            )
-        identity.refresh_from_db()
-        self.assertEqual(identity.employee, old_employee)
-        self.assertTrue(identity.requires_manual_confirmation)
-        self.assertEqual(second_result["auto_matched"], 0)
-        self.assertEqual(second_result["needs_mapping"], 1)
-
-        old_call.refresh_from_db()
-        new_call.refresh_from_db()
-        self.assertEqual(old_call.employee_profile, old_employee)
-        self.assertEqual(old_call.employee, self.worker)
-        self.assertIsNone(new_call.employee_profile)
-        self.assertIsNone(new_call.employee)
-
-    def test_active_extension_name_change_requires_manual_remapping(self):
-        old_employee = Employee.objects.create(
-            organization=self.organization,
-            display_name="Ğ¡Ñ‚Ğ°Ñ€Ñ‹Ğ¹ Ğ’Ğ»Ğ°Ğ´ĞµĞ»ĞµÑ†",
-            is_active=True,
-            user=self.worker,
-        )
-        Employee.objects.create(
-            organization=self.organization,
-            display_name="ĞĞ¾Ğ²Ñ‹Ğ¹ Ğ’Ğ»Ğ°Ğ´ĞµĞ»ĞµÑ†",
-            is_active=True,
-        )
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½",
-            external_id="active-reassigned-ext",
-        )
-        channel = CommunicationChannel.objects.create(
-            organization=self.organization,
-            kind=CommunicationChannel.KIND_MEGAFON,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½ active reassigned",
-        )
-        provider = ChannelConnection.objects.create(
-            channel=channel,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½ active reassigned",
-            external_id="active-reassigned-ext",
-            settings={
-                "megafon_api_base_url": "https://aqualine22.megapbx.ru/crmapi/v1",
-                "megafon_api_key_encrypted": encrypt_secret("secret"),
-            },
-        )
-        identity = TelephonyEmployeeIdentity.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            employee=old_employee,
-            raw_name="Ğ¡Ñ‚Ğ°Ñ€Ñ‹Ğ¹ Ğ’Ğ»Ğ°Ğ´ĞµĞ»ĞµÑ†",
-            normalized_name="ÑÑ‚Ğ°Ñ€Ñ‹Ğ¹ Ğ²Ğ»Ğ°Ğ´ĞµĞ»ĞµÑ†",
-            extension="882",
-            is_active=True,
-            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
-            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
-        )
-
-        with patch(
-            "pool_service.services.employee_identity_sync._read_megafon_accounts",
-            return_value=(provider, [{"name": "ĞĞ¾Ğ²Ñ‹Ğ¹ Ğ’Ğ»Ğ°Ğ´ĞµĞ»ĞµÑ†", "ext": "882"}]),
-        ):
-            result = sync_megafon_employee_identities(telephony, actor=self.owner)
-
-        identity.refresh_from_db()
-        self.assertEqual(identity.employee, old_employee)
-        self.assertTrue(identity.requires_manual_confirmation)
-        self.assertIsNotNone(identity.reassignment_detected_at)
-        self.assertEqual(
-            identity.status,
-            TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
-        )
-        self.assertEqual(result["auto_matched"], 0)
-        self.assertEqual(result["needs_mapping"], 1)
-
-    def test_inactive_extension_webhook_waits_for_accounts_revalidation(self):
-        employee = Employee.objects.create(
-            organization=self.organization,
-            display_name="Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ² Ğ˜Ğ²Ğ°Ğ½ Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ²Ğ¸Ñ‡",
-            is_active=True,
-            user=self.worker,
-        )
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½",
-            external_id="reactivated-ext",
-        )
-        channel = CommunicationChannel.objects.create(
-            organization=self.organization,
-            kind=CommunicationChannel.KIND_MEGAFON,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½ reactivated",
-        )
-        provider = ChannelConnection.objects.create(
-            channel=channel,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½ reactivated",
-            external_id="reactivated-ext",
-            settings={
-                "megafon_api_base_url": "https://aqualine22.megapbx.ru/crmapi/v1",
-                "megafon_api_key_encrypted": encrypt_secret("secret"),
-            },
-        )
-        identity = TelephonyEmployeeIdentity.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            employee=employee,
-            raw_name="Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ² Ğ˜Ğ²Ğ°Ğ½ Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ²Ğ¸Ñ‡",
-            normalized_name="Ğ¸Ğ²Ğ°Ğ½Ğ¾Ğ² Ğ¸Ğ²Ğ°Ğ½ Ğ¸Ğ²Ğ°Ğ½Ğ¾Ğ²Ğ¸Ñ‡",
-            extension="881",
-            is_active=False,
-            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
-            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
-        )
-        call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="reactivated-call",
-            provider_extension="881",
-            phone_number="+79001112235",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=timezone.now(),
-            result=PhoneCall.RESULT_ANSWERED,
-        )
-
-        profile, user = resolve_call_employee(
-            self.organization,
-            telephony,
-            "881",
-            "worker",
-        )
-        self.assertIsNone(profile)
-        self.assertIsNone(user)
-        identity.refresh_from_db()
-        self.assertTrue(identity.is_active)
-        self.assertTrue(identity.requires_manual_confirmation)
-        self.assertEqual(
-            TelephonyEmployeeIdentity.objects.filter(
-                connection=telephony,
-                extension="881",
-            ).count(),
-            1,
-        )
-
-        with patch(
-            "pool_service.services.employee_identity_sync._read_megafon_accounts",
-            return_value=(
-                provider,
-                [{"name": "Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ² Ğ˜Ğ²Ğ°Ğ½ Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ²Ğ¸Ñ‡", "ext": "881"}],
-            ),
-        ):
-            result = sync_megafon_employee_identities(telephony, actor=self.owner)
-
-        identity.refresh_from_db()
-        call.refresh_from_db()
-        self.assertFalse(identity.requires_manual_confirmation)
-        self.assertEqual(identity.employee, employee)
-        self.assertEqual(result["auto_matched"], 1)
-        self.assertEqual(call.employee_profile, employee)
-        self.assertEqual(call.employee, self.worker)
-
-        changed_identity = TelephonyEmployeeIdentity.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            employee=employee,
-            raw_name="Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ² Ğ˜Ğ²Ğ°Ğ½ Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ²Ğ¸Ñ‡",
-            normalized_name="Ğ¸Ğ²Ğ°Ğ½Ğ¾Ğ² Ğ¸Ğ²Ğ°Ğ½ Ğ¸Ğ²Ğ°Ğ½Ğ¾Ğ²Ğ¸Ñ‡",
-            extension="884",
-            external_user="old-provider-user",
-            is_active=False,
-            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
-            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
-        )
-
-        changed_profile, changed_user = resolve_call_employee(
-            self.organization,
-            telephony,
-            "884",
-            "new-provider-user",
-        )
-        self.assertIsNone(changed_profile)
-        self.assertIsNone(changed_user)
-        changed_identity.refresh_from_db()
-        self.assertTrue(changed_identity.requires_manual_confirmation)
-        self.assertEqual(
-            changed_identity.status,
-            TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
-        )
-
-        with patch(
-            "pool_service.services.employee_identity_sync._read_megafon_accounts",
-            return_value=(
-                provider,
-                [{"name": "Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ² Ğ˜Ğ²Ğ°Ğ½ Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ²Ğ¸Ñ‡", "ext": "884"}],
-            ),
-        ):
-            changed_result = sync_megafon_employee_identities(
-                telephony,
-                actor=self.owner,
-            )
-
-        changed_identity.refresh_from_db()
-        self.assertTrue(changed_identity.requires_manual_confirmation)
-        self.assertEqual(
-            changed_identity.status,
-            TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
-        )
-        self.assertEqual(changed_identity.external_user, "new-provider-user")
-        self.assertEqual(changed_result["auto_matched"], 0)
-        self.assertEqual(changed_result["needs_mapping"], 1)
-
-    def test_full_employee_sync_isolates_unconfigured_telephony_lines(self):
-        configured = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="ĞĞ°ÑÑ‚Ñ€Ğ¾ĞµĞ½Ğ½Ğ°Ñ Ğ»Ğ¸Ğ½Ğ¸Ñ",
-            external_id="configured-line",
-        )
-        broken = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="Ğ¡Ñ‚Ğ°Ñ€Ğ°Ñ Ğ»Ğ¸Ğ½Ğ¸Ñ Ğ±ĞµĞ· ĞºĞ»ÑÑ‡Ğ°",
-            external_id="broken-line",
-        )
-
-        def fake_megafon_sync(telephony, actor=None):
-            if telephony.pk == broken.pk:
-                raise EmployeeIdentitySyncError("ĞšĞ»ÑÑ‡ ĞĞ¢Ğ¡ Ğ½Ğµ Ğ½Ğ°ÑÑ‚Ñ€Ğ¾ĞµĞ½.")
-            return {
-                "synced": 3,
-                "auto_matched": 2,
-                "needs_mapping": 1,
-                "synced_at": timezone.now(),
-            }
-
-        with patch(
-            "pool_service.services.employee_identity_sync.sync_onec_employee_identities",
-            return_value={
-                "synced": 5,
-                "active": 4,
-                "inactive": 1,
-                "auto_linked_users": 0,
-                "synced_at": timezone.now(),
-            },
-        ), patch(
-            "pool_service.services.employee_identity_sync.sync_megafon_employee_identities",
-            side_effect=fake_megafon_sync,
-        ):
-            result = sync_all_employee_identities(
-                self.organization,
-                actor=self.owner,
-            )
-
-        by_id = {
-            item["connection_id"]: item for item in result["telephony"]
-        }
-        self.assertEqual(by_id[configured.pk]["synced"], 3)
-        self.assertEqual(by_id[configured.pk]["error"], "")
-        self.assertEqual(by_id[broken.pk]["synced"], 0)
-        self.assertIn("ĞšĞ»ÑÑ‡ ĞĞ¢Ğ¡", by_id[broken.pk]["error"])
-
-    def test_employee_identity_command_fails_after_reporting_line_errors(self):
-        result = {
-            "onec": {"synced": 3},
-            "telephony": [
-                {
-                    "name": "ĞĞµĞ´Ğ¾ÑÑ‚ÑƒĞ¿Ğ½Ğ°Ñ Ğ»Ğ¸Ğ½Ğ¸Ñ",
-                    "synced": 0,
-                    "needs_mapping": 0,
-                    "error": "ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½ Ğ½Ğµ Ğ¾Ñ‚Ğ²ĞµÑ‚Ğ¸Ğ»",
-                }
-            ],
-        }
-        output = io.StringIO()
-        errors = io.StringIO()
-
-        with override_settings(
-            ONEC_ODATA_TARGET_ORGANIZATION_ID=str(self.organization.pk)
-        ), patch(
-            "pool_service.management.commands.sync_employee_identities.sync_all_employee_identities",
-            return_value=result,
-        ):
-            with self.assertRaises(CommandError):
-                call_command(
-                    "sync_employee_identities",
-                    stdout=output,
-                    stderr=errors,
-                )
-
-        self.assertIn("MegaFon_errors=1", output.getvalue())
-        self.assertIn("ĞĞµĞ´Ğ¾ÑÑ‚ÑƒĞ¿Ğ½Ğ°Ñ Ğ»Ğ¸Ğ½Ğ¸Ñ", errors.getvalue())
-
-    def test_manual_megafon_sync_isolates_failed_lines(self):
-        configured = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="Ğ Ğ°Ğ±Ğ¾Ñ‡Ğ°Ñ Ğ»Ğ¸Ğ½Ğ¸Ñ",
-            external_id="manual-configured-line",
-        )
-        broken = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="Ğ›Ğ¸Ğ½Ğ¸Ñ Ğ±ĞµĞ· ĞºĞ»ÑÑ‡Ğ°",
-            external_id="manual-broken-line",
-        )
-        self.organization.paid_until = timezone.now() + timedelta(days=30)
-        self.organization.save(update_fields=["paid_until"])
-        self.client.login(username="owner", password="test")
-
-        def fake_sync(telephony, actor=None):
-            if telephony.pk == broken.pk:
-                raise EmployeeIdentitySyncError("ĞšĞ»ÑÑ‡ ĞĞ¢Ğ¡ Ğ½Ğµ Ğ½Ğ°ÑÑ‚Ñ€Ğ¾ĞµĞ½.")
-            return {
-                "synced": 4,
-                "auto_matched": 3,
-                "needs_mapping": 1,
-                "synced_at": timezone.now(),
-            }
-
-        with patch(
-            "pool_service.finance_views.sync_megafon_employee_identities",
-            side_effect=fake_sync,
-        ) as sync_mock:
-            response = self.client.post(
-                reverse("finance_employee_identity_sync"),
-                {"source": "megafon"},
-                follow=True,
-            )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(sync_mock.call_count, 2)
-        self.assertContains(response, "ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½: Ğ¿Ğ¾Ğ»ÑƒÑ‡ĞµĞ½Ğ¾ 4 ÑĞ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸ĞºĞ¾Ğ²")
-        self.assertContains(response, "Ğ›Ğ¸Ğ½Ğ¸Ñ Ğ±ĞµĞ· ĞºĞ»ÑÑ‡Ğ°")
-        self.assertContains(response, "ĞšĞ»ÑÑ‡ ĞĞ¢Ğ¡ Ğ½Ğµ Ğ½Ğ°ÑÑ‚Ñ€Ğ¾ĞµĞ½")
-
-    def test_onec_employee_sync_rolls_back_when_later_page_fails(self):
-        employee = Employee.objects.create(
-            organization=self.organization,
-            display_name="ĞšÑ€Ğ°Ñ„Ñ‚ Ğ”Ğ°Ñ€ÑŒÑ Ğ’Ğ°Ğ»ĞµÑ€ÑŒĞµĞ²Ğ½Ğ°",
-            is_active=True,
-        )
-        existing = EmployeeOneCIdentity.objects.create(
-            organization=self.organization,
-            employee=employee,
-            raw_name="Ğ¡Ñ‚Ğ°Ñ€Ğ°Ñ Ğ·Ğ°Ğ¿Ğ¸ÑÑŒ",
-            normalized_name="ÑÑ‚Ğ°Ñ€Ğ°Ñ Ğ·Ğ°Ğ¿Ğ¸ÑÑŒ",
-            source_identity_key="atomic-existing",
-            status=EmployeeOneCIdentity.STATUS_MANUALLY_MATCHED,
-            match_method=EmployeeOneCIdentity.MATCH_MANUAL,
-            source_active=True,
-        )
-        config = ODataConfig(
-            base_url="https://example.test/odata/standard.odata/",
-            username="user",
-            password="pass",
-            organization_guids=("11111111-1111-1111-1111-111111111111",),
-            timeout_seconds=5,
-            max_pages=10,
-            max_rows=100,
-        )
-        first_page = [{
-            "Ref_Key": "44444444-4444-4444-4444-444444444444",
-            "Code": "000000018",
-            "Description": "ĞĞ¾Ğ²Ğ°Ñ Ğ—Ğ°Ğ¿Ğ¸ÑÑŒ",
-            "DeletionMark": False,
-            "Ğ’ĞÑ€Ñ…Ğ¸Ğ²Ğµ": False,
-            "ĞĞµĞ´ĞµĞ¹ÑÑ‚Ğ²Ğ¸Ñ‚ĞµĞ»ĞµĞ½": False,
-            "Ğ“Ğ¾Ğ»Ğ¾Ğ²Ğ½Ğ°ÑĞÑ€Ğ³Ğ°Ğ½Ğ¸Ğ·Ğ°Ñ†Ğ¸Ñ_Key": "11111111-1111-1111-1111-111111111111",
-        }]
-
-        def broken_pages(*_args, **_kwargs):
-            yield first_page, 1
-            raise ODataPreviewError("late page failure")
-
-        with patch(
-            "pool_service.services.employee_identity_sync.is_odata_target_organization",
-            return_value=True,
-        ), patch(
-            "pool_service.services.employee_identity_sync.config_from_settings",
-            return_value=config,
-        ), patch(
-            "pool_service.services.employee_identity_sync.read_odata_pages",
-            side_effect=broken_pages,
-        ):
-            with self.assertRaises(EmployeeIdentitySyncError):
-                sync_onec_employee_identities(self.organization, actor=self.owner)
-
-        self.assertFalse(
-            EmployeeOneCIdentity.objects.filter(
-                onec_employee_id="44444444-4444-4444-4444-444444444444"
-            ).exists()
-        )
-        existing.refresh_from_db()
-        self.assertTrue(existing.source_active)
-
-    def test_onec_employee_sync_rejects_malformed_deletion_flags(self):
-        existing = EmployeeOneCIdentity.objects.create(
-            organization=self.organization,
-            raw_name="Ğ¡ÑƒÑ‰ĞµÑÑ‚Ğ²ÑƒÑÑ‰Ğ¸Ğ¹ ÑĞ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº",
-            normalized_name="ÑÑƒÑ‰ĞµÑÑ‚Ğ²ÑƒÑÑ‰Ğ¸Ğ¹ ÑĞ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº",
-            source_identity_key="malformed-deletion-existing",
-            status=EmployeeOneCIdentity.STATUS_NOT_FOUND,
-            source_active=True,
-        )
-        config = ODataConfig(
-            base_url="https://example.test/odata/standard.odata/",
-            username="user",
-            password="pass",
-            organization_guids=("11111111-1111-1111-1111-111111111111",),
-            timeout_seconds=5,
-            max_pages=10,
-            max_rows=100,
-        )
-        base_row = {
-            "Ref_Key": "55555555-5555-5555-5555-555555555555",
-            "Code": "000000019",
-            "Description": "ĞĞµĞºĞ¾Ñ€Ñ€ĞµĞºÑ‚Ğ½Ğ°Ñ Ğ—Ğ°Ğ¿Ğ¸ÑÑŒ",
-            "Ğ’ĞÑ€Ñ…Ğ¸Ğ²Ğµ": False,
-            "ĞĞµĞ´ĞµĞ¹ÑÑ‚Ğ²Ğ¸Ñ‚ĞµĞ»ĞµĞ½": False,
-            "Ğ“Ğ¾Ğ»Ğ¾Ğ²Ğ½Ğ°ÑĞÑ€Ğ³Ğ°Ğ½Ğ¸Ğ·Ğ°Ñ†Ğ¸Ñ_Key": "11111111-1111-1111-1111-111111111111",
-        }
-
-        for deletion_mark in (None, "False"):
-            row = dict(base_row)
-            if deletion_mark is not None:
-                row["DeletionMark"] = deletion_mark
-            with self.subTest(deletion_mark=deletion_mark), patch(
-                "pool_service.services.employee_identity_sync.is_odata_target_organization",
-                return_value=True,
-            ), patch(
-                "pool_service.services.employee_identity_sync.config_from_settings",
-                return_value=config,
-            ), patch(
-                "pool_service.services.employee_identity_sync.read_odata_pages",
-                return_value=iter([([row], 1)]),
-            ):
-                with self.assertRaises(EmployeeIdentitySyncError):
-                    sync_onec_employee_identities(
-                        self.organization,
-                        actor=self.owner,
-                    )
-
-            existing.refresh_from_db()
-            self.assertTrue(existing.source_active)
-            self.assertFalse(
-                EmployeeOneCIdentity.objects.filter(
-                    onec_employee_id="55555555-5555-5555-5555-555555555555"
-                ).exists()
-            )
-
-    def test_onec_employee_sync_rejects_out_of_scope_organization(self):
-        existing = EmployeeOneCIdentity.objects.create(
-            organization=self.organization,
-            raw_name="Ğ¡ÑƒÑ‰ĞµÑÑ‚Ğ²ÑƒÑÑ‰Ğ¸Ğ¹ ÑĞ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº",
-            normalized_name="ÑÑƒÑ‰ĞµÑÑ‚Ğ²ÑƒÑÑ‰Ğ¸Ğ¹ ÑĞ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº",
-            source_identity_key="foreign-organization-existing",
-            status=EmployeeOneCIdentity.STATUS_NOT_FOUND,
-            source_active=True,
-        )
-        config = ODataConfig(
-            base_url="https://example.test/odata/standard.odata/",
-            username="user",
-            password="pass",
-            organization_guids=("11111111-1111-1111-1111-111111111111",),
-            timeout_seconds=5,
-            max_pages=10,
-            max_rows=100,
-        )
-        row = {
-            "Ref_Key": "66666666-6666-6666-6666-666666666666",
-            "Code": "000000020",
-            "Description": "Ğ§ÑƒĞ¶Ğ°Ñ ĞÑ€Ğ³Ğ°Ğ½Ğ¸Ğ·Ğ°Ñ†Ğ¸Ñ",
-            "DeletionMark": False,
-            "Ğ’ĞÑ€Ñ…Ğ¸Ğ²Ğµ": False,
-            "ĞĞµĞ´ĞµĞ¹ÑÑ‚Ğ²Ğ¸Ñ‚ĞµĞ»ĞµĞ½": False,
-            "Ğ“Ğ¾Ğ»Ğ¾Ğ²Ğ½Ğ°ÑĞÑ€Ğ³Ğ°Ğ½Ğ¸Ğ·Ğ°Ñ†Ğ¸Ñ_Key": "22222222-2222-2222-2222-222222222222",
-        }
-
-        with patch(
-            "pool_service.services.employee_identity_sync.is_odata_target_organization",
-            return_value=True,
-        ), patch(
-            "pool_service.services.employee_identity_sync.config_from_settings",
-            return_value=config,
-        ), patch(
-            "pool_service.services.employee_identity_sync.read_odata_pages",
-            return_value=iter([([row], 1)]),
-        ):
-            with self.assertRaises(EmployeeIdentitySyncError):
-                sync_onec_employee_identities(
-                    self.organization,
-                    actor=self.owner,
-                )
-
-        existing.refresh_from_db()
-        self.assertTrue(existing.source_active)
-        self.assertFalse(
-            EmployeeOneCIdentity.objects.filter(
-                onec_employee_id="66666666-6666-6666-6666-666666666666"
-            ).exists()
-        )
-
-    def test_onec_employee_sync_enforces_configured_row_limit(self):
-        existing = EmployeeOneCIdentity.objects.create(
-            organization=self.organization,
-            raw_name="Ğ¡ÑƒÑ‰ĞµÑÑ‚Ğ²ÑƒÑÑ‰Ğ¸Ğ¹ ÑĞ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº",
-            normalized_name="ÑÑƒÑ‰ĞµÑÑ‚Ğ²ÑƒÑÑ‰Ğ¸Ğ¹ ÑĞ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº",
-            source_identity_key="row-limit-existing",
-            status=EmployeeOneCIdentity.STATUS_NOT_FOUND,
-            source_active=True,
-        )
-        config = ODataConfig(
-            base_url="https://example.test/odata/standard.odata/",
-            username="user",
-            password="pass",
-            organization_guids=("11111111-1111-1111-1111-111111111111",),
-            timeout_seconds=5,
-            max_pages=10,
-            max_rows=1,
-        )
-        rows = [
-            {
-                "Ref_Key": employee_guid,
-                "Code": code,
-                "Description": name,
-                "DeletionMark": False,
-                "Ğ’ĞÑ€Ñ…Ğ¸Ğ²Ğµ": False,
-                "ĞĞµĞ´ĞµĞ¹ÑÑ‚Ğ²Ğ¸Ñ‚ĞµĞ»ĞµĞ½": False,
-                "Ğ“Ğ¾Ğ»Ğ¾Ğ²Ğ½Ğ°ÑĞÑ€Ğ³Ğ°Ğ½Ğ¸Ğ·Ğ°Ñ†Ğ¸Ñ_Key": "11111111-1111-1111-1111-111111111111",
-            }
-            for employee_guid, code, name in (
-                (
-                    "77777777-7777-7777-7777-777777777777",
-                    "000000021",
-                    "ĞŸĞµÑ€Ğ²Ğ°Ñ Ğ—Ğ°Ğ¿Ğ¸ÑÑŒ",
-                ),
-                (
-                    "88888888-8888-8888-8888-888888888888",
-                    "000000022",
-                    "Ğ’Ñ‚Ğ¾Ñ€Ğ°Ñ Ğ—Ğ°Ğ¿Ğ¸ÑÑŒ",
-                ),
-            )
-        ]
-
-        with patch(
-            "pool_service.services.employee_identity_sync.is_odata_target_organization",
-            return_value=True,
-        ), patch(
-            "pool_service.services.employee_identity_sync.config_from_settings",
-            return_value=config,
-        ), patch(
-            "pool_service.services.employee_identity_sync.read_odata_pages",
-            return_value=iter([(rows, 1)]),
-        ):
-            with self.assertRaises(EmployeeIdentitySyncError):
-                sync_onec_employee_identities(
-                    self.organization,
-                    actor=self.owner,
-                )
-
-        existing.refresh_from_db()
-        self.assertTrue(existing.source_active)
-        self.assertFalse(
-            EmployeeOneCIdentity.objects.filter(
-                onec_employee_id__in={
-                    "77777777-7777-7777-7777-777777777777",
-                    "88888888-8888-8888-8888-888888888888",
-                }
-            ).exists()
-        )
-
-    def test_active_extension_provider_user_change_blocks_new_call_assignment(self):
-        employee = Employee.objects.create(
-            organization=self.organization,
-            display_name="Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ² Ğ˜Ğ²Ğ°Ğ½ Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ²Ğ¸Ñ‡",
-            is_active=True,
-            user=self.worker,
-        )
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½",
-            external_id="changed-provider-user",
-        )
-        identity = TelephonyEmployeeIdentity.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            employee=employee,
-            raw_name="Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ² Ğ˜Ğ²Ğ°Ğ½ Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ²Ğ¸Ñ‡",
-            normalized_name="Ğ¸Ğ²Ğ°Ğ½Ğ¾Ğ² Ğ¸Ğ²Ğ°Ğ½ Ğ¸Ğ²Ğ°Ğ½Ğ¾Ğ²Ğ¸Ñ‡",
-            extension="883",
-            external_user="old-user",
-            is_active=True,
-            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
-            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
-        )
-
-        profile, user = resolve_call_employee(
-            self.organization,
-            telephony,
-            "883",
-            "new-user",
-        )
-
-        self.assertIsNone(profile)
-        self.assertIsNone(user)
-        identity.refresh_from_db()
-        self.assertEqual(identity.employee, employee)
-        self.assertEqual(identity.external_user, "new-user")
-        self.assertTrue(identity.requires_manual_confirmation)
-        self.assertEqual(
-            identity.status,
-            TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
-        )
-
-    def test_active_extension_accepts_initial_provider_user(self):
-        employee = Employee.objects.create(
-            organization=self.organization,
-            display_name="Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ² Ğ˜Ğ²Ğ°Ğ½ Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ²Ğ¸Ñ‡",
-            is_active=True,
-            user=self.worker,
-        )
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½",
-            external_id="initial-provider-user",
-        )
-        identity = TelephonyEmployeeIdentity.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            employee=employee,
-            raw_name="Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ² Ğ˜Ğ²Ğ°Ğ½ Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ²Ğ¸Ñ‡",
-            normalized_name="Ğ¸Ğ²Ğ°Ğ½Ğ¾Ğ² Ğ¸Ğ²Ğ°Ğ½ Ğ¸Ğ²Ğ°Ğ½Ğ¾Ğ²Ğ¸Ñ‡",
-            extension="889",
-            external_user="",
-            is_active=True,
-            status=TelephonyEmployeeIdentity.STATUS_AUTO_MATCHED,
-            match_method=TelephonyEmployeeIdentity.MATCH_EXACT_NAME,
-        )
-
-        profile, user = resolve_call_employee(
-            self.organization,
-            telephony,
-            "889",
-            "initial-user",
-        )
-
-        self.assertEqual(profile, employee)
-        self.assertEqual(user, self.worker)
-        identity.refresh_from_db()
-        self.assertEqual(identity.external_user, "initial-user")
-        self.assertFalse(identity.requires_manual_confirmation)
-        self.assertEqual(
-            identity.status,
-            TelephonyEmployeeIdentity.STATUS_AUTO_MATCHED,
-        )
-
-    def test_auto_linked_service2_user_backfills_existing_profile_calls(self):
-        self.worker.first_name = "Ğ”Ğ°Ñ€ÑŒÑ"
-        self.worker.last_name = "ĞšÑ€Ğ°Ñ„Ñ‚"
-        self.worker.save(update_fields=["first_name", "last_name"])
-        employee = Employee.objects.create(
-            organization=self.organization,
-            display_name="ĞšÑ€Ğ°Ñ„Ñ‚ Ğ”Ğ°Ñ€ÑŒÑ Ğ’Ğ°Ğ»ĞµÑ€ÑŒĞµĞ²Ğ½Ğ°",
-            first_name="Ğ”Ğ°Ñ€ÑŒÑ",
-            last_name="ĞšÑ€Ğ°Ñ„Ñ‚",
-            middle_name="Ğ’Ğ°Ğ»ĞµÑ€ÑŒĞµĞ²Ğ½Ğ°",
-            is_active=True,
-        )
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½",
-            external_id="late-service2-link",
-        )
-        identity = TelephonyEmployeeIdentity.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            employee=employee,
-            raw_name="ĞšÑ€Ğ°Ñ„Ñ‚ Ğ”Ğ°Ñ€ÑŒÑ Ğ’Ğ°Ğ»ĞµÑ€ÑŒĞµĞ²Ğ½Ğ°",
-            normalized_name="ĞºÑ€Ğ°Ñ„Ñ‚ Ğ´Ğ°Ñ€ÑŒÑ Ğ²Ğ°Ğ»ĞµÑ€ÑŒĞµĞ²Ğ½Ğ°",
-            extension="884",
-            is_active=True,
-            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
-            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
-        )
-        call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="late-link-call",
-            employee_profile=employee,
-            provider_extension="884",
-            phone_number="+79001112236",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=timezone.now(),
-            result=PhoneCall.RESULT_ANSWERED,
-        )
-
-        self.assertTrue(auto_link_service2_user(employee, actor=self.owner))
-
-        employee.refresh_from_db()
-        call.refresh_from_db()
-        identity.refresh_from_db()
-        self.assertEqual(employee.user, self.worker)
-        self.assertEqual(identity.employee, employee)
-        self.assertEqual(call.employee_profile, employee)
-        self.assertEqual(call.employee, self.worker)
-
-    def test_manual_telephony_mapping_updates_existing_calls(self):
-        employee = Employee.objects.create(
-            organization=self.organization,
-            display_name="Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ² Ğ˜Ğ²Ğ°Ğ½ Ğ˜Ğ²Ğ°Ğ½Ğ¾Ğ²Ğ¸Ñ‡",
-            is_active=True,
-            user=self.worker,
-        )
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½",
-            external_id="manual-map",
-        )
-        identity = TelephonyEmployeeIdentity.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            raw_name="Ğ˜Ğ²Ğ°Ğ½",
-            normalized_name="Ğ¸Ğ²Ğ°Ğ½",
-            extension="777",
-            status=TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
-            match_method=TelephonyEmployeeIdentity.MATCH_NONE,
-        )
-        call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="manual-call",
-            phone_number="+79001112233",
-            direction=PhoneCall.DIRECTION_OUT,
-            started_at=timezone.now(),
-            result=PhoneCall.RESULT_ANSWERED,
-            provider_extension="777",
-        )
-
-        mapped = map_telephony_identity(identity, employee, self.owner)
-
-        self.assertEqual(mapped.employee, employee)
-        self.assertEqual(
-            mapped.status,
-            TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
-        )
-        call.refresh_from_db()
-        self.assertEqual(call.employee_profile, employee)
-        self.assertEqual(call.employee, self.worker)
-
-    def test_manual_mapping_correction_repairs_calls_from_previous_wrong_employee(self):
-        old_employee = Employee.objects.create(
-            organization=self.organization,
-            display_name="ĞÑˆĞ¸Ğ±Ğ¾Ñ‡Ğ½Ğ¾ Ğ½Ğ°Ğ·Ğ½Ğ°Ñ‡ĞµĞ½Ğ½Ñ‹Ğ¹",
-            is_active=True,
-            user=self.worker,
-        )
-        new_employee = Employee.objects.create(
-            organization=self.organization,
-            display_name="ĞŸÑ€Ğ°Ğ²Ğ¸Ğ»ÑŒĞ½Ñ‹Ğ¹ ÑĞ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº",
-            is_active=True,
-            user=self.other,
-        )
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½",
-            external_id="manual-correction",
-        )
-        identity = TelephonyEmployeeIdentity.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            employee=old_employee,
-            raw_name="ĞŸÑ€Ğ°Ğ²Ğ¸Ğ»ÑŒĞ½Ñ‹Ğ¹ ÑĞ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº",
-            normalized_name="Ğ¿Ñ€Ğ°Ğ²Ğ¸Ğ»ÑŒĞ½Ñ‹Ğ¹ ÑĞ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº",
-            extension="885",
-            is_active=True,
-            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
-            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
-        )
-        call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="wrong-owner-call",
-            employee=self.worker,
-            employee_profile=old_employee,
-            provider_extension="885",
-            phone_number="+79001112237",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=timezone.now(),
-            result=PhoneCall.RESULT_ANSWERED,
-        )
-
-        map_telephony_identity(identity, new_employee, self.owner)
-
-        call.refresh_from_db()
-        self.assertEqual(call.employee_profile, new_employee)
-        self.assertEqual(call.employee, self.other)
-
-    def test_shared_provider_user_does_not_cross_assign_extensions(self):
-        first_employee = Employee.objects.create(
-            organization=self.organization,
-            display_name="ĞŸĞµÑ€Ğ²Ñ‹Ğ¹ ÑĞ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº",
-            is_active=True,
-            user=self.worker,
-        )
-        second_employee = Employee.objects.create(
-            organization=self.organization,
-            display_name="Ğ’Ñ‚Ğ¾Ñ€Ğ¾Ğ¹ ÑĞ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº",
-            is_active=True,
-            user=self.other,
-        )
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½",
-            external_id="shared-provider-user",
-        )
-        first_identity = TelephonyEmployeeIdentity.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            raw_name="ĞŸĞµÑ€Ğ²Ñ‹Ğ¹ ÑĞ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº",
-            normalized_name="Ğ¿ĞµÑ€Ğ²Ñ‹Ğ¹ ÑĞ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº",
-            extension="891",
-            external_user="shared-user",
-            status=TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
-            match_method=TelephonyEmployeeIdentity.MATCH_NONE,
-        )
-        second_identity = TelephonyEmployeeIdentity.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            raw_name="Ğ’Ñ‚Ğ¾Ñ€Ğ¾Ğ¹ ÑĞ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº",
-            normalized_name="Ğ²Ñ‚Ğ¾Ñ€Ğ¾Ğ¹ ÑĞ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸Ğº",
-            extension="892",
-            external_user="shared-user",
-            status=TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
-            match_method=TelephonyEmployeeIdentity.MATCH_NONE,
-        )
-        first_call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="shared-user-first",
-            provider_extension="891",
-            provider_user="shared-user",
-            phone_number="+79001112240",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=timezone.now(),
-            result=PhoneCall.RESULT_ANSWERED,
-        )
-        second_call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="shared-user-second",
-            provider_extension="892",
-            provider_user="shared-user",
-            phone_number="+79001112241",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=timezone.now(),
-            result=PhoneCall.RESULT_ANSWERED,
-        )
-        extensionless_call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="shared-user-extensionless",
-            provider_user="shared-user",
-            phone_number="+79001112242",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=timezone.now(),
-            result=PhoneCall.RESULT_ANSWERED,
-        )
-
-        map_telephony_identity(first_identity, first_employee, self.owner)
-
-        first_call.refresh_from_db()
-        second_call.refresh_from_db()
-        extensionless_call.refresh_from_db()
-        self.assertEqual(first_call.employee_profile, first_employee)
-        self.assertEqual(first_call.employee, self.worker)
-        self.assertIsNone(second_call.employee_profile)
-        self.assertIsNone(second_call.employee)
-        self.assertIsNone(extensionless_call.employee_profile)
-        self.assertIsNone(extensionless_call.employee)
-
-        map_telephony_identity(second_identity, second_employee, self.owner)
-
-        first_call.refresh_from_db()
-        second_call.refresh_from_db()
-        extensionless_call.refresh_from_db()
-        self.assertEqual(first_call.employee_profile, first_employee)
-        self.assertEqual(first_call.employee, self.worker)
-        self.assertEqual(second_call.employee_profile, second_employee)
-        self.assertEqual(second_call.employee, self.other)
-        self.assertIsNone(extensionless_call.employee_profile)
-        self.assertIsNone(extensionless_call.employee)
-
-    def test_reassignment_mapping_preserves_calls_before_detected_boundary(self):
-        old_employee = Employee.objects.create(
-            organization=self.organization,
-            display_name="Ğ¡Ñ‚Ğ°Ñ€Ñ‹Ğ¹ Ğ²Ğ»Ğ°Ğ´ĞµĞ»ĞµÑ† Ğ½Ğ¾Ğ¼ĞµÑ€Ğ°",
-            is_active=True,
-            user=self.worker,
-        )
-        new_employee = Employee.objects.create(
-            organization=self.organization,
-            display_name="ĞĞ¾Ğ²Ñ‹Ğ¹ Ğ²Ğ»Ğ°Ğ´ĞµĞ»ĞµÑ† Ğ½Ğ¾Ğ¼ĞµÑ€Ğ°",
-            is_active=True,
-            user=self.other,
-        )
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½",
-            external_id="reassignment-boundary",
-        )
-        boundary = timezone.now() - timedelta(minutes=5)
-        identity = TelephonyEmployeeIdentity.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            employee=old_employee,
-            raw_name="ĞĞ¾Ğ²Ñ‹Ğ¹ Ğ²Ğ»Ğ°Ğ´ĞµĞ»ĞµÑ† Ğ½Ğ¾Ğ¼ĞµÑ€Ğ°",
-            normalized_name="Ğ½Ğ¾Ğ²Ñ‹Ğ¹ Ğ²Ğ»Ğ°Ğ´ĞµĞ»ĞµÑ† Ğ½Ğ¾Ğ¼ĞµÑ€Ğ°",
-            extension="886",
-            external_user="new-provider-user",
-            is_active=True,
-            requires_manual_confirmation=True,
-            reassignment_detected_at=boundary,
-            status=TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
-            match_method=TelephonyEmployeeIdentity.MATCH_NONE,
-        )
-        old_call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="before-reassignment",
-            employee=self.worker,
-            employee_profile=old_employee,
-            provider_extension="886",
-            phone_number="+79001112238",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=boundary - timedelta(days=1),
-            result=PhoneCall.RESULT_ANSWERED,
-        )
-        recent_call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="after-reassignment",
-            employee=self.worker,
-            employee_profile=old_employee,
-            provider_extension="886",
-            phone_number="+79001112239",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=boundary + timedelta(minutes=1),
-            result=PhoneCall.RESULT_ANSWERED,
-        )
-        late_received_call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="late-received-reassignment",
-            employee=self.worker,
-            employee_profile=old_employee,
-            provider_extension="886",
-            phone_number="+79001112240",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=boundary - timedelta(hours=1),
-            result=PhoneCall.RESULT_ANSWERED,
-        )
-        known_new_holder_call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="known-new-holder-before-detection",
-            employee=self.worker,
-            employee_profile=old_employee,
-            provider_extension="886",
-            provider_user="new-provider-user",
-            phone_number="+79001112241",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=boundary - timedelta(hours=2),
-            result=PhoneCall.RESULT_ANSWERED,
-        )
-        PhoneCall.objects.filter(pk=old_call.pk).update(
-            created_at=boundary - timedelta(days=1)
-        )
-        PhoneCall.objects.filter(pk=known_new_holder_call.pk).update(
-            created_at=boundary - timedelta(hours=2)
-        )
-
-        mapped = map_telephony_identity(identity, new_employee, self.owner)
-
-        mapped.refresh_from_db()
-        old_call.refresh_from_db()
-        recent_call.refresh_from_db()
-        late_received_call.refresh_from_db()
-        known_new_holder_call.refresh_from_db()
-        self.assertFalse(mapped.requires_manual_confirmation)
-        self.assertIsNone(mapped.reassignment_detected_at)
-        self.assertEqual(old_call.employee_profile, old_employee)
-        self.assertEqual(old_call.employee, self.worker)
-        self.assertEqual(recent_call.employee_profile, new_employee)
-        self.assertEqual(recent_call.employee, self.other)
-        self.assertEqual(late_received_call.employee_profile, new_employee)
-        self.assertEqual(late_received_call.employee, self.other)
-        self.assertEqual(known_new_holder_call.employee_profile, new_employee)
-        self.assertEqual(known_new_holder_call.employee, self.other)
-
-    def test_service2_account_mapping_is_unique_and_backfills_calls(self):
-        employee = Employee.objects.create(
-            organization=self.organization,
-            display_name="ĞŸĞµÑ‚Ñ€Ğ¾Ğ² ĞŸĞµÑ‚Ñ€ ĞŸĞµÑ‚Ñ€Ğ¾Ğ²Ğ¸Ñ‡",
-            is_active=True,
-        )
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            external_id="service-user-map",
-        )
-        identity = TelephonyEmployeeIdentity.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            employee=employee,
-            raw_name="ĞŸĞµÑ‚Ñ€Ğ¾Ğ² ĞŸĞµÑ‚Ñ€ ĞŸĞµÑ‚Ñ€Ğ¾Ğ²Ğ¸Ñ‡",
-            normalized_name="Ğ¿ĞµÑ‚Ñ€Ğ¾Ğ² Ğ¿ĞµÑ‚Ñ€ Ğ¿ĞµÑ‚Ñ€Ğ¾Ğ²Ğ¸Ñ‡",
-            extension="778",
-            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
-            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
-        )
-        call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="service-user-call",
-            phone_number="+79001112233",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=timezone.now(),
-            result=PhoneCall.RESULT_ANSWERED,
-            provider_extension="778",
-            employee_profile=employee,
-        )
-
-        map_employee_service2_user(employee, self.worker, self.owner)
-
-        employee.refresh_from_db()
-        self.assertEqual(employee.user, self.worker)
-        call.refresh_from_db()
-        self.assertEqual(call.employee, self.worker)
-        self.assertEqual(identity.employee, employee)
-
-    def test_service2_account_change_claims_legacy_calls(self):
-        employee = Employee.objects.create(
-            organization=self.organization,
-            display_name="ĞŸĞµÑ‚Ñ€Ğ¾Ğ² ĞŸĞµÑ‚Ñ€ ĞŸĞµÑ‚Ñ€Ğ¾Ğ²Ğ¸Ñ‡",
-            is_active=True,
-            user=self.worker,
-        )
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            external_id="legacy-service-user-map",
-        )
-        call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="legacy-service-user-call",
-            phone_number="+79001112233",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=timezone.now(),
-            result=PhoneCall.RESULT_ANSWERED,
-            employee=self.worker,
-        )
-
-        map_employee_service2_user(employee, self.other, self.owner)
-
-        employee.refresh_from_db()
-        call.refresh_from_db()
-        self.assertEqual(employee.user, self.other)
-        self.assertEqual(call.employee_profile, employee)
-        self.assertEqual(call.employee, self.other)
-
-    def test_unified_employee_mapping_page_lists_1c_and_telephony_sources(self):
-        employee = Employee.objects.create(
-            organization=self.organization,
-            display_name="Ğ¡Ğ¸Ğ´Ğ¾Ñ€Ğ¾Ğ² Ğ¡Ğ¸Ğ´Ğ¾Ñ€ Ğ¡Ğ¸Ğ´Ğ¾Ñ€Ğ¾Ğ²Ğ¸Ñ‡",
-            is_active=True,
-            user=self.worker,
-        )
-        EmployeeOneCIdentity.objects.create(
-            organization=self.organization,
-            employee=employee,
-            raw_name="Ğ¡Ğ¸Ğ´Ğ¾Ñ€Ğ¾Ğ² Ğ¡Ğ¸Ğ´Ğ¾Ñ€ Ğ¡Ğ¸Ğ´Ğ¾Ñ€Ğ¾Ğ²Ğ¸Ñ‡",
-            normalized_name="ÑĞ¸Ğ´Ğ¾Ñ€Ğ¾Ğ² ÑĞ¸Ğ´Ğ¾Ñ€ ÑĞ¸Ğ´Ğ¾Ñ€Ğ¾Ğ²Ğ¸Ñ‡",
-            onec_employee_id="11111111-1111-1111-1111-111111111111",
-            personnel_number="0001",
-            status=EmployeeOneCIdentity.STATUS_MANUALLY_MATCHED,
-            match_method=EmployeeOneCIdentity.MATCH_MANUAL,
-            source_active=True,
-        )
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="ĞœĞµĞ³Ğ°Ğ¤Ğ¾Ğ½",
-            external_id="mapping-page",
-        )
-        TelephonyEmployeeIdentity.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            employee=employee,
-            raw_name="Ğ¡Ğ¸Ğ´Ğ¾Ñ€Ğ¾Ğ² Ğ¡Ğ¸Ğ´Ğ¾Ñ€ Ğ¡Ğ¸Ğ´Ğ¾Ñ€Ğ¾Ğ²Ğ¸Ñ‡",
-            normalized_name="ÑĞ¸Ğ´Ğ¾Ñ€Ğ¾Ğ² ÑĞ¸Ğ´Ğ¾Ñ€ ÑĞ¸Ğ´Ğ¾Ñ€Ğ¾Ğ²Ğ¸Ñ‡",
-            extension="779",
-            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
-            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
-        )
-
-        self.organization.paid_until = timezone.now() + timedelta(days=30)
-        self.organization.save(update_fields=["paid_until"])
-        self.client.login(username="owner", password="test")
-        page = self.client.get(reverse("finance_payroll_employee_mapping"))
-
-        self.assertEqual(page.status_code, 200)
-        self.assertContains(page, "Ğ¡Ğ¾Ğ¿Ğ¾ÑÑ‚Ğ°Ğ²Ğ»ĞµĞ½Ğ¸Ğµ ÑĞ¾Ñ‚Ñ€ÑƒĞ´Ğ½Ğ¸ĞºĞ¾Ğ²")
-        self.assertContains(page, "Ğ¡Ğ¸Ğ½Ñ…Ñ€Ğ¾Ğ½Ğ¸Ğ·Ğ¸Ñ€Ğ¾Ğ²Ğ°Ñ‚ÑŒ Ğ²ÑÑ‘")
-        self.assertContains(page, "Ğ¡Ğ¸Ğ´Ğ¾Ñ€Ğ¾Ğ² Ğ¡Ğ¸Ğ´Ğ¾Ñ€ Ğ¡Ğ¸Ğ´Ğ¾Ñ€Ğ¾Ğ²Ğ¸Ñ‡")
-        self.assertContains(page, "ext 779")
-        self.assertContains(page, "0001")
-
-    def test_channel_settings_are_organization_scoped(self):
-        foreign_organization = Organization.objects.create(name="Foreign setup org")
-        foreign_channel = CommunicationChannel.objects.create(
-            organization=foreign_organization,
-            kind="website",
-            name="Foreign site",
-        )
-        foreign_connection = ChannelConnection.objects.create(
-            channel=foreign_channel,
-            name="Foreign connection",
-            external_id="foreign",
-        )
-        foreign_avito_channel = CommunicationChannel.objects.create(
-            organization=foreign_organization,
-            kind="avito",
-            name="Foreign Avito",
-        )
-        foreign_avito_connection = ChannelConnection.objects.create(
-            channel=foreign_avito_channel,
-            name="Foreign Avito account",
-            external_id="987654321",
-        )
-        foreign_line = TelephonyConnection.objects.create(
-            organization=foreign_organization,
-            name="Foreign line",
-            external_id="foreign-line",
-        )
-        self.client.login(username="owner", password="test")
-        self.assertEqual(
-            self.client.get(
-                reverse("communication_connection_edit", args=[foreign_connection.pk])
-            ).status_code,
-            404,
-        )
-        self.assertEqual(
-            self.client.get(
-                reverse("communication_telephony_edit", args=[foreign_line.pk])
-            ).status_code,
-            404,
-        )
-        self.assertEqual(
-            self.client.post(
-                reverse("communication_avito_connect", args=[foreign_avito_connection.pk]),
-                secure=True,
-            ).status_code,
-            404,
-        )
-        self.assertEqual(
-            self.client.post(
-                reverse("communication_avito_check", args=[foreign_avito_connection.pk]),
-                secure=True,
-            ).status_code,
-            404,
-        )
-
-    def test_communication_notification_feed_is_persistent_and_user_scoped(self):
-        own_notification = Notification.objects.create(
-            user=self.worker,
-            organization=self.organization,
-            kind="communication",
-            title="ĞĞ¾Ğ²Ğ¾Ğµ ÑĞ¾Ğ¾Ğ±Ñ‰ĞµĞ½Ğ¸Ğµ",
-            message="ĞĞ²Ğ¸Ñ‚Ğ¾ Â· Ğ˜Ğ²Ğ°Ğ½: Ğ—Ğ´Ñ€Ğ°Ğ²ÑÑ‚Ğ²ÑƒĞ¹Ñ‚Ğµ",
-            action_url="/communications/?conversation=test",
-        )
-        other_notification = Notification.objects.create(
-            user=self.other,
-            organization=self.organization,
-            kind="communication",
-            title="Ğ§ÑƒĞ¶Ğ¾Ğµ ÑĞ¾Ğ¾Ğ±Ñ‰ĞµĞ½Ğ¸Ğµ",
-        )
-        self.client.login(username="worker", password="test")
-        feed = self.client.get(reverse("communication_notification_feed"))
-        self.assertEqual(feed.status_code, 200)
-        self.assertEqual([item["id"] for item in feed.json()["notifications"]], [own_notification.pk])
-        self.assertFalse(Notification.objects.get(pk=own_notification.pk).is_resolved)
-        self.assertEqual(
-            self.client.post(reverse("communication_notification_resolve", args=[other_notification.pk])).status_code,
-            404,
-        )
-        other_notification.refresh_from_db()
-        self.assertFalse(other_notification.is_resolved)
-        page = self.client.get(reverse("communications_calls"))
-        self.assertContains(page, 'id="communication-alerts"')
-        self.assertContains(page, "window.setInterval(pollCommunicationAlerts, 15000)", html=False)
-        self.assertContains(page, "visibleIds.slice(index * 20, (index + 1) * 20)", html=False)
-
-        self.assertEqual(
-            self.client.get(reverse("communication_notification_resolve", args=[own_notification.pk])).status_code,
-            405,
-        )
-        resolved = self.client.post(reverse("communication_notification_resolve", args=[own_notification.pk]))
-        self.assertEqual(resolved.status_code, 200)
-        own_notification.refresh_from_db()
-        self.assertTrue(own_notification.is_read)
-        self.assertTrue(own_notification.is_resolved)
-        resolved_feed = self.client.get(
-            reverse("communication_notification_feed"), {"visible": str(own_notification.pk)},
-        ).json()
-        self.assertEqual(resolved_feed["notifications"], [])
-        self.assertEqual(resolved_feed["resolved_ids"], [own_notification.pk])
-        other_notification.is_resolved = True
-        other_notification.save(update_fields=["is_resolved"])
-        scoped_resolved = self.client.get(
-            reverse("communication_notification_feed"), {"visible": f"{own_notification.pk},{other_notification.pk}"},
-        ).json()
-        self.assertEqual(scoped_resolved["resolved_ids"], [own_notification.pk])
-        foreign_organization = Organization.objects.create(name="Foreign notification org")
-        foreign_notification = Notification.objects.create(
-            user=self.worker,
-            organization=foreign_organization,
-            kind="communication",
-            title="Ğ”Ñ€ÑƒĞ³Ğ°Ñ Ğ¾Ñ€Ğ³Ğ°Ğ½Ğ¸Ğ·Ğ°Ñ†Ğ¸Ñ",
-            is_resolved=True,
-        )
-        other_kind = Notification.objects.create(
-            user=self.worker,
-            organization=self.organization,
-            kind="finance",
-            title="Ğ”Ñ€ÑƒĞ³Ğ¾Ğ¹ Ñ‚Ğ¸Ğ¿",
-            is_resolved=True,
-        )
-        isolated = self.client.get(
-            reverse("communication_notification_feed"),
-            {"visible": f"{foreign_notification.pk},{other_kind.pk}"},
-        ).json()
-        self.assertEqual(isolated["resolved_ids"], [])
-        self.assertEqual(
-            self.client.get(reverse("communication_notification_feed"), {"visible": "1,true"}).status_code,
-            400,
-        )
-
-        generated = [Notification.objects.create(
-            user=self.worker,
-            organization=self.organization,
-            kind="communication",
-            title=f"Ğ¡Ğ¾Ğ¾Ğ±Ñ‰ĞµĞ½Ğ¸Ğµ {index}",
-        ) for index in range(11)]
-        feed_ids = [item["id"] for item in self.client.get(reverse("communication_notification_feed")).json()["notifications"]]
-        self.assertNotIn(generated[0].pk, feed_ids)
-        self.assertEqual(feed_ids[-1], generated[-1].pk)
-
-        csrf_notification = Notification.objects.create(
-            user=self.worker,
-            organization=self.organization,
-            kind="communication",
-            title="CSRF check",
-        )
-        csrf_client = Client(enforce_csrf_checks=True)
-        self.assertTrue(csrf_client.login(username="worker", password="test"))
-        csrf_client.get(reverse("communication_notification_feed"))
-        resolve_url = reverse("communication_notification_resolve", args=[csrf_notification.pk])
-        self.assertEqual(csrf_client.post(resolve_url).status_code, 403)
-        csrf_token = csrf_client.cookies["csrftoken"].value
-        self.assertEqual(csrf_client.post(resolve_url, HTTP_X_CSRFTOKEN=csrf_token).status_code, 200)
-
-        self.client.logout()
-        self.client.login(username="accountant", password="test")
-        self.assertNotEqual(self.client.get(reverse("communication_notification_feed")).status_code, 200)
-
-    def test_view_only_capability_cannot_change_conversation_status(self):
-        viewer = User.objects.create_user("viewer", password="test")
-        OrganizationAccess.objects.create(user=viewer, organization=self.organization, role="viewer")
-        CommunicationAccess.objects.filter(user=viewer, organization=self.organization).update(can_view_conversations=True)
-        conversation = Conversation.objects.create(
-            organization=self.organization,
-            connection=self.connection,
-            external_id="view-only-chat",
-            participant_name="Ğ˜Ğ²Ğ°Ğ½",
-        )
-        self.client.login(username="viewer", password="test")
-        page = self.client.get(
-            reverse("communications_conversations"), {"conversation": conversation.uuid},
-        )
-        self.assertEqual(page.status_code, 200)
-        self.assertNotContains(page, 'name="status"')
-        response = self.client.post(
-            reverse("communication_update", args=[conversation.uuid]),
-            {"status": Conversation.STATUS_DONE},
-        )
-        self.assertEqual(response.status_code, 403)
-        conversation.refresh_from_db()
-        self.assertEqual(conversation.status, Conversation.STATUS_NEW)
-
-    def test_worker_sees_only_own_calls_and_owner_sees_all(self):
-        telephony = TelephonyConnection.objects.create(organization=self.organization, external_id="megafon")
-        for index, employee in enumerate((self.worker, self.other)):
-            PhoneCall.objects.create(organization=self.organization, connection=telephony, external_id=str(index), employee=employee, phone_number=f"7000000000{index}", direction="in", started_at=timezone.now() - timedelta(minutes=index), result="answered")
-        self.client.login(username="worker", password="test")
-        response = self.client.get(reverse("communications_calls"))
-        self.assertContains(response, "70000000000")
-        self.assertNotContains(response, "70000000001")
-        self.assertNotContains(response, 'name="employee"')
-        scoped = self.client.get(reverse("communications_calls"), {"employee": self.other.pk})
-        self.assertContains(scoped, "70000000000")
-        self.assertNotContains(scoped, "70000000001")
-        self.client.logout(); self.client.login(username="owner", password="test")
-        response = self.client.get(reverse("communications_calls"))
-        self.assertContains(response, "70000000000")
-        self.assertContains(response, "70000000001")
-        self.assertContains(response, 'name="employee"')
-        self.assertEqual(self.client.get(reverse("communications_calls"), {"date_from": "not-a-date"}).status_code, 400)
-        self.assertEqual(self.client.get(reverse("communications_calls"), {"date_from": "2026-02-02", "date_to": "2026-02-01"}).status_code, 400)
-        self.assertEqual(self.client.get(reverse("communications_calls"), {"employee": "not-an-id"}).status_code, 400)
-
-    def test_call_recording_requires_stored_file_and_scopes_access(self):
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            external_id="recordings",
-            recording_allowed_hosts=["recordings.example.test"],
-        )
-        call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="call-recording",
-            employee=self.worker,
-            phone_number="70000000000",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=timezone.now(),
-            result=PhoneCall.RESULT_ANSWERED,
-            recording_ref="https://recordings.example.test/call.mp3",
-            recording_status=PhoneCall.RECORDING_PENDING,
-        )
-        self.client.login(username="worker", password="test")
-        url = reverse("communication_call_recording", args=[call.pk])
-        self.assertEqual(self.client.get(url).status_code, 404)
-
-        payload = b"ID3" + b"private-recording"
-        call.recording_file.save(
-            "private-call.mp3",
-            ContentFile(payload),
-            save=True,
-        )
-        call.recording_status = PhoneCall.RECORDING_STORED
-        call.save(update_fields=["recording_status"])
-        response = self.client.get(url)
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "audio/mpeg")
-        self.assertNotIn("recordings.example.test", response.get("Location", ""))
-
-        foreign_organization = Organization.objects.create(name="Foreign calls org")
-        foreign_owner = User.objects.create_user("foreign-call-owner", password="test")
-        OrganizationAccess.objects.create(
-            user=foreign_owner, organization=foreign_organization, role="owner",
-        )
-        self.client.logout()
-        self.client.login(username="foreign-call-owner", password="test")
-        self.assertEqual(self.client.get(url).status_code, 404)
-
-    def test_recording_downloader_rejects_untrusted_recording_host(self):
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            external_id="untrusted-recording",
-            recording_allowed_hosts=["records.megapbx.ru"],
-        )
-        call = PhoneCall.objects.create(
-            organization=self.organization,
-            connection=telephony,
-            external_id="untrusted-call",
-            phone_number="+79001112233",
-            direction=PhoneCall.DIRECTION_IN,
-            started_at=timezone.now(),
-            result=PhoneCall.RESULT_ANSWERED,
-            recording_ref="https://example.invalid/call.mp3",
-            recording_status=PhoneCall.RECORDING_PENDING,
-        )
-        self.assertFalse(download_call_recording(call.pk))
-        call.refresh_from_db()
-        self.assertEqual(call.recording_status, PhoneCall.RECORDING_FAILED)
-        self.assertEqual(call.recording_error, "untrusted_recording_url")
-        self.assertFalse(call.recording_file)
-
-    def test_avito_dialog_shows_delivery_state_and_disables_attachments(self):
-        conversation = Conversation.objects.create(
-            organization=self.organization,
-            connection=self.connection,
-            external_id="chat-ui",
-            participant_name="Ğ˜Ğ²Ğ°Ğ½",
-            last_message_at=timezone.now(),
-        )
-        ConversationMessage.objects.create(
-            conversation=conversation,
-            direction=ConversationMessage.DIRECTION_OUT,
-            body="ĞĞµ Ğ´Ğ¾ÑÑ‚Ğ°Ğ²Ğ»ĞµĞ½Ğ¾",
-            delivery_status=ConversationMessage.DELIVERY_FAILED,
-        )
-        self.client.login(username="worker", password="test")
-        response = self.client.get(reverse("communications_conversations"), {"conversation": conversation.uuid})
-        self.assertContains(response, "ĞÑˆĞ¸Ğ±ĞºĞ°")
-        self.assertContains(response, "Ğ”Ğ»Ñ ĞĞ²Ğ¸Ñ‚Ğ¾ ÑĞµĞ¹Ñ‡Ğ°Ñ Ğ´Ğ¾ÑÑ‚ÑƒĞ¿Ğ½Ğ° Ğ¾Ñ‚Ğ¿Ñ€Ğ°Ğ²ĞºĞ° Ñ‚Ğ¾Ğ»ÑŒĞºĞ¾ Ñ‚ĞµĞºÑÑ‚Ğ°")
-        self.assertNotContains(response, 'type="file"')
-
-    def test_avito_attachment_is_rejected_on_server(self):
-        conversation = Conversation.objects.create(
-            organization=self.organization,
-            connection=self.connection,
-            external_id="chat-server-validation",
-            participant_name="Ğ˜Ğ²Ğ°Ğ½",
-        )
-        self.client.login(username="worker", password="test")
-        response = self.client.post(
-            reverse("communication_reply", args=[conversation.uuid]),
-            {"body": "Ğ¤Ğ°Ğ¹Ğ»", "attachments": SimpleUploadedFile("note.txt", b"data", content_type="text/plain")},
-        )
-        self.assertEqual(response.status_code, 302)
-        self.assertFalse(conversation.messages.exists())
-
-        self.connection.is_active = False
-        self.connection.save(update_fields=["is_active"])
-        inactive = self.client.post(
-            reverse("communication_reply", args=[conversation.uuid]),
-            {"body": "ĞĞµ ÑÑ‚Ğ°Ğ²Ğ¸Ñ‚ÑŒ Ğ² Ğ¾Ñ‡ĞµÑ€ĞµĞ´ÑŒ"},
-        )
-        self.assertEqual(inactive.status_code, 302)
-        self.assertFalse(conversation.messages.exists())
-
-        too_long = self.client.post(
-            reverse("communication_reply", args=[conversation.uuid]),
-            {"body": "x" * 10001},
-        )
-        self.assertEqual(too_long.status_code, 302)
-        self.assertFalse(conversation.messages.exists())
-
-    def test_invalid_image_rejects_entire_website_reply_and_download_is_hardened(self):
-        website_channel = CommunicationChannel.objects.create(
-            organization=self.organization, kind="website", name="Ğ¡Ğ°Ğ¹Ñ‚",
-        )
-        website_connection = ChannelConnection.objects.create(
-            channel=website_channel, name="Ğ§Ğ°Ñ‚", external_id="widget",
-        )
-        conversation = Conversation.objects.create(
-            organization=self.organization,
-            connection=website_connection,
-            external_id="chat-file",
-            participant_name="ĞĞ½Ğ½Ğ°",
-        )
-        self.client.login(username="worker", password="test")
-        response = self.client.post(
-            reverse("communication_reply", args=[conversation.uuid]),
-            {"body": "Ğ¤Ğ¾Ñ‚Ğ¾", "attachments": SimpleUploadedFile("broken.png", b"not-an-image", content_type="image/png")},
-        )
-        self.assertEqual(response.status_code, 302)
-        self.assertFalse(conversation.messages.exists())
-
-        message = ConversationMessage.objects.create(
-            conversation=conversation, direction="out", body="Ğ”Ğ¾ĞºÑƒĞ¼ĞµĞ½Ñ‚",
-        )
-        attachment = MessageAttachment.objects.create(
-            message=message,
-            original=SimpleUploadedFile("page.html", b"<script>alert(1)</script>", content_type="text/html"),
-            original_name="page.html",
-            content_type="text/html",
-            original_size=25,
-        )
-        download = self.client.get(reverse("communication_attachment", args=[attachment.pk]))
-        self.assertEqual(download["Content-Type"], "application/octet-stream")
-        self.assertEqual(download["X-Content-Type-Options"], "nosniff")
-        self.assertIn("attachment", download["Content-Disposition"])
-
-        foreign_organization = Organization.objects.create(name="Foreign communications org")
-        foreign_user = User.objects.create_user("foreign-worker", password="test")
-        OrganizationAccess.objects.create(
-            user=foreign_user, organization=foreign_organization, role="manager",
-        )
-        self.client.logout()
-        self.client.login(username="foreign-worker", password="test")
-        self.assertEqual(
-            self.client.get(reverse("communication_attachment", args=[attachment.pk])).status_code,
-            404,
-        )
-
-
-class WebsiteCommunicationApiTests(TestCase):
-    def setUp(self):
-        self.organization = Organization.objects.create(name="Website API org")
-        owner = User.objects.create_user("website-owner", password="test")
-        OrganizationAccess.objects.create(user=owner, organization=self.organization, role="owner")
-        channel = CommunicationChannel.objects.create(organization=self.organization, kind="website", name="ĞÑĞ½Ğ¾Ğ²Ğ½Ğ¾Ğ¹ ÑĞ°Ğ¹Ñ‚")
-        self.connection = ChannelConnection(channel=channel, name="Ğ’Ğ¸Ğ´Ğ¶ĞµÑ‚", external_id="widget")
-        self.connection.set_api_token("secret-token")
-        self.connection.save()
-        self.headers = {"HTTP_AUTHORIZATION": "Bearer secret-token"}
-
-    @patch("pool_service.services.notifications.send_push_to_users")
-    def test_chat_ingestion_is_authenticated_and_idempotent(self, _send_push):
-        url = reverse("website_chat_message", args=[self.connection.public_id])
-        payload = {"session_id": "browser-1", "message_id": "client-1", "name": "Ğ˜Ğ²Ğ°Ğ½", "phone": "+70000000000", "body": "Ğ—Ğ´Ñ€Ğ°Ğ²ÑÑ‚Ğ²ÑƒĞ¹Ñ‚Ğµ"}
-        self.assertEqual(self.client.post(url, payload, content_type="application/json").status_code, 401)
-        first = self.client.post(url, payload, content_type="application/json", **self.headers)
-        duplicate = self.client.post(url, payload, content_type="application/json", **self.headers)
-        self.assertEqual(first.status_code, 201)
-        self.assertEqual(duplicate.status_code, 200)
-        self.assertFalse(duplicate.json()["created"])
-        self.assertEqual(ConversationMessage.objects.filter(direction="in").count(), 1)
-
-        boundary_payload = dict(payload, session_id="s" * 250, message_id="client-2")
-        boundary = self.client.post(url, boundary_payload, content_type="application/json", **self.headers)
-        self.assertEqual(boundary.status_code, 201)
-        self.assertEqual(len(Conversation.objects.get(external_id__startswith="chat:ss").external_id), 255)
-        too_long_session = self.client.post(
-            url,
-            dict(payload, session_id="s" * 251, message_id="client-3"),
-            content_type="application/json",
-            **self.headers,
-        )
-        self.assertEqual(too_long_session.status_code, 400)
-        self.assertEqual(too_long_session.json()["error"], "invalid_session_id")
-
-        oversized = b'{"body":"' + (b"x" * (64 * 1024)) + b'"}'
-        oversized_request = RequestFactory().post(url, b"{}", content_type="application/json")
-        oversized_request.META.pop("CONTENT_LENGTH", None)
-        oversized_request._body = oversized
-        with self.assertRaisesMessage(ValueError, "payload_too_large"):
-            _payload(oversized_request)
-
-    @patch("pool_service.services.notifications.send_push_to_users")
-    def test_website_request_and_reply_delivery_ack(self, _send_push):
-        request_url = reverse("website_request_create", args=[self.connection.public_id])
-        response = self.client.post(request_url, {"request_id": "lead-1", "name": "ĞĞ½Ğ½Ğ°", "phone": "+71111111111", "service": "Ğ‘Ğ°ÑÑĞµĞ¹Ğ½", "delivery": "Ğ¡Ğ°Ğ¼Ğ¾Ğ²Ñ‹Ğ²Ğ¾Ğ·", "address": "Ğ‘Ğ°Ñ€Ğ½Ğ°ÑƒĞ»", "comment": "ĞŸĞµÑ€ĞµĞ·Ğ²Ğ¾Ğ½Ğ¸Ñ‚Ğµ"}, content_type="application/json", **self.headers)
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(WebsiteRequest.objects.get().service, "Ğ‘Ğ°ÑÑĞµĞ¹Ğ½")
-        self.client.login(username="website-owner", password="test")
-        request_card = self.client.get(
-            reverse("communications_conversations"),
-            {"conversation": response.json()["conversation_id"]},
-        )
-        self.assertContains(request_card, "Ğ—Ğ°ÑĞ²ĞºĞ° Ñ ÑĞ°Ğ¹Ñ‚Ğ°")
-        self.assertContains(request_card, "+71111111111")
-        self.assertContains(request_card, "Ğ‘Ğ°ÑÑĞµĞ¹Ğ½")
-        self.assertContains(request_card, "Ğ¡Ğ°Ğ¼Ğ¾Ğ²Ñ‹Ğ²Ğ¾Ğ·")
-        self.assertContains(request_card, "Ğ‘Ğ°Ñ€Ğ½Ğ°ÑƒĞ»")
-        self.assertContains(request_card, "ĞŸĞµÑ€ĞµĞ·Ğ²Ğ¾Ğ½Ğ¸Ñ‚Ğµ")
-        self.client.logout()
-
-        conversation = Conversation.objects.create(organization=self.organization, connection=self.connection, external_id="chat:browser-2", participant_name="ĞĞ½Ğ½Ğ°")
-        outgoing = ConversationMessage.objects.create(conversation=conversation, direction="out", body="Ğ”Ğ¾Ğ±Ñ€Ñ‹Ğ¹ Ğ´ĞµĞ½ÑŒ", delivery_status="pending")
-        outbox_url = reverse("website_chat_outbox", args=[self.connection.public_id, "browser-2"])
-        outbox = self.client.get(outbox_url, **self.headers)
-        self.assertEqual(outbox.json()["messages"][0]["body"], "Ğ”Ğ¾Ğ±Ñ€Ñ‹Ğ¹ Ğ´ĞµĞ½ÑŒ")
-        outgoing.refresh_from_db()
-        self.assertEqual(outgoing.delivery_status, ConversationMessage.DELIVERY_SENDING)
-        ack_url = reverse("website_chat_outbox_ack", args=[self.connection.public_id, "browser-2"])
-        ack = self.client.post(ack_url, {"message_ids": [outgoing.pk]}, content_type="application/json", **self.headers)
-        self.assertEqual(ack.json()["acknowledged"], 1)
-        outgoing.refresh_from_db()
-        self.assertEqual(outgoing.delivery_status, "delivered")
-        delivered_at = outgoing.delivered_at
-        repeated_ack = self.client.post(ack_url, {"message_ids": [outgoing.pk]}, content_type="application/json", **self.headers)
-        self.assertEqual(repeated_ack.json()["acknowledged"], 0)
-        outgoing.refresh_from_db()
-        self.assertEqual(outgoing.delivered_at, delivered_at)
-        self.assertEqual(self.client.get(outbox_url, **self.headers).json()["messages"], [])
-
-        failed = ConversationMessage.objects.create(
-            conversation=conversation,
-            direction=ConversationMessage.DIRECTION_OUT,
-            body="ĞĞµ Ğ¾Ñ‚Ğ¿Ñ€Ğ°Ğ²Ğ»ÑÑ‚ÑŒ",
-            delivery_status=ConversationMessage.DELIVERY_FAILED,
-        )
-        self.assertEqual(self.client.get(outbox_url, **self.headers).json()["messages"], [])
-        failed_ack = self.client.post(
-            ack_url, {"message_ids": [failed.pk]}, content_type="application/json", **self.headers,
-        )
-        self.assertEqual(failed_ack.json()["acknowledged"], 0)
-        failed.refresh_from_db()
-        self.assertEqual(failed.delivery_status, ConversationMessage.DELIVERY_FAILED)
-        invalid_bool = self.client.post(
-            ack_url, {"message_ids": [True]}, content_type="application/json", **self.headers,
-        )
-        self.assertEqual(invalid_bool.status_code, 400)
-        never_claimed = ConversationMessage.objects.create(
-            conversation=conversation,
-            direction=ConversationMessage.DIRECTION_OUT,
-            body="Ğ•Ñ‰Ñ‘ Ğ½Ğµ Ğ¿Ğ¾Ğ»ÑƒÑ‡ĞµĞ½Ğ¾ ÑĞ°Ğ¹Ñ‚Ğ¾Ğ¼",
-            delivery_status=ConversationMessage.DELIVERY_PENDING,
-        )
-        premature_ack = self.client.post(
-            ack_url, {"message_ids": [never_claimed.pk]}, content_type="application/json", **self.headers,
-        )
-        self.assertEqual(premature_ack.json()["acknowledged"], 0)
-        never_claimed.refresh_from_db()
-        self.assertEqual(never_claimed.delivery_status, ConversationMessage.DELIVERY_PENDING)
-
-        other_conversation = Conversation.objects.create(
-            organization=self.organization,
-            connection=self.connection,
-            external_id="chat:other-browser",
-            participant_name="ĞĞ»ĞµĞ³",
-        )
-        other_message = ConversationMessage.objects.create(
-            conversation=other_conversation,
-            direction=ConversationMessage.DIRECTION_OUT,
-            body="Ğ”Ñ€ÑƒĞ³Ğ¾Ğ¹ Ğ´Ğ¸Ğ°Ğ»Ğ¾Ğ³",
-            delivery_status=ConversationMessage.DELIVERY_SENDING,
-        )
-        cross_session_ack = self.client.post(
-            ack_url, {"message_ids": [other_message.pk]}, content_type="application/json", **self.headers,
-        )
-        self.assertEqual(cross_session_ack.json()["acknowledged"], 0)
-        other_message.refresh_from_db()
-        self.assertEqual(other_message.delivery_status, ConversationMessage.DELIVERY_SENDING)
-
-
-class AvitoCommunicationTests(TestCase):
-    def setUp(self):
-        self.organization = Organization.objects.create(name="Avito API org")
-        owner = User.objects.create_user("avito-owner", password="test")
-        OrganizationAccess.objects.create(user=owner, organization=self.organization, role="owner")
-        channel = CommunicationChannel.objects.create(organization=self.organization, kind="avito", name="ĞĞ²Ğ¸Ñ‚Ğ¾")
-        self.connection = ChannelConnection(channel=channel, name="ĞĞºĞºĞ°ÑƒĞ½Ñ‚", external_id="12345")
-        self.connection.set_api_token("webhook-secret")
-        self.connection.save()
-        self.headers = {"HTTP_AUTHORIZATION": "Bearer webhook-secret"}
-
-    @patch("pool_service.services.notifications.send_push_to_users")
-    def test_webhook_is_authenticated_scoped_and_idempotent(self, _send_push):
-        url = reverse("avito_webhook", args=[self.connection.public_id, "webhook-secret"])
-        bad_url = reverse("avito_webhook", args=[self.connection.public_id, "wrong-secret"])
-        payload = {"payload": {"type": "message", "value": {
-            "id": "message-1", "chat_id": "chat-1", "user_id": 12345,
-            "author_id": 67890, "author_name": "Ğ˜Ğ²Ğ°Ğ½", "type": "text",
-            "content": {"text": "Ğ—Ğ´Ñ€Ğ°Ğ²ÑÑ‚Ğ²ÑƒĞ¹Ñ‚Ğµ"},
-        }}}
-        self.assertEqual(self.client.post(bad_url, payload, content_type="application/json").status_code, 401)
-        first = self.client.post(url, payload, content_type="application/json")
-        duplicate = self.client.post(url, payload, content_type="application/json")
-        self.assertEqual(first.status_code, 200)
-        self.assertEqual(duplicate.status_code, 200)
-        self.assertTrue(first.json()["created"])
-        self.assertFalse(duplicate.json()["created"])
-        self.assertEqual(ConversationMessage.objects.get().body, "Ğ—Ğ´Ñ€Ğ°Ğ²ÑÑ‚Ğ²ÑƒĞ¹Ñ‚Ğµ")
-        self.connection.refresh_from_db()
-        self.assertTrue(self.connection.settings["avito_webhook_last_received_at"])
-        self.assertEqual(self.connection.settings["avito_webhook_last_result"], "duplicate")
-
-        wrong_account = {"payload": {"type": "message", "value": dict(payload["payload"]["value"], id="message-2", user_id=999)}}
-        response = self.client.post(url, wrong_account, content_type="application/json")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(ConversationMessage.objects.count(), 1)
-        self.connection.refresh_from_db()
-        self.assertEqual(self.connection.settings["avito_webhook_last_result"], "ignored")
-
-        invalid = {"payload": {"type": "message", "value": dict(
-            payload["payload"]["value"], id="message-3", type="unsupported"
-        )}}
-        invalid_response = self.client.post(url, invalid, content_type="application/json")
-        self.assertEqual(invalid_response.status_code, 200)
-        self.connection.refresh_from_db()
-        self.assertEqual(self.connection.settings["avito_webhook_last_result"], "error")
-        self.assertEqual(
-            self.connection.settings["avito_webhook_last_error"],
-            "unsupported_message_type",
-        )
-
-    @patch("pool_service.communication_avito._json_request")
-    def test_credentials_are_encrypted_and_outgoing_message_is_delivered(self, request):
-        credential = AvitoCredential.objects.create(
-            connection=self.connection,
-            client_id_encrypted=encrypt_secret("client-id"),
-            client_secret_encrypted=encrypt_secret("client-secret"),
-        )
-        self.assertNotIn("client-secret", credential.client_secret_encrypted)
-        request.side_effect = [
-            {"access_token": "short-lived-token", "expires_in": 3600},
-            {"id": "provider-message-1"},
-        ]
-        conversation = Conversation.objects.create(
-            organization=self.organization, connection=self.connection,
-            external_id="chat-1", participant_name="Ğ˜Ğ²Ğ°Ğ½",
-        )
-        message = ConversationMessage.objects.create(
-            conversation=conversation, direction="out", body="Ğ”Ğ¾Ğ±Ñ€Ñ‹Ğ¹ Ğ´ĞµĞ½ÑŒ",
-            delivery_status=ConversationMessage.DELIVERY_PENDING,
-        )
-        send_message(message)
-        message.refresh_from_db()
-        credential.refresh_from_db()
-        self.assertEqual(message.delivery_status, ConversationMessage.DELIVERY_DELIVERED)
-        self.assertEqual(message.external_id, "provider-message-1")
-        self.assertEqual(decrypt_secret(credential.access_token_encrypted), "short-lived-token")
-        self.assertEqual(access_token(self.connection), "short-lived-token")
-        self.assertEqual(request.call_count, 2)
-
-    @patch("pool_service.communication_avito._json_request")
-    def test_authorized_account_and_messenger_access_helpers(self, request):
-        AvitoCredential.objects.create(
-            connection=self.connection,
-            client_id_encrypted=encrypt_secret("client-id"),
-            client_secret_encrypted=encrypt_secret("client-secret"),
-            access_token_encrypted=encrypt_secret("cached-token"),
-            access_token_expires_at=timezone.now() + timedelta(hours=1),
-        )
-        request.side_effect = [
-            {"id": 7986565},
-            {"chats": []},
-        ]
-        self.assertEqual(authorized_account_id(self.connection), "7986565")
-        self.assertTrue(verify_messenger_access(self.connection, "7986565"))
-        self.assertIn("/core/v1/accounts/self", request.call_args_list[0].args[0])
-        self.assertIn(
-            "/messenger/v2/accounts/7986565/chats?limit=1&offset=0",
-            request.call_args_list[1].args[0],
-        )
-
-    @patch("pool_service.services.notifications.send_push_to_users")
-    @patch("pool_service.communication_avito._json_list_request")
-    @patch("pool_service.communication_avito._json_request")
-    def test_pull_sync_recovers_recent_inbound_messages(
-        self, request, list_request, _send_push
-    ):
-        AvitoCredential.objects.create(
-            connection=self.connection,
-            client_id_encrypted=encrypt_secret("client-id"),
-            client_secret_encrypted=encrypt_secret("client-secret"),
-            access_token_encrypted=encrypt_secret("cached-token"),
-            access_token_expires_at=timezone.now() + timedelta(hours=1),
-        )
-        now_ts = int(timezone.now().timestamp())
-        request.side_effect = [
-            {"id": 12345},
-            {
-                "chats": [
-                    {
-                        "id": "chat-recovery",
-                        "users": [
-                            {
-                                "name": "ĞšĞ»Ğ¸ĞµĞ½Ñ‚",
-                                "public_user_profile": {"user_id": 67890},
-                            }
-                        ],
-                    }
-                ]
-            },
-            {"id": 12345},
-            {
-                "chats": [
-                    {
-                        "id": "chat-recovery",
-                        "users": [
-                            {
-                                "name": "ĞšĞ»Ğ¸ĞµĞ½Ñ‚",
-                                "public_user_profile": {"user_id": 67890},
-                            }
-                        ],
-                    }
-                ]
-            },
-        ]
-        list_request.return_value = [
-            {
-                "id": "out-1",
-                "author_id": 12345,
-                "created": now_ts,
-                "direction": "out",
-                "type": "text",
-                "content": {"text": "ĞĞ°Ñˆ Ğ¾Ñ‚Ğ²ĞµÑ‚"},
-            },
-            {
-                "id": "in-1",
-                "author_id": 67890,
-                "created": now_ts,
-                "direction": "in",
-                "type": "text",
-                "content": {"text": "Ğ¢ĞµÑÑ‚Ğ¾Ğ²Ğ¾Ğµ Ğ²Ñ…Ğ¾Ğ´ÑÑ‰ĞµĞµ"},
-            },
-        ]
-        result = sync_recent_messages(self.connection)
-        self.assertEqual(result.chats_checked, 1)
-        self.assertEqual(result.messages_created, 1)
-        self.assertEqual(result.messages_skipped, 1)
-        message = ConversationMessage.objects.get(external_id="in-1")
-        self.assertEqual(message.body, "Ğ¢ĞµÑÑ‚Ğ¾Ğ²Ğ¾Ğµ Ğ²Ñ…Ğ¾Ğ´ÑÑ‰ĞµĞµ")
-        self.assertEqual(message.conversation.external_id, "chat-recovery")
-        self.assertEqual(message.conversation.participant_name, "ĞšĞ»Ğ¸ĞµĞ½Ñ‚")
-
-        second = sync_recent_messages(self.connection)
-        self.assertEqual(second.messages_created, 0)
-        self.assertEqual(second.messages_existing, 1)
-
-    def test_message_list_request_accepts_wrapped_messages_payload(self):
-        response = MagicMock()
-        response.__enter__.return_value.read.return_value = (
-            b'{"messages":[{"id":"m1","direction":"in","type":"text","content":{"text":"hello"}}]}'
-        )
-        with patch("pool_service.communication_avito.urlopen", return_value=response):
-            messages = _json_list_request("https://api.avito.ru/test")
-        self.assertEqual(messages[0]["id"], "m1")
-
-    def test_message_list_request_rejects_unknown_object_payload(self):
-        response = MagicMock()
-        response.__enter__.return_value.read.return_value = b'{"ok":true}'
-        with patch("pool_service.communication_avito.urlopen", return_value=response):
-            with self.assertRaisesMessage(
-                AvitoError, "provider_messages_invalid_response"
-            ):
-                _json_list_request("https://api.avito.ru/test")
-
-    @patch("pool_service.communication_avito._json_request")
-    def test_webhook_provider_helpers_validate_contract(self, request):
-        credential = AvitoCredential.objects.create(
-            connection=self.connection,
-            client_id_encrypted=encrypt_secret("client-id"),
-            client_secret_encrypted=encrypt_secret("client-secret"),
-            access_token_encrypted=encrypt_secret("cached-token"),
-            access_token_expires_at=timezone.now() + timedelta(hours=1),
-        )
-        callback = "https://service2.example/api/communications/avito/test/token/webhook/"
-
-        request.side_effect = [
-            {"ok": True},
-            {"subscriptions": [{"url": callback, "version": "3"}]},
-            {"ok": True},
-        ]
-        self.assertEqual(subscribe_webhook(self.connection, callback), {"ok": True})
-        self.assertEqual(webhook_subscriptions(self.connection), [callback])
-        self.assertEqual(unsubscribe_webhook(self.connection, callback), {"ok": True})
-        self.assertEqual(request.call_count, 3)
-        credential.refresh_from_db()
-        self.assertEqual(
-            decrypt_secret(credential.access_token_encrypted),
-            "cached-token",
-        )
-
-        request.reset_mock()
-        request.side_effect = None
-        request.return_value = {"ok": False}
-        with self.assertRaisesMessage(AvitoError, "provider_webhook_rejected"):
-            subscribe_webhook(self.connection, callback)
-
-    @patch("pool_service.communication_avito._json_request")
-    def test_corrupt_cached_token_is_replaced(self, request):
-        AvitoCredential.objects.create(
-            connection=self.connection,
-            client_id_encrypted=encrypt_secret("client-id"),
-            client_secret_encrypted=encrypt_secret("client-secret"),
-            access_token_encrypted="not-a-fernet-token",
-            access_token_expires_at=timezone.now() + timedelta(hours=1),
-        )
-        request.return_value = {"access_token": "replacement-token", "expires_in": 3600}
-
-        self.assertEqual(access_token(self.connection), "replacement-token")
-        self.assertEqual(request.call_count, 1)
-
-    @patch("pool_service.management.commands.send_avito_outbox.send_message")
-    def test_outbox_claim_prevents_a_second_worker_from_sending(self, sender):
-        conversation = Conversation.objects.create(
-            organization=self.organization, connection=self.connection,
-            external_id="chat-claim", participant_name="Ğ˜Ğ²Ğ°Ğ½",
-        )
-        message = ConversationMessage.objects.create(
-            conversation=conversation, direction="out", body="ĞĞ´Ğ¸Ğ½ Ñ€Ğ°Ğ·",
-            delivery_status=ConversationMessage.DELIVERY_PENDING,
-        )
-        call_command("send_avito_outbox")
-        call_command("send_avito_outbox")
-        message.refresh_from_db()
-        self.assertEqual(message.delivery_status, ConversationMessage.DELIVERY_SENDING)
-        sender.assert_called_once()
-
-    def test_outbox_stale_selection_is_not_claimed_after_deactivation(self):
-        conversation = Conversation.objects.create(
-            organization=self.organization,
-            connection=self.connection,
-            external_id="chat-disabled-after-selection",
-            participant_name="Ğ˜Ğ²Ğ°Ğ½",
-        )
-        message = ConversationMessage.objects.create(
-            conversation=conversation,
-            direction=ConversationMessage.DIRECTION_OUT,
-            body="ĞĞµ Ğ¾Ñ‚Ğ¿Ñ€Ğ°Ğ²Ğ»ÑÑ‚ÑŒ Ğ¿Ğ¾ÑĞ»Ğµ Ğ¾Ñ‚ĞºĞ»ÑÑ‡ĞµĞ½Ğ¸Ñ",
-            delivery_status=ConversationMessage.DELIVERY_PENDING,
-        )
-        selected_id = message.pk
-        self.connection.is_active = False
-        self.connection.save(update_fields=["is_active"])
-        self.assertIsNone(claim_message(selected_id))
-        message.refresh_from_db()
-        self.assertEqual(message.delivery_status, ConversationMessage.DELIVERY_PENDING)
-
-        self.connection.is_active = True
-        self.connection.save(update_fields=["is_active"])
-        self.connection.channel.is_active = False
-        self.connection.channel.save(update_fields=["is_active"])
-        self.assertIsNone(claim_message(selected_id))
-        message.refresh_from_db()
-        self.assertEqual(message.delivery_status, ConversationMessage.DELIVERY_PENDING)
-
-    @patch("pool_service.management.commands.send_avito_outbox.send_message")
-    def test_transient_presend_failure_retries_are_bounded(self, sender):
-        sender.side_effect = AvitoRetryableError("provider_http_503")
-        conversation = Conversation.objects.create(
-            organization=self.organization,
-            connection=self.connection,
-            external_id="chat-transient",
-            participant_name="Ğ˜Ğ²Ğ°Ğ½",
-        )
-        message = ConversationMessage.objects.create(
-            conversation=conversation,
-            direction=ConversationMessage.DIRECTION_OUT,
-            body="ĞŸĞ¾Ğ²Ñ‚Ğ¾Ñ€Ğ¸Ñ‚ÑŒ Ğ¿Ğ¾ÑĞ»Ğµ Ğ²Ñ€ĞµĞ¼ĞµĞ½Ğ½Ğ¾Ğ¹ Ğ¾ÑˆĞ¸Ğ±ĞºĞ¸",
-            delivery_status=ConversationMessage.DELIVERY_PENDING,
-        )
-
-        call_command("send_avito_outbox")
-        message.refresh_from_db()
-        self.assertEqual(message.delivery_status, ConversationMessage.DELIVERY_PENDING)
-        self.assertEqual(message.delivery_attempts, 1)
-
-        call_command("send_avito_outbox")
-        message.refresh_from_db()
-        self.assertEqual(message.delivery_status, ConversationMessage.DELIVERY_PENDING)
-        self.assertEqual(message.delivery_attempts, 2)
-
-        call_command("send_avito_outbox")
-        message.refresh_from_db()
-        self.assertEqual(message.delivery_status, ConversationMessage.DELIVERY_FAILED)
-        self.assertEqual(message.delivery_attempts, 3)
-        self.assertEqual(message.delivery_error, "provider_http_503")
-        self.assertEqual(sender.call_count, 3)
-
-    def test_missing_credentials_fail_message_without_crashing_batch(self):
-        conversation = Conversation.objects.create(
-            organization=self.organization,
-            connection=self.connection,
-            external_id="chat-no-credentials",
-            participant_name="Ğ˜Ğ²Ğ°Ğ½",
-        )
-        message = ConversationMessage.objects.create(
-            conversation=conversation,
-            direction=ConversationMessage.DIRECTION_OUT,
-            body="Ğ¡Ğ¾Ğ¾Ğ±Ñ‰ĞµĞ½Ğ¸Ğµ Ğ±ĞµĞ· Ğ½Ğ°ÑÑ‚Ñ€Ğ¾Ğ¹ĞºĞ¸",
-            delivery_status=ConversationMessage.DELIVERY_PENDING,
-        )
-        call_command("send_avito_outbox")
-        message.refresh_from_db()
-        self.assertEqual(message.delivery_status, ConversationMessage.DELIVERY_FAILED)
-        self.assertEqual(message.delivery_error, "provider_credentials_missing")
+YªçŠx-®éÜj×¢ëiºÚ+Š§j[h‘éÜ¢éíçntå:-jZ.¶›­–)Ş³Vg&öÒFFWF–ÖR–×÷'BF–ÖVFVÇF¦–×÷'B–ğ¦g&öÒ–×÷'FÆ–"–×÷'B–×÷'EöÖöGVÆP¦–×÷'BÆövv–æp¦g&öÒVæ—GFW7BæÖö6²–×÷'BÖv–4Öö6²ÂF6€ ¦g&öÒF¦ævòæ2–×÷'B0¦g&öÒF¦ævòæ6öçG&–"æWF‚æÖöFVÇ2–×÷'BW&Ö—76–öâÂW6W ¦g&öÒF¦ævòæ6÷&RæÖævVÖVçB–×÷'B6ÆÅö6öÖÖæ@¦g&öÒF¦ævòæ6÷&RæÖævVÖVçBæ&6R–×÷'B6öÖÖæDW'&÷ ¦g&öÒF¦ævòæF"–×÷'B–çFVw&—G”W'&÷"ÂG&ç67F–öà¦g&öÒF¦ævòæ6÷&Ræf–ÆW2æ&6R–×÷'B6öçFVçDf–ÆP¦g&öÒF¦ævòæ6÷&Ræf–ÆW2çWÆöFVFf–ÆR–×÷'B6–×ÆUWÆöFVDf–ÆP¦g&öÒF¦ævòçFW7B–×÷'B6Æ–VçBÂ&WVW7Df7F÷'’ÂFW7D66RÂ÷fW'&–FU÷6WGF–æw0¦g&öÒF¦ævòçW&Ç2–×÷'B&WfW'6P¦g&öÒF¦ævòçWF–Ç2–×÷'BF–ÖW¦öæP ¦g&öÒööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öåöÖöFVÇ2–×÷'Bf—Fô7&VFVçF–ÂÂ6öÖ×Væ–6F–öä66W72Â6öÖ×Væ–6F–öä6†ææVÂÂ6†ææVÄ6öææV7F–öâÂ6öçfW'6F–öâÂ6öçfW'6F–öäÖW76vRÂÖW76vTGF6†ÖVçBÂ†öæT6ÆÂÂFVÆW†öç”6öææV7F–öâÂFVÆW†öç”V×Æ÷–VT–FVçF—G’ÂvV'6—FU&WVW7@¦g&öÒööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öåöf—Fò–×÷'B€¢f—FôW'&÷"À¢f—Fõ&WG'–&ÆTW'&÷"À¢f—Fõ7–æ5&W7VÇBÀ¢ö§6öåöÆ—7E÷&WVW7BÀ¢66W75÷Fö¶VâÀ¢WF†÷&—¦VEö66÷VçEö–BÀ¢6VæEöÖW76vRÀ¢7V'67&–&U÷vV&†öö²À¢7–æ5÷&V6VçEöÖW76vW2À¢Vç7V'67&–&U÷vV&†öö²À¢fW&–g•öÖW76VævW%ö66W72À¢vV&†ööµ÷7V'67&—F–öç2À¢¦g&öÒööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷&V6÷&F–æw2–×÷'BF÷væÆöEö6ÆÅ÷&V6÷&F–æp¦g&öÒööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷6V7&WG2–×÷'BFV7'—E÷6V7&WBÂVæ7'—E÷6V7&W@¦g&öÒööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷6W'f–6W2–×÷'B&V6V—fUöÖW76vRÂW6W'5÷v—F…ö6öçfW'6F–öåö66W70¦g&öÒööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷6W'f–6W2–×÷'B6öçfW'6F–öåö6&–Æ—G¦g&öÒööÅ÷6W'f–6Rç6W'f–6W2æV×Æ÷–VUö–FVçF—G•÷7–æ2–×÷'B€¢V×Æ÷–VT–FVçF—G•7–æ4W'&÷"À¢WFõöÆ–æµ÷6W'f–6S%÷W6W"À¢ÖöV×Æ÷–VU÷6W'f–6S%÷W6W"À¢Ö÷FVÆW†öç•ö–FVçF—G’À¢&W6öÇfUö6ÆÅöV×Æ÷–VRÀ¢7–æ5öÆÅöV×Æ÷–VUö–FVçF—F–W2À¢7–æ5öÖVvföåöV×Æ÷–VUö–FVçF—F–W2À¢7–æ5ööæV5öV×Æ÷–VUö–FVçF—F–W2À¢¦g&öÒööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öåö’–×÷'B÷–Æö@¦g&öÒööÅ÷6W'f–6Ræf–ææ6Uö–×÷'G2æöFF÷&öf—B–×÷'BôFF6öæf–rÂôFF&Wf–WtW'&÷ ¦g&öÒööÅ÷6W'f–6RæÖævVÖVçBæ6öÖÖæG2ç6VæEöf—Fõö÷WF&÷‚–×÷'B6Æ–ÕöÖW76vP¦g&öÒööÅ÷6W'f–6RæÖöFVÇ2–×÷'B6Æ–VçB26W'f–6T6Æ–VçBÂV×Æ÷–VRÂV×Æ÷–VTöæT4–FVçF—G’Âæ÷F–f–6F–öâÂ÷&væ—¦F–öâÂ÷&væ—¦F–öä66W70¦g&öÒ6W'f–6U÷6—FRæÆövv–æuö†æFÆW'2–×÷'B&VF7D6öÖ×Væ–6F–öåvV&†ööµ6V7&WDf–ÇFW   ¦6Æ726öÖ×Væ–6F–öç5FW7G2…FW7D66R“ ¢FVb6WEW‡6VÆb“ ¢6VÆbæ÷&væ—¦F–öâÒ÷&væ—¦F–öâæö&¦V7G2æ7&VFR†æÖSÒ%FW7B6öÖ×Væ–6F–öç2÷&r"¢6VÆbæ÷væW"ÒW6W"æö&¦V7G2æ7&VFU÷W6W"‚&÷væW""Â77v÷&CÒ'FW7B"¢6VÆbçv÷&¶W"ÒW6W"æö&¦V7G2æ7&VFU÷W6W"‚'v÷&¶W""Â77v÷&CÒ'FW7B"¢6VÆbæ÷F†W"ÒW6W"æö&¦V7G2æ7&VFU÷W6W"‚&÷F†W""Â77v÷&CÒ'FW7B"¢6VÆbæ66÷VçFçBÒW6W"æö&¦V7G2æ7&VFU÷W6W"‚&66÷VçFçB"Â77v÷&CÒ'FW7B"¢÷&væ—¦F–öä66W72æö&¦V7G2æ7&VFR‡W6W#×6VÆbæ÷væW"Â÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÂ&öÆSÒ&÷væW""¢÷&væ—¦F–öä66W72æö&¦V7G2æ7&VFR‡W6W#×6VÆbçv÷&¶W"Â÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÂ&öÆSÒ&ÖævW""¢÷&væ—¦F–öä66W72æö&¦V7G2æ7&VFR‡W6W#×6VÆbæ÷F†W"Â÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÂ&öÆSÒ&ÖævW""¢÷&væ—¦F–öä66W72æö&¦V7G2æ7&VFR‡W6W#×6VÆbæ66÷VçFçBÂ÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÂ&öÆSÒ&66÷VçFçB"¢6VÆbæ6†ææVÂÒ6öÖ×Væ–6F–öä6†ææVÂæö&¦V7G2æ7&VFR†÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÂ¶–æCÒ&f—Fò"ÂæÖSÒ-	--â"¢6VÆbæ6öææV7F–öâÒ6†ææVÄ6öææV7F–öâæö&¦V7G2æ7&VFR†6†ææVÃ×6VÆbæ6†ææVÂÂæÖSÒ-	­­=İ""ÂW‡FW&æÅö–CÒ&öæR"¢66÷VçEö–E÷F6†W"ÒF6‚€¢'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2æf—FõöWF†÷&—¦VEö66÷VçEö–B"À¢&WGW&å÷fÇVS×6VÆbæ6öææV7F–öâæW‡FW&æÅö–BÀ¢¢ÖW76VævW%ö66W75÷F6†W"ÒF6‚€¢'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2æf—Fõ÷fW&–g•öÖW76VævW%ö66W72"À¢&WGW&å÷fÇVSÕG'VRÀ¢¢6VÆbæf—FõöWF†÷&—¦VEö66÷VçEö–BÒ66÷VçEö–E÷F6†W"ç7F'B‚¢6VÆbæf—Fõ÷fW&–g•öÖW76VævW%ö66W72ÒÖW76VævW%ö66W75÷F6†W"ç7F'B‚¢6VÆbæFD6ÆVçW†66÷VçEö–E÷F6†W"ç7F÷¢6VÆbæFD6ÆVçW†ÖW76VævW%ö66W75÷F6†W"ç7F÷ ¢F6‚‚'ööÅ÷6W'f–6Rç6W'f–6W2ææ÷F–f–6F–öç2ç6VæE÷W6…÷Fõ÷W6W'2"¢FVbFW7Eö–æ6öÖ–æuöÖW76vUö7&VFW5ö6öçfW'6F–öåöæEöæ÷F–f–6F–öç2‡6VÆbÂ÷6VæE÷W6‚“ ¢ÖW76vRÂ7&VFVBÒ&V6V—fUöÖW76vR†6öææV7F–öã×6VÆbæ6öææV7F–öâÂW‡FW&æÅö6öçfW'6F–öåö–CÒ&6†BÓ"Â'F–6—çEöæÖSÒ-	-Ò"Â&öG“Ò-	}M---=-R"ÂW‡FW&æÅöÖW76vUö–CÒ&ÖW76vRÓ"¢6VÆbæ76W'EG'VR†7&VFVB¢6VÆbæ76W'DWVÂ†ÖW76vRæ6öçfW'6F–öâæÆ7EöÖW76vUöBÂÖW76vRæ7&VFVEöB¢6VÆbæ76W'DWVÂ„æ÷F–f–6F–öâæö&¦V7G2æf–ÇFW"†¶–æCÒ&6öÖ×Væ–6F–öâ"’æ6÷VçB‚’Â2¢òÂGWÆ–6FRÒ&V6V—fUöÖW76vR†6öææV7F–öã×6VÆbæ6öææV7F–öâÂW‡FW&æÅö6öçfW'6F–öåö–CÒ&6†BÓ"Â'F–6—çEöæÖSÒ-	-Ò"Â&öG“Ò-	}M---=-R"ÂW‡FW&æÅöÖW76vUö–CÒ&ÖW76vRÓ"¢6VÆbæ76W'DfÇ6R†GWÆ–6FR ¢F6‚‚'ööÅ÷6W'f–6Rç6W'f–6W2ææ÷F–f–6F–öç2ç6VæE÷W6…÷Fõ÷W6W'2"¢FVbFW7Eö66÷VçFçE÷&öÆU÷G&ç6—F–öå÷&Wfö¶W5öæ÷F–f–6F–öç2‡6VÆbÂ6VæE÷W6‚“ ¢66W72Ò÷&væ—¦F–öä66W72æö&¦V7G2ævWB‡W6W#×6VÆbçv÷&¶W"Â÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâ¢66W72ç&öÆRÒ&66÷VçFçB ¢66W72ç6fR‡WFFUöf–VÆG3Õ²'&öÆR%Ò¢6&–Æ—F–W2Ò6öÖ×Væ–6F–öä66W72æö&¦V7G2ævWB‡W6W#×6VÆbçv÷&¶W"Â÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâ¢6VÆbæ76W'DfÇ6R†6&–Æ—F–W2æ6å÷f–Wuö6öçfW'6F–öç2¢6VÆbæ76W'Dæ÷D–â‡6VÆbçv÷&¶W"ÂW6W'5÷v—F…ö6öçfW'6F–öåö66W72‡6VÆbæ÷&væ—¦F–öâ’ ¢&V6V—fUöÖW76vR€¢6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢W‡FW&æÅö6öçfW'6F–öåö–CÒ'&—fFRÖ6†B"À¢'F–6—çEöæÖSÒ-	­½]İ""À¢&öG“Ò-	­íİMM]İm½ÍİíRíí]İR"À¢W‡FW&æÅöÖW76vUö–CÒ'&—fFRÖÖW76vR"À¢¢6VÆbæ76W'DfÇ6R„æ÷F–f–6F–öâæö&¦V7G2æf–ÇFW"‡W6W#×6VÆbçv÷&¶W"Â¶–æCÒ&6öÖ×Væ–6F–öâ"’æW†—7G2‚’¢W6†VE÷W6W'2Ò·W6W"ç²f÷"6ÆÂ–â6VæE÷W6‚æ6ÆÅö&w5öÆ—7Bf÷"W6W"–â6ÆÂæ&w5³×Ğ¢6VÆbæ76W'Dæ÷D–â‡6VÆbçv÷&¶W"ç²ÂW6†VE÷W6W'2 ¢FVbFW7E÷6W'f–6U÷&öÆU÷6fU÷&W6W'fW5öW‡Æ–6—Eö6&–Æ—F–W2‡6VÆb“ ¢6W'f–6U÷W6W"ÒW6W"æö&¦V7G2æ7&VFU÷W6W"‚'6W'f–6RÖ6&–Æ—G’"Â77v÷&CÒ'FW7B"¢&öÆRÒ÷&væ—¦F–öä66W72æö&¦V7G2æ7&VFR€¢W6W#×6W'f–6U÷W6W"À¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢&öÆSÒ'6W'f–6R"À¢¢6&–Æ—F–W2Ò6öÖ×Væ–6F–öä66W72æö&¦V7G2ævWB‡W6W#×6W'f–6U÷W6W"Â÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâ¢6VÆbæ76W'DfÇ6R†6&–Æ—F–W2æ6å÷f–Wuö6öçfW'6F–öç2¢6&–Æ—F–W2æ6å÷f–Wuö6öçfW'6F–öç2ÒG'VP¢6&–Æ—F–W2æ6å÷&WÇ•ö6öçfW'6F–öç2ÒG'VP¢6&–Æ—F–W2ç6fR‡WFFUöf–VÆG3Õ²&6å÷f–Wuö6öçfW'6F–öç2"Â&6å÷&WÇ•ö6öçfW'6F–öç2%Ò ¢&öÆRç6fR‚¢6&–Æ—F–W2ç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'EG'VR†6&–Æ—F–W2æ6å÷f–Wuö6öçfW'6F–öç2¢6VÆbæ76W'EG'VR†6&–Æ—F–W2æ6å÷&WÇ•ö6öçfW'6F–öç2 ¢FVbFW7EöFÖ–åöF÷væw&FU÷&V6ö×WFW5ö–æ†W&—FVEö6&–Æ—F–W2‡6VÆb“ ¢W6W"ÒW6W"æö&¦V7G2æ7&VFU÷W6W"‚&F÷væw&FVBÖFÖ–â"Â77v÷&CÒ'FW7B"¢&öÆRÒ÷&væ—¦F–öä66W72æö&¦V7G2æ7&VFR€¢W6W#×W6W"À¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢&öÆSÒ&FÖ–â"À¢¢6&–Æ—F–W2Ò6öÖ×Væ–6F–öä66W72æö&¦V7G2ævWB‡W6W#×W6W"Â÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâ¢6VÆbæ76W'EG'VR†6&–Æ—F–W2æ6åöÖævUö6†ææVÇ2¢6VÆbæ76W'EG'VR†6&–Æ—F–W2æ6åö76–våö6öçfW'6F–öâ¢6VÆbæ76W'EG'VR†6&–Æ—F–W2æ6å÷f–WuöÆÅö6ÆÇ2 ¢&öÆRç&öÆRÒ&ÖævW" ¢&öÆRç6fR‡WFFUöf–VÆG3Õ²'&öÆR%Ò¢6&–Æ—F–W2ç&Vg&W6…ög&öÕöF"‚ ¢6VÆbæ76W'EG'VR†6&–Æ—F–W2æ6å÷f–Wuö6öçfW'6F–öç2¢6VÆbæ76W'EG'VR†6&–Æ—F–W2æ6å÷&WÇ•ö6öçfW'6F–öç2¢6VÆbæ76W'EG'VR†6&–Æ—F–W2æ6å÷F¶Uö6öçfW'6F–öâ¢6VÆbæ76W'EG'VR†6&–Æ—F–W2æ6å÷f–Wuö÷våö6ÆÇ2¢6VÆbæ76W'EG'VR†6&–Æ—F–W2æ6åöÆ—7FVåö6ÆÇ2¢6VÆbæ76W'DfÇ6R†6&–Æ—F–W2æ6åöÖævUö6†ææVÇ2¢6VÆbæ76W'DfÇ6R†6&–Æ—F–W2æ6åö76–våö6öçfW'6F–öâ¢6VÆbæ76W'DfÇ6R†6&–Æ—F–W2æ6å÷f–WuöÆÅö6ÆÇ2 ¢FVbFW7EöFF&6Uö–FV×÷FVæ7•öÆÆ÷w5öçVÆÅö–G5ö'WE÷&V¦V7G5öGWÆ–6FW2‡6VÆb“ ¢6öçfW'6F–öâÒ6öçfW'6F–öâæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢W‡FW&æÅö–CÒ&F"Ö–FV×÷FVæ7’"À¢'F–6—çEöæÖSÒ-	-Ò"À¢¢6öçfW'6F–öäÖW76vRæö&¦V7G2æ7&VFR€¢6öçfW'6F–öãÖ6öçfW'6F–öâÀ¢F—&V7F–öãÔ6öçfW'6F–öäÖW76vRäD•$T5D”ôåôõUBÀ¢&öG“Ò-	ı]-½’]r&÷f–FW"–B"À¢FVÆ—fW'•÷7FGW3Ô6öçfW'6F–öäÖW76vRäDTÄ•dU%•õTäD”ärÀ¢¢6öçfW'6F–öäÖW76vRæö&¦V7G2æ7&VFR€¢6öçfW'6F–öãÖ6öçfW'6F–öâÀ¢F—&V7F–öãÔ6öçfW'6F–öäÖW76vRäD•$T5D”ôåôõUBÀ¢&öG“Ò-	--íí’]r&÷f–FW"–B"À¢FVÆ—fW'•÷7FGW3Ô6öçfW'6F–öäÖW76vRäDTÄ•dU%•õTäD”ärÀ¢¢6öçfW'6F–öäÖW76vRæö&¦V7G2æ7&VFR€¢6öçfW'6F–öãÖ6öçfW'6F–öâÀ¢W‡FW&æÅö–CÒ'&÷f–FW"ÖGWÆ–6FR"À¢F—&V7F–öãÔ6öçfW'6F–öäÖW76vRäD•$T5D”ôåô”âÀ¢&öG“Ò-	ı]-½’"À¢¢v—F‚6VÆbæ76W'E&—6W2„–çFVw&—G”W'&÷"“ ¢v—F‚G&ç67F–öâæFöÖ–2‚“ ¢6öçfW'6F–öäÖW76vRæö&¦V7G2æ7&VFR€¢6öçfW'6F–öãÖ6öçfW'6F–öâÀ¢W‡FW&æÅö–CÒ'&÷f–FW"ÖGWÆ–6FR"À¢F—&V7F–öãÔ6öçfW'6F–öäÖW76vRäD•$T5D”ôåô”âÀ¢&öG“Ò-	M=½­""À¢ ¢FVbFW7E÷&WVW7EöÆöuöf–ÇFW%÷&VF7G5öf—Fõ÷vV&†ööµ÷6V7&WB‡6VÆb“ ¢6V7&WBÒ'7WW"×6V7&WB×vV&†öö²×Fö¶Vâ ¢&V6÷&BÒÆövv–æräÆöu&V6÷&B€¢æÖSÒ&F¦ævòç&WVW7B"À¢ÆWfVÃÖÆövv–æräU%$õ"À¢F†æÖSÕõöf–ÆUõòÀ¢Æ–æVæóÓÀ¢×6sÒ$–çFW&æÂ6W'fW"W'&÷#¢W2"À¢&w3Ò€¢b"ö’ö6öÖ×Væ–6F–öç2öf—Fòó#6SCScrÖSƒ–"Ó&C2ÖCSbÓC#ccCsC÷·6V7&WGÒ÷vV&†öö²ò"À¢’À¢W†5ö–æfóÔæöæRÀ¢¢6VÆbæ76W'EG'VR…&VF7D6öÖ×Væ–6F–öåvV&†ööµ6V7&WDf–ÇFW"‚’æf–ÇFW"‡&V6÷&B’¢&VæFW&VBÒ&V6÷&BævWDÖW76vR‚¢6VÆbæ76W'Dæ÷D–â‡6V7&WBÂ&VæFW&VB¢6VÆbæ76W'D–â‚%µ$TD5DTEÒ"Â&VæFW&VB ¢FVbFW7Eö÷væW%÷6VW5ö6öÖ×Væ–6F–öç5ö–åö7W'&VçEöFW6·F÷öæEöÖö&–ÆUöæf–vF–öâ‡6VÆb“ ¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&÷væW""Â77v÷&CÒ'FW7B"¢&W7öç6RÒ6VÆbæ6Æ–VçBævWB‡&WfW'6R‚'ööÅöÆ—7B"’¢6öÖ×Væ–6F–öç5÷W&ÂÒ&WfW'6R‚&6öÖ×Væ–6F–öç5ö6öçfW'6F–öç2"¢6VÆbæ76W'D6öçF–ç2€¢&W7öç6RÀ¢bv‡&VcÒ'¶6öÖ×Væ–6F–öç5÷W&ÇÒ"6Æ73Ò&FW6·F÷×6–FV&%õöÆ–æ²rÀ¢¢6VÆbæ76W'D6öçF–ç2€¢&W7öç6RÀ¢bv‡&VcÒ'¶6öÖ×Væ–6F–öç5÷W&ÇÒ"6Æ73Ò&Æ—7BÖw&÷WÖ—FVÒÆ—7BÖw&÷WÖ—FVÒÖ7F–öârÀ¢ ¢FVbFW7Eö6ÆÇ5÷vUö†æFÆW5÷VæÖVEöV×Æ÷–VUöæE÷W6W5÷6†&VEöæf–vF–öâ‡6VÆb“ ¢FVÆW†öç’ÒFVÆW†öç”6öææV7F–öâæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢æÖSÒ-	Í]=
+MíÒ"À¢W‡FW&æÅö–CÒ&ÖVvföâÖÖ–â"À¢¢†öæT6ÆÂæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢6öææV7F–öã×FVÆW†öç’À¢W‡FW&æÅö–CÒ'VæÖVBÖ6ÆÂ"À¢V×Æ÷–VSÔæöæRÀ¢6öçF7EöæÖSÒ-	­½]İ"]ríıí--½]İİí=âí-=Mİ­"À¢†öæUöçVÖ&W#Ò"³s“##32"À¢F—&V7F–öãÕ†öæT6ÆÂäD•$T5D”ôåô”âÀ¢7F'FVEöC×F–ÖW¦öæRææ÷r‚’À¢GW&F–öå÷6V6öæG3ÓC"À¢&W7VÇCÕ†öæT6ÆÂå$U5TÅEôå5tU$TBÀ¢ ¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&÷væW""Â77v÷&CÒ'FW7B"¢6ÆÇ5÷vRÒ6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öç5ö6ÆÇ2"’¢6VÆbæ76W'DWVÂ†6ÆÇ5÷vRç7FGW5ö6öFRÂ#¢6VÆbæ76W'D6öçF–ç2†6ÆÇ5÷vRÂ-	İRíıí--½]Ò"¢6VÆbæ76W'D6öçF–ç2†6ÆÇ5÷vRÂv&’&’ÖvV"r¢6VÆbæ76W'D6öçF–ç2†6ÆÇ5÷vRÂ&WfW'6R‚&6öÖ×Væ–6F–öç5ö6†ææVÇ2"’¢6VÆbæ76W'D6öçF–ç2†6ÆÇ5÷vRÂ&6öÖ×Væ–6F–öç2×F'2" ¢F–Æöw5÷vRÒ6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öç5ö6öçfW'6F–öç2"’¢6VÆbæ76W'DWVÂ†F–Æöw5÷vRç7FGW5ö6öFRÂ#¢6VÆbæ76W'D6öçF–ç2†F–Æöw5÷vRÂv&’&’ÖvV"r¢6VÆbæ76W'D6öçF–ç2†F–Æöw5÷vRÂ&WfW'6R‚&6öÖ×Væ–6F–öç5ö6†ææVÇ2"’¢6VÆbæ76W'D6öçF–ç2†F–Æöw5÷vRÂ&6öÖ×Væ–6F–öç2×F'2" ¢FVbFW7Eö6ÆÇ5÷vUöVÖ&VG5÷&—fFU÷&V6÷&F–æu÷Æ–W%öæE÷7W÷'G5÷&ævW2‡6VÆb“ ¢FVÆW†öç’ÒFVÆW†öç”6öææV7F–öâæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢æÖSÒ-	Í]=
+MíÒ"À¢W‡FW&æÅö–CÒ&ÖVvföâ×Æ–W""À¢¢6ÆÂÒ†öæT6ÆÂæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢6öææV7F–öã×FVÆW†öç’À¢W‡FW&æÅö–CÒ'7F÷&VBÖ6ÆÂ"À¢V×Æ÷–VS×6VÆbæ÷væW"À¢6öçF7EöæÖSÒ-	­½]İ""À¢†öæUöçVÖ&W#Ò"³s“##32"À¢F—&V7F–öãÕ†öæT6ÆÂäD•$T5D”ôåô”âÀ¢7F'FVEöC×F–ÖW¦öæRææ÷r‚’À¢GW&F–öå÷6V6öæG3Ó"À¢&W7VÇCÕ†öæT6ÆÂå$U5TÅEôå5tU$TBÀ¢&V6÷&F–æu÷&VcÒ&‡GG3¢ò÷&V6÷&G2æÖVv'‚ç'R÷7F÷&VBÖ6ÆÂæ×2"À¢&V6÷&F–æu÷7FGW3Õ†öæT6ÆÂå$T4õ$D”äuõ5Dõ$TBÀ¢¢–ÆöBÒ"$”C2"²"'&V6÷&F–ærÖ'—FW2 ¢6ÆÂç&V6÷&F–æuöf–ÆRç6fR€¢'7F÷&VBÖ6ÆÂæ×2"À¢6öçFVçDf–ÆR‡–ÆöB’À¢6fSÕG'VRÀ¢ ¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&÷væW""Â77v÷&CÒ'FW7B"¢vRÒ6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öç5ö6ÆÇ2"’¢6VÆbæ76W'DWVÂ‡vRç7FGW5ö6öFRÂ#¢6VÆbæ76W'D6öçF–ç2‡vRÂ#ÆVF–ò"Â‡FÖÃÔfÇ6R¢6VÆbæ76W'D6öçF–ç2‡vRÂvFFÖ6ÆÂ×Æ–W"rÂ‡FÖÃÔfÇ6R¢6VÆbæ76W'D6öçF–ç2‡vRÂvFFÖ6ÆÂ×6VV²rÂ‡FÖÃÔfÇ6R¢6VÆbæ76W'D6öçF–ç2‡vRÂvFFÖ6ÆÂ×7VVBrÂ‡FÖÃÔfÇ6R¢6VÆbæ76W'D6öçF–ç2‡vRÂwfÇVSÒ#ãR"rÂ‡FÖÃÔfÇ6R¢6VÆbæ76W'D6öçF–ç2‡vRÂwfÇVSÒ#ã#R"rÂ‡FÖÃÔfÇ6R¢6VÆbæ76W'D6öçF–ç2‡vRÂwfÇVSÒ#ãR"rÂ‡FÖÃÔfÇ6R¢6VÆbæ76W'D6öçF–ç2‡vRÂwfÇVSÒ#""rÂ‡FÖÃÔfÇ6R¢&V6÷&F–æu÷W&ÂÒ&WfW'6R‚&6öÖ×Væ–6F–öåö6ÆÅ÷&V6÷&F–ær"Â&w3Õ¶6ÆÂçµÒ¢6VÆbæ76W'D6öçF–ç2‡vRÂ&V6÷&F–æu÷W&Â¢6VÆbæ76W'D6öçF–ç2‡vRÂb'·&V6÷&F–æu÷W&ÇÓöF÷væÆöCÓ"¢6VÆbæ76W'Dæ÷D6öçF–ç2‡vRÂ6ÆÂç&V6÷&F–æu÷&Vb ¢gVÆÂÒ6VÆbæ6Æ–VçBævWB‡&V6÷&F–æu÷W&Â¢6VÆbæ76W'DWVÂ†gVÆÂç7FGW5ö6öFRÂ#¢6VÆbæ76W'DWVÂ†gVÆÅ²$6öçFVçBÕG—R%ÒÂ&VF–òö×Vr"¢6VÆbæ76W'DWVÂ†gVÆÅ²$66WBÕ&ævW2%ÒÂ&'—FW2"¢6VÆbæ76W'D–â‚&–æÆ–æR"ÂgVÆÅ²$6öçFVçBÔF—7÷6—F–öâ%Ò ¢'F–ÂÒ6VÆbæ6Æ–VçBævWB‡&V6÷&F–æu÷W&ÂÂ…EEõ$ätSÒ&'—FW3Ó2Ór"¢6VÆbæ76W'DWVÂ‡'F–Âç7FGW5ö6öFRÂ#b¢6VÆbæ76W'DWVÂ‡'F–Å²$6öçFVçBÕ&ævR%ÒÂb&'—FW22Ór÷¶ÆVâ‡–ÆöB—Ò"¢6VÆbæ76W'DWVÂ†"""æ¦ö–â‡'F–Âç7G&VÖ–æuö6öçFVçB’Â–ÆöE³3£…Ò ¢F÷væÆöBÒ6VÆbæ6Æ–VçBævWB€¢b'·&V6÷&F–æu÷W&ÇÓöF÷væÆöCÓ"À¢…EEõ$ätSÒ&'—FW3Ó2Ór"À¢¢6VÆbæ76W'DWVÂ†F÷væÆöBç7FGW5ö6öFRÂ#¢6VÆbæ76W'DWVÂ†F÷væÆöE²$6öçFVçBÕG—R%ÒÂ&VF–òö×Vr"¢6VÆbæ76W'D–â‚&GF6†ÖVçB"ÂF÷væÆöE²$6öçFVçBÔF—7÷6—F–öâ%Ò¢6VÆbæ76W'DWVÂ†"""æ¦ö–â†F÷væÆöBç7G&VÖ–æuö6öçFVçB’Â–ÆöB ¢÷fW'&–FU÷6WGF–æw2€¢4ôÔÕTä”4D”ôåõ$T4õ$D”äuôDõtäÄôEõD”ÔTõUEõ4T4ôäE3Ó"À¢4ôÔÕTä”4D”ôåõ$T4õ$D”äuôÔ…ô%•DU3Ó#B¢#BÀ¢¢FVbFW7E÷&V6÷&F–æuöF÷væÆöFW%÷6fW5ö×5÷Fõ÷&—fFU÷7F÷&vR‡6VÆb“ ¢FVÆW†öç’ÒFVÆW†öç”6öææV7F–öâæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢æÖSÒ-	Í]=
+MíÒ"À¢W‡FW&æÅö–CÒ&ÖVvföâÖF÷væÆöB"À¢&V6÷&F–æuöÆÆ÷vVEö†÷7G3Õ²'&V6÷&G2æÖVv'‚ç'R%ÒÀ¢¢6ÆÂÒ†öæT6ÆÂæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢6öææV7F–öã×FVÆW†öç’À¢W‡FW&æÅö–CÒ&F÷væÆöBÖ6ÆÂ"À¢†öæUöçVÖ&W#Ò"³s“##32"À¢F—&V7F–öãÕ†öæT6ÆÂäD•$T5D”ôåô”âÀ¢7F'FVEöC×F–ÖW¦öæRææ÷r‚’À¢GW&F–öå÷6V6öæG3Ó3À¢&W7VÇCÕ†öæT6ÆÂå$U5TÅEôå5tU$TBÀ¢&V6÷&F–æu÷&VcÒ&‡GG3¢ò÷&V6÷&G2æÖVv'‚ç'RöF÷væÆöBÖ6ÆÂæ×2"À¢&V6÷&F–æu÷7FGW3Õ†öæT6ÆÂå$T4õ$D”äuõTäD”ärÀ¢¢–ÆöBÒ"$”C2"²"'‚"¢#€ ¢6Æ72f¶U&W7öç6R†–òä'—FW4”ò“ ¢FVbõö–æ—Eõò‡6VÆbÂFF“ ¢7WW"‚’åõö–æ—Eõò†FF¢6VÆbæ†VFW'2Ò°¢$6öçFVçBÕG—R#¢&VF–òö×Vr"À¢$6öçFVçBÔÆVæwF‚#¢7G"†ÆVâ†FF’’À¢Ğ ¢FVbõöVçFW%õò‡6VÆb“ ¢&WGW&â6VÆ` ¢FVbõöW†—Eõò‡6VÆbÂW†5÷G—RÂW†2ÂF"“ ¢6VÆbæ6Æ÷6R‚¢&WGW&âfÇ6P ¢v—F‚F6‚€¢'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷&V6÷&F–æw2åö÷Vå÷&V6÷&F–ær"À¢&WGW&å÷fÇVSÔf¶U&W7öç6R‡–ÆöB’À¢“ ¢6VÆbæ76W'EG'VR†F÷væÆöEö6ÆÅ÷&V6÷&F–ær†6ÆÂç²’ ¢6ÆÂç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ†6ÆÂç&V6÷&F–æu÷7FGW2Â†öæT6ÆÂå$T4õ$D”äuõ5Dõ$TB¢6VÆbæ76W'EG'VR†6ÆÂç&V6÷&F–æuöf–ÆRææÖR¢6VÆbæ76W'DWVÂ†6ÆÂç&V6÷&F–æuöW'&÷"Â""¢6VÆbæ76W'D—4æ÷DæöæR†6ÆÂç&V6÷&F–æuöF÷væÆöFVEöB¢v—F‚6ÆÂç&V6÷&F–æuöf–ÆRæ÷Vâ‚'&""’27F÷&VC ¢6VÆbæ76W'DWVÂ‡7F÷&VBç&VB‚’Â–ÆöB ¢FVbFW7E÷&V6÷&F–æuöF÷væÆöFW%÷&V¦V7G5ö‡FÖÅö–ç7FVEööe÷7F÷&–æuöÆöv–å÷vR‡6VÆb“ ¢FVÆW†öç’ÒFVÆW†öç”6öææV7F–öâæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢æÖSÒ-	Í]=
+MíÒ"À¢W‡FW&æÅö–CÒ&ÖVvföâÖ‡FÖÂ"À¢&V6÷&F–æuöÆÆ÷vVEö†÷7G3Õ²'&V6÷&G2æÖVv'‚ç'R%ÒÀ¢¢6ÆÂÒ†öæT6ÆÂæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢6öææV7F–öã×FVÆW†öç’À¢W‡FW&æÅö–CÒ&‡FÖÂÖ6ÆÂ"À¢†öæUöçVÖ&W#Ò"³s“##32"À¢F—&V7F–öãÕ†öæT6ÆÂäD•$T5D”ôåô”âÀ¢7F'FVEöC×F–ÖW¦öæRææ÷r‚’À¢GW&F–öå÷6V6öæG3Ó3À¢&W7VÇCÕ†öæT6ÆÂå$U5TÅEôå5tU$TBÀ¢&V6÷&F–æu÷&VcÒ&‡GG3¢ò÷&V6÷&G2æÖVv'‚ç'Rö‡FÖÂÖ6ÆÂæ×2"À¢&V6÷&F–æu÷7FGW3Õ†öæT6ÆÂå$T4õ$D”äuõTäD”ärÀ¢ ¢6Æ72f¶T‡FÖÅ&W7öç6R†–òä'—FW4”ò“ ¢FVbõö–æ—Eõò‡6VÆb“ ¢7WW"‚’åõö–æ—Eõò†"#Æ‡FÖÃæÆöv–ãÂö‡FÖÃâ"¢6VÆbæ†VFW'2Ò°¢$6öçFVçBÕG—R#¢'FW‡Bö‡FÖÃ²6†'6WC×WFbÓ‚"À¢$6öçFVçBÔÆVæwF‚#¢#‚"À¢Ğ ¢FVbõöVçFW%õò‡6VÆb“ ¢&WGW&â6VÆ` ¢FVbõöW†—Eõò‡6VÆbÂW†5÷G—RÂW†2ÂF"“ ¢6VÆbæ6Æ÷6R‚¢&WGW&âfÇ6P ¢v—F‚F6‚€¢'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷&V6÷&F–æw2åö÷Vå÷&V6÷&F–ær"À¢&WGW&å÷fÇVSÔf¶T‡FÖÅ&W7öç6R‚’À¢“ ¢6VÆbæ76W'DfÇ6R†F÷væÆöEö6ÆÅ÷&V6÷&F–ær†6ÆÂç²’ ¢6ÆÂç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ†6ÆÂç&V6÷&F–æu÷7FGW2Â†öæT6ÆÂå$T4õ$D”äuôd”ÄTB¢6VÆbæ76W'DfÇ6R†6ÆÂç&V6÷&F–æuöf–ÆR¢6VÆbæ76W'D–â‚'VæW‡V7FVEö6öçFVçE÷G—R"Â6ÆÂç&V6÷&F–æuöW'&÷" ¢FVbFW7EöÖævW%öFöW5öæ÷E÷6VUö6öÖ×Væ–6F–öç5öæf–vF–öåöGW&–æu÷&öÆÆ÷WB‡6VÆb“ ¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ'v÷&¶W""Â77v÷&CÒ'FW7B"¢&W7öç6RÒ6VÆbæ6Æ–VçBævWB‡&WfW'6R‚'ööÅöÆ—7B"’¢6öÖ×Væ–6F–öç5÷W&ÂÒ&WfW'6R‚&6öÖ×Væ–6F–öç5ö6öçfW'6F–öç2"¢6VÆbæ76W'Dæ÷D6öçF–ç2€¢&W7öç6RÀ¢bv‡&VcÒ'¶6öÖ×Væ–6F–öç5÷W&ÇÒ"6Æ73Ò&FW6·F÷×6–FV&%õöÆ–æ²rÀ¢¢6VÆbæ76W'Dæ÷D6öçF–ç2€¢&W7öç6RÀ¢bv‡&VcÒ'¶6öÖ×Væ–6F–öç5÷W&ÇÒ"6Æ73Ò&Æ—7BÖw&÷WÖ—FVÒÆ—7BÖw&÷WÖ—FVÒÖ7F–öârÀ¢¢6VÆbæ76W'EG'VR‡&W7öç6Ræ6öçFW‡E²&6åö66W75ö6öÖ×Væ–6F–öç2%Ò¢6VÆbæ76W'DfÇ6R‡&W7öç6Ræ6öçFW‡E²'6†÷uö6öÖ×Væ–6F–öç5öÖVçR%Ò ¢FVbFW7EöÆVv7•÷&öÆUö&6¶f–ÆÅö7&VFW5öFVfVÇG5÷v—F†÷WEö÷fW'w&—F–æuöW‡Æ–6—Eö66W72‡6VÆb“ ¢6öÖ×Væ–6F–öä66W72æö&¦V7G2æf–ÇFW"€¢W6W#×6VÆbæ÷væW"À¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢’æFVÆWFR‚¢v÷&¶W%ö66W72Ò6öÖ×Væ–6F–öä66W72æö&¦V7G2ævWB€¢W6W#×6VÆbçv÷&¶W"À¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢¢v÷&¶W%ö66W72æ6åöÖævUö6†ææVÇ2ÒG'VP¢v÷&¶W%ö66W72ç6fR‡WFFUöf–VÆG3Õ²&6åöÖævUö6†ææVÇ2%Ò ¢Ö–w&F–öâÒ–×÷'EöÖöGVÆR€¢'ööÅ÷6W'f–6RæÖ–w&F–öç2ãeö&6¶f–ÆÅö6öÖ×Væ–6F–öåö66W72 ¢¢Ö–w&F–öâæ&6¶f–ÆÅö6öÖ×Væ–6F–öåö66W72†2ÂæöæR ¢÷væW%ö66W72Ò6öÖ×Væ–6F–öä66W72æö&¦V7G2ævWB€¢W6W#×6VÆbæ÷væW"À¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢¢6VÆbæ76W'EG'VR†÷væW%ö66W72æ6å÷f–Wuö6öçfW'6F–öç2¢6VÆbæ76W'EG'VR†÷væW%ö66W72æ6å÷&WÇ•ö6öçfW'6F–öç2¢6VÆbæ76W'EG'VR†÷væW%ö66W72æ6åö76–våö6öçfW'6F–öâ¢6VÆbæ76W'EG'VR†÷væW%ö66W72æ6å÷f–WuöÆÅö6ÆÇ2¢6VÆbæ76W'EG'VR†÷væW%ö66W72æ6åöÖævUö6†ææVÇ2 ¢v÷&¶W%ö66W72ç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'EG'VR‡v÷&¶W%ö66W72æ6åöÖævUö6†ææVÇ2 ¢FVbFW7Eöf—'7E÷v÷&¶W%÷F¶W5ö6öçfW'6F–öåöFöÖ–6ÆÇ’‡6VÆb“ ¢6öçfW'6F–öâÒ6öçfW'6F–öâæö&¦V7G2æ7&VFR†÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÂ6öææV7F–öã×6VÆbæ6öææV7F–öâÂW‡FW&æÅö–CÒ&6†B"Â'F–6—çEöæÖSÒ-	-Ò"¢÷F†W%öæ÷F–f–6F–öâÒæ÷F–f–6F–öâæö&¦V7G2æ7&VFR€¢W6W#×6VÆbæ÷F†W"À¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢¶–æCÒ&6öÖ×Væ–6F–öâ"À¢F—FÆSÒ-	İí-íRíí]İR"À¢7F–öå÷W&ÃÖb"ö6öÖ×Væ–6F–öç2óö6öçfW'6F–öã×¶6öçfW'6F–öâçWV–GÒ"À¢¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ'v÷&¶W""Â77v÷&CÒ'FW7B"¢&W7öç6RÒ6VÆbæ6Æ–VçBç÷7B‡&WfW'6R‚&6öÖ×Væ–6F–öå÷F¶R"Â&w3Õ¶6öçfW'6F–öâçWV–EÒ’¢6VÆbæ76W'DWVÂ‡&W7öç6Rç7FGW5ö6öFRÂ3"¢6öçfW'6F–öâç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ†6öçfW'6F–öâæ76–væVRÂ6VÆbçv÷&¶W"¢6VÆbæ6Æ–VçBæÆöv÷WB‚“²6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&÷F†W""Â77v÷&CÒ'FW7B"¢&V6öæ6–ÆVBÒ6VÆbæ6Æ–VçBævWB€¢&WfW'6R‚&6öÖ×Væ–6F–öåöæ÷F–f–6F–öåöfVVB"’Â²'f—6–&ÆR#¢7G"†÷F†W%öæ÷F–f–6F–öâç²—ÒÀ¢’æ§6öâ‚¢6VÆbæ76W'DWVÂ‡&V6öæ6–ÆVE²'&W6öÇfVEö–G2%ÒÂ¶÷F†W%öæ÷F–f–6F–öâçµÒ¢6VÆbæ76W'DWVÂ‡6VÆbæ6Æ–VçBç÷7B‡&WfW'6R‚&6öÖ×Væ–6F–öå÷F¶R"Â&w3Õ¶6öçfW'6F–öâçWV–EÒ’’ç7FGW5ö6öFRÂC2 ¢FVbFW7Eö66÷VçFçEö6ææ÷Eö÷Våö6öÖ×Væ–6F–öç2‡6VÆb“ ¢W&Ö—76–öâÒW&Ö—76–öâæö&¦V7G2ævWB†6öFVæÖSÒ&6å÷f–Wuö6öçfW'6F–öç2"¢6VÆbæ66÷VçFçBçW6W%÷W&Ö—76–öç2æFB‡W&Ö—76–öâ¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&66÷VçFçB"Â77v÷&CÒ'FW7B"¢6VÆbæ76W'DfÇ6R†6öçfW'6F–öåö6&–Æ—G’‡6VÆbæ66÷VçFçBÂ&6å÷f–Wuö6öçfW'6F–öç2"Â6VÆbæ÷&væ—¦F–öâ’¢6VÆbæ76W'Dæ÷DWVÂ‡6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öç5ö6öçfW'6F–öç2"’’ç7FGW5ö6öFRÂ# ¢FVbFW7EöW‡Æ–6—Eö6&–Æ—G•öFVç•öæE÷7WW'W6W%ööæÇ•ö6öÖ×Væ–6F–öåöFÖ–â‡6VÆb“ ¢66W72Ò6öÖ×Væ–6F–öä66W72æö&¦V7G2ævWB‡W6W#×6VÆbçv÷&¶W"Â÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâ¢66W72æ6å÷f–Wuö6öçfW'6F–öç2ÒfÇ6P¢66W72ç6fR‡WFFUöf–VÆG3Õ²&6å÷f–Wuö6öçfW'6F–öç2%Ò¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ'v÷&¶W""Â77v÷&CÒ'FW7B"¢6VÆbæ76W'DWVÂ‡6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öç5ö6öçfW'6F–öç2"’’ç7FGW5ö6öFRÂC2¢6VÆbçv÷&¶W"æ—5÷7FfbÒG'VP¢6VÆbçv÷&¶W"ç6fR‡WFFUöf–VÆG3Õ²&—5÷7Ffb%Ò¢6VÆbçv÷&¶W"çW6W%÷W&Ö—76–öç2æFB…W&Ö—76–öâæö&¦V7G2ævWB†6öFVæÖSÒ'f–Wuö6öÖ×Væ–6F–öæ6†ææVÂ"’¢6VÆbæ6Æ–VçBæf÷&6UöÆöv–â‡6VÆbçv÷&¶W"¢6VÆbæ76W'DWVÂ‡6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&FÖ–ã§ööÅ÷6W'f–6Uö6öÖ×Væ–6F–öæ6†ææVÅö6†ævVÆ—7B"’’ç7FGW5ö6öFRÂC2 ¢FVbFW7EööæÇ•ö6†ææVÅöÖævW%ö6åö6†ævU÷66÷VEö6†ææVÅ÷7FFR‡6VÆb“ ¢6†ææVÅ÷W&ÂÒ&WfW'6R‚&6öÖ×Væ–6F–öåö6†ææVÅ÷6WEö7F—fR"Â&w3Õ·6VÆbæ6†ææVÂçµÒ¢6öææV7F–öå÷W&ÂÒ&WfW'6R‚&6öÖ×Væ–6F–öåö6öææV7F–öå÷6WEö7F—fR"Â&w3Õ·6VÆbæ6öææV7F–öâçµÒ¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ'v÷&¶W""Â77v÷&CÒ'FW7B"¢6VÆbæ76W'DWVÂ‡6VÆbæ6Æ–VçBç÷7B†6†ææVÅ÷W&ÂÂ²&7F—fR#¢#'Ò’ç7FGW5ö6öFRÂC2¢6VÆbæ6†ææVÂç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'EG'VR‡6VÆbæ6†ææVÂæ—5ö7F—fR ¢6VÆbæ6Æ–VçBæÆöv÷WB‚¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&÷væW""Â77v÷&CÒ'FW7B"¢6VÆbæ76W'DWVÂ‡6VÆbæ6Æ–VçBævWB†6†ææVÅ÷W&Â’ç7FGW5ö6öFRÂCR¢6VÆbæ76W'DWVÂ‡6VÆbæ6Æ–VçBç÷7B†6†ææVÅ÷W&ÂÂ²&7F—fR#¢&–çfÆ–B'Ò’ç7FGW5ö6öFRÂC¢6VÆbæ76W'DWVÂ‡6VÆbæ6Æ–VçBç÷7B†6†ææVÅ÷W&ÂÂ²&7F—fR#¢#'Ò’ç7FGW5ö6öFRÂ3"¢6VÆbæ76W'DWVÂ‡6VÆbæ6Æ–VçBç÷7B†6öææV7F–öå÷W&ÂÂ²&7F—fR#¢#'Ò’ç7FGW5ö6öFRÂ3"¢6VÆbæ6†ææVÂç&Vg&W6…ög&öÕöF"‚¢6VÆbæ6öææV7F–öâç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DfÇ6R‡6VÆbæ6†ææVÂæ—5ö7F—fR¢6VÆbæ76W'DfÇ6R‡6VÆbæ6öææV7F–öâæ—5ö7F—fR¢vRÒ6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öç5ö6†ææVÇ2"’¢6VÆbæ76W'D6öçF–ç2‡vRÂ-	-­½í}-Â­İ²"¢6VÆbæ76W'D6öçF–ç2‡vRÂ-	-­½í}-Â" ¢77&eö6Æ–VçBÒ6Æ–VçB†Væf÷&6Uö77&eö6†V6·3ÕG'VR¢6VÆbæ76W'EG'VR†77&eö6Æ–VçBæÆöv–â‡W6W&æÖSÒ&÷væW""Â77v÷&CÒ'FW7B"’¢77&eö6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öç5ö6†ææVÇ2"’¢6VÆbæ76W'DWVÂ†77&eö6Æ–VçBç÷7B†6öææV7F–öå÷W&ÂÂ²&7F—fR#¢#'Ò’ç7FGW5ö6öFRÂC2¢77&e÷Fö¶VâÒ77&eö6Æ–VçBæ6öö¶–W5²&77&gFö¶Vâ%ÒçfÇVP¢6VÆbæ76W'DWVÂ€¢77&eö6Æ–VçBç÷7B†6öææV7F–öå÷W&ÂÂ²&7F—fR#¢#'ÒÂ…EEõ…ô55$eDô´TãÖ77&e÷Fö¶Vâ’ç7FGW5ö6öFRÀ¢3"À¢¢6VÆbæ6öææV7F–öâç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'EG'VR‡6VÆbæ6öææV7F–öâæ—5ö7F—fR ¢f÷&V–våö÷&væ—¦F–öâÒ÷&væ—¦F–öâæö&¦V7G2æ7&VFR†æÖSÒ$f÷&V–vâ6†ææVÇ2÷&r"¢f÷&V–våö6†ææVÂÒ6öÖ×Væ–6F–öä6†ææVÂæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öãÖf÷&V–våö÷&væ—¦F–öâÂ¶–æCÒ'vV'6—FR"ÂæÖSÒ$f÷&V–vâ6—FR"À¢¢f÷&V–våö6öææV7F–öâÒ6†ææVÄ6öææV7F–öâæö&¦V7G2æ7&VFR€¢6†ææVÃÖf÷&V–våö6†ææVÂÂæÖSÒ$f÷&V–vâv–FvWB"ÂW‡FW&æÅö–CÒ&f÷&V–vâ×v–FvWB"À¢¢6VÆbæ76W'DWVÂ€¢6VÆbæ6Æ–VçBç÷7B‡&WfW'6R‚&6öÖ×Væ–6F–öåö6†ææVÅ÷6WEö7F—fR"Â&w3Õ¶f÷&V–våö6†ææVÂçµÒ’Â²&7F—fR#¢#'Ò’ç7FGW5ö6öFRÀ¢CBÀ¢¢6VÆbæ76W'DWVÂ€¢6VÆbæ6Æ–VçBç÷7B‡&WfW'6R‚&6öÖ×Væ–6F–öåö6öææV7F–öå÷6WEö7F—fR"Â&w3Õ¶f÷&V–våö6öææV7F–öâçµÒ’Â²&7F—fR#¢#'Ò’ç7FGW5ö6öFRÀ¢CBÀ¢¢f÷&V–våö6†ææVÂç&Vg&W6…ög&öÕöF"‚¢f÷&V–våö6öææV7F–öâç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'EG'VR†f÷&V–våö6†ææVÂæ—5ö7F—fR¢6VÆbæ76W'EG'VR†f÷&V–våö6öææV7F–öâæ—5ö7F—fR ¢FVbFW7Eö÷væW%ö6åö7&VFU÷vV'6—FUö6öææV7F–öåöæE÷Fö¶Våö—5÷6†÷våööæ6R‡6VÆb“ ¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&÷væW""Â77v÷&CÒ'FW7B"¢v—F‚F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2ç6V7&WG2çFö¶Vå÷W&Ç6fR"Â&WGW&å÷fÇVSÒ'vV'6—FRÖöæR×F–ÖR×Fö¶Vâ"“ ¢&W7öç6RÒ6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öåö6öææV7F–öåö7&VFR"Â&w3Õ²'vV'6—FR%Ò’À¢°¢&æÖR#¢-	íİí-İí’""À¢&W‡FW&æÅö–B#¢&VÆ–æS#"ç'R"À¢&—5ö7F—fR#¢&öâ"À¢ÒÀ¢¢6VÆbæ76W'DWVÂ‡&W7öç6Rç7FGW5ö6öFRÂ#¢6VÆbæ76W'D6öçF–ç2‡&W7öç6RÂ'vV'6—FRÖöæR×F–ÖR×Fö¶Vâ"¢6VÆbæ76W'DWVÂ‡&W7öç6U²$66†RÔ6öçG&öÂ%ÒÂ&æò×7F÷&R"¢6VÆbæ76W'DWVÂ‡&W7öç6U²%&VfW'&W"ÕöÆ–7’%ÒÂ&æò×&VfW'&W""¢6öææV7F–öâÒ6†ææVÄ6öææV7F–öâæö&¦V7G2ævWB€¢6†ææVÅõö÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢6†ææVÅõö¶–æCÒ'vV'6—FR"À¢W‡FW&æÅö–CÒ&VÆ–æS#"ç'R"À¢¢6VÆbæ76W'EG'VR†6öææV7F–öâæ6†V6µö•÷Fö¶Vâ‚'vV'6—FRÖöæR×F–ÖR×Fö¶Vâ"’¢VF—E÷vRÒ6VÆbæ6Æ–VçBævWB€¢&WfW'6R‚&6öÖ×Væ–6F–öåö6öææV7F–öåöVF—B"Â&w3Õ¶6öææV7F–öâçµÒ¢¢6VÆbæ76W'DWVÂ†VF—E÷vRç7FGW5ö6öFRÂ#¢6VÆbæ76W'Dæ÷D6öçF–ç2†VF—E÷vRÂ'vV'6—FRÖöæR×F–ÖR×Fö¶Vâ" ¢FVbFW7Eö÷væW%ö6åö7&VFUöf—Fõö6öææV7F–öå÷v—F…öVæ7'—FVEö7&VFVçF–Ç2‡6VÆb“ ¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&÷væW""Â77v÷&CÒ'FW7B"¢&W7öç6RÒ6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öåö6öææV7F–öåö7&VFR"Â&w3Õ²&f—Fò%Ò’À¢°¢&æÖR#¢-	íİí-İí’	--â"À¢&W‡FW&æÅö–B#¢##3CScsƒ’"À¢&6Æ–VçEö–B#¢&f—FòÖ6Æ–VçBÖ–B"À¢&6Æ–VçE÷6V7&WB#¢&f—FòÖ6Æ–VçB×6V7&WB"À¢&—5ö7F—fR#¢&öâ"À¢ÒÀ¢¢6VÆbæ76W'DWVÂ‡&W7öç6Rç7FGW5ö6öFRÂ3"¢6öææV7F–öâÒ6†ææVÄ6öææV7F–öâæö&¦V7G2ævWB€¢6†ææVÃ×6VÆbæ6†ææVÂÀ¢W‡FW&æÅö–CÒ##3CScsƒ’"À¢¢7&VFVçF–ÂÒf—Fô7&VFVçF–Âæö&¦V7G2ævWB†6öææV7F–öãÖ6öææV7F–öâ¢6VÆbæ76W'Dæ÷DWVÂ†7&VFVçF–Âæ6Æ–VçEö–EöVæ7'—FVBÂ&f—FòÖ6Æ–VçBÖ–B"¢6VÆbæ76W'Dæ÷DWVÂ†7&VFVçF–Âæ6Æ–VçE÷6V7&WEöVæ7'—FVBÂ&f—FòÖ6Æ–VçB×6V7&WB"¢6VÆbæ76W'DWVÂ†FV7'—E÷6V7&WB†7&VFVçF–Âæ6Æ–VçEö–EöVæ7'—FVB’Â&f—FòÖ6Æ–VçBÖ–B"¢6VÆbæ76W'DWVÂ€¢FV7'—E÷6V7&WB†7&VFVçF–Âæ6Æ–VçE÷6V7&WEöVæ7'—FVB’À¢&f—FòÖ6Æ–VçB×6V7&WB"À¢¢6VÆbæ76W'DWVÂ†6öææV7F–öâæ•÷Fö¶Våö†6‚Â""¢6VÆbæ76W'DWVÂ†6öææV7F–öâç6WGF–æw5²&f—Fõ÷vV&†ööµ÷7FGW2%ÒÂ&æ÷Eö6öææV7FVB" ¢F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2æf—Fõ÷Vç7V'67&–&U÷vV&†öö²"¢F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2æf—Fõ÷7V'67&–&U÷vV&†öö²"¢F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2æf—Fõ÷vV&†ööµ÷7V'67&—F–öç2"¢FVbFW7Eö÷væW%ö6åö6öææV7Eöf—Fõ÷vV&†ööµöWFöÖF–6ÆÇ’€¢6VÆbÂ7V'67&—F–öç2Â7V'67&–&RÂVç7V'67&–&P¢“ ¢f—Fô7&VFVçF–Âæö&¦V7G2æ7&VFR€¢6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢6Æ–VçEö–EöVæ7'—FVCÖVæ7'—E÷6V7&WB‚&6Æ–VçB"’À¢6Æ–VçE÷6V7&WEöVæ7'—FVCÖVæ7'—E÷6V7&WB‚'6V7&WB"’À¢¢6ÆÆ&6²Ò€¢b&‡GG3¢ò÷FW7G6W'fW"ö’ö6öÖ×Væ–6F–öç2öf—Fòò ¢b'·6VÆbæ6öææV7F–öâçV&Æ–5ö–GÒöæWr×vV&†öö²×Fö¶Vâ÷vV&†öö²ò ¢¢7V'67&—F–öç2ç6–FUöVffV7BÒµµÒÂ¶6ÆÆ&6µÕĞ¢6VÆbæf—FõöWF†÷&—¦VEö66÷VçEö–Bç&WGW&å÷fÇVRÒ##3CScsƒ’ ¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&÷væW""Â77v÷&CÒ'FW7B"¢v—F‚F6‚€¢'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2ç6V7&WG2çFö¶Vå÷W&Ç6fR"À¢&WGW&å÷fÇVSÒ&æWr×vV&†öö²×Fö¶Vâ"À¢“ ¢&W7öç6RÒ6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öåöf—Fõö6öææV7B"Â&w3Õ·6VÆbæ6öææV7F–öâçµÒ’À¢6V7W&SÕG'VRÀ¢¢6VÆbæ76W'DWVÂ‡&W7öç6Rç7FGW5ö6öFRÂ3"¢6VÆbæ6öææV7F–öâç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ‡6VÆbæ6öææV7F–öâæW‡FW&æÅö–BÂ##3CScsƒ’"¢6VÆbæ76W'EG'VR‡6VÆbæ6öææV7F–öâæ6†V6µö•÷Fö¶Vâ‚&æWr×vV&†öö²×Fö¶Vâ"’¢6VÆbæ76W'DWVÂ€¢6VÆbæ6öææV7F–öâç6WGF–æw5²&f—Fõ÷vV&†ööµ÷7FGW2%ÒÂ&6öææV7FVB ¢¢7V'67&–&Ræ76W'Eö6ÆÆVEööæ6U÷v—F‚‡6VÆbæ6öææV7F–öâÂ6ÆÆ&6²¢Vç7V'67&–&Ræ76W'Eöæ÷Eö6ÆÆVB‚ ¢F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2æf—Fõ÷7V'67&–&U÷vV&†öö²"¢F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2æf—Fõ÷vV&†ööµ÷7V'67&—F–öç2"¢FVbFW7Eöf—Fõö6öææV7E÷&WW6W5öW†—7F–æu÷fÆ–E÷7V'67&—F–öâ€¢6VÆbÂ7V'67&—F–öç2Â7V'67&–&P¢“ ¢f—Fô7&VFVçF–Âæö&¦V7G2æ7&VFR€¢6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢6Æ–VçEö–EöVæ7'—FVCÖVæ7'—E÷6V7&WB‚&6Æ–VçB"’À¢6Æ–VçE÷6V7&WEöVæ7'—FVCÖVæ7'—E÷6V7&WB‚'6V7&WB"’À¢¢6VÆbæ6öææV7F–öâç6WEö•÷Fö¶Vâ‚&7W'&VçB×vV&†öö²×Fö¶Vâ"¢6VÆbæ6öææV7F–öâç6fR‡WFFUöf–VÆG3Õ²&•÷Fö¶Våö†6‚%Ò¢6ÆÆ&6²Ò€¢b&‡GG3¢ò÷FW7G6W'fW"ö’ö6öÖ×Væ–6F–öç2öf—Fòò ¢b'·6VÆbæ6öææV7F–öâçV&Æ–5ö–GÒö7W'&VçB×vV&†öö²×Fö¶Vâ÷vV&†öö²ò ¢¢7V'67&—F–öç2ç&WGW&å÷fÇVRÒ¶6ÆÆ&6µĞ¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&÷væW""Â77v÷&CÒ'FW7B"¢&W7öç6RÒ6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öåöf—Fõö6öææV7B"Â&w3Õ·6VÆbæ6öææV7F–öâçµÒ’À¢6V7W&SÕG'VRÀ¢¢6VÆbæ76W'DWVÂ‡&W7öç6Rç7FGW5ö6öFRÂ3"¢6VÆbæ6öææV7F–öâç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'EG'VR‡6VÆbæ6öææV7F–öâæ6†V6µö•÷Fö¶Vâ‚&7W'&VçB×vV&†öö²×Fö¶Vâ"’¢6VÆbæ76W'DWVÂ€¢6VÆbæ6öææV7F–öâç6WGF–æw5²&f—Fõ÷vV&†ööµ÷7FGW2%ÒÂ&6öææV7FVB ¢¢7V'67&–&Ræ76W'Eöæ÷Eö6ÆÆVB‚ ¢F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2æf—Fõ÷7V'67&–&U÷vV&†öö²"¢F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2æf—Fõ÷vV&†ööµ÷7V'67&—F–öç2"¢FVbFW7Eöf—Fõö6öææV7E÷&W7F÷&W5÷&Wf–÷W5÷Fö¶Våööåöf–ÇW&R€¢6VÆbÂ7V'67&—F–öç2Â7V'67&–&P¢“ ¢f—Fô7&VFVçF–Âæö&¦V7G2æ7&VFR€¢6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢6Æ–VçEö–EöVæ7'—FVCÖVæ7'—E÷6V7&WB‚&6Æ–VçB"’À¢6Æ–VçE÷6V7&WEöVæ7'—FVCÖVæ7'—E÷6V7&WB‚'6V7&WB"’À¢¢6VÆbæ6öææV7F–öâç6WEö•÷Fö¶Vâ‚&öÆB×vV&†öö²×Fö¶Vâ"¢6VÆbæ6öææV7F–öâç6fR‡WFFUöf–VÆG3Õ²&•÷Fö¶Våö†6‚%Ò¢7V'67&—F–öç2ç&WGW&å÷fÇVRÒµĞ¢7V'67&–&Rç6–FUöVffV7BÒf—FôW'&÷"‚'&÷f–FW%ö‡GGóC2"¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&÷væW""Â77v÷&CÒ'FW7B"¢v—F‚F6‚€¢'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2ç6V7&WG2çFö¶Vå÷W&Ç6fR"À¢&WGW&å÷fÇVSÒ&f–ÆVB×vV&†öö²×Fö¶Vâ"À¢“ ¢&W7öç6RÒ6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öåöf—Fõö6öææV7B"Â&w3Õ·6VÆbæ6öææV7F–öâçµÒ’À¢6V7W&SÕG'VRÀ¢¢6VÆbæ76W'DWVÂ‡&W7öç6Rç7FGW5ö6öFRÂ3"¢6VÆbæ6öææV7F–öâç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'EG'VR‡6VÆbæ6öææV7F–öâæ6†V6µö•÷Fö¶Vâ‚&öÆB×vV&†öö²×Fö¶Vâ"’¢6VÆbæ76W'DfÇ6R‡6VÆbæ6öææV7F–öâæ6†V6µö•÷Fö¶Vâ‚&f–ÆVB×vV&†öö²×Fö¶Vâ"’¢6VÆbæ76W'DWVÂ‡6VÆbæ6öææV7F–öâç6WGF–æw5²&f—Fõ÷vV&†ööµ÷7FGW2%ÒÂ&W'&÷"" ¢F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2æf—Fõ÷7V'67&–&U÷vV&†öö²"¢F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2æf—Fõ÷vV&†ööµ÷7V'67&—F–öç2"¢FVbFW7Eöf—Fõö6öææV7Eö¶VW5öæWu÷Fö¶Vå÷v†Vå÷7V'67&–&U÷&W7öç6Uö—5öÆ÷7Eö'WE÷7V'67&—F–öåöW†—7G2€¢6VÆbÂ7V'67&—F–öç2Â7V'67&–&P¢“ ¢f—Fô7&VFVçF–Âæö&¦V7G2æ7&VFR€¢6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢6Æ–VçEö–EöVæ7'—FVCÖVæ7'—E÷6V7&WB‚&6Æ–VçB"’À¢6Æ–VçE÷6V7&WEöVæ7'—FVCÖVæ7'—E÷6V7&WB‚'6V7&WB"’À¢¢6ÆÆ&6²Ò€¢b&‡GG3¢ò÷FW7G6W'fW"ö’ö6öÖ×Væ–6F–öç2öf—Fòò ¢b'·6VÆbæ6öææV7F–öâçV&Æ–5ö–GÒöÖ&–wV÷W2×vV&†öö²×Fö¶Vâ÷vV&†öö²ò ¢¢7V'67&—F–öç2ç6–FUöVffV7BÒµµÒÂ¶6ÆÆ&6µÕĞ¢7V'67&–&Rç6–FUöVffV7BÒf—FôW'&÷"‚'&÷f–FW%÷Væf–Æ&ÆR"¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&÷væW""Â77v÷&CÒ'FW7B"¢v—F‚F6‚€¢'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2ç6V7&WG2çFö¶Vå÷W&Ç6fR"À¢&WGW&å÷fÇVSÒ&Ö&–wV÷W2×vV&†öö²×Fö¶Vâ"À¢“ ¢&W7öç6RÒ6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öåöf—Fõö6öææV7B"Â&w3Õ·6VÆbæ6öææV7F–öâçµÒ’À¢6V7W&SÕG'VRÀ¢¢6VÆbæ76W'DWVÂ‡&W7öç6Rç7FGW5ö6öFRÂ3"¢6VÆbæ6öææV7F–öâç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'EG'VR‡6VÆbæ6öææV7F–öâæ6†V6µö•÷Fö¶Vâ‚&Ö&–wV÷W2×vV&†öö²×Fö¶Vâ"’¢6VÆbæ76W'DWVÂ€¢6VÆbæ6öææV7F–öâç6WGF–æw5²&f—Fõ÷vV&†ööµ÷7FGW2%ÒÂ&6öææV7FVB ¢ ¢F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2æf—Fõ÷Vç7V'67&–&U÷vV&†öö²"¢F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2æf—Fõ÷7V'67&–&U÷vV&†öö²"¢F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2æf—Fõ÷vV&†ööµ÷7V'67&—F–öç2"¢FVbFW7EöW‡Æ–6—Eöf—Fõ÷&V6öææV7E÷&÷FFW5÷Fö¶VåöæE÷&VÖ÷fW5÷7FÆU÷7V'67&—F–öâ€¢6VÆbÂ7V'67&—F–öç2Â7V'67&–&RÂVç7V'67&–&P¢“ ¢f—Fô7&VFVçF–Âæö&¦V7G2æ7&VFR€¢6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢6Æ–VçEö–EöVæ7'—FVCÖVæ7'—E÷6V7&WB‚&6Æ–VçB"’À¢6Æ–VçE÷6V7&WEöVæ7'—FVCÖVæ7'—E÷6V7&WB‚'6V7&WB"’À¢¢6VÆbæ6öææV7F–öâç6WEö•÷Fö¶Vâ‚&öÆB×vV&†öö²×Fö¶Vâ"¢6VÆbæ6öææV7F–öâç6WGF–æw2Ò²&f—Fõ÷vV&†ööµ÷7FGW2#¢&6öææV7FVB'Ğ¢6VÆbæ6öææV7F–öâç6fR‡WFFUöf–VÆG3Õ²&•÷Fö¶Våö†6‚"Â'6WGF–æw2%Ò¢öÆEö6ÆÆ&6²Ò€¢b&‡GG3¢ò÷FW7G6W'fW"ö’ö6öÖ×Væ–6F–öç2öf—Fòò ¢b'·6VÆbæ6öææV7F–öâçV&Æ–5ö–GÒööÆB×vV&†öö²×Fö¶Vâ÷vV&†öö²ò ¢¢æWuö6ÆÆ&6²Ò€¢b&‡GG3¢ò÷FW7G6W'fW"ö’ö6öÖ×Væ–6F–öç2öf—Fòò ¢b'·6VÆbæ6öææV7F–öâçV&Æ–5ö–GÒöæWr×vV&†öö²×Fö¶Vâ÷vV&†öö²ò ¢¢7V'67&—F–öç2ç6–FUöVffV7BÒµ¶öÆEö6ÆÆ&6µÒÂ¶æWuö6ÆÆ&6µÕĞ¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&÷væW""Â77v÷&CÒ'FW7B"¢v—F‚F6‚€¢'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2ç6V7&WG2çFö¶Vå÷W&Ç6fR"À¢&WGW&å÷fÇVSÒ&æWr×vV&†öö²×Fö¶Vâ"À¢“ ¢&W7öç6RÒ6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öåöf—Fõö6öææV7B"Â&w3Õ·6VÆbæ6öææV7F–öâçµÒ’À¢²&f÷&6R#¢#'ÒÀ¢6V7W&SÕG'VRÀ¢¢6VÆbæ76W'DWVÂ‡&W7öç6Rç7FGW5ö6öFRÂ3"¢6VÆbæ6öææV7F–öâç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DfÇ6R‡6VÆbæ6öææV7F–öâæ6†V6µö•÷Fö¶Vâ‚&öÆB×vV&†öö²×Fö¶Vâ"’¢6VÆbæ76W'EG'VR‡6VÆbæ6öææV7F–öâæ6†V6µö•÷Fö¶Vâ‚&æWr×vV&†öö²×Fö¶Vâ"’¢7V'67&–&Ræ76W'Eö6ÆÆVEööæ6U÷v—F‚‡6VÆbæ6öææV7F–öâÂæWuö6ÆÆ&6²¢Vç7V'67&–&Ræ76W'Eö6ÆÆVEööæ6U÷v—F‚‡6VÆbæ6öææV7F–öâÂöÆEö6ÆÆ&6² ¢F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2æf—Fõ÷vV&†ööµ÷7V'67&—F–öç2"¢FVbFW7Eö÷væW%ö6åö6†V6µöf—Fõ÷vV&†öö²‡6VÆbÂ7V'67&—F–öç2“ ¢f—Fô7&VFVçF–Âæö&¦V7G2æ7&VFR€¢6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢6Æ–VçEö–EöVæ7'—FVCÖVæ7'—E÷6V7&WB‚&6Æ–VçB"’À¢6Æ–VçE÷6V7&WEöVæ7'—FVCÖVæ7'—E÷6V7&WB‚'6V7&WB"’À¢¢6VÆbæ6öææV7F–öâç6WEö•÷Fö¶Vâ‚&7W'&VçB×vV&†öö²×Fö¶Vâ"¢6VÆbæ6öææV7F–öâç6fR‡WFFUöf–VÆG3Õ²&•÷Fö¶Våö†6‚%Ò¢6ÆÆ&6²Ò€¢b&‡GG3¢ò÷FW7G6W'fW"ö’ö6öÖ×Væ–6F–öç2öf—Fòò ¢b'·6VÆbæ6öææV7F–öâçV&Æ–5ö–GÒö7W'&VçB×vV&†öö²×Fö¶Vâ÷vV&†öö²ò ¢¢7V'67&—F–öç2ç&WGW&å÷fÇVRÒ¶6ÆÆ&6µĞ¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&÷væW""Â77v÷&CÒ'FW7B"¢&W7öç6RÒ6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öåöf—Fõö6†V6²"Â&w3Õ·6VÆbæ6öææV7F–öâçµÒ’À¢6V7W&SÕG'VRÀ¢¢6VÆbæ76W'DWVÂ‡&W7öç6Rç7FGW5ö6öFRÂ3"¢6VÆbæ6öææV7F–öâç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ€¢6VÆbæ6öææV7F–öâç6WGF–æw5²&f—Fõ÷vV&†ööµ÷7FGW2%ÒÂ&6öææV7FVB ¢ ¢F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2æf—Fõ÷vV&†ööµ÷7V'67&—F–öç2"¢FVbFW7Eöf—Fõö6†V6µ÷7W&f6W5öÖ—76–æuöÖW76VævW%ö66W72‡6VÆbÂ7V'67&—F–öç2“ ¢f—Fô7&VFVçF–Âæö&¦V7G2æ7&VFR€¢6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢6Æ–VçEö–EöVæ7'—FVCÖVæ7'—E÷6V7&WB‚&6Æ–VçB"’À¢6Æ–VçE÷6V7&WEöVæ7'—FVCÖVæ7'—E÷6V7&WB‚'6V7&WB"’À¢¢6VÆbæf—Fõ÷fW&–g•öÖW76VævW%ö66W72ç6–FUöVffV7BÒf—FôW'&÷"‚'&÷f–FW%ö‡GGóC""¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&÷væW""Â77v÷&CÒ'FW7B"¢&W7öç6RÒ6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öåöf—Fõö6†V6²"Â&w3Õ·6VÆbæ6öææV7F–öâçµÒ’À¢6V7W&SÕG'VRÀ¢¢6VÆbæ76W'DWVÂ‡&W7öç6Rç7FGW5ö6öFRÂ3"¢6VÆbæ6öææV7F–öâç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ‡6VÆbæ6öææV7F–öâç6WGF–æw5²&f—Fõ÷vV&†ööµ÷7FGW2%ÒÂ&W'&÷""¢6VÆbæ76W'DWVÂ€¢6VÆbæ6öææV7F–öâç6WGF–æw5²&f—Fõ÷vV&†ööµöW'&÷"%ÒÂ'&÷f–FW%ö‡GGóC" ¢¢7V'67&—F–öç2æ76W'Eöæ÷Eö6ÆÆVB‚ ¢F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2æf—Fõ÷7–æ5÷&V6VçEöÖW76vW2"¢FVbFW7Eö÷væW%ö6å÷'Våöf—Fõ÷VÆÅ÷7–æ2‡6VÆbÂ7–æ6W"“ ¢7–æ6W"ç&WGW&å÷fÇVRÒf—Fõ7–æ5&W7VÇB€¢6†G5ö6†V6¶VCÓ"À¢ÖW76vW5ö6†V6¶VCÓBÀ¢ÖW76vW5ö7&VFVCÓÀ¢ÖW76vW5öW†—7F–æsÓ"À¢ÖW76vW5÷6¶—VCÓÀ¢¢f—Fô7&VFVçF–Âæö&¦V7G2æ7&VFR€¢6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢6Æ–VçEö–EöVæ7'—FVCÖVæ7'—E÷6V7&WB‚&6Æ–VçB"’À¢6Æ–VçE÷6V7&WEöVæ7'—FVCÖVæ7'—E÷6V7&WB‚'6V7&WB"’À¢¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&÷væW""Â77v÷&CÒ'FW7B"¢&W7öç6RÒ6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öåöf—Fõ÷7–æ2"Â&w3Õ·6VÆbæ6öææV7F–öâçµÒ’À¢6V7W&SÕG'VRÀ¢¢6VÆbæ76W'DWVÂ‡&W7öç6Rç7FGW5ö6öFRÂ3"¢7–æ6W"æ76W'Eö6ÆÆVEööæ6U÷v—F‚‡6VÆbæ6öææV7F–öâ¢6VÆbæ6öææV7F–öâç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'EG'VR‡6VÆbæ6öææV7F–öâç6WGF–æw5²&f—Fõ÷VÆÅöÆ7Eö6†V6¶VEöB%Ò¢6VÆbæ76W'DWVÂ‡6VÆbæ6öææV7F–öâç6WGF–æw5²&f—Fõ÷VÆÅöÆ7Eö7&VFVB%ÒÂ¢6VÆbæ76W'DWVÂ‡6VÆbæ6öææV7F–öâç6WGF–æw5²&f—Fõ÷VÆÅöÆ7EöW†—7F–ær%ÒÂ" ¢FVbFW7EöÖævW%ö6ææ÷Eö÷Våö6†ææVÅ÷6WGW÷vW2‡6VÆb“ ¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ'v÷&¶W""Â77v÷&CÒ'FW7B"¢6VÆbæ76W'DWVÂ€¢6VÆbæ6Æ–VçBævWB€¢&WfW'6R‚&6öÖ×Væ–6F–öåö6öææV7F–öåö7&VFR"Â&w3Õ²'vV'6—FR%Ò¢’ç7FGW5ö6öFRÀ¢C2À¢¢6VÆbæ76W'DWVÂ€¢6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öåö6öææV7F–öåöVF—B"Â&w3Õ·6VÆbæ6öææV7F–öâçµÒ’’ç7FGW5ö6öFRÀ¢C2À¢¢6VÆbæ76W'DWVÂ€¢6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öå÷FVÆW†öç•ö7&VFR"’’ç7FGW5ö6öFRÀ¢C2À¢¢6VÆbæ76W'DWVÂ€¢6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öåöf—Fõö6öææV7B"Â&w3Õ·6VÆbæ6öææV7F–öâçµÒ’À¢6V7W&SÕG'VRÀ¢’ç7FGW5ö6öFRÀ¢C2À¢¢6VÆbæ76W'DWVÂ€¢6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öåöf—Fõö6†V6²"Â&w3Õ·6VÆbæ6öææV7F–öâçµÒ’À¢6V7W&SÕG'VRÀ¢’ç7FGW5ö6öFRÀ¢C2À¢¢6VÆbæ76W'DWVÂ€¢6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öåöf—Fõ÷7–æ2"Â&w3Õ·6VÆbæ6öææV7F–öâçµÒ’À¢6V7W&SÕG'VRÀ¢’ç7FGW5ö6öFRÀ¢C2À¢ ¢FVbFW7Eö÷væW%ö6åö7&VFUöæEöVF—EöÖVvföåöÆ–æU÷v—F…÷6fU÷&V6÷&F–æuö†÷7G2‡6VÆb“ ¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&÷væW""Â77v÷&CÒ'FW7B"¢7&VFVBÒ6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öå÷FVÆW†öç•ö7&VFR"’À¢°¢&æÖR#¢-	Í]=MíÒíM"À¢&W‡FW&æÅö–B#¢&Æ–æRÓ"À¢&G5ö&6U÷W&Â#¢&‡GG3¢òöVÆ–æS#"æÖVv'‚ç'Rö7&Ö’÷c"À¢&G5ö•ö¶W’#¢&ÖVvföâÖG2×6V7&WB"À¢'&V6÷&F–æuöÆÆ÷vVEö†÷7G2#¢'&V6÷&G2æÖVvföâæW†×ÆUÆæÖVF–æÖVvföâæW†×ÆR"À¢&—5ö7F—fR#¢&öâ"À¢ÒÀ¢¢6VÆbæ76W'DWVÂ†7&VFVBç7FGW5ö6öFRÂ3"¢Æ–æRÒFVÆW†öç”6öææV7F–öâæö&¦V7G2ævWB€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÂW‡FW&æÅö–CÒ&Æ–æRÓ ¢¢6VÆbæ76W'DWVÂ€¢Æ–æRç&V6÷&F–æuöÆÆ÷vVEö†÷7G2À¢²'&V6÷&G2æÖVvföâæW†×ÆR"Â&ÖVF–æÖVvföâæW†×ÆR%ÒÀ¢¢&÷f–FW%ö6öææV7F–öâÒ6†ææVÄ6öææV7F–öâæö&¦V7G2ævWB€¢6†ææVÅõö÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢6†ææVÅõö¶–æCÔ6öÖ×Væ–6F–öä6†ææVÂä´”äEôÔTtdôâÀ¢W‡FW&æÅö–CÒ&Æ–æRÓ"À¢¢6VÆbæ76W'DWVÂ€¢&÷f–FW%ö6öææV7F–öâç6WGF–æw5²&ÖVvföåö•ö&6U÷W&Â%ÒÀ¢&‡GG3¢òöVÆ–æS#"æÖVv'‚ç'Rö7&Ö’÷c"À¢¢Væ7'—FVEö¶W’Ò&÷f–FW%ö6öææV7F–öâç6WGF–æw5²&ÖVvföåö•ö¶W•öVæ7'—FVB%Ğ¢6VÆbæ76W'Dæ÷DWVÂ†Væ7'—FVEö¶W’Â&ÖVvföâÖG2×6V7&WB"¢6VÆbæ76W'DWVÂ†FV7'—E÷6V7&WB†Væ7'—FVEö¶W’’Â&ÖVvföâÖG2×6V7&WB" ¢–çfÆ–BÒ6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öå÷FVÆW†öç•öVF—B"Â&w3Õ¶Æ–æRçµÒ’À¢°¢&æÖR#¢-	Í]=MíÒíM"À¢&W‡FW&æÅö–B#¢&Æ–æRÓ"À¢&G5ö&6U÷W&Â#¢&‡GG3¢òöVÆ–æS#"æÖVv'‚ç'Rö7&Ö’÷c"À¢&G5ö•ö¶W’#¢""À¢'&V6÷&F–æuöÆÆ÷vVEö†÷7G2#¢&‡GG3¢ò÷&V6÷&G2æW†×ÆR÷F‚"À¢&—5ö7F—fR#¢&öâ"À¢ÒÀ¢¢6VÆbæ76W'DWVÂ†–çfÆ–Bç7FGW5ö6öFRÂ#¢6VÆbæ76W'D6öçF–ç2†–çfÆ–BÂ--í½Í­âMíÍ]İİíRÍò" ¢FVbFW7Eö÷væW%ö6åö6öææV7EöÖVvföå÷fG5öæE÷&V6V—fUö6ÆÅö†—7F÷'’‡6VÆb“ ¢FVÆW†öç’ÒFVÆW†öç”6öææV7F–öâæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢æÖSÒ-	Í]=
+MíÒíM"À¢W‡FW&æÅö–CÒ&ÖVvföâÖöff–6R"À¢¢6W'f–6T6Æ–VçBæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢æÖSÒ-
+-]-í-½’­½]İ""À¢†öæSÒ"³rƒ“’Ó#"Ó32"À¢¢ÖVvföåö6†ææVÂÒ6öÖ×Væ–6F–öä6†ææVÂæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢¶–æCÔ6öÖ×Væ–6F–öä6†ææVÂä´”äEôÔTtdôâÀ¢æÖSÒ-	Í]=
+MíÒ"À¢¢6†ææVÄ6öææV7F–öâæö&¦V7G2æ7&VFR€¢6†ææVÃÖÖVvföåö6†ææVÂÀ¢æÖSÒ-	Í]=
+MíÒíM"À¢W‡FW&æÅö–CÒ&ÖVvföâÖöff–6R"À¢6WGF–æw3×°¢&ÖVvföåö•ö&6U÷W&Â#¢&‡GG3¢òöVÆ–æS#"æÖVv'‚ç'Rö7&Ö’÷c"À¢&ÖVvföåö•ö¶W•öVæ7'—FVB#¢Væ7'—E÷6V7&WB‚&ÖVvföâÖG2×6V7&WB"’À¢ÒÀ¢¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&÷væW""Â77v÷&CÒ'FW7B"¢v—F‚F6‚€¢'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öå÷f–Ww2ç6V7&WG2çFö¶Vå÷W&Ç6fR"À¢&WGW&å÷fÇVSÒ&ÖVvföâÖ7&Ò×Fö¶Vâ"À¢“ ¢6WGWÒ6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öå÷FVÆW†öç•ö6öææV7B"Â&w3Õ·FVÆW†öç’çµÒ’À¢6V7W&SÕG'VRÀ¢¢6VÆbæ76W'DWVÂ‡6WGWç7FGW5ö6öFRÂ#¢6VÆbæ76W'D6öçF–ç2‡6WGWÂ&ÖVvföâÖ7&Ò×Fö¶Vâ"¢6VÆbæ76W'DWVÂ‡6WGW²$66†RÔ6öçG&öÂ%ÒÂ&æò×7F÷&R" ¢&÷f–FW%ö6öææV7F–öâÒ6†ææVÍ¶çNm¢G§²ÚîÆ­yÒ÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢W‡FW&æÅö–CÒ&ÆVv7’×6W'f–6R×W6W"ÖÖ"À¢¢6ÆÂÒ†öæT6ÆÂæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢6öææV7F–öã×FVÆW†öç’À¢W‡FW&æÅö–CÒ&ÆVv7’×6W'f–6R×W6W"Ö6ÆÂ"À¢†öæUöçVÖ&W#Ò"³s“##32"À¢F—&V7F–öãÕ†öæT6ÆÂäD•$T5D”ôåô”âÀ¢7F'FVEöC×F–ÖW¦öæRææ÷r‚’À¢&W7VÇCÕ†öæT6ÆÂå$U5TÅEôå5tU$TBÀ¢V×Æ÷–VS×6VÆbçv÷&¶W"À¢ ¢ÖöV×Æ÷–VU÷6W'f–6S%÷W6W"†V×Æ÷–VRÂ6VÆbæ÷F†W"Â6VÆbæ÷væW" ¢V×Æ÷–VRç&Vg&W6…ög&öÕöF"‚¢6ÆÂç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ†V×Æ÷–VRçW6W"Â6VÆbæ÷F†W"¢6VÆbæ76W'DWVÂ†6ÆÂæV×Æ÷–VU÷&öf–ÆRÂV×Æ÷–VR¢6VÆbæ76W'DWVÂ†6ÆÂæV×Æ÷–VRÂ6VÆbæ÷F†W" ¢FVbFW7E÷Væ–f–VEöV×Æ÷–VUöÖ–æu÷vUöÆ—7G5ó5öæE÷FVÆW†öç•÷6÷W&6W2‡6VÆb“ ¢V×Æ÷–VRÒV×Æ÷–VRæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢F—7Æ•öæÖSÒ-
+Míí"
+Mí
+Míí-r"À¢—5ö7F—fSÕG'VRÀ¢W6W#×6VÆbçv÷&¶W"À¢¢V×Æ÷–VTöæT4–FVçF—G’æö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢V×Æ÷–VSÖV×Æ÷–VRÀ¢&uöæÖSÒ-
+Míí"
+Mí
+Míí-r"À¢æ÷&ÖÆ—¦VEöæÖSÒ-Míí"MíMíí-r"À¢öæV5öV×Æ÷–VUö–CÒ#ÓÓÓÓ"À¢W'6öææVÅöçVÖ&W#Ò#"À¢7FGW3ÔV×Æ÷–VTöæT4–FVçF—G’å5DEU5ôÔåTÄÅ•ôÔD4„TBÀ¢ÖF6…öÖWF†öCÔV×Æ÷–VTöæT4–FVçF—G’äÔD4…ôÔåTÂÀ¢6÷W&6Uö7F—fSÕG'VRÀ¢¢FVÆW†öç’ÒFVÆW†öç”6öææV7F–öâæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢æÖSÒ-	Í]=
+MíÒ"À¢W‡FW&æÅö–CÒ&Ö–ær×vR"À¢¢FVÆW†öç”V×Æ÷–VT–FVçF—G’æö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢6öææV7F–öã×FVÆW†öç’À¢V×Æ÷–VSÖV×Æ÷–VRÀ¢&uöæÖSÒ-
+Míí"
+Mí
+Míí-r"À¢æ÷&ÖÆ—¦VEöæÖSÒ-Míí"MíMíí-r"À¢W‡FVç6–öãÒ#ss’"À¢7FGW3ÕFVÆW†öç”V×Æ÷–VT–FVçF—G’å5DEU5ôÔåTÄÅ•ôÔD4„TBÀ¢ÖF6…öÖWF†öCÕFVÆW†öç”V×Æ÷–VT–FVçF—G’äÔD4…ôÔåTÂÀ¢ ¢6VÆbæ÷&væ—¦F–öâç–E÷VçF–ÂÒF–ÖW¦öæRææ÷r‚’²F–ÖVFVÇF†F—3Ó3¢6VÆbæ÷&væ—¦F–öâç6fR‡WFFUöf–VÆG3Õ²'–E÷VçF–Â%Ò¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&÷væW""Â77v÷&CÒ'FW7B"¢vRÒ6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&f–ææ6U÷—&öÆÅöV×Æ÷–VUöÖ–ær"’ ¢6VÆbæ76W'DWVÂ‡vRç7FGW5ö6öFRÂ#¢6VÆbæ76W'D6öçF–ç2‡vRÂ-
+íıí--½]İRí-=Mİ­í""¢6VÆbæ76W'D6öçF–ç2‡vRÂ-
+İ]íİ}í--Â-"¢6VÆbæ76W'D6öçF–ç2‡vRÂ-
+Míí"
+Mí
+Míí-r"¢6VÆbæ76W'D6öçF–ç2‡vRÂ&W‡Bss’"¢6VÆbæ76W'D6öçF–ç2‡vRÂ#" ¢FVbFW7Eö6†ææVÅ÷6WGF–æw5ö&Uö÷&væ—¦F–öå÷66÷VB‡6VÆb“ ¢f÷&V–våö÷&væ—¦F–öâÒ÷&væ—¦F–öâæö&¦V7G2æ7&VFR†æÖSÒ$f÷&V–vâ6WGW÷&r"¢f÷&V–våö6†ææVÂÒ6öÖ×Væ–6F–öä6†ææVÂæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öãÖf÷&V–våö÷&væ—¦F–öâÀ¢¶–æCÒ'vV'6—FR"À¢æÖSÒ$f÷&V–vâ6—FR"À¢¢f÷&V–våö6öææV7F–öâÒ6†ææVÄ6öææV7F–öâæö&¦V7G2æ7&VFR€¢6†ææVÃÖf÷&V–våö6†ææVÂÀ¢æÖSÒ$f÷&V–vâ6öææV7F–öâ"À¢W‡FW&æÅö–CÒ&f÷&V–vâ"À¢¢f÷&V–våöf—Fõö6†ææVÂÒ6öÖ×Væ–6F–öä6†ææVÂæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öãÖf÷&V–våö÷&væ—¦F–öâÀ¢¶–æCÒ&f—Fò"À¢æÖSÒ$f÷&V–vâf—Fò"À¢¢f÷&V–våöf—Fõö6öææV7F–öâÒ6†ææVÄ6öææV7F–öâæö&¦V7G2æ7&VFR€¢6†ææVÃÖf÷&V–våöf—Fõö6†ææVÂÀ¢æÖSÒ$f÷&V–vâf—Fò66÷VçB"À¢W‡FW&æÅö–CÒ#“ƒscSC3#"À¢¢f÷&V–våöÆ–æRÒFVÆW†öç”6öææV7F–öâæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öãÖf÷&V–våö÷&væ—¦F–öâÀ¢æÖSÒ$f÷&V–vâÆ–æR"À¢W‡FW&æÅö–CÒ&f÷&V–vâÖÆ–æR"À¢¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&÷væW""Â77v÷&CÒ'FW7B"¢6VÆbæ76W'DWVÂ€¢6VÆbæ6Æ–VçBævWB€¢&WfW'6R‚&6öÖ×Væ–6F–öåö6öææV7F–öåöVF—B"Â&w3Õ¶f÷&V–våö6öææV7F–öâçµÒ¢’ç7FGW5ö6öFRÀ¢CBÀ¢¢6VÆbæ76W'DWVÂ€¢6VÆbæ6Æ–VçBævWB€¢&WfW'6R‚&6öÖ×Væ–6F–öå÷FVÆW†öç•öVF—B"Â&w3Õ¶f÷&V–våöÆ–æRçµÒ¢’ç7FGW5ö6öFRÀ¢CBÀ¢¢6VÆbæ76W'DWVÂ€¢6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öåöf—Fõö6öææV7B"Â&w3Õ¶f÷&V–våöf—Fõö6öææV7F–öâçµÒ’À¢6V7W&SÕG'VRÀ¢’ç7FGW5ö6öFRÀ¢CBÀ¢¢6VÆbæ76W'DWVÂ€¢6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öåöf—Fõö6†V6²"Â&w3Õ¶f÷&V–våöf—Fõö6öææV7F–öâçµÒ’À¢6V7W&SÕG'VRÀ¢’ç7FGW5ö6öFRÀ¢CBÀ¢ ¢FVbFW7Eö6öÖ×Væ–6F–öåöæ÷F–f–6F–öåöfVVEö—5÷W'6—7FVçEöæE÷W6W%÷66÷VB‡6VÆb“ ¢÷våöæ÷F–f–6F–öâÒæ÷F–f–6F–öâæö&¦V7G2æ7&VFR€¢W6W#×6VÆbçv÷&¶W"À¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢¶–æCÒ&6öÖ×Væ–6F–öâ"À¢F—FÆSÒ-	İí-íRíí]İR"À¢ÖW76vSÒ-	--â+r	-Ó¢	}M---=-R"À¢7F–öå÷W&ÃÒ"ö6öÖ×Væ–6F–öç2óö6öçfW'6F–öã×FW7B"À¢¢÷F†W%öæ÷F–f–6F–öâÒæ÷F–f–6F–öâæö&¦V7G2æ7&VFR€¢W6W#×6VÆbæ÷F†W"À¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢¶–æCÒ&6öÖ×Væ–6F–öâ"À¢F—FÆSÒ-
+}=míRíí]İR"À¢¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ'v÷&¶W""Â77v÷&CÒ'FW7B"¢fVVBÒ6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öåöæ÷F–f–6F–öåöfVVB"’¢6VÆbæ76W'DWVÂ†fVVBç7FGW5ö6öFRÂ#¢6VÆbæ76W'DWVÂ…¶—FVÕ²&–B%Òf÷"—FVÒ–âfVVBæ§6öâ‚•²&æ÷F–f–6F–öç2%ÕÒÂ¶÷våöæ÷F–f–6F–öâçµÒ¢6VÆbæ76W'DfÇ6R„æ÷F–f–6F–öâæö&¦V7G2ævWB‡³Ö÷våöæ÷F–f–6F–öâç²’æ—5÷&W6öÇfVB¢6VÆbæ76W'DWVÂ€¢6VÆbæ6Æ–VçBç÷7B‡&WfW'6R‚&6öÖ×Væ–6F–öåöæ÷F–f–6F–öå÷&W6öÇfR"Â&w3Õ¶÷F†W%öæ÷F–f–6F–öâçµÒ’’ç7FGW5ö6öFRÀ¢CBÀ¢¢÷F†W%öæ÷F–f–6F–öâç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DfÇ6R†÷F†W%öæ÷F–f–6F–öâæ—5÷&W6öÇfVB¢vRÒ6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öç5ö6ÆÇ2"’¢6VÆbæ76W'D6öçF–ç2‡vRÂv–CÒ&6öÖ×Væ–6F–öâÖÆW'G2"r¢6VÆbæ76W'D6öçF–ç2‡vRÂ'v–æF÷rç6WD–çFW'fÂ‡öÆÄ6öÖ×Væ–6F–öäÆW'G2ÂS’"Â‡FÖÃÔfÇ6R¢6VÆbæ76W'D6öçF–ç2‡vRÂ'f—6–&ÆT–G2ç6Æ–6R†–æFW‚¢#Â†–æFW‚²’¢#’"Â‡FÖÃÔfÇ6R ¢6VÆbæ76W'DWVÂ€¢6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öåöæ÷F–f–6F–öå÷&W6öÇfR"Â&w3Õ¶÷våöæ÷F–f–6F–öâçµÒ’’ç7FGW5ö6öFRÀ¢CRÀ¢¢&W6öÇfVBÒ6VÆbæ6Æ–VçBç÷7B‡&WfW'6R‚&6öÖ×Væ–6F–öåöæ÷F–f–6F–öå÷&W6öÇfR"Â&w3Õ¶÷våöæ÷F–f–6F–öâçµÒ’¢6VÆbæ76W'DWVÂ‡&W6öÇfVBç7FGW5ö6öFRÂ#¢÷våöæ÷F–f–6F–öâç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'EG'VR†÷våöæ÷F–f–6F–öâæ—5÷&VB¢6VÆbæ76W'EG'VR†÷våöæ÷F–f–6F–öâæ—5÷&W6öÇfVB¢&W6öÇfVEöfVVBÒ6VÆbæ6Æ–VçBævWB€¢&WfW'6R‚&6öÖ×Væ–6F–öåöæ÷F–f–6F–öåöfVVB"’Â²'f—6–&ÆR#¢7G"†÷våöæ÷F–f–6F–öâç²—ÒÀ¢’æ§6öâ‚¢6VÆbæ76W'DWVÂ‡&W6öÇfVEöfVVE²&æ÷F–f–6F–öç2%ÒÂµÒ¢6VÆbæ76W'DWVÂ‡&W6öÇfVEöfVVE²'&W6öÇfVEö–G2%ÒÂ¶÷våöæ÷F–f–6F–öâçµÒ¢÷F†W%öæ÷F–f–6F–öâæ—5÷&W6öÇfVBÒG'VP¢÷F†W%öæ÷F–f–6F–öâç6fR‡WFFUöf–VÆG3Õ²&—5÷&W6öÇfVB%Ò¢66÷VE÷&W6öÇfVBÒ6VÆbæ6Æ–VçBævWB€¢&WfW'6R‚&6öÖ×Væ–6F–öåöæ÷F–f–6F–öåöfVVB"’Â²'f—6–&ÆR#¢b'¶÷våöæ÷F–f–6F–öâç·ÒÇ¶÷F†W%öæ÷F–f–6F–öâç·Ò'ÒÀ¢’æ§6öâ‚¢6VÆbæ76W'DWVÂ‡66÷VE÷&W6öÇfVE²'&W6öÇfVEö–G2%ÒÂ¶÷våöæ÷F–f–6F–öâçµÒ¢f÷&V–våö÷&væ—¦F–öâÒ÷&væ—¦F–öâæö&¦V7G2æ7&VFR†æÖSÒ$f÷&V–vâæ÷F–f–6F–öâ÷&r"¢f÷&V–våöæ÷F–f–6F–öâÒæ÷F–f–6F–öâæö&¦V7G2æ7&VFR€¢W6W#×6VÆbçv÷&¶W"À¢÷&væ—¦F–öãÖf÷&V–våö÷&væ—¦F–öâÀ¢¶–æCÒ&6öÖ×Væ–6F–öâ"À¢F—FÆSÒ-	M==òí=İ}mò"À¢—5÷&W6öÇfVCÕG'VRÀ¢¢÷F†W%ö¶–æBÒæ÷F–f–6F–öâæö&¦V7G2æ7&VFR€¢W6W#×6VÆbçv÷&¶W"À¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢¶–æCÒ&f–ææ6R"À¢F—FÆSÒ-	M==í’-ò"À¢—5÷&W6öÇfVCÕG'VRÀ¢¢—6öÆFVBÒ6VÆbæ6Æ–VçBævWB€¢&WfW'6R‚&6öÖ×Væ–6F–öåöæ÷F–f–6F–öåöfVVB"’À¢²'f—6–&ÆR#¢b'¶f÷&V–våöæ÷F–f–6F–öâç·ÒÇ¶÷F†W%ö¶–æBç·Ò'ÒÀ¢’æ§6öâ‚¢6VÆbæ76W'DWVÂ†—6öÆFVE²'&W6öÇfVEö–G2%ÒÂµÒ¢6VÆbæ76W'DWVÂ€¢6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öåöæ÷F–f–6F–öåöfVVB"’Â²'f—6–&ÆR#¢#ÇG'VR'Ò’ç7FGW5ö6öFRÀ¢CÀ¢ ¢vVæW&FVBÒ´æ÷F–f–6F–öâæö&¦V7G2æ7&VFR€¢W6W#×6VÆbçv÷&¶W"À¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢¶–æCÒ&6öÖ×Væ–6F–öâ"À¢F—FÆSÖb-
+íí]İR¶–æFW‡Ò"À¢’f÷"–æFW‚–â&ævRƒ•Ğ¢fVVEö–G2Ò¶—FVÕ²&–B%Òf÷"—FVÒ–â6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öåöæ÷F–f–6F–öåöfVVB"’’æ§6öâ‚•²&æ÷F–f–6F–öç2%ÕĞ¢6VÆbæ76W'Dæ÷D–â†vVæW&FVE³Òç²ÂfVVEö–G2¢6VÆbæ76W'DWVÂ†fVVEö–G5²ÓÒÂvVæW&FVE²ÓÒç² ¢77&eöæ÷F–f–6F–öâÒæ÷F–f–6F–öâæö&¦V7G2æ7&VFR€¢W6W#×6VÆbçv÷&¶W"À¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢¶–æCÒ&6öÖ×Væ–6F–öâ"À¢F—FÆSÒ$55$b6†V6²"À¢¢77&eö6Æ–VçBÒ6Æ–VçB†Væf÷&6Uö77&eö6†V6·3ÕG'VR¢6VÆbæ76W'EG'VR†77&eö6Æ–VçBæÆöv–â‡W6W&æÖSÒ'v÷&¶W""Â77v÷&CÒ'FW7B"’¢77&eö6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öåöæ÷F–f–6F–öåöfVVB"’¢&W6öÇfU÷W&ÂÒ&WfW'6R‚&6öÖ×Væ–6F–öåöæ÷F–f–6F–öå÷&W6öÇfR"Â&w3Õ¶77&eöæ÷F–f–6F–öâçµÒ¢6VÆbæ76W'DWVÂ†77&eö6Æ–VçBç÷7B‡&W6öÇfU÷W&Â’ç7FGW5ö6öFRÂC2¢77&e÷Fö¶VâÒ77&eö6Æ–VçBæ6öö¶–W5²&77&gFö¶Vâ%ÒçfÇVP¢6VÆbæ76W'DWVÂ†77&eö6Æ–VçBç÷7B‡&W6öÇfU÷W&ÂÂ…EEõ…ô55$eDô´TãÖ77&e÷Fö¶Vâ’ç7FGW5ö6öFRÂ# ¢6VÆbæ6Æ–VçBæÆöv÷WB‚¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&66÷VçFçB"Â77v÷&CÒ'FW7B"¢6VÆbæ76W'Dæ÷DWVÂ‡6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öåöæ÷F–f–6F–öåöfVVB"’’ç7FGW5ö6öFRÂ# ¢FVbFW7E÷f–WuööæÇ•ö6&–Æ—G•ö6ææ÷Eö6†ævUö6öçfW'6F–öå÷7FGW2‡6VÆb“ ¢f–WvW"ÒW6W"æö&¦V7G2æ7&VFU÷W6W"‚'f–WvW""Â77v÷&CÒ'FW7B"¢÷&væ—¦F–öä66W72æö&¦V7G2æ7&VFR‡W6W#×f–WvW"Â÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÂ&öÆSÒ'f–WvW""¢6öÖ×Væ–6F–öä66W72æö&¦V7G2æf–ÇFW"‡W6W#×f–WvW"Â÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâ’çWFFR†6å÷f–Wuö6öçfW'6F–öç3ÕG'VR¢6öçfW'6F–öâÒ6öçfW'6F–öâæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢W‡FW&æÅö–CÒ'f–WrÖöæÇ’Ö6†B"À¢'F–6—çEöæÖSÒ-	-Ò"À¢¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ'f–WvW""Â77v÷&CÒ'FW7B"¢vRÒ6VÆbæ6Æ–VçBævWB€¢&WfW'6R‚&6öÖ×Væ–6F–öç5ö6öçfW'6F–öç2"’Â²&6öçfW'6F–öâ#¢6öçfW'6F–öâçWV–GÒÀ¢¢6VÆbæ76W'DWVÂ‡vRç7FGW5ö6öFRÂ#¢6VÆbæ76W'Dæ÷D6öçF–ç2‡vRÂvæÖSÒ'7FGW2"r¢&W7öç6RÒ6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öå÷WFFR"Â&w3Õ¶6öçfW'6F–öâçWV–EÒ’À¢²'7FGW2#¢6öçfW'6F–öâå5DEU5ôDôäWÒÀ¢¢6VÆbæ76W'DWVÂ‡&W7öç6Rç7FGW5ö6öFRÂC2¢6öçfW'6F–öâç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ†6öçfW'6F–öâç7FGW2Â6öçfW'6F–öâå5DEU5ôäUr ¢FVbFW7E÷v÷&¶W%÷6VW5ööæÇ•ö÷våö6ÆÇ5öæEö÷væW%÷6VW5öÆÂ‡6VÆb“ ¢FVÆW†öç’ÒFVÆW†öç”6öææV7F–öâæö&¦V7G2æ7&VFR†÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÂW‡FW&æÅö–CÒ&ÖVvföâ"¢f÷"–æFW‚ÂV×Æ÷–VR–âVçVÖW&FR‚‡6VÆbçv÷&¶W"Â6VÆbæ÷F†W"’“ ¢†öæT6ÆÂæö&¦V7G2æ7&VFR†÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÂ6öææV7F–öã×FVÆW†öç’ÂW‡FW&æÅö–C×7G"†–æFW‚’ÂV×Æ÷–VSÖV×Æ÷–VRÂ†öæUöçVÖ&W#Öb#s¶–æFW‡Ò"ÂF—&V7F–öãÒ&–â"Â7F'FVEöC×F–ÖW¦öæRææ÷r‚’ÒF–ÖVFVÇF†Ö–çWFW3Ö–æFW‚’Â&W7VÇCÒ&ç7vW&VB"¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ'v÷&¶W""Â77v÷&CÒ'FW7B"¢&W7öç6RÒ6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öç5ö6ÆÇ2"’¢6VÆbæ76W'D6öçF–ç2‡&W7öç6RÂ#s"¢6VÆbæ76W'Dæ÷D6öçF–ç2‡&W7öç6RÂ#s"¢6VÆbæ76W'Dæ÷D6öçF–ç2‡&W7öç6RÂvæÖSÒ&V×Æ÷–VR"r¢66÷VBÒ6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öç5ö6ÆÇ2"’Â²&V×Æ÷–VR#¢6VÆbæ÷F†W"ç·Ò¢6VÆbæ76W'D6öçF–ç2‡66÷VBÂ#s"¢6VÆbæ76W'Dæ÷D6öçF–ç2‡66÷VBÂ#s"¢6VÆbæ6Æ–VçBæÆöv÷WB‚“²6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&÷væW""Â77v÷&CÒ'FW7B"¢&W7öç6RÒ6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öç5ö6ÆÇ2"’¢6VÆbæ76W'D6öçF–ç2‡&W7öç6RÂ#s"¢6VÆbæ76W'D6öçF–ç2‡&W7öç6RÂ#s"¢6VÆbæ76W'D6öçF–ç2‡&W7öç6RÂvæÖSÒ&V×Æ÷–VR"r¢6VÆbæ76W'DWVÂ‡6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öç5ö6ÆÇ2"’Â²&FFUög&öÒ#¢&æ÷BÖÖFFR'Ò’ç7FGW5ö6öFRÂC¢6VÆbæ76W'DWVÂ‡6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öç5ö6ÆÇ2"’Â²&FFUög&öÒ#¢###bÓ"Ó""Â&FFU÷Fò#¢###bÓ"Ó'Ò’ç7FGW5ö6öFRÂC¢6VÆbæ76W'DWVÂ‡6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öç5ö6ÆÇ2"’Â²&V×Æ÷–VR#¢&æ÷BÖâÖ–B'Ò’ç7FGW5ö6öFRÂC ¢FVbFW7Eö6ÆÅ÷&V6÷&F–æu÷&WV—&W5÷7F÷&VEöf–ÆUöæE÷66÷W5ö66W72‡6VÆb“ ¢FVÆW†öç’ÒFVÆW†öç”6öææV7F–öâæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢W‡FW&æÅö–CÒ'&V6÷&F–æw2"À¢&V6÷&F–æuöÆÆ÷vVEö†÷7G3Õ²'&V6÷&F–æw2æW†×ÆRçFW7B%ÒÀ¢¢6ÆÂÒ†öæT6ÆÂæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢6öææV7F–öã×FVÆW†öç’À¢W‡FW&æÅö–CÒ&6ÆÂ×&V6÷&F–ær"À¢V×Æ÷–VS×6VÆbçv÷&¶W"À¢†öæUöçVÖ&W#Ò#s"À¢F—&V7F–öãÕ†öæT6ÆÂäD•$T5D”ôåô”âÀ¢7F'FVEöC×F–ÖW¦öæRææ÷r‚’À¢&W7VÇCÕ†öæT6ÆÂå$U5TÅEôå5tU$TBÀ¢&V6÷&F–æu÷&VcÒ&‡GG3¢ò÷&V6÷&F–æw2æW†×ÆRçFW7Bö6ÆÂæ×2"À¢&V6÷&F–æu÷7FGW3Õ†öæT6ÆÂå$T4õ$D”äuõTäD”ärÀ¢¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ'v÷&¶W""Â77v÷&CÒ'FW7B"¢W&ÂÒ&WfW'6R‚&6öÖ×Væ–6F–öåö6ÆÅ÷&V6÷&F–ær"Â&w3Õ¶6ÆÂçµÒ¢6VÆbæ76W'DWVÂ‡6VÆbæ6Æ–VçBævWB‡W&Â’ç7FGW5ö6öFRÂCB ¢–ÆöBÒ"$”C2"²"'&—fFR×&V6÷&F–ær ¢6ÆÂç&V6÷&F–æuöf–ÆRç6fR€¢'&—fFRÖ6ÆÂæ×2"À¢6öçFVçDf–ÆR‡–ÆöB’À¢6fSÕG'VRÀ¢¢6ÆÂç&V6÷&F–æu÷7FGW2Ò†öæT6ÆÂå$T4õ$D”äuõ5Dõ$T@¢6ÆÂç6fR‡WFFUöf–VÆG3Õ²'&V6÷&F–æu÷7FGW2%Ò¢&W7öç6RÒ6VÆbæ6Æ–VçBævWB‡W&Â¢6VÆbæ76W'DWVÂ‡&W7öç6Rç7FGW5ö6öFRÂ#¢6VÆbæ76W'DWVÂ‡&W7öç6U²$6öçFVçBÕG—R%ÒÂ&VF–òö×Vr"¢6VÆbæ76W'Dæ÷D–â‚'&V6÷&F–æw2æW†×ÆRçFW7B"Â&W7öç6RævWB‚$Æö6F–öâ"Â""’ ¢f÷&V–våö÷&væ—¦F–öâÒ÷&væ—¦F–öâæö&¦V7G2æ7&VFR†æÖSÒ$f÷&V–vâ6ÆÇ2÷&r"¢f÷&V–våö÷væW"ÒW6W"æö&¦V7G2æ7&VFU÷W6W"‚&f÷&V–vâÖ6ÆÂÖ÷væW""Â77v÷&CÒ'FW7B"¢÷&væ—¦F–öä66W72æö&¦V7G2æ7&VFR€¢W6W#Öf÷&V–våö÷væW"Â÷&væ—¦F–öãÖf÷&V–våö÷&væ—¦F–öâÂ&öÆSÒ&÷væW""À¢¢6VÆbæ6Æ–VçBæÆöv÷WB‚¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&f÷&V–vâÖ6ÆÂÖ÷væW""Â77v÷&CÒ'FW7B"¢6VÆbæ76W'DWVÂ‡6VÆbæ6Æ–VçBævWB‡W&Â’ç7FGW5ö6öFRÂCB ¢FVbFW7E÷&V6÷&F–æuöF÷væÆöFW%÷&V¦V7G5÷VçG'W7FVE÷&V6÷&F–æuö†÷7B‡6VÆb“ ¢FVÆW†öç’ÒFVÆW†öç”6öææV7F–öâæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢W‡FW&æÅö–CÒ'VçG'W7FVB×&V6÷&F–ær"À¢&V6÷&F–æuöÆÆ÷vVEö†÷7G3Õ²'&V6÷&G2æÖVv'‚ç'R%ÒÀ¢¢6ÆÂÒ†öæT6ÆÂæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢6öææV7F–öã×FVÆW†öç’À¢W‡FW&æÅö–CÒ'VçG'W7FVBÖ6ÆÂ"À¢†öæUöçVÖ&W#Ò"³s“##32"À¢F—&V7F–öãÕ†öæT6ÆÂäD•$T5D”ôåô”âÀ¢7F'FVEöC×F–ÖW¦öæRææ÷r‚’À¢&W7VÇCÕ†öæT6ÆÂå$U5TÅEôå5tU$TBÀ¢&V6÷&F–æu÷&VcÒ&‡GG3¢òöW†×ÆRæ–çfÆ–Bö6ÆÂæ×2"À¢&V6÷&F–æu÷7FGW3Õ†öæT6ÆÂå$T4õ$D”äuõTäD”ärÀ¢¢6VÆbæ76W'DfÇ6R†F÷væÆöEö6ÆÅ÷&V6÷&F–ær†6ÆÂç²’¢6ÆÂç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ†6ÆÂç&V6÷&F–æu÷7FGW2Â†öæT6ÆÂå$T4õ$D”äuôd”ÄTB¢6VÆbæ76W'DWVÂ†6ÆÂç&V6÷&F–æuöW'&÷"Â'VçG'W7FVE÷&V6÷&F–æu÷W&Â"¢6VÆbæ76W'DfÇ6R†6ÆÂç&V6÷&F–æuöf–ÆR ¢FVbFW7Eöf—FõöF–Æöu÷6†÷w5öFVÆ—fW'•÷7FFUöæEöF—6&ÆW5öGF6†ÖVçG2‡6VÆb“ ¢6öçfW'6F–öâÒ6öçfW'6F–öâæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢W‡FW&æÅö–CÒ&6†B×V’"À¢'F–6—çEöæÖSÒ-	-Ò"À¢Æ7EöÖW76vUöC×F–ÖW¦öæRææ÷r‚’À¢¢6öçfW'6F–öäÖW76vRæö&¦V7G2æ7&VFR€¢6öçfW'6F–öãÖ6öçfW'6F–öâÀ¢F—&V7F–öãÔ6öçfW'6F–öäÖW76vRäD•$T5D”ôåôõUBÀ¢&öG“Ò-	İRMí--½]İâ"À¢FVÆ—fW'•÷7FGW3Ô6öçfW'6F–öäÖW76vRäDTÄ•dU%•ôd”ÄTBÀ¢¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ'v÷&¶W""Â77v÷&CÒ'FW7B"¢&W7öç6RÒ6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öç5ö6öçfW'6F–öç2"’Â²&6öçfW'6F–öâ#¢6öçfW'6F–öâçWV–GÒ¢6VÆbæ76W'D6öçF–ç2‡&W7öç6RÂ-	í­"¢6VÆbæ76W'D6öçF–ç2‡&W7öç6RÂ-	M½ò	--â]}Mí-=ıİí-ı-­-í½Í­â-]­-"¢6VÆbæ76W'Dæ÷D6öçF–ç2‡&W7öç6RÂwG—SÒ&f–ÆR"r ¢FVbFW7Eöf—FõöGF6†ÖVçEö—5÷&V¦V7FVEööå÷6W'fW"‡6VÆb“ ¢6öçfW'6F–öâÒ6öçfW'6F–öâæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢W‡FW&æÅö–CÒ&6†B×6W'fW"×fÆ–FF–öâ"À¢'F–6—çEöæÖSÒ-	-Ò"À¢¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ'v÷&¶W""Â77v÷&CÒ'FW7B"¢&W7öç6RÒ6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öå÷&WÇ’"Â&w3Õ¶6öçfW'6F–öâçWV–EÒ’À¢²&&öG’#¢-
+M²"Â&GF6†ÖVçG2#¢6–×ÆUWÆöFVDf–ÆR‚&æ÷FRçG‡B"Â"&FF"Â6öçFVçE÷G—SÒ'FW‡B÷Æ–â"—ÒÀ¢¢6VÆbæ76W'DWVÂ‡&W7öç6Rç7FGW5ö6öFRÂ3"¢6VÆbæ76W'DfÇ6R†6öçfW'6F–öâæÖW76vW2æW†—7G2‚’ ¢6VÆbæ6öææV7F–öâæ—5ö7F—fRÒfÇ6P¢6VÆbæ6öææV7F–öâç6fR‡WFFUöf–VÆG3Õ²&—5ö7F—fR%Ò¢–æ7F—fRÒ6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öå÷&WÇ’"Â&w3Õ¶6öçfW'6F–öâçWV–EÒ’À¢²&&öG’#¢-	İR---Â"í}]]MÂ'ÒÀ¢¢6VÆbæ76W'DWVÂ†–æ7F—fRç7FGW5ö6öFRÂ3"¢6VÆbæ76W'DfÇ6R†6öçfW'6F–öâæÖW76vW2æW†—7G2‚’ ¢FöõöÆöærÒ6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öå÷&WÇ’"Â&w3Õ¶6öçfW'6F–öâçWV–EÒ’À¢²&&öG’#¢'‚"¢ÒÀ¢¢6VÆbæ76W'DWVÂ‡FöõöÆöærç7FGW5ö6öFRÂ3"¢6VÆbæ76W'DfÇ6R†6öçfW'6F–öâæÖW76vW2æW†—7G2‚’ ¢FVbFW7Eö–çfÆ–Eö–ÖvU÷&V¦V7G5öVçF—&U÷vV'6—FU÷&WÇ•öæEöF÷væÆöEö—5ö†&FVæVB‡6VÆb“ ¢vV'6—FUö6†ææVÂÒ6öÖ×Væ–6F–öä6†ææVÂæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÂ¶–æCÒ'vV'6—FR"ÂæÖSÒ-
+""À¢¢vV'6—FUö6öææV7F–öâÒ6†ææVÄ6öææV7F–öâæö&¦V7G2æ7&VFR€¢6†ææVÃ×vV'6—FUö6†ææVÂÂæÖSÒ-
+}""ÂW‡FW&æÅö–CÒ'v–FvWB"À¢¢6öçfW'6F–öâÒ6öçfW'6F–öâæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢6öææV7F–öã×vV'6—FUö6öææV7F–öâÀ¢W‡FW&æÅö–CÒ&6†BÖf–ÆR"À¢'F–6—çEöæÖSÒ-	İİ"À¢¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ'v÷&¶W""Â77v÷&CÒ'FW7B"¢&W7öç6RÒ6VÆbæ6Æ–VçBç÷7B€¢&WfW'6R‚&6öÖ×Væ–6F–öå÷&WÇ’"Â&w3Õ¶6öçfW'6F–öâçWV–EÒ’À¢²&&öG’#¢-
+Mí-â"Â&GF6†ÖVçG2#¢6–×ÆUWÆöFVDf–ÆR‚&'&ö¶Vâçær"Â"&æ÷BÖâÖ–ÖvR"Â6öçFVçE÷G—SÒ&–ÖvR÷ær"—ÒÀ¢¢6VÆbæ76W'DWVÂ‡&W7öç6Rç7FGW5ö6öFRÂ3"¢6VÆbæ76W'DfÇ6R†6öçfW'6F–öâæÖW76vW2æW†—7G2‚’ ¢ÖW76vRÒ6öçfW'6F–öäÖW76vRæö&¦V7G2æ7&VFR€¢6öçfW'6F–öãÖ6öçfW'6F–öâÂF—&V7F–öãÒ&÷WB"Â&öG“Ò-	Mí­=Í]İ""À¢¢GF6†ÖVçBÒÖW76vTGF6†ÖVçBæö&¦V7G2æ7&VFR€¢ÖW76vSÖÖW76vRÀ¢÷&–v–æÃÕ6–×ÆUWÆöFVDf–ÆR‚'vRæ‡FÖÂ"Â"#Ç67&—CæÆW'Bƒ“Â÷67&—Câ"Â6öçFVçE÷G—SÒ'FW‡Bö‡FÖÂ"’À¢÷&–v–æÅöæÖSÒ'vRæ‡FÖÂ"À¢6öçFVçE÷G—SÒ'FW‡Bö‡FÖÂ"À¢÷&–v–æÅ÷6—¦SÓ#RÀ¢¢F÷væÆöBÒ6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öåöGF6†ÖVçB"Â&w3Õ¶GF6†ÖVçBçµÒ’¢6VÆbæ76W'DWVÂ†F÷væÆöE²$6öçFVçBÕG—R%ÒÂ&Æ–6F–öâöö7FWB×7G&VÒ"¢6VÆbæ76W'DWVÂ†F÷væÆöE²%‚Ô6öçFVçBÕG—RÔ÷F–öç2%ÒÂ&æ÷6æ–fb"¢6VÆbæ76W'D–â‚&GF6†ÖVçB"ÂF÷væÆöE²$6öçFVçBÔF—7÷6—F–öâ%Ò ¢f÷&V–våö÷&væ—¦F–öâÒ÷&væ—¦F–öâæö&¦V7G2æ7&VFR†æÖSÒ$f÷&V–vâ6öÖ×Væ–6F–öç2÷&r"¢f÷&V–vå÷W6W"ÒW6W"æö&¦V7G2æ7&VFU÷W6W"‚&f÷&V–vâ×v÷&¶W""Â77v÷&CÒ'FW7B"¢÷&væ—¦F–öä66W72æö&¦V7G2æ7&VFR€¢W6W#Öf÷&V–vå÷W6W"Â÷&væ—¦F–öãÖf÷&V–våö÷&væ—¦F–öâÂ&öÆSÒ&ÖævW""À¢¢6VÆbæ6Æ–VçBæÆöv÷WB‚¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ&f÷&V–vâ×v÷&¶W""Â77v÷&CÒ'FW7B"¢6VÆbæ76W'DWVÂ€¢6VÆbæ6Æ–VçBævWB‡&WfW'6R‚&6öÖ×Væ–6F–öåöGF6†ÖVçB"Â&w3Õ¶GF6†ÖVçBçµÒ’’ç7FGW5ö6öFRÀ¢CBÀ¢  ¦6Æ72vV'6—FT6öÖ×Væ–6F–öä•FW7G2…FW7D66R“ ¢FVb6WEW‡6VÆb“ ¢6VÆbæ÷&væ—¦F–öâÒ÷&væ—¦F–öâæö&¦V7G2æ7&VFR†æÖSÒ%vV'6—FR’÷&r"¢÷væW"ÒW6W"æö&¦V7G2æ7&VFU÷W6W"‚'vV'6—FRÖ÷væW""Â77v÷&CÒ'FW7B"¢÷&væ—¦F–öä66W72æö&¦V7G2æ7&VFR‡W6W#Ö÷væW"Â÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÂ&öÆSÒ&÷væW""¢6†ææVÂÒ6öÖ×Væ–6F–öä6†ææVÂæö&¦V7G2æ7&VFR†÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÂ¶–æCÒ'vV'6—FR"ÂæÖSÒ-	íİí-İí’""¢6VÆbæ6öææV7F–öâÒ6†ææVÄ6öææV7F–öâ†6†ææVÃÖ6†ææVÂÂæÖSÒ-	-Mm]""ÂW‡FW&æÅö–CÒ'v–FvWB"¢6VÆbæ6öææV7F–öâç6WEö•÷Fö¶Vâ‚'6V7&WB×Fö¶Vâ"¢6VÆbæ6öææV7F–öâç6fR‚¢6VÆbæ†VFW'2Ò²$…EEôUD„õ$•¤D”ôâ#¢$&V&W"6V7&WB×Fö¶Vâ'Ğ ¢F6‚‚'ööÅ÷6W'f–6Rç6W'f–6W2ææ÷F–f–6F–öç2ç6VæE÷W6…÷Fõ÷W6W'2"¢FVbFW7Eö6†Eö–ævW7F–öåö—5öWF†VçF–6FVEöæEö–FV×÷FVçB‡6VÆbÂ÷6VæE÷W6‚“ ¢W&ÂÒ&WfW'6R‚'vV'6—FUö6†EöÖW76vR"Â&w3Õ·6VÆbæ6öææV7F–öâçV&Æ–5ö–EÒ¢–ÆöBÒ²'6W76–öåö–B#¢&'&÷w6W"Ó"Â&ÖW76vUö–B#¢&6Æ–VçBÓ"Â&æÖR#¢-	-Ò"Â'†öæR#¢"³s"Â&&öG’#¢-	}M---=-R'Ğ¢6VÆbæ76W'DWVÂ‡6VÆbæ6Æ–VçBç÷7B‡W&ÂÂ–ÆöBÂ6öçFVçE÷G—SÒ&Æ–6F–öâö§6öâ"’ç7FGW5ö6öFRÂC¢f—'7BÒ6VÆbæ6Æ–VçBç÷7B‡W&ÂÂ–ÆöBÂ6öçFVçE÷G—SÒ&Æ–6F–öâö§6öâ"Â¢§6VÆbæ†VFW'2¢GWÆ–6FRÒ6VÆbæ6Æ–VçBç÷7B‡W&ÂÂ–ÆöBÂ6öçFVçE÷G—SÒ&Æ–6F–öâö§6öâ"Â¢§6VÆbæ†VFW'2¢6VÆbæ76W'DWVÂ†f—'7Bç7FGW5ö6öFRÂ#¢6VÆbæ76W'DWVÂ†GWÆ–6FRç7FGW5ö6öFRÂ#¢6VÆbæ76W'DfÇ6R†GWÆ–6FRæ§6öâ‚•²&7&VFVB%Ò¢6VÆbæ76W'DWVÂ„6öçfW'6F–öäÖW76vRæö&¦V7G2æf–ÇFW"†F—&V7F–öãÒ&–â"’æ6÷VçB‚’Â ¢&÷VæF'•÷–ÆöBÒF–7B‡–ÆöBÂ6W76–öåö–CÒ'2"¢#SÂÖW76vUö–CÒ&6Æ–VçBÓ""¢&÷VæF'’Ò6VÆbæ6Æ–VçBç÷7B‡W&ÂÂ&÷VæF'•÷–ÆöBÂ6öçFVçE÷G—SÒ&Æ–6F–öâö§6öâ"Â¢§6VÆbæ†VFW'2¢6VÆbæ76W'DWVÂ†&÷VæF'’ç7FGW5ö6öFRÂ#¢6VÆbæ76W'DWVÂ†ÆVâ„6öçfW'6F–öâæö&¦V7G2ævWB†W‡FW&æÅö–Eõ÷7F'G7v—FƒÒ&6†C§72"’æW‡FW&æÅö–B’Â#SR¢FöõöÆöæu÷6W76–öâÒ6VÆbæ6Æ–VçBç÷7B€¢W&ÂÀ¢F–7B‡–ÆöBÂ6W76–öåö–CÒ'2"¢#SÂÖW76vUö–CÒ&6Æ–VçBÓ2"’À¢6öçFVçE÷G—SÒ&Æ–6F–öâö§6öâ"À¢¢§6VÆbæ†VFW'2À¢¢6VÆbæ76W'DWVÂ‡FöõöÆöæu÷6W76–öâç7FGW5ö6öFRÂC¢6VÆbæ76W'DWVÂ‡FöõöÆöæu÷6W76–öâæ§6öâ‚•²&W'&÷"%ÒÂ&–çfÆ–E÷6W76–öåö–B" ¢÷fW'6—¦VBÒ"w²&&öG’#¢"r²†"'‚"¢ƒcB¢#B’’²"r'Òp¢÷fW'6—¦VE÷&WVW7BÒ&WVW7Df7F÷'’‚’ç÷7B‡W&ÂÂ"'·Ò"Â6öçFVçE÷G—SÒ&Æ–6F–öâö§6öâ"¢÷fW'6—¦VE÷&WVW7BäÔUDç÷‚$4ôåDTåEôÄTäuD‚"ÂæöæR¢÷fW'6—¦VE÷&WVW7Båö&öG’Ò÷fW'6—¦V@¢v—F‚6VÆbæ76W'E&—6W4ÖW76vR…fÇVTW'&÷"Â'–ÆöE÷FöõöÆ&vR"“ ¢÷–ÆöB†÷fW'6—¦VE÷&WVW7B ¢F6‚‚'ööÅ÷6W'f–6Rç6W'f–6W2ææ÷F–f–6F–öç2ç6VæE÷W6…÷Fõ÷W6W'2"¢FVbFW7E÷vV'6—FU÷&WVW7EöæE÷&WÇ•öFVÆ—fW'•ö6²‡6VÆbÂ÷6VæE÷W6‚“ ¢&WVW7E÷W&ÂÒ&WfW'6R‚'vV'6—FU÷&WVW7Eö7&VFR"Â&w3Õ·6VÆbæ6öææV7F–öâçV&Æ–5ö–EÒ¢&W7öç6RÒ6VÆbæ6Æ–VçBç÷7B‡&WVW7E÷W&ÂÂ²'&WVW7Eö–B#¢&ÆVBÓ"Â&æÖR#¢-	İİ"Â'†öæR#¢"³s"Â'6W'f–6R#¢-	]Ò"Â&FVÆ—fW'’#¢-
+Íí-½-ír"Â&FG&W72#¢-	İ=²"Â&6öÖÖVçB#¢-	ı]]}-íİ-R'ÒÂ6öçFVçE÷G—SÒ&Æ–6F–öâö§6öâ"Â¢§6VÆbæ†VFW'2¢6VÆbæ76W'DWVÂ‡&W7öç6Rç7FGW5ö6öFRÂ#¢6VÆbæ76W'DWVÂ…vV'6—FU&WVW7Bæö&¦V7G2ævWB‚’ç6W'f–6RÂ-	]Ò"¢6VÆbæ6Æ–VçBæÆöv–â‡W6W&æÖSÒ'vV'6—FRÖ÷væW""Â77v÷&CÒ'FW7B"¢&WVW7Eö6&BÒ6VÆbæ6Æ–VçBævWB€¢&WfW'6R‚&6öÖ×Væ–6F–öç5ö6öçfW'6F–öç2"’À¢²&6öçfW'6F–öâ#¢&W7öç6Ræ§6öâ‚•²&6öçfW'6F–öåö–B%×ÒÀ¢¢6VÆbæ76W'D6öçF–ç2‡&WVW7Eö6&BÂ-	}ı-­-"¢6VÆbæ76W'D6öçF–ç2‡&WVW7Eö6&BÂ"³s"¢6VÆbæ76W'D6öçF–ç2‡&WVW7Eö6&BÂ-	]Ò"¢6VÆbæ76W'D6öçF–ç2‡&WVW7Eö6&BÂ-
+Íí-½-ír"¢6VÆbæ76W'D6öçF–ç2‡&WVW7Eö6&BÂ-	İ=²"¢6VÆbæ76W'D6öçF–ç2‡&WVW7Eö6&BÂ-	ı]]}-íİ-R"¢6VÆbæ6Æ–VçBæÆöv÷WB‚ ¢6öçfW'6F–öâÒ6öçfW'6F–öâæö&¦V7G2æ7&VFR†÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÂ6öææV7F–öã×6VÆbæ6öææV7F–öâÂW‡FW&æÅö–CÒ&6†C¦'&÷w6W"Ó""Â'F–6—çEöæÖSÒ-	İİ"¢÷WFvö–ærÒ6öçfW'6F–öäÖW76vRæö&¦V7G2æ7&VFR†6öçfW'6F–öãÖ6öçfW'6F–öâÂF—&V7F–öãÒ&÷WB"Â&öG“Ò-	Mí½’M]İÂ"ÂFVÆ—fW'•÷7FGW3Ò'VæF–ær"¢÷WF&÷…÷W&ÂÒ&WfW'6R‚'vV'6—FUö6†Eö÷WF&÷‚"Â&w3Õ·6VÆbæ6öææV7F–öâçV&Æ–5ö–BÂ&'&÷w6W"Ó"%Ò¢÷WF&÷‚Ò6VÆbæ6Æ–VçBævWB†÷WF&÷…÷W&ÂÂ¢§6VÆbæ†VFW'2¢6VÆbæ76W'DWVÂ†÷WF&÷‚æ§6öâ‚•²&ÖW76vW2%Õ³Õ²&&öG’%ÒÂ-	Mí½’M]İÂ"¢÷WFvö–ærç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ†÷WFvö–æræFVÆ—fW'•÷7FGW2Â6öçfW'6F–öäÖW76vRäDTÄ•dU%•õ4TäD”är¢6µ÷W&ÂÒ&WfW'6R‚'vV'6—FUö6†Eö÷WF&÷…ö6²"Â&w3Õ·6VÆbæ6öææV7F–öâçV&Æ–5ö–BÂ&'&÷w6W"Ó"%Ò¢6²Ò6VÆbæ6Æ–VçBç÷7B†6µ÷W&ÂÂ²&ÖW76vUö–G2#¢¶÷WFvö–ærçµ×ÒÂ6öçFVçE÷G—SÒ&Æ–6F–öâö§6öâ"Â¢§6VÆbæ†VFW'2¢6VÆbæ76W'DWVÂ†6²æ§6öâ‚•²&6¶æ÷vÆVFvVB%ÒÂ¢÷WFvö–ærç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ†÷WFvö–æræFVÆ—fW'•÷7FGW2Â&FVÆ—fW&VB"¢FVÆ—fW&VEöBÒ÷WFvö–æræFVÆ—fW&VEö@¢&WVFVEö6²Ò6VÆbæ6Æ–VçBç÷7B†6µ÷W&ÂÂ²&ÖW76vUö–G2#¢¶÷WFvö–ærçµ×ÒÂ6öçFVçE÷G—SÒ&Æ–6F–öâö§6öâ"Â¢§6VÆbæ†VFW'2¢6VÆbæ76W'DWVÂ‡&WVFVEö6²æ§6öâ‚•²&6¶æ÷vÆVFvVB%ÒÂ¢÷WFvö–ærç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ†÷WFvö–æræFVÆ—fW&VEöBÂFVÆ—fW&VEöB¢6VÆbæ76W'DWVÂ‡6VÆbæ6Æ–VçBævWB†÷WF&÷…÷W&ÂÂ¢§6VÆbæ†VFW'2’æ§6öâ‚•²&ÖW76vW2%ÒÂµÒ ¢f–ÆVBÒ6öçfW'6F–öäÖW76vRæö&¦V7G2æ7&VFR€¢6öçfW'6F–öãÖ6öçfW'6F–öâÀ¢F—&V7F–öãÔ6öçfW'6F–öäÖW76vRäD•$T5D”ôåôõUBÀ¢&öG“Ò-	İRí-ı-½ı-Â"À¢FVÆ—fW'•÷7FGW3Ô6öçfW'6F–öäÖW76vRäDTÄ•dU%•ôd”ÄTBÀ¢¢6VÆbæ76W'DWVÂ‡6VÆbæ6Æ–VçBævWB†÷WF&÷…÷W&ÂÂ¢§6VÆbæ†VFW'2’æ§6öâ‚•²&ÖW76vW2%ÒÂµÒ¢f–ÆVEö6²Ò6VÆbæ6Æ–VçBç÷7B€¢6µ÷W&ÂÂ²&ÖW76vUö–G2#¢¶f–ÆVBçµ×ÒÂ6öçFVçE÷G—SÒ&Æ–6F–öâö§6öâ"Â¢§6VÆbæ†VFW'2À¢¢6VÆbæ76W'DWVÂ†f–ÆVEö6²æ§6öâ‚•²&6¶æ÷vÆVFvVB%ÒÂ¢f–ÆVBç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ†f–ÆVBæFVÆ—fW'•÷7FGW2Â6öçfW'6F–öäÖW76vRäDTÄ•dU%•ôd”ÄTB¢–çfÆ–Eö&ööÂÒ6VÆbæ6Æ–VçBç÷7B€¢6µ÷W&ÂÂ²&ÖW76vUö–G2#¢µG'VU×ÒÂ6öçFVçE÷G—SÒ&Æ–6F–öâö§6öâ"Â¢§6VÆbæ†VFW'2À¢¢6VÆbæ76W'DWVÂ†–çfÆ–Eö&ööÂç7FGW5ö6öFRÂC¢æWfW%ö6Æ–ÖVBÒ6öçfW'6F–öäÖW76vRæö&¦V7G2æ7&VFR€¢6öçfW'6F–öãÖ6öçfW'6F–öâÀ¢F—&V7F–öãÔ6öçfW'6F–öäÖW76vRäD•$T5D”ôåôõUBÀ¢&öG“Ò-	]İRıí½=}]İâ-íÂ"À¢FVÆ—fW'•÷7FGW3Ô6öçfW'6F–öäÖW76vRäDTÄ•dU%•õTäD”ärÀ¢¢&VÖGW&Uö6²Ò6VÆbæ6Æ–VçBç÷7B€¢6µ÷W&ÂÂ²&ÖW76vUö–G2#¢¶æWfW%ö6Æ–ÖVBçµ×ÒÂ6öçFVçE÷G—SÒ&Æ–6F–öâö§6öâ"Â¢§6VÆbæ†VFW'2À¢¢6VÆbæ76W'DWVÂ‡&VÖGW&Uö6²æ§6öâ‚•²&6¶æ÷vÆVFvVB%ÒÂ¢æWfW%ö6Æ–ÖVBç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ†æWfW%ö6Æ–ÖVBæFVÆ—fW'•÷7FGW2Â6öçfW'6F–öäÖW76vRäDTÄ•dU%•õTäD”är ¢÷F†W%ö6öçfW'6F–öâÒ6öçfW'6F–öâæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢W‡FW&æÅö–CÒ&6†C¦÷F†W"Ö'&÷w6W""À¢'F–6—çEöæÖSÒ-	í½]2"À¢¢÷F†W%öÖW76vRÒ6öçfW'6F–öäÖW76vRæö&¦V7G2æ7&VFR€¢6öçfW'6F–öãÖ÷F†W%ö6öçfW'6F–öâÀ¢F—&V7F–öãÔ6öçfW'6F–öäÖW76vRäD•$T5D”ôåôõUBÀ¢&öG“Ò-	M==í’M½í2"À¢FVÆ—fW'•÷7FGW3Ô6öçfW'6F–öäÖW76vRäDTÄ•dU%•õ4TäD”ärÀ¢¢7&÷75÷6W76–öåö6²Ò6VÆbæ6Æ–VçBç÷7B€¢6µ÷W&ÂÂ²&ÖW76vUö–G2#¢¶÷F†W%öÖW76vRçµ×ÒÂ6öçFVçE÷G—SÒ&Æ–6F–öâö§6öâ"Â¢§6VÆbæ†VFW'2À¢¢6VÆbæ76W'DWVÂ†7&÷75÷6W76–öåö6²æ§6öâ‚•²&6¶æ÷vÆVFvVB%ÒÂ¢÷F†W%öÖW76vRç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ†÷F†W%öÖW76vRæFVÆ—fW'•÷7FGW2Â6öçfW'6F–öäÖW76vRäDTÄ•dU%•õ4TäD”är  ¦6Æ72f—Fô6öÖ×Væ–6F–öåFW7G2…FW7D66R“ ¢FVb6WEW‡6VÆb“ ¢6VÆbæ÷&væ—¦F–öâÒ÷&væ—¦F–öâæö&¦V7G2æ7&VFR†æÖSÒ$f—Fò’÷&r"¢÷væW"ÒW6W"æö&¦V7G2æ7&VFU÷W6W"‚&f—FòÖ÷væW""Â77v÷&CÒ'FW7B"¢÷&væ—¦F–öä66W72æö&¦V7G2æ7&VFR‡W6W#Ö÷væW"Â÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÂ&öÆSÒ&÷væW""¢6†ææVÂÒ6öÖ×Væ–6F–öä6†ææVÂæö&¦V7G2æ7&VFR†÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÂ¶–æCÒ&f—Fò"ÂæÖSÒ-	--â"¢6VÆbæ6öææV7F–öâÒ6†ææVÄ6öææV7F–öâ†6†ææVÃÖ6†ææVÂÂæÖSÒ-	­­=İ""ÂW‡FW&æÅö–CÒ##3CR"¢6VÆbæ6öææV7F–öâç6WEö•÷Fö¶Vâ‚'vV&†öö²×6V7&WB"¢6VÆbæ6öææV7F–öâç6fR‚¢6VÆbæ†VFW'2Ò²$…EEôUD„õ$•¤D”ôâ#¢$&V&W"vV&†öö²×6V7&WB'Ğ ¢F6‚‚'ööÅ÷6W'f–6Rç6W'f–6W2ææ÷F–f–6F–öç2ç6VæE÷W6…÷Fõ÷W6W'2"¢FVbFW7E÷vV&†ööµö—5öWF†VçF–6FVE÷66÷VEöæEö–FV×÷FVçB‡6VÆbÂ÷6VæE÷W6‚“ ¢W&ÂÒ&WfW'6R‚&f—Fõ÷vV&†öö²"Â&w3Õ·6VÆbæ6öææV7F–öâçV&Æ–5ö–BÂ'vV&†öö²×6V7&WB%Ò¢&E÷W&ÂÒ&WfW'6R‚&f—Fõ÷vV&†öö²"Â&w3Õ·6VÆbæ6öææV7F–öâçV&Æ–5ö–BÂ'w&öær×6V7&WB%Ò¢–ÆöBÒ²'–ÆöB#¢²'G—R#¢&ÖW76vR"Â'fÇVR#¢°¢&–B#¢&ÖW76vRÓ"Â&6†Eö–B#¢&6†BÓ"Â'W6W%ö–B#¢#3CRÀ¢&WF†÷%ö–B#¢csƒ“Â&WF†÷%öæÖR#¢-	-Ò"Â'G—R#¢'FW‡B"À¢&6öçFVçB#¢²'FW‡B#¢-	}M---=-R'ÒÀ¢××Ğ¢6VÆbæ76W'DWVÂ‡6VÆbæ6Æ–VçBç÷7B†&E÷W&ÂÂ–ÆöBÂ6öçFVçE÷G—SÒ&Æ–6F–öâö§6öâ"’ç7FGW5ö6öFRÂC¢f—'7BÒ6VÆbæ6Æ–VçBç÷7B‡W&ÂÂ–ÆöBÂ6öçFVçE÷G—SÒ&Æ–6F–öâö§6öâ"¢GWÆ–6FRÒ6VÆbæ6Æ–VçBç÷7B‡W&ÂÂ–ÆöBÂ6öçFVçE÷G—SÒ&Æ–6F–öâö§6öâ"¢6VÆbæ76W'DWVÂ†f—'7Bç7FGW5ö6öFRÂ#¢6VÆbæ76W'DWVÂ†GWÆ–6FRç7FGW5ö6öFRÂ#¢6VÆbæ76W'EG'VR†f—'7Bæ§6öâ‚•²&7&VFVB%Ò¢6VÆbæ76W'DfÇ6R†GWÆ–6FRæ§6öâ‚•²&7&VFVB%Ò¢6VÆbæ76W'DWVÂ„6öçfW'6F–öäÖW76vRæö&¦V7G2ævWB‚’æ&öG’Â-	}M---=-R"¢6VÆbæ6öææV7F–öâç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'EG'VR‡6VÆbæ6öææV7F–öâç6WGF–æw5²&f—Fõ÷vV&†ööµöÆ7E÷&V6V—fVEöB%Ò¢6VÆbæ76W'DWVÂ‡6VÆbæ6öææV7F–öâç6WGF–æw5²&f—Fõ÷vV&†ööµöÆ7E÷&W7VÇB%ÒÂ&GWÆ–6FR" ¢w&öæuö66÷VçBÒ²'–ÆöB#¢²'G—R#¢&ÖW76vR"Â'fÇVR#¢F–7B‡–ÆöE²'–ÆöB%Õ²'fÇVR%ÒÂ–CÒ&ÖW76vRÓ""ÂW6W%ö–CÓ““’—×Ğ¢&W7öç6RÒ6VÆbæ6Æ–VçBç÷7B‡W&ÂÂw&öæuö66÷VçBÂ6öçFVçE÷G—SÒ&Æ–6F–öâö§6öâ"¢6VÆbæ76W'DWVÂ‡&W7öç6Rç7FGW5ö6öFRÂ#¢6VÆbæ76W'DWVÂ„6öçfW'6F–öäÖW76vRæö&¦V7G2æ6÷VçB‚’Â¢6VÆbæ6öææV7F–öâç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ‡6VÆbæ6öææV7F–öâç6WGF–æw5²&f—Fõ÷vV&†ööµöÆ7E÷&W7VÇB%ÒÂ&–væ÷&VB" ¢–çfÆ–BÒ²'–ÆöB#¢²'G—R#¢&ÖW76vR"Â'fÇVR#¢F–7B€¢–ÆöE²'–ÆöB%Õ²'fÇVR%ÒÂ–CÒ&ÖW76vRÓ2"ÂG—SÒ'Vç7W÷'FVB ¢—×Ğ¢–çfÆ–E÷&W7öç6RÒ6VÆbæ6Æ–VçBç÷7B‡W&ÂÂ–çfÆ–BÂ6öçFVçE÷G—SÒ&Æ–6F–öâö§6öâ"¢6VÆbæ76W'DWVÂ†–çfÆ–E÷&W7öç6Rç7FGW5ö6öFRÂ#¢6VÆbæ6öææV7F–öâç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ‡6VÆbæ6öææV7F–öâç6WGF–æw5²&f—Fõ÷vV&†ööµöÆ7E÷&W7VÇB%ÒÂ&W'&÷""¢6VÆbæ76W'DWVÂ€¢6VÆbæ6öææV7F–öâç6WGF–æw5²&f—Fõ÷vV&†ööµöÆ7EöW'&÷"%ÒÀ¢'Vç7W÷'FVEöÖW76vU÷G—R"À¢ ¢F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öåöf—Fòåö§6öå÷&WVW7B"¢FVbFW7Eö7&VFVçF–Ç5ö&UöVæ7'—FVEöæEö÷WFvö–æuöÖW76vUö—5öFVÆ—fW&VB‡6VÆbÂ&WVW7B“ ¢7&VFVçF–ÂÒf—Fô7&VFVçF–Âæö&¦V7G2æ7&VFR€¢6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢6Æ–VçEö–EöVæ7'—FVCÖVæ7'—E÷6V7&WB‚&6Æ–VçBÖ–B"’À¢6Æ–VçE÷6V7&WEöVæ7'—FVCÖVæ7'—E÷6V7&WB‚&6Æ–VçB×6V7&WB"’À¢¢6VÆbæ76W'Dæ÷D–â‚&6Æ–VçB×6V7&WB"Â7&VFVçF–Âæ6Æ–VçE÷6V7&WEöVæ7'—FVB¢&WVW7Bç6–FUöVffV7BÒ°¢²&66W75÷Fö¶Vâ#¢'6†÷'BÖÆ—fVB×Fö¶Vâ"Â&W‡—&W5ö–â#¢3cÒÀ¢²&–B#¢'&÷f–FW"ÖÖW76vRÓ'ÒÀ¢Ğ¢6öçfW'6F–öâÒ6öçfW'6F–öâæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÂ6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢W‡FW&æÅö–CÒ&6†BÓ"Â'F–6—çEöæÖSÒ-	-Ò"À¢¢ÖW76vRÒ6öçfW'6F–öäÖW76vRæö&¦V7G2æ7&VFR€¢6öçfW'6F–öãÖ6öçfW'6F–öâÂF—&V7F–öãÒ&÷WB"Â&öG“Ò-	Mí½’M]İÂ"À¢FVÆ—fW'•÷7FGW3Ô6öçfW'6F–öäÖW76vRäDTÄ•dU%•õTäD”ärÀ¢¢6VæEöÖW76vR†ÖW76vR¢ÖW76vRç&Vg&W6…ög&öÕöF"‚¢7&VFVçF–Âç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ†ÖW76vRæFVÆ—fW'•÷7FGW2Â6öçfW'6F–öäÖW76vRäDTÄ•dU%•ôDTÄ•dU$TB¢6VÆbæ76W'DWVÂ†ÖW76vRæW‡FW&æÅö–BÂ'&÷f–FW"ÖÖW76vRÓ"¢6VÆbæ76W'DWVÂ†FV7'—E÷6V7&WB†7&VFVçF–Âæ66W75÷Fö¶VåöVæ7'—FVB’Â'6†÷'BÖÆ—fVB×Fö¶Vâ"¢6VÆbæ76W'DWVÂ†66W75÷Fö¶Vâ‡6VÆbæ6öææV7F–öâ’Â'6†÷'BÖÆ—fVB×Fö¶Vâ"¢6VÆbæ76W'DWVÂ‡&WVW7Bæ6ÆÅö6÷VçBÂ" ¢F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öåöf—Fòåö§6öå÷&WVW7B"¢FVbFW7EöWF†÷&—¦VEö66÷VçEöæEöÖW76VævW%ö66W75ö†VÇW'2‡6VÆbÂ&WVW7B“ ¢f—Fô7&VFVçF–Âæö&¦V7G2æ7&VFR€¢6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢6Æ–VçEö–EöVæ7'—FVCÖVæ7'—E÷6V7&WB‚&6Æ–VçBÖ–B"’À¢6Æ–VçE÷6V7&WEöVæ7'—FVCÖVæ7'—E÷6V7&WB‚&6Æ–VçB×6V7&WB"’À¢66W75÷Fö¶VåöVæ7'—FVCÖVæ7'—E÷6V7&WB‚&66†VB×Fö¶Vâ"’À¢66W75÷Fö¶VåöW‡—&W5öC×F–ÖW¦öæRææ÷r‚’²F–ÖVFVÇF††÷W'3Ó’À¢¢&WVW7Bç6–FUöVffV7BÒ°¢²&–B#¢s“ƒcScWÒÀ¢²&6†G2#¢µ×ÒÀ¢Ğ¢6VÆbæ76W'DWVÂ†WF†÷&—¦VEö66÷VçEö–B‡6VÆbæ6öææV7F–öâ’Â#s“ƒcScR"¢6VÆbæ76W'EG'VR‡fW&–g•öÖW76VævW%ö66W72‡6VÆbæ6öææV7F–öâÂ#s“ƒcScR"’¢6VÆbæ76W'D–â‚"ö6÷&R÷cö66÷VçG2÷6VÆb"Â&WVW7Bæ6ÆÅö&w5öÆ—7E³Òæ&w5³Ò¢6VÆbæ76W'D–â€¢"öÖW76VævW"÷c"ö66÷VçG2ós“ƒcScRö6†G3öÆ–Ö—CÓföfg6WCÓ"À¢&WVW7Bæ6ÆÅö&w5öÆ—7E³Òæ&w5³ÒÀ¢ ¢F6‚‚'ööÅ÷6W'f–6Rç6W'f–6W2ææ÷F–f–6F–öç2ç6VæE÷W6…÷Fõ÷W6W'2"¢F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öåöf—Fòåö§6öåöÆ—7E÷&WVW7B"¢F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öåöf—Fòåö§6öå÷&WVW7B"¢FVbFW7E÷VÆÅ÷7–æ5÷&V6÷fW'5÷&V6VçEö–æ&÷VæEöÖW76vW2€¢6VÆbÂ&WVW7BÂÆ—7E÷&WVW7BÂ÷6VæE÷W6€¢“ ¢f—Fô7&VFVçF–Âæö&¦V7G2æ7&VFR€¢6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢6Æ–VçEö–EöVæ7'—FVCÖVæ7'—E÷6V7&WB‚&6Æ–VçBÖ–B"’À¢6Æ–VçE÷6V7&WEöVæ7'—FVCÖVæ7'—E÷6V7&WB‚&6Æ–VçB×6V7&WB"’À¢66W75÷Fö¶VåöVæ7'—FVCÖVæ7'—E÷6V7&WB‚&66†VB×Fö¶Vâ"’À¢66W75÷Fö¶VåöW‡—&W5öC×F–ÖW¦öæRææ÷r‚’²F–ÖVFVÇF††÷W'3Ó’À¢¢æ÷u÷G2Ò–çB‡F–ÖW¦öæRææ÷r‚’çF–ÖW7F×‚’¢&WVW7Bç6–FUöVffV7BÒ°¢²&–B#¢#3CWÒÀ¢°¢&6†G2#¢°¢°¢&–B#¢&6†B×&V6÷fW'’"À¢'W6W'2#¢°¢°¢&æÖR#¢-	­½]İ""À¢'V&Æ–5÷W6W%÷&öf–ÆR#¢²'W6W%ö–B#¢csƒ“ÒÀ¢Ğ¢ÒÀ¢Ğ¢Ğ¢ÒÀ¢²&–B#¢#3CWÒÀ¢°¢&6†G2#¢°¢°¢&–B#¢&6†B×&V6÷fW'’"À¢'W6W'2#¢°¢°¢&æÖR#¢-	­½]İ""À¢'V&Æ–5÷W6W%÷&öf–ÆR#¢²'W6W%ö–B#¢csƒ“ÒÀ¢Ğ¢ÒÀ¢Ğ¢Ğ¢ÒÀ¢Ğ¢Æ—7E÷&WVW7Bç&WGW&å÷fÇVRÒ°¢°¢&–B#¢&÷WBÓ"À¢&WF†÷%ö–B#¢#3CRÀ¢&7&VFVB#¢æ÷u÷G2À¢&F—&V7F–öâ#¢&÷WB"À¢'G—R#¢'FW‡B"À¢&6öçFVçB#¢²'FW‡B#¢-	İ‚í--]"'ÒÀ¢ÒÀ¢°¢&–B#¢&–âÓ"À¢&WF†÷%ö–B#¢csƒ“À¢&7&VFVB#¢æ÷u÷G2À¢&F—&V7F–öâ#¢&–â"À¢'G—R#¢'FW‡B"À¢&6öçFVçB#¢²'FW‡B#¢-
+-]-í-íR-]íMı]R'ÒÀ¢ÒÀ¢Ğ¢&W7VÇBÒ7–æ5÷&V6VçEöÖW76vW2‡6VÆbæ6öææV7F–öâ¢6VÆbæ76W'DWVÂ‡&W7VÇBæ6†G5ö6†V6¶VBÂ¢6VÆbæ76W'DWVÂ‡&W7VÇBæÖW76vW5ö7&VFVBÂ¢6VÆbæ76W'DWVÂ‡&W7VÇBæÖW76vW5÷6¶—VBÂ¢ÖW76vRÒ6öçfW'6F–öäÖW76vRæö&¦V7G2ævWB†W‡FW&æÅö–CÒ&–âÓ"¢6VÆbæ76W'DWVÂ†ÖW76vRæ&öG’Â-
+-]-í-íR-]íMı]R"¢6VÆbæ76W'DWVÂ†ÖW76vRæ6öçfW'6F–öâæW‡FW&æÅö–BÂ&6†B×&V6÷fW'’"¢6VÆbæ76W'DWVÂ†ÖW76vRæ6öçfW'6F–öâç'F–6—çEöæÖRÂ-	­½]İ"" ¢6V6öæBÒ7–æ5÷&V6VçEöÖW76vW2‡6VÆbæ6öææV7F–öâ¢6VÆbæ76W'DWVÂ‡6V6öæBæÖW76vW5ö7&VFVBÂ¢6VÆbæ76W'DWVÂ‡6V6öæBæÖW76vW5öW†—7F–ærÂ ¢FVbFW7EöÖW76vUöÆ—7E÷&WVW7Eö66WG5÷w&VEöÖW76vW5÷–ÆöB‡6VÆb“ ¢&W7öç6RÒÖv–4Öö6²‚¢&W7öç6RåõöVçFW%õòç&WGW&å÷fÇVRç&VBç&WGW&å÷fÇVRÒ€¢"w²&ÖW76vW2#¥·²&–B#¢&Ó"Â&F—&V7F–öâ#¢&–â"Â'G—R#¢'FW‡B"Â&6öçFVçB#§²'FW‡B#¢&†VÆÆò'×Õ×Òp¢¢v—F‚F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öåöf—FòçW&Æ÷Vâ"Â&WGW&å÷fÇVS×&W7öç6R“ ¢ÖW76vW2Òö§6öåöÆ—7E÷&WVW7B‚&‡GG3¢òö’æf—Fòç'R÷FW7B"¢6VÆbæ76W'DWVÂ†ÖW76vW5³Õ²&–B%ÒÂ&Ó" ¢FVbFW7EöÖW76vUöÆ—7E÷&WVW7E÷&V¦V7G5÷Væ¶æ÷våöö&¦V7E÷–ÆöB‡6VÆb“ ¢&W7öç6RÒÖv–4Öö6²‚¢&W7öç6RåõöVçFW%õòç&WGW&å÷fÇVRç&VBç&WGW&å÷fÇVRÒ"w²&ö²#§G'VWÒp¢v—F‚F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öåöf—FòçW&Æ÷Vâ"Â&WGW&å÷fÇVS×&W7öç6R“ ¢v—F‚6VÆbæ76W'E&—6W4ÖW76vR€¢f—FôW'&÷"Â'&÷f–FW%öÖW76vW5ö–çfÆ–E÷&W7öç6R ¢“ ¢ö§6öåöÆ—7E÷&WVW7B‚&‡GG3¢òö’æf—Fòç'R÷FW7B" ¢F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öåöf—Fòåö§6öå÷&WVW7B"¢FVbFW7E÷vV&†ööµ÷&÷f–FW%ö†VÇW'5÷fÆ–FFUö6öçG&7B‡6VÆbÂ&WVW7B“ ¢7&VFVçF–ÂÒf—Fô7&VFVçF–Âæö&¦V7G2æ7&VFR€¢6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢6Æ–VçEö–EöVæ7'—FVCÖVæ7'—E÷6V7&WB‚&6Æ–VçBÖ–B"’À¢6Æ–VçE÷6V7&WEöVæ7'—FVCÖVæ7'—E÷6V7&WB‚&6Æ–VçB×6V7&WB"’À¢66W75÷Fö¶VåöVæ7'—FVCÖVæ7'—E÷6V7&WB‚&66†VB×Fö¶Vâ"’À¢66W75÷Fö¶VåöW‡—&W5öC×F–ÖW¦öæRææ÷r‚’²F–ÖVFVÇF††÷W'3Ó’À¢¢6ÆÆ&6²Ò&‡GG3¢ò÷6W'f–6S"æW†×ÆRö’ö6öÖ×Væ–6F–öç2öf—Fò÷FW7B÷Fö¶Vâ÷vV&†öö²ò  ¢&WVW7Bç6–FUöVffV7BÒ°¢²&ö²#¢G'VWÒÀ¢²'7V'67&—F–öç2#¢·²'W&Â#¢6ÆÆ&6²Â'fW'6–öâ#¢#2'Õ×ÒÀ¢²&ö²#¢G'VWÒÀ¢Ğ¢6VÆbæ76W'DWVÂ‡7V'67&–&U÷vV&†öö²‡6VÆbæ6öææV7F–öâÂ6ÆÆ&6²’Â²&ö²#¢G'VWÒ¢6VÆbæ76W'DWVÂ‡vV&†ööµ÷7V'67&—F–öç2‡6VÆbæ6öææV7F–öâ’Â¶6ÆÆ&6µÒ¢6VÆbæ76W'DWVÂ‡Vç7V'67&–&U÷vV&†öö²‡6VÆbæ6öææV7F–öâÂ6ÆÆ&6²’Â²&ö²#¢G'VWÒ¢6VÆbæ76W'DWVÂ‡&WVW7Bæ6ÆÅö6÷VçBÂ2¢7&VFVçF–Âç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ€¢FV7'—E÷6V7&WB†7&VFVçF–Âæ66W75÷Fö¶VåöVæ7'—FVB’À¢&66†VB×Fö¶Vâ"À¢ ¢&WVW7Bç&W6WEöÖö6²‚¢&WVW7Bç6–FUöVffV7BÒæöæP¢&WVW7Bç&WGW&å÷fÇVRÒ²&ö²#¢fÇ6WĞ¢v—F‚6VÆbæ76W'E&—6W4ÖW76vR„f—FôW'&÷"Â'&÷f–FW%÷vV&†ööµ÷&V¦V7FVB"“ ¢7V'67&–&U÷vV&†öö²‡6VÆbæ6öææV7F–öâÂ6ÆÆ&6² ¢F6‚‚'ööÅ÷6W'f–6Ræ6öÖ×Væ–6F–öåöf—Fòåö§6öå÷&WVW7B"¢FVbFW7Eö6÷''WEö66†VE÷Fö¶Våö—5÷&WÆ6VB‡6VÆbÂ&WVW7B“ ¢f—Fô7&VFVçF–Âæö&¦V7G2æ7&VFR€¢6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢6Æ–VçEö–EöVæ7'—FVCÖVæ7'—E÷6V7&WB‚&6Æ–VçBÖ–B"’À¢6Æ–VçE÷6V7&WEöVæ7'—FVCÖVæ7'—E÷6V7&WB‚&6Æ–VçB×6V7&WB"’À¢66W75÷Fö¶VåöVæ7'—FVCÒ&æ÷BÖÖfW&æWB×Fö¶Vâ"À¢66W75÷Fö¶VåöW‡—&W5öC×F–ÖW¦öæRææ÷r‚’²F–ÖVFVÇF††÷W'3Ó’À¢¢&WVW7Bç&WGW&å÷fÇVRÒ²&66W75÷Fö¶Vâ#¢'&WÆ6VÖVçB×Fö¶Vâ"Â&W‡—&W5ö–â#¢3cĞ ¢6VÆbæ76W'DWVÂ†66W75÷Fö¶Vâ‡6VÆbæ6öææV7F–öâ’Â'&WÆ6VÖVçB×Fö¶Vâ"¢6VÆbæ76W'DWVÂ‡&WVW7Bæ6ÆÅö6÷VçBÂ ¢F6‚‚'ööÅ÷6W'f–6RæÖævVÖVçBæ6öÖÖæG2ç6VæEöf—Fõö÷WF&÷‚ç6VæEöÖW76vR"¢FVbFW7Eö÷WF&÷…ö6Æ–Õ÷&WfVçG5ö÷6V6öæE÷v÷&¶W%ög&öÕ÷6VæF–ær‡6VÆbÂ6VæFW"“ ¢6öçfW'6F–öâÒ6öçfW'6F–öâæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÂ6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢W‡FW&æÅö–CÒ&6†BÖ6Æ–Ò"Â'F–6—çEöæÖSÒ-	-Ò"À¢¢ÖW76vRÒ6öçfW'6F–öäÖW76vRæö&¦V7G2æ7&VFR€¢6öçfW'6F–öãÖ6öçfW'6F–öâÂF—&V7F–öãÒ&÷WB"Â&öG“Ò-	íMÒr"À¢FVÆ—fW'•÷7FGW3Ô6öçfW'6F–öäÖW76vRäDTÄ•dU%•õTäD”ärÀ¢¢6ÆÅö6öÖÖæB‚'6VæEöf—Fõö÷WF&÷‚"¢6ÆÅö6öÖÖæB‚'6VæEöf—Fõö÷WF&÷‚"¢ÖW76vRç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ†ÖW76vRæFVÆ—fW'•÷7FGW2Â6öçfW'6F–öäÖW76vRäDTÄ•dU%•õ4TäD”är¢6VæFW"æ76W'Eö6ÆÆVEööæ6R‚ ¢FVbFW7Eö÷WF&÷…÷7FÆU÷6VÆV7F–öåö—5öæ÷Eö6Æ–ÖVEögFW%öFV7F—fF–öâ‡6VÆb“ ¢6öçfW'6F–öâÒ6öçfW'6F–öâæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢W‡FW&æÅö–CÒ&6†BÖF—6&ÆVBÖgFW"×6VÆV7F–öâ"À¢'F–6—çEöæÖSÒ-	-Ò"À¢¢ÖW76vRÒ6öçfW'6F–öäÖW76vRæö&¦V7G2æ7&VFR€¢6öçfW'6F–öãÖ6öçfW'6F–öâÀ¢F—&V7F–öãÔ6öçfW'6F–öäÖW76vRäD•$T5D”ôåôõUBÀ¢&öG“Ò-	İRí-ı-½ı-Âıí½Rí-­½í}]İò"À¢FVÆ—fW'•÷7FGW3Ô6öçfW'6F–öäÖW76vRäDTÄ•dU%•õTäD”ärÀ¢¢6VÆV7FVEö–BÒÖW76vRç°¢6VÆbæ6öææV7F–öâæ—5ö7F—fRÒfÇ6P¢6VÆbæ6öææV7F–öâç6fR‡WFFUöf–VÆG3Õ²&—5ö7F—fR%Ò¢6VÆbæ76W'D—4æöæR†6Æ–ÕöÖW76vR‡6VÆV7FVEö–B’¢ÖW76vRç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ†ÖW76vRæFVÆ—fW'•÷7FGW2Â6öçfW'6F–öäÖW76vRäDTÄ•dU%•õTäD”är ¢6VÆbæ6öææV7F–öâæ—5ö7F—fRÒG'VP¢6VÆbæ6öææV7F–öâç6fR‡WFFUöf–VÆG3Õ²&—5ö7F—fR%Ò¢6VÆbæ6öææV7F–öâæ6†ææVÂæ—5ö7F—fRÒfÇ6P¢6VÆbæ6öææV7F–öâæ6†ææVÂç6fR‡WFFUöf–VÆG3Õ²&—5ö7F—fR%Ò¢6VÆbæ76W'D—4æöæR†6Æ–ÕöÖW76vR‡6VÆV7FVEö–B’¢ÖW76vRç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ†ÖW76vRæFVÆ—fW'•÷7FGW2Â6öçfW'6F–öäÖW76vRäDTÄ•dU%•õTäD”är ¢F6‚‚'ööÅ÷6W'f–6RæÖævVÖVçBæ6öÖÖæG2ç6VæEöf—Fõö÷WF&÷‚ç6VæEöÖW76vR"¢FVbFW7E÷G&ç6–VçE÷&W6VæEöf–ÇW&U÷&WG&–W5ö&Uö&÷VæFVB‡6VÆbÂ6VæFW"“ ¢6VæFW"ç6–FUöVffV7BÒf—Fõ&WG'–&ÆTW'&÷"‚'&÷f–FW%ö‡GGóS2"¢6öçfW'6F–öâÒ6öçfW'6F–öâæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢W‡FW&æÅö–CÒ&6†B×G&ç6–VçB"À¢'F–6—çEöæÖSÒ-	-Ò"À¢¢ÖW76vRÒ6öçfW'6F–öäÖW76vRæö&¦V7G2æ7&VFR€¢6öçfW'6F–öãÖ6öçfW'6F–öâÀ¢F—&V7F–öãÔ6öçfW'6F–öäÖW76vRäD•$T5D”ôåôõUBÀ¢&öG“Ò-	ıí--í-Âıí½R-]Í]İİí’í­‚"À¢FVÆ—fW'•÷7FGW3Ô6öçfW'6F–öäÖW76vRäDTÄ•dU%•õTäD”ärÀ¢ ¢6ÆÅö6öÖÖæB‚'6VæEöf—Fõö÷WF&÷‚"¢ÖW76vRç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ†ÖW76vRæFVÆ—fW'•÷7FGW2Â6öçfW'6F–öäÖW76vRäDTÄ•dU%•õTäD”är¢6VÆbæ76W'DWVÂ†ÖW76vRæFVÆ—fW'•öGFV×G2Â ¢6ÆÅö6öÖÖæB‚'6VæEöf—Fõö÷WF&÷‚"¢ÖW76vRç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ†ÖW76vRæFVÆ—fW'•÷7FGW2Â6öçfW'6F–öäÖW76vRäDTÄ•dU%•õTäD”är¢6VÆbæ76W'DWVÂ†ÖW76vRæFVÆ—fW'•öGFV×G2Â" ¢6ÆÅö6öÖÖæB‚'6VæEöf—Fõö÷WF&÷‚"¢ÖW76vRç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ†ÖW76vRæFVÆ—fW'•÷7FGW2Â6öçfW'6F–öäÖW76vRäDTÄ•dU%•ôd”ÄTB¢6VÆbæ76W'DWVÂ†ÖW76vRæFVÆ—fW'•öGFV×G2Â2¢6VÆbæ76W'DWVÂ†ÖW76vRæFVÆ—fW'•öW'&÷"Â'&÷f–FW%ö‡GGóS2"¢6VÆbæ76W'DWVÂ‡6VæFW"æ6ÆÅö6÷VçBÂ2 ¢FVbFW7EöÖ—76–æuö7&VFVçF–Ç5öf–ÅöÖW76vU÷v—F†÷WEö7&6†–æuö&F6‚‡6VÆb“ ¢6öçfW'6F–öâÒ6öçfW'6F–öâæö&¦V7G2æ7&VFR€¢÷&væ—¦F–öã×6VÆbæ÷&væ—¦F–öâÀ¢6öææV7F–öã×6VÆbæ6öææV7F–öâÀ¢W‡FW&æÅö–CÒ&6†BÖæòÖ7&VFVçF–Ç2"À¢'F–6—çEöæÖSÒ-	-Ò"À¢¢ÖW76vRÒ6öçfW'6F–öäÖW76vRæö&¦V7G2æ7&VFR€¢6öçfW'6F–öãÖ6öçfW'6F–öâÀ¢F—&V7F–öãÔ6öçfW'6F–öäÖW76vRäD•$T5D”ôåôõUBÀ¢&öG“Ò-
+íí]İR]rİ-í­‚"À¢FVÆ—fW'•÷7FGW3Ô6öçfW'6F–öäÖW76vRäDTÄ•dU%•õTäD”ärÀ¢¢6ÆÅö6öÖÖæB‚'6VæEöf—Fõö÷WF&÷‚"¢ÖW76vRç&Vg&W6…ög&öÕöF"‚¢6VÆbæ76W'DWVÂ†ÖW76vRæFVÆ—fW'•÷7FGW2Â6öçfW'6F–öäÖW76vRäDTÄ•dU%•ôd”ÄTB¢6VÆbæ76W'DWVÂ†ÖW76vRæFVÆ—fW'•öW'&÷"Â'&÷f–FW%ö7&VFVçF–Ç5öÖ—76–ær"
