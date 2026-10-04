@@ -51,7 +51,7 @@ class Command(BaseCommand):
                 )
             ).exclude(analysis__status=CallAnalysis.STATUS_READY)
 
-        ids = list(queryset.order_by("started_at", "pk").values_list("pk", flat=True)[:limit])
+        ids = list(queryset.order_by("-started_at", "-pk").values_list("pk", flat=True)[:limit])
         ready = 0
         failed = 0
         skipped = 0
