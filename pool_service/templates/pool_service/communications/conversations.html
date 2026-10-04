@@ -3,6 +3,22 @@
 {% block content %}
 <style>
 .communications-grid{display:grid;grid-template-columns:minmax(280px,34%) 1fr;min-height:65vh}.conversation-list{border-right:1px solid #dee2e6;max-height:72vh;overflow:auto}.conversation-row{display:block;padding:1rem;border-bottom:1px solid #eee;color:inherit;text-decoration:none}.conversation-row.active{background:#eef6ff}.chat-history{height:48vh;overflow:auto;background:#f7f8fa;padding:1rem}.website-request-card{background:#fff;border:1px solid #d9e3f1;border-radius:.75rem;padding:1rem;margin-bottom:1rem}.website-request-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.75rem 1.25rem}.website-request-field{min-width:0}.website-request-label{font-size:.75rem;color:#6c757d;text-transform:uppercase}.bubble{max-width:76%;padding:.7rem 1rem;border-radius:1rem;margin-bottom:.75rem;background:white}.bubble.out{margin-left:auto;background:#dcebff}.delivery-state{font-weight:600}.delivery-state.failed{color:#b42318}.delivery-state.pending,.delivery-state.sending{color:#725c00}.composer-note{font-size:.82rem;color:#725c00;background:#fff8d8;border-radius:.5rem;padding:.55rem .7rem}@media(max-width:767px){.communications-grid{grid-template-columns:1fr}.conversation-list{max-height:35vh;border-right:0}.chat-history{height:42vh}.website-request-grid{grid-template-columns:1fr}}
+
+
+html[data-theme="dark"] .communications-grid{border-color:#304158;background:#151f2e}
+html[data-theme="dark"] .conversation-list{border-color:#304158}
+html[data-theme="dark"] .conversation-row{border-color:#304158;color:#dfe7f1}
+html[data-theme="dark"] .conversation-row:hover{background:#1b2b40}
+html[data-theme="dark"] .conversation-row.active{background:#1d3555}
+html[data-theme="dark"] .chat-history{background:#111a28}
+html[data-theme="dark"] .website-request-card{background:#182436;border-color:#34465c}
+html[data-theme="dark"] .website-request-label{color:#93a4b8}
+html[data-theme="dark"] .bubble{color:#dfe7f1;background:#182436}
+html[data-theme="dark"] .bubble.out{background:#1d3555;color:#eaf2ff}
+html[data-theme="dark"] .delivery-state.pending,
+html[data-theme="dark"] .delivery-state.sending{color:#d8b36c}
+html[data-theme="dark"] .composer-note{color:#d7c38e;background:#2a291f;border:1px solid #5a4b2d}
+
 </style>
 {% include "pool_service/communications/_section_nav.html" %}
 <div class="card communications-grid overflow-hidden">
