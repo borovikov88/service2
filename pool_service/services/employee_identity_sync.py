@@ -15,6 +15,7 @@ from pool_service.communication_models import (
     PhoneCall,
     TelephonyEmployeeIdentity,
 )
+from pool_service.communication_megafon import normalize_megafon_api_endpoint
 from pool_service.communication_secrets import CommunicationSecretError, decrypt_secret
 from pool_service.finance_imports.employee_matching import (
     confirm_employee_identity,
@@ -432,7 +433,9 @@ def _megafon_api_credentials(telephony):
     if provider is None:
         raise EmployeeIdentitySyncError("Для линии не найдено подключение МегаФона.")
     values = dict(provider.settings or {})
-    endpoint = str(values.get("megafon_api_base_url") or "").strip()
+    endpoint = normalize_megafon_api_endpoint(
+        values.get("megafon_api_base_url") or ""
+    )
     encrypted_key = str(values.get("megafon_api_key_encrypted") or "").strip()
     if not endpoint or not encrypted_key:
         raise EmployeeIdentitySyncError(

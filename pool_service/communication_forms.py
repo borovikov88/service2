@@ -2,6 +2,8 @@ from urllib.parse import urlsplit
 
 from django import forms
 
+from pool_service.communication_megafon import normalize_megafon_api_endpoint
+
 
 class CommunicationConnectionForm(forms.Form):
     name = forms.CharField(
@@ -93,12 +95,12 @@ class TelephonyConnectionForm(forms.Form):
         max_length=500,
         help_text=(
             "Скопируйте неизменяемое поле «Адрес АТС» из кабинета МегаФона. "
-            "Например: https://aqualine22.megapbx.ru/crmapi/v1"
+            "Например: https://aqualine22.megapbx.ru/sys/crm_api.wcgp"
         ),
         widget=forms.URLInput(
             attrs={
                 "class": "form-control",
-                "placeholder": "https://aqualine22.megapbx.ru/crmapi/v1",
+                "placeholder": "https://aqualine22.megapbx.ru/sys/crm_api.wcgp",
             }
         ),
     )
@@ -134,7 +136,9 @@ class TelephonyConnectionForm(forms.Form):
         self.require_ats_api_key = require_ats_api_key
 
     def clean_ats_base_url(self):
-        raw = (self.cleaned_data.get("ats_base_url") or "").strip().rstrip("/")
+        raw = normalize_megafon_api_endpoint(
+            self.cleaned_data.get("ats_base_url") or ""
+        )
         try:
             parsed = urlsplit(raw)
             parsed.port

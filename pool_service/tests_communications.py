@@ -36,6 +36,7 @@ from pool_service.communication_services import receive_message, users_with_conv
 from pool_service.communication_services import conversation_capability
 from pool_service.services.employee_identity_sync import (
     EmployeeIdentitySyncError,
+    _read_megafon_accounts,
     auto_link_service2_user,
     map_employee_service2_user,
     map_telephony_identity,
@@ -909,7 +910,7 @@ class CommunicationsTests(TestCase):
         )
         self.assertEqual(
             provider_connection.settings["megafon_api_base_url"],
-            "https://aqualine22.megapbx.ru/crmapi/v1",
+            "https://aqualine22.megapbx.ru/sys/crm_api.wcgp",
         )
         encrypted_key = provider_connection.settings["megafon_api_key_encrypted"]
         self.assertNotEqual(encrypted_key, "megafon-ats-secret")
@@ -1454,6 +1455,45 @@ class CommunicationsTests(TestCase):
         call.refresh_from_db()
         self.assertEqual(call.employee_profile, employee)
         self.assertEqual(call.employee, self.worker)
+
+    def test_megafon_accounts_repairs_legacy_api_endpoint_without_redirect(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон legacy endpoint",
+            external_id="megafon-legacy-endpoint",
+        )
+        channel = CommunicationChannel.objects.create(
+            organization=self.organization,
+            kind=CommunicationChannel.KIND_MEGAFON,
+            name="МегаФон legacy endpoint",
+        )
+        provider = ChannelConnection.objects.create(
+            channel=channel,
+            name="МегаФон legacy endpoint",
+            external_id="megafon-legacy-endpoint",
+            settings={
+                "megafon_api_base_url": "https://aqualine22.megapbx.ru/crmapi/v1",
+                "megafon_api_key_encrypted": encrypt_secret("secret"),
+            },
+        )
+        response = MagicMock(status=200)
+        response.read.return_value = b"[]"
+        opener = MagicMock()
+        opener.open.return_value.__enter__.return_value = response
+
+        with patch(
+            "pool_service.services.employee_identity_sync.build_opener",
+            return_value=opener,
+        ):
+            returned_provider, accounts = _read_megafon_accounts(telephony)
+
+        request = opener.open.call_args.args[0]
+        self.assertEqual(
+            request.full_url,
+            "https://aqualine22.megapbx.ru/sys/crm_api.wcgp",
+        )
+        self.assertEqual(returned_provider, provider)
+        self.assertEqual(accounts, [])
 
     def test_service2_auto_link_requires_employee_side_uniqueness(self):
         self.worker.first_name = "Иван"
