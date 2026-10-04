@@ -54,6 +54,11 @@ class Migration(migrations.Migration):
         ),
         migrations.AddField(
             model_name="callanalysis",
+            name="requested_at",
+            field=models.DateTimeField(blank=True, db_index=True, null=True),
+        ),
+        migrations.AddField(
+            model_name="callanalysis",
             name="status",
             field=models.CharField(
                 choices=[
