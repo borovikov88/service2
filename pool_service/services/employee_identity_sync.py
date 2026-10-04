@@ -487,19 +487,34 @@ def _read_megafon_accounts(telephony):
     return provider, accounts
 
 
-def apply_telephony_identity_to_calls(identity):
+def apply_telephony_identity_to_calls(
+    identity,
+    *,
+    previous_employee_id=None,
+    reassignment_boundary=None,
+):
     if not identity.employee_id or identity.requires_manual_confirmation:
         return 0
     employee = identity.employee
     matches = PhoneCall.objects.filter(
         organization=identity.organization,
         connection=identity.connection,
-        employee_profile__isnull=True,
     )
     selector = Q(provider_extension=identity.extension)
     if identity.external_user:
         selector |= Q(provider_user=identity.external_user)
     matches = matches.filter(selector)
+
+    if previous_employee_id and previous_employee_id != employee.pk:
+        ownership_scope = Q(employee_profile__isnull=True) | Q(
+            employee_profile_id=previous_employee_id
+        )
+        matches = matches.filter(ownership_scope)
+        if reassignment_boundary is not None:
+            matches = matches.filter(started_at__gte=reassignment_boundary)
+    else:
+        matches = matches.filter(employee_profile__isnull=True)
+
     return matches.update(
         employee_profile_id=employee.pk,
         employee_id=employee.user_id,
@@ -595,22 +610,23 @@ def sync_megafon_employee_identities(telephony, actor=None):
         ]
 
         if reassigned_extension:
-            identity.employee = None
             identity.external_user = ""
             identity.status = TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING
             identity.match_method = TelephonyEmployeeIdentity.MATCH_NONE
             identity.confirmed_by = None
             identity.confirmed_at = None
             identity.requires_manual_confirmation = True
+            if identity.reassignment_detected_at is None:
+                identity.reassignment_detected_at = now
             update_fields.extend(
                 [
-                    "employee",
                     "external_user",
                     "status",
                     "match_method",
                     "confirmed_by",
                     "confirmed_at",
                     "requires_manual_confirmation",
+                    "reassignment_detected_at",
                 ]
             )
         elif (
@@ -622,7 +638,10 @@ def sync_megafon_employee_identities(telephony, actor=None):
             # The accounts API confirmed the same holder name that existed
             # before it disappeared, so the prior mapping is safe to restore.
             identity.requires_manual_confirmation = False
-            update_fields.append("requires_manual_confirmation")
+            identity.reassignment_detected_at = None
+            update_fields.extend(
+                ["requires_manual_confirmation", "reassignment_detected_at"]
+            )
 
         identity.save(update_fields=update_fields)
         identity = _auto_match_telephony_identity(identity, actor=actor)
@@ -664,6 +683,12 @@ def map_telephony_identity(identity, employee, actor):
         locked = TelephonyEmployeeIdentity.objects.select_for_update().get(
             pk=identity.pk
         )
+        previous_employee_id = locked.employee_id
+        reassignment_boundary = (
+            locked.reassignment_detected_at
+            if locked.requires_manual_confirmation
+            else None
+        )
         before = {
             "employee_id": locked.employee_id,
             "requires_manual_confirmation": locked.requires_manual_confirmation,
@@ -672,6 +697,7 @@ def map_telephony_identity(identity, employee, actor):
         }
         locked.employee = employee
         locked.requires_manual_confirmation = False
+        locked.reassignment_detected_at = None
         locked.status = TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED
         locked.match_method = TelephonyEmployeeIdentity.MATCH_MANUAL
         locked.confirmed_by = actor
@@ -705,7 +731,11 @@ def map_telephony_identity(identity, employee, actor):
         )
     auto_link_service2_user(employee, actor=actor)
     employee.refresh_from_db()
-    apply_telephony_identity_to_calls(locked)
+    apply_telephony_identity_to_calls(
+        locked,
+        previous_employee_id=previous_employee_id,
+        reassignment_boundary=reassignment_boundary,
+    )
     return locked
 
 
@@ -741,10 +771,13 @@ def resolve_call_employee(organization, telephony, extension="", external_user="
             identity.requires_manual_confirmation = bool(identity.employee_id)
             identity.external_user = external_user
             identity.last_seen_at = timezone.now()
+            if identity.employee_id and identity.reassignment_detected_at is None:
+                identity.reassignment_detected_at = timezone.now()
             identity.save(
                 update_fields=[
                     "is_active",
                     "requires_manual_confirmation",
+                    "reassignment_detected_at",
                     "external_user",
                     "last_seen_at",
                     "updated_at",
@@ -764,9 +797,12 @@ def resolve_call_employee(organization, telephony, extension="", external_user="
                     identity.requires_manual_confirmation = True
                     identity.status = TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING
                     identity.match_method = TelephonyEmployeeIdentity.MATCH_NONE
+                    if identity.reassignment_detected_at is None:
+                        identity.reassignment_detected_at = timezone.now()
                     updates.extend(
                         [
                             "requires_manual_confirmation",
+                            "reassignment_detected_at",
                             "status",
                             "match_method",
                         ]
