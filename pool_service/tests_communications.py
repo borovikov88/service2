@@ -1212,6 +1212,34 @@ class CommunicationsTests(TestCase):
         self.assertEqual(call.employee_profile, employee)
         self.assertEqual(call.employee, self.worker)
 
+    def test_service2_auto_link_requires_employee_side_uniqueness(self):
+        self.worker.first_name = "Иван"
+        self.worker.last_name = "Иванов"
+        self.worker.save(update_fields=["first_name", "last_name"])
+        first = Employee.objects.create(
+            organization=self.organization,
+            display_name="Иванов Иван Петрович",
+            first_name="Иван",
+            last_name="Иванов",
+            middle_name="Петрович",
+            is_active=True,
+        )
+        second = Employee.objects.create(
+            organization=self.organization,
+            display_name="Иванов Иван Сергеевич",
+            first_name="Иван",
+            last_name="Иванов",
+            middle_name="Сергеевич",
+            is_active=True,
+        )
+
+        self.assertFalse(auto_link_service2_user(first, actor=self.owner))
+        self.assertFalse(auto_link_service2_user(second, actor=self.owner))
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertIsNone(first.user)
+        self.assertIsNone(second.user)
+
     def test_onec_employee_sync_uses_stable_ids_and_source_activity(self):
         employee = Employee.objects.create(
             organization=self.organization,
@@ -1393,6 +1421,65 @@ class CommunicationsTests(TestCase):
         self.assertEqual(old_call.employee, self.worker)
         self.assertIsNone(new_call.employee_profile)
         self.assertIsNone(new_call.employee)
+
+    def test_active_extension_name_change_requires_manual_remapping(self):
+        old_employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Старый Владелец",
+            is_active=True,
+            user=self.worker,
+        )
+        Employee.objects.create(
+            organization=self.organization,
+            display_name="Новый Владелец",
+            is_active=True,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="active-reassigned-ext",
+        )
+        channel = CommunicationChannel.objects.create(
+            organization=self.organization,
+            kind=CommunicationChannel.KIND_MEGAFON,
+            name="МегаФон active reassigned",
+        )
+        provider = ChannelConnection.objects.create(
+            channel=channel,
+            name="МегаФон active reassigned",
+            external_id="active-reassigned-ext",
+            settings={
+                "megafon_api_base_url": "https://aqualine22.megapbx.ru/crmapi/v1",
+                "megafon_api_key_encrypted": encrypt_secret("secret"),
+            },
+        )
+        identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=old_employee,
+            raw_name="Старый Владелец",
+            normalized_name="старый владелец",
+            extension="882",
+            is_active=True,
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+
+        with patch(
+            "pool_service.services.employee_identity_sync._read_megafon_accounts",
+            return_value=(provider, [{"name": "Новый Владелец", "ext": "882"}]),
+        ):
+            result = sync_megafon_employee_identities(telephony, actor=self.owner)
+
+        identity.refresh_from_db()
+        self.assertIsNone(identity.employee)
+        self.assertTrue(identity.requires_manual_confirmation)
+        self.assertEqual(
+            identity.status,
+            TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+        )
+        self.assertEqual(result["auto_matched"], 0)
+        self.assertEqual(result["needs_mapping"], 1)
 
     def test_inactive_extension_webhook_waits_for_accounts_revalidation(self):
         employee = Employee.objects.create(
