@@ -1084,6 +1084,63 @@ class CommunicationsTests(TestCase):
             "https://records.megapbx.ru/call-123.mp3",
         )
 
+        old_profile = Employee.objects.create(
+            organization=self.organization,
+            display_name="Старый владелец звонка",
+            is_active=True,
+            user=self.worker,
+        )
+        new_profile = Employee.objects.create(
+            organization=self.organization,
+            display_name="Новый владелец extension",
+            is_active=True,
+            user=self.other,
+        )
+        call.employee_profile = old_profile
+        call.employee = self.worker
+        call.provider_extension = "999"
+        call.provider_user = "worker"
+        call.save(
+            update_fields=[
+                "employee_profile",
+                "employee",
+                "provider_extension",
+                "provider_user",
+            ]
+        )
+        TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=new_profile,
+            raw_name="Новый владелец extension",
+            normalized_name="новый владелец extension",
+            extension="999",
+            external_user="other",
+            is_active=True,
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+        replay = webhook_client.post(
+            webhook_url,
+            {
+                "cmd": "history",
+                "crm_token": "megafon-crm-token",
+                "callid": "call-123",
+                "phone": "+79001112233",
+                "type": "in",
+                "start": "2026-10-03 16:00:00",
+                "duration": "93",
+                "status": "Success",
+                "user": "other",
+                "ext": "999",
+            },
+        )
+        self.assertEqual(replay.status_code, 200)
+        call.refresh_from_db()
+        self.assertEqual(call.duration_seconds, 93)
+        self.assertEqual(call.employee_profile, old_profile)
+        self.assertEqual(call.employee, self.worker)
+
         unauthorized = webhook_client.post(
             webhook_url,
             {
