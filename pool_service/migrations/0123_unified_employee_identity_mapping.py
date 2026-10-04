@@ -47,6 +47,7 @@ class Migration(migrations.Migration):
                 ("external_user", models.CharField(blank=True, max_length=255)),
                 ("is_active", models.BooleanField(default=True)),
                 ("requires_manual_confirmation", models.BooleanField(default=False)),
+                ("reassignment_detected_at", models.DateTimeField(blank=True, null=True)),
                 (
                     "status",
                     models.CharField(
