@@ -262,12 +262,14 @@ def reset_call_analysis(call_id):
     analysis, _ = CallAnalysis.objects.get_or_create(call_id=call_id)
     analysis.status = CallAnalysis.STATUS_PENDING
     analysis.error = ""
+    analysis.attempts = 0
     analysis.processing_started_at = None
     analysis.processed_at = None
     analysis.save(
         update_fields=[
             "status",
             "error",
+            "attempts",
             "processing_started_at",
             "processed_at",
             "updated_at",
