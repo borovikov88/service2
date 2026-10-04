@@ -184,6 +184,51 @@
             grid-template-columns: 1fr;
         }
     }
+
+    /* CRM dark theme: detail cards and metadata. */
+    html[data-theme="dark"] .crm-view-hero,
+    html[data-theme="dark"] .crm-view-card {
+        border-color: #304158;
+        background:
+            radial-gradient(circle at top right, rgba(67, 139, 220, 0.10), transparent 32%),
+            linear-gradient(180deg, #172333 0%, #151f2e 100%);
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22);
+    }
+    html[data-theme="dark"] .crm-view-badge {
+        background: #1d3555;
+        color: #a8ceff;
+    }
+    html[data-theme="dark"] .crm-view-badge--success {
+        background: #183127;
+        color: #83d1a8;
+    }
+    html[data-theme="dark"] .crm-view-badge--warning {
+        background: #342b1f;
+        color: #d8b36c;
+    }
+    html[data-theme="dark"] .crm-view-meta-label,
+    html[data-theme="dark"] .crm-view-empty {
+        color: #9daec0;
+    }
+    html[data-theme="dark"] .crm-view-meta-value,
+    html[data-theme="dark"] .crm-view-section-title {
+        color: #edf3fa;
+    }
+    html[data-theme="dark"] .crm-view-list-item {
+        border-color: #34465c;
+        background: #182436;
+        color: #e3ebf5;
+    }
+    html[data-theme="dark"] .crm-view-list-item:hover {
+        background: #1b2a3d;
+        border-color: #47617e;
+    }
+    html[data-theme="dark"] .crm-view-archive {
+        border-color: #5a4b2d;
+        background: #1a2535;
+        color: #d7c38e;
+    }
+
 </style>
 
 <div class="crm-view-shell">
