@@ -32,7 +32,7 @@ from pool_service.communication_forms import CommunicationConnectionForm, Teleph
 from pool_service.communication_models import (
     AvitoCredential, ChannelConnection, CommunicationChannel, Conversation,
     ConversationAssignment, ConversationMessage, ConversationReadState,
-    MessageAttachment, PhoneCall, TelephonyConnection,
+    CallAnalysis, MessageAttachment, PhoneCall, TelephonyConnection,
 )
 from pool_service.communication_secrets import encrypt_secret
 from pool_service.communication_services import conversation_capability, optimize_message_image, organization_access
@@ -289,8 +289,8 @@ def call_analysis_retry(request, call_id):
     if not call.recording_file:
         messages.error(request, "Сначала должна быть сохранена запись звонка.")
         return redirect("communications_calls")
-    analysis = getattr(call, "analysis", None)
-    if analysis and analysis.status == "processing":
+    analysis = CallAnalysis.objects.filter(call=call).first()
+    if analysis and analysis.status == CallAnalysis.STATUS_PROCESSING:
         messages.info(request, "Этот звонок уже обрабатывается.")
         return redirect("communications_calls")
 
