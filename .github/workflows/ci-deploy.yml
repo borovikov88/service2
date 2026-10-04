@@ -52,7 +52,7 @@ jobs:
           "$lint_dir/actionlint" -shellcheck= -pyflakes= \
             .github/workflows/direct-pr-review.yml .github/workflows/ci-deploy.yml \
             .github/workflows/development-codex.yml .github/workflows/codex-plan-connection.yml \
-            .github/workflows/production-health.yml
+            .github/workflows/production-health.yml .github/workflows/call-recordings-sync.yml
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
       - name: Validate Django configuration and migration state
