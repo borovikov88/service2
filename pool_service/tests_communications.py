@@ -1154,7 +1154,7 @@ class CommunicationsTests(TestCase):
             raw_name="Ожидает подтверждения",
             normalized_name="ожидает подтверждения",
             extension="998",
-            external_user="other",
+            external_user="accountant",
             is_active=True,
             requires_manual_confirmation=True,
             status=TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
@@ -2033,6 +2033,48 @@ class CommunicationsTests(TestCase):
             TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
         )
 
+    def test_active_extension_accepts_initial_provider_user(self):
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Иванов Иван Иванович",
+            is_active=True,
+            user=self.worker,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="initial-provider-user",
+        )
+        identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=employee,
+            raw_name="Иванов Иван Иванович",
+            normalized_name="иванов иван иванович",
+            extension="889",
+            external_user="",
+            is_active=True,
+            status=TelephonyEmployeeIdentity.STATUS_AUTO_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_EXACT_NAME,
+        )
+
+        profile, user = resolve_call_employee(
+            self.organization,
+            telephony,
+            "889",
+            "initial-user",
+        )
+
+        self.assertEqual(profile, employee)
+        self.assertEqual(user, self.worker)
+        identity.refresh_from_db()
+        self.assertEqual(identity.external_user, "initial-user")
+        self.assertFalse(identity.requires_manual_confirmation)
+        self.assertEqual(
+            identity.status,
+            TelephonyEmployeeIdentity.STATUS_AUTO_MATCHED,
+        )
+
     def test_auto_linked_service2_user_backfills_existing_profile_calls(self):
         self.worker.first_name = "Дарья"
         self.worker.last_name = "Крафт"
@@ -2377,6 +2419,36 @@ class CommunicationsTests(TestCase):
         call.refresh_from_db()
         self.assertEqual(call.employee, self.worker)
         self.assertEqual(identity.employee, employee)
+
+    def test_service2_account_change_claims_legacy_calls(self):
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Петров Петр Петрович",
+            is_active=True,
+            user=self.worker,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            external_id="legacy-service-user-map",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="legacy-service-user-call",
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+            employee=self.worker,
+        )
+
+        map_employee_service2_user(employee, self.other, self.owner)
+
+        employee.refresh_from_db()
+        call.refresh_from_db()
+        self.assertEqual(employee.user, self.other)
+        self.assertEqual(call.employee_profile, employee)
+        self.assertEqual(call.employee, self.other)
 
     def test_unified_employee_mapping_page_lists_1c_and_telephony_sources(self):
         employee = Employee.objects.create(

@@ -218,7 +218,7 @@ def map_employee_service2_user(employee, user, actor):
             changed_fields=["user_id"] if before["user_id"] != user.pk else [],
         )
     employee.refresh_from_db()
-    backfill_employee_calls(employee)
+    backfill_employee_calls(employee, previous_user_id=before["user_id"])
     return locked
 
 
@@ -548,8 +548,20 @@ def apply_telephony_identity_to_calls(
     )
 
 
-def backfill_employee_calls(employee):
-    total = PhoneCall.objects.filter(
+def backfill_employee_calls(employee, *, previous_user_id=None):
+    total = 0
+    if previous_user_id and previous_user_id != employee.user_id:
+        total += PhoneCall.objects.filter(
+            organization=employee.organization,
+            employee_id=previous_user_id,
+            employee_profile__isnull=True,
+            provider_extension="",
+            provider_user="",
+        ).update(
+            employee_profile_id=employee.pk,
+            employee_id=employee.user_id,
+        )
+    total += PhoneCall.objects.filter(
         organization=employee.organization,
         employee_profile=employee,
     ).exclude(employee_id=employee.user_id).update(
@@ -818,9 +830,10 @@ def resolve_call_employee(organization, telephony, extension="", external_user="
         else:
             updates = []
             if external_user and external_user != identity.external_user:
+                provider_user_changed = bool(identity.external_user)
                 identity.external_user = external_user
                 updates.append("external_user")
-                if identity.employee_id:
+                if identity.employee_id and provider_user_changed:
                     # A changed provider user on a still-active extension may
                     # mean the number was reassigned between account snapshots.
                     # Keep the historical employee proposal on the identity,
