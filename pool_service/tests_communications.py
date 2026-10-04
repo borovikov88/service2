@@ -1093,6 +1093,198 @@ class CommunicationsTests(TestCase):
             PhoneCall.objects.filter(connection=telephony, external_id="call-unauthorized").exists()
         )
 
+    def test_megafon_account_sync_auto_matches_employee_and_backfills_calls(self):
+        self.worker.first_name = "Дарья"
+        self.worker.last_name = "Крафт"
+        self.worker.save(update_fields=["first_name", "last_name"])
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Крафт Дарья Валерьевна",
+            first_name="Дарья",
+            last_name="Крафт",
+            middle_name="Валерьевна",
+            is_active=True,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон офис",
+            external_id="megafon-sync",
+        )
+        channel = CommunicationChannel.objects.create(
+            organization=self.organization,
+            kind=CommunicationChannel.KIND_MEGAFON,
+            name="МегаФон sync",
+        )
+        provider = ChannelConnection.objects.create(
+            channel=channel,
+            name="МегаФон офис",
+            external_id="megafon-sync",
+            settings={
+                "megafon_api_base_url": "https://aqualine22.megapbx.ru/crmapi/v1",
+                "megafon_api_key_encrypted": encrypt_secret("secret"),
+            },
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="sync-call",
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+            provider_extension="601",
+        )
+
+        with patch(
+            "pool_service.services.employee_identity_sync._read_megafon_accounts",
+            return_value=(provider, [{"name": "Крафт Дарья Валерьевна", "ext": "601"}]),
+        ):
+            result = sync_megafon_employee_identities(telephony, actor=self.owner)
+
+        self.assertEqual(result["synced"], 1)
+        self.assertEqual(result["auto_matched"], 1)
+        identity = TelephonyEmployeeIdentity.objects.get(
+            connection=telephony,
+            extension="601",
+        )
+        self.assertEqual(identity.employee, employee)
+        self.assertEqual(
+            identity.status,
+            TelephonyEmployeeIdentity.STATUS_AUTO_MATCHED,
+        )
+        employee.refresh_from_db()
+        self.assertEqual(employee.user, self.worker)
+        call.refresh_from_db()
+        self.assertEqual(call.employee_profile, employee)
+        self.assertEqual(call.employee, self.worker)
+
+    def test_manual_telephony_mapping_updates_existing_calls(self):
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Иванов Иван Иванович",
+            is_active=True,
+            user=self.worker,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="manual-map",
+        )
+        identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            raw_name="Иван",
+            normalized_name="иван",
+            extension="777",
+            status=TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+            match_method=TelephonyEmployeeIdentity.MATCH_NONE,
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="manual-call",
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_OUT,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+            provider_extension="777",
+        )
+
+        mapped = map_telephony_identity(identity, employee, self.owner)
+
+        self.assertEqual(mapped.employee, employee)
+        self.assertEqual(
+            mapped.status,
+            TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+        )
+        call.refresh_from_db()
+        self.assertEqual(call.employee_profile, employee)
+        self.assertEqual(call.employee, self.worker)
+
+    def test_service2_account_mapping_is_unique_and_backfills_calls(self):
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Петров Петр Петрович",
+            is_active=True,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            external_id="service-user-map",
+        )
+        identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=employee,
+            raw_name="Петров Петр Петрович",
+            normalized_name="петров петр петрович",
+            extension="778",
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="service-user-call",
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+            provider_extension="778",
+            employee_profile=employee,
+        )
+
+        map_employee_service2_user(employee, self.worker, self.owner)
+
+        employee.refresh_from_db()
+        self.assertEqual(employee.user, self.worker)
+        call.refresh_from_db()
+        self.assertEqual(call.employee, self.worker)
+        self.assertEqual(identity.employee, employee)
+
+    def test_unified_employee_mapping_page_lists_1c_and_telephony_sources(self):
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Сидоров Сидор Сидорович",
+            is_active=True,
+            user=self.worker,
+        )
+        EmployeeOneCIdentity.objects.create(
+            organization=self.organization,
+            employee=employee,
+            raw_name="Сидоров Сидор Сидорович",
+            normalized_name="сидоров сидор сидорович",
+            onec_employee_id="11111111-1111-1111-1111-111111111111",
+            personnel_number="0001",
+            status=EmployeeOneCIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=EmployeeOneCIdentity.MATCH_MANUAL,
+            source_active=True,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="mapping-page",
+        )
+        TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=employee,
+            raw_name="Сидоров Сидор Сидорович",
+            normalized_name="сидоров сидор сидорович",
+            extension="779",
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+
+        self.client.login(username="owner", password="test")
+        page = self.client.get(reverse("finance_payroll_employee_mapping"))
+
+        self.assertEqual(page.status_code, 200)
+        self.assertContains(page, "Сопоставление сотрудников")
+        self.assertContains(page, "Синхронизировать всё")
+        self.assertContains(page, "Сидоров Сидор Сидорович")
+        self.assertContains(page, "ext 779")
+        self.assertContains(page, "0001")
+
     def test_channel_settings_are_organization_scoped(self):
         foreign_organization = Organization.objects.create(name="Foreign setup org")
         foreign_channel = CommunicationChannel.objects.create(
