@@ -1141,6 +1141,38 @@ class CommunicationsTests(TestCase):
         self.assertEqual(call.employee_profile, old_profile)
         self.assertEqual(call.employee, self.worker)
 
+        legacy_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="legacy-replayed-call",
+            employee=self.worker,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        legacy_replay = webhook_client.post(
+            webhook_url,
+            {
+                "cmd": "history",
+                "crm_token": "megafon-crm-token",
+                "callid": "legacy-replayed-call",
+                "phone": "+79001112233",
+                "type": "in",
+                "start": "2026-10-03 16:00:00",
+                "duration": "94",
+                "status": "Success",
+                "user": "other",
+                "ext": "999",
+            },
+        )
+        self.assertEqual(legacy_replay.status_code, 200)
+        legacy_call.refresh_from_db()
+        self.assertEqual(legacy_call.employee_profile, new_profile)
+        self.assertEqual(legacy_call.employee, self.other)
+        self.assertEqual(legacy_call.provider_extension, "999")
+        self.assertEqual(legacy_call.provider_user, "other")
+
         pending_profile = Employee.objects.create(
             organization=self.organization,
             display_name="Ожидает подтверждения",

@@ -594,10 +594,18 @@ def megafon_webhook(request, public_id):
         )
         effective_employee = employee
         effective_employee_profile = employee_profile
-        if existing_call and (
-            existing_call.employee_id
-            or existing_call.employee_profile_id
-        ):
+        preserve_existing_ownership = existing_call and (
+            existing_call.employee_profile_id
+            or (
+                existing_call.employee_id
+                and (
+                    existing_call.provider_extension
+                    or existing_call.provider_user
+                    or employee_profile is None
+                )
+            )
+        )
+        if preserve_existing_ownership:
             effective_employee = existing_call.employee
             effective_employee_profile = existing_call.employee_profile
 
