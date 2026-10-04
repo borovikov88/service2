@@ -657,10 +657,56 @@ class CommunicationsTests(TestCase):
         self.assertContains(response, "Клиент хочет бассейн 6×3 м.")
         self.assertContains(response, "Полная расшифровка")
         self.assertContains(response, "Перезвонить после замера")
+        self.assertNotContains(response, "A: Нужен бассейн 6 на 3.")
+        self.assertContains(
+            response,
+            reverse("communication_call_analysis_transcript", args=[call.pk]),
+        )
         self.assertContains(
             response,
             reverse("communication_call_analysis_retry", args=[call.pk]),
         )
+
+        transcript_response = self.client.get(
+            reverse("communication_call_analysis_transcript", args=[call.pk])
+        )
+        self.assertEqual(transcript_response.status_code, 200)
+        self.assertEqual(
+            transcript_response.json()["transcript"],
+            "A: Нужен бассейн 6 на 3.\nB: Уточним адрес.",
+        )
+
+    def test_call_analysis_transcript_respects_call_access(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-ai-transcript-access",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-transcript-access-call",
+            employee=self.owner,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=30,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        call.recording_file.save("ai-transcript-access.mp3", ContentFile(b"ID3test"), save=True)
+        CallAnalysis.objects.create(
+            call=call,
+            status=CallAnalysis.STATUS_READY,
+            transcript="Секретная расшифровка",
+            summary="Итог",
+        )
+
+        self.client.login(username="worker", password="test")
+        response = self.client.get(
+            reverse("communication_call_analysis_transcript", args=[call.pk])
+        )
+        self.assertEqual(response.status_code, 403)
 
     @patch("pool_service.communication_views.request_call_analysis", return_value=True)
     def test_call_analysis_retry_requires_call_access_and_queues_only_on_button(self, request_analysis):
