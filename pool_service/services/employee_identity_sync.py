@@ -633,6 +633,11 @@ def sync_megafon_employee_identities(telephony, actor=None):
             was_pending_revalidation
             and not source_name_changed
             and identity.employee_id
+            and identity.status
+            in {
+                TelephonyEmployeeIdentity.STATUS_AUTO_MATCHED,
+                TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            }
         ):
             # A webhook reactivated an inactive, already-mapped extension.
             # The accounts API confirmed the same holder name that existed
