@@ -24,4 +24,4 @@ if ! flock -n 9; then
     exit 0
 fi
 
-exec "$PYTHON_BIN" manage.py process_requested_call_analyses --limit 1
+exec "$PYTHON_BIN" manage.py process_requested_call_analyses --limit 10 --idle-grace-seconds 1
