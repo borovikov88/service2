@@ -270,7 +270,15 @@
                     <div class="call-analysis__transcript mt-2">{{ call.analysis.transcript }}</div>
                   </details>
                 {% elif call.analysis and call.analysis.status == 'processing' %}
-                  <span class="text-muted"><span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>Расшифровываем разговор…</span>
+                  <div class="d-flex flex-wrap align-items-center gap-2">
+                    <span class="text-muted"><span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>Расшифровываем разговор…</span>
+                    <form method="post" action="{% url 'communication_call_analysis_retry' call.pk %}">
+                      {% csrf_token %}
+                      <button class="btn btn-outline-secondary btn-sm" type="submit">
+                        Повторить, если зависло
+                      </button>
+                    </form>
+                  </div>
                 {% elif call.analysis and call.analysis.status == 'failed' %}
                   <div class="d-flex flex-wrap align-items-center gap-2">
                     <span class="text-warning">Не удалось расшифровать разговор.</span>
