@@ -648,7 +648,8 @@ class CommunicationsTests(TestCase):
             reverse("communication_call_analysis_retry", args=[call.pk]),
         )
 
-    def test_call_analysis_retry_requires_call_access_and_resets_failed_state(self):
+    @patch("pool_service.communication_views.process_call_analysis", return_value=True)
+    def test_call_analysis_retry_requires_call_access_and_runs_only_on_button(self, process_analysis):
         telephony = TelephonyConnection.objects.create(
             organization=self.organization,
             name="МегаФон",
@@ -672,6 +673,7 @@ class CommunicationsTests(TestCase):
             status=CallAnalysis.STATUS_FAILED,
             error="openai_processing_failed",
             attempts=1,
+            confirmed_at=timezone.now(),
         )
 
         self.client.login(username="owner", password="test")
@@ -684,6 +686,7 @@ class CommunicationsTests(TestCase):
         self.assertEqual(analysis.error, "")
         self.assertEqual(analysis.attempts, 0)
         self.assertIsNone(analysis.confirmed_at)
+        process_analysis.assert_called_once_with(call.pk)
 
         self.client.logout()
         self.client.login(username="worker", password="test")
@@ -691,6 +694,37 @@ class CommunicationsTests(TestCase):
             reverse("communication_call_analysis_retry", args=[call.pk])
         )
         self.assertEqual(forbidden.status_code, 403)
+
+    def test_calls_page_offers_manual_transcription_for_unanalysed_recording(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-ai-manual",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-manual-call",
+            employee=self.owner,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=25,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        call.recording_file.save("ai-manual-call.mp3", ContentFile(b"ID3test"), save=True)
+
+        self.client.login(username="owner", password="test")
+        response = self.client.get(reverse("communications_calls"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Расшифровка запускается вручную.")
+        self.assertContains(response, "Расшифровать и проанализировать")
+        self.assertContains(
+            response,
+            reverse("communication_call_analysis_retry", args=[call.pk]),
+        )
+        self.assertNotContains(response, "Ожидает автоматической расшифровки.")
 
     @override_settings(
         COMMUNICATION_RECORDING_DOWNLOAD_TIMEOUT_SECONDS=2,
