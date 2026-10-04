@@ -392,16 +392,25 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
         if not isinstance(exc, CallAnalysisError):
             logger.exception("Call analysis failed for call_id=%s", call_id)
             code = "openai_processing_failed"
+        max_attempts = int(
+            _setting("OPENAI_CALL_MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS)
+        )
+        retryable = analysis.attempts < max_attempts
         CallAnalysis.objects.filter(
             pk=analysis.pk,
             status=CallAnalysis.STATUS_PROCESSING,
             processing_token=token,
         ).update(
-            status=CallAnalysis.STATUS_FAILED,
+            status=(
+                CallAnalysis.STATUS_PENDING
+                if retryable
+                else CallAnalysis.STATUS_FAILED
+            ),
             error=code[:500],
             processing_token="",
+            processing_started_at=None,
             processed_at=timezone.now(),
-            requested_at=None,
+            requested_at=(analysis.requested_at if retryable else None),
         )
         return False
 
