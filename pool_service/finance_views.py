@@ -4788,6 +4788,9 @@ def finance_employee_identity_sync(request):
             telephony_unmapped = sum(
                 item["needs_mapping"] for item in result["telephony"]
             )
+            telephony_errors = [
+                item for item in result["telephony"] if item.get("error")
+            ]
             messages.success(
                 request,
                 (
@@ -4796,6 +4799,15 @@ def finance_employee_identity_sync(request):
                     f"в телефонии требуют сопоставления {telephony_unmapped}."
                 ),
             )
+            if telephony_errors:
+                messages.warning(
+                    request,
+                    "Не синхронизированы линии: "
+                    + "; ".join(
+                        f"{item['name']}: {item['error']}"
+                        for item in telephony_errors
+                    ),
+                )
         else:
             raise EmployeeIdentitySyncError("Неизвестный источник синхронизации.")
     except EmployeeIdentitySyncError as exc:
