@@ -100,6 +100,26 @@ allowed_hosts_env = os.getenv('ALLOWED_HOSTS', '')
 ALLOWED_HOSTS = [host.strip() for host in allowed_hosts_env.split(',') if host.strip()]
 YANDEX_SUGGEST_API_KEY = os.getenv("YANDEX_SUGGEST_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_CALL_TRANSCRIPTION_MODEL = os.getenv(
+    "OPENAI_CALL_TRANSCRIPTION_MODEL",
+    "gpt-4o-transcribe-diarize",
+)
+OPENAI_CALL_ANALYSIS_MODEL = os.getenv(
+    "OPENAI_CALL_ANALYSIS_MODEL",
+    "gpt-5.6-luna",
+)
+OPENAI_CALL_TIMEOUT_SECONDS = _env_float(
+    "OPENAI_CALL_TIMEOUT_SECONDS",
+    120,
+    minimum=10,
+    maximum=300,
+)
+OPENAI_CALL_MAX_ATTEMPTS = _env_int(
+    "OPENAI_CALL_MAX_ATTEMPTS",
+    5,
+    minimum=1,
+    maximum=20,
+)
 OPENAI_DEVELOPMENT_MODEL = os.getenv("OPENAI_DEVELOPMENT_MODEL", "gpt-5.6")
 DEVELOPMENT_MAX_CORRECTIVE_ITERATIONS = max(
     0, min(int(os.getenv("DEVELOPMENT_MAX_CORRECTIVE_ITERATIONS", "3")), 10)
