@@ -73,3 +73,5 @@ class ThemePreferenceTests(TestCase):
         self.assertIn('html[data-theme="dark"] .owner-badge.preliminary', css)
         self.assertIn('html[data-theme="dark"] .finance-desktop .finance-data-card thead th', css)
         self.assertIn('html[data-theme="dark"] .app-logo', css)
+        self.assertIn('background: #101a28;', css)
+        self.assertNotIn('filter: brightness(0) invert(1);', css)
