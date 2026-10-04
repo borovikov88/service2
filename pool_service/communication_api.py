@@ -560,7 +560,7 @@ def megafon_webhook(request, public_id):
         extension,
         provider_user,
     )
-    if employee is None:
+    if employee is None and not extension:
         employee = _megafon_employee(
             connection.channel.organization,
             provider_user,
