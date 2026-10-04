@@ -844,6 +844,37 @@ class EmployeeIdentityMappingForm(forms.Form):
         ).order_by("display_name", "id")
 
 
+class EmployeeServiceUserMappingForm(forms.Form):
+    user = forms.ModelChoiceField(
+        queryset=User.objects.none(),
+        required=True,
+        label="Аккаунт Service2",
+        empty_label="Выберите аккаунт",
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
+
+    def __init__(self, *args, organization, employee=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.organization = organization
+        user_ids = (
+            organization.accesses.filter(user__is_active=True)
+            .values_list("user_id", flat=True)
+            .distinct()
+        )
+        linked_ids = Employee.objects.filter(
+            organization=organization,
+            user__isnull=False,
+        )
+        if employee is not None:
+            linked_ids = linked_ids.exclude(pk=employee.pk)
+        linked_user_ids = linked_ids.values_list("user_id", flat=True)
+        self.fields["user"].queryset = (
+            User.objects.filter(pk__in=user_ids, is_active=True)
+            .exclude(pk__in=linked_user_ids)
+            .order_by("last_name", "first_name", "username", "id")
+        )
+
+
 class CashFlowArticleMappingForm(forms.Form):
     """Explicit, human-confirmed classification for one active 1C article.
 

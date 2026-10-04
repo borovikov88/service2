@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from django.apps import apps
 from django.contrib.auth.models import Permission, User
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.db import IntegrityError, transaction
 from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -14,7 +15,7 @@ from django.test import Client, RequestFactory, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from pool_service.communication_models import AvitoCredential, CommunicationAccess, CommunicationChannel, ChannelConnection, Conversation, ConversationMessage, MessageAttachment, PhoneCall, TelephonyConnection, WebsiteRequest
+from pool_service.communication_models import AvitoCredential, CommunicationAccess, CommunicationChannel, ChannelConnection, Conversation, ConversationMessage, MessageAttachment, PhoneCall, TelephonyConnection, TelephonyEmployeeIdentity, WebsiteRequest
 from pool_service.communication_avito import (
     AvitoError,
     AvitoRetryableError,
@@ -33,9 +34,20 @@ from pool_service.communication_recordings import download_call_recording
 from pool_service.communication_secrets import decrypt_secret, encrypt_secret
 from pool_service.communication_services import receive_message, users_with_conversation_access
 from pool_service.communication_services import conversation_capability
+from pool_service.services.employee_identity_sync import (
+    EmployeeIdentitySyncError,
+    auto_link_service2_user,
+    map_employee_service2_user,
+    map_telephony_identity,
+    resolve_call_employee,
+    sync_all_employee_identities,
+    sync_megafon_employee_identities,
+    sync_onec_employee_identities,
+)
 from pool_service.communication_api import _payload
+from pool_service.finance_imports.odata_profit import ODataConfig, ODataPreviewError
 from pool_service.management.commands.send_avito_outbox import claim_message
-from pool_service.models import Client as ServiceClient, Notification, Organization, OrganizationAccess
+from pool_service.models import Client as ServiceClient, Employee, EmployeeOneCIdentity, Notification, Organization, OrganizationAccess
 from service_site.logging_handlers import RedactCommunicationWebhookSecretFilter
 
 
@@ -964,22 +976,27 @@ class CommunicationsTests(TestCase):
 
         webhook_url = reverse("megafon_webhook", args=[provider_connection.public_id])
         webhook_client = Client()
-        response = webhook_client.post(
-            webhook_url,
-            {
-                "cmd": "history",
-                "crm_token": "megafon-crm-token",
-                "callid": "call-123",
-                "phone": "+79001112233",
-                "type": "in",
-                "start": "2026-10-03 16:00:00",
-                "duration": "91",
-                "status": "Success",
-                "user": "worker",
-                "link": "https://records.megapbx.ru/call-123.mp3",
-            },
-        )
+        with patch(
+            "pool_service.communication_api.resolve_call_employee",
+            wraps=resolve_call_employee,
+        ) as locked_resolver:
+            response = webhook_client.post(
+                webhook_url,
+                {
+                    "cmd": "history",
+                    "crm_token": "megafon-crm-token",
+                    "callid": "call-123",
+                    "phone": "+79001112233",
+                    "type": "in",
+                    "start": "2026-10-03 16:00:00",
+                    "duration": "91",
+                    "status": "Success",
+                    "user": "worker",
+                    "link": "https://records.megapbx.ru/call-123.mp3",
+                },
+            )
         self.assertEqual(response.status_code, 200)
+        self.assertTrue(locked_resolver.call_args.kwargs["lock_identity"])
         call = PhoneCall.objects.get(connection=telephony, external_id="call-123")
         self.assertEqual(call.employee, self.worker)
         self.assertEqual(call.contact_name, "Тестовый клиент")
@@ -1073,6 +1090,243 @@ class CommunicationsTests(TestCase):
             "https://records.megapbx.ru/call-123.mp3",
         )
 
+        old_profile = Employee.objects.create(
+            organization=self.organization,
+            display_name="Старый владелец звонка",
+            is_active=True,
+            user=self.worker,
+        )
+        new_profile = Employee.objects.create(
+            organization=self.organization,
+            display_name="Новый владелец extension",
+            is_active=True,
+            user=self.other,
+        )
+        call.employee_profile = old_profile
+        call.employee = self.worker
+        call.provider_extension = "999"
+        call.provider_user = "worker"
+        call.save(
+            update_fields=[
+                "employee_profile",
+                "employee",
+                "provider_extension",
+                "provider_user",
+            ]
+        )
+        current_identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=new_profile,
+            raw_name="Новый владелец extension",
+            normalized_name="новый владелец extension",
+            extension="999",
+            external_user="other",
+            is_active=True,
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+        historical_event = webhook_client.post(
+            webhook_url,
+            {
+                "cmd": "event",
+                "crm_token": "megafon-crm-token",
+                "callid": "call-123",
+                "phone": "+79001112233",
+                "type": "COMPLETED",
+                "ext": "999",
+                "user": "worker",
+                "direction": "in",
+            },
+        )
+        self.assertEqual(historical_event.status_code, 200)
+        current_identity.refresh_from_db()
+        self.assertEqual(current_identity.external_user, "other")
+        self.assertFalse(current_identity.requires_manual_confirmation)
+        replay = webhook_client.post(
+            webhook_url,
+            {
+                "cmd": "history",
+                "crm_token": "megafon-crm-token",
+                "callid": "call-123",
+                "phone": "+79001112233",
+                "type": "in",
+                "start": "2026-10-03 16:00:00",
+                "duration": "93",
+                "status": "Success",
+                "user": "worker",
+                "ext": "999",
+            },
+        )
+        self.assertEqual(replay.status_code, 200)
+        call.refresh_from_db()
+        self.assertEqual(call.duration_seconds, 93)
+        self.assertEqual(call.employee_profile, old_profile)
+        self.assertEqual(call.employee, self.worker)
+        current_identity.refresh_from_db()
+        self.assertEqual(current_identity.external_user, "other")
+        self.assertFalse(current_identity.requires_manual_confirmation)
+        self.assertEqual(
+            current_identity.status,
+            TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+        )
+
+        replay_without_provider_keys = webhook_client.post(
+            webhook_url,
+            {
+                "cmd": "history",
+                "crm_token": "megafon-crm-token",
+                "callid": "call-123",
+                "phone": "+79001112233",
+                "type": "in",
+                "start": "2026-10-03 16:00:00",
+                "duration": "95",
+                "status": "Success",
+            },
+        )
+        self.assertEqual(replay_without_provider_keys.status_code, 200)
+        call.refresh_from_db()
+        self.assertEqual(call.provider_extension, "999")
+        self.assertEqual(call.provider_user, "worker")
+        self.assertEqual(call.employee_profile, old_profile)
+        self.assertEqual(call.employee, self.worker)
+
+        legacy_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="legacy-replayed-call",
+            employee=self.worker,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        legacy_replay = webhook_client.post(
+            webhook_url,
+            {
+                "cmd": "history",
+                "crm_token": "megafon-crm-token",
+                "callid": "legacy-replayed-call",
+                "phone": "+79001112233",
+                "type": "in",
+                "start": "2026-10-03 16:00:00",
+                "duration": "94",
+                "status": "Success",
+                "user": "other",
+                "ext": "999",
+            },
+        )
+        self.assertEqual(legacy_replay.status_code, 200)
+        legacy_call.refresh_from_db()
+        self.assertEqual(legacy_call.employee_profile, new_profile)
+        self.assertEqual(legacy_call.employee, self.other)
+        self.assertEqual(legacy_call.provider_extension, "999")
+        self.assertEqual(legacy_call.provider_user, "other")
+
+        current_identity.is_active = False
+        current_identity.save(update_fields=["is_active", "updated_at"])
+        inactive_legacy_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="inactive-identity-legacy-replay",
+            employee=self.worker,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        inactive_replay = webhook_client.post(
+            webhook_url,
+            {
+                "cmd": "history",
+                "crm_token": "megafon-crm-token",
+                "callid": "inactive-identity-legacy-replay",
+                "phone": "+79001112233",
+                "type": "in",
+                "start": "2026-10-03 16:00:00",
+                "duration": "30",
+                "status": "Success",
+                "user": "other",
+                "ext": "999",
+            },
+        )
+        self.assertEqual(inactive_replay.status_code, 200)
+        inactive_legacy_call.refresh_from_db()
+        self.assertEqual(inactive_legacy_call.employee_profile, new_profile)
+        self.assertEqual(inactive_legacy_call.employee, self.other)
+        current_identity.is_active = True
+        current_identity.save(update_fields=["is_active", "updated_at"])
+
+        unassigned_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="unassigned-historical-call",
+            provider_extension="999",
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now() - timedelta(days=1),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        unassigned_replay = webhook_client.post(
+            webhook_url,
+            {
+                "cmd": "history",
+                "crm_token": "megafon-crm-token",
+                "callid": "unassigned-historical-call",
+                "phone": "+79001112233",
+                "type": "in",
+                "start": "2026-10-02 16:00:00",
+                "duration": "60",
+                "status": "Success",
+                "ext": "999",
+            },
+        )
+        self.assertEqual(unassigned_replay.status_code, 200)
+        unassigned_call.refresh_from_db()
+        self.assertIsNone(unassigned_call.employee_profile)
+        self.assertIsNone(unassigned_call.employee)
+
+        pending_profile = Employee.objects.create(
+            organization=self.organization,
+            display_name="Ожидает подтверждения",
+            is_active=True,
+            user=self.accountant,
+        )
+        TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=pending_profile,
+            raw_name="Ожидает подтверждения",
+            normalized_name="ожидает подтверждения",
+            extension="998",
+            external_user="accountant",
+            is_active=True,
+            requires_manual_confirmation=True,
+            status=TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+            match_method=TelephonyEmployeeIdentity.MATCH_NONE,
+        )
+        pending_history = webhook_client.post(
+            webhook_url,
+            {
+                "cmd": "history",
+                "crm_token": "megafon-crm-token",
+                "callid": "pending-extensionless-call",
+                "phone": "+79001112233",
+                "type": "in",
+                "start": "2026-10-03 16:05:00",
+                "duration": "10",
+                "status": "Success",
+                "user": "accountant",
+            },
+        )
+        self.assertEqual(pending_history.status_code, 200)
+        pending_call = PhoneCall.objects.get(
+            connection=telephony,
+            external_id="pending-extensionless-call",
+        )
+        self.assertIsNone(pending_call.employee_profile)
+        self.assertIsNone(pending_call.employee)
+
         unauthorized = webhook_client.post(
             webhook_url,
             {
@@ -1087,6 +1341,1623 @@ class CommunicationsTests(TestCase):
         self.assertFalse(
             PhoneCall.objects.filter(connection=telephony, external_id="call-unauthorized").exists()
         )
+
+        oversized_user = webhook_client.post(
+            webhook_url,
+            {
+                "cmd": "history",
+                "crm_token": "megafon-crm-token",
+                "callid": "call-long-user",
+                "phone": "+79001112233",
+                "type": "in",
+                "start": "2026-10-03 16:00:00",
+                "duration": "1",
+                "status": "Success",
+                "user": "u" * 256,
+                "ext": "601",
+            },
+        )
+        self.assertEqual(oversized_user.status_code, 400)
+        self.assertEqual(oversized_user.json()["error"], "invalid_user")
+        self.assertFalse(
+            PhoneCall.objects.filter(
+                connection=telephony,
+                external_id="call-long-user",
+            ).exists()
+        )
+
+        oversized_ext = webhook_client.post(
+            webhook_url,
+            {
+                "cmd": "history",
+                "crm_token": "megafon-crm-token",
+                "callid": "call-long-ext",
+                "phone": "+79001112233",
+                "type": "in",
+                "start": "2026-10-03 16:00:00",
+                "duration": "1",
+                "status": "Success",
+                "user": "worker",
+                "ext": "6" * 65,
+            },
+        )
+        self.assertEqual(oversized_ext.status_code, 400)
+        self.assertEqual(oversized_ext.json()["error"], "invalid_ext")
+        self.assertFalse(
+            PhoneCall.objects.filter(
+                connection=telephony,
+                external_id="call-long-ext",
+            ).exists()
+        )
+
+    def test_megafon_account_sync_auto_matches_employee_and_backfills_calls(self):
+        self.worker.first_name = "Дарья"
+        self.worker.last_name = "Крафт"
+        self.worker.save(update_fields=["first_name", "last_name"])
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Крафт Дарья Валерьевна",
+            first_name="Дарья",
+            last_name="Крафт",
+            middle_name="Валерьевна",
+            is_active=True,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон офис",
+            external_id="megafon-sync",
+        )
+        channel = CommunicationChannel.objects.create(
+            organization=self.organization,
+            kind=CommunicationChannel.KIND_MEGAFON,
+            name="МегаФон sync",
+        )
+        provider = ChannelConnection.objects.create(
+            channel=channel,
+            name="МегаФон офис",
+            external_id="megafon-sync",
+            settings={
+                "megafon_api_base_url": "https://aqualine22.megapbx.ru/crmapi/v1",
+                "megafon_api_key_encrypted": encrypt_secret("secret"),
+            },
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="sync-call",
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+            provider_extension="601",
+        )
+
+        with patch(
+            "pool_service.services.employee_identity_sync._read_megafon_accounts",
+            return_value=(provider, [{"name": "Крафт Дарья Валерьевна", "ext": "601"}]),
+        ):
+            result = sync_megafon_employee_identities(telephony, actor=self.owner)
+
+        self.assertEqual(result["synced"], 1)
+        self.assertEqual(result["auto_matched"], 1)
+        identity = TelephonyEmployeeIdentity.objects.get(
+            connection=telephony,
+            extension="601",
+        )
+        self.assertEqual(identity.employee, employee)
+        self.assertEqual(
+            identity.status,
+            TelephonyEmployeeIdentity.STATUS_AUTO_MATCHED,
+        )
+        employee.refresh_from_db()
+        self.assertEqual(employee.user, self.worker)
+        call.refresh_from_db()
+        self.assertEqual(call.employee_profile, employee)
+        self.assertEqual(call.employee, self.worker)
+
+    def test_service2_auto_link_requires_employee_side_uniqueness(self):
+        self.worker.first_name = "Иван"
+        self.worker.last_name = "Иванов"
+        self.worker.save(update_fields=["first_name", "last_name"])
+        first = Employee.objects.create(
+            organization=self.organization,
+            display_name="Иванов Иван Петрович",
+            first_name="Иван",
+            last_name="Иванов",
+            middle_name="Петрович",
+            is_active=True,
+        )
+        second = Employee.objects.create(
+            organization=self.organization,
+            display_name="Иванов Иван Сергеевич",
+            first_name="Иван",
+            last_name="Иванов",
+            middle_name="Сергеевич",
+            is_active=True,
+        )
+
+        self.assertFalse(auto_link_service2_user(first, actor=self.owner))
+        self.assertFalse(auto_link_service2_user(second, actor=self.owner))
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertIsNone(first.user)
+        self.assertIsNone(second.user)
+
+    def test_service2_auto_link_skips_a_unique_constraint_race(self):
+        self.worker.first_name = "Дарья"
+        self.worker.last_name = "Крафт"
+        self.worker.save(update_fields=["first_name", "last_name"])
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Крафт Дарья Валерьевна",
+            first_name="Дарья",
+            last_name="Крафт",
+            middle_name="Валерьевна",
+            is_active=True,
+        )
+
+        with patch.object(
+            Employee,
+            "save",
+            side_effect=IntegrityError("unique_employee_user_per_org"),
+        ):
+            linked = auto_link_service2_user(employee, actor=self.owner)
+
+        self.assertFalse(linked)
+        employee.refresh_from_db()
+        self.assertIsNone(employee.user)
+
+    def test_onec_employee_sync_uses_stable_ids_and_source_activity(self):
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Крафт Дарья Валерьевна",
+            is_active=True,
+        )
+        config = ODataConfig(
+            base_url="https://example.test/odata/standard.odata/",
+            username="user",
+            password="pass",
+            organization_guids=("11111111-1111-1111-1111-111111111111",),
+            timeout_seconds=5,
+            max_pages=10,
+            max_rows=100,
+        )
+        legacy_identity = EmployeeOneCIdentity.objects.create(
+            organization=self.organization,
+            raw_name="Сотрудник только из старого импорта",
+            normalized_name="сотрудник только из старого импорта",
+            source_identity_key="legacy-unseen-employee",
+            status=EmployeeOneCIdentity.STATUS_NOT_FOUND,
+            source_active=True,
+        )
+        rows = [
+            {
+                "Ref_Key": "22222222-2222-2222-2222-222222222222",
+                "Code": "000000017",
+                "Description": "Крафт Дарья Валерьевна",
+                "DeletionMark": False,
+                "ВАрхиве": False,
+                "Недействителен": False,
+                "ГоловнаяОрганизация_Key": "11111111-1111-1111-1111-111111111111",
+            },
+            {
+                "Ref_Key": "33333333-3333-3333-3333-333333333333",
+                "Code": "000000099",
+                "Description": "Старый Сотрудник",
+                "DeletionMark": False,
+                "ВАрхиве": False,
+                "Недействителен": True,
+                "ГоловнаяОрганизация_Key": "11111111-1111-1111-1111-111111111111",
+            },
+        ]
+
+        with patch(
+            "pool_service.services.employee_identity_sync.is_odata_target_organization",
+            return_value=True,
+        ), patch(
+            "pool_service.services.employee_identity_sync.config_from_settings",
+            return_value=config,
+        ), patch(
+            "pool_service.services.employee_identity_sync.read_odata_pages",
+            return_value=iter([(rows, 1)]),
+        ):
+            result = sync_onec_employee_identities(
+                self.organization,
+                actor=self.owner,
+            )
+
+        self.assertEqual(result["synced"], 2)
+        self.assertEqual(result["active"], 1)
+        self.assertEqual(result["inactive"], 1)
+        active_identity = EmployeeOneCIdentity.objects.get(
+            onec_employee_id="22222222-2222-2222-2222-222222222222"
+        )
+        self.assertEqual(active_identity.employee, employee)
+        self.assertTrue(active_identity.source_active)
+        self.assertEqual(active_identity.personnel_number, "000000017")
+        inactive_identity = EmployeeOneCIdentity.objects.get(
+            onec_employee_id="33333333-3333-3333-3333-333333333333"
+        )
+        self.assertFalse(inactive_identity.source_active)
+        self.assertIsNotNone(inactive_identity.last_seen_at)
+        legacy_identity.refresh_from_db()
+        self.assertFalse(legacy_identity.source_active)
+        self.assertIsNone(legacy_identity.last_seen_at)
+
+    def test_reused_inactive_extension_requires_manual_remapping(self):
+        old_employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Старый Сотрудник",
+            is_active=True,
+            user=self.worker,
+        )
+        Employee.objects.create(
+            organization=self.organization,
+            display_name="Новый Сотрудник",
+            is_active=True,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="reused-ext",
+        )
+        channel = CommunicationChannel.objects.create(
+            organization=self.organization,
+            kind=CommunicationChannel.KIND_MEGAFON,
+            name="МегаФон reused",
+        )
+        provider = ChannelConnection.objects.create(
+            channel=channel,
+            name="МегаФон reused",
+            external_id="reused-ext",
+            settings={
+                "megafon_api_base_url": "https://aqualine22.megapbx.ru/crmapi/v1",
+                "megafon_api_key_encrypted": encrypt_secret("secret"),
+            },
+        )
+        identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=old_employee,
+            raw_name="Старый Сотрудник",
+            normalized_name="старый сотрудник",
+            extension="880",
+            is_active=False,
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+            confirmed_by=self.owner,
+            confirmed_at=timezone.now(),
+        )
+        old_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="old-holder-call",
+            employee=self.worker,
+            employee_profile=old_employee,
+            provider_extension="880",
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now() - timedelta(days=30),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        new_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="new-holder-call",
+            provider_extension="880",
+            phone_number="+79001112234",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+
+        with patch(
+            "pool_service.services.employee_identity_sync._read_megafon_accounts",
+            return_value=(provider, [{"name": "Новый Сотрудник", "ext": "880"}]),
+        ):
+            result = sync_megafon_employee_identities(telephony, actor=self.owner)
+
+        identity.refresh_from_db()
+        self.assertEqual(identity.employee, old_employee)
+        self.assertTrue(identity.requires_manual_confirmation)
+        self.assertIsNotNone(identity.reassignment_detected_at)
+        self.assertEqual(
+            identity.status,
+            TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+        )
+        self.assertEqual(result["auto_matched"], 0)
+        self.assertEqual(result["needs_mapping"], 1)
+
+        # A later hourly sync must not silently auto-match the new holder.
+        with patch(
+            "pool_service.services.employee_identity_sync._read_megafon_accounts",
+            return_value=(provider, [{"name": "Новый Сотрудник", "ext": "880"}]),
+        ):
+            second_result = sync_megafon_employee_identities(
+                telephony,
+                actor=self.owner,
+            )
+        identity.refresh_from_db()
+        self.assertEqual(identity.employee, old_employee)
+        self.assertTrue(identity.requires_manual_confirmation)
+        self.assertEqual(second_result["auto_matched"], 0)
+        self.assertEqual(second_result["needs_mapping"], 1)
+
+        old_call.refresh_from_db()
+        new_call.refresh_from_db()
+        self.assertEqual(old_call.employee_profile, old_employee)
+        self.assertEqual(old_call.employee, self.worker)
+        self.assertIsNone(new_call.employee_profile)
+        self.assertIsNone(new_call.employee)
+
+    def test_active_extension_name_change_requires_manual_remapping(self):
+        old_employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Старый Владелец",
+            is_active=True,
+            user=self.worker,
+        )
+        Employee.objects.create(
+            organization=self.organization,
+            display_name="Новый Владелец",
+            is_active=True,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="active-reassigned-ext",
+        )
+        channel = CommunicationChannel.objects.create(
+            organization=self.organization,
+            kind=CommunicationChannel.KIND_MEGAFON,
+            name="МегаФон active reassigned",
+        )
+        provider = ChannelConnection.objects.create(
+            channel=channel,
+            name="МегаФон active reassigned",
+            external_id="active-reassigned-ext",
+            settings={
+                "megafon_api_base_url": "https://aqualine22.megapbx.ru/crmapi/v1",
+                "megafon_api_key_encrypted": encrypt_secret("secret"),
+            },
+        )
+        identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=old_employee,
+            raw_name="Старый Владелец",
+            normalized_name="старый владелец",
+            extension="882",
+            is_active=True,
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+
+        with patch(
+            "pool_service.services.employee_identity_sync._read_megafon_accounts",
+            return_value=(provider, [{"name": "Новый Владелец", "ext": "882"}]),
+        ):
+            result = sync_megafon_employee_identities(telephony, actor=self.owner)
+
+        identity.refresh_from_db()
+        self.assertEqual(identity.employee, old_employee)
+        self.assertTrue(identity.requires_manual_confirmation)
+        self.assertIsNotNone(identity.reassignment_detected_at)
+        self.assertEqual(
+            identity.status,
+            TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+        )
+        self.assertEqual(result["auto_matched"], 0)
+        self.assertEqual(result["needs_mapping"], 1)
+
+    def test_accounts_snapshot_preserves_identity_seen_after_snapshot_started(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон snapshot boundary",
+            external_id="snapshot-boundary",
+        )
+        channel = CommunicationChannel.objects.create(
+            organization=self.organization,
+            kind=CommunicationChannel.KIND_MEGAFON,
+            name="МегаФон snapshot boundary",
+        )
+        provider = ChannelConnection.objects.create(
+            channel=channel,
+            name="МегаФон snapshot boundary",
+            external_id="snapshot-boundary",
+            settings={
+                "megafon_api_base_url": "https://aqualine22.megapbx.ru/crmapi/v1",
+                "megafon_api_key_encrypted": encrypt_secret("secret"),
+            },
+        )
+        old_seen_at = timezone.now() - timedelta(days=1)
+        recently_seen = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            raw_name="Поздний webhook",
+            normalized_name="поздний webhook",
+            extension="885",
+            is_active=True,
+            last_seen_at=old_seen_at,
+        )
+        stale = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            raw_name="Старая строка",
+            normalized_name="старая строка",
+            extension="886",
+            is_active=True,
+            last_seen_at=old_seen_at,
+        )
+
+        def accounts_response_after_webhook(_telephony):
+            TelephonyEmployeeIdentity.objects.filter(pk=recently_seen.pk).update(
+                is_active=True,
+                last_seen_at=timezone.now(),
+            )
+            return provider, []
+
+        with patch(
+            "pool_service.services.employee_identity_sync._read_megafon_accounts",
+            side_effect=accounts_response_after_webhook,
+        ):
+            sync_megafon_employee_identities(telephony, actor=self.owner)
+
+        recently_seen.refresh_from_db()
+        stale.refresh_from_db()
+        self.assertTrue(recently_seen.is_active)
+        self.assertFalse(stale.is_active)
+
+    def test_inactive_extension_webhook_waits_for_accounts_revalidation(self):
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Иванов Иван Иванович",
+            is_active=True,
+            user=self.worker,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="reactivated-ext",
+        )
+        channel = CommunicationChannel.objects.create(
+            organization=self.organization,
+            kind=CommunicationChannel.KIND_MEGAFON,
+            name="МегаФон reactivated",
+        )
+        provider = ChannelConnection.objects.create(
+            channel=channel,
+            name="МегаФон reactivated",
+            external_id="reactivated-ext",
+            settings={
+                "megafon_api_base_url": "https://aqualine22.megapbx.ru/crmapi/v1",
+                "megafon_api_key_encrypted": encrypt_secret("secret"),
+            },
+        )
+        identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=employee,
+            raw_name="Иванов Иван Иванович",
+            normalized_name="иванов иван иванович",
+            extension="881",
+            is_active=False,
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="reactivated-call",
+            provider_extension="881",
+            phone_number="+79001112235",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+
+        profile, user = resolve_call_employee(
+            self.organization,
+            telephony,
+            "881",
+            "worker",
+        )
+        self.assertIsNone(profile)
+        self.assertIsNone(user)
+        identity.refresh_from_db()
+        self.assertTrue(identity.is_active)
+        self.assertTrue(identity.requires_manual_confirmation)
+        self.assertEqual(
+            TelephonyEmployeeIdentity.objects.filter(
+                connection=telephony,
+                extension="881",
+            ).count(),
+            1,
+        )
+
+        with patch(
+            "pool_service.services.employee_identity_sync._read_megafon_accounts",
+            return_value=(
+                provider,
+                [{"name": "Иванов Иван Иванович", "ext": "881"}],
+            ),
+        ):
+            result = sync_megafon_employee_identities(telephony, actor=self.owner)
+
+        identity.refresh_from_db()
+        call.refresh_from_db()
+        self.assertFalse(identity.requires_manual_confirmation)
+        self.assertEqual(identity.employee, employee)
+        self.assertEqual(result["auto_matched"], 1)
+        self.assertEqual(call.employee_profile, employee)
+        self.assertEqual(call.employee, self.worker)
+
+        changed_identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=employee,
+            raw_name="Иванов Иван Иванович",
+            normalized_name="иванов иван иванович",
+            extension="884",
+            external_user="old-provider-user",
+            is_active=False,
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+
+        changed_profile, changed_user = resolve_call_employee(
+            self.organization,
+            telephony,
+            "884",
+            "new-provider-user",
+        )
+        self.assertIsNone(changed_profile)
+        self.assertIsNone(changed_user)
+        changed_identity.refresh_from_db()
+        self.assertTrue(changed_identity.requires_manual_confirmation)
+        self.assertEqual(
+            changed_identity.status,
+            TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+        )
+
+        with patch(
+            "pool_service.services.employee_identity_sync._read_megafon_accounts",
+            return_value=(
+                provider,
+                [{"name": "Иванов Иван Иванович", "ext": "884"}],
+            ),
+        ):
+            changed_result = sync_megafon_employee_identities(
+                telephony,
+                actor=self.owner,
+            )
+
+        changed_identity.refresh_from_db()
+        self.assertTrue(changed_identity.requires_manual_confirmation)
+        self.assertEqual(
+            changed_identity.status,
+            TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+        )
+        self.assertEqual(changed_identity.external_user, "new-provider-user")
+        self.assertEqual(changed_result["auto_matched"], 0)
+        self.assertEqual(changed_result["needs_mapping"], 1)
+
+    def test_full_employee_sync_isolates_unconfigured_telephony_lines(self):
+        configured = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="Настроенная линия",
+            external_id="configured-line",
+        )
+        broken = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="Старая линия без ключа",
+            external_id="broken-line",
+        )
+
+        def fake_megafon_sync(telephony, actor=None):
+            if telephony.pk == broken.pk:
+                raise EmployeeIdentitySyncError("Ключ АТС не настроен.")
+            return {
+                "synced": 3,
+                "auto_matched": 2,
+                "needs_mapping": 1,
+                "synced_at": timezone.now(),
+            }
+
+        with patch(
+            "pool_service.services.employee_identity_sync.sync_onec_employee_identities",
+            return_value={
+                "synced": 5,
+                "active": 4,
+                "inactive": 1,
+                "auto_linked_users": 0,
+                "synced_at": timezone.now(),
+            },
+        ), patch(
+            "pool_service.services.employee_identity_sync.sync_megafon_employee_identities",
+            side_effect=fake_megafon_sync,
+        ):
+            result = sync_all_employee_identities(
+                self.organization,
+                actor=self.owner,
+            )
+
+        by_id = {
+            item["connection_id"]: item for item in result["telephony"]
+        }
+        self.assertEqual(by_id[configured.pk]["synced"], 3)
+        self.assertEqual(by_id[configured.pk]["error"], "")
+        self.assertEqual(by_id[broken.pk]["synced"], 0)
+        self.assertIn("Ключ АТС", by_id[broken.pk]["error"])
+
+    def test_employee_identity_command_fails_after_reporting_line_errors(self):
+        result = {
+            "onec": {"synced": 3},
+            "telephony": [
+                {
+                    "name": "Недоступная линия",
+                    "synced": 0,
+                    "needs_mapping": 0,
+                    "error": "МегаФон не ответил",
+                }
+            ],
+        }
+        output = io.StringIO()
+        errors = io.StringIO()
+
+        with override_settings(
+            ONEC_ODATA_TARGET_ORGANIZATION_ID=str(self.organization.pk)
+        ), patch(
+            "pool_service.management.commands.sync_employee_identities.sync_all_employee_identities",
+            return_value=result,
+        ):
+            with self.assertRaises(CommandError):
+                call_command(
+                    "sync_employee_identities",
+                    stdout=output,
+                    stderr=errors,
+                )
+
+        self.assertIn("MegaFon_errors=1", output.getvalue())
+        self.assertIn("Недоступная линия", errors.getvalue())
+
+    def test_full_employee_sync_continues_megafon_after_onec_failure(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="Линия после сбоя 1С",
+            external_id="line-after-onec-failure",
+        )
+        with patch(
+            "pool_service.services.employee_identity_sync.sync_onec_employee_identities",
+            side_effect=EmployeeIdentitySyncError("1С временно недоступна"),
+        ), patch(
+            "pool_service.services.employee_identity_sync.sync_megafon_employee_identities",
+            return_value={
+                "synced": 2,
+                "auto_matched": 1,
+                "needs_mapping": 1,
+                "synced_at": timezone.now(),
+            },
+        ) as megafon_sync:
+            result = sync_all_employee_identities(
+                self.organization,
+                actor=self.owner,
+            )
+
+        megafon_sync.assert_called_once_with(telephony, actor=self.owner)
+        self.assertEqual(result["onec"]["synced"], 0)
+        self.assertIn("1С временно недоступна", result["onec"]["error"])
+        self.assertEqual(result["telephony"][0]["synced"], 2)
+
+    def test_employee_identity_command_reports_onec_error_after_other_sources(self):
+        result = {
+            "onec": {"synced": 0, "error": "1С временно недоступна"},
+            "telephony": [
+                {
+                    "name": "Рабочая линия",
+                    "synced": 2,
+                    "needs_mapping": 0,
+                    "error": "",
+                }
+            ],
+        }
+        output = io.StringIO()
+        errors = io.StringIO()
+
+        with override_settings(
+            ONEC_ODATA_TARGET_ORGANIZATION_ID=str(self.organization.pk)
+        ), patch(
+            "pool_service.management.commands.sync_employee_identities.sync_all_employee_identities",
+            return_value=result,
+        ):
+            with self.assertRaises(CommandError):
+                call_command(
+                    "sync_employee_identities",
+                    stdout=output,
+                    stderr=errors,
+                )
+
+        self.assertIn("1C_errors=1", output.getvalue())
+        self.assertIn("MegaFon=2", output.getvalue())
+        self.assertIn("1С временно недоступна", errors.getvalue())
+
+    def test_manual_megafon_sync_isolates_failed_lines(self):
+        configured = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="Рабочая линия",
+            external_id="manual-configured-line",
+        )
+        broken = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="Линия без ключа",
+            external_id="manual-broken-line",
+        )
+        self.organization.paid_until = timezone.now() + timedelta(days=30)
+        self.organization.save(update_fields=["paid_until"])
+        self.client.login(username="owner", password="test")
+
+        def fake_sync(telephony, actor=None):
+            if telephony.pk == broken.pk:
+                raise EmployeeIdentitySyncError("Ключ АТС не настроен.")
+            return {
+                "synced": 4,
+                "auto_matched": 3,
+                "needs_mapping": 1,
+                "synced_at": timezone.now(),
+            }
+
+        with patch(
+            "pool_service.finance_views.sync_megafon_employee_identities",
+            side_effect=fake_sync,
+        ) as sync_mock:
+            response = self.client.post(
+                reverse("finance_employee_identity_sync"),
+                {"source": "megafon"},
+                follow=True,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(sync_mock.call_count, 2)
+        self.assertContains(response, "МегаФон: получено 4 сотрудников")
+        self.assertContains(response, "Линия без ключа")
+        self.assertContains(response, "Ключ АТС не настроен")
+
+    def test_onec_employee_sync_rolls_back_when_later_page_fails(self):
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Крафт Дарья Валерьевна",
+            is_active=True,
+        )
+        existing = EmployeeOneCIdentity.objects.create(
+            organization=self.organization,
+            employee=employee,
+            raw_name="Старая запись",
+            normalized_name="старая запись",
+            source_identity_key="atomic-existing",
+            status=EmployeeOneCIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=EmployeeOneCIdentity.MATCH_MANUAL,
+            source_active=True,
+        )
+        config = ODataConfig(
+            base_url="https://example.test/odata/standard.odata/",
+            username="user",
+            password="pass",
+            organization_guids=("11111111-1111-1111-1111-111111111111",),
+            timeout_seconds=5,
+            max_pages=10,
+            max_rows=100,
+        )
+        first_page = [{
+            "Ref_Key": "44444444-4444-4444-4444-444444444444",
+            "Code": "000000018",
+            "Description": "Новая Запись",
+            "DeletionMark": False,
+            "ВАрхиве": False,
+            "Недействителен": False,
+            "ГоловнаяОрганизация_Key": "11111111-1111-1111-1111-111111111111",
+        }]
+
+        def broken_pages(*_args, **_kwargs):
+            yield first_page, 1
+            raise ODataPreviewError("late page failure")
+
+        with patch(
+            "pool_service.services.employee_identity_sync.is_odata_target_organization",
+            return_value=True,
+        ), patch(
+            "pool_service.services.employee_identity_sync.config_from_settings",
+            return_value=config,
+        ), patch(
+            "pool_service.services.employee_identity_sync.read_odata_pages",
+            side_effect=broken_pages,
+        ):
+            with self.assertRaises(EmployeeIdentitySyncError):
+                sync_onec_employee_identities(self.organization, actor=self.owner)
+
+        self.assertFalse(
+            EmployeeOneCIdentity.objects.filter(
+                onec_employee_id="44444444-4444-4444-4444-444444444444"
+            ).exists()
+        )
+        existing.refresh_from_db()
+        self.assertTrue(existing.source_active)
+
+    def test_onec_employee_sync_rejects_malformed_deletion_flags(self):
+        existing = EmployeeOneCIdentity.objects.create(
+            organization=self.organization,
+            raw_name="Существующий сотрудник",
+            normalized_name="существующий сотрудник",
+            source_identity_key="malformed-deletion-existing",
+            status=EmployeeOneCIdentity.STATUS_NOT_FOUND,
+            source_active=True,
+        )
+        config = ODataConfig(
+            base_url="https://example.test/odata/standard.odata/",
+            username="user",
+            password="pass",
+            organization_guids=("11111111-1111-1111-1111-111111111111",),
+            timeout_seconds=5,
+            max_pages=10,
+            max_rows=100,
+        )
+        base_row = {
+            "Ref_Key": "55555555-5555-5555-5555-555555555555",
+            "Code": "000000019",
+            "Description": "Некорректная Запись",
+            "ВАрхиве": False,
+            "Недействителен": False,
+            "ГоловнаяОрганизация_Key": "11111111-1111-1111-1111-111111111111",
+        }
+
+        for deletion_mark in (None, "False"):
+            row = dict(base_row)
+            if deletion_mark is not None:
+                row["DeletionMark"] = deletion_mark
+            with self.subTest(deletion_mark=deletion_mark), patch(
+                "pool_service.services.employee_identity_sync.is_odata_target_organization",
+                return_value=True,
+            ), patch(
+                "pool_service.services.employee_identity_sync.config_from_settings",
+                return_value=config,
+            ), patch(
+                "pool_service.services.employee_identity_sync.read_odata_pages",
+                return_value=iter([([row], 1)]),
+            ):
+                with self.assertRaises(EmployeeIdentitySyncError):
+                    sync_onec_employee_identities(
+                        self.organization,
+                        actor=self.owner,
+                    )
+
+            existing.refresh_from_db()
+            self.assertTrue(existing.source_active)
+            self.assertFalse(
+                EmployeeOneCIdentity.objects.filter(
+                    onec_employee_id="55555555-5555-5555-5555-555555555555"
+                ).exists()
+            )
+
+    def test_onec_employee_sync_rejects_out_of_scope_organization(self):
+        existing = EmployeeOneCIdentity.objects.create(
+            organization=self.organization,
+            raw_name="Существующий сотрудник",
+            normalized_name="существующий сотрудник",
+            source_identity_key="foreign-organization-existing",
+            status=EmployeeOneCIdentity.STATUS_NOT_FOUND,
+            source_active=True,
+        )
+        config = ODataConfig(
+            base_url="https://example.test/odata/standard.odata/",
+            username="user",
+            password="pass",
+            organization_guids=("11111111-1111-1111-1111-111111111111",),
+            timeout_seconds=5,
+            max_pages=10,
+            max_rows=100,
+        )
+        row = {
+            "Ref_Key": "66666666-6666-6666-6666-666666666666",
+            "Code": "000000020",
+            "Description": "Чужая Организация",
+            "DeletionMark": False,
+            "ВАрхиве": False,
+            "Недействителен": False,
+            "ГоловнаяОрганизация_Key": "22222222-2222-2222-2222-222222222222",
+        }
+
+        with patch(
+            "pool_service.services.employee_identity_sync.is_odata_target_organization",
+            return_value=True,
+        ), patch(
+            "pool_service.services.employee_identity_sync.config_from_settings",
+            return_value=config,
+        ), patch(
+            "pool_service.services.employee_identity_sync.read_odata_pages",
+            return_value=iter([([row], 1)]),
+        ):
+            with self.assertRaises(EmployeeIdentitySyncError):
+                sync_onec_employee_identities(
+                    self.organization,
+                    actor=self.owner,
+                )
+
+        existing.refresh_from_db()
+        self.assertTrue(existing.source_active)
+        self.assertFalse(
+            EmployeeOneCIdentity.objects.filter(
+                onec_employee_id="66666666-6666-6666-6666-666666666666"
+            ).exists()
+        )
+
+    def test_onec_employee_sync_enforces_configured_row_limit(self):
+        existing = EmployeeOneCIdentity.objects.create(
+            organization=self.organization,
+            raw_name="Существующий сотрудник",
+            normalized_name="существующий сотрудник",
+            source_identity_key="row-limit-existing",
+            status=EmployeeOneCIdentity.STATUS_NOT_FOUND,
+            source_active=True,
+        )
+        config = ODataConfig(
+            base_url="https://example.test/odata/standard.odata/",
+            username="user",
+            password="pass",
+            organization_guids=("11111111-1111-1111-1111-111111111111",),
+            timeout_seconds=5,
+            max_pages=10,
+            max_rows=1,
+        )
+        rows = [
+            {
+                "Ref_Key": employee_guid,
+                "Code": code,
+                "Description": name,
+                "DeletionMark": False,
+                "ВАрхиве": False,
+                "Недействителен": False,
+                "ГоловнаяОрганизация_Key": "11111111-1111-1111-1111-111111111111",
+            }
+            for employee_guid, code, name in (
+                (
+                    "77777777-7777-7777-7777-777777777777",
+                    "000000021",
+                    "Первая Запись",
+                ),
+                (
+                    "88888888-8888-8888-8888-888888888888",
+                    "000000022",
+                    "Вторая Запись",
+                ),
+            )
+        ]
+
+        with patch(
+            "pool_service.services.employee_identity_sync.is_odata_target_organization",
+            return_value=True,
+        ), patch(
+            "pool_service.services.employee_identity_sync.config_from_settings",
+            return_value=config,
+        ), patch(
+            "pool_service.services.employee_identity_sync.read_odata_pages",
+            return_value=iter([(rows, 1)]),
+        ):
+            with self.assertRaises(EmployeeIdentitySyncError):
+                sync_onec_employee_identities(
+                    self.organization,
+                    actor=self.owner,
+                )
+
+        existing.refresh_from_db()
+        self.assertTrue(existing.source_active)
+        self.assertFalse(
+            EmployeeOneCIdentity.objects.filter(
+                onec_employee_id__in={
+                    "77777777-7777-7777-7777-777777777777",
+                    "88888888-8888-8888-8888-888888888888",
+                }
+            ).exists()
+        )
+
+    def test_active_extension_provider_user_change_blocks_new_call_assignment(self):
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Иванов Иван Иванович",
+            is_active=True,
+            user=self.worker,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="changed-provider-user",
+        )
+        identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=employee,
+            raw_name="Иванов Иван Иванович",
+            normalized_name="иванов иван иванович",
+            extension="883",
+            external_user="old-user",
+            is_active=True,
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+
+        profile, user = resolve_call_employee(
+            self.organization,
+            telephony,
+            "883",
+            "new-user",
+        )
+
+        self.assertIsNone(profile)
+        self.assertIsNone(user)
+        identity.refresh_from_db()
+        self.assertEqual(identity.employee, employee)
+        self.assertEqual(identity.external_user, "new-user")
+        self.assertTrue(identity.requires_manual_confirmation)
+        self.assertEqual(
+            identity.status,
+            TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+        )
+
+    def test_active_extension_accepts_initial_provider_user(self):
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Иванов Иван Иванович",
+            is_active=True,
+            user=self.worker,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="initial-provider-user",
+        )
+        identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=employee,
+            raw_name="Иванов Иван Иванович",
+            normalized_name="иванов иван иванович",
+            extension="889",
+            external_user="",
+            is_active=True,
+            status=TelephonyEmployeeIdentity.STATUS_AUTO_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_EXACT_NAME,
+        )
+
+        with transaction.atomic():
+            profile, user = resolve_call_employee(
+                self.organization,
+                telephony,
+                "889",
+                "initial-user",
+                lock_identity=True,
+            )
+
+        self.assertEqual(profile, employee)
+        self.assertEqual(user, self.worker)
+        identity.refresh_from_db()
+        self.assertEqual(identity.external_user, "initial-user")
+        self.assertFalse(identity.requires_manual_confirmation)
+        self.assertEqual(
+            identity.status,
+            TelephonyEmployeeIdentity.STATUS_AUTO_MATCHED,
+        )
+
+    def test_inactive_employee_blocks_live_call_resolution(self):
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Бывший сотрудник",
+            is_active=False,
+            user=self.worker,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон inactive employee",
+            external_id="inactive-employee",
+        )
+        identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=employee,
+            raw_name="Бывший сотрудник",
+            normalized_name="бывший сотрудник",
+            extension="887",
+            external_user="former-user",
+            is_active=True,
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+
+        with transaction.atomic():
+            profile, user = resolve_call_employee(
+                self.organization,
+                telephony,
+                "887",
+                "former-user",
+                lock_identity=True,
+            )
+
+        self.assertIsNone(profile)
+        self.assertIsNone(user)
+        identity.refresh_from_db()
+        self.assertTrue(identity.requires_manual_confirmation)
+        self.assertEqual(
+            identity.status,
+            TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+        )
+        self.assertEqual(identity.match_method, TelephonyEmployeeIdentity.MATCH_NONE)
+        self.assertIsNotNone(identity.reassignment_detected_at)
+
+    def test_auto_linked_service2_user_backfills_existing_profile_calls(self):
+        self.worker.first_name = "Дарья"
+        self.worker.last_name = "Крафт"
+        self.worker.save(update_fields=["first_name", "last_name"])
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Крафт Дарья Валерьевна",
+            first_name="Дарья",
+            last_name="Крафт",
+            middle_name="Валерьевна",
+            is_active=True,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="late-service2-link",
+        )
+        identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=employee,
+            raw_name="Крафт Дарья Валерьевна",
+            normalized_name="крафт дарья валерьевна",
+            extension="884",
+            is_active=True,
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="late-link-call",
+            employee_profile=employee,
+            provider_extension="884",
+            phone_number="+79001112236",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+
+        self.assertTrue(auto_link_service2_user(employee, actor=self.owner))
+
+        employee.refresh_from_db()
+        call.refresh_from_db()
+        identity.refresh_from_db()
+        self.assertEqual(employee.user, self.worker)
+        self.assertEqual(identity.employee, employee)
+        self.assertEqual(call.employee_profile, employee)
+        self.assertEqual(call.employee, self.worker)
+
+    def test_manual_telephony_mapping_updates_existing_calls(self):
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Иванов Иван Иванович",
+            is_active=True,
+            user=self.worker,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="manual-map",
+        )
+        identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            raw_name="Иван",
+            normalized_name="иван",
+            extension="777",
+            status=TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+            match_method=TelephonyEmployeeIdentity.MATCH_NONE,
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="manual-call",
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_OUT,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+            provider_extension="777",
+        )
+
+        mapped = map_telephony_identity(identity, employee, self.owner)
+
+        self.assertEqual(mapped.employee, employee)
+        self.assertEqual(
+            mapped.status,
+            TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+        )
+        call.refresh_from_db()
+        self.assertEqual(call.employee_profile, employee)
+        self.assertEqual(call.employee, self.worker)
+
+    def test_manual_mapping_correction_repairs_calls_from_previous_wrong_employee(self):
+        old_employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Ошибочно назначенный",
+            is_active=True,
+            user=self.worker,
+        )
+        new_employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Правильный сотрудник",
+            is_active=True,
+            user=self.other,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="manual-correction",
+        )
+        identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=old_employee,
+            raw_name="Правильный сотрудник",
+            normalized_name="правильный сотрудник",
+            extension="885",
+            is_active=True,
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="wrong-owner-call",
+            employee=self.worker,
+            employee_profile=old_employee,
+            provider_extension="885",
+            phone_number="+79001112237",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+
+        map_telephony_identity(identity, new_employee, self.owner)
+
+        call.refresh_from_db()
+        self.assertEqual(call.employee_profile, new_employee)
+        self.assertEqual(call.employee, self.other)
+
+    def test_shared_provider_user_does_not_cross_assign_extensions(self):
+        first_employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Первый сотрудник",
+            is_active=True,
+            user=self.worker,
+        )
+        second_employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Второй сотрудник",
+            is_active=True,
+            user=self.other,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="shared-provider-user",
+        )
+        first_identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            raw_name="Первый сотрудник",
+            normalized_name="первый сотрудник",
+            extension="891",
+            external_user="shared-user",
+            status=TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+            match_method=TelephonyEmployeeIdentity.MATCH_NONE,
+        )
+        second_identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            raw_name="Второй сотрудник",
+            normalized_name="второй сотрудник",
+            extension="892",
+            external_user="shared-user",
+            status=TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+            match_method=TelephonyEmployeeIdentity.MATCH_NONE,
+        )
+        first_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="shared-user-first",
+            provider_extension="891",
+            provider_user="shared-user",
+            phone_number="+79001112240",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        second_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="shared-user-second",
+            provider_extension="892",
+            provider_user="shared-user",
+            phone_number="+79001112241",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        extensionless_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="shared-user-extensionless",
+            provider_user="shared-user",
+            phone_number="+79001112242",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+
+        map_telephony_identity(first_identity, first_employee, self.owner)
+
+        first_call.refresh_from_db()
+        second_call.refresh_from_db()
+        extensionless_call.refresh_from_db()
+        self.assertEqual(first_call.employee_profile, first_employee)
+        self.assertEqual(first_call.employee, self.worker)
+        self.assertIsNone(second_call.employee_profile)
+        self.assertIsNone(second_call.employee)
+        self.assertIsNone(extensionless_call.employee_profile)
+        self.assertIsNone(extensionless_call.employee)
+
+        map_telephony_identity(second_identity, second_employee, self.owner)
+
+        first_call.refresh_from_db()
+        second_call.refresh_from_db()
+        extensionless_call.refresh_from_db()
+        self.assertEqual(first_call.employee_profile, first_employee)
+        self.assertEqual(first_call.employee, self.worker)
+        self.assertEqual(second_call.employee_profile, second_employee)
+        self.assertEqual(second_call.employee, self.other)
+        self.assertIsNone(extensionless_call.employee_profile)
+        self.assertIsNone(extensionless_call.employee)
+
+    def test_reassignment_mapping_preserves_calls_before_detected_boundary(self):
+        self.other.first_name = "Новый"
+        self.other.last_name = "Владелец"
+        self.other.save(update_fields=["first_name", "last_name"])
+        old_employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Старый владелец номера",
+            is_active=True,
+            user=self.worker,
+        )
+        new_employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Новый владелец номера",
+            first_name="Новый",
+            last_name="Владелец",
+            is_active=True,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="reassignment-boundary",
+        )
+        boundary = timezone.now() - timedelta(minutes=5)
+        identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=old_employee,
+            raw_name="Новый владелец номера",
+            normalized_name="новый владелец номера",
+            extension="886",
+            external_user="new-provider-user",
+            is_active=True,
+            requires_manual_confirmation=True,
+            reassignment_detected_at=boundary,
+            status=TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+            match_method=TelephonyEmployeeIdentity.MATCH_NONE,
+        )
+        old_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="before-reassignment",
+            employee=self.worker,
+            employee_profile=old_employee,
+            provider_extension="886",
+            phone_number="+79001112238",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=boundary - timedelta(days=1),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        recent_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="after-reassignment",
+            employee=self.worker,
+            employee_profile=old_employee,
+            provider_extension="886",
+            phone_number="+79001112239",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=boundary + timedelta(minutes=1),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        late_received_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="late-received-reassignment",
+            employee=self.worker,
+            employee_profile=old_employee,
+            provider_extension="886",
+            phone_number="+79001112240",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=boundary - timedelta(hours=1),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        known_new_holder_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="known-new-holder-before-detection",
+            employee=self.worker,
+            employee_profile=old_employee,
+            provider_extension="886",
+            provider_user="new-provider-user",
+            phone_number="+79001112241",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=boundary - timedelta(hours=2),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        PhoneCall.objects.filter(pk=old_call.pk).update(
+            created_at=boundary - timedelta(days=1)
+        )
+        PhoneCall.objects.filter(pk=known_new_holder_call.pk).update(
+            created_at=boundary - timedelta(hours=2)
+        )
+
+        mapped = map_telephony_identity(identity, new_employee, self.owner)
+
+        mapped.refresh_from_db()
+        new_employee.refresh_from_db()
+        old_call.refresh_from_db()
+        recent_call.refresh_from_db()
+        late_received_call.refresh_from_db()
+        known_new_holder_call.refresh_from_db()
+        self.assertFalse(mapped.requires_manual_confirmation)
+        self.assertIsNone(mapped.reassignment_detected_at)
+        self.assertEqual(new_employee.user, self.other)
+        self.assertEqual(old_call.employee_profile, old_employee)
+        self.assertEqual(old_call.employee, self.worker)
+        self.assertEqual(recent_call.employee_profile, new_employee)
+        self.assertEqual(recent_call.employee, self.other)
+        self.assertEqual(late_received_call.employee_profile, new_employee)
+        self.assertEqual(late_received_call.employee, self.other)
+        self.assertEqual(known_new_holder_call.employee_profile, new_employee)
+        self.assertEqual(known_new_holder_call.employee, self.other)
+
+    def test_service2_account_mapping_is_unique_and_backfills_calls(self):
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Петров Петр Петрович",
+            is_active=True,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            external_id="service-user-map",
+        )
+        identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=employee,
+            raw_name="Петров Петр Петрович",
+            normalized_name="петров петр петрович",
+            extension="778",
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="service-user-call",
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+            provider_extension="778",
+            employee_profile=employee,
+        )
+
+        map_employee_service2_user(employee, self.worker, self.owner)
+
+        employee.refresh_from_db()
+        self.assertEqual(employee.user, self.worker)
+        call.refresh_from_db()
+        self.assertEqual(call.employee, self.worker)
+        self.assertEqual(identity.employee, employee)
+
+    def test_service2_account_change_claims_legacy_calls(self):
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Петров Петр Петрович",
+            is_active=True,
+            user=self.worker,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            external_id="legacy-service-user-map",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="legacy-service-user-call",
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+            employee=self.worker,
+        )
+
+        map_employee_service2_user(employee, self.other, self.owner)
+
+        employee.refresh_from_db()
+        call.refresh_from_db()
+        self.assertEqual(employee.user, self.other)
+        self.assertEqual(call.employee_profile, employee)
+        self.assertEqual(call.employee, self.other)
+
+    def test_unified_employee_mapping_page_lists_1c_and_telephony_sources(self):
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Сидоров Сидор Сидорович",
+            is_active=True,
+            user=self.worker,
+        )
+        EmployeeOneCIdentity.objects.create(
+            organization=self.organization,
+            employee=employee,
+            raw_name="Сидоров Сидор Сидорович",
+            normalized_name="сидоров сидор сидорович",
+            onec_employee_id="11111111-1111-1111-1111-111111111111",
+            personnel_number="0001",
+            status=EmployeeOneCIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=EmployeeOneCIdentity.MATCH_MANUAL,
+            source_active=True,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="mapping-page",
+        )
+        TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=employee,
+            raw_name="Сидоров Сидор Сидорович",
+            normalized_name="сидоров сидор сидорович",
+            extension="779",
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+
+        self.organization.paid_until = timezone.now() + timedelta(days=30)
+        self.organization.save(update_fields=["paid_until"])
+        self.client.login(username="owner", password="test")
+        page = self.client.get(reverse("finance_payroll_employee_mapping"))
+
+        self.assertEqual(page.status_code, 200)
+        self.assertContains(page, "Сопоставление сотрудников")
+        self.assertContains(page, "Синхронизировать всё")
+        self.assertContains(page, "Сидоров Сидор Сидорович")
+        self.assertContains(page, "ext 779")
+        self.assertContains(page, "0001")
+        self.assertContains(page, 'id="identity-live-search"')
+        self.assertContains(page, "data-identity-search-row")
+        self.assertContains(page, 'url.searchParams.set("q", input.value.trim())')
+        self.assertContains(page, "}, 300);")
 
     def test_channel_settings_are_organization_scoped(self):
         foreign_organization = Organization.objects.create(name="Foreign setup org")

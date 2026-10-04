@@ -237,7 +237,10 @@ def calls(request):
         raise PermissionDenied
     organization = access.organization
     can_view_all = conversation_capability(request.user, "can_view_all_calls", organization)
-    queryset = PhoneCall.objects.filter(organization=organization).select_related("employee")
+    queryset = PhoneCall.objects.filter(organization=organization).select_related(
+        "employee",
+        "employee_profile",
+    )
     if not can_view_all:
         queryset = queryset.filter(employee=request.user)
     try:

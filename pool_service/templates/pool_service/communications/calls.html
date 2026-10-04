@@ -110,7 +110,12 @@
         <tr>
           <td>{{ call.started_at|date:"d.m.Y H:i" }}</td>
           <td>
-            {% if call.employee %}
+            {% if call.employee_profile %}
+              {{ call.employee_profile.display_name }}
+              {% if not call.employee_profile.user_id %}
+                <br><small class="text-muted">без аккаунта Service2</small>
+              {% endif %}
+            {% elif call.employee %}
               {{ call.employee.get_full_name|default:call.employee.username }}
             {% else %}
               <span class="text-muted">Не сопоставлен</span>

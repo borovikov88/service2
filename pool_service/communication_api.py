@@ -22,10 +22,12 @@ from pool_service.communication_models import (
     MessageAttachment,
     PhoneCall,
     TelephonyConnection,
+    TelephonyEmployeeIdentity,
     WebsiteRequest,
 )
 from pool_service.communication_recordings import download_call_recording
 from pool_service.communication_services import receive_message
+from pool_service.services.employee_identity_sync import resolve_call_employee
 from pool_service.models import Client, OrganizationAccess
 from pool_service.communication_avito import AvitoError, ingest_webhook
 
@@ -395,6 +397,65 @@ def _megafon_employee(organization, provider_user, extension=""):
     return None
 
 
+def _megafon_identity_employee_for_replay(
+    organization,
+    telephony,
+    extension="",
+    provider_user="",
+):
+    identity = None
+    if extension:
+        identity = (
+            TelephonyEmployeeIdentity.objects.filter(
+                organization=organization,
+                connection=telephony,
+                extension=extension,
+            )
+            .select_related("employee__user")
+            .first()
+        )
+        if (
+            identity
+            and identity.external_user
+            and provider_user
+            and identity.external_user != provider_user
+        ):
+            return None, None
+        if (
+            identity
+            and not identity.is_active
+            and (
+                not provider_user
+                or not identity.external_user
+                or identity.external_user != provider_user
+            )
+        ):
+            # Inactive identities are historical evidence only. Require the
+            # replay to carry the same provider user before repairing a legacy
+            # call; new calls never use this read-only helper.
+            return None, None
+    elif provider_user:
+        candidates = list(
+            TelephonyEmployeeIdentity.objects.filter(
+                organization=organization,
+                connection=telephony,
+                external_user=provider_user,
+            )
+            .select_related("employee__user")
+            .order_by("pk")[:2]
+        )
+        if len(candidates) == 1:
+            identity = candidates[0]
+
+    if (
+        identity
+        and identity.employee_id
+        and not identity.requires_manual_confirmation
+    ):
+        return identity.employee, identity.employee.user
+    return None, None
+
+
 def _megafon_started_at(value):
     raw = str(value or "").strip()
     if not raw:
@@ -485,7 +546,7 @@ def megafon_webhook(request, public_id):
         if direction and direction not in {"in", "out"}:
             return _error("invalid_direction")
         if (
-            len(extension) > 255
+            len(extension) > 64
             or len(provider_user) > 255
             or len(call_id) > 255
         ):
@@ -500,6 +561,17 @@ def megafon_webhook(request, public_id):
         settings_data["megafon_last_event_callid"] = call_id
         connection.settings = settings_data
         connection.save(update_fields=["settings"])
+        historical_retry = bool(call_id) and PhoneCall.objects.filter(
+            connection=telephony,
+            external_id=call_id,
+        ).exists()
+        if not historical_retry:
+            resolve_call_employee(
+                connection.channel.organization,
+                telephony,
+                extension,
+                provider_user,
+            )
         client = _megafon_contact(connection.channel.organization, phone)
         return JsonResponse({
             "accepted": True,
@@ -529,6 +601,10 @@ def megafon_webhook(request, public_id):
         return _error("invalid_phone")
     if direction not in {PhoneCall.DIRECTION_IN, PhoneCall.DIRECTION_OUT}:
         return _error("invalid_type")
+    if len(provider_user) > 255:
+        return _error("invalid_user")
+    if len(extension) > 64:
+        return _error("invalid_ext")
     if len(recording_ref) > 500:
         return _error("invalid_link")
 
@@ -543,11 +619,6 @@ def megafon_webhook(request, public_id):
     except ValueError as exc:
         return _error(str(exc))
 
-    employee = _megafon_employee(
-        connection.channel.organization,
-        provider_user,
-        extension,
-    )
     client = _megafon_contact(connection.channel.organization, phone)
     result = (
         PhoneCall.RESULT_ANSWERED
@@ -556,16 +627,85 @@ def megafon_webhook(request, public_id):
     )
 
     with transaction.atomic():
-        existing_call = PhoneCall.objects.filter(
-            connection=telephony,
-            external_id=call_id,
-        ).first()
+        existing_call = (
+            PhoneCall.objects.select_for_update()
+            .select_related("employee", "employee_profile")
+            .filter(
+                connection=telephony,
+                external_id=call_id,
+            )
+            .first()
+        )
+        has_stored_provider_identity = existing_call and (
+            existing_call.employee_profile_id
+            or existing_call.provider_extension
+            or existing_call.provider_user
+        )
+        if has_stored_provider_identity:
+            employee_profile = existing_call.employee_profile
+            employee = existing_call.employee
+        elif existing_call:
+            employee_profile, employee = _megafon_identity_employee_for_replay(
+                connection.channel.organization,
+                telephony,
+                extension,
+                provider_user,
+            )
+        else:
+            employee_profile, employee = resolve_call_employee(
+                connection.channel.organization,
+                telephony,
+                extension,
+                provider_user,
+                lock_identity=True,
+            )
+            unified_identity_exists = (
+                not extension
+                and bool(provider_user)
+                and TelephonyEmployeeIdentity.objects.filter(
+                    organization=connection.channel.organization,
+                    connection=telephony,
+                    external_user=provider_user,
+                ).exists()
+            )
+            if employee is None and not extension and not unified_identity_exists:
+                employee = _megafon_employee(
+                    connection.channel.organization,
+                    provider_user,
+                    extension,
+                )
+        effective_employee = employee
+        effective_employee_profile = employee_profile
+        preserve_existing_ownership = existing_call and (
+            existing_call.employee_profile_id
+            or (
+                existing_call.employee_id
+                and (
+                    existing_call.provider_extension
+                    or existing_call.provider_user
+                    or employee_profile is None
+                )
+            )
+        )
+        if preserve_existing_ownership:
+            effective_employee = existing_call.employee
+            effective_employee_profile = existing_call.employee_profile
+        effective_provider_user = provider_user or (
+            existing_call.provider_user if existing_call else ""
+        )
+        effective_provider_extension = extension or (
+            existing_call.provider_extension if existing_call else ""
+        )
+
         phone_call, created = PhoneCall.objects.update_or_create(
             connection=telephony,
             external_id=call_id,
             defaults={
                 "organization": connection.channel.organization,
-                "employee": employee,
+                "employee": effective_employee,
+                "employee_profile": effective_employee_profile,
+                "provider_user": effective_provider_user,
+                "provider_extension": effective_provider_extension,
                 "contact_name": client.name if client else "",
                 "phone_number": phone,
                 "direction": direction,
