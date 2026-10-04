@@ -1711,6 +1711,159 @@ class CommunicationsTests(TestCase):
         self.assertContains(response, "Линия без ключа")
         self.assertContains(response, "Ключ АТС не настроен")
 
+    def test_onec_employee_sync_rolls_back_when_later_page_fails(self):
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Крафт Дарья Валерьевна",
+            is_active=True,
+        )
+        existing = EmployeeOneCIdentity.objects.create(
+            organization=self.organization,
+            employee=employee,
+            raw_name="Старая запись",
+            normalized_name="старая запись",
+            source_identity_key="atomic-existing",
+            status=EmployeeOneCIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=EmployeeOneCIdentity.MATCH_MANUAL,
+            source_active=True,
+        )
+        config = ODataConfig(
+            base_url="https://example.test/odata/standard.odata/",
+            username="user",
+            password="pass",
+            organization_guids=("11111111-1111-1111-1111-111111111111",),
+            timeout_seconds=5,
+            max_pages=10,
+            max_rows=100,
+        )
+        first_page = [{
+            "Ref_Key": "44444444-4444-4444-4444-444444444444",
+            "Code": "000000018",
+            "Description": "Новая Запись",
+            "DeletionMark": False,
+            "ВАрхиве": False,
+            "Недействителен": False,
+            "ГоловнаяОрганизация_Key": "11111111-1111-1111-1111-111111111111",
+        }]
+
+        def broken_pages(*_args, **_kwargs):
+            yield first_page, 1
+            raise ODataPreviewError("late page failure")
+
+        with patch(
+            "pool_service.services.employee_identity_sync.is_odata_target_organization",
+            return_value=True,
+        ), patch(
+            "pool_service.services.employee_identity_sync.config_from_settings",
+            return_value=config,
+        ), patch(
+            "pool_service.services.employee_identity_sync.read_odata_pages",
+            side_effect=broken_pages,
+        ):
+            with self.assertRaises(EmployeeIdentitySyncError):
+                sync_onec_employee_identities(self.organization, actor=self.owner)
+
+        self.assertFalse(
+            EmployeeOneCIdentity.objects.filter(
+                onec_employee_id="44444444-4444-4444-4444-444444444444"
+            ).exists()
+        )
+        existing.refresh_from_db()
+        self.assertTrue(existing.source_active)
+
+    def test_active_extension_provider_user_change_blocks_new_call_assignment(self):
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Иванов Иван Иванович",
+            is_active=True,
+            user=self.worker,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="changed-provider-user",
+        )
+        identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=employee,
+            raw_name="Иванов Иван Иванович",
+            normalized_name="иванов иван иванович",
+            extension="883",
+            external_user="old-user",
+            is_active=True,
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+
+        profile, user = resolve_call_employee(
+            self.organization,
+            telephony,
+            "883",
+            "new-user",
+        )
+
+        self.assertIsNone(profile)
+        self.assertIsNone(user)
+        identity.refresh_from_db()
+        self.assertEqual(identity.employee, employee)
+        self.assertEqual(identity.external_user, "new-user")
+        self.assertTrue(identity.requires_manual_confirmation)
+        self.assertEqual(
+            identity.status,
+            TelephonyEmployeeIdentity.STATUS_NEEDS_MAPPING,
+        )
+
+    def test_auto_linked_service2_user_backfills_existing_profile_calls(self):
+        self.worker.first_name = "Дарья"
+        self.worker.last_name = "Крафт"
+        self.worker.save(update_fields=["first_name", "last_name"])
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Крафт Дарья Валерьевна",
+            first_name="Дарья",
+            last_name="Крафт",
+            middle_name="Валерьевна",
+            is_active=True,
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="late-service2-link",
+        )
+        identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=employee,
+            raw_name="Крафт Дарья Валерьевна",
+            normalized_name="крафт дарья валерьевна",
+            extension="884",
+            is_active=True,
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="late-link-call",
+            employee_profile=employee,
+            provider_extension="884",
+            phone_number="+79001112236",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+
+        self.assertTrue(auto_link_service2_user(employee, actor=self.owner))
+
+        employee.refresh_from_db()
+        call.refresh_from_db()
+        identity.refresh_from_db()
+        self.assertEqual(employee.user, self.worker)
+        self.assertEqual(identity.employee, employee)
+        self.assertEqual(call.employee_profile, employee)
+        self.assertEqual(call.employee, self.worker)
+
     def test_manual_telephony_mapping_updates_existing_calls(self):
         employee = Employee.objects.create(
             organization=self.organization,
