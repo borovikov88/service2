@@ -43,7 +43,7 @@ def _client():
     return OpenAI(api_key=api_key, timeout=timeout, max_retries=1)
 
 
-def _claim(call_id, *, force=False):
+def _claim(call_id, *, force=False, reset_existing=False):
     now = timezone.now()
     stale_before = now - timedelta(minutes=PROCESSING_STALE_MINUTES)
     max_attempts = int(_setting("OPENAI_CALL_MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS))
@@ -59,16 +59,38 @@ def _claim(call_id, *, force=False):
             return None
 
         analysis, _ = CallAnalysis.objects.select_for_update().get_or_create(call=call)
-        if not force:
+
+        if (
+            analysis.status == CallAnalysis.STATUS_PROCESSING
+            and analysis.processing_started_at
+            and analysis.processing_started_at >= stale_before
+        ):
+            return None
+
+        if reset_existing:
+            analysis.status = CallAnalysis.STATUS_PENDING
+            analysis.error = ""
+            analysis.attempts = 0
+            analysis.processing_started_at = None
+            analysis.processing_token = ""
+            analysis.processed_at = None
+            analysis.confirmed_at = None
+            analysis.save(
+                update_fields=[
+                    "status",
+                    "error",
+                    "attempts",
+                    "processing_started_at",
+                    "processing_token",
+                    "processed_at",
+                    "confirmed_at",
+                    "updated_at",
+                ]
+            )
+        elif not force:
             if analysis.status == CallAnalysis.STATUS_READY:
                 return None
             if analysis.attempts >= max_attempts:
-                return None
-            if (
-                analysis.status == CallAnalysis.STATUS_PROCESSING
-                and analysis.processing_started_at
-                and analysis.processing_started_at >= stale_before
-            ):
                 return None
 
         token = str(uuid4())
@@ -301,9 +323,7 @@ def _analyze_transcript(client, call, transcript):
 
 
 def process_call_analysis(call_id, *, force=False, reset_existing=False):
-    if reset_existing:
-        reset_call_analysis(call_id)
-    claim = _claim(call_id, force=force)
+    claim = _claim(call_id, force=force, reset_existing=reset_existing)
     if not claim:
         return False
     analysis_id, token = claim
