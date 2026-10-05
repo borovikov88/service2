@@ -920,6 +920,16 @@ class CommunicationsTests(TestCase):
             response,
             reverse("communication_call_analysis_retry", args=[call.pk]),
         )
+        status_url = reverse("communication_call_analysis_status", args=[call.pk])
+        self.assertContains(response, status_url)
+        self.assertContains(response, 'data-call-analysis-status="processing"')
+        status_response = self.client.get(status_url)
+        self.assertEqual(status_response.status_code, 200)
+        self.assertEqual(status_response.json()["status"], CallAnalysis.STATUS_PROCESSING)
+
+        self.client.logout()
+        self.client.login(username="other", password="test")
+        self.assertEqual(self.client.get(status_url).status_code, 403)
 
     @override_settings(
         OPENAI_API_KEY="test-key",
