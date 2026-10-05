@@ -5,6 +5,7 @@ import logging
 from unittest.mock import MagicMock, patch
 
 from django.apps import apps
+from django.conf import settings
 from django.contrib.auth.models import Permission, User
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -784,6 +785,8 @@ class CommunicationsTests(TestCase):
         )
         self.assertEqual(forbidden.status_code, 403)
 
+    @patch("pool_service.services.call_ai.os.access", return_value=True)
+    @patch("pool_service.services.call_ai.os.path.isfile", return_value=True)
     @patch("pool_service.services.call_ai.threading.Thread")
     @patch("pool_service.services.call_ai.subprocess.Popen")
     @patch("pool_service.services.call_ai.shutil.which", return_value="/bin/bash")
@@ -792,6 +795,8 @@ class CommunicationsTests(TestCase):
         _which,
         popen,
         thread,
+        _isfile,
+        _access,
     ):
         process = popen.return_value
         self.assertTrue(start_requested_call_analysis_worker())
@@ -802,7 +807,10 @@ class CommunicationsTests(TestCase):
         self.assertTrue(command[1].endswith("scripts/run_call_ai_worker.sh"))
         self.assertTrue(kwargs["start_new_session"])
         self.assertTrue(kwargs["close_fds"])
-        self.assertTrue(kwargs["env"]["SERVICE2_PYTHON"])
+        self.assertEqual(
+            kwargs["env"]["SERVICE2_PYTHON"],
+            str(settings.BASE_DIR.parent / "venv" / "bin" / "python"),
+        )
         thread.assert_called_once_with(
             target=_reap_call_analysis_worker,
             args=(process,),
