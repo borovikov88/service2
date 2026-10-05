@@ -7,6 +7,7 @@ from pool_service.client_crm_import import (
     apply_candidate,
     apply_ready_candidates,
     request_client_import_scan,
+    resolve_import_candidate,
     scan_onec_clients,
 )
 from pool_service.client_crm_models import (
@@ -174,3 +175,97 @@ class ClientCRMImportTests(TestCase):
         self.assertEqual(first.status, ClientImportRun.STATUS_PENDING)
         self.assertEqual(ClientImportRun.objects.count(), 1)
         launcher.assert_called_once_with(first.pk)
+
+
+    def test_manual_resolution_changes_effective_type_and_allows_import(self):
+        user = get_user_model().objects.create_user(username="resolver")
+        candidate = self.candidate(
+            source_ref="44444444-4444-4444-4444-444444444444",
+            source_kind=ClientImportCandidate.KIND_LEGAL,
+            name="Андреев Иван",
+            legal_name="",
+            inn="",
+            status=ClientImportCandidate.STATUS_REVIEW,
+            payload={
+                "fio": "Андреев Иван",
+                "phones": [{"value": "+7 913 237-27-27", "match": "79132372727", "label": "Основной"}],
+                "emails": [],
+            },
+        )
+
+        resolved = resolve_import_candidate(
+            candidate.pk,
+            ClientImportCandidate.RESOLUTION_PRIVATE,
+            user,
+        )
+        self.assertEqual(resolved.status, ClientImportCandidate.STATUS_READY)
+        self.assertEqual(resolved.effective_kind, ClientImportCandidate.KIND_PRIVATE)
+
+        client = apply_candidate(resolved)
+        self.assertEqual(client.client_type, "private")
+        self.assertEqual(client.crm_profile.onec_ref, candidate.source_ref)
+
+    def test_skip_resolution_is_not_mass_imported(self):
+        user = get_user_model().objects.create_user(username="skip-resolver")
+        candidate = self.candidate(
+            source_ref="55555555-5555-5555-5555-555555555555",
+            name="Прочие",
+        )
+        resolve_import_candidate(
+            candidate.pk,
+            ClientImportCandidate.RESOLUTION_SKIP,
+            user,
+        )
+
+        result = apply_ready_candidates(self.organization)
+
+        candidate.refresh_from_db()
+        self.assertEqual(result["imported"], 0)
+        self.assertEqual(candidate.status, ClientImportCandidate.STATUS_SKIPPED)
+        self.assertIsNone(candidate.applied_at)
+
+    @override_settings(ONEC_ODATA_TARGET_ORGANIZATION_ID="")
+    def test_legal_phone_does_not_match_existing_private_client(self):
+        private = Client.objects.create(
+            organization=self.organization,
+            client_type="private",
+            name="Иван Иванов",
+            phone="+7 999 111-22-33",
+        )
+        buyer_rows = [
+            {
+                "Ref_Key": "66666666-6666-6666-6666-666666666666",
+                "Code": "НФ-999999",
+                "Description": "ООО Тест без ИНН",
+                "НаименованиеПолное": "ООО Тест без ИНН",
+                "ЮридическоеФизическоеЛицо": "ЮридическоеЛицо",
+                "ВидКонтрагента": "ЮридическоеЛицо",
+                "ИНН": "",
+                "КПП": "",
+                "ФИО": "",
+                "ДатаРождения": "0001-01-01T00:00:00",
+                "НомерТелефонаДляПоиска": "89991112233",
+                "АдресЭПДляПоиска": "",
+                "Покупатель": True,
+                "Недействителен": False,
+            }
+        ]
+
+        def fake_query(_config, entity_set, **kwargs):
+            if entity_set == "Catalog_Контрагенты":
+                return {"rows": buyer_rows, "complete": True}
+            return {"rows": [], "complete": True}
+
+        with override_settings(ONEC_ODATA_TARGET_ORGANIZATION_ID=str(self.organization.id)), patch(
+            "pool_service.client_crm_import.config_from_settings", return_value=object()
+        ), patch(
+            "pool_service.client_crm_import.fetch_metadata", return_value=b"metadata"
+        ), patch(
+            "pool_service.client_crm_import.query_1c_rows", side_effect=fake_query
+        ):
+            scan_onec_clients()
+
+        candidate = ClientImportCandidate.objects.get(source_ref=buyer_rows[0]["Ref_Key"])
+        self.assertEqual(candidate.status, ClientImportCandidate.STATUS_REVIEW)
+        self.assertIsNone(candidate.matched_client)
+        self.assertTrue(Client.objects.filter(pk=private.pk).exists())
