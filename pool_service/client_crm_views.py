@@ -3,13 +3,19 @@ import logging
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.http import HttpResponseForbidden
-from django.shortcuts import redirect, render
+from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 
-from .client_crm_import import apply_ready_candidates, request_client_import_scan
-from .client_crm_models import ClientImportCandidate, ClientImportRun
-from .models import OrganizationAccess
+from .client_crm_import import (
+    apply_ready_candidates,
+    request_client_import_scan,
+    resolve_import_candidate,
+)
+from .client_crm_models import ClientCRMProfile, ClientImportCandidate, ClientImportRun
+from .client_merge import merge_clients, merge_suggestions
+from .models import Client, OrganizationAccess, Pool
 
 
 IMPORT_ROLES = {"owner", "admin"}
@@ -68,6 +74,31 @@ def client_onec_import(request):
                     run.error or "Не удалось запустить обновление из 1С.",
                 )
             return redirect("client_onec_import")
+        if action == "resolve":
+            try:
+                candidate_id = int(request.POST.get("candidate_id") or 0)
+            except (TypeError, ValueError):
+                return HttpResponseForbidden()
+            resolution = (request.POST.get("resolution") or "").strip()
+            try:
+                candidate = resolve_import_candidate(
+                    candidate_id,
+                    resolution,
+                    request.user,
+                )
+            except (ClientImportCandidate.DoesNotExist, ValueError) as exc:
+                messages.error(request, str(exc) or "Не удалось сохранить решение.")
+            else:
+                messages.success(
+                    request,
+                    f"{candidate.name}: решение сохранено.",
+                )
+            status = (request.POST.get("return_status") or "").strip()
+            url = reverse("client_onec_import")
+            if status in dict(ClientImportCandidate.STATUS_CHOICES):
+                url = f"{url}?status={status}"
+            return redirect(url)
+
         if action == "apply":
             latest_run = (
                 ClientImportRun.objects.filter(organization_id=organization_id)
@@ -147,6 +178,127 @@ def client_onec_import(request):
                 and latest_run.status == ClientImportRun.STATUS_SUCCESS
                 and summary.get(ClientImportCandidate.STATUS_READY, 0)
             ),
+            "show_search": False,
+            "show_add_button": False,
+            "add_url": None,
+        },
+    )
+
+
+
+@login_required
+def client_merge_index(request):
+    try:
+        organization_id = int(
+            getattr(settings, "ONEC_ODATA_TARGET_ORGANIZATION_ID", "") or 0
+        )
+    except (TypeError, ValueError):
+        organization_id = 0
+    if not organization_id or not _can_manage_import(request.user, organization_id):
+        return HttpResponseForbidden()
+
+    if request.method == "POST":
+        try:
+            source_id = int(request.POST.get("source_id") or 0)
+            target_id = int(request.POST.get("target_id") or 0)
+        except (TypeError, ValueError):
+            messages.error(request, "Некорректный выбор клиента.")
+            return redirect("client_merge_index")
+        try:
+            result = merge_clients(source_id, target_id, request.user)
+        except ValueError as exc:
+            messages.error(request, str(exc))
+        else:
+            moved_total = sum(result["moved"].values())
+            messages.success(
+                request,
+                f"Карточки объединены. Перенесено связанных записей: {moved_total}.",
+            )
+        return redirect("client_merge_index")
+
+    legacy_qs = (
+        Client.objects.filter(
+            organization_id=organization_id,
+            pool__isnull=False,
+        )
+        .filter(
+            Q(crm_profile__isnull=True)
+            | Q(
+                crm_profile__onec_ref__isnull=True,
+                crm_profile__merged_into__isnull=True,
+            )
+        )
+        .annotate(pool_count=Count("pool", distinct=True))
+        .distinct()
+        .order_by("name", "id")
+    )
+
+    canonical_qs = (
+        Client.objects.filter(
+            organization_id=organization_id,
+            crm_profile__onec_ref__isnull=False,
+            crm_profile__merged_into__isnull=True,
+        )
+        .select_related("crm_profile")
+        .order_by("name", "id")
+    )
+    canonical = list(canonical_qs)
+
+    selected_source = None
+    source_raw = (request.GET.get("source") or "").strip()
+    if source_raw:
+        try:
+            source_id = int(source_raw)
+        except ValueError:
+            source_id = 0
+        if source_id:
+            selected_source = legacy_qs.filter(pk=source_id).first()
+
+    q = (request.GET.get("q") or "").strip()
+    target_results = []
+    suggestions = []
+    if selected_source:
+        if q:
+            target_results = list(
+                canonical_qs.filter(
+                    Q(name__icontains=q)
+                    | Q(company_name__icontains=q)
+                    | Q(phone__icontains=q)
+                    | Q(inn__icontains=q)
+                )[:50]
+            )
+        else:
+            suggestions = merge_suggestions(selected_source, canonical, limit=5)
+
+    legacy_clients = list(legacy_qs)
+    for client in legacy_clients:
+        client.object_preview = list(
+            Pool.objects.filter(client=client, is_deleted=False)
+            .order_by("address", "id")
+            .values_list("address", flat=True)[:3]
+        )
+
+    selected_pools = []
+    if selected_source:
+        selected_pools = list(
+            Pool.objects.filter(client=selected_source, is_deleted=False)
+            .order_by("address", "id")
+        )
+
+    return render(
+        request,
+        "pool_service/client_merge.html",
+        {
+            "page_title": "Объединение клиентов",
+            "page_subtitle": "Перенос старых карточек Service2 на клиентов из 1С",
+            "active_tab": "clients",
+            "legacy_clients": legacy_clients,
+            "selected_source": selected_source,
+            "selected_pools": selected_pools,
+            "suggestions": suggestions,
+            "target_results": target_results,
+            "q": q,
+            "canonical_count": len(canonical),
             "show_search": False,
             "show_add_button": False,
             "add_url": None,
