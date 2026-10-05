@@ -267,6 +267,34 @@ def _normalize_fact_value(value):
     return text or None
 
 
+def _normalize_commitments(value):
+    if not isinstance(value, list):
+        return []
+    normalized = []
+    allowed_actors = {"employee", "client"}
+    allowed_confidence = {"high", "medium", "low"}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        action = str(item.get("action") or "").strip()
+        actor = str(item.get("actor") or "").strip().lower()
+        confidence = str(item.get("confidence") or "").strip().lower()
+        if not action or actor not in allowed_actors:
+            continue
+        normalized.append(
+            {
+                "actor": actor,
+                "action": action[:500],
+                "kind": str(item.get("kind") or "other").strip()[:80] or "other",
+                "due_date": _normalize_fact_value(item.get("due_date")),
+                "due_time": _normalize_fact_value(item.get("due_time")),
+                "evidence": str(item.get("evidence") or "").strip()[:1000],
+                "confidence": confidence if confidence in allowed_confidence else "low",
+            }
+        )
+    return normalized
+
+
 def _normalize_facts(value):
     facts = value if isinstance(value, dict) else {}
     keys = [
@@ -288,7 +316,9 @@ def _normalize_facts(value):
         "next_contact_at",
         "responsible",
     ]
-    return {key: _normalize_fact_value(facts.get(key)) for key in keys}
+    normalized = {key: _normalize_fact_value(facts.get(key)) for key in keys}
+    normalized["commitments"] = _normalize_commitments(facts.get("commitments"))
+    return normalized
 
 
 def _analyze_transcript(client, call, transcript):
@@ -304,9 +334,15 @@ def _analyze_transcript(client, call, transcript):
         "Верни только один JSON-объект без markdown. Ничего не выдумывай: "
         "если факт не прозвучал, используй null; для множественных фактов можно использовать массив строк. "
         "summary — краткий итог разговора на русском в 2-5 предложениях. "
-        "facts должен содержать ровно ключи: client_name, company, phone, address, object_type, request, "
+        "facts должен содержать ключи: client_name, company, phone, address, object_type, request, "
         "dimensions, technical_details, timeline, budget, existing_equipment, problems, agreements, "
-        "send_to_client, next_step, next_contact_at, responsible. "
+        "send_to_client, next_step, next_contact_at, responsible, commitments. "
+        "commitments — массив только конкретных договорённостей, которые действительно прозвучали. "
+        "Каждый элемент commitments: actor ('employee' или 'client'), action, kind, due_date, due_time, "
+        "evidence, confidence. due_date возвращай в YYYY-MM-DD, due_time в HH:MM. "
+        "Относительные сроки вычисляй от даты звонка из метаданных. Если срок не назван — due_date=null. "
+        "confidence='high' ставь только когда обязательство и исполнитель следуют из разговора однозначно. "
+        "Не превращай обсуждение, предположение или уже выполненное действие в обязательство. "
         "Телефон из метаданных можно использовать как phone, но не приписывай его словам клиента. "
         "Если в расшифровке спикеры обозначены буквами, не угадывай их личности без контекста."
     )
@@ -315,6 +351,7 @@ def _analyze_transcript(client, call, transcript):
         f"Направление: {call.get_direction_display()}\n"
         f"Телефон: {call.phone_number}\n"
         f"Сотрудник: {employee_name or 'не определён'}\n"
+        f"Дата и время звонка: {call.started_at.isoformat()}\n"
         f"Контакт из телефонии: {call.contact_name or 'не указан'}\n\n"
         f"Расшифровка:\n{transcript}"
     )
@@ -407,6 +444,16 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
             processed_at=timezone.now(),
             requested_at=None,
         )
+        if completed:
+            try:
+                from pool_service.services.call_commitments import materialize_call_commitments
+
+                materialize_call_commitments(call.id)
+            except Exception:
+                logger.exception(
+                    "Failed to materialize call commitments for call_id=%s",
+                    call.id,
+                )
         return bool(completed)
     except Exception as exc:
         quota_exhausted = _is_openai_credit_balance_exhausted(exc)
