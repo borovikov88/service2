@@ -502,7 +502,7 @@ def start_requested_call_analysis_worker():
     return True
 
 
-def request_call_analysis(call_id):
+def request_call_analysis(call_id, *, allow_reanalysis=True):
     now = timezone.now()
     stale_before = now - timedelta(minutes=PROCESSING_STALE_MINUTES)
 
@@ -517,6 +517,16 @@ def request_call_analysis(call_id):
             return False
 
         analysis, _ = CallAnalysis.objects.select_for_update().get_or_create(call=call)
+        if not allow_reanalysis:
+            if analysis.status == CallAnalysis.STATUS_READY:
+                return False
+            if analysis.status == CallAnalysis.STATUS_PROCESSING:
+                return False
+            if (
+                analysis.status == CallAnalysis.STATUS_PENDING
+                and analysis.requested_at
+            ):
+                return False
         if (
             analysis.status == CallAnalysis.STATUS_PROCESSING
             and analysis.processing_started_at
