@@ -46,11 +46,18 @@ def _merge_profile(source, target, actor):
 
 def _merge_contacts(source, target):
     for contact in ClientContact.objects.filter(client=source).order_by("id"):
-        existing = ClientContact.objects.filter(
+        target_contacts = ClientContact.objects.filter(
             client=target,
             kind=contact.kind,
-            value=contact.value,
-        ).first()
+        )
+        existing = None
+        if contact.match_value:
+            existing = target_contacts.filter(
+                match_value=contact.match_value,
+            ).first()
+        if existing is None:
+            existing = target_contacts.filter(value=contact.value).first()
+
         if existing:
             sources = list(existing.sources or [])
             for value in contact.sources or []:
@@ -77,12 +84,43 @@ def _merge_contacts(source, target):
             contact.save(update_fields=["client", "updated_at"])
 
 
+def _merge_company_link_metadata(existing, source_link):
+    changed = False
+    roles = list(existing.roles or [])
+    for role in source_link.roles or []:
+        if role not in roles:
+            roles.append(role)
+    if roles != (existing.roles or []):
+        existing.roles = roles
+        changed = True
+    if source_link.is_primary and not existing.is_primary:
+        existing.is_primary = True
+        changed = True
+    if not existing.position and source_link.position:
+        existing.position = source_link.position
+        changed = True
+    if not existing.source_reference and source_link.source_reference:
+        existing.source_reference = source_link.source_reference
+        changed = True
+    if source_link.automatic and not existing.automatic:
+        existing.automatic = True
+        changed = True
+    if (
+        existing.source == ClientCompanyLink.SOURCE_MANUAL
+        and source_link.source != ClientCompanyLink.SOURCE_MANUAL
+    ):
+        existing.source = source_link.source
+        changed = True
+    if changed:
+        existing.save()
+
+
 def _merge_company_links(source, target):
     for link in list(ClientCompanyLink.objects.filter(company=source).select_related("person")):
         if link.person_id == target.id:
             link.delete()
             continue
-        merged, _ = ClientCompanyLink.objects.get_or_create(
+        merged, created = ClientCompanyLink.objects.get_or_create(
             company=target,
             person=link.person,
             defaults={
@@ -94,14 +132,15 @@ def _merge_company_links(source, target):
                 "automatic": link.automatic,
             },
         )
-        if merged.pk != link.pk:
-            link.delete()
+        if not created:
+            _merge_company_link_metadata(merged, link)
+        link.delete()
 
     for link in list(ClientCompanyLink.objects.filter(person=source).select_related("company")):
         if link.company_id == target.id:
             link.delete()
             continue
-        merged, _ = ClientCompanyLink.objects.get_or_create(
+        merged, created = ClientCompanyLink.objects.get_or_create(
             company=link.company,
             person=target,
             defaults={
@@ -113,8 +152,9 @@ def _merge_company_links(source, target):
                 "automatic": link.automatic,
             },
         )
-        if merged.pk != link.pk:
-            link.delete()
+        if not created:
+            _merge_company_link_metadata(merged, link)
+        link.delete()
 
 
 def _merge_staff_access(source, target):
