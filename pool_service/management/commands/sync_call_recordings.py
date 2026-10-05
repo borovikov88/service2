@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from pool_service.communication_models import PhoneCall
 from pool_service.communication_recordings import download_call_recording
+from pool_service.services.call_commitment_control import process_call_commitment_controls
 
 
 class Command(BaseCommand):
@@ -91,9 +92,20 @@ class Command(BaseCommand):
                 else:
                     failed += 1
 
+        control = process_call_commitment_controls()
+
         self.stdout.write(
             self.style.SUCCESS(
                 f"Call recording sync: checked={len(ids)} saved={saved} "
                 f"failed={failed} skipped={skipped}"
+            )
+        )
+        self.stdout.write(
+            self.style.SUCCESS(
+                "Call commitment control: "
+                f"checked={control['checked']} "
+                f"due_reminders={control['due_reminders']} "
+                f"escalations={control['escalations']} "
+                f"without_deadline={control['without_deadline']}"
             )
         )
