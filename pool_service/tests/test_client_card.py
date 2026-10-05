@@ -216,6 +216,12 @@ class ClientCardTests(TestCase):
             organization=self.organization,
             role="service",
         )
+        Pool.objects.create(
+            organization=self.organization,
+            client=self.crm_client,
+            address="Сервисный объект",
+            service_monthly_price=12345,
+        )
         CrmItem.objects.create(
             organization=self.organization,
             direction=CrmItem.DIRECTION_SERVICE,
@@ -238,4 +244,6 @@ class ClientCardTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Сервисная запись")
+        self.assertContains(response, "Сервисный объект")
         self.assertNotContains(response, "Продажная запись")
+        self.assertNotContains(response, "12345")
