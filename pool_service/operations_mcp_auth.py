@@ -148,8 +148,7 @@ def resource_url():
 def issuer_url():
     configured = getattr(settings, "ADVISOR_OPERATIONS_MCP_AUTH_ISSUER", "")
     if not configured:
-        site_url = getattr(settings, "SITE_URL", "")
-        configured = f"{site_url.rstrip('/')}/operations" if site_url else ""
+        configured = getattr(settings, "SITE_URL", "")
     return _https_url(configured, field="ADVISOR_OPERATIONS_MCP_AUTH_ISSUER")
 
 
