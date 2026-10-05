@@ -1,6 +1,6 @@
 import hashlib
 import json
-from datetime import timedelta
+from datetime import date, timedelta
 
 from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
@@ -224,6 +224,41 @@ class OperationsMcpTests(TestCase):
                 payload_json__operations_mcp_idempotency_key="cross-org"
             ).exists()
         )
+
+    def test_reschedule_task_is_idempotent(self):
+        raw = self._token(raw="reschedule-token")
+        task = ServiceTask.objects.create(
+            organization=self.organization,
+            title="Перезвонить клиенту",
+            start_date=date(2026, 10, 7),
+            end_date=date(2026, 10, 7),
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            source_type=ServiceTask.SOURCE_MANAGER,
+            status=ServiceTask.STATUS_NEW,
+            visibility=ServiceTask.VISIBILITY_PRIVATE,
+            primary_responsible=self.manager,
+            created_by=self.owner,
+        )
+        task.responsibles.add(self.manager)
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {
+                "name": "reschedule_task",
+                "arguments": {
+                    "task_id": task.id,
+                    "due_date": "2026-10-08",
+                    "reason": "Клиент попросил позвонить завтра",
+                },
+            },
+        }
+        with self._settings():
+            first = self._post(payload, token=raw)
+            second = self._post(payload, token=raw)
+        self.assertTrue(first.json()["result"]["structuredContent"]["changed"])
+        self.assertFalse(second.json()["result"]["structuredContent"]["changed"])
+        self.assertEqual(task.changes.filter(action="moved").count(), 1)
 
     def test_notification_tool_is_deduplicated(self):
         raw = self._token(raw="notification-token")
