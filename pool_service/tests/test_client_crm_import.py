@@ -289,3 +289,29 @@ class ClientCRMImportTests(TestCase):
         candidate.refresh_from_db()
         self.assertEqual(candidate.status, ClientImportCandidate.STATUS_DUPLICATE)
         self.assertEqual(candidate.resolution, ClientImportCandidate.RESOLUTION_AUTO)
+
+
+    def test_manual_type_resolution_clears_stale_auto_match(self):
+        user = get_user_model().objects.create_user(username="stale-match-resolver")
+        stale = Client.objects.create(
+            organization=self.organization,
+            client_type="private",
+            name="Старое физлицо",
+            phone="+7 999 000-00-00",
+        )
+        candidate = self.candidate(
+            source_ref="88888888-8888-8888-8888-888888888888",
+            source_kind=ClientImportCandidate.KIND_LEGAL,
+            name="ООО Новый клиент",
+            matched_client=stale,
+            status=ClientImportCandidate.STATUS_REVIEW,
+        )
+
+        resolved = resolve_import_candidate(
+            candidate.pk,
+            ClientImportCandidate.RESOLUTION_LEGAL,
+            user,
+        )
+
+        self.assertIsNone(resolved.matched_client)
+        self.assertEqual(resolved.status, ClientImportCandidate.STATUS_READY)
