@@ -41,7 +41,7 @@
           <tbody>
             {% for company in companies %}
               <tr>
-                <td class="fw-semibold">{{ company.name }}</td>
+                <td class="fw-semibold"><a class="text-decoration-none" href="{% url 'client_detail' company.id %}">{{ company.name }}</a></td>
                 <td>{{ company.phone|default:"-" }}</td>
                 <td>{{ company.email|default:"-" }}</td>
                 <td>{{ company.pool_count|default:0 }}</td>
@@ -145,7 +145,7 @@
             <tbody>
               {% for client in private_contacts %}
                 <tr>
-                  <td class="fw-semibold">{{ client.name }}</td>
+                  <td class="fw-semibold"><a class="text-decoration-none" href="{% url 'client_detail' client.id %}">{{ client.name }}</a></td>
                   <td>{{ client.phone|default:"-" }}</td>
                   <td>{{ client.email|default:"-" }}</td>
                   <td>
