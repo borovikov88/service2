@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+import logging
+import os
 import re
+import shutil
+import subprocess
+import sys
+import threading
 
 from django.conf import settings
 from django.db import transaction
@@ -14,8 +20,9 @@ from .client_crm_models import (
     ClientCompanyLink,
     ClientContact,
     ClientImportCandidate,
+    ClientImportRun,
 )
-from .onec_diagnostic import config_from_settings
+from .onec_diagnostic import config_from_settings, fetch_metadata
 from .onec_diagnostic_universal import query_1c_rows
 
 
@@ -24,6 +31,9 @@ CONTACT_ENTITY = "Catalog_Контрагенты_КонтактнаяИнфор�
 PAGE_SIZE = 500
 CONTACT_BATCH_SIZE = 40
 SYSTEM_NAMES = {"розничный покупатель"}
+IMPORT_RUN_STALE_MINUTES = 120
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_phone(value: str | None) -> str:
@@ -60,7 +70,7 @@ def _target_organization() -> Organization:
     return Organization.objects.get(pk=organization_id)
 
 
-def _buyer_rows(config):
+def _buyer_rows(config, metadata_raw):
     cursor = ""
     while True:
         filters = [
@@ -93,6 +103,7 @@ def _buyer_rows(config):
             include_deleted=False,
             include_inactive=False,
             order_by=[{"field": "Code", "direction": "asc"}],
+            metadata_raw=metadata_raw,
         )
         rows = result.get("rows", [])
         if not rows:
@@ -107,7 +118,7 @@ def _buyer_rows(config):
         cursor = next_cursor
 
 
-def _contact_rows(config, refs):
+def _contact_rows(config, refs, metadata_raw):
     contact_map = defaultdict(list)
     refs = [ref for ref in refs if ref]
     for start in range(0, len(refs), CONTACT_BATCH_SIZE):
@@ -132,6 +143,7 @@ def _contact_rows(config, refs):
                 {"field": "Ref_Key", "direction": "asc"},
                 {"field": "LineNumber", "direction": "asc"},
             ],
+            metadata_raw=metadata_raw,
         )
         for row in result.get("rows", []):
             contact_map[str(row.get("Ref_Key") or "")].append(row)
@@ -202,74 +214,275 @@ def _match_clients(organization, source_kind, inn, phones, source_ref=""):
     return [], ""
 
 
-def scan_onec_clients():
+def _update_run_progress(run, *, processed_rows, totals):
+    if run is None:
+        return
+    ClientImportRun.objects.filter(pk=run.pk).update(
+        processed_rows=processed_rows,
+        ready_count=totals.get(ClientImportCandidate.STATUS_READY, 0),
+        review_count=totals.get(ClientImportCandidate.STATUS_REVIEW, 0),
+        duplicate_count=totals.get(ClientImportCandidate.STATUS_DUPLICATE, 0),
+        invalid_count=totals.get(ClientImportCandidate.STATUS_INVALID, 0),
+        imported_count=totals.get(ClientImportCandidate.STATUS_IMPORTED, 0),
+        updated_at=timezone.now(),
+    )
+
+
+def scan_onec_clients(run=None):
     organization = _target_organization()
     config = config_from_settings()
-    rows = list(_buyer_rows(config))
-    contacts_by_ref = _contact_rows(config, [row.get("Ref_Key") for row in rows])
+
+    # Metadata is large and relatively expensive. Reuse one snapshot for the
+    # entire scan instead of downloading it again for every OData batch.
+    metadata_raw = fetch_metadata(config)
+    rows = list(_buyer_rows(config, metadata_raw))
+    if run is not None:
+        ClientImportRun.objects.filter(pk=run.pk).update(
+            total_rows=len(rows),
+            updated_at=timezone.now(),
+        )
+
+    contacts_by_ref = _contact_rows(
+        config,
+        [row.get("Ref_Key") for row in rows],
+        metadata_raw,
+    )
 
     totals = defaultdict(int)
-    with transaction.atomic():
-        for row in rows:
-            ref = str(row.get("Ref_Key") or "")
-            name = str(row.get("Description") or row.get("НаименованиеПолное") or "").strip()
-            source_kind = _source_kind(row)
-            inn = str(row.get("ИНН") or "").strip()
-            phones, emails = _candidate_contacts(row, contacts_by_ref.get(ref, []))
-            matches, match_reason = _match_clients(organization, source_kind, inn, phones, ref)
+    processed_rows = 0
+    for row in rows:
+        ref = str(row.get("Ref_Key") or "")
+        name = str(row.get("Description") or row.get("НаименованиеПолное") or "").strip()
+        source_kind = _source_kind(row)
+        inn = str(row.get("ИНН") or "").strip()
+        phones, emails = _candidate_contacts(row, contacts_by_ref.get(ref, []))
+        matches, match_reason = _match_clients(organization, source_kind, inn, phones, ref)
 
-            status = ClientImportCandidate.STATUS_READY
-            reason = ""
-            matched_client = None
-            if not ref or not name:
-                status = ClientImportCandidate.STATUS_INVALID
-                reason = "Нет идентификатора или имени в 1С"
-            elif name.casefold().strip() in SYSTEM_NAMES:
-                status = ClientImportCandidate.STATUS_INVALID
-                reason = "Системная карточка 1С"
-            elif len(matches) > 1:
-                status = ClientImportCandidate.STATUS_DUPLICATE
-                reason = f"Несколько карточек Service2 совпали по: {match_reason}"
-            elif len(matches) == 1:
-                matched_client = matches[0]
-            elif source_kind == ClientImportCandidate.KIND_LEGAL and not inn:
-                status = ClientImportCandidate.STATUS_REVIEW
-                reason = "У юридического лица не заполнен ИНН"
+        status = ClientImportCandidate.STATUS_READY
+        reason = ""
+        matched_client = None
+        if not ref or not name:
+            status = ClientImportCandidate.STATUS_INVALID
+            reason = "Нет идентификатора или имени в 1С"
+        elif name.casefold().strip() in SYSTEM_NAMES:
+            status = ClientImportCandidate.STATUS_INVALID
+            reason = "Системная карточка 1С"
+        elif len(matches) > 1:
+            status = ClientImportCandidate.STATUS_DUPLICATE
+            reason = f"Несколько карточек Service2 совпали по: {match_reason}"
+        elif len(matches) == 1:
+            matched_client = matches[0]
+        elif source_kind == ClientImportCandidate.KIND_LEGAL and not inn:
+            status = ClientImportCandidate.STATUS_REVIEW
+            reason = "У юридического лица не заполнен ИНН"
 
-            payload = {
-                "phones": phones,
-                "emails": emails,
-                "onec_type": str(row.get("ВидКонтрагента") or ""),
-                "onec_person_kind": str(row.get("ЮридическоеФизическоеЛицо") or ""),
-                "fio": str(row.get("ФИО") or "").strip(),
-            }
-            candidate, _ = ClientImportCandidate.objects.update_or_create(
-                organization=organization,
-                source_ref=ref,
-                defaults={
-                    "source_code": str(row.get("Code") or ""),
-                    "source_kind": source_kind,
-                    "name": name,
-                    "legal_name": str(row.get("НаименованиеПолное") or "").strip(),
-                    "inn": inn,
-                    "kpp": str(row.get("КПП") or "").strip(),
-                    "phone": phones[0]["value"] if phones else "",
-                    "email": emails[0]["value"] if emails else "",
-                    "birth_date": _parse_date(row.get("ДатаРождения")),
-                    "payload": payload,
-                    "status": status if status != ClientImportCandidate.STATUS_READY or not matched_client else ClientImportCandidate.STATUS_READY,
-                    "reason": reason,
-                    "matched_client": matched_client,
-                },
+        payload = {
+            "phones": phones,
+            "emails": emails,
+            "onec_type": str(row.get("ВидКонтрагента") or ""),
+            "onec_person_kind": str(row.get("ЮридическоеФизическоеЛицо") or ""),
+            "fio": str(row.get("ФИО") or "").strip(),
+        }
+        candidate, _ = ClientImportCandidate.objects.update_or_create(
+            organization=organization,
+            source_ref=ref,
+            defaults={
+                "source_code": str(row.get("Code") or ""),
+                "source_kind": source_kind,
+                "name": name,
+                "legal_name": str(row.get("НаименованиеПолное") or "").strip(),
+                "inn": inn,
+                "kpp": str(row.get("КПП") or "").strip(),
+                "phone": phones[0]["value"] if phones else "",
+                "email": emails[0]["value"] if emails else "",
+                "birth_date": _parse_date(row.get("ДатаРождения")),
+                "payload": payload,
+                "status": status,
+                "reason": reason,
+                "matched_client": matched_client,
+            },
+        )
+        if candidate.applied_at and matched_client and candidate.status == ClientImportCandidate.STATUS_READY:
+            candidate.status = ClientImportCandidate.STATUS_IMPORTED
+            candidate.save(update_fields=["status", "updated_at"])
+
+        totals[candidate.status] += 1
+        totals[source_kind] += 1
+        processed_rows += 1
+        if processed_rows % 25 == 0 or processed_rows == len(rows):
+            _update_run_progress(
+                run,
+                processed_rows=processed_rows,
+                totals=totals,
             )
-            if candidate.applied_at and matched_client and candidate.status == ClientImportCandidate.STATUS_READY:
-                candidate.status = ClientImportCandidate.STATUS_IMPORTED
-                candidate.save(update_fields=["status", "updated_at"])
-            totals[candidate.status] += 1
-            totals[source_kind] += 1
+
     totals["total"] = len(rows)
     return dict(totals)
 
+
+def _worker_python_executable(base_dir):
+    production_python = os.path.join(
+        os.path.dirname(base_dir),
+        "venv",
+        "bin",
+        "python",
+    )
+    if os.path.isfile(production_python) and os.access(production_python, os.X_OK):
+        return production_python
+    return sys.executable
+
+
+def _reap_client_import_worker(process, run_id):
+    try:
+        return_code = process.wait()
+        if return_code:
+            logger.error(
+                "1C client import worker exited with code %s for run_id=%s",
+                return_code,
+                run_id,
+            )
+            ClientImportRun.objects.filter(
+                pk=run_id,
+                status__in=[
+                    ClientImportRun.STATUS_PENDING,
+                    ClientImportRun.STATUS_RUNNING,
+                ],
+            ).update(
+                status=ClientImportRun.STATUS_FAILED,
+                error="Фоновый процесс импорта завершился с ошибкой",
+                finished_at=timezone.now(),
+                updated_at=timezone.now(),
+            )
+    except Exception:
+        logger.exception("Failed while reaping 1C client import worker")
+
+
+def start_client_import_worker(run_id):
+    base_dir = str(settings.BASE_DIR)
+    worker_script = os.path.join(base_dir, "scripts", "run_client_import_worker.sh")
+    bash = shutil.which("bash")
+    if not bash or not os.path.isfile(worker_script):
+        logger.error("1C client import worker launcher is unavailable")
+        return False
+
+    env = os.environ.copy()
+    env["SERVICE2_PYTHON"] = _worker_python_executable(base_dir)
+    try:
+        process = subprocess.Popen(
+            [bash, worker_script, str(run_id)],
+            cwd=base_dir,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except OSError:
+        logger.exception("Failed to start 1C client import worker")
+        return False
+
+    threading.Thread(
+        target=_reap_client_import_worker,
+        args=(process, run_id),
+        daemon=True,
+        name="service2-client-import-reaper",
+    ).start()
+    return True
+
+
+def request_client_import_scan(requested_by=None):
+    organization = _target_organization()
+    stale_before = timezone.now() - timedelta(minutes=IMPORT_RUN_STALE_MINUTES)
+
+    with transaction.atomic():
+        ClientImportRun.objects.select_for_update().filter(
+            organization=organization,
+            status__in=[
+                ClientImportRun.STATUS_PENDING,
+                ClientImportRun.STATUS_RUNNING,
+            ],
+            updated_at__lt=stale_before,
+        ).update(
+            status=ClientImportRun.STATUS_FAILED,
+            error="Предыдущий импорт не завершился и был помечен как зависший",
+            finished_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+
+        active = (
+            ClientImportRun.objects.select_for_update()
+            .filter(
+                organization=organization,
+                status__in=[
+                    ClientImportRun.STATUS_PENDING,
+                    ClientImportRun.STATUS_RUNNING,
+                ],
+            )
+            .order_by("-requested_at", "-id")
+            .first()
+        )
+        if active is not None:
+            return active, False
+
+        run = ClientImportRun.objects.create(
+            organization=organization,
+            requested_by=requested_by,
+            status=ClientImportRun.STATUS_PENDING,
+        )
+
+    if not start_client_import_worker(run.pk):
+        ClientImportRun.objects.filter(pk=run.pk).update(
+            status=ClientImportRun.STATUS_FAILED,
+            error="Не удалось запустить фоновый процесс импорта",
+            finished_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+        run.refresh_from_db()
+        return run, False
+    return run, True
+
+
+def process_client_import_run(run_id):
+    with transaction.atomic():
+        run = (
+            ClientImportRun.objects.select_for_update()
+            .select_related("organization")
+            .get(pk=run_id)
+        )
+        if run.status != ClientImportRun.STATUS_PENDING:
+            return run
+        run.status = ClientImportRun.STATUS_RUNNING
+        run.started_at = timezone.now()
+        run.error = ""
+        run.save(update_fields=["status", "started_at", "error", "updated_at"])
+
+    try:
+        result = scan_onec_clients(run=run)
+    except Exception as exc:
+        logger.exception("1C client import failed for run_id=%s", run_id)
+        code = getattr(exc, "code", exc.__class__.__name__)
+        ClientImportRun.objects.filter(pk=run_id).update(
+            status=ClientImportRun.STATUS_FAILED,
+            error=f"Ошибка импорта: {str(code)[:400]}",
+            finished_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+    else:
+        ClientImportRun.objects.filter(pk=run_id).update(
+            status=ClientImportRun.STATUS_SUCCESS,
+            total_rows=result.get("total", 0),
+            processed_rows=result.get("total", 0),
+            ready_count=result.get(ClientImportCandidate.STATUS_READY, 0),
+            review_count=result.get(ClientImportCandidate.STATUS_REVIEW, 0),
+            duplicate_count=result.get(ClientImportCandidate.STATUS_DUPLICATE, 0),
+            invalid_count=result.get(ClientImportCandidate.STATUS_INVALID, 0),
+            imported_count=result.get(ClientImportCandidate.STATUS_IMPORTED, 0),
+            error="",
+            finished_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+    return ClientImportRun.objects.get(pk=run_id)
 
 def _split_person_name(value):
     cleaned = re.sub(r"(?i)\bИП\b", " ", str(value or "")).replace('"', " ")
