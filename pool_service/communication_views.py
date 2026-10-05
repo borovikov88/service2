@@ -372,7 +372,14 @@ def call_analysis_bulk(request):
     queryset = PhoneCall.objects.filter(
         pk__in=call_ids,
         organization=organization,
-    ).exclude(recording_file="")
+    ).exclude(recording_file="").filter(
+        Q(analysis__isnull=True)
+        | Q(analysis__status=CallAnalysis.STATUS_FAILED)
+        | Q(
+            analysis__status=CallAnalysis.STATUS_PENDING,
+            analysis__requested_at__isnull=True,
+        )
+    )
     if not conversation_capability(request.user, "can_view_all_calls", organization):
         queryset = queryset.filter(employee=request.user)
 
