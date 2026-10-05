@@ -151,6 +151,34 @@ class OperationsMcpTests(TestCase):
             )
         self.assertEqual(response.status_code, 401)
 
+    def test_diagnostic_resource_token_is_rejected(self):
+        raw = self._token(
+            resource="https://service2.example/mcp/1c",
+            scopes=["onec.diagnostic.read"],
+            raw="diagnostic-token",
+        )
+        with self._settings():
+            response = self._post(
+                {"jsonrpc": "2.0", "id": 21, "method": "tools/list", "params": {}},
+                token=raw,
+            )
+        self.assertEqual(response.status_code, 401)
+
+    def test_token_stops_working_after_owner_role_is_removed(self):
+        raw = self._token(raw="revoked-by-role-token")
+        access = OrganizationAccess.objects.get(
+            user=self.owner,
+            organization=self.organization,
+        )
+        access.role = "manager"
+        access.save(update_fields=["role"])
+        with self._settings():
+            response = self._post(
+                {"jsonrpc": "2.0", "id": 22, "method": "tools/list", "params": {}},
+                token=raw,
+            )
+        self.assertEqual(response.status_code, 401)
+
     def test_create_task_is_idempotent_and_audited(self):
         raw = self._token()
         payload = {
