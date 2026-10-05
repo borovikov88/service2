@@ -3240,3 +3240,4 @@ class DevelopmentTaskEvent(models.Model):
 # Register the isolated employee reward models in this Django app.
 # Kept in a separate module so the test-reward domain cannot leak into payroll models.
 from . import reward_models  # noqa: E402,F401
+from . import client_crm_models  # noqa: E402,F401
