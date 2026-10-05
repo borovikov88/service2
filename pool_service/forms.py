@@ -7,6 +7,7 @@ from django.utils.crypto import get_random_string
 from django.utils import timezone
 from django.urls import reverse
 from pathlib import Path
+from .client_queries import active_clients
 from .models import (
     WaterReading,
     Organization,
