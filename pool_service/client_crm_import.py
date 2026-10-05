@@ -823,9 +823,9 @@ def _find_or_create_ip_person(company, candidate):
                 match_value__in=phone_values,
             ).values_list("client_id", flat=True)
         )
-        for person in person_matches.exclude(phone__isnull=True).exclude(phone="").only("id", "phone"):
-            if normalize_phone(person.phone) in phone_values:
-                ids.add(person.id)
+        for candidate_person in person_matches.exclude(phone__isnull=True).exclude(phone="").only("id", "phone"):
+            if normalize_phone(candidate_person.phone) in phone_values:
+                ids.add(candidate_person.id)
     if person is None:
         if len(ids) > 1:
             raise ValueError("Для ИП найдено несколько физлиц с тем же телефоном")
