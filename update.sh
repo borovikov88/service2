@@ -28,8 +28,8 @@ if [[ ! -d ../venv || ! -x ../venv/bin/python || ! -d ../tmp || ! -w ../tmp ]]; 
     exit 67
 fi
 if [[ "$MODE" == "deploy" ]]; then
-    # Keep deployment mutually exclusive with the manual call-AI worker.
-    # Lock order is always AI -> deploy, matching the scheduled workflow.
+    # Keep deployment mutually exclusive with the call-AI worker.
+    # Deployment owns both locks for the full mutating phase.
     exec 8>../tmp/service2-call-ai.lock
     if ! flock -n 8; then
         echo "Active call analysis is running; retry deployment after it finishes" >&2
@@ -213,6 +213,16 @@ python manage.py collectstatic --noinput
 
 echo "===== Restarting Passenger ====="
 touch ../tmp/restart.txt
+
+# Deployment is complete. Release both locks before starting the detached
+# requested-call worker so it can safely use the freshly deployed checkout.
+if [[ -f scripts/run_call_ai_worker.sh ]]; then
+    flock -u 9 || true
+    flock -u 8 || true
+    exec 9>&-
+    exec 8>&-
+    nohup /bin/bash scripts/run_call_ai_worker.sh </dev/null >/dev/null 2>&1 &
+fi
 
 echo "===== Deployed $EXPECTED_SHA ====="
 

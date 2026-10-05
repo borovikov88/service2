@@ -4,7 +4,9 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
+import threading
 from contextlib import contextmanager
 from datetime import timedelta
 from uuid import uuid4
@@ -413,6 +415,47 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
             requested_at=(analysis.requested_at if retryable else None),
         )
         return False
+
+
+def _reap_call_analysis_worker(process):
+    try:
+        process.wait()
+    except Exception:
+        logger.exception("Failed while reaping requested call analysis worker")
+
+
+def start_requested_call_analysis_worker():
+    base_dir = str(settings.BASE_DIR)
+    worker_script = os.path.join(base_dir, "scripts", "run_call_ai_worker.sh")
+    bash = shutil.which("bash")
+    if not bash or not os.path.isfile(worker_script):
+        logger.error("Call AI worker launcher is unavailable")
+        return False
+
+    env = os.environ.copy()
+    env["SERVICE2_PYTHON"] = sys.executable
+    try:
+        process = subprocess.Popen(
+            [bash, worker_script],
+            cwd=base_dir,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except OSError:
+        logger.exception("Failed to start requested call analysis worker")
+        return False
+
+    threading.Thread(
+        target=_reap_call_analysis_worker,
+        args=(process,),
+        daemon=True,
+        name="service2-call-ai-reaper",
+    ).start()
+    return True
 
 
 def request_call_analysis(call_id):

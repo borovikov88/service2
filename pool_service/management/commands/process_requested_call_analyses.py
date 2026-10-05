@@ -1,3 +1,5 @@
+import time
+
 from django.core.management.base import BaseCommand
 
 from pool_service.communication_models import CallAnalysis
@@ -9,27 +11,45 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--limit", type=int, default=1)
+        parser.add_argument("--idle-grace-seconds", type=float, default=0.0)
+        parser.add_argument("--drain", action="store_true")
 
     def handle(self, *args, **options):
         limit = max(1, min(int(options["limit"]), 10))
-        call_ids = list(
-            CallAnalysis.objects.filter(
-                requested_at__isnull=False,
-                status=CallAnalysis.STATUS_PENDING,
-                call__recording_file__isnull=False,
-            )
-            .exclude(call__recording_file="")
-            .order_by("requested_at", "pk")
-            .values_list("call_id", flat=True)[:limit]
-        )
-
+        idle_grace = max(0.0, min(float(options["idle_grace_seconds"]), 5.0))
+        drain = bool(options["drain"])
+        attempted_ids = []
         processed = 0
-        for call_id in call_ids:
+        empty_checks = 0
+
+        while drain or len(attempted_ids) < limit:
+            queryset = (
+                CallAnalysis.objects.filter(
+                    requested_at__isnull=False,
+                    status=CallAnalysis.STATUS_PENDING,
+                    call__recording_file__isnull=False,
+                )
+                .exclude(call__recording_file="")
+                .order_by("requested_at", "pk")
+            )
+            if attempted_ids:
+                queryset = queryset.exclude(call_id__in=attempted_ids)
+
+            call_id = queryset.values_list("call_id", flat=True).first()
+            if call_id is None:
+                if idle_grace > 0 and empty_checks == 0:
+                    empty_checks += 1
+                    time.sleep(idle_grace)
+                    continue
+                break
+
+            empty_checks = 0
+            attempted_ids.append(call_id)
             if process_call_analysis(call_id):
                 processed += 1
 
         self.stdout.write(
             self.style.SUCCESS(
-                f"Requested call analyses processed: {processed}/{len(call_ids)}"
+                f"Requested call analyses processed: {processed}/{len(attempted_ids)}"
             )
         )

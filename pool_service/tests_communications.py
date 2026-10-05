@@ -31,7 +31,7 @@ from pool_service.communication_avito import (
     webhook_subscriptions,
 )
 from pool_service.communication_recordings import download_call_recording
-from pool_service.services.call_ai import _ffmpeg_executable, process_call_analysis, request_call_analysis
+from pool_service.services.call_ai import _ffmpeg_executable, _reap_call_analysis_worker, process_call_analysis, request_call_analysis, start_requested_call_analysis_worker
 from pool_service.communication_secrets import decrypt_secret, encrypt_secret
 from pool_service.communication_services import receive_message, users_with_conversation_access
 from pool_service.communication_services import conversation_capability
@@ -708,8 +708,13 @@ class CommunicationsTests(TestCase):
         )
         self.assertEqual(response.status_code, 403)
 
+    @patch("pool_service.communication_views.start_requested_call_analysis_worker", return_value=True)
     @patch("pool_service.communication_views.request_call_analysis", return_value=True)
-    def test_call_analysis_retry_requires_call_access_and_queues_only_on_button(self, request_analysis):
+    def test_call_analysis_retry_requires_call_access_and_queues_only_on_button(
+        self,
+        request_analysis,
+        start_worker,
+    ):
         telephony = TelephonyConnection.objects.create(
             organization=self.organization,
             name="МегаФон",
@@ -742,6 +747,7 @@ class CommunicationsTests(TestCase):
         )
         self.assertRedirects(response, reverse("communications_calls"))
         request_analysis.assert_called_once_with(call.pk)
+        start_worker.assert_called_once_with()
 
         self.client.logout()
         self.client.login(username="worker", password="test")
@@ -749,6 +755,33 @@ class CommunicationsTests(TestCase):
             reverse("communication_call_analysis_retry", args=[call.pk])
         )
         self.assertEqual(forbidden.status_code, 403)
+
+    @patch("pool_service.services.call_ai.threading.Thread")
+    @patch("pool_service.services.call_ai.subprocess.Popen")
+    @patch("pool_service.services.call_ai.shutil.which", return_value="/bin/bash")
+    def test_requested_call_worker_starts_detached_from_web_process(
+        self,
+        _which,
+        popen,
+        thread,
+    ):
+        process = popen.return_value
+        self.assertTrue(start_requested_call_analysis_worker())
+        popen.assert_called_once()
+        command = popen.call_args.args[0]
+        kwargs = popen.call_args.kwargs
+        self.assertEqual(command[0], "/bin/bash")
+        self.assertTrue(command[1].endswith("scripts/run_call_ai_worker.sh"))
+        self.assertTrue(kwargs["start_new_session"])
+        self.assertTrue(kwargs["close_fds"])
+        self.assertTrue(kwargs["env"]["SERVICE2_PYTHON"])
+        thread.assert_called_once_with(
+            target=_reap_call_analysis_worker,
+            args=(process,),
+            daemon=True,
+            name="service2-call-ai-reaper",
+        )
+        thread.return_value.start.assert_called_once_with()
 
     def test_manual_request_does_not_duplicate_fresh_processing_request(self):
         telephony = TelephonyConnection.objects.create(
@@ -944,6 +977,79 @@ class CommunicationsTests(TestCase):
         call_command("process_requested_call_analyses", "--limit", "1")
         process_analysis.assert_called_once_with(requested_call.pk)
 
+    @patch(
+        "pool_service.management.commands.process_requested_call_analyses.process_call_analysis"
+    )
+    def test_requested_call_worker_drains_requests_added_while_running(self, process_analysis):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-ai-worker-drain",
+        )
+        first_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-worker-drain-first",
+            employee=self.owner,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=25,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        first_call.recording_file.save(
+            "ai-worker-drain-first.mp3",
+            ContentFile(b"ID3test"),
+            save=True,
+        )
+        second_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-worker-drain-second",
+            employee=self.owner,
+            phone_number="+79001112234",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=25,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        second_call.recording_file.save(
+            "ai-worker-drain-second.mp3",
+            ContentFile(b"ID3test"),
+            save=True,
+        )
+        CallAnalysis.objects.create(
+            call=first_call,
+            status=CallAnalysis.STATUS_PENDING,
+            requested_at=timezone.now(),
+        )
+
+        def process_side_effect(call_id):
+            if call_id == first_call.pk:
+                CallAnalysis.objects.create(
+                    call=second_call,
+                    status=CallAnalysis.STATUS_PENDING,
+                    requested_at=timezone.now(),
+                )
+            return True
+
+        process_analysis.side_effect = process_side_effect
+        call_command(
+            "process_requested_call_analyses",
+            "--limit",
+            "1",
+            "--idle-grace-seconds",
+            "0",
+            "--drain",
+        )
+
+        self.assertEqual(
+            [item.args[0] for item in process_analysis.call_args_list],
+            [first_call.pk, second_call.pk],
+        )
+
     def test_calls_page_offers_manual_transcription_for_unanalysed_recording(self):
         telephony = TelephonyConnection.objects.create(
             organization=self.organization,
@@ -967,12 +1073,13 @@ class CommunicationsTests(TestCase):
         self.client.login(username="owner", password="test")
         response = self.client.get(reverse("communications_calls"))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Расшифровка запускается вручную.")
-        self.assertContains(response, "Расшифровать и проанализировать")
+        self.assertContains(response, 'class="btn btn-outline-primary btn-sm call-player__analysis"')
+        self.assertContains(response, 'aria-label="Расшифровать и проанализировать"')
         self.assertContains(
             response,
             reverse("communication_call_analysis_retry", args=[call.pk]),
         )
+        self.assertNotContains(response, "Расшифровка запускается вручную.")
         self.assertNotContains(response, "Ожидает автоматической расшифровки.")
 
     @override_settings(
