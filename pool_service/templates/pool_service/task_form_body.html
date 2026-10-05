@@ -132,7 +132,7 @@
     {% if is_modal %}
       <button type="button" class="btn btn-outline-secondary rounded-3" data-bs-dismiss="modal">Закрыть</button>
     {% elif next_url %}
-      <a class="btn btn-outline-secondary rounded-3" href="{{ next_url }}">Назад к календарю</a>
+      <a class="btn btn-outline-secondary rounded-3" href="{{ next_url }}">Назад</a>
     {% else %}
       <a class="btn btn-outline-secondary rounded-3" href="{% url 'readings_all' %}">Назад к календарю</a>
     {% endif %}
