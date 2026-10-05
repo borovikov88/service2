@@ -15,6 +15,7 @@ from .client_crm_import import (
     _candidate_contacts,
     _contact_rows,
     _effective_kind,
+    _has_private_name_conflict,
     _match_clients,
     _parse_date,
     _source_kind,
@@ -138,6 +139,14 @@ def _stage_recent_candidate(organization, row, extra_contacts):
     ):
         status = ClientImportCandidate.STATUS_REVIEW
         reason = "У юридического лица не заполнен ИНН"
+    elif (
+        effective_kind == ClientImportCandidate.KIND_PRIVATE
+        and not phones
+        and resolution == ClientImportCandidate.RESOLUTION_AUTO
+        and _has_private_name_conflict(organization, name)
+    ):
+        status = ClientImportCandidate.STATUS_REVIEW
+        reason = "Есть физлицо с тем же ФИО, но нет телефона для безопасного сопоставления"
 
     if resolution == ClientImportCandidate.RESOLUTION_SKIP:
         status = ClientImportCandidate.STATUS_SKIPPED
