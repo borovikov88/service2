@@ -32,7 +32,9 @@ OWNER_DECISIONS = {
     "НФ-018476": "skip",
 }
 
-BACKUP_KEY = "_migration_0128_resolution_backup"
+ORIGINAL_STATUS = "review"
+ORIGINAL_REASON = "У юридического лица не заполнен ИНН"
+DECISION_NOTE = "Подтверждено владельцем 05.10.2026"
 
 
 def _refresh_run_counts(Candidate, ImportRun, organization_ids):
@@ -79,41 +81,32 @@ def apply_owner_decisions(apps, schema_editor):
         candidates = Candidate.objects.filter(
             source_code=source_code,
             applied_at__isnull=True,
+            status=ORIGINAL_STATUS,
+            reason=ORIGINAL_REASON,
+            matched_client__isnull=True,
+            resolution="auto",
         )
-        for candidate in candidates.iterator():
-            touched_org_ids.add(candidate.organization_id)
-            payload = dict(candidate.payload or {})
-            if BACKUP_KEY not in payload:
-                payload[BACKUP_KEY] = {
-                    "status": candidate.status,
-                    "reason": candidate.reason,
-                    "matched_client_id": candidate.matched_client_id,
-                }
-
-            candidate.payload = payload
-            candidate.resolution = resolution
-            candidate.resolution_note = "Подтверждено владельцем 05.10.2026"
-            candidate.resolved_at = now
-            candidate.resolved_by_id = None
-            if resolution == "skip":
-                candidate.status = "skipped"
-                candidate.reason = "Не импортировать — решение владельца"
-            else:
-                candidate.status = "ready"
-                candidate.reason = "Тип подтверждён владельцем"
-                candidate.matched_client_id = None
-            candidate.save(
-                update_fields=[
-                    "payload",
-                    "resolution",
-                    "resolution_note",
-                    "resolved_at",
-                    "resolved_by",
-                    "status",
-                    "reason",
-                    "matched_client",
-                    "updated_at",
-                ]
+        touched_org_ids.update(
+            candidates.values_list("organization_id", flat=True)
+        )
+        if resolution == "skip":
+            candidates.update(
+                resolution=resolution,
+                resolution_note=DECISION_NOTE,
+                resolved_at=now,
+                resolved_by=None,
+                status="skipped",
+                reason="Не импортировать — решение владельца",
+            )
+        else:
+            candidates.update(
+                resolution=resolution,
+                resolution_note=DECISION_NOTE,
+                resolved_at=now,
+                resolved_by=None,
+                status="ready",
+                reason="Тип подтверждён владельцем",
+                matched_client=None,
             )
 
     _refresh_run_counts(Candidate, ImportRun, touched_org_ids)
@@ -124,39 +117,28 @@ def reverse_owner_decisions(apps, schema_editor):
     ImportRun = apps.get_model("pool_service", "ClientImportRun")
     touched_org_ids = set()
 
-    for source_code in OWNER_DECISIONS:
+    for source_code, resolution in OWNER_DECISIONS.items():
+        expected_status = "skipped" if resolution == "skip" else "ready"
         candidates = Candidate.objects.filter(
             source_code=source_code,
             applied_at__isnull=True,
-            resolution_note="Подтверждено владельцем 05.10.2026",
+            resolution=resolution,
+            resolution_note=DECISION_NOTE,
+            status=expected_status,
+            matched_client__isnull=True,
         )
-        for candidate in candidates.iterator():
-            payload = dict(candidate.payload or {})
-            backup = payload.pop(BACKUP_KEY, None)
-            if not backup:
-                continue
-            touched_org_ids.add(candidate.organization_id)
-            candidate.payload = payload
-            candidate.resolution = "auto"
-            candidate.resolution_note = ""
-            candidate.resolved_by_id = None
-            candidate.resolved_at = None
-            candidate.status = backup.get("status") or "review"
-            candidate.reason = backup.get("reason") or ""
-            candidate.matched_client_id = backup.get("matched_client_id")
-            candidate.save(
-                update_fields=[
-                    "payload",
-                    "resolution",
-                    "resolution_note",
-                    "resolved_by",
-                    "resolved_at",
-                    "status",
-                    "reason",
-                    "matched_client",
-                    "updated_at",
-                ]
-            )
+        touched_org_ids.update(
+            candidates.values_list("organization_id", flat=True)
+        )
+        candidates.update(
+            resolution="auto",
+            resolution_note="",
+            resolved_by=None,
+            resolved_at=None,
+            status=ORIGINAL_STATUS,
+            reason=ORIGINAL_REASON,
+            matched_client=None,
+        )
 
     _refresh_run_counts(Candidate, ImportRun, touched_org_ids)
 
