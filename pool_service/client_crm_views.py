@@ -2,6 +2,7 @@ import logging
 
 from django.conf import settings
 from django.contrib import messages
+from django.contrib.auth.models import User
 from django.contrib.auth.decorators import login_required
 from django.db.models import Count, Q
 from django.http import HttpResponseForbidden, JsonResponse
@@ -14,12 +15,14 @@ from .client_crm_import import (
     resolve_import_candidate,
 )
 from .client_crm_models import ClientCRMProfile, ClientImportCandidate, ClientImportRun
+from .communication_models import CommunicationAccess
 from .client_queries import active_clients
 from .client_merge import merge_clients, merge_suggestions
-from .models import Client, OrganizationAccess, Pool
+from .models import Client, CrmItem, OrganizationAccess, Pool, ServiceTask
 
 
 IMPORT_ROLES = {"owner", "admin"}
+CLIENT_VIEW_ROLES = {"owner", "admin", "service", "installer", "manager"}
 logger = logging.getLogger(__name__)
 
 
@@ -33,6 +36,227 @@ def _can_manage_import(user, organization_id):
         organization_id=organization_id,
         role__in=IMPORT_ROLES,
     ).exists()
+
+
+def _can_view_client(user, client):
+    if not user.is_authenticated or not user.is_active:
+        return False
+    if user.is_superuser:
+        return True
+    if not client.organization_id:
+        return False
+    return OrganizationAccess.objects.filter(
+        user=user,
+        organization_id=client.organization_id,
+        role__in=CLIENT_VIEW_ROLES,
+    ).exists()
+
+
+def _can_manage_client_profile(user, client):
+    if not user.is_authenticated or not user.is_active:
+        return False
+    if user.is_superuser:
+        return False
+    if not client.organization_id:
+        return False
+    return OrganizationAccess.objects.filter(
+        user=user,
+        organization_id=client.organization_id,
+        role__in=IMPORT_ROLES,
+    ).exists()
+
+
+def _user_label(user):
+    if not user:
+        return ""
+    return user.get_full_name() or user.username
+
+
+@login_required
+def client_detail(request, client_id):
+    client = get_object_or_404(
+        active_clients(
+            Client.objects.select_related("organization", "crm_profile")
+        ),
+        pk=client_id,
+    )
+    if not _can_view_client(request.user, client):
+        return HttpResponseForbidden()
+
+    profile = getattr(client, "crm_profile", None)
+    can_manage_profile = _can_manage_client_profile(request.user, client)
+
+    if request.method == "POST":
+        if not can_manage_profile:
+            return HttpResponseForbidden()
+        profile, _ = ClientCRMProfile.objects.get_or_create(client=client)
+
+        def resolve_user(raw_value):
+            raw_value = (raw_value or "").strip()
+            if not raw_value:
+                return None
+            try:
+                user_id = int(raw_value)
+            except (TypeError, ValueError):
+                raise ValueError("Некорректный сотрудник.")
+            user = (
+                User.objects.filter(
+                    pk=user_id,
+                    is_active=True,
+                    organizationaccess__organization_id=client.organization_id,
+                )
+                .distinct()
+                .first()
+            )
+            if not user:
+                raise ValueError("Сотрудник не найден в организации.")
+            return user
+
+        try:
+            profile.manager = resolve_user(request.POST.get("manager"))
+            profile.responsible = resolve_user(request.POST.get("responsible"))
+        except ValueError as exc:
+            messages.error(request, str(exc))
+        else:
+            profile.notes = (request.POST.get("notes") or "").strip()
+            profile.save(
+                update_fields=[
+                    "manager",
+                    "responsible",
+                    "notes",
+                    "updated_at",
+                ]
+            )
+            messages.success(request, "Карточка клиента обновлена.")
+        return redirect("client_detail", client_id=client.id)
+
+    contacts = list(client.crm_contacts.order_by("kind", "-is_primary", "id"))
+    pools = list(
+        Pool.objects.filter(client=client, is_deleted=False)
+        .order_by("address", "id")
+    )
+
+    tasks_qs = (
+        ServiceTask.objects.filter(
+            Q(client=client) | Q(pool__client=client),
+            organization_id=client.organization_id,
+        )
+        .exclude(
+            is_archived=True,
+            archived_reason=ServiceTask.ARCHIVE_REASON_DELETED,
+        )
+        .select_related("pool", "primary_responsible", "created_by")
+        .prefetch_related("responsibles")
+        .distinct()
+        .order_by("-updated_at", "-id")
+    )
+    is_admin = (
+        request.user.is_superuser
+        or OrganizationAccess.objects.filter(
+            user=request.user,
+            organization_id=client.organization_id,
+            role__in=IMPORT_ROLES,
+        ).exists()
+    )
+    if not is_admin:
+        tasks_qs = tasks_qs.filter(
+            Q(created_by=request.user)
+            | Q(primary_responsible=request.user)
+            | Q(responsibles=request.user)
+        ).distinct()
+    tasks = list(tasks_qs[:30])
+
+    crm_items = list(
+        CrmItem.objects.filter(
+            client=client,
+            organization_id=client.organization_id,
+            is_archived=False,
+        )
+        .select_related("pool", "responsible")
+        .order_by("-updated_at", "-id")[:20]
+    )
+
+    calls_qs = client.phone_calls.select_related(
+        "employee",
+        "employee_profile",
+    ).order_by("-started_at", "-id")
+    call_access = None
+    if client.organization_id and not request.user.is_superuser:
+        call_access = CommunicationAccess.objects.filter(
+            organization_id=client.organization_id,
+            user=request.user,
+        ).first()
+    if request.user.is_superuser or (call_access and call_access.can_view_all_calls):
+        visible_calls = calls_qs
+    elif call_access and call_access.can_view_own_calls:
+        visible_calls = calls_qs.filter(employee=request.user)
+    else:
+        visible_calls = calls_qs.none()
+    calls = list(visible_calls[:20])
+    for call in calls:
+        call.analysis_obj = getattr(call, "analysis", None)
+
+    if client.client_type == "legal":
+        related_people = list(
+            client.person_links.select_related("person", "person__crm_profile")
+            .order_by("-is_primary", "person__name", "id")
+        )
+        related_companies = []
+    else:
+        related_companies = list(
+            client.company_links.select_related("company", "company__crm_profile")
+            .order_by("-is_primary", "company__name", "id")
+        )
+        related_people = []
+
+    staff_users = []
+    if client.organization_id:
+        staff_users = list(
+            User.objects.filter(
+                is_active=True,
+                organizationaccess__organization_id=client.organization_id,
+            )
+            .distinct()
+            .order_by("first_name", "last_name", "username")
+        )
+
+    active_task_count = sum(
+        1
+        for task in tasks
+        if task.status not in {
+            ServiceTask.STATUS_DONE,
+            ServiceTask.STATUS_CANCELLED,
+        }
+    )
+
+    return render(
+        request,
+        "pool_service/client_detail.html",
+        {
+            "page_title": client.name,
+            "page_subtitle": "Карточка клиента",
+            "active_tab": "clients",
+            "client": client,
+            "profile": profile,
+            "contacts": contacts,
+            "pools": pools,
+            "tasks": tasks,
+            "crm_items": crm_items,
+            "calls": calls,
+            "related_people": related_people,
+            "related_companies": related_companies,
+            "staff_users": staff_users,
+            "can_manage_profile": can_manage_profile,
+            "manager_label": _user_label(profile.manager) if profile else "",
+            "responsible_label": _user_label(profile.responsible) if profile else "",
+            "object_count": len(pools),
+            "active_task_count": active_task_count,
+            "call_count": visible_calls.count(),
+            "show_search": False,
+            "show_add_button": False,
+            "add_url": None,
+        },
+    )
 
 
 @login_required
