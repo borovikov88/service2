@@ -7,7 +7,7 @@
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
       <div>
         <h4 class="fw-bold mb-1">Импорт клиентов из 1С</h4>
-        <div class="text-muted">Сначала обновляем кандидатов, затем отдельно применяем только безопасно сопоставленные записи.</div>
+        <div class="text-muted">Новые покупатели из 1С добавляются автоматически примерно каждые 5 минут. Ночью выполняется полная сверка; ручной запуск нужен только для диагностики или срочной повторной проверки.</div>
       </div>
       <div class="d-flex gap-2">
         <a class="btn btn-outline-primary" href="{% url 'client_merge_index' %}">
@@ -121,7 +121,7 @@
         {% csrf_token %}
         <input type="hidden" name="action" value="scan">
         <button class="btn btn-primary" type="submit" {% if import_active %}disabled{% endif %}>
-          <i class="bi bi-arrow-repeat me-1"></i>Обновить из 1С
+          <i class="bi bi-arrow-repeat me-1"></i>Полная сверка сейчас
         </button>
       </form>
       <form method="post" onsubmit="return confirm('Импортировать все карточки со статусом «Готов к импорту»?');">
