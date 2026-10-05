@@ -234,7 +234,10 @@ def _candidate_contacts(row, extra_rows):
 
 
 def _match_clients(organization, source_kind, inn, phones, source_ref=""):
-    matches = Client.objects.filter(organization=organization)
+    matches = Client.objects.filter(organization=organization).filter(
+        models.Q(crm_profile__isnull=True)
+        | models.Q(crm_profile__merged_into__isnull=True)
+    )
     if source_ref:
         profile = ClientCRMProfile.objects.filter(onec_ref=source_ref).select_related("client").first()
         if profile and profile.client.organization_id == organization.id:
@@ -364,6 +367,7 @@ def scan_onec_clients(run=None):
             reason = "Не импортировать — решение пользователя"
         elif resolution != ClientImportCandidate.RESOLUTION_AUTO and status not in {
             ClientImportCandidate.STATUS_INVALID,
+            ClientImportCandidate.STATUS_DUPLICATE,
         }:
             status = ClientImportCandidate.STATUS_READY
             reason = "Тип подтверждён пользователем"
