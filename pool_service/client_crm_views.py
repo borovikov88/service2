@@ -9,7 +9,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
 from .client_crm_import import (
-    apply_ready_candidates,
+    request_client_apply,
     request_client_import_scan,
     resolve_import_candidate,
 )
@@ -103,29 +103,26 @@ def client_onec_import(request):
             return redirect(url)
 
         if action == "apply":
-            latest_run = (
-                ClientImportRun.objects.filter(organization_id=organization_id)
-                .order_by("-requested_at", "-id")
-                .first()
-            )
-            if not latest_run or latest_run.status != ClientImportRun.STATUS_SUCCESS:
-                messages.warning(
+            try:
+                run, started = request_client_apply()
+            except ValueError as exc:
+                messages.warning(request, str(exc))
+            except Exception:
+                logger.exception("Failed to enqueue 1C client apply")
+                messages.error(
                     request,
-                    "Импортировать карточки можно только после полностью успешного обновления из 1С.",
-                )
-                return redirect("client_onec_import")
-            result = apply_ready_candidates()
-            if result["failed"]:
-                messages.warning(
-                    request,
-                    f"Импортировано: {result['imported']}. "
-                    f"Требуют проверки: {result['failed']}.",
+                    "Не удалось запустить импорт клиентов. Обновите страницу и попробуйте ещё раз.",
                 )
             else:
-                messages.success(
-                    request,
-                    f"Импортировано карточек: {result['imported']}.",
-                )
+                if started:
+                    messages.success(
+                        request,
+                        "Импорт готовых клиентов запущен на сервере. Можно закрыть страницу — процесс продолжится.",
+                    )
+                elif run.status == ClientImportRun.STATUS_APPLYING:
+                    messages.info(request, "Импорт клиентов уже выполняется.")
+                else:
+                    messages.info(request, "Готовых карточек для импорта больше нет.")
             return redirect("client_onec_import")
         return HttpResponseForbidden()
 
@@ -139,6 +136,7 @@ def client_onec_import(request):
         and latest_run.status in {
             ClientImportRun.STATUS_PENDING,
             ClientImportRun.STATUS_RUNNING,
+            ClientImportRun.STATUS_APPLYING,
         }
     )
 
