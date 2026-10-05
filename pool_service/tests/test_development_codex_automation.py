@@ -1244,6 +1244,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         }
         allowed_automatic_workflows = {
             "call-recordings-sync.yml",
+            "client-sync.yml",
             "employee-identity-sync.yml",
             "ci-deploy.yml",
             "direct-pr-review.yml",
@@ -1264,7 +1265,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         for workflow in workflows:
             with self.subTest(workflow=workflow.name):
                 text = workflow.read_text(encoding="utf-8")
-                if workflow.name in {"call-recordings-sync.yml", "employee-identity-sync.yml"}:
+                if workflow.name in {"call-recordings-sync.yml", "client-sync.yml", "employee-identity-sync.yml"}:
                     expected_triggers = ["schedule", "workflow_dispatch"]
                 elif workflow.name == "ci-deploy.yml":
                     expected_triggers = ["pull_request", "push", "workflow_dispatch"]

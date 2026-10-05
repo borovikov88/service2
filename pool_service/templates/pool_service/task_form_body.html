@@ -6,6 +6,22 @@
   {% if is_modal %}
     <input type="hidden" name="modal" value="1">
   {% endif %}
+  {% if linked_client %}
+    <input type="hidden" name="client_id" value="{{ linked_client.id }}">
+  {% endif %}
+  {% if linked_pool %}
+    <input type="hidden" name="pool_id" value="{{ linked_pool.id }}">
+  {% endif %}
+
+  {% if linked_client %}
+    <div class="border rounded-3 px-3 py-2">
+      <div class="text-muted small">Клиент</div>
+      <div class="fw-semibold">{{ linked_client.name }}</div>
+      {% if linked_pool %}
+        <div class="text-muted small mt-1">{{ linked_pool.address }}</div>
+      {% endif %}
+    </div>
+  {% endif %}
 
   {% if form.non_field_errors %}
     <div class="alert alert-danger mb-0">{{ form.non_field_errors }}</div>
@@ -116,7 +132,7 @@
     {% if is_modal %}
       <button type="button" class="btn btn-outline-secondary rounded-3" data-bs-dismiss="modal">Закрыть</button>
     {% elif next_url %}
-      <a class="btn btn-outline-secondary rounded-3" href="{{ next_url }}">Назад к календарю</a>
+      <a class="btn btn-outline-secondary rounded-3" href="{{ next_url }}">Назад</a>
     {% else %}
       <a class="btn btn-outline-secondary rounded-3" href="{% url 'readings_all' %}">Назад к календарю</a>
     {% endif %}

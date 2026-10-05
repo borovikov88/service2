@@ -1,0 +1,76 @@
+name: Sync CRM clients from 1C
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+    - cron: "22 20 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Sync mode
+        required: true
+        type: choice
+        default: incremental
+        options:
+          - incremental
+          - full
+
+permissions:
+  contents: read
+
+concurrency:
+  group: service2-client-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync CRM clients
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_deploy
+          chmod 600 ~/.ssh/service2_deploy
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          ssh-keygen -y -f ~/.ssh/service2_deploy >/dev/null
+          PORT="${DEPLOY_PORT:-22}"
+          [[ "$PORT" =~ ^[0-9]+$ ]]
+          HOST_LOOKUP="$DEPLOY_HOST"
+          if [[ "$PORT" != "22" ]]; then HOST_LOOKUP="[$DEPLOY_HOST]:$PORT"; fi
+          ssh-keygen -F "$HOST_LOOKUP" -f ~/.ssh/known_hosts >/dev/null
+
+      - name: Synchronize clients
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+          DISPATCH_MODE: ${{ inputs.mode }}
+          SCHEDULE_VALUE: ${{ github.event.schedule }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          MODE="incremental"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${DISPATCH_MODE:-}" ]]; then
+            MODE="$DISPATCH_MODE"
+          elif [[ "${SCHEDULE_VALUE:-}" == "22 20 * * *" ]]; then
+            MODE="full"
+          fi
+
+          printf -v REMOTE_COMMAND \
+            'set -Eeuo pipefail; cd %q; exec 8>../tmp/service2-client-import.lock; if flock -n 8; then exec 9>../tmp/service2-deploy.lock; flock -s -w 300 9; ../venv/bin/python -B manage.py sync_onec_clients --mode %q; else echo "Client sync already running; skipping."; fi' \
+            "$DEPLOY_APP_PATH" "$MODE"
+
+          ssh -i ~/.ssh/service2_deploy \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
