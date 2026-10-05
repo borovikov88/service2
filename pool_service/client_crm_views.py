@@ -203,14 +203,21 @@ def client_detail(request, client_id):
     )
 
     calls = []
+    calls_total = 0
     can_view_calls = False
     if client.organization_id:
         communication_access = CommunicationAccess.objects.filter(
             organization_id=client.organization_id,
             user=request.user,
         ).first()
+        is_org_admin = OrganizationAccess.objects.filter(
+            user=request.user,
+            organization_id=client.organization_id,
+            role__in=IMPORT_ROLES,
+        ).exists()
         can_view_all_calls = bool(
             request.user.is_superuser
+            or is_org_admin
             or (communication_access and communication_access.can_view_all_calls)
         )
         can_view_own_calls = bool(
@@ -222,10 +229,13 @@ def client_detail(request, client_id):
             .order_by("-started_at")
         )
         if can_view_all_calls:
+            calls_total = call_qs.count()
             calls = list(call_qs[:50])
             can_view_calls = True
         elif can_view_own_calls:
-            calls = list(call_qs.filter(employee=request.user)[:50])
+            own_call_qs = call_qs.filter(employee=request.user)
+            calls_total = own_call_qs.count()
+            calls = list(own_call_qs[:50])
             can_view_calls = True
 
     for call in calls:
@@ -282,6 +292,7 @@ def client_detail(request, client_id):
             "tasks": tasks,
             "crm_items": crm_items,
             "calls": calls,
+            "calls_total": calls_total,
             "can_view_calls": can_view_calls,
             "can_manage": can_manage,
             "staff_options": staff_options,
