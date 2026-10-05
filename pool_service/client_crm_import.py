@@ -496,6 +496,7 @@ def request_client_import_scan(requested_by=None):
             status__in=[
                 ClientImportRun.STATUS_PENDING,
                 ClientImportRun.STATUS_RUNNING,
+                ClientImportRun.STATUS_APPLYING,
             ],
             updated_at__lt=stale_before,
         ).update(
@@ -512,6 +513,7 @@ def request_client_import_scan(requested_by=None):
                 status__in=[
                     ClientImportRun.STATUS_PENDING,
                     ClientImportRun.STATUS_RUNNING,
+                    ClientImportRun.STATUS_APPLYING,
                 ],
             )
             .order_by("-requested_at", "-id")
@@ -530,6 +532,112 @@ def request_client_import_scan(requested_by=None):
         ClientImportRun.objects.filter(pk=run.pk).update(
             status=ClientImportRun.STATUS_FAILED,
             error="Не удалось запустить фоновый процесс импорта",
+            finished_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+        run.refresh_from_db()
+        return run, False
+    return run, True
+
+
+def _reap_client_apply_worker(process, run_id):
+    try:
+        return_code = process.wait()
+        if return_code:
+            logger.error(
+                "1C client apply worker exited with code %s for run_id=%s",
+                return_code,
+                run_id,
+            )
+            ClientImportRun.objects.filter(
+                pk=run_id,
+                status=ClientImportRun.STATUS_APPLYING,
+            ).update(
+                status=ClientImportRun.STATUS_FAILED,
+                error="Фоновый импорт клиентов завершился с ошибкой",
+                finished_at=timezone.now(),
+                updated_at=timezone.now(),
+            )
+    except Exception:
+        logger.exception("Failed while reaping 1C client apply worker")
+
+
+def start_client_apply_worker(run_id):
+    base_dir = str(settings.BASE_DIR)
+    worker_script = os.path.join(base_dir, "scripts", "run_client_apply_worker.sh")
+    bash = shutil.which("bash")
+    if not bash or not os.path.isfile(worker_script):
+        logger.error("1C client apply worker launcher is unavailable")
+        return False
+
+    env = os.environ.copy()
+    env["SERVICE2_PYTHON"] = _worker_python_executable(base_dir)
+    try:
+        process = subprocess.Popen(
+            [bash, worker_script, str(run_id)],
+            cwd=base_dir,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except OSError:
+        logger.exception("Failed to start 1C client apply worker")
+        return False
+
+    threading.Thread(
+        target=_reap_client_apply_worker,
+        args=(process, run_id),
+        daemon=True,
+        name="service2-client-apply-reaper",
+    ).start()
+    return True
+
+
+def request_client_apply():
+    organization = _target_organization()
+    with transaction.atomic():
+        organization = Organization.objects.select_for_update().get(pk=organization.pk)
+        run = (
+            ClientImportRun.objects.select_for_update()
+            .filter(organization=organization)
+            .order_by("-requested_at", "-id")
+            .first()
+        )
+        if run is None or run.status != ClientImportRun.STATUS_SUCCESS:
+            raise ValueError("Импорт можно запустить только после успешного обновления из 1С")
+
+        ready_count = ClientImportCandidate.objects.filter(
+            organization=organization,
+            status=ClientImportCandidate.STATUS_READY,
+        ).count()
+        if not ready_count:
+            return run, False
+
+        run.status = ClientImportRun.STATUS_APPLYING
+        run.error = ""
+        run.total_rows = ready_count
+        run.processed_rows = 0
+        run.started_at = timezone.now()
+        run.finished_at = None
+        run.save(
+            update_fields=[
+                "status",
+                "error",
+                "total_rows",
+                "processed_rows",
+                "started_at",
+                "finished_at",
+                "updated_at",
+            ]
+        )
+
+    if not start_client_apply_worker(run.pk):
+        ClientImportRun.objects.filter(pk=run.pk).update(
+            status=ClientImportRun.STATUS_FAILED,
+            error="Не удалось запустить фоновый импорт клиентов",
             finished_at=timezone.now(),
             updated_at=timezone.now(),
         )
@@ -833,13 +941,15 @@ def resolve_import_candidate(candidate_id, resolution, resolved_by=None):
     return candidate
 
 
-def apply_ready_candidates(organization=None):
+def apply_ready_candidates(organization=None, run=None):
     organization = organization or _target_organization()
     candidates = ClientImportCandidate.objects.filter(
         organization=organization,
         status=ClientImportCandidate.STATUS_READY,
     ).order_by("id")
+    total = candidates.count()
     result = {"imported": 0, "failed": 0}
+    processed = 0
     for candidate in candidates.iterator():
         try:
             apply_candidate(candidate)
@@ -850,4 +960,64 @@ def apply_ready_candidates(organization=None):
             result["failed"] += 1
         else:
             result["imported"] += 1
+        processed += 1
+        if run is not None and (processed % 25 == 0 or processed == total):
+            ClientImportRun.objects.filter(
+                pk=run.pk,
+                status=ClientImportRun.STATUS_APPLYING,
+            ).update(
+                total_rows=total,
+                processed_rows=processed,
+                imported_count=result["imported"],
+                review_count=result["failed"],
+                updated_at=timezone.now(),
+            )
     return result
+
+
+def process_client_apply_run(run_id):
+    run = (
+        ClientImportRun.objects.select_related("organization")
+        .filter(pk=run_id, status=ClientImportRun.STATUS_APPLYING)
+        .first()
+    )
+    if run is None:
+        return ClientImportRun.objects.get(pk=run_id)
+
+    try:
+        result = apply_ready_candidates(run.organization, run=run)
+    except Exception as exc:
+        logger.exception("1C client apply failed for run_id=%s", run_id)
+        code = getattr(exc, "code", exc.__class__.__name__)
+        ClientImportRun.objects.filter(pk=run_id).update(
+            status=ClientImportRun.STATUS_FAILED,
+            error=f"Ошибка импорта клиентов: {str(code)[:400]}",
+            finished_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+    else:
+        counts = {
+            item["status"]: item["count"]
+            for item in ClientImportCandidate.objects.filter(
+                organization=run.organization
+            ).values("status").annotate(count=models.Count("id"))
+        }
+        ClientImportRun.objects.filter(pk=run_id).update(
+            status=ClientImportRun.STATUS_SUCCESS,
+            ready_count=counts.get(ClientImportCandidate.STATUS_READY, 0),
+            review_count=counts.get(ClientImportCandidate.STATUS_REVIEW, 0),
+            duplicate_count=counts.get(ClientImportCandidate.STATUS_DUPLICATE, 0),
+            invalid_count=(
+                counts.get(ClientImportCandidate.STATUS_INVALID, 0)
+                + counts.get(ClientImportCandidate.STATUS_SKIPPED, 0)
+            ),
+            imported_count=counts.get(ClientImportCandidate.STATUS_IMPORTED, 0),
+            error=(
+                f"Требуют проверки после импорта: {result['failed']}"
+                if result["failed"]
+                else ""
+            ),
+            finished_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+    return ClientImportRun.objects.get(pk=run_id)
