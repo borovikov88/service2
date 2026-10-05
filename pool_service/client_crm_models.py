@@ -304,11 +304,13 @@ class ClientImportCandidate(models.Model):
 class ClientImportRun(models.Model):
     STATUS_PENDING = "pending"
     STATUS_RUNNING = "running"
+    STATUS_APPLYING = "applying"
     STATUS_SUCCESS = "success"
     STATUS_FAILED = "failed"
     STATUS_CHOICES = [
         (STATUS_PENDING, "В очереди"),
         (STATUS_RUNNING, "Загружается"),
+        (STATUS_APPLYING, "Импортируются клиенты"),
         (STATUS_SUCCESS, "Готово"),
         (STATUS_FAILED, "Ошибка"),
     ]
