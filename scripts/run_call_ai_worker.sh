@@ -20,11 +20,13 @@ IDLE_GRACE_SECONDS="${3:-0}"
 [[ "$WAIT_FOR_AI" == "0" || "$WAIT_FOR_AI" == "1" ]]
 [[ "$IDLE_GRACE_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]]
 
-# Allow at most one durable successor to wait behind the active AI worker.
-# Extra button clicks only persist database requests; their launchers exit here.
-exec 7>"$TMP_DIR/service2-call-ai-successor.lock"
-if ! flock -n 7; then
-    exit 0
+# Only durable manual launchers participate in the successor mutex.
+# Scheduled fallback is deliberately non-waiting and must never consume this slot.
+if [[ "$WAIT_FOR_AI" == "1" ]]; then
+    exec 7>"$TMP_DIR/service2-call-ai-successor.lock"
+    if ! flock -n 7; then
+        exit 0
+    fi
 fi
 
 # Keep the lock order identical to update.sh: AI -> deploy.
@@ -32,20 +34,29 @@ fi
 exec 8>"$TMP_DIR/service2-call-ai.lock"
 if [[ "$WAIT_FOR_AI" == "1" ]]; then
     flock 8
-elif ! flock -n 8; then
-    exit 0
+else
+    if ! flock -n 8; then
+        exit 0
+    fi
 fi
 
-# This process is now the active worker. Release the successor slot immediately
-# so at most one new launcher may wait behind it while it drains the queue.
-flock -u 7
-exec 7>&-
+# This process is now the active worker. Free the manual successor slot so one
+# later request may wait behind this worker while it drains the durable queue.
+if [[ "$WAIT_FOR_AI" == "1" ]]; then
+    flock -u 7
+    exec 7>&-
+fi
 
-# Background readers share the deployment guard. update.sh keeps its exclusive
-# lock, so checkout/venv/migrations can never change underneath this process.
+# Background readers share the deployment guard. A manual request waits through
+# an exclusive deploy/identity-sync holder rather than abandoning its queue row.
+# Scheduled fallback remains non-blocking so its GitHub job stays bounded.
 exec 9>"$TMP_DIR/service2-deploy.lock"
-if ! flock -s -n 9; then
-    exit 0
+if [[ "$WAIT_FOR_AI" == "1" ]]; then
+    flock -s 9
+else
+    if ! flock -s -n 9; then
+        exit 0
+    fi
 fi
 
 COMMAND_ARGS=(
