@@ -14,6 +14,32 @@
       </a>
     </div>
 
+    {% if latest_run %}
+      <div class="alert {% if latest_run.status == "success" %}alert-success{% elif latest_run.status == "failed" %}alert-danger{% else %}alert-info{% endif %} d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+        <div>
+          <div class="fw-semibold">
+            {% if latest_run.status == "pending" %}Обновление из 1С поставлено в очередь
+            {% elif latest_run.status == "running" %}Обновление из 1С выполняется
+            {% elif latest_run.status == "success" %}Последнее обновление из 1С завершено
+            {% else %}Последнее обновление завершилось ошибкой{% endif %}
+          </div>
+          <div class="small">
+            {% if latest_run.total_rows %}
+              Обработано {{ latest_run.processed_rows }} из {{ latest_run.total_rows }}
+            {% elif import_active %}
+              Получаем данные из 1С…
+            {% endif %}
+            {% if latest_run.error %}<span class="ms-2">{{ latest_run.error }}</span>{% endif %}
+          </div>
+        </div>
+        {% if latest_run.status == "success" %}
+          <div class="small">
+            Готовы: {{ latest_run.ready_count }} · Проверить: {{ latest_run.review_count }} · Дубли: {{ latest_run.duplicate_count }} · Некорректные: {{ latest_run.invalid_count }}
+          </div>
+        {% endif %}
+      </div>
+    {% endif %}
+
     <div class="row g-3 mb-4">
       <div class="col-6 col-lg-2">
         <div class="border rounded-3 p-3 h-100">
@@ -67,14 +93,14 @@
       <form method="post">
         {% csrf_token %}
         <input type="hidden" name="action" value="scan">
-        <button class="btn btn-primary" type="submit">
+        <button class="btn btn-primary" type="submit" {% if import_active %}disabled{% endif %}>
           <i class="bi bi-arrow-repeat me-1"></i>Обновить из 1С
         </button>
       </form>
       <form method="post" onsubmit="return confirm('Импортировать все карточки со статусом «Готов к импорту»?');">
         {% csrf_token %}
         <input type="hidden" name="action" value="apply">
-        <button class="btn btn-success" type="submit" {% if not ready_count %}disabled{% endif %}>
+        <button class="btn btn-success" type="submit" {% if not ready_count or import_active %}disabled{% endif %}>
           <i class="bi bi-check2-circle me-1"></i>Импортировать готовые ({{ ready_count }})
         </button>
       </form>
@@ -154,4 +180,11 @@
     {% endif %}
   </div>
 </div>
+{% if import_active %}
+<script>
+  window.setTimeout(function () {
+    window.location.reload();
+  }, 5000);
+</script>
+{% endif %}
 {% endblock %}
