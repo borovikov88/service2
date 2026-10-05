@@ -211,6 +211,23 @@
                 >
                   <i class="bi bi-download"></i>
                 </a>
+                {% if not call.analysis or call.analysis.status == 'pending' and not call.analysis.requested_at %}
+                  <form
+                    class="m-0 d-inline-flex"
+                    method="post"
+                    action="{% url 'communication_call_analysis_retry' call.pk %}"
+                  >
+                    {% csrf_token %}
+                    <button
+                      class="btn btn-outline-primary btn-sm call-player__analysis"
+                      type="submit"
+                      aria-label="Расшифровать и проанализировать"
+                      title="Расшифровать и проанализировать"
+                    >
+                      <i class="bi bi-stars"></i>
+                    </button>
+                  </form>
+                {% endif %}
               </div>
             {% elif call.recording_ref %}
               {% if call.recording_status == 'failed' %}
@@ -225,7 +242,8 @@
             {% endif %}
           </td>
         </tr>
-        {% if can_listen and call.recording_file %}
+        {% if can_listen and call.recording_file and call.analysis %}
+          {% if call.analysis.status != 'pending' or call.analysis.requested_at %}
           <tr>
             <td colspan="7" class="p-0">
               <div class="call-analysis">
@@ -295,20 +313,11 @@
                       <button class="btn btn-outline-secondary btn-sm" type="submit">Повторить</button>
                     </form>
                   </div>
-                {% else %}
-                  <div class="d-flex flex-wrap align-items-center gap-2">
-                    <span class="text-muted">Расшифровка запускается вручную.</span>
-                    <form method="post" action="{% url 'communication_call_analysis_retry' call.pk %}">
-                      {% csrf_token %}
-                      <button class="btn btn-primary btn-sm" type="submit">
-                        <i class="bi bi-stars me-1"></i>Расшифровать и проанализировать
-                      </button>
-                    </form>
-                  </div>
                 {% endif %}
               </div>
             </td>
           </tr>
+          {% endif %}
         {% endif %}
       {% empty %}
         <tr>
