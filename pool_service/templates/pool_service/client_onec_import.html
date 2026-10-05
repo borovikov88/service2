@@ -121,7 +121,7 @@
         {% csrf_token %}
         <input type="hidden" name="action" value="scan">
         <button class="btn btn-primary" type="submit" {% if import_active %}disabled{% endif %}>
-          <i class="bi bi-arrow-repeat me-1"></i>Полная сверка сейчас
+          <i class="bi bi-arrow-repeat me-1"></i>Проверить 1С сейчас
         </button>
       </form>
       <form method="post" onsubmit="return confirm('Импортировать все карточки со статусом «Готов к импорту»?');">
