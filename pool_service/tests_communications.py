@@ -1073,12 +1073,13 @@ class CommunicationsTests(TestCase):
         self.client.login(username="owner", password="test")
         response = self.client.get(reverse("communications_calls"))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Расшифровка запускается вручную.")
-        self.assertContains(response, "Расшифровать и проанализировать")
+        self.assertContains(response, 'class="btn btn-outline-primary btn-sm call-player__analysis"')
+        self.assertContains(response, 'aria-label="Расшифровать и проанализировать"')
         self.assertContains(
             response,
             reverse("communication_call_analysis_retry", args=[call.pk]),
         )
+        self.assertNotContains(response, "Расшифровка запускается вручную.")
         self.assertNotContains(response, "Ожидает автоматической расшифровки.")
 
     @override_settings(
