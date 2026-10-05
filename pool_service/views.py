@@ -9160,6 +9160,11 @@ def profile_view(request):
         return redirect("profile")
 
     if request.method == "POST" and request.POST.get("notification_settings") == "1":
+        if request.POST.get("personal_notification_settings") == "1":
+            profile.in_app_notifications_enabled = bool(request.POST.get("in_app_notifications_enabled"))
+            profile.push_notifications_enabled = bool(request.POST.get("push_notifications_enabled"))
+            profile.save(update_fields=["in_app_notifications_enabled", "push_notifications_enabled"])
+
         if notification_access:
             organization = notification_access.organization
 
