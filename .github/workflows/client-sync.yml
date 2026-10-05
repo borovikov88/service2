@@ -52,7 +52,7 @@ jobs:
           test -n "$DEPLOY_USER"
           test -n "$DEPLOY_APP_PATH"
           PORT="${DEPLOY_PORT:-22}"
-          SYNC_COMMAND="sync_recent_onec_clients --lookback-hours 48"
+          SYNC_COMMAND="sync_recent_onec_clients --lookback-hours 168"
           if [[ "${{ github.event_name }}" == "schedule" && "${{ github.event.schedule }}" == "31 20 * * *" ]]; then
             SYNC_COMMAND="sync_full_onec_clients"
           fi
