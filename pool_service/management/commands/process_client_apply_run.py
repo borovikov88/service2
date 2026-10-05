@@ -1,0 +1,24 @@
+from django.core.management.base import BaseCommand, CommandError
+
+from pool_service.client_crm_import import process_client_apply_run
+
+
+class Command(BaseCommand):
+    help = "Import all ready CRM client candidates for one completed 1C scan."
+
+    def add_arguments(self, parser):
+        parser.add_argument("run_id", type=int)
+
+    def handle(self, *args, **options):
+        run_id = int(options["run_id"])
+        try:
+            run = process_client_apply_run(run_id)
+        except Exception as exc:
+            raise CommandError(f"Client apply run {run_id} failed to start") from exc
+
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"Client apply run {run.pk}: {run.status} "
+                f"{run.processed_rows}/{run.total_rows}"
+            )
+        )
