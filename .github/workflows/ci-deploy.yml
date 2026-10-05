@@ -168,6 +168,74 @@ jobs:
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
             "$REMOTE_COMMAND" < update.sh
+      - name: Audit object to client links once
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          read -r -d '' PY_CODE <<'PY' || true
+          import json
+          from django.db.models import Q
+          from pool_service.models import Pool
+          rows = []
+          total = canonical = legacy = merged = 0
+          for pool in (
+              Pool.objects.filter(is_deleted=False)
+              .select_related("client", "client__crm_profile")
+              .order_by("id")
+          ):
+              total += 1
+              client = pool.client
+              profile = getattr(client, "crm_profile", None)
+              if profile and profile.merged_into_id:
+                  status = "merged_source"
+                  merged += 1
+              elif profile and profile.onec_ref:
+                  status = "canonical_1c"
+                  canonical += 1
+              else:
+                  status = "legacy_unmerged"
+                  legacy += 1
+              haystack = " ".join(
+                  str(v or "")
+                  for v in (
+                      pool.address,
+                      client.name,
+                      client.company_name,
+                      client.first_name,
+                      client.last_name,
+                  )
+              ).casefold()
+              if status != "canonical_1c" or "чертков" in haystack or "черткова" in haystack or "тест" in haystack:
+                  rows.append({
+                      "pool_id": pool.id,
+                      "address": pool.address,
+                      "client_id": client.id,
+                      "client_name": client.name,
+                      "client_type": client.client_type,
+                      "status": status,
+                      "onec_ref": (profile.onec_ref if profile else None),
+                      "merged_into_id": (profile.merged_into_id if profile else None),
+                      "is_chertkov_match": ("чертков" in haystack or "черткова" in haystack),
+                      "is_test_match": ("тест" in haystack),
+                  })
+          print(json.dumps({
+              "summary": {
+                  "active_objects": total,
+                  "canonical_1c": canonical,
+                  "legacy_unmerged": legacy,
+                  "merged_source": merged,
+              },
+              "problem_or_target_rows": rows,
+          }, ensure_ascii=False))
+          PY
+          printf -v REMOTE_COMMAND 'cd %q; test "$(git rev-parse HEAD)" = %q; ../venv/bin/python manage.py shell -c %q'             "$DEPLOY_APP_PATH" "$GITHUB_SHA" "$PY_CODE"
+          ssh -i ~/.ssh/service2_deploy             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes             -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
+
       - name: Activate 1C Diagnostic MCP once
         id: activate_diag
         env:
