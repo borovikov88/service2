@@ -151,6 +151,21 @@ class Migration(migrations.Migration):
             ),
         ),
         migrations.AlterField(
+            model_name="clientimportrun",
+            name="status",
+            field=models.CharField(
+                choices=[
+                    ("pending", "В очереди"),
+                    ("running", "Загружается"),
+                    ("applying", "Импортируются клиенты"),
+                    ("success", "Готово"),
+                    ("failed", "Ошибка"),
+                ],
+                default="pending",
+                max_length=16,
+            ),
+        ),
+        migrations.AlterField(
             model_name="clientimportcandidate",
             name="status",
             field=models.CharField(
