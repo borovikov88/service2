@@ -1111,7 +1111,7 @@ def resolve_import_candidate(candidate_id, resolution, resolved_by=None):
     return candidate
 
 
-def sync_recent_onec_clients(*, lookback_hours=48):
+def sync_recent_onec_clients(*, lookback_hours=168):
     """Import newly created 1C buyers without a full catalog scan.
 
     The query intentionally overlaps previous runs. source_ref uniqueness and
