@@ -886,10 +886,26 @@ def resolve_import_candidate(candidate_id, resolution, resolved_by=None):
     if resolution not in allowed:
         raise ValueError("Недопустимое решение")
 
+    organization_id = ClientImportCandidate.objects.values_list(
+        "organization_id", flat=True
+    ).get(pk=candidate_id)
+    organization = Organization.objects.select_for_update().get(pk=organization_id)
+    if ClientImportRun.objects.filter(
+        organization=organization,
+        status__in=[
+            ClientImportRun.STATUS_PENDING,
+            ClientImportRun.STATUS_RUNNING,
+            ClientImportRun.STATUS_APPLYING,
+        ],
+    ).exists():
+        raise ValueError(
+            "Дождитесь завершения текущего обновления или импорта клиентов."
+        )
+
     candidate = (
         ClientImportCandidate.objects.select_for_update()
         .select_related("organization")
-        .get(pk=candidate_id)
+        .get(pk=candidate_id, organization=organization)
     )
     if candidate.applied_at:
         raise ValueError("Импортированную карточку нельзя изменить")
