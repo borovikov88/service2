@@ -9,9 +9,14 @@
         <h4 class="fw-bold mb-1">Импорт клиентов из 1С</h4>
         <div class="text-muted">Сначала обновляем кандидатов, затем отдельно применяем только безопасно сопоставленные записи.</div>
       </div>
-      <a class="btn btn-outline-secondary" href="{% url 'clients_list' %}">
-        <i class="bi bi-arrow-left me-1"></i>К клиентам
-      </a>
+      <div class="d-flex gap-2">
+        <a class="btn btn-outline-primary" href="{% url 'client_merge_index' %}">
+          <i class="bi bi-diagram-3 me-1"></i>Объединение клиентов
+        </a>
+        <a class="btn btn-outline-secondary" href="{% url 'clients_list' %}">
+          <i class="bi bi-arrow-left me-1"></i>К клиентам
+        </a>
+      </div>
     </div>
 
     {% if latest_run %}
@@ -34,7 +39,7 @@
         </div>
         {% if latest_run.status == "success" %}
           <div class="small">
-            Готовы: {{ latest_run.ready_count }} · Проверить: {{ latest_run.review_count }} · Дубли: {{ latest_run.duplicate_count }} · Некорректные: {{ latest_run.invalid_count }}
+            Готовы: {{ latest_run.ready_count }} · Проверить: {{ latest_run.review_count }} · Дубли: {{ latest_run.duplicate_count }} · Некорректные/исключённые: {{ latest_run.invalid_count }}
           </div>
         {% endif %}
       </div>
@@ -76,6 +81,14 @@
           <div class="border rounded-3 p-3 h-100">
             <div class="text-muted small">Некорректные</div>
             <div class="fs-4 fw-bold">{{ summary.invalid|default:0 }}</div>
+          </div>
+        </a>
+      </div>
+      <div class="col-6 col-lg-2">
+        <a class="text-decoration-none text-reset" href="?status=skipped">
+          <div class="border rounded-3 p-3 h-100">
+            <div class="text-muted small">Не импортировать</div>
+            <div class="fs-4 fw-bold">{{ summary.skipped|default:0 }}</div>
           </div>
         </a>
       </div>
@@ -125,6 +138,7 @@
             <th>Телефон / Email</th>
             <th>Статус</th>
             <th>Сопоставление</th>
+            <th>Решение</th>
           </tr>
         </thead>
         <tbody>
@@ -137,7 +151,12 @@
               {% endif %}
               <div class="text-muted small">1С: {{ candidate.source_code|default:"—" }}</div>
             </td>
-            <td>{{ candidate.get_source_kind_display }}</td>
+            <td>
+              {{ candidate.get_source_kind_display }}
+              {% if candidate.resolution != "auto" %}
+                <div class="small mt-1"><span class="badge text-bg-info">{{ candidate.get_resolution_display }}</span></div>
+              {% endif %}
+            </td>
             <td>{{ candidate.inn|default:"—" }}</td>
             <td>
               <div>{{ candidate.phone|default:"—" }}</div>
@@ -151,6 +170,8 @@
               {% elif candidate.status == "duplicate" %}
                 <span class="badge text-bg-danger">Возможный дубль</span>
               {% elif candidate.status == "invalid" %}
+                <span class="badge text-bg-secondary">Некорректные данные</span>
+              {% elif candidate.status == "skipped" %}
                 <span class="badge text-bg-secondary">Не импортировать</span>
               {% else %}
                 <span class="badge text-bg-primary">Импортирован</span>
@@ -164,10 +185,29 @@
                 <span class="text-muted">Новая карточка</span>
               {% endif %}
             </td>
+            <td style="min-width: 310px;">
+              {% if candidate.status != "imported" %}
+                <form method="post" class="d-flex flex-wrap gap-1">
+                  {% csrf_token %}
+                  <input type="hidden" name="action" value="resolve">
+                  <input type="hidden" name="candidate_id" value="{{ candidate.id }}">
+                  <input type="hidden" name="return_status" value="{{ current_status }}">
+                  <button class="btn btn-sm {% if candidate.resolution == 'legal' %}btn-primary{% else %}btn-outline-secondary{% endif %}" type="submit" name="resolution" value="legal">Юрлицо</button>
+                  <button class="btn btn-sm {% if candidate.resolution == 'private' %}btn-primary{% else %}btn-outline-secondary{% endif %}" type="submit" name="resolution" value="private">Физлицо</button>
+                  <button class="btn btn-sm {% if candidate.resolution == 'ip' %}btn-primary{% else %}btn-outline-secondary{% endif %}" type="submit" name="resolution" value="ip">ИП</button>
+                  <button class="btn btn-sm {% if candidate.resolution == 'skip' %}btn-secondary{% else %}btn-outline-danger{% endif %}" type="submit" name="resolution" value="skip">Не импортировать</button>
+                  {% if candidate.resolution != "auto" %}
+                    <button class="btn btn-sm btn-link text-muted" type="submit" name="resolution" value="auto">Сбросить</button>
+                  {% endif %}
+                </form>
+              {% else %}
+                <span class="text-muted small">Уже импортирован</span>
+              {% endif %}
+            </td>
           </tr>
           {% empty %}
           <tr>
-            <td colspan="6" class="text-center text-muted py-5">
+            <td colspan="7" class="text-center text-muted py-5">
               Данные ещё не загружены. Нажмите «Обновить из 1С».
             </td>
           </tr>
@@ -176,7 +216,7 @@
       </table>
     </div>
     {% if total_candidates > 500 %}
-      <div class="text-muted small mt-2">На странице показаны первые 500 записей. Используйте фильтры по статусу.</div>
+      <div class="text-muted small mt-2">В общем списке показаны первые 500 записей. Для разбора используйте плашки по статусам — проблемные категории выводятся отдельно.</div>
     {% endif %}
   </div>
 </div>
