@@ -192,6 +192,16 @@ def client_detail(request, client_id):
             | Q(primary_responsible=request.user)
             | Q(responsibles=request.user)
         ).distinct()
+    active_tasks_count = (
+        tasks_qs.filter(is_archived=False)
+        .exclude(
+            status__in=[
+                ServiceTask.STATUS_DONE,
+                ServiceTask.STATUS_CANCELLED,
+            ]
+        )
+        .count()
+    )
     tasks = list(tasks_qs[:50])
     for task in tasks:
         task.responsible_label = _user_label(task.primary_responsible) or ", ".join(
@@ -208,6 +218,7 @@ def client_detail(request, client_id):
     )
     if service_only:
         crm_item_qs = crm_item_qs.filter(direction=CrmItem.DIRECTION_SERVICE)
+    open_crm_count = crm_item_qs.filter(is_archived=False).distinct().count()
     crm_items = list(
         crm_item_qs
         .select_related("pool", "responsible")
@@ -270,17 +281,6 @@ def client_detail(request, client_id):
         client_kind_label = "Юридическое лицо"
     else:
         client_kind_label = "Физическое лицо"
-
-    active_tasks_count = sum(
-        1
-        for task in tasks
-        if not task.is_archived
-        and task.status not in {
-            ServiceTask.STATUS_DONE,
-            ServiceTask.STATUS_CANCELLED,
-        }
-    )
-    open_crm_count = sum(1 for item in crm_items if not item.is_archived)
 
     next_url = reverse("client_detail", kwargs={"client_id": client.id})
     new_task_url = reverse("task_create") + "?" + urlencode(
