@@ -1,0 +1,328 @@
+{% extends 'pool_service/base.html' %}
+{% block title %}{{ client.name }}{% endblock %}
+{% block content %}
+{% include "pool_service/_admin_workspace_styles.html" %}
+<div class="admin-desktop">
+  <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
+    <div>
+      <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
+        <h3 class="fw-bold mb-0">{{ client.name }}</h3>
+        {% if profile and profile.legal_form == "ip" %}
+          <span class="badge text-bg-info">ИП</span>
+        {% elif client.client_type == "legal" %}
+          <span class="badge text-bg-primary">Юрлицо</span>
+        {% else %}
+          <span class="badge text-bg-secondary">Физлицо</span>
+        {% endif %}
+        {% if profile and profile.onec_ref %}
+          <span class="badge text-bg-success">1С</span>
+        {% else %}
+          <span class="badge text-bg-warning">Service2</span>
+        {% endif %}
+      </div>
+      <div class="text-muted">
+        {% if client.phone %}{{ client.phone }}{% endif %}
+        {% if client.email %}{% if client.phone %} · {% endif %}{{ client.email }}{% endif %}
+        {% if client.inn %}{% if client.phone or client.email %} · {% endif %}ИНН {{ client.inn }}{% endif %}
+      </div>
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+      {% if client.phone %}
+        <a class="btn btn-outline-primary btn-sm" href="tel:{{ client.phone }}">
+          <i class="bi bi-telephone me-1"></i>Позвонить
+        </a>
+      {% endif %}
+      {% if can_manage_profile %}
+        <a class="btn btn-outline-secondary btn-sm" href="{% url 'client_edit' client.id %}">
+          <i class="bi bi-pencil me-1"></i>Основные данные
+        </a>
+      {% endif %}
+      <a class="btn btn-outline-secondary btn-sm" href="{% url 'clients_list' %}">
+        <i class="bi bi-arrow-left me-1"></i>К клиентам
+      </a>
+    </div>
+  </div>
+
+  <div class="row g-3 mb-4">
+    <div class="col-6 col-lg-3">
+      <div class="admin-card card card-soft p-3 h-100">
+        <div class="text-muted small">Объекты</div>
+        <div class="fs-4 fw-bold">{{ object_count }}</div>
+      </div>
+    </div>
+    <div class="col-6 col-lg-3">
+      <div class="admin-card card card-soft p-3 h-100">
+        <div class="text-muted small">Активные задачи</div>
+        <div class="fs-4 fw-bold">{{ active_task_count }}</div>
+      </div>
+    </div>
+    <div class="col-6 col-lg-3">
+      <div class="admin-card card card-soft p-3 h-100">
+        <div class="text-muted small">Звонки</div>
+        <div class="fs-4 fw-bold">{{ call_count }}</div>
+      </div>
+    </div>
+    <div class="col-6 col-lg-3">
+      <div class="admin-card card card-soft p-3 h-100">
+        <div class="text-muted small">Последняя синхронизация 1С</div>
+        <div class="fw-semibold mt-1">
+          {% if profile and profile.last_synced_at %}
+            {{ profile.last_synced_at|date:"d.m.Y H:i" }}
+          {% else %}
+            —
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="admin-card card card-soft p-3 p-lg-4">
+    <ul class="nav nav-pills gap-2 mb-4" id="clientCardTabs" role="tablist">
+      <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#client-overview" type="button">Обзор</button></li>
+      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#client-objects" type="button">Объекты <span class="badge text-bg-secondary ms-1">{{ object_count }}</span></button></li>
+      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#client-tasks" type="button">Задачи <span class="badge text-bg-secondary ms-1">{{ active_task_count }}</span></button></li>
+      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#client-communications" type="button">Коммуникации</button></li>
+      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#client-sales" type="button">Продажи</button></li>
+    </ul>
+
+    <div class="tab-content">
+      <div class="tab-pane fade show active" id="client-overview">
+        <div class="row g-4">
+          <div class="col-12 col-xl-6">
+            <div class="border rounded-3 p-3 h-100">
+              <div class="fw-semibold mb-3">Основные данные</div>
+              <div class="row g-3 small">
+                <div class="col-5 text-muted">Название / ФИО</div><div class="col-7">{{ client.name }}</div>
+                {% if profile and profile.legal_name %}
+                  <div class="col-5 text-muted">Полное название</div><div class="col-7">{{ profile.legal_name }}</div>
+                {% endif %}
+                {% if client.inn %}
+                  <div class="col-5 text-muted">ИНН</div><div class="col-7">{{ client.inn }}</div>
+                {% endif %}
+                {% if profile and profile.kpp %}
+                  <div class="col-5 text-muted">КПП</div><div class="col-7">{{ profile.kpp }}</div>
+                {% endif %}
+                {% if profile and profile.birth_date %}
+                  <div class="col-5 text-muted">Дата рождения</div><div class="col-7">{{ profile.birth_date|date:"d.m.Y" }}</div>
+                {% endif %}
+                {% if profile and profile.onec_code %}
+                  <div class="col-5 text-muted">Код 1С</div><div class="col-7">{{ profile.onec_code }}</div>
+                {% endif %}
+                <div class="col-5 text-muted">Менеджер клиента</div><div class="col-7">{{ manager_label|default:"Не назначен" }}</div>
+                <div class="col-5 text-muted">Ответственный</div><div class="col-7">{{ responsible_label|default:"Не назначен" }}</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="col-12 col-xl-6">
+            <div class="border rounded-3 p-3 h-100">
+              <div class="fw-semibold mb-3">Контакты</div>
+              {% if client.phone %}
+                <div class="mb-2"><i class="bi bi-telephone me-2"></i><a href="tel:{{ client.phone }}">{{ client.phone }}</a></div>
+              {% endif %}
+              {% if client.email %}
+                <div class="mb-2"><i class="bi bi-envelope me-2"></i><a href="mailto:{{ client.email }}">{{ client.email }}</a></div>
+              {% endif %}
+              {% for contact in contacts %}
+                {% if contact.value != client.phone and contact.value != client.email %}
+                  <div class="mb-2">
+                    {% if contact.kind == "phone" %}
+                      <i class="bi bi-telephone me-2"></i><a href="tel:{{ contact.value }}">{{ contact.value }}</a>
+                    {% else %}
+                      <i class="bi bi-envelope me-2"></i><a href="mailto:{{ contact.value }}">{{ contact.value }}</a>
+                    {% endif %}
+                    {% if contact.label %}<span class="text-muted small ms-2">{{ contact.label }}</span>{% endif %}
+                  </div>
+                {% endif %}
+              {% empty %}
+                {% if not client.phone and not client.email %}<div class="text-muted">Контакты не заполнены.</div>{% endif %}
+              {% endfor %}
+            </div>
+          </div>
+
+          {% if related_people or related_companies %}
+            <div class="col-12">
+              <div class="border rounded-3 p-3">
+                <div class="fw-semibold mb-3">{% if related_people %}Связанные люди{% else %}Связанные компании{% endif %}</div>
+                <div class="row g-2">
+                  {% for link in related_people %}
+                    <div class="col-12 col-lg-6">
+                      <a class="text-decoration-none text-reset" href="{% url 'client_detail' link.person.id %}">
+                        <div class="border rounded-3 p-3">
+                          <div class="fw-semibold">{{ link.person.name }}</div>
+                          <div class="text-muted small">
+                            {% if link.position %}{{ link.position }}{% endif %}
+                            {% if link.roles %}{% if link.position %} · {% endif %}{{ link.roles|join:", " }}{% endif %}
+                          </div>
+                        </div>
+                      </a>
+                    </div>
+                  {% endfor %}
+                  {% for link in related_companies %}
+                    <div class="col-12 col-lg-6">
+                      <a class="text-decoration-none text-reset" href="{% url 'client_detail' link.company.id %}">
+                        <div class="border rounded-3 p-3">
+                          <div class="fw-semibold">{{ link.company.name }}</div>
+                          <div class="text-muted small">
+                            {% if link.position %}{{ link.position }}{% endif %}
+                            {% if link.roles %}{% if link.position %} · {% endif %}{{ link.roles|join:", " }}{% endif %}
+                          </div>
+                        </div>
+                      </a>
+                    </div>
+                  {% endfor %}
+                </div>
+              </div>
+            </div>
+          {% endif %}
+
+          {% if crm_items %}
+            <div class="col-12">
+              <div class="border rounded-3 p-3">
+                <div class="fw-semibold mb-3">Активные CRM-процессы</div>
+                <div class="d-grid gap-2">
+                  {% for item in crm_items %}
+                    <div class="border rounded-3 p-3">
+                      <div class="d-flex flex-wrap justify-content-between gap-2">
+                        <div class="fw-semibold">{{ item.title }}</div>
+                        <span class="badge text-bg-light">{{ item.get_direction_display }}</span>
+                      </div>
+                      {% if item.description %}<div class="text-muted small mt-1">{{ item.description|truncatechars:180 }}</div>{% endif %}
+                    </div>
+                  {% endfor %}
+                </div>
+              </div>
+            </div>
+          {% endif %}
+
+          {% if can_manage_profile %}
+            <div class="col-12">
+              <div class="border rounded-3 p-3">
+                <div class="fw-semibold mb-3">Управление клиентом</div>
+                <form method="post">
+                  {% csrf_token %}
+                  <div class="row g-3">
+                    <div class="col-12 col-lg-4">
+                      <label class="form-label">Менеджер клиента</label>
+                      <select class="form-select" name="manager">
+                        <option value="">Не назначен</option>
+                        {% for staff in staff_users %}
+                          <option value="{{ staff.id }}" {% if profile and profile.manager_id == staff.id %}selected{% endif %}>{{ staff.get_full_name|default:staff.username }}</option>
+                        {% endfor %}
+                      </select>
+                    </div>
+                    <div class="col-12 col-lg-4">
+                      <label class="form-label">Ответственный</label>
+                      <select class="form-select" name="responsible">
+                        <option value="">Не назначен</option>
+                        {% for staff in staff_users %}
+                          <option value="{{ staff.id }}" {% if profile and profile.responsible_id == staff.id %}selected{% endif %}>{{ staff.get_full_name|default:staff.username }}</option>
+                        {% endfor %}
+                      </select>
+                    </div>
+                    <div class="col-12">
+                      <label class="form-label">Заметки</label>
+                      <textarea class="form-control" rows="4" name="notes" placeholder="Общие заметки по клиенту">{{ profile.notes|default:"" }}</textarea>
+                    </div>
+                    <div class="col-12">
+                      <button class="btn btn-primary" type="submit">Сохранить</button>
+                    </div>
+                  </div>
+                </form>
+              </div>
+            </div>
+          {% elif profile and profile.notes %}
+            <div class="col-12">
+              <div class="border rounded-3 p-3">
+                <div class="fw-semibold mb-2">Заметки</div>
+                <div class="text-muted">{{ profile.notes|linebreaksbr }}</div>
+              </div>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="tab-pane fade" id="client-objects">
+        <div class="d-grid gap-2">
+          {% for pool in pools %}
+            <a class="text-decoration-none text-reset" href="{% url 'pool_detail' pool.uuid %}">
+              <div class="border rounded-3 p-3">
+                <div class="d-flex flex-wrap justify-content-between gap-2">
+                  <div class="fw-semibold"><i class="bi bi-geo-alt me-1"></i>{{ pool.address }}</div>
+                  <span class="badge text-bg-light">{{ pool.get_object_type_display }}</span>
+                </div>
+                {% if pool.description %}<div class="text-muted small mt-2">{{ pool.description|striptags|truncatechars:180 }}</div>{% endif %}
+              </div>
+            </a>
+          {% empty %}
+            <div class="text-muted py-4 text-center">У клиента пока нет объектов.</div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="tab-pane fade" id="client-tasks">
+        <div class="d-grid gap-2">
+          {% for task in tasks %}
+            <a class="text-decoration-none text-reset" href="{% url 'task_edit' task.id %}?next={% url 'client_detail' client.id %}">
+              <div class="border rounded-3 p-3">
+                <div class="d-flex flex-wrap justify-content-between gap-2">
+                  <div class="fw-semibold">{{ task.title }}</div>
+                  <span class="badge {% if task.status == 'done' %}text-bg-success{% elif task.priority == 'high' %}text-bg-danger{% else %}text-bg-light{% endif %}">{{ task.get_status_display }}</span>
+                </div>
+                <div class="text-muted small mt-1">
+                  {{ task.start_date|date:"d.m.Y" }}
+                  {% if task.pool %} · {{ task.pool.address }}{% endif %}
+                  {% if task.primary_responsible %} · {{ task.primary_responsible.get_full_name|default:task.primary_responsible.username }}{% endif %}
+                </div>
+              </div>
+            </a>
+          {% empty %}
+            <div class="text-muted py-4 text-center">Связанных задач нет.</div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="tab-pane fade" id="client-communications">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <div class="fw-semibold">Последние звонки</div>
+          <a class="btn btn-outline-secondary btn-sm" href="{% url 'communications_calls' %}">Все звонки</a>
+        </div>
+        <div class="d-grid gap-2">
+          {% for call in calls %}
+            <div class="border rounded-3 p-3">
+              <div class="d-flex flex-wrap justify-content-between gap-2">
+                <div>
+                  <span class="fw-semibold">{% if call.direction == "in" %}Входящий{% else %}Исходящий{% endif %}</span>
+                  <span class="text-muted ms-2">{{ call.phone_number }}</span>
+                </div>
+                <div class="text-muted small">{{ call.started_at|date:"d.m.Y H:i" }}</div>
+              </div>
+              <div class="text-muted small mt-1">
+                {{ call.duration_seconds }} сек. · {{ call.get_result_display }}
+                {% if call.employee %} · {{ call.employee.get_full_name|default:call.employee.username }}{% endif %}
+              </div>
+              {% if call.analysis_obj and call.analysis_obj.summary %}
+                <div class="small mt-2">{{ call.analysis_obj.summary|truncatechars:300 }}</div>
+              {% endif %}
+            </div>
+          {% empty %}
+            <div class="text-muted py-4 text-center">Доступных связанных звонков пока нет.</div>
+          {% endfor %}
+        </div>
+        <div class="alert alert-secondary mt-3 mb-0">
+          Диалоги Авито/сайта пока не имеют прямой связи с карточкой клиента. Их привязку добавим отдельно, чтобы не сопоставлять переписку только по имени.
+        </div>
+      </div>
+
+      <div class="tab-pane fade" id="client-sales">
+        <div class="border rounded-3 p-4">
+          <div class="fw-semibold mb-2">Продажи клиента</div>
+          <div class="text-muted">
+            Здесь будут фактические реализации 1С и чеки ККМ. Заказы в продажи включаться не будут. Финансовую выборку подключим следующим этапом к этой же карточке.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
