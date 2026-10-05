@@ -947,14 +947,19 @@ def resolve_import_candidate(candidate_id, resolution, resolved_by=None):
 
 def apply_ready_candidates(organization=None, run=None):
     organization = organization or _target_organization()
-    candidates = ClientImportCandidate.objects.filter(
-        organization=organization,
-        status=ClientImportCandidate.STATUS_READY,
-    ).order_by("id")
-    total = candidates.count()
+    candidate_ids = list(
+        ClientImportCandidate.objects.filter(
+            organization=organization,
+            status=ClientImportCandidate.STATUS_READY,
+        )
+        .order_by("id")
+        .values_list("id", flat=True)
+    )
+    total = len(candidate_ids)
     result = {"imported": 0, "failed": 0}
     processed = 0
-    for candidate in candidates.iterator():
+    for candidate_id in candidate_ids:
+        candidate = ClientImportCandidate.objects.get(pk=candidate_id)
         try:
             apply_candidate(candidate)
         except (ValueError, RuntimeError):
