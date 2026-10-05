@@ -7388,6 +7388,47 @@ def task_create(request):
             pass
     initial["responsibles"] = [required_responsible_id] if required_responsible_id else []
 
+    client_param = (request.GET.get("client") or "").strip()
+    if client_param:
+        try:
+            client_id = int(client_param)
+        except (TypeError, ValueError):
+            client_id = 0
+        if client_id:
+            initial_client = (
+                Client.objects.filter(
+                    pk=client_id,
+                    organization=org,
+                )
+                .filter(
+                    Q(crm_profile__isnull=True)
+                    | Q(crm_profile__merged_into__isnull=True)
+                )
+                .first()
+            )
+            if initial_client:
+                initial["client"] = initial_client
+
+    pool_param = (request.GET.get("pool") or "").strip()
+    if pool_param:
+        try:
+            pool_id = int(pool_param)
+        except (TypeError, ValueError):
+            pool_id = 0
+        if pool_id:
+            initial_pool = (
+                Pool.objects.filter(
+                    pk=pool_id,
+                    organization=org,
+                    is_deleted=False,
+                )
+                .select_related("client")
+                .first()
+            )
+            if initial_pool:
+                initial["pool"] = initial_pool
+                initial["client"] = initial_pool.client
+
     if request.method == "POST":
         post_data = request.POST.copy()
         selected = post_data.getlist("responsibles") or []
