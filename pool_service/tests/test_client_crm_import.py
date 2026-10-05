@@ -14,8 +14,9 @@ from pool_service.client_crm_models import (
     ClientCompanyLink,
     ClientContact,
     ClientImportCandidate,
+    ClientImportRun,
 )
-from pool_service.models import Client, OneCODataSyncRun, Organization
+from pool_service.models import Client, Organization
 
 
 class ClientCRMImportTests(TestCase):
@@ -170,8 +171,6 @@ class ClientCRMImportTests(TestCase):
         self.assertTrue(started_first)
         self.assertFalse(started_second)
         self.assertEqual(first.pk, second.pk)
-        self.assertEqual(first.status, OneCODataSyncRun.STATUS_PENDING)
-        self.assertEqual(first.sync_scope.get("feature"), "crm_clients")
-        self.assertEqual(first.requested_report_types, ["crm_clients"])
-        self.assertEqual(OneCODataSyncRun.objects.count(), 1)
+        self.assertEqual(first.status, ClientImportRun.STATUS_PENDING)
+        self.assertEqual(ClientImportRun.objects.count(), 1)
         launcher.assert_called_once_with(first.pk)
