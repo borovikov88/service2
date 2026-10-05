@@ -165,13 +165,19 @@ def client_detail(request, client_id):
             | Q(primary_responsible=request.user)
             | Q(responsibles=request.user)
         ).distinct()
+    active_task_count = tasks_qs.exclude(
+        status__in=[
+            ServiceTask.STATUS_DONE,
+            ServiceTask.STATUS_CANCELLED,
+        ]
+    ).count()
     tasks = list(tasks_qs[:30])
 
     crm_items_qs = CrmItem.objects.filter(
-        client=client,
+        Q(client=client) | Q(pool__client=client),
         organization_id=client.organization_id,
         is_archived=False,
-    ).select_related("pool", "responsible")
+    ).select_related("pool", "responsible").distinct()
     if (
         not request.user.is_superuser
         and not (user_roles & {"owner", "admin", "manager"})
@@ -225,15 +231,6 @@ def client_detail(request, client_id):
             .distinct()
             .order_by("first_name", "last_name", "username")
         )
-
-    active_task_count = sum(
-        1
-        for task in tasks
-        if task.status not in {
-            ServiceTask.STATUS_DONE,
-            ServiceTask.STATUS_CANCELLED,
-        }
-    )
 
     return render(
         request,
