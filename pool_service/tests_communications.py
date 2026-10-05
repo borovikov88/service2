@@ -1255,6 +1255,139 @@ class CommunicationsTests(TestCase):
         self.assertNotContains(response, "Расшифровка запускается вручную.")
         self.assertNotContains(response, "Ожидает автоматической расшифровки.")
 
+    def test_owner_can_upload_multiple_call_recordings_for_client_without_auto_analysis(self):
+        client = ServiceClient.objects.create(
+            organization=self.organization,
+            client_type="private",
+            name="Иван Клиент",
+            phone="+79001234567",
+        )
+        self.client.login(username="owner", password="test")
+        response = self.client.post(
+            reverse("communication_call_recording_upload"),
+            {
+                "client": str(client.pk),
+                "direction": PhoneCall.DIRECTION_OUT,
+                "recordings": [
+                    SimpleUploadedFile("first.mp3", b"ID3first", content_type="audio/mpeg"),
+                    SimpleUploadedFile("second.wav", b"RIFFsecond", content_type="audio/wav"),
+                ],
+            },
+        )
+        self.assertRedirects(response, reverse("communications_calls"))
+
+        calls = PhoneCall.objects.filter(
+            organization=self.organization,
+            connection__external_id="manual-upload",
+        ).order_by("pk")
+        self.assertEqual(calls.count(), 2)
+        self.assertEqual(set(calls.values_list("client_id", flat=True)), {client.pk})
+        self.assertEqual(
+            set(calls.values_list("contact_name", flat=True)),
+            {"Иван Клиент"},
+        )
+        self.assertEqual(
+            set(calls.values_list("phone_number", flat=True)),
+            {"+79001234567"},
+        )
+        self.assertEqual(
+            set(calls.values_list("direction", flat=True)),
+            {PhoneCall.DIRECTION_OUT},
+        )
+        self.assertEqual(
+            set(calls.values_list("recording_status", flat=True)),
+            {PhoneCall.RECORDING_STORED},
+        )
+        self.assertFalse(CallAnalysis.objects.filter(call__in=calls).exists())
+        for call in calls:
+            self.assertTrue(call.recording_file)
+
+        page = self.client.get(reverse("communications_calls"))
+        self.assertContains(page, "Иван Клиент")
+        self.assertContains(page, "Расшифровать выбранные")
+        self.assertContains(page, 'data-call-select', html=False)
+
+    def test_manual_call_upload_requires_view_all_calls_and_scopes_client(self):
+        foreign_org = Organization.objects.create(name="Foreign communications org")
+        foreign_client = ServiceClient.objects.create(
+            organization=foreign_org,
+            client_type="private",
+            name="Чужой клиент",
+        )
+
+        self.client.login(username="worker", password="test")
+        forbidden = self.client.post(
+            reverse("communication_call_recording_upload"),
+            {
+                "recordings": [
+                    SimpleUploadedFile("worker.mp3", b"ID3worker", content_type="audio/mpeg"),
+                ],
+            },
+        )
+        self.assertEqual(forbidden.status_code, 403)
+
+        self.client.logout()
+        self.client.login(username="owner", password="test")
+        missing = self.client.post(
+            reverse("communication_call_recording_upload"),
+            {
+                "client": str(foreign_client.pk),
+                "recordings": [
+                    SimpleUploadedFile("foreign.mp3", b"ID3foreign", content_type="audio/mpeg"),
+                ],
+            },
+        )
+        self.assertEqual(missing.status_code, 404)
+        self.assertFalse(
+            PhoneCall.objects.filter(
+                organization=self.organization,
+                connection__external_id="manual-upload",
+            ).exists()
+        )
+
+    @patch("pool_service.communication_views.start_requested_call_analysis_worker", return_value=True)
+    @patch("pool_service.communication_views.request_call_analysis", return_value=True)
+    def test_bulk_call_analysis_queues_selected_recordings_once(
+        self,
+        request_analysis,
+        start_worker,
+    ):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="Загруженные записи",
+            external_id="manual-bulk",
+        )
+        calls = []
+        for index in range(2):
+            call = PhoneCall.objects.create(
+                organization=self.organization,
+                connection=telephony,
+                external_id=f"manual-bulk-{index}",
+                phone_number="",
+                direction=PhoneCall.DIRECTION_IN,
+                started_at=timezone.now(),
+                result=PhoneCall.RESULT_ANSWERED,
+                recording_status=PhoneCall.RECORDING_STORED,
+            )
+            call.recording_file.save(
+                f"manual-bulk-{index}.mp3",
+                ContentFile(b"ID3test"),
+                save=True,
+            )
+            calls.append(call)
+
+        self.client.login(username="owner", password="test")
+        response = self.client.post(
+            reverse("communication_call_analysis_bulk"),
+            {"call_ids": [str(call.pk) for call in calls]},
+        )
+        self.assertRedirects(response, reverse("communications_calls"))
+        self.assertEqual(
+            [item.args[0] for item in request_analysis.call_args_list],
+            [call.pk for call in calls],
+        )
+        start_worker.assert_called_once_with()
+
     @override_settings(
         COMMUNICATION_RECORDING_DOWNLOAD_TIMEOUT_SECONDS=2,
         COMMUNICATION_RECORDING_MAX_BYTES=1024 * 1024,
