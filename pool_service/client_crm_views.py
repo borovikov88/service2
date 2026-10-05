@@ -151,10 +151,20 @@ def client_onec_import(request):
         for item in candidates.values("source_kind").annotate(count=Count("id"))
     }
     current_status = request.GET.get("status", "").strip()
-    if current_status in dict(ClientImportCandidate.STATUS_CHOICES):
+    manual_only = (request.GET.get("manual") or "").strip() == "1"
+    if manual_only:
+        candidates = candidates.exclude(
+            resolution=ClientImportCandidate.RESOLUTION_AUTO
+        )
+        current_status = ""
+    elif current_status in dict(ClientImportCandidate.STATUS_CHOICES):
         candidates = candidates.filter(status=current_status)
     else:
         current_status = ""
+
+    manual_count = ClientImportCandidate.objects.filter(
+        organization_id=organization_id
+    ).exclude(resolution=ClientImportCandidate.RESOLUTION_AUTO).count()
 
     return render(
         request,
@@ -166,6 +176,8 @@ def client_onec_import(request):
             "summary": summary,
             "kinds": kinds,
             "current_status": current_status,
+            "manual_only": manual_only,
+            "manual_count": manual_count,
             "candidates": candidates.order_by("name")[:500],
             "total_candidates": ClientImportCandidate.objects.filter(
                 organization_id=organization_id
