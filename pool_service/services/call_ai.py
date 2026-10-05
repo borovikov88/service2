@@ -340,6 +340,24 @@ def _analyze_transcript(client, call, transcript):
     return summary, facts, model
 
 
+def _is_openai_credit_balance_exhausted(exc):
+    code = getattr(exc, "code", None)
+    if code == "credit_balance_exhausted":
+        return True
+
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        candidates = [body]
+        nested = body.get("error")
+        if isinstance(nested, dict):
+            candidates.append(nested)
+        for candidate in candidates:
+            if candidate.get("code") == "credit_balance_exhausted":
+                return True
+
+    return "credit_balance_exhausted" in str(exc)
+
+
 def process_call_analysis(call_id, *, force=False, reset_existing=False):
     claim = _claim(call_id, force=force, reset_existing=reset_existing)
     if not claim:
@@ -391,14 +409,22 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
         )
         return bool(completed)
     except Exception as exc:
+        quota_exhausted = _is_openai_credit_balance_exhausted(exc)
         code = str(exc)
-        if not isinstance(exc, CallAnalysisError):
+        if quota_exhausted:
+            logger.warning("OpenAI API credits exhausted for call_id=%s", call_id)
+            code = "openai_credit_balance_exhausted"
+        elif not isinstance(exc, CallAnalysisError):
             logger.exception("Call analysis failed for call_id=%s", call_id)
             code = "openai_processing_failed"
         max_attempts = int(
             _setting("OPENAI_CALL_MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS)
         )
-        retryable = bool(analysis.requested_at) and analysis.attempts < max_attempts
+        retryable = (
+            not quota_exhausted
+            and bool(analysis.requested_at)
+            and analysis.attempts < max_attempts
+        )
         CallAnalysis.objects.filter(
             pk=analysis.pk,
             status=CallAnalysis.STATUS_PROCESSING,

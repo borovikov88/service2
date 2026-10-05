@@ -956,6 +956,56 @@ class CommunicationsTests(TestCase):
         self.assertEqual(analysis.attempts, 2)
         self.assertIsNone(analysis.requested_at)
 
+    @override_settings(
+        OPENAI_API_KEY="test-key",
+        OPENAI_CALL_MAX_ATTEMPTS=5,
+    )
+    @patch(
+        "pool_service.services.call_ai._client",
+        side_effect=RuntimeError(
+            "Error code: 429 - credit_balance_exhausted"
+        ),
+    )
+    def test_exhausted_openai_balance_fails_immediately_and_is_explained(self, _client):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-ai-no-credit",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-no-credit-call",
+            employee=self.owner,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=20,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        call.recording_file.save("ai-no-credit.mp3", ContentFile(b"ID3test"), save=True)
+        analysis = CallAnalysis.objects.create(
+            call=call,
+            status=CallAnalysis.STATUS_PENDING,
+            requested_at=timezone.now(),
+        )
+
+        self.assertFalse(process_call_analysis(call.pk))
+        analysis.refresh_from_db()
+        self.assertEqual(analysis.status, CallAnalysis.STATUS_FAILED)
+        self.assertEqual(analysis.error, "openai_credit_balance_exhausted")
+        self.assertEqual(analysis.attempts, 1)
+        self.assertIsNone(analysis.requested_at)
+
+        self.client.login(username="owner", password="test")
+        response = self.client.get(reverse("communications_calls"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            "Закончились кредиты OpenAI API. Пополните баланс и повторите.",
+        )
+
     @patch(
         "pool_service.management.commands.process_requested_call_analyses.process_call_analysis",
         return_value=True,

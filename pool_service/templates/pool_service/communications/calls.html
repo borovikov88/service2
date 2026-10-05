@@ -307,7 +307,11 @@
                   </div>
                 {% elif call.analysis and call.analysis.status == 'failed' %}
                   <div class="d-flex flex-wrap align-items-center gap-2">
-                    <span class="text-warning">Не удалось расшифровать разговор.</span>
+                    {% if call.analysis.error == 'openai_credit_balance_exhausted' %}
+                      <span class="text-warning">Закончились кредиты OpenAI API. Пополните баланс и повторите.</span>
+                    {% else %}
+                      <span class="text-warning">Не удалось расшифровать разговор.</span>
+                    {% endif %}
                     <form method="post" action="{% url 'communication_call_analysis_retry' call.pk %}">
                       {% csrf_token %}
                       <button class="btn btn-outline-secondary btn-sm" type="submit">Повторить</button>
