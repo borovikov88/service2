@@ -6,67 +6,37 @@ import django.db.models.deletion
 
 
 OWNER_DECISIONS = {
-    # Юридические лица
-    "НФ-017647": "legal",   # Добрая Банька
-    "НФ-017726": "legal",   # Новая Волна
-    "НФ-017754": "legal",   # Бирюзовая катунь
-    "НФ-018043": "legal",   # Атлантика
-    "НФ-018046": "legal",   # ВТБ24
-    "НФ-018098": "legal",   # Рикки-Тикки
-    "НФ-018403": "legal",   # Бонифаций
-    "НФ-018417": "legal",   # Спа Комсомольский 40
-    "НФ-018459": "legal",   # Сантехника Алтай
-    "НФ-018471": "legal",   # Водный Мир
-    "НФ-018483": "legal",   # Лесотель
-    "НФ-018487": "legal",   # ООО Термариум Актру
-    "НФ-018505": "legal",   # Акрил
-    "НФ-018630": "legal",   # Аэрофлот
-    # Физические лица
-    "НФ-018031": "private", # Андреев Иван
-    "НФ-018047": "private", # Анопко Александр Михайлович
-    "НФ-018664": "private", # Ирина (подарок для дочери)
-    "НФ-018675": "private", # Воронько Павел
-    # ИП
-    "НФ-018251": "ip",      # ИП Ямщиков Алексей Владимирович
-    # Не импортировать
-    "НФ-017913": "skip",    # Расчеты по карте
-    "НФ-018042": "skip",    # Наше предприятие
-    "НФ-018241": "skip",    # Алиэкспресс
-    "НФ-018452": "skip",    # Интернет-магазин
-    "НФ-018476": "skip",    # Прочие
+    "НФ-017647": "legal",
+    "НФ-017726": "legal",
+    "НФ-017754": "legal",
+    "НФ-018043": "legal",
+    "НФ-018046": "legal",
+    "НФ-018098": "legal",
+    "НФ-018403": "legal",
+    "НФ-018417": "legal",
+    "НФ-018459": "legal",
+    "НФ-018471": "legal",
+    "НФ-018483": "legal",
+    "НФ-018487": "legal",
+    "НФ-018505": "legal",
+    "НФ-018630": "legal",
+    "НФ-018031": "private",
+    "НФ-018047": "private",
+    "НФ-018664": "private",
+    "НФ-018675": "private",
+    "НФ-018251": "ip",
+    "НФ-017913": "skip",
+    "НФ-018042": "skip",
+    "НФ-018241": "skip",
+    "НФ-018452": "skip",
+    "НФ-018476": "skip",
 }
 
+BACKUP_KEY = "_migration_0128_resolution_backup"
 
-def apply_owner_decisions(apps, schema_editor):
-    Candidate = apps.get_model("pool_service", "ClientImportCandidate")
-    ImportRun = apps.get_model("pool_service", "ClientImportRun")
-    now = timezone.now()
-    touched_org_ids = set()
 
-    for source_code, resolution in OWNER_DECISIONS.items():
-        status = "skipped" if resolution == "skip" else "ready"
-        reason = (
-            "Не импортировать — решение владельца"
-            if resolution == "skip"
-            else "Тип подтверждён владельцем"
-        )
-        qs = Candidate.objects.filter(source_code=source_code, applied_at__isnull=True)
-        touched_org_ids.update(qs.values_list("organization_id", flat=True))
-        update_values = {
-            "resolution": resolution,
-            "resolution_note": "Решение владельца от 05.10.2026",
-            "resolved_at": now,
-            "status": status,
-            "reason": reason,
-        }
-        if resolution != "skip":
-            # Old staging was built before phone matching was type-scoped.
-            # Do not trust a previously stored auto-match for manually
-            # classified rows; the owner can merge legacy cards explicitly.
-            update_values["matched_client"] = None
-        qs.update(**update_values)
-
-    for organization_id in touched_org_ids:
+def _refresh_run_counts(Candidate, ImportRun, organization_ids):
+    for organization_id in organization_ids:
         counts = {
             item["status"]: item["count"]
             for item in Candidate.objects.filter(
@@ -99,21 +69,96 @@ def apply_owner_decisions(apps, schema_editor):
             )
 
 
-def reverse_owner_decisions(apps, schema_editor):
+def apply_owner_decisions(apps, schema_editor):
     Candidate = apps.get_model("pool_service", "ClientImportCandidate")
-    for source_code in OWNER_DECISIONS:
-        Candidate.objects.filter(
+    ImportRun = apps.get_model("pool_service", "ClientImportRun")
+    now = timezone.now()
+    touched_org_ids = set()
+
+    for source_code, resolution in OWNER_DECISIONS.items():
+        candidates = Candidate.objects.filter(
             source_code=source_code,
             applied_at__isnull=True,
-            resolution_note="Решение владельца от 05.10.2026",
-        ).update(
-            resolution="auto",
-            resolution_note="",
-            resolved_by=None,
-            resolved_at=None,
-            status="review",
-            reason="Требуется повторная проверка после отката решения",
         )
+        for candidate in candidates.iterator():
+            touched_org_ids.add(candidate.organization_id)
+            payload = dict(candidate.payload or {})
+            if BACKUP_KEY not in payload:
+                payload[BACKUP_KEY] = {
+                    "status": candidate.status,
+                    "reason": candidate.reason,
+                    "matched_client_id": candidate.matched_client_id,
+                }
+
+            candidate.payload = payload
+            candidate.resolution = resolution
+            candidate.resolution_note = "Подтверждено владельцем 05.10.2026"
+            candidate.resolved_at = now
+            candidate.resolved_by_id = None
+            if resolution == "skip":
+                candidate.status = "skipped"
+                candidate.reason = "Не импортировать — решение владельца"
+            else:
+                candidate.status = "ready"
+                candidate.reason = "Тип подтверждён владельцем"
+                candidate.matched_client_id = None
+            candidate.save(
+                update_fields=[
+                    "payload",
+                    "resolution",
+                    "resolution_note",
+                    "resolved_at",
+                    "resolved_by",
+                    "status",
+                    "reason",
+                    "matched_client",
+                    "updated_at",
+                ]
+            )
+
+    _refresh_run_counts(Candidate, ImportRun, touched_org_ids)
+
+
+def reverse_owner_decisions(apps, schema_editor):
+    Candidate = apps.get_model("pool_service", "ClientImportCandidate")
+    ImportRun = apps.get_model("pool_service", "ClientImportRun")
+    touched_org_ids = set()
+
+    for source_code in OWNER_DECISIONS:
+        candidates = Candidate.objects.filter(
+            source_code=source_code,
+            applied_at__isnull=True,
+            resolution_note="Подтверждено владельцем 05.10.2026",
+        )
+        for candidate in candidates.iterator():
+            payload = dict(candidate.payload or {})
+            backup = payload.pop(BACKUP_KEY, None)
+            if not backup:
+                continue
+            touched_org_ids.add(candidate.organization_id)
+            candidate.payload = payload
+            candidate.resolution = "auto"
+            candidate.resolution_note = ""
+            candidate.resolved_by_id = None
+            candidate.resolved_at = None
+            candidate.status = backup.get("status") or "review"
+            candidate.reason = backup.get("reason") or ""
+            candidate.matched_client_id = backup.get("matched_client_id")
+            candidate.save(
+                update_fields=[
+                    "payload",
+                    "resolution",
+                    "resolution_note",
+                    "resolved_by",
+                    "resolved_at",
+                    "status",
+                    "reason",
+                    "matched_client",
+                    "updated_at",
+                ]
+            )
+
+    _refresh_run_counts(Candidate, ImportRun, touched_org_ids)
 
 
 class Migration(migrations.Migration):
