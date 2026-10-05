@@ -94,8 +94,11 @@ def client_onec_import(request):
                     f"{candidate.name}: решение сохранено.",
                 )
             status = (request.POST.get("return_status") or "").strip()
+            return_manual = (request.POST.get("return_manual") or "").strip() == "1"
             url = reverse("client_onec_import")
-            if status in dict(ClientImportCandidate.STATUS_CHOICES):
+            if return_manual:
+                url = f"{url}?manual=1"
+            elif status in dict(ClientImportCandidate.STATUS_CHOICES):
                 url = f"{url}?status={status}"
             return redirect(url)
 
