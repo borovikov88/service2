@@ -6,7 +6,7 @@ from django.utils import timezone
 from django.urls import reverse
 
 from pool_service.models import OrganizationAccess, Pool, WaterReading
-from pool_service.services.notifications import notify_client_users, notify_org_users
+from pool_service.services.notifications import SERVICE_NOTIFICATION_ROLES, notify_client_users, notify_org_users
 
 
 class Command(BaseCommand):
@@ -154,6 +154,7 @@ class Command(BaseCommand):
                 dedupe_key=dedupe_key,
                 send_in_app=pool.organization.notify_missed_visits,
                 send_push=pool.organization.notify_missed_visits_push,
+                roles=SERVICE_NOTIFICATION_ROLES,
             )
 
     def _generate_daily_missing(self, today):

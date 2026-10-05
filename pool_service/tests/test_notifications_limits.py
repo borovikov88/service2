@@ -3,7 +3,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from pool_service.models import Client, Notification, Organization, OrganizationAccess, Pool, WaterReading
+from pool_service.models import Client, Notification, Organization, OrganizationAccess, Pool, Profile, WaterReading
 from pool_service.services.notifications import notify_reading_out_of_range
 
 
@@ -21,8 +21,10 @@ class LimitsNotificationTests(TestCase):
         self.org_admin = User.objects.create_user(username="orgadmin", password="pass")
         self.service_user = User.objects.create_user(username="serviceuser", password="pass")
         self.pool_staff_user = User.objects.create_user(username="poolstaff", password="pass")
+        self.accountant = User.objects.create_user(username="accountant", password="pass")
         OrganizationAccess.objects.create(user=self.org_admin, organization=self.org, role="admin")
         OrganizationAccess.objects.create(user=self.service_user, organization=self.org, role="service")
+        OrganizationAccess.objects.create(user=self.accountant, organization=self.org, role="accountant")
         self.client = Client.objects.create(
             user=self.pool_staff_user,
             client_type="private",
@@ -69,6 +71,48 @@ class LimitsNotificationTests(TestCase):
 
         self.assertTrue(Notification.objects.filter(user=self.org_admin, kind="limits", pool=self.pool).exists())
         self.assertFalse(Notification.objects.filter(user=self.pool_staff_user, kind="limits", pool=self.pool).exists())
+
+    def test_accountant_does_not_receive_pool_reading_limits(self):
+        WaterReading.objects.create(
+            pool=self.pool,
+            added_by=self.service_user,
+            date=timezone.now(),
+            ph=6.4,
+        )
+
+        self.assertFalse(
+            Notification.objects.filter(
+                user=self.accountant,
+                kind="limits",
+                pool=self.pool,
+            ).exists()
+        )
+
+    def test_personal_in_app_switch_blocks_limits_notification(self):
+        profile = Profile.objects.get(user=self.org_admin)
+        profile.in_app_notifications_enabled = False
+        profile.push_notifications_enabled = False
+        profile.save(
+            update_fields=[
+                "in_app_notifications_enabled",
+                "push_notifications_enabled",
+            ]
+        )
+
+        WaterReading.objects.create(
+            pool=self.pool,
+            added_by=self.service_user,
+            date=timezone.now(),
+            ph=6.4,
+        )
+
+        self.assertFalse(
+            Notification.objects.filter(
+                user=self.org_admin,
+                kind="limits",
+                pool=self.pool,
+            ).exists()
+        )
 
     def test_limits_notification_uses_human_readable_message(self):
         self.client.name = "Школа № 137"

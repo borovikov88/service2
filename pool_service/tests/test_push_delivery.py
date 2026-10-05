@@ -7,7 +7,7 @@ from django.test.utils import override_settings
 from django.urls import reverse
 
 from pool_service.forms import WaterReadingForm
-from pool_service.models import Notification, PushSubscription
+from pool_service.models import Notification, Profile, PushSubscription
 from pool_service.services.push_notifications import send_push_to_users
 
 
@@ -80,6 +80,31 @@ class PushDeliveryTests(TestCase):
         self.assertTrue(next(iter(urls)).startswith("/notifications/open/"))
         self.assertIn("https://service2.aqualine22.ru/static/assets/images/aqualine-favicon.png", icons)
         self.assertIn("https://rovikpool.ru/static/assets/images/rovikpool-favicon.png", icons)
+
+    @override_settings(VAPID_PUBLIC_KEY="test-public", VAPID_PRIVATE_KEY="test-private")
+    @patch("pool_service.services.push_notifications.webpush")
+    def test_disabled_profile_does_not_receive_push(self, webpush_mock):
+        profile = Profile.objects.get(user=self.user)
+        profile.push_notifications_enabled = False
+        profile.save(update_fields=["push_notifications_enabled"])
+        PushSubscription.objects.create(
+            user=self.user,
+            endpoint="https://fcm.googleapis.com/fcm/send/disabled",
+            host="service2.aqualine22.ru",
+            p256dh="key",
+            auth="auth",
+        )
+
+        sent = send_push_to_users(
+            [self.user],
+            title="Показатели вне нормы",
+            message="Тест",
+            action_url=self.notification.action_url,
+            notification=self.notification,
+        )
+
+        self.assertEqual(sent, 0)
+        webpush_mock.assert_not_called()
 
     def test_signed_push_open_marks_notification_read(self):
         from django.core import signing

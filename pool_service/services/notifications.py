@@ -2,7 +2,7 @@ from django.conf import settings
 from django.contrib.auth.models import User
 from django.urls import reverse
 
-from pool_service.models import ClientAccess, Notification, OrganizationAccess, OrganizationWaterNorms, WaterReading
+from pool_service.models import ClientAccess, Notification, OrganizationAccess, OrganizationWaterNorms, Profile, WaterReading
 from pool_service.services.push_notifications import send_push_to_users
 
 
@@ -17,6 +17,9 @@ READING_LABELS_GENITIVE = {
     "cl_free": "\u0441\u0432\u043e\u0431\u043e\u0434\u043d\u043e\u0433\u043e \u0445\u043b\u043e\u0440\u0430",
     "cl_total": "\u043e\u0431\u0449\u0435\u0433\u043e \u0445\u043b\u043e\u0440\u0430",
 }
+
+
+SERVICE_NOTIFICATION_ROLES = ("owner", "admin", "manager", "service")
 
 
 def _limits_for_org(organization):
@@ -131,13 +134,34 @@ def notify_users(
     send_in_app=True,
     send_push=True,
 ):
-    created = []
+    active_users = []
+    seen_user_ids = set()
     for user in users:
-        if not user or not user.is_active:
+        if not user or not user.is_active or not user.id or user.id in seen_user_ids:
             continue
+        seen_user_ids.add(user.id)
+        active_users.append(user)
+
+    profiles = {
+        profile.user_id: profile
+        for profile in Profile.objects.filter(user_id__in=seen_user_ids)
+    }
+
+    created = []
+    for user in active_users:
+        profile = profiles.get(user.id)
+        user_send_in_app = send_in_app and (
+            profile is None or profile.in_app_notifications_enabled
+        )
+        user_send_push = send_push and (
+            profile is None or profile.push_notifications_enabled
+        )
+        if not user_send_in_app and not user_send_push:
+            continue
+
         obj = None
         was_created = False
-        if send_in_app:
+        if user_send_in_app:
             obj, was_created = _create_notification(
                 user,
                 title=title,
@@ -152,7 +176,7 @@ def notify_users(
             )
             if was_created:
                 created.append(obj)
-        if send_push:
+        if user_send_push:
             send_push_to_users(
                 [user],
                 title=title,
@@ -180,8 +204,12 @@ def notify_org_users(
     dedupe_key="",
     send_in_app=True,
     send_push=True,
+    roles=None,
 ):
-    users = User.objects.filter(organizationaccess__organization=organization, is_active=True).distinct()
+    users = User.objects.filter(organizationaccess__organization=organization, is_active=True)
+    if roles:
+        users = users.filter(organizationaccess__role__in=roles)
+    users = users.distinct()
     return notify_users(
         users,
         title=title,
@@ -282,6 +310,7 @@ def notify_reading_out_of_range(reading):
     dedupe_key = f"limits:{reading.uuid}"
     recipients = User.objects.filter(
         organizationaccess__organization=organization,
+        organizationaccess__role__in=SERVICE_NOTIFICATION_ROLES,
         is_active=True,
     ).distinct()
     if reading.added_by_id:

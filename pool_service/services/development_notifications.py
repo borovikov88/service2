@@ -36,33 +36,40 @@ def _notify(task, *, title, message, dedupe_suffix):
     action_url = reverse("development_task_detail", args=[task.pk])
     created = []
     for user in _recipients(task):
-        notification, was_created = Notification.objects.get_or_create(
-            user=user,
-            dedupe_key=f"development-task:{task.pk}:{dedupe_suffix}",
-            defaults={
-                "organization": task.organization,
-                "kind": "development",
-                "level": "info",
-                "title": title,
-                "message": message,
-                "action_url": action_url,
-            },
-        )
-        if was_created:
-            created.append(notification)
-            push_enabled = Profile.objects.filter(
-                user=user, push_notifications_enabled=False
-            ).exists() is False
-            if push_enabled:
-                transaction.on_commit(
-                    lambda user=user, notification=notification: send_push_to_users(
-                        [user],
-                        title=notification.title,
-                        message=notification.message,
-                        action_url=notification.action_url,
-                        notification=notification,
-                    )
+        profile = Profile.objects.filter(user=user).first()
+        in_app_enabled = profile is None or profile.in_app_notifications_enabled
+        push_enabled = profile is None or profile.push_notifications_enabled
+        if not in_app_enabled and not push_enabled:
+            continue
+
+        notification = None
+        was_created = False
+        if in_app_enabled:
+            notification, was_created = Notification.objects.get_or_create(
+                user=user,
+                dedupe_key=f"development-task:{task.pk}:{dedupe_suffix}",
+                defaults={
+                    "organization": task.organization,
+                    "kind": "development",
+                    "level": "info",
+                    "title": title,
+                    "message": message,
+                    "action_url": action_url,
+                },
+            )
+            if was_created:
+                created.append(notification)
+
+        if push_enabled and (was_created or not in_app_enabled):
+            transaction.on_commit(
+                lambda user=user, notification=notification: send_push_to_users(
+                    [user],
+                    title=title,
+                    message=message,
+                    action_url=action_url,
+                    notification=notification,
                 )
+            )
     return created
 
 
