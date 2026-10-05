@@ -36,6 +36,7 @@ from pool_service.communication_models import (
     ConversationAssignment, ConversationMessage, ConversationReadState,
     CallAnalysis, MessageAttachment, PhoneCall, TelephonyConnection,
 )
+from pool_service.communication_recordings import looks_like_audio_file
 from pool_service.communication_secrets import encrypt_secret
 from pool_service.communication_services import conversation_capability, optimize_message_image, organization_access
 from pool_service.services.call_ai import request_call_analysis, start_requested_call_analysis_worker
@@ -325,8 +326,17 @@ def call_recording_upload(request):
         extension = os.path.splitext(uploaded.name or "")[1].lower()
         if extension not in MANUAL_CALL_ALLOWED_EXTENSIONS:
             rejected.append(f"{uploaded.name}: неподдерживаемый формат")
-        elif uploaded.size > max_bytes:
+            continue
+        if uploaded.size <= 0:
+            rejected.append(f"{uploaded.name}: пустой файл")
+            continue
+        if uploaded.size > max_bytes:
             rejected.append(f"{uploaded.name}: файл больше допустимого размера")
+            continue
+        prefix = uploaded.read(32)
+        uploaded.seek(0)
+        if not looks_like_audio_file(prefix, extension):
+            rejected.append(f"{uploaded.name}: файл не похож на поддерживаемую аудиозапись")
     if rejected:
         messages.error(request, "Не загружено: " + "; ".join(rejected[:5]))
         return redirect("communications_calls")
@@ -385,7 +395,7 @@ def call_analysis_bulk(request):
 
     queued = 0
     for call_id in queryset.order_by("pk").values_list("pk", flat=True):
-        if request_call_analysis(call_id):
+        if request_call_analysis(call_id, allow_reanalysis=False):
             queued += 1
 
     if queued:
