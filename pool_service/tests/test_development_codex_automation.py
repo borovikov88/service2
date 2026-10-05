@@ -1244,6 +1244,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         }
         allowed_automatic_workflows = {
             "call-recordings-sync.yml",
+            "client-sync.yml",
             "employee-identity-sync.yml",
             "ci-deploy.yml",
             "direct-pr-review.yml",
@@ -1266,6 +1267,8 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
                 text = workflow.read_text(encoding="utf-8")
                 if workflow.name in {"call-recordings-sync.yml", "employee-identity-sync.yml"}:
                     expected_triggers = ["schedule", "workflow_dispatch"]
+                elif workflow.name == "client-sync.yml":
+                    expected_triggers = ["push", "schedule", "workflow_dispatch"]
                 elif workflow.name == "ci-deploy.yml":
                     expected_triggers = ["pull_request", "push", "workflow_dispatch"]
                 elif workflow.name == "direct-pr-review.yml":
@@ -1281,6 +1284,23 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
                 else:
                     expected_triggers = ["workflow_dispatch"]
                 self.assertEqual(workflow_trigger_names(text), expected_triggers)
+
+    def test_client_sync_workflow_is_bounded_and_uses_existing_production_locks(self):
+        workflow = (Path(settings.BASE_DIR) / ".github/workflows/client-sync.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("branches: [main]", workflow)
+        self.assertIn('cron: "*/5 * * * *"', workflow)
+        self.assertIn('cron: "31 20 * * *"', workflow)
+        self.assertIn("environment: production", workflow)
+        self.assertIn("contents: read", workflow)
+        self.assertIn("StrictHostKeyChecking=yes", workflow)
+        self.assertIn("../tmp/service2-client-import.lock", workflow)
+        self.assertIn("../tmp/service2-deploy.lock", workflow)
+        self.assertIn("sync_recent_onec_clients --lookback-hours 168", workflow)
+        self.assertIn("sync_full_onec_clients", workflow)
+        self.assertNotIn("contents: write", workflow)
+        self.assertNotIn("pull-requests: write", workflow)
 
     def test_ci_deploy_workflow_enforces_ci_first_and_fail_closed_deployment_policy(self):
         workflow = (Path(settings.BASE_DIR) / ".github/workflows/ci-deploy.yml").read_text(
