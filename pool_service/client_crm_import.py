@@ -11,7 +11,7 @@ import sys
 import threading
 
 from django.conf import settings
-from django.db import transaction
+from django.db import models, transaction
 from django.utils import timezone
 
 from .models import Client, Organization
@@ -159,6 +159,52 @@ def _source_kind(row):
     return ClientImportCandidate.KIND_PRIVATE
 
 
+def _effective_kind(source_kind, resolution):
+    if resolution == ClientImportCandidate.RESOLUTION_LEGAL:
+        return ClientImportCandidate.KIND_LEGAL
+    if resolution == ClientImportCandidate.RESOLUTION_PRIVATE:
+        return ClientImportCandidate.KIND_PRIVATE
+    if resolution == ClientImportCandidate.RESOLUTION_IP:
+        return ClientImportCandidate.KIND_IP
+    return source_kind
+
+
+def _refresh_latest_run_counts(organization):
+    counts = {
+        item["status"]: item["count"]
+        for item in ClientImportCandidate.objects.filter(
+            organization=organization
+        ).values("status").annotate(count=models.Count("id"))
+    }
+    latest = (
+        ClientImportRun.objects.filter(
+            organization=organization,
+            status=ClientImportRun.STATUS_SUCCESS,
+        )
+        .order_by("-requested_at", "-id")
+        .first()
+    )
+    if latest:
+        latest.ready_count = counts.get(ClientImportCandidate.STATUS_READY, 0)
+        latest.review_count = counts.get(ClientImportCandidate.STATUS_REVIEW, 0)
+        latest.duplicate_count = counts.get(ClientImportCandidate.STATUS_DUPLICATE, 0)
+        latest.invalid_count = (
+            counts.get(ClientImportCandidate.STATUS_INVALID, 0)
+            + counts.get(ClientImportCandidate.STATUS_SKIPPED, 0)
+        )
+        latest.imported_count = counts.get(ClientImportCandidate.STATUS_IMPORTED, 0)
+        latest.save(
+            update_fields=[
+                "ready_count",
+                "review_count",
+                "duplicate_count",
+                "invalid_count",
+                "imported_count",
+                "updated_at",
+            ]
+        )
+
+
 def _candidate_contacts(row, extra_rows):
     phones = []
     emails = []
@@ -254,9 +300,21 @@ def scan_onec_clients(run=None):
         ref = str(row.get("Ref_Key") or "")
         name = str(row.get("Description") or row.get("НаименованиеПолное") or "").strip()
         source_kind = _source_kind(row)
+        existing = ClientImportCandidate.objects.filter(
+            organization=organization,
+            source_ref=ref,
+        ).only("resolution", "applied_at").first()
+        resolution = (
+            existing.resolution
+            if existing is not None
+            else ClientImportCandidate.RESOLUTION_AUTO
+        )
+        effective_kind = _effective_kind(source_kind, resolution)
         inn = str(row.get("ИНН") or "").strip()
         phones, emails = _candidate_contacts(row, contacts_by_ref.get(ref, []))
-        matches, match_reason = _match_clients(organization, source_kind, inn, phones, ref)
+        matches, match_reason = _match_clients(
+            organization, effective_kind, inn, phones, ref
+        )
 
         status = ClientImportCandidate.STATUS_READY
         reason = ""
@@ -272,9 +330,22 @@ def scan_onec_clients(run=None):
             reason = f"Несколько карточек Service2 совпали по: {match_reason}"
         elif len(matches) == 1:
             matched_client = matches[0]
-        elif source_kind == ClientImportCandidate.KIND_LEGAL and not inn:
+        elif (
+            effective_kind == ClientImportCandidate.KIND_LEGAL
+            and not inn
+            and resolution == ClientImportCandidate.RESOLUTION_AUTO
+        ):
             status = ClientImportCandidate.STATUS_REVIEW
             reason = "У юридического лица не заполнен ИНН"
+
+        if resolution == ClientImportCandidate.RESOLUTION_SKIP:
+            status = ClientImportCandidate.STATUS_SKIPPED
+            reason = "Не импортировать — решение пользователя"
+        elif resolution != ClientImportCandidate.RESOLUTION_AUTO and status not in {
+            ClientImportCandidate.STATUS_INVALID,
+        }:
+            status = ClientImportCandidate.STATUS_READY
+            reason = "Тип подтверждён пользователем"
 
         payload = {
             "phones": phones,
@@ -302,7 +373,7 @@ def scan_onec_clients(run=None):
                 "matched_client": matched_client,
             },
         )
-        if candidate.applied_at and matched_client and candidate.status == ClientImportCandidate.STATUS_READY:
+        if candidate.applied_at:
             candidate.status = ClientImportCandidate.STATUS_IMPORTED
             candidate.save(update_fields=["status", "updated_at"])
 
@@ -605,9 +676,10 @@ def apply_candidate(candidate):
     }:
         raise ValueError("Карточка требует ручной проверки")
 
+    kind = candidate.effective_kind
     client = candidate.matched_client
     if client is None:
-        client_type = "private" if candidate.source_kind == ClientImportCandidate.KIND_PRIVATE else "legal"
+        client_type = "private" if kind == ClientImportCandidate.KIND_PRIVATE else "legal"
         last_name = first_name = middle_name = ""
         if client_type == "private":
             last_name, first_name, middle_name = _split_person_name(candidate.name)
@@ -634,9 +706,9 @@ def apply_candidate(candidate):
     profile, _ = ClientCRMProfile.objects.get_or_create(client=client)
     profile.legal_form = (
         ClientCRMProfile.LEGAL_FORM_IP
-        if candidate.source_kind == ClientImportCandidate.KIND_IP
+        if kind == ClientImportCandidate.KIND_IP
         else ClientCRMProfile.LEGAL_FORM_ENTITY
-        if candidate.source_kind == ClientImportCandidate.KIND_LEGAL
+        if kind == ClientImportCandidate.KIND_LEGAL
         else ClientCRMProfile.LEGAL_FORM_NONE
     )
     profile.middle_name = profile.middle_name or (_split_person_name(candidate.name)[2] if client.client_type == "private" else "")
@@ -651,7 +723,7 @@ def apply_candidate(candidate):
     profile.save()
     _sync_contacts(client, candidate)
 
-    if candidate.source_kind == ClientImportCandidate.KIND_IP:
+    if kind == ClientImportCandidate.KIND_IP:
         _find_or_create_ip_person(client, candidate)
 
     candidate.matched_client = client
@@ -660,6 +732,62 @@ def apply_candidate(candidate):
     candidate.applied_at = timezone.now()
     candidate.save(update_fields=["matched_client", "status", "reason", "applied_at", "updated_at"])
     return client
+
+
+@transaction.atomic
+def resolve_import_candidate(candidate_id, resolution, resolved_by=None):
+    allowed = {
+        ClientImportCandidate.RESOLUTION_AUTO,
+        ClientImportCandidate.RESOLUTION_LEGAL,
+        ClientImportCandidate.RESOLUTION_PRIVATE,
+        ClientImportCandidate.RESOLUTION_IP,
+        ClientImportCandidate.RESOLUTION_SKIP,
+    }
+    if resolution not in allowed:
+        raise ValueError("Недопустимое решение")
+
+    candidate = (
+        ClientImportCandidate.objects.select_for_update()
+        .select_related("organization")
+        .get(pk=candidate_id)
+    )
+    if candidate.applied_at:
+        raise ValueError("Импортированную карточку нельзя изменить")
+
+    candidate.resolution = resolution
+    candidate.resolved_by = resolved_by
+    candidate.resolved_at = timezone.now() if resolution != ClientImportCandidate.RESOLUTION_AUTO else None
+    candidate.resolution_note = (
+        "Ручное решение"
+        if resolution != ClientImportCandidate.RESOLUTION_AUTO
+        else ""
+    )
+
+    if resolution == ClientImportCandidate.RESOLUTION_SKIP:
+        candidate.status = ClientImportCandidate.STATUS_SKIPPED
+        candidate.reason = "Не импортировать — решение пользователя"
+    elif resolution == ClientImportCandidate.RESOLUTION_AUTO:
+        # A fresh scan will recalculate automatic diagnostics. Until then keep
+        # the row visible for review rather than silently marking it ready.
+        candidate.status = ClientImportCandidate.STATUS_REVIEW
+        candidate.reason = "Ручное решение сброшено; обновите данные из 1С"
+    else:
+        candidate.status = ClientImportCandidate.STATUS_READY
+        candidate.reason = "Тип подтверждён пользователем"
+
+    candidate.save(
+        update_fields=[
+            "resolution",
+            "resolution_note",
+            "resolved_by",
+            "resolved_at",
+            "status",
+            "reason",
+            "updated_at",
+        ]
+    )
+    _refresh_latest_run_counts(candidate.organization)
+    return candidate
 
 
 def apply_ready_candidates(organization=None):
