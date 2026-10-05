@@ -10,7 +10,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--lookback-hours",
             type=int,
-            default=48,
+            default=168,
             help="Overlap window for recently created 1C buyers.",
         )
 
