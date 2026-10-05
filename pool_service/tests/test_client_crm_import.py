@@ -659,3 +659,68 @@ class ClientCRMImportTests(TestCase):
         self.assertFalse(
             ClientCRMProfile.objects.filter(onec_ref=buyer_rows[0]["Ref_Key"]).exists()
         )
+
+
+    @override_settings(ONEC_ODATA_TARGET_ORGANIZATION_ID="")
+    def test_recent_sync_never_rebinds_other_canonical_onec_client(self):
+        canonical = Client.objects.create(
+            organization=self.organization,
+            client_type="legal",
+            name="Уже связанный клиент",
+            phone="+7 913 555-66-77",
+        )
+        ClientCRMProfile.objects.create(
+            client=canonical,
+            onec_ref="16161616-1616-1616-1616-161616161616",
+            source=ClientCRMProfile.SOURCE_ONEC,
+        )
+        buyer_rows = [
+            {
+                "Ref_Key": "17171717-1717-1717-1717-171717171717",
+                "Code": "НФ-020004",
+                "Description": "Другой клиент 1С",
+                "НаименованиеПолное": "Другой клиент 1С",
+                "ЮридическоеФизическоеЛицо": "ЮридическоеЛицо",
+                "ВидКонтрагента": "ЮридическоеЛицо",
+                "ИНН": "",
+                "КПП": "",
+                "ФИО": "",
+                "ДатаРождения": "0001-01-01T00:00:00",
+                "ДатаСоздания": "2026-10-05T00:00:00",
+                "НомерТелефонаДляПоиска": "79135556677",
+                "АдресЭПДляПоиска": "",
+                "Покупатель": True,
+                "Недействителен": False,
+            }
+        ]
+
+        def fake_query(_config, entity_set, **kwargs):
+            if entity_set == "Catalog_Контрагенты":
+                return {"rows": buyer_rows, "complete": True}
+            return {"rows": [], "complete": True}
+
+        with override_settings(
+            ONEC_ODATA_TARGET_ORGANIZATION_ID=str(self.organization.id)
+        ), patch(
+            "pool_service.client_crm_import.config_from_settings",
+            return_value=object(),
+        ), patch(
+            "pool_service.client_crm_import.fetch_metadata",
+            return_value=b"metadata",
+        ), patch(
+            "pool_service.client_crm_import.query_1c_rows",
+            side_effect=fake_query,
+        ):
+            result = sync_recent_onec_clients(lookback_hours=168)
+
+        self.assertEqual(result["duplicate"], 1)
+        canonical.crm_profile.refresh_from_db()
+        self.assertEqual(
+            canonical.crm_profile.onec_ref,
+            "16161616-1616-1616-1616-161616161616",
+        )
+        candidate = ClientImportCandidate.objects.get(
+            source_ref=buyer_rows[0]["Ref_Key"]
+        )
+        self.assertEqual(candidate.status, ClientImportCandidate.STATUS_DUPLICATE)
+        self.assertIsNone(candidate.applied_at)
