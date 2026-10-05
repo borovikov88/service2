@@ -44,7 +44,8 @@ class CallCommitmentMaterializationTests(TestCase):
             result=PhoneCall.RESULT_ANSWERED,
         )
 
-    def test_high_confidence_employee_commitment_creates_crm_task(self):
+    @patch("pool_service.services.call_commitments.notify_task_assignment")
+    def test_high_confidence_employee_commitment_creates_crm_task(self, notify_task_assignment):
         call = self._call("employee-promise")
         CallAnalysis.objects.create(
             call=call,
@@ -81,8 +82,10 @@ class CallCommitmentMaterializationTests(TestCase):
         self.assertEqual(task.payload_json["actor"], "employee")
         self.assertTrue(task.auto_created)
         self.assertIn(self.manager, task.responsibles.all())
+        notify_task_assignment.assert_called_once()
 
-    def test_client_commitment_waits_for_client_and_is_idempotent(self):
+    @patch("pool_service.services.call_commitments.notify_task_assignment")
+    def test_client_commitment_waits_for_client_and_is_idempotent(self, notify_task_assignment):
         call = self._call("client-promise")
         CallAnalysis.objects.create(
             call=call,
@@ -119,6 +122,7 @@ class CallCommitmentMaterializationTests(TestCase):
             ServiceTask.objects.filter(payload_json__source_call_id=call.id).count(),
             1,
         )
+        notify_task_assignment.assert_not_called()
 
     def test_uncertain_commitment_is_not_materialized(self):
         call = self._call("uncertain-promise")
