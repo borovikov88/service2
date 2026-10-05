@@ -403,7 +403,7 @@ def _create_task(authenticated, organization, arguments):
         payload_json={
             "source": "operations_mcp",
             "operations_mcp_idempotency_key": key,
-            "operations_mcp_grant_id": authenticated.grant_id,
+            "operations_mcp_grant_id": authenticated.grant.id,
         },
     )
     task.responsibles.add(responsible)
