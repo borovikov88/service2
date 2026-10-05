@@ -10,7 +10,7 @@ from django.urls import reverse
 import pywebpush
 from pywebpush import WebPushException, webpush
 
-from pool_service.models import PushSubscription
+from pool_service.models import Profile, PushSubscription
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +88,15 @@ def send_push_to_users(users, *, title, message, action_url="", notification=Non
     if not config:
         return 0
     active_users = [user for user in users if user and user.is_active]
+    if not active_users:
+        return 0
+    disabled_user_ids = set(
+        Profile.objects.filter(
+            user__in=active_users,
+            push_notifications_enabled=False,
+        ).values_list("user_id", flat=True)
+    )
+    active_users = [user for user in active_users if user.id not in disabled_user_ids]
     if not active_users:
         return 0
     sent = 0
