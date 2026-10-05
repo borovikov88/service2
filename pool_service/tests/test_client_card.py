@@ -1,8 +1,9 @@
-from datetime import date
+from datetime import date, timedelta
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from pool_service.client_crm_models import ClientCRMProfile
 from pool_service.models import (
@@ -17,7 +18,10 @@ from pool_service.models import (
 
 class ClientCardTests(TestCase):
     def setUp(self):
-        self.organization = Organization.objects.create(name="CRM card org")
+        self.organization = Organization.objects.create(
+            name="CRM card org",
+            paid_until=timezone.now() + timedelta(days=30),
+        )
         self.owner = get_user_model().objects.create_user(
             username="crm-card-owner",
             password="test-pass",
@@ -182,3 +186,56 @@ class ClientCardTests(TestCase):
         self.assertEqual(post_response.status_code, 302)
         task = ServiceTask.objects.get(title="Задача из карточки")
         self.assertEqual(task.client_id, self.crm_client.pk)
+
+
+    def test_accountant_cannot_open_client_card_directly(self):
+        accountant = get_user_model().objects.create_user(
+            username="crm-card-accountant",
+            password="test-pass",
+        )
+        OrganizationAccess.objects.create(
+            user=accountant,
+            organization=self.organization,
+            role="accountant",
+        )
+        self.client.force_login(accountant)
+
+        response = self.client.get(
+            reverse("client_detail", args=[self.crm_client.pk])
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_service_role_sees_only_service_crm_direction(self):
+        service_user = get_user_model().objects.create_user(
+            username="crm-card-service",
+            password="test-pass",
+        )
+        OrganizationAccess.objects.create(
+            user=service_user,
+            organization=self.organization,
+            role="service",
+        )
+        CrmItem.objects.create(
+            organization=self.organization,
+            direction=CrmItem.DIRECTION_SERVICE,
+            title="Сервисная запись",
+            client=self.crm_client,
+            created_by=self.owner,
+        )
+        CrmItem.objects.create(
+            organization=self.organization,
+            direction=CrmItem.DIRECTION_SALES,
+            title="Продажная запись",
+            client=self.crm_client,
+            created_by=self.owner,
+        )
+        self.client.force_login(service_user)
+
+        response = self.client.get(
+            reverse("client_detail", args=[self.crm_client.pk])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Сервисная запись")
+        self.assertNotContains(response, "Продажная запись")
