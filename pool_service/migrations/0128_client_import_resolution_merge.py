@@ -52,13 +52,19 @@ def apply_owner_decisions(apps, schema_editor):
         )
         qs = Candidate.objects.filter(source_code=source_code, applied_at__isnull=True)
         touched_org_ids.update(qs.values_list("organization_id", flat=True))
-        qs.update(
-            resolution=resolution,
-            resolution_note="Решение владельца от 05.10.2026",
-            resolved_at=now,
-            status=status,
-            reason=reason,
-        )
+        update_values = {
+            "resolution": resolution,
+            "resolution_note": "Решение владельца от 05.10.2026",
+            "resolved_at": now,
+            "status": status,
+            "reason": reason,
+        }
+        if resolution != "skip":
+            # Old staging was built before phone matching was type-scoped.
+            # Do not trust a previously stored auto-match for manually
+            # classified rows; the owner can merge legacy cards explicitly.
+            update_values["matched_client"] = None
+        qs.update(**update_values)
 
     for organization_id in touched_org_ids:
         counts = {
