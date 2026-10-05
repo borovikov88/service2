@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from .client_crm_import import (
     BUYER_ENTITY,
+    IMPORT_RUN_STALE_MINUTES,
     PAGE_SIZE,
     SYSTEM_NAMES,
     _candidate_contacts,
@@ -184,8 +185,46 @@ def _stage_recent_candidate(organization, row, extra_contacts):
     return candidate
 
 
+def _cleanup_stale_runs(organization):
+    stale_before = timezone.now() - timedelta(minutes=IMPORT_RUN_STALE_MINUTES)
+    return ClientImportRun.objects.filter(
+        organization=organization,
+        status__in=[
+            ClientImportRun.STATUS_PENDING,
+            ClientImportRun.STATUS_RUNNING,
+            ClientImportRun.STATUS_APPLYING,
+        ],
+        updated_at__lt=stale_before,
+    ).update(
+        status=ClientImportRun.STATUS_FAILED,
+        error="Автоматическая синхронизация пометила зависший импорт как ошибочный",
+        finished_at=timezone.now(),
+        updated_at=timezone.now(),
+    )
+
+
+def _automatic_sync_blocked(organization):
+    return ClientImportRun.objects.filter(
+        organization=organization,
+        status__in=[
+            ClientImportRun.STATUS_PENDING,
+            ClientImportRun.STATUS_RUNNING,
+            ClientImportRun.STATUS_APPLYING,
+        ],
+    ).exists()
+
+
 def sync_recent_onec_clients(*, lookback_hours=RECENT_LOOKBACK_HOURS):
     organization = _target_organization()
+    organization_model = organization.__class__
+    with transaction.atomic():
+        locked_organization = organization_model.objects.select_for_update().get(
+            pk=organization.pk
+        )
+        _cleanup_stale_runs(locked_organization)
+        if _automatic_sync_blocked(locked_organization):
+            return {"skipped_active_run": 1}
+
     config = config_from_settings()
     metadata_raw = fetch_metadata(config)
 
@@ -201,7 +240,6 @@ def sync_recent_onec_clients(*, lookback_hours=RECENT_LOOKBACK_HOURS):
     )
 
     result = defaultdict(int)
-    organization_model = organization.__class__
     for row in rows:
         ref = str(row.get("Ref_Key") or "")
         with transaction.atomic():
@@ -272,15 +310,8 @@ def sync_all_onec_clients():
         locked_organization = organization_model.objects.select_for_update().get(
             pk=organization.pk
         )
-        active = ClientImportRun.objects.filter(
-            organization=locked_organization,
-            status__in=[
-                ClientImportRun.STATUS_PENDING,
-                ClientImportRun.STATUS_RUNNING,
-                ClientImportRun.STATUS_APPLYING,
-            ],
-        ).exists()
-        if active:
+        _cleanup_stale_runs(locked_organization)
+        if _automatic_sync_blocked(locked_organization):
             raise RuntimeError("Client import or scan is already active")
         run = ClientImportRun.objects.create(
             organization=locked_organization,
