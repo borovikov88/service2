@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import timedelta
 import logging
 
-from django.db import transaction
+from django.db import models, transaction
 from django.utils import timezone
 
 from .client_crm_import import (
@@ -22,7 +22,7 @@ from .client_crm_import import (
     apply_ready_candidates,
     scan_onec_clients,
 )
-from .client_crm_models import ClientImportCandidate
+from .client_crm_models import ClientImportCandidate, ClientImportRun
 from .onec_diagnostic import config_from_settings, fetch_metadata
 from .onec_diagnostic_universal import query_1c_rows
 
@@ -201,89 +201,163 @@ def sync_recent_onec_clients(*, lookback_hours=RECENT_LOOKBACK_HOURS):
     )
 
     result = defaultdict(int)
+    organization_model = organization.__class__
     for row in rows:
         ref = str(row.get("Ref_Key") or "")
-        candidate = _stage_recent_candidate(
-            organization,
-            row,
-            contacts_by_ref.get(ref, []),
-        )
-        result["seen"] += 1
+        with transaction.atomic():
+            # Manual staging decisions lock the same Organization row.  The
+            # lock keeps a five-minute sync from overwriting a decision made
+            # at the same moment in the UI.
+            locked_organization = organization_model.objects.select_for_update().get(
+                pk=organization.pk
+            )
+            candidate = _stage_recent_candidate(
+                locked_organization,
+                row,
+                contacts_by_ref.get(ref, []),
+            )
+            result["seen"] += 1
 
-        if candidate.status == ClientImportCandidate.STATUS_READY:
-            try:
-                apply_candidate(candidate)
-            except (ValueError, RuntimeError):
-                logger.exception(
-                    "Automatic 1C client import requires review for candidate %s",
-                    candidate.pk,
-                )
-                candidate.status = ClientImportCandidate.STATUS_REVIEW
-                candidate.reason = (
-                    "Автоматический импорт не смог безопасно сопоставить карточку"
-                )
-                candidate.save(
-                    update_fields=["status", "reason", "updated_at"]
-                )
+            if candidate.status == ClientImportCandidate.STATUS_READY:
+                try:
+                    apply_candidate(candidate)
+                except (ValueError, RuntimeError):
+                    logger.exception(
+                        "Automatic 1C client import requires review for candidate %s",
+                        candidate.pk,
+                    )
+                    candidate.status = ClientImportCandidate.STATUS_REVIEW
+                    candidate.reason = (
+                        "Автоматический импорт не смог безопасно сопоставить карточку"
+                    )
+                    candidate.save(
+                        update_fields=["status", "reason", "updated_at"]
+                    )
+                    result["review"] += 1
+                else:
+                    result["imported"] += 1
+            elif (
+                candidate.status == ClientImportCandidate.STATUS_IMPORTED
+                and candidate.matched_client_id
+            ):
+                try:
+                    apply_candidate(candidate)
+                except (ValueError, RuntimeError):
+                    logger.exception(
+                        "Automatic refresh failed for imported 1C client candidate %s",
+                        candidate.pk,
+                    )
+                    result["refresh_failed"] += 1
+                else:
+                    result["refreshed"] += 1
+            elif candidate.status in {
+                ClientImportCandidate.STATUS_REVIEW,
+                ClientImportCandidate.STATUS_DUPLICATE,
+            }:
                 result["review"] += 1
-            else:
-                result["imported"] += 1
-        elif (
-            candidate.status == ClientImportCandidate.STATUS_IMPORTED
-            and candidate.matched_client_id
-        ):
-            try:
-                apply_candidate(candidate)
-            except (ValueError, RuntimeError):
-                logger.exception(
-                    "Automatic refresh failed for imported 1C client candidate %s",
-                    candidate.pk,
-                )
-                result["refresh_failed"] += 1
-            else:
-                result["refreshed"] += 1
-        elif candidate.status in {
-            ClientImportCandidate.STATUS_REVIEW,
-            ClientImportCandidate.STATUS_DUPLICATE,
-        }:
-            result["review"] += 1
-        elif candidate.status in {
-            ClientImportCandidate.STATUS_INVALID,
-            ClientImportCandidate.STATUS_SKIPPED,
-        }:
-            result["skipped"] += 1
+            elif candidate.status in {
+                ClientImportCandidate.STATUS_INVALID,
+                ClientImportCandidate.STATUS_SKIPPED,
+            }:
+                result["skipped"] += 1
 
     return dict(result)
 
 
 def sync_all_onec_clients():
     organization = _target_organization()
-    scan_result = scan_onec_clients()
-    apply_result = apply_ready_candidates(organization)
+    organization_model = organization.__class__
 
-    refreshed = 0
-    refresh_failed = 0
-    imported_ids = list(
-        ClientImportCandidate.objects.filter(
-            organization=organization,
-            status=ClientImportCandidate.STATUS_IMPORTED,
-            matched_client__isnull=False,
+    with transaction.atomic():
+        locked_organization = organization_model.objects.select_for_update().get(
+            pk=organization.pk
         )
-        .order_by("id")
-        .values_list("id", flat=True)
-    )
-    for candidate_id in imported_ids:
-        candidate = ClientImportCandidate.objects.get(pk=candidate_id)
-        try:
-            apply_candidate(candidate)
-        except (ValueError, RuntimeError):
-            logger.exception(
-                "Nightly refresh failed for imported 1C client candidate %s",
-                candidate_id,
+        active = ClientImportRun.objects.filter(
+            organization=locked_organization,
+            status__in=[
+                ClientImportRun.STATUS_PENDING,
+                ClientImportRun.STATUS_RUNNING,
+                ClientImportRun.STATUS_APPLYING,
+            ],
+        ).exists()
+        if active:
+            raise RuntimeError("Client import or scan is already active")
+        run = ClientImportRun.objects.create(
+            organization=locked_organization,
+            status=ClientImportRun.STATUS_RUNNING,
+        )
+
+    try:
+        scan_result = scan_onec_clients(run=run)
+        ClientImportRun.objects.filter(pk=run.pk).update(
+            status=ClientImportRun.STATUS_APPLYING,
+            processed_rows=0,
+            total_rows=ClientImportCandidate.objects.filter(
+                organization=organization,
+                status=ClientImportCandidate.STATUS_READY,
+            ).count(),
+            updated_at=timezone.now(),
+        )
+        run.refresh_from_db()
+        apply_result = apply_ready_candidates(organization, run=run)
+
+        refreshed = 0
+        refresh_failed = 0
+        imported_ids = list(
+            ClientImportCandidate.objects.filter(
+                organization=organization,
+                status=ClientImportCandidate.STATUS_IMPORTED,
+                matched_client__isnull=False,
             )
-            refresh_failed += 1
-        else:
-            refreshed += 1
+            .order_by("id")
+            .values_list("id", flat=True)
+        )
+        for candidate_id in imported_ids:
+            candidate = ClientImportCandidate.objects.get(pk=candidate_id)
+            try:
+                apply_candidate(candidate)
+            except (ValueError, RuntimeError):
+                logger.exception(
+                    "Nightly refresh failed for imported 1C client candidate %s",
+                    candidate_id,
+                )
+                refresh_failed += 1
+            else:
+                refreshed += 1
+
+        counts = {
+            item["status"]: item["count"]
+            for item in ClientImportCandidate.objects.filter(
+                organization=organization
+            ).values("status").annotate(count=models.Count("id"))
+        }
+        ClientImportRun.objects.filter(pk=run.pk).update(
+            status=ClientImportRun.STATUS_SUCCESS,
+            ready_count=counts.get(ClientImportCandidate.STATUS_READY, 0),
+            review_count=counts.get(ClientImportCandidate.STATUS_REVIEW, 0),
+            duplicate_count=counts.get(ClientImportCandidate.STATUS_DUPLICATE, 0),
+            invalid_count=(
+                counts.get(ClientImportCandidate.STATUS_INVALID, 0)
+                + counts.get(ClientImportCandidate.STATUS_SKIPPED, 0)
+            ),
+            imported_count=counts.get(ClientImportCandidate.STATUS_IMPORTED, 0),
+            error=(
+                f"Не удалось обновить импортированных карточек: {refresh_failed}"
+                if refresh_failed
+                else ""
+            ),
+            finished_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+    except Exception as exc:
+        logger.exception("Nightly full 1C client synchronization failed")
+        ClientImportRun.objects.filter(pk=run.pk).update(
+            status=ClientImportRun.STATUS_FAILED,
+            error=f"Ошибка полной синхронизации: {str(exc)[:400]}",
+            finished_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+        raise
 
     return {
         "scan": scan_result,
