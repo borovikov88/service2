@@ -146,7 +146,12 @@ def process_call_commitment_controls(*, now=None):
             is_archived=False,
             completed_at__isnull=True,
         )
-        .exclude(status=ServiceTask.STATUS_CANCELLED)
+        .exclude(
+            status__in=[
+                ServiceTask.STATUS_DONE,
+                ServiceTask.STATUS_CANCELLED,
+            ]
+        )
         .select_related(
             "organization",
             "client",
