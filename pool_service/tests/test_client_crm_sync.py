@@ -1,3 +1,4 @@
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
@@ -9,8 +10,12 @@ from pool_service.client_crm_models import (
     ClientCompanyLink,
     ClientContact,
     ClientImportCandidate,
+    ClientImportRun,
 )
-from pool_service.client_crm_sync import sync_recent_onec_clients
+from pool_service.client_crm_sync import (
+    sync_all_onec_clients,
+    sync_recent_onec_clients,
+)
 from pool_service.models import Client, Organization
 
 
@@ -206,3 +211,53 @@ class ClientCRMAutoSyncTests(TestCase):
         )
         self.assertEqual(manual.sources, ["manual"])
         self.assertEqual(manual.source_reference, "")
+
+
+    def test_incremental_sync_skips_active_manual_run(self):
+        ClientImportRun.objects.create(
+            organization=self.organization,
+            status=ClientImportRun.STATUS_RUNNING,
+        )
+
+        with override_settings(
+            ONEC_ODATA_TARGET_ORGANIZATION_ID=str(self.organization.pk)
+        ), patch(
+            "pool_service.client_crm_sync.config_from_settings"
+        ) as config_mock:
+            result = sync_recent_onec_clients()
+
+        self.assertEqual(result, {"skipped_active_run": 1})
+        config_mock.assert_not_called()
+
+    def test_incremental_sync_recovers_stale_run(self):
+        run = ClientImportRun.objects.create(
+            organization=self.organization,
+            status=ClientImportRun.STATUS_RUNNING,
+        )
+        ClientImportRun.objects.filter(pk=run.pk).update(
+            updated_at=timezone.now() - timedelta(hours=3)
+        )
+
+        result = self._sync([])
+
+        run.refresh_from_db()
+        self.assertEqual(result, {})
+        self.assertEqual(run.status, ClientImportRun.STATUS_FAILED)
+        self.assertIn("зависший импорт", run.error)
+
+    def test_full_sync_uses_visible_import_run(self):
+        with override_settings(
+            ONEC_ODATA_TARGET_ORGANIZATION_ID=str(self.organization.pk)
+        ), patch(
+            "pool_service.client_crm_sync.scan_onec_clients",
+            return_value={"total": 0},
+        ), patch(
+            "pool_service.client_crm_sync.apply_ready_candidates",
+            return_value={"imported": 0, "failed": 0},
+        ):
+            result = sync_all_onec_clients()
+
+        run = ClientImportRun.objects.get(organization=self.organization)
+        self.assertEqual(run.status, ClientImportRun.STATUS_SUCCESS)
+        self.assertEqual(result["scan"], {"total": 0})
+        self.assertEqual(result["apply"], {"imported": 0, "failed": 0})
