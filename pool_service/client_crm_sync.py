@@ -257,13 +257,15 @@ def sync_recent_onec_clients(*, lookback_hours=RECENT_LOOKBACK_HOURS):
 
 
 def sync_all_onec_clients():
+    organization = _target_organization()
     scan_result = scan_onec_clients()
-    apply_result = apply_ready_candidates()
+    apply_result = apply_ready_candidates(organization)
 
     refreshed = 0
     refresh_failed = 0
     imported_ids = list(
         ClientImportCandidate.objects.filter(
+            organization=organization,
             status=ClientImportCandidate.STATUS_IMPORTED,
             matched_client__isnull=False,
         )
