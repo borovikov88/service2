@@ -269,3 +269,23 @@ class ClientCRMImportTests(TestCase):
         self.assertEqual(candidate.status, ClientImportCandidate.STATUS_REVIEW)
         self.assertIsNone(candidate.matched_client)
         self.assertTrue(Client.objects.filter(pk=private.pk).exists())
+
+
+    def test_duplicate_cannot_be_bypassed_with_type_resolution(self):
+        user = get_user_model().objects.create_user(username="duplicate-resolver")
+        candidate = self.candidate(
+            source_ref="77777777-7777-7777-7777-777777777778",
+            status=ClientImportCandidate.STATUS_DUPLICATE,
+            reason="Несколько карточек Service2 совпали по: телефон",
+        )
+
+        with self.assertRaisesMessage(ValueError, "сначала нужно выбрать существующую карточку"):
+            resolve_import_candidate(
+                candidate.pk,
+                ClientImportCandidate.RESOLUTION_LEGAL,
+                user,
+            )
+
+        candidate.refresh_from_db()
+        self.assertEqual(candidate.status, ClientImportCandidate.STATUS_DUPLICATE)
+        self.assertEqual(candidate.resolution, ClientImportCandidate.RESOLUTION_AUTO)
