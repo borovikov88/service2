@@ -14,12 +14,13 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from .models import Client, OneCODataSyncRun, Organization
+from .models import Client, Organization
 from .client_crm_models import (
     ClientCRMProfile,
     ClientCompanyLink,
     ClientContact,
     ClientImportCandidate,
+    ClientImportRun,
 )
 from .onec_diagnostic import config_from_settings, fetch_metadata
 from .onec_diagnostic_universal import query_1c_rows
@@ -31,7 +32,6 @@ PAGE_SIZE = 500
 CONTACT_BATCH_SIZE = 40
 SYSTEM_NAMES = {"розничный покупатель"}
 IMPORT_RUN_STALE_MINUTES = 120
-CRM_SYNC_FEATURE = "crm_clients"
 
 logger = logging.getLogger(__name__)
 
@@ -214,36 +214,17 @@ def _match_clients(organization, source_kind, inn, phones, source_ref=""):
     return [], ""
 
 
-def _run_progress_payload(*, total_rows, processed_rows, totals):
-    return {
-        "feature": CRM_SYNC_FEATURE,
-        "total_rows": int(total_rows or 0),
-        "processed_rows": int(processed_rows or 0),
-        "ready_count": int(totals.get(ClientImportCandidate.STATUS_READY, 0)),
-        "review_count": int(totals.get(ClientImportCandidate.STATUS_REVIEW, 0)),
-        "duplicate_count": int(totals.get(ClientImportCandidate.STATUS_DUPLICATE, 0)),
-        "invalid_count": int(totals.get(ClientImportCandidate.STATUS_INVALID, 0)),
-        "imported_count": int(totals.get(ClientImportCandidate.STATUS_IMPORTED, 0)),
-    }
-
-
-def _is_client_import_run(run):
-    return bool(
-        run
-        and isinstance(run.sync_scope, dict)
-        and run.sync_scope.get("feature") == CRM_SYNC_FEATURE
-    )
-
-
-def _update_run_progress(run, *, total_rows, processed_rows, totals):
+def _update_run_progress(run, *, processed_rows, totals):
     if run is None:
         return
-    OneCODataSyncRun.objects.filter(pk=run.pk).update(
-        progress=_run_progress_payload(
-            total_rows=total_rows,
-            processed_rows=processed_rows,
-            totals=totals,
-        )
+    ClientImportRun.objects.filter(pk=run.pk).update(
+        processed_rows=processed_rows,
+        ready_count=totals.get(ClientImportCandidate.STATUS_READY, 0),
+        review_count=totals.get(ClientImportCandidate.STATUS_REVIEW, 0),
+        duplicate_count=totals.get(ClientImportCandidate.STATUS_DUPLICATE, 0),
+        invalid_count=totals.get(ClientImportCandidate.STATUS_INVALID, 0),
+        imported_count=totals.get(ClientImportCandidate.STATUS_IMPORTED, 0),
+        updated_at=timezone.now(),
     )
 
 
@@ -256,11 +237,9 @@ def scan_onec_clients(run=None):
     metadata_raw = fetch_metadata(config)
     rows = list(_buyer_rows(config, metadata_raw))
     if run is not None:
-        _update_run_progress(
-            run,
+        ClientImportRun.objects.filter(pk=run.pk).update(
             total_rows=len(rows),
-            processed_rows=0,
-            totals={},
+            updated_at=timezone.now(),
         )
 
     contacts_by_ref = _contact_rows(
@@ -333,7 +312,6 @@ def scan_onec_clients(run=None):
         if processed_rows % 25 == 0 or processed_rows == len(rows):
             _update_run_progress(
                 run,
-                total_rows=len(rows),
                 processed_rows=processed_rows,
                 totals=totals,
             )
@@ -363,16 +341,17 @@ def _reap_client_import_worker(process, run_id):
                 return_code,
                 run_id,
             )
-            OneCODataSyncRun.objects.filter(
+            ClientImportRun.objects.filter(
                 pk=run_id,
                 status__in=[
-                    OneCODataSyncRun.STATUS_PENDING,
-                    OneCODataSyncRun.STATUS_RUNNING,
+                    ClientImportRun.STATUS_PENDING,
+                    ClientImportRun.STATUS_RUNNING,
                 ],
             ).update(
-                status=OneCODataSyncRun.STATUS_FAILED,
-                error_message="Фоновый процесс импорта клиентов завершился с ошибкой",
+                status=ClientImportRun.STATUS_FAILED,
+                error="Фоновый процесс импорта завершился с ошибкой",
                 finished_at=timezone.now(),
+                updated_at=timezone.now(),
             )
     except Exception:
         logger.exception("Failed while reaping 1C client import worker")
@@ -412,23 +391,7 @@ def start_client_import_worker(run_id):
     return True
 
 
-def _active_client_import_runs(organization):
-    return [
-        run
-        for run in OneCODataSyncRun.objects.select_for_update()
-        .filter(
-            organization=organization,
-            status__in=[
-                OneCODataSyncRun.STATUS_PENDING,
-                OneCODataSyncRun.STATUS_RUNNING,
-            ],
-        )
-        .order_by("-created_at", "-id")[:20]
-        if _is_client_import_run(run)
-    ]
-
-
-def request_client_import_scan(requested_by):
+def request_client_import_scan(requested_by=None):
     organization = _target_organization()
     stale_before = timezone.now() - timedelta(minutes=IMPORT_RUN_STALE_MINUTES)
 
@@ -436,47 +399,47 @@ def request_client_import_scan(requested_by):
         # Lock the organization row so simultaneous clicks from different
         # browsers cannot create two active imports.
         organization = Organization.objects.select_for_update().get(pk=organization.pk)
-        active_runs = _active_client_import_runs(organization)
+        ClientImportRun.objects.filter(
+            organization=organization,
+            status__in=[
+                ClientImportRun.STATUS_PENDING,
+                ClientImportRun.STATUS_RUNNING,
+            ],
+            updated_at__lt=stale_before,
+        ).update(
+            status=ClientImportRun.STATUS_FAILED,
+            error="Предыдущий импорт не завершился и был помечен как зависший",
+            finished_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
 
-        active = None
-        for existing in active_runs:
-            activity_at = existing.started_at or existing.created_at
-            if activity_at < stale_before:
-                existing.status = OneCODataSyncRun.STATUS_FAILED
-                existing.error_message = (
-                    "Предыдущий импорт клиентов не завершился и был помечен как зависший"
-                )
-                existing.finished_at = timezone.now()
-                existing.save(
-                    update_fields=["status", "error_message", "finished_at"]
-                )
-                continue
-            if active is None:
-                active = existing
-
+        active = (
+            ClientImportRun.objects.select_for_update()
+            .filter(
+                organization=organization,
+                status__in=[
+                    ClientImportRun.STATUS_PENDING,
+                    ClientImportRun.STATUS_RUNNING,
+                ],
+            )
+            .order_by("-requested_at", "-id")
+            .first()
+        )
         if active is not None:
             return active, False
 
-        run = OneCODataSyncRun.objects.create(
+        run = ClientImportRun.objects.create(
             organization=organization,
             requested_by=requested_by,
-            mode=OneCODataSyncRun.MODE_PREVIEW,
-            status=OneCODataSyncRun.STATUS_PENDING,
-            requested_report_types=[CRM_SYNC_FEATURE],
-            sync_scope={"feature": CRM_SYNC_FEATURE},
-            progress=_run_progress_payload(
-                total_rows=0,
-                processed_rows=0,
-                totals={},
-            ),
-            result_summary={},
+            status=ClientImportRun.STATUS_PENDING,
         )
 
     if not start_client_import_worker(run.pk):
-        OneCODataSyncRun.objects.filter(pk=run.pk).update(
-            status=OneCODataSyncRun.STATUS_FAILED,
-            error_message="Не удалось запустить фоновый процесс импорта клиентов",
+        ClientImportRun.objects.filter(pk=run.pk).update(
+            status=ClientImportRun.STATUS_FAILED,
+            error="Не удалось запустить фоновый процесс импорта",
             finished_at=timezone.now(),
+            updated_at=timezone.now(),
         )
         run.refresh_from_db()
         return run, False
@@ -486,51 +449,43 @@ def request_client_import_scan(requested_by):
 def process_client_import_run(run_id):
     with transaction.atomic():
         run = (
-            OneCODataSyncRun.objects.select_for_update()
+            ClientImportRun.objects.select_for_update()
             .select_related("organization")
             .get(pk=run_id)
         )
-        if not _is_client_import_run(run):
-            raise ValueError("Not a CRM client import run")
-        if run.status != OneCODataSyncRun.STATUS_PENDING:
+        if run.status != ClientImportRun.STATUS_PENDING:
             return run
-        run.status = OneCODataSyncRun.STATUS_RUNNING
+        run.status = ClientImportRun.STATUS_RUNNING
         run.started_at = timezone.now()
-        run.error_message = ""
-        run.save(update_fields=["status", "started_at", "error_message"])
+        run.error = ""
+        run.save(update_fields=["status", "started_at", "error", "updated_at"])
 
     try:
         result = scan_onec_clients(run=run)
     except Exception as exc:
         logger.exception("1C client import failed for run_id=%s", run_id)
         code = getattr(exc, "code", exc.__class__.__name__)
-        OneCODataSyncRun.objects.filter(pk=run_id).update(
-            status=OneCODataSyncRun.STATUS_FAILED,
-            error_message=f"Ошибка импорта клиентов: {str(code)[:400]}",
+        ClientImportRun.objects.filter(pk=run_id).update(
+            status=ClientImportRun.STATUS_FAILED,
+            error=f"Ошибка импорта: {str(code)[:400]}",
             finished_at=timezone.now(),
+            updated_at=timezone.now(),
         )
     else:
-        summary = {
-            "feature": CRM_SYNC_FEATURE,
-            "total": result.get("total", 0),
-            "ready_count": result.get(ClientImportCandidate.STATUS_READY, 0),
-            "review_count": result.get(ClientImportCandidate.STATUS_REVIEW, 0),
-            "duplicate_count": result.get(ClientImportCandidate.STATUS_DUPLICATE, 0),
-            "invalid_count": result.get(ClientImportCandidate.STATUS_INVALID, 0),
-            "imported_count": result.get(ClientImportCandidate.STATUS_IMPORTED, 0),
-        }
-        OneCODataSyncRun.objects.filter(pk=run_id).update(
-            status=OneCODataSyncRun.STATUS_COMPLETED,
-            progress=_run_progress_payload(
-                total_rows=result.get("total", 0),
-                processed_rows=result.get("total", 0),
-                totals=result,
-            ),
-            result_summary=summary,
-            error_message="",
+        ClientImportRun.objects.filter(pk=run_id).update(
+            status=ClientImportRun.STATUS_SUCCESS,
+            total_rows=result.get("total", 0),
+            processed_rows=result.get("total", 0),
+            ready_count=result.get(ClientImportCandidate.STATUS_READY, 0),
+            review_count=result.get(ClientImportCandidate.STATUS_REVIEW, 0),
+            duplicate_count=result.get(ClientImportCandidate.STATUS_DUPLICATE, 0),
+            invalid_count=result.get(ClientImportCandidate.STATUS_INVALID, 0),
+            imported_count=result.get(ClientImportCandidate.STATUS_IMPORTED, 0),
+            error="",
             finished_at=timezone.now(),
+            updated_at=timezone.now(),
         )
-    return OneCODataSyncRun.objects.get(pk=run_id)
+    return ClientImportRun.objects.get(pk=run_id)
 
 def _split_person_name(value):
     cleaned = re.sub(r"(?i)\bИП\b", " ", str(value or "")).replace('"', " ")
