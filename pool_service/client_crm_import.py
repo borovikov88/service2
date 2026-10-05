@@ -145,6 +145,10 @@ def _contact_rows(config, refs, metadata_raw):
             ],
             metadata_raw=metadata_raw,
         )
+        if result.get("complete") is False:
+            raise RuntimeError(
+                "1C contact batch is incomplete; refusing contact reconciliation"
+            )
         for row in result.get("rows", []):
             contact_map[str(row.get("Ref_Key") or "")].append(row)
     return contact_map
@@ -317,7 +321,7 @@ def _update_run_progress(run, *, processed_rows, totals):
     )
 
 
-def scan_onec_clients(run=None):
+def scan_onec_clients(run=None, *, return_seen_refs=False):
     organization = _target_organization()
     config = config_from_settings()
 
@@ -338,9 +342,12 @@ def scan_onec_clients(run=None):
     )
 
     totals = defaultdict(int)
+    seen_refs = []
     processed_rows = 0
     for row in rows:
         ref = str(row.get("Ref_Key") or "")
+        if ref:
+            seen_refs.append(ref)
         name = str(row.get("Description") or row.get("НаименованиеПолное") or "").strip()
         source_kind = _source_kind(row)
         existing = ClientImportCandidate.objects.filter(
@@ -455,7 +462,10 @@ def scan_onec_clients(run=None):
             )
 
     totals["total"] = len(rows)
-    return dict(totals)
+    result = dict(totals)
+    if return_seen_refs:
+        result["_seen_refs"] = seen_refs
+    return result
 
 
 def _worker_python_executable(base_dir):
@@ -849,6 +859,7 @@ def _find_or_create_ip_person(company, candidate):
         .first()
     )
     person = existing_link.person if existing_link else None
+    refresh_linked_person = existing_link is not None
 
     phones = (candidate.payload or {}).get("phones", [])
     phone_values = {item.get("match") for item in phones if item.get("match")}
@@ -894,13 +905,43 @@ def _find_or_create_ip_person(company, candidate):
             email=candidate.email or None,
         )
     profile, _ = ClientCRMProfile.objects.get_or_create(client=person)
-    if middle_name and not profile.middle_name:
+    if refresh_linked_person:
+        person_name = " ".join(
+            part for part in [last_name, first_name, middle_name] if part
+        ).strip() or candidate.name
+        person.name = person_name
+        person.first_name = first_name or None
+        person.last_name = last_name or None
+        person.phone = candidate.phone or None
+        person.email = candidate.email or None
+        person.save(
+            update_fields=[
+                "name",
+                "first_name",
+                "last_name",
+                "phone",
+                "email",
+            ]
+        )
         profile.middle_name = middle_name
-    if candidate.birth_date and not profile.birth_date:
         profile.birth_date = candidate.birth_date
-    if profile.source == ClientCRMProfile.SOURCE_MANUAL:
         profile.source = ClientCRMProfile.SOURCE_ONEC_IP
-    profile.save()
+        profile.save(
+            update_fields=[
+                "middle_name",
+                "birth_date",
+                "source",
+                "updated_at",
+            ]
+        )
+    else:
+        if middle_name and not profile.middle_name:
+            profile.middle_name = middle_name
+        if candidate.birth_date and not profile.birth_date:
+            profile.birth_date = candidate.birth_date
+        if profile.source == ClientCRMProfile.SOURCE_MANUAL:
+            profile.source = ClientCRMProfile.SOURCE_ONEC_IP
+        profile.save()
     _sync_contacts(person, candidate)
     ClientCompanyLink.objects.update_or_create(
         company=company,
@@ -952,13 +993,20 @@ def apply_candidate(candidate):
         ).exists()
         if already_linked_to_same_onec:
             client.name = candidate.name or client.name
+            client.client_type = (
+                "private"
+                if kind == ClientImportCandidate.KIND_PRIVATE
+                else "legal"
+            )
             if kind == ClientImportCandidate.KIND_PRIVATE:
                 last_name, first_name, _middle_name = _split_person_name(candidate.name)
-                client.first_name = first_name or client.first_name
-                client.last_name = last_name or client.last_name
+                client.first_name = first_name or None
+                client.last_name = last_name or None
                 client.company_name = None
             else:
-                client.company_name = candidate.legal_name or candidate.name or client.company_name
+                client.first_name = None
+                client.last_name = None
+                client.company_name = candidate.legal_name or candidate.name or None
             client.inn = candidate.inn or None
             client.phone = candidate.phone or None
             client.email = candidate.email or None
@@ -1007,6 +1055,13 @@ def apply_candidate(candidate):
 
     if kind == ClientImportCandidate.KIND_IP:
         _find_or_create_ip_person(client, candidate)
+    elif already_linked_to_same_onec:
+        ClientCompanyLink.objects.filter(
+            company=client,
+            source=ClientCompanyLink.SOURCE_ONEC_IP,
+            source_reference=candidate.source_ref,
+            automatic=True,
+        ).delete()
 
     candidate.matched_client = client
     candidate.status = ClientImportCandidate.STATUS_IMPORTED
@@ -1107,16 +1162,27 @@ def resolve_import_candidate(candidate_id, resolution, resolved_by=None):
     return candidate
 
 
-def apply_ready_candidates(organization=None, run=None):
+def apply_ready_candidates(organization=None, run=None, candidate_ids=None):
     organization = organization or _target_organization()
-    candidate_ids = list(
-        ClientImportCandidate.objects.filter(
-            organization=organization,
-            status=ClientImportCandidate.STATUS_READY,
+    if candidate_ids is None:
+        candidate_ids = list(
+            ClientImportCandidate.objects.filter(
+                organization=organization,
+                status=ClientImportCandidate.STATUS_READY,
+            )
+            .order_by("id")
+            .values_list("id", flat=True)
         )
-        .order_by("id")
-        .values_list("id", flat=True)
-    )
+    else:
+        candidate_ids = list(
+            ClientImportCandidate.objects.filter(
+                organization=organization,
+                status=ClientImportCandidate.STATUS_READY,
+                id__in=list(candidate_ids),
+            )
+            .order_by("id")
+            .values_list("id", flat=True)
+        )
     total = len(candidate_ids)
     result = {"imported": 0, "failed": 0}
     processed = 0
