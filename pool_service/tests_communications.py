@@ -1039,9 +1039,10 @@ class CommunicationsTests(TestCase):
         call_command(
             "process_requested_call_analyses",
             "--limit",
-            "10",
+            "1",
             "--idle-grace-seconds",
             "0",
+            "--drain",
         )
 
         self.assertEqual(
