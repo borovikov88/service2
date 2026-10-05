@@ -7,10 +7,10 @@ class Command(BaseCommand):
     help = "Process one queued 1C CRM client import run."
 
     def add_arguments(self, parser):
-        parser.add_argument("run_id")
+        parser.add_argument("run_id", type=int)
 
     def handle(self, *args, **options):
-        run_id = str(options["run_id"])
+        run_id = int(options["run_id"])
         try:
             run = process_client_import_run(run_id)
         except Exception as exc:
