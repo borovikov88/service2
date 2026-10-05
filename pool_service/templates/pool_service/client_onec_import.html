@@ -194,8 +194,29 @@
               {% endif %}
             </td>
             <td style="min-width: 310px;">
-              {% if candidate.status != "imported" %}
-                {% if candidate.status != "ready" or candidate.resolution != "auto" %}
+              {% if candidate.status == "imported" %}
+                <span class="text-muted small">Уже импортирован</span>
+              {% elif candidate.status == "duplicate" %}
+                <div class="small text-danger mb-1">Нужно отдельно выбрать существующую карточку.</div>
+                <form method="post" class="d-flex gap-1">
+                  {% csrf_token %}
+                  <input type="hidden" name="action" value="resolve">
+                  <input type="hidden" name="candidate_id" value="{{ candidate.id }}">
+                  <input type="hidden" name="return_status" value="{{ current_status }}">
+                  <input type="hidden" name="return_manual" value="{% if manual_only %}1{% endif %}">
+                  <button class="btn btn-sm btn-outline-danger" type="submit" name="resolution" value="skip">Не импортировать</button>
+                </form>
+              {% elif candidate.status == "invalid" %}
+                <div class="small text-muted mb-1">Системная/некорректная карточка.</div>
+                <form method="post" class="d-flex gap-1">
+                  {% csrf_token %}
+                  <input type="hidden" name="action" value="resolve">
+                  <input type="hidden" name="candidate_id" value="{{ candidate.id }}">
+                  <input type="hidden" name="return_status" value="{{ current_status }}">
+                  <input type="hidden" name="return_manual" value="{% if manual_only %}1{% endif %}">
+                  <button class="btn btn-sm btn-outline-danger" type="submit" name="resolution" value="skip">Не импортировать</button>
+                </form>
+              {% elif candidate.status != "ready" or candidate.resolution != "auto" %}
                 <form method="post" class="d-flex flex-wrap gap-1">
                   {% csrf_token %}
                   <input type="hidden" name="action" value="resolve">
@@ -210,11 +231,8 @@
                     <button class="btn btn-sm btn-link text-muted" type="submit" name="resolution" value="auto">Сбросить</button>
                   {% endif %}
                 </form>
-                {% else %}
-                  <span class="text-muted small">Автоматически</span>
-                {% endif %}
               {% else %}
-                <span class="text-muted small">Уже импортирован</span>
+                <span class="text-muted small">Автоматически</span>
               {% endif %}
             </td>
           </tr>
