@@ -7,13 +7,43 @@ from django.db.models import Count
 from django.http import HttpResponseForbidden
 from django.shortcuts import redirect, render
 
-from .client_crm_import import apply_ready_candidates, request_client_import_scan
-from .client_crm_models import ClientImportCandidate, ClientImportRun
-from .models import OrganizationAccess
+from .client_crm_import import (
+    CRM_SYNC_FEATURE,
+    apply_ready_candidates,
+    request_client_import_scan,
+)
+from .client_crm_models import ClientImportCandidate
+from .models import OneCODataSyncRun, OrganizationAccess
 
 
 IMPORT_ROLES = {"owner", "admin"}
 logger = logging.getLogger(__name__)
+
+
+def _latest_client_import_run(organization_id):
+    for run in (
+        OneCODataSyncRun.objects.filter(organization_id=organization_id)
+        .order_by("-created_at", "-id")[:50]
+    ):
+        if isinstance(run.sync_scope, dict) and run.sync_scope.get("feature") == CRM_SYNC_FEATURE:
+            return run
+    return None
+
+
+def _decorate_import_run(run):
+    if run is None:
+        return None
+    progress = run.progress if isinstance(run.progress, dict) else {}
+    summary = run.result_summary if isinstance(run.result_summary, dict) else {}
+    run.total_rows = int(progress.get("total_rows") or summary.get("total") or 0)
+    run.processed_rows = int(progress.get("processed_rows") or 0)
+    run.ready_count = int(summary.get("ready_count") or progress.get("ready_count") or 0)
+    run.review_count = int(summary.get("review_count") or progress.get("review_count") or 0)
+    run.duplicate_count = int(summary.get("duplicate_count") or progress.get("duplicate_count") or 0)
+    run.invalid_count = int(summary.get("invalid_count") or progress.get("invalid_count") or 0)
+    run.imported_count = int(summary.get("imported_count") or progress.get("imported_count") or 0)
+    run.error = run.error_message
+    return run
 
 
 def _can_manage_import(user, organization_id):
@@ -55,8 +85,8 @@ def client_onec_import(request):
                     "Обновление из 1С запущено. Можно закрыть страницу или открыть её на другом компьютере — процесс продолжится на сервере.",
                 )
             elif run.status in {
-                ClientImportRun.STATUS_PENDING,
-                ClientImportRun.STATUS_RUNNING,
+                OneCODataSyncRun.STATUS_PENDING,
+                OneCODataSyncRun.STATUS_RUNNING,
             }:
                 messages.info(
                     request,
@@ -65,16 +95,12 @@ def client_onec_import(request):
             else:
                 messages.error(
                     request,
-                    run.error or "Не удалось запустить обновление из 1С.",
+                    run.error_message or "Не удалось запустить обновление из 1С.",
                 )
             return redirect("client_onec_import")
         if action == "apply":
-            latest_run = (
-                ClientImportRun.objects.filter(organization_id=organization_id)
-                .order_by("-requested_at", "-id")
-                .first()
-            )
-            if not latest_run or latest_run.status != ClientImportRun.STATUS_SUCCESS:
+            latest_run = _latest_client_import_run(organization_id)
+            if not latest_run or latest_run.status != OneCODataSyncRun.STATUS_COMPLETED:
                 messages.warning(
                     request,
                     "Импортировать карточки можно только после полностью успешного обновления из 1С.",
@@ -95,16 +121,12 @@ def client_onec_import(request):
             return redirect("client_onec_import")
         return HttpResponseForbidden()
 
-    latest_run = (
-        ClientImportRun.objects.filter(organization_id=organization_id)
-        .order_by("-requested_at", "-id")
-        .first()
-    )
+    latest_run = _decorate_import_run(_latest_client_import_run(organization_id))
     import_active = bool(
         latest_run
         and latest_run.status in {
-            ClientImportRun.STATUS_PENDING,
-            ClientImportRun.STATUS_RUNNING,
+            OneCODataSyncRun.STATUS_PENDING,
+            OneCODataSyncRun.STATUS_RUNNING,
         }
     )
 
@@ -144,7 +166,7 @@ def client_onec_import(request):
             "import_active": import_active,
             "can_apply": bool(
                 latest_run
-                and latest_run.status == ClientImportRun.STATUS_SUCCESS
+                and latest_run.status == OneCODataSyncRun.STATUS_COMPLETED
                 and summary.get(ClientImportCandidate.STATUS_READY, 0)
             ),
             "show_search": False,
