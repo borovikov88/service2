@@ -12,15 +12,17 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--limit", type=int, default=1)
         parser.add_argument("--idle-grace-seconds", type=float, default=0.0)
+        parser.add_argument("--drain", action="store_true")
 
     def handle(self, *args, **options):
         limit = max(1, min(int(options["limit"]), 10))
         idle_grace = max(0.0, min(float(options["idle_grace_seconds"]), 5.0))
+        drain = bool(options["drain"])
         attempted_ids = []
         processed = 0
         empty_checks = 0
 
-        while len(attempted_ids) < limit:
+        while drain or len(attempted_ids) < limit:
             queryset = (
                 CallAnalysis.objects.filter(
                     requested_at__isnull=False,
