@@ -381,9 +381,15 @@ def push_context(request):
         return {}
 
     from django.conf import settings
+    from pool_service.models import Profile
+
     public_key = getattr(settings, "VAPID_PUBLIC_KEY", "")
     private_key = getattr(settings, "VAPID_PRIVATE_KEY", "")
-    enabled = bool(user.is_active and public_key and private_key)
+    user_push_enabled = not Profile.objects.filter(
+        user=user,
+        push_notifications_enabled=False,
+    ).exists()
+    enabled = bool(user.is_active and user_push_enabled and public_key and private_key)
     return {
         "push_enabled": enabled,
         "push_public_key": public_key or "",
