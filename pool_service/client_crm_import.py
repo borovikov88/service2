@@ -233,6 +233,20 @@ def _candidate_contacts(row, extra_rows):
     return phones, emails
 
 
+def _has_conflicting_onec_identity(matches, source_ref):
+    if not source_ref or not matches:
+        return False
+    client_ids = [client.pk for client in matches]
+    return ClientCRMProfile.objects.filter(
+        client_id__in=client_ids,
+        onec_ref__isnull=False,
+    ).exclude(
+        onec_ref=""
+    ).exclude(
+        onec_ref=source_ref
+    ).exists()
+
+
 def _has_private_name_conflict(organization, name):
     normalized_name = str(name or "").strip()
     if not normalized_name:
@@ -366,6 +380,12 @@ def scan_onec_clients(run=None):
         elif len(matches) > 1:
             status = ClientImportCandidate.STATUS_DUPLICATE
             reason = f"Несколько карточек Service2 совпали по: {match_reason}"
+        elif len(matches) == 1 and _has_conflicting_onec_identity(matches, ref):
+            status = ClientImportCandidate.STATUS_DUPLICATE
+            reason = (
+                "Совпавший клиент уже связан с другой карточкой 1С: "
+                f"{match_reason}"
+            )
         elif len(matches) == 1:
             matched_client = matches[0]
         elif (
