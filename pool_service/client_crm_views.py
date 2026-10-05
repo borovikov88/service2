@@ -249,7 +249,12 @@ def client_merge_index(request):
             messages.error(request, "Некорректный выбор клиента.")
             return redirect("client_merge_index")
         try:
-            result = merge_clients(source_id, target_id, request.user)
+            result = merge_clients(
+                source_id,
+                target_id,
+                organization_id=organization_id,
+                actor=request.user,
+            )
         except ValueError as exc:
             messages.error(request, str(exc))
         else:
