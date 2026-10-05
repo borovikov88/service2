@@ -1,3 +1,5 @@
+import logging
+
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -11,6 +13,7 @@ from .models import OrganizationAccess
 
 
 IMPORT_ROLES = {"owner", "admin"}
+logger = logging.getLogger(__name__)
 
 
 def _can_manage_import(user, organization_id):
@@ -37,7 +40,15 @@ def client_onec_import(request):
     if request.method == "POST":
         action = request.POST.get("action")
         if action == "scan":
-            run, started = request_client_import_scan(request.user)
+            try:
+                run, started = request_client_import_scan(request.user)
+            except Exception:
+                logger.exception("Failed to enqueue 1C client import")
+                messages.error(
+                    request,
+                    "Не удалось запустить обновление из 1С. Попробуйте ещё раз после обновления страницы.",
+                )
+                return redirect("client_onec_import")
             if started:
                 messages.success(
                     request,
