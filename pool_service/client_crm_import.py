@@ -786,6 +786,26 @@ def _sync_contacts(client, candidate):
 
 
 def _find_or_create_ip_person(company, candidate):
+    existing_link = (
+        ClientCompanyLink.objects.filter(
+            company=company,
+            source=ClientCompanyLink.SOURCE_ONEC_IP,
+            source_reference=candidate.source_ref,
+        )
+        .select_related("person")
+        .first()
+    )
+    if existing_link:
+        person = existing_link.person
+        profile, _ = ClientCRMProfile.objects.get_or_create(client=person)
+        if candidate.birth_date and not profile.birth_date:
+            profile.birth_date = candidate.birth_date
+        if profile.source == ClientCRMProfile.SOURCE_MANUAL:
+            profile.source = ClientCRMProfile.SOURCE_ONEC_IP
+        profile.save()
+        _sync_contacts(person, candidate)
+        return person
+
     phones = (candidate.payload or {}).get("phones", [])
     phone_values = {item.get("match") for item in phones if item.get("match")}
     person_matches = Client.objects.filter(
@@ -890,6 +910,30 @@ def apply_candidate(candidate):
         client.save()
 
     profile, _ = ClientCRMProfile.objects.get_or_create(client=client)
+
+    # Once a client is linked to 1C, 1C is the canonical source for its
+    # business identity. Do not blank Service2 fields when 1C is empty, but
+    # refresh non-empty values and names on every sync.
+    if not profile.onec_ref or profile.onec_ref == candidate.source_ref:
+        client.name = candidate.name or client.name
+        if client.client_type == "legal":
+            client.company_name = candidate.name or client.company_name
+        if candidate.phone:
+            client.phone = candidate.phone
+        if candidate.email:
+            client.email = candidate.email
+        if candidate.inn:
+            client.inn = candidate.inn
+        client.save(
+            update_fields=[
+                "name",
+                "company_name",
+                "phone",
+                "email",
+                "inn",
+            ]
+        )
+
     profile.legal_form = (
         ClientCRMProfile.LEGAL_FORM_IP
         if kind == ClientImportCandidate.KIND_IP
@@ -1195,6 +1239,57 @@ def sync_recent_onec_clients(*, lookback_hours=48):
             result["review"] += 1
 
     return result
+
+
+def sync_full_onec_clients():
+    """Nightly reconciliation of the full 1C buyer catalog."""
+    organization = _target_organization()
+    active_run = ClientImportRun.objects.filter(
+        organization=organization,
+        status__in=[
+            ClientImportRun.STATUS_PENDING,
+            ClientImportRun.STATUS_RUNNING,
+            ClientImportRun.STATUS_APPLYING,
+        ],
+    ).exists()
+    if active_run:
+        return {"skipped": True, "reason": "manual_import_active"}
+
+    scan_result = scan_onec_clients()
+    apply_result = apply_ready_candidates(organization)
+
+    refreshed = 0
+    refresh_failed = 0
+    candidate_ids = list(
+        ClientImportCandidate.objects.filter(
+            organization=organization,
+            status=ClientImportCandidate.STATUS_IMPORTED,
+            applied_at__isnull=False,
+        )
+        .order_by("id")
+        .values_list("id", flat=True)
+    )
+    for candidate_id in candidate_ids:
+        candidate = ClientImportCandidate.objects.get(pk=candidate_id)
+        try:
+            apply_candidate(candidate)
+        except (ValueError, RuntimeError):
+            refresh_failed += 1
+            logger.exception(
+                "Failed nightly refresh for imported 1C client candidate %s",
+                candidate_id,
+            )
+        else:
+            refreshed += 1
+
+    return {
+        "skipped": False,
+        "scanned": scan_result.get("total", 0),
+        "imported": apply_result.get("imported", 0),
+        "review_failed": apply_result.get("failed", 0),
+        "refreshed": refreshed,
+        "refresh_failed": refresh_failed,
+    }
 
 
 def apply_ready_candidates(organization=None, run=None):
