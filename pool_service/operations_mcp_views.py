@@ -45,6 +45,7 @@ from pool_service.operations_mcp_auth import (
 )
 from pool_service.operations_mcp_policy import ALLOWED_ROLES
 from pool_service.services.notifications import notify_task_assignment, notify_users
+from pool_service.services.push_notifications import send_push_to_users
 from pool_service.services.task_archive import archive_task
 
 
@@ -252,9 +253,12 @@ def _staff_user(organization, user_id):
     )
 
 
-def _task_for_org(organization, task_id):
+def _task_for_org(organization, task_id, *, for_update=False):
+    queryset = ServiceTask.objects
+    if for_update:
+        queryset = queryset.select_for_update()
     return (
-        ServiceTask.objects.select_related("client", "pool", "primary_responsible")
+        queryset.select_related("client", "pool", "primary_responsible")
         .prefetch_related("responsibles")
         .filter(pk=task_id, organization=organization)
         .first()
@@ -419,7 +423,10 @@ def _create_task(authenticated, organization, arguments):
         action=ServiceTaskChange.ACTION_CREATED,
         new_value=task.title,
     )
-    notify_task_assignment(task, [responsible], added_by=actor)
+    transaction.on_commit(
+        lambda: notify_task_assignment(task, [responsible], added_by=actor),
+        robust=True,
+    )
     return {"created": True, "task": _task_data(task)}
 
 
@@ -430,7 +437,7 @@ def _reschedule_task(authenticated, organization, arguments):
     due_date = _as_date(arguments.get("due_date"), "due_date")
     due_time = _as_time(arguments.get("due_time"), "due_time")
     reason = _as_text(arguments.get("reason"), "reason", required=True, maximum=500)
-    task = _task_for_org(organization, task_id)
+    task = _task_for_org(organization, task_id, for_update=True)
     if (
         not task
         or task.task_type != ServiceTask.TYPE_CRM_FOLLOWUP
@@ -472,7 +479,7 @@ def _complete_task(authenticated, organization, arguments):
     _reject_unknown(arguments, {"task_id", "comment"})
     task_id = _as_int(arguments.get("task_id"), "task_id")
     comment = _as_text(arguments.get("comment"), "comment", maximum=1000)
-    task = _task_for_org(organization, task_id)
+    task = _task_for_org(organization, task_id, for_update=True)
     if not task or task.task_type != ServiceTask.TYPE_CRM_FOLLOWUP:
         raise ValueError("task_id")
     if task.is_completed_archive or task.completed_at or task.status == ServiceTask.STATUS_DONE:
@@ -542,7 +549,18 @@ def _send_employee_notification(authenticated, organization, arguments):
         organization=organization,
         dedupe_key=f"operations_mcp:{task.id}:{key}",
         send_in_app=True,
-        send_push=True,
+        send_push=False,
+    )
+    notification = created[0] if created else None
+    transaction.on_commit(
+        lambda: send_push_to_users(
+            [employee],
+            title=title,
+            message=message,
+            action_url=action_url,
+            notification=notification,
+        ),
+        robust=True,
     )
     sent_keys.append(marker)
     payload["operations_notification_keys"] = sent_keys
@@ -748,9 +766,18 @@ def operations_mcp(request):
         )
 
     try:
-        data = _tool_dispatch(authenticated, name, arguments)
-        response_bytes = len(json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-        _audit(authenticated, name, result="success", started=started, response_bytes=response_bytes)
+        with transaction.atomic():
+            data = _tool_dispatch(authenticated, name, arguments)
+            response_bytes = len(
+                json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            )
+            _audit(
+                authenticated,
+                name,
+                result="success",
+                started=started,
+                response_bytes=response_bytes,
+            )
     except (ValueError, PermissionError):
         _audit(authenticated, name, result="denied", started=started)
         return transport._mcp_response(
