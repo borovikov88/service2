@@ -1270,7 +1270,11 @@ class CommunicationsTests(TestCase):
                 "direction": PhoneCall.DIRECTION_OUT,
                 "recordings": [
                     SimpleUploadedFile("first.mp3", b"ID3first", content_type="audio/mpeg"),
-                    SimpleUploadedFile("second.wav", b"RIFFsecond", content_type="audio/wav"),
+                    SimpleUploadedFile(
+                        "second.wav",
+                        b"RIFF\x04\x00\x00\x00WAVEdata",
+                        content_type="audio/wav",
+                    ),
                 ],
             },
         )
@@ -1306,6 +1310,69 @@ class CommunicationsTests(TestCase):
         self.assertContains(page, "Иван Клиент")
         self.assertContains(page, "Расшифровать выбранные")
         self.assertContains(page, 'data-call-select', html=False)
+
+    def test_manual_call_upload_rejects_non_audio_content_before_saving_batch(self):
+        self.client.login(username="owner", password="test")
+        response = self.client.post(
+            reverse("communication_call_recording_upload"),
+            {
+                "recordings": [
+                    SimpleUploadedFile(
+                        "valid.mp3",
+                        b"ID3valid",
+                        content_type="audio/mpeg",
+                    ),
+                    SimpleUploadedFile(
+                        "renamed.mp3",
+                        b"<!doctype html><html>login</html>",
+                        content_type="audio/mpeg",
+                    ),
+                ],
+            },
+        )
+        self.assertRedirects(response, reverse("communications_calls"))
+        self.assertFalse(
+            PhoneCall.objects.filter(
+                organization=self.organization,
+                connection__external_id="manual-upload",
+            ).exists()
+        )
+
+    def test_bulk_safe_request_does_not_reset_ready_analysis(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="Загруженные записи",
+            external_id="manual-atomic",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="manual-atomic-ready",
+            phone_number="",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        call.recording_file.save(
+            "manual-atomic-ready.mp3",
+            ContentFile(b"ID3ready"),
+            save=True,
+        )
+        analysis = CallAnalysis.objects.create(
+            call=call,
+            status=CallAnalysis.STATUS_READY,
+            transcript="Уже готово",
+            summary="Готовый анализ",
+        )
+
+        self.assertFalse(
+            request_call_analysis(call.pk, allow_reanalysis=False)
+        )
+        analysis.refresh_from_db()
+        self.assertEqual(analysis.status, CallAnalysis.STATUS_READY)
+        self.assertEqual(analysis.transcript, "Уже готово")
+        self.assertIsNone(analysis.requested_at)
 
     def test_manual_call_upload_requires_view_all_calls_and_scopes_client(self):
         foreign_org = Organization.objects.create(name="Foreign communications org")
@@ -1407,6 +1474,12 @@ class CommunicationsTests(TestCase):
         self.assertEqual(
             [item.args[0] for item in request_analysis.call_args_list],
             [call.pk for call in calls],
+        )
+        self.assertTrue(
+            all(
+                item.kwargs == {"allow_reanalysis": False}
+                for item in request_analysis.call_args_list
+            )
         )
         start_worker.assert_called_once_with()
 
