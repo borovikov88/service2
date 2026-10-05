@@ -377,7 +377,7 @@ def call_analysis_bulk(request):
         queryset = queryset.filter(employee=request.user)
 
     queued = 0
-    for call_id in queryset.values_list("pk", flat=True):
+    for call_id in queryset.order_by("pk").values_list("pk", flat=True):
         if request_call_analysis(call_id):
             queued += 1
 
