@@ -5,8 +5,8 @@ from django.db.models import Count
 from django.http import HttpResponseForbidden
 from django.shortcuts import redirect, render
 
-from .client_crm_import import apply_ready_candidates, scan_onec_clients
-from .client_crm_models import ClientImportCandidate
+from .client_crm_import import apply_ready_candidates, request_client_import_scan
+from .client_crm_models import ClientImportCandidate, ClientImportRun
 from .models import OrganizationAccess
 
 
@@ -37,21 +37,40 @@ def client_onec_import(request):
     if request.method == "POST":
         action = request.POST.get("action")
         if action == "scan":
-            try:
-                result = scan_onec_clients()
-            except Exception:
-                messages.error(
-                    request,
-                    "Не удалось получить клиентов из 1С. Данные CRM не изменены.",
-                )
-            else:
+            run, started = request_client_import_scan(request.user)
+            if started:
                 messages.success(
                     request,
-                    "Данные 1С обновлены: найдено "
-                    f"{result.get('total', 0)} покупателей.",
+                    "Обновление из 1С запущено. Можно закрыть страницу или открыть её на другом компьютере — процесс продолжится на сервере.",
+                )
+            elif run.status in {
+                ClientImportRun.STATUS_PENDING,
+                ClientImportRun.STATUS_RUNNING,
+            }:
+                messages.info(
+                    request,
+                    "Обновление из 1С уже выполняется. Повторный запуск не создан.",
+                )
+            else:
+                messages.error(
+                    request,
+                    run.error or "Не удалось запустить обновление из 1С.",
                 )
             return redirect("client_onec_import")
         if action == "apply":
+            active_run = ClientImportRun.objects.filter(
+                organization_id=organization_id,
+                status__in=[
+                    ClientImportRun.STATUS_PENDING,
+                    ClientImportRun.STATUS_RUNNING,
+                ],
+            ).exists()
+            if active_run:
+                messages.warning(
+                    request,
+                    "Сначала дождитесь завершения обновления из 1С.",
+                )
+                return redirect("client_onec_import")
             result = apply_ready_candidates()
             if result["failed"]:
                 messages.warning(
@@ -66,6 +85,19 @@ def client_onec_import(request):
                 )
             return redirect("client_onec_import")
         return HttpResponseForbidden()
+
+    latest_run = (
+        ClientImportRun.objects.filter(organization_id=organization_id)
+        .order_by("-requested_at", "-id")
+        .first()
+    )
+    import_active = bool(
+        latest_run
+        and latest_run.status in {
+            ClientImportRun.STATUS_PENDING,
+            ClientImportRun.STATUS_RUNNING,
+        }
+    )
 
     candidates = ClientImportCandidate.objects.filter(
         organization_id=organization_id,
@@ -99,6 +131,8 @@ def client_onec_import(request):
                 organization_id=organization_id
             ).count(),
             "ready_count": summary.get(ClientImportCandidate.STATUS_READY, 0),
+            "latest_run": latest_run,
+            "import_active": import_active,
             "show_search": False,
             "show_add_button": False,
             "add_url": None,
