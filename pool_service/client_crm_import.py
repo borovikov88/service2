@@ -741,6 +741,17 @@ def _sync_contacts(client, candidate):
 
 
 def _find_or_create_ip_person(company, candidate):
+    existing_link = (
+        ClientCompanyLink.objects.filter(
+            company=company,
+            source=ClientCompanyLink.SOURCE_ONEC_IP,
+            source_reference=candidate.source_ref,
+        )
+        .select_related("person")
+        .first()
+    )
+    person = existing_link.person if existing_link else None
+
     phones = (candidate.payload or {}).get("phones", [])
     phone_values = {item.get("match") for item in phones if item.get("match")}
     person_matches = Client.objects.filter(
@@ -759,9 +770,10 @@ def _find_or_create_ip_person(company, candidate):
         for person in person_matches.exclude(phone__isnull=True).exclude(phone="").only("id", "phone"):
             if normalize_phone(person.phone) in phone_values:
                 ids.add(person.id)
-    if len(ids) > 1:
-        raise ValueError("Для ИП найдено несколько физлиц с тем же телефоном")
-    person = person_matches.filter(id=next(iter(ids))).first() if ids else None
+    if person is None:
+        if len(ids) > 1:
+            raise ValueError("Для ИП найдено несколько физлиц с тем же телефоном")
+        person = person_matches.filter(id=next(iter(ids))).first() if ids else None
 
     last_name, first_name, middle_name = _split_person_name(
         (candidate.payload or {}).get("fio") or candidate.name
@@ -769,10 +781,10 @@ def _find_or_create_ip_person(company, candidate):
     if person is None:
         exact_name = " ".join(part for part in [last_name, first_name, middle_name] if part).strip()
         named = list(person_matches.filter(name__iexact=exact_name)[:2]) if exact_name else []
-        if len(named) == 1:
-            person = named[0]
-        elif len(named) > 1:
-            raise ValueError("Для ИП найдено несколько физлиц с тем же ФИО")
+        if named:
+            raise ValueError(
+                "Для ИП найдено физлицо с тем же ФИО без подтверждающего телефона"
+            )
     if person is None:
         person = Client.objects.create(
             organization=candidate.organization,
@@ -835,12 +847,32 @@ def apply_candidate(candidate):
             inn=candidate.inn or None,
         )
     else:
-        if candidate.inn and not client.inn:
-            client.inn = candidate.inn
-        if not client.phone and candidate.phone:
-            client.phone = candidate.phone
-        if not client.email and candidate.email:
-            client.email = candidate.email
+        already_linked_to_same_onec = ClientCRMProfile.objects.filter(
+            client=client,
+            onec_ref=candidate.source_ref,
+        ).exists()
+        if already_linked_to_same_onec:
+            client.name = candidate.name or client.name
+            if kind == ClientImportCandidate.KIND_PRIVATE:
+                last_name, first_name, _middle_name = _split_person_name(candidate.name)
+                client.first_name = first_name or client.first_name
+                client.last_name = last_name or client.last_name
+                client.company_name = None
+            else:
+                client.company_name = candidate.legal_name or candidate.name or client.company_name
+            if candidate.inn:
+                client.inn = candidate.inn
+            if candidate.phone:
+                client.phone = candidate.phone
+            if candidate.email:
+                client.email = candidate.email
+        else:
+            if candidate.inn and not client.inn:
+                client.inn = candidate.inn
+            if not client.phone and candidate.phone:
+                client.phone = candidate.phone
+            if not client.email and candidate.email:
+                client.email = candidate.email
         client.save()
 
     profile, _ = ClientCRMProfile.objects.get_or_create(client=client)
