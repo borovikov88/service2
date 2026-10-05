@@ -7388,14 +7388,27 @@ def task_create(request):
             pass
     initial["responsibles"] = [required_responsible_id] if required_responsible_id else []
 
-    client_param = (request.GET.get("client") or "").strip()
+    client_param = (
+        request.GET.get("client")
+        or request.POST.get("client_id")
+        or ""
+    ).strip()
+    pool_param = (
+        request.GET.get("pool")
+        or request.POST.get("pool_id")
+        or ""
+    ).strip()
+
+    linked_client = None
+    linked_pool = None
+
     if client_param:
         try:
             client_id = int(client_param)
         except (TypeError, ValueError):
             client_id = 0
         if client_id:
-            initial_client = (
+            linked_client = (
                 Client.objects.filter(
                     pk=client_id,
                     organization=org,
@@ -7406,17 +7419,14 @@ def task_create(request):
                 )
                 .first()
             )
-            if initial_client:
-                initial["client"] = initial_client
 
-    pool_param = (request.GET.get("pool") or "").strip()
     if pool_param:
         try:
             pool_id = int(pool_param)
         except (TypeError, ValueError):
             pool_id = 0
         if pool_id:
-            initial_pool = (
+            linked_pool = (
                 Pool.objects.filter(
                     pk=pool_id,
                     organization=org,
@@ -7425,9 +7435,8 @@ def task_create(request):
                 .select_related("client")
                 .first()
             )
-            if initial_pool:
-                initial["pool"] = initial_pool
-                initial["client"] = initial_pool.client
+            if linked_pool:
+                linked_client = linked_pool.client
 
     if request.method == "POST":
         post_data = request.POST.copy()
@@ -7441,6 +7450,8 @@ def task_create(request):
             task.organization = org
             task.created_by = request.user
             task.visibility = ServiceTask.VISIBILITY_PRIVATE
+            task.client = linked_client
+            task.pool = linked_pool
             task.save()
             form.save_m2m()
             notify_task_assignment(task, task.responsibles.all(), added_by=request.user)
@@ -7485,6 +7496,8 @@ def task_create(request):
         "selected_responsibles": selected_responsibles,
         "is_modal": is_modal,
         "required_responsible_id": required_responsible_id,
+        "linked_client": linked_client,
+        "linked_pool": linked_pool,
         "has_time": has_time,
         "modal_title": modal_title,
     }
