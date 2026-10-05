@@ -21,6 +21,7 @@ from pool_service.communication_models import CallAnalysis
 from pool_service.models import (
     Client,
     FinanceMcpAuditEvent,
+    Notification,
     OrganizationAccess,
     ServiceTask,
     ServiceTaskChange,
@@ -428,8 +429,12 @@ def _reschedule_task(authenticated, organization, arguments):
     if not task or task.is_archived or task.completed_at or task.status in {ServiceTask.STATUS_DONE, ServiceTask.STATUS_CANCELLED}:
         raise ValueError("task_id")
     actor = _authorized_actor(authenticated)
-    old = f"{task.end_date or task.start_date} {task.end_time or task.start_time or ''}".strip()
-    new_time = due_time if arguments.get("due_time") is not None else (task.end_time or task.start_time)
+    old_date = task.end_date or task.start_date
+    old_time = task.end_time or task.start_time
+    old = f"{old_date} {old_time or ''}".strip()
+    new_time = due_time if arguments.get("due_time") is not None else old_time
+    if old_date == due_date and old_time == new_time:
+        return {"changed": False, "task": _task_data(task)}
     task.start_date = due_date
     task.end_date = due_date
     task.start_time = new_time
@@ -448,7 +453,7 @@ def _reschedule_task(authenticated, organization, arguments):
         old_value=old,
         new_value=f"{due_date.isoformat()} {new_time.strftime('%H:%M') if new_time else ''} | {reason}".strip(),
     )
-    return {"task": _task_data(task)}
+    return {"changed": True, "task": _task_data(task)}
 
 
 @transaction.atomic
@@ -493,6 +498,9 @@ def _send_employee_notification(authenticated, organization, arguments):
         if not task:
             raise ValueError("task_id")
         action_url = reverse("task_edit", kwargs={"task_id": task.id})
+    full_dedupe_key = f"operations_mcp:{key}"
+    if Notification.objects.filter(user=employee, dedupe_key=full_dedupe_key).exists():
+        return {"created_notifications": 0, "employee_user_id": employee.id}
     created = notify_users(
         [employee],
         title=title,
@@ -501,7 +509,7 @@ def _send_employee_notification(authenticated, organization, arguments):
         level="info",
         action_url=action_url,
         organization=organization,
-        dedupe_key=f"operations_mcp:{key}",
+        dedupe_key=full_dedupe_key,
         send_in_app=True,
         send_push=True,
     )
