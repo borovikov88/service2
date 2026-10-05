@@ -315,3 +315,61 @@ class ClientCRMImportTests(TestCase):
 
         self.assertIsNone(resolved.matched_client)
         self.assertEqual(resolved.status, ClientImportCandidate.STATUS_READY)
+
+
+    @override_settings(ONEC_ODATA_TARGET_ORGANIZATION_ID="")
+    def test_rescan_does_not_rematch_manually_classified_candidate(self):
+        legacy = Client.objects.create(
+            organization=self.organization,
+            client_type="legal",
+            name="Старое юрлицо",
+            phone="+7 999 222-33-44",
+        )
+        candidate = ClientImportCandidate.objects.create(
+            organization=self.organization,
+            source_ref="99999999-9999-9999-9999-999999999999",
+            source_code="НФ-999998",
+            source_kind=ClientImportCandidate.KIND_LEGAL,
+            name="ООО Канонический клиент",
+            phone="89992223344",
+            status=ClientImportCandidate.STATUS_READY,
+            resolution=ClientImportCandidate.RESOLUTION_LEGAL,
+            matched_client=legacy,
+        )
+        buyer_rows = [
+            {
+                "Ref_Key": candidate.source_ref,
+                "Code": candidate.source_code,
+                "Description": candidate.name,
+                "НаименованиеПолное": candidate.name,
+                "ЮридическоеФизическоеЛицо": "ЮридическоеЛицо",
+                "ВидКонтрагента": "ЮридическоеЛицо",
+                "ИНН": "",
+                "КПП": "",
+                "ФИО": "",
+                "ДатаРождения": "0001-01-01T00:00:00",
+                "НомерТелефонаДляПоиска": "89992223344",
+                "АдресЭПДляПоиска": "",
+                "Покупатель": True,
+                "Недействителен": False,
+            }
+        ]
+
+        def fake_query(_config, entity_set, **kwargs):
+            if entity_set == "Catalog_Контрагенты":
+                return {"rows": buyer_rows, "complete": True}
+            return {"rows": [], "complete": True}
+
+        with override_settings(ONEC_ODATA_TARGET_ORGANIZATION_ID=str(self.organization.id)), patch(
+            "pool_service.client_crm_import.config_from_settings", return_value=object()
+        ), patch(
+            "pool_service.client_crm_import.fetch_metadata", return_value=b"metadata"
+        ), patch(
+            "pool_service.client_crm_import.query_1c_rows", side_effect=fake_query
+        ):
+            scan_onec_clients()
+
+        candidate.refresh_from_db()
+        self.assertEqual(candidate.resolution, ClientImportCandidate.RESOLUTION_LEGAL)
+        self.assertEqual(candidate.status, ClientImportCandidate.STATUS_READY)
+        self.assertIsNone(candidate.matched_client)
