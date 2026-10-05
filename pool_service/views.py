@@ -9291,6 +9291,8 @@ def profile_view(request):
         "confirm_phone_url": confirm_phone_url,
 
         "can_manage_notifications": bool(notification_access),
+        "in_app_notifications_enabled": profile.in_app_notifications_enabled,
+        "push_notifications_enabled": profile.push_notifications_enabled,
 
         "notification_org": notification_access.organization if notification_access else None,
 
