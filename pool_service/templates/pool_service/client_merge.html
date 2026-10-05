@@ -1,0 +1,149 @@
+{% extends 'pool_service/base.html' %}
+{% block title %}Объединение клиентов{% endblock %}
+{% block content %}
+{% include "pool_service/_admin_workspace_styles.html" %}
+<div class="admin-desktop">
+  <div class="admin-card card card-soft p-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+      <div>
+        <h4 class="fw-bold mb-1">Объединение клиентов</h4>
+        <div class="text-muted">Старая карточка Service2 остаётся архивной, а её объекты и история переносятся на выбранного клиента из 1С.</div>
+      </div>
+      <div class="d-flex gap-2">
+        <a class="btn btn-outline-primary" href="{% url 'client_onec_import' %}">
+          <i class="bi bi-database-down me-1"></i>Импорт из 1С
+        </a>
+        <a class="btn btn-outline-secondary" href="{% url 'clients_list' %}">
+          <i class="bi bi-arrow-left me-1"></i>К клиентам
+        </a>
+      </div>
+    </div>
+
+    {% if not canonical_count %}
+      <div class="alert alert-info mb-4">
+        Пока нет импортированных карточек 1С. Сначала импортируйте готовых клиентов, затем здесь можно будет объединить старые карточки с объектами.
+      </div>
+    {% endif %}
+
+    <div class="row g-4">
+      <div class="col-12 col-xl-4">
+        <div class="border rounded-3 p-3">
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <div class="fw-semibold">Старые карточки с объектами</div>
+            <span class="badge text-bg-secondary">{{ legacy_clients|length }}</span>
+          </div>
+
+          <div class="d-grid gap-2" style="max-height: 70vh; overflow:auto;">
+            {% for client in legacy_clients %}
+              <a href="?source={{ client.id }}" class="text-decoration-none text-reset">
+                <div class="border rounded-3 p-3 {% if selected_source and selected_source.id == client.id %}border-primary{% endif %}">
+                  <div class="fw-semibold">{{ client.name }}</div>
+                  <div class="small text-muted mt-1">
+                    Объектов: {{ client.pool_count }}
+                    {% if client.phone %} · {{ client.phone }}{% endif %}
+                  </div>
+                  {% for address in client.object_preview %}
+                    <div class="small mt-1"><i class="bi bi-geo-alt me-1"></i>{{ address }}</div>
+                  {% endfor %}
+                </div>
+              </a>
+            {% empty %}
+              <div class="text-muted py-4 text-center">
+                Старых карточек с объектами для объединения нет.
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      <div class="col-12 col-xl-8">
+        {% if selected_source %}
+          <div class="border rounded-3 p-4 mb-4">
+            <div class="text-muted small">Старая карточка Service2</div>
+            <h5 class="fw-bold mb-1">{{ selected_source.name }}</h5>
+            <div class="small text-muted">
+              {% if selected_source.phone %}{{ selected_source.phone }}{% endif %}
+              {% if selected_source.email %} · {{ selected_source.email }}{% endif %}
+            </div>
+
+            <div class="mt-3">
+              <div class="fw-semibold mb-2">Объекты</div>
+              {% for pool in selected_pools %}
+                <div class="border rounded-2 px-3 py-2 mb-2">
+                  <i class="bi bi-geo-alt me-1"></i>{{ pool.address }}
+                  <span class="text-muted small ms-2">{{ pool.get_object_type_display }}</span>
+                </div>
+              {% empty %}
+                <div class="text-muted">Нет активных объектов.</div>
+              {% endfor %}
+            </div>
+          </div>
+
+          {% if suggestions %}
+            <div class="mb-4">
+              <div class="fw-semibold mb-2">Предполагаемые совпадения</div>
+              <div class="d-grid gap-2">
+                {% for item in suggestions %}
+                  <div class="border rounded-3 p-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
+                    <div>
+                      <div class="fw-semibold">{{ item.client.name }}</div>
+                      <div class="small text-muted">
+                        Совпадение: {{ item.score }}%
+                        {% if item.client.phone %} · {{ item.client.phone }}{% endif %}
+                        {% if item.client.inn %} · ИНН {{ item.client.inn }}{% endif %}
+                      </div>
+                    </div>
+                    <form method="post" onsubmit="return confirm('Объединить старую карточку «{{ selected_source.name|escapejs }}» с «{{ item.client.name|escapejs }}»?');">
+                      {% csrf_token %}
+                      <input type="hidden" name="source_id" value="{{ selected_source.id }}">
+                      <input type="hidden" name="target_id" value="{{ item.client.id }}">
+                      <button class="btn btn-primary btn-sm" type="submit">Объединить</button>
+                    </form>
+                  </div>
+                {% endfor %}
+              </div>
+            </div>
+          {% endif %}
+
+          <div class="border rounded-3 p-3">
+            <div class="fw-semibold mb-2">Найти другого клиента из 1С</div>
+            <form method="get" class="d-flex gap-2 mb-3">
+              <input type="hidden" name="source" value="{{ selected_source.id }}">
+              <input class="form-control" type="search" name="q" value="{{ q }}" placeholder="Название, телефон или ИНН">
+              <button class="btn btn-outline-primary" type="submit">Найти</button>
+            </form>
+
+            {% if q %}
+              <div class="d-grid gap-2">
+                {% for target in target_results %}
+                  <div class="border rounded-3 p-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
+                    <div>
+                      <div class="fw-semibold">{{ target.name }}</div>
+                      <div class="small text-muted">
+                        {% if target.phone %}{{ target.phone }}{% endif %}
+                        {% if target.inn %} · ИНН {{ target.inn }}{% endif %}
+                      </div>
+                    </div>
+                    <form method="post" onsubmit="return confirm('Объединить старую карточку «{{ selected_source.name|escapejs }}» с «{{ target.name|escapejs }}»?');">
+                      {% csrf_token %}
+                      <input type="hidden" name="source_id" value="{{ selected_source.id }}">
+                      <input type="hidden" name="target_id" value="{{ target.id }}">
+                      <button class="btn btn-primary btn-sm" type="submit">Объединить</button>
+                    </form>
+                  </div>
+                {% empty %}
+                  <div class="text-muted py-3">По запросу ничего не найдено.</div>
+                {% endfor %}
+              </div>
+            {% endif %}
+          </div>
+        {% else %}
+          <div class="border rounded-3 p-5 text-center text-muted">
+            Выберите слева старую карточку с объектом. Система предложит похожих клиентов из 1С, но объединение выполняется только после вашего подтверждения.
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
