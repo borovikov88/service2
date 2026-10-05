@@ -3,7 +3,7 @@ name: Sync CRM clients from 1C
 on:
   schedule:
     - cron: "*/5 * * * *"
-    - cron: "20 20 * * *"
+    - cron: "22 20 * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -63,7 +63,7 @@ jobs:
           MODE="incremental"
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${DISPATCH_MODE:-}" ]]; then
             MODE="$DISPATCH_MODE"
-          elif [[ "${SCHEDULE_VALUE:-}" == "20 20 * * *" ]]; then
+          elif [[ "${SCHEDULE_VALUE:-}" == "22 20 * * *" ]]; then
             MODE="full"
           fi
 
