@@ -65,6 +65,7 @@ _restore_missing_diagnostic_settings()
 from pool_service import finance_mcp_views  # noqa: E402
 from pool_service import onec_diagnostic_mcp_chatgpt as diagnostic_chatgpt  # noqa: E402
 from pool_service import onec_diagnostic_mcp_views as diagnostic_views  # noqa: E402
+from pool_service import operations_mcp_views as operations_views  # noqa: E402
 from pool_service.finance_mcp_auth import (  # noqa: E402
     FinanceMcpConfigurationError,
     authorization_server_metadata as finance_authorization_server_metadata_data,
@@ -76,6 +77,12 @@ from pool_service.onec_diagnostic_mcp_auth import (  # noqa: E402
     OneCDiagnosticMcpConfigurationError,
     is_enabled as diagnostic_is_enabled,
     resource_url as diagnostic_resource_url,
+)
+from pool_service.operations_mcp_auth import (  # noqa: E402
+    OPERATIONS_SCOPE,
+    OperationsMcpConfigurationError,
+    is_enabled as operations_is_enabled,
+    resource_url as operations_resource_url,
 )
 
 
@@ -92,6 +99,8 @@ def shared_authorization_server_metadata_data():
     scopes = list(data.get("scopes_supported") or [])
     if diagnostic_is_enabled() and DIAGNOSTIC_READ_SCOPE not in scopes:
         scopes.append(DIAGNOSTIC_READ_SCOPE)
+    if operations_is_enabled() and OPERATIONS_SCOPE not in scopes:
+        scopes.append(OPERATIONS_SCOPE)
     data["scopes_supported"] = scopes
     return data
 
@@ -154,7 +163,7 @@ def shared_authorization_server_metadata(request):
         response = HttpResponse(status=405)
         response["Allow"] = "GET"
         return _no_store(response)
-    if not finance_is_enabled() and not diagnostic_is_enabled():
+    if not finance_is_enabled() and not diagnostic_is_enabled() and not operations_is_enabled():
         return _no_store(HttpResponseNotFound())
     try:
         return _no_store(JsonResponse(shared_authorization_server_metadata_data()))
@@ -187,11 +196,21 @@ def _is_diagnostic_resource(value):
         return False
 
 
+def _is_operations_resource(value):
+    try:
+        return value == operations_resource_url()
+    except OperationsMcpConfigurationError:
+        return False
+
+
 @require_http_methods(["GET", "POST"])
 def shared_oauth_authorize(request):
     """Dispatch the shared authorization endpoint by exact requested resource."""
     params = request.GET if request.method == "GET" else request.POST
-    if _is_diagnostic_resource(_single_resource(params)):
+    resource = _single_resource(params)
+    if _is_operations_resource(resource):
+        return operations_views.operations_oauth_authorize(request)
+    if _is_diagnostic_resource(resource):
         return diagnostic_views.onec_diagnostic_oauth_authorize(request)
     return finance_mcp_views.finance_oauth_authorize(request)
 
@@ -200,7 +219,10 @@ def shared_oauth_authorize(request):
 @require_http_methods(["POST"])
 def shared_oauth_token(request):
     """Dispatch the shared token endpoint by exact requested resource."""
-    if _is_diagnostic_resource(_single_resource(request.POST)):
+    resource = _single_resource(request.POST)
+    if _is_operations_resource(resource):
+        return operations_views.operations_oauth_token(request)
+    if _is_diagnostic_resource(resource):
         return diagnostic_views.onec_diagnostic_oauth_token(request)
     return finance_mcp_views.finance_oauth_token(request)
 
