@@ -168,6 +168,7 @@ jobs:
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
             "$REMOTE_COMMAND" < update.sh
+      # Retry marker for one-time object/client audit.
       - name: Audit object to client links once
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
