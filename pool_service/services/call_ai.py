@@ -164,14 +164,15 @@ def _transcription_file(call):
     size = _recording_size(call)
 
     if size <= max_bytes:
-        call.recording_file.open("rb")
         try:
-            yield call.recording_file.file
-        finally:
-            try:
-                call.recording_file.close()
-            except Exception:
-                pass
+            input_path = call.recording_file.path
+        except (OSError, ValueError) as exc:
+            raise CallAnalysisError("recording_file_unavailable") from exc
+        try:
+            with open(input_path, "rb") as recording:
+                yield recording
+        except OSError as exc:
+            raise CallAnalysisError("recording_file_unavailable") from exc
         return
 
     ffmpeg = _ffmpeg_executable()

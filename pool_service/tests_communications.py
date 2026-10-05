@@ -31,7 +31,7 @@ from pool_service.communication_avito import (
     webhook_subscriptions,
 )
 from pool_service.communication_recordings import download_call_recording
-from pool_service.services.call_ai import _ffmpeg_executable, _reap_call_analysis_worker, process_call_analysis, request_call_analysis, start_requested_call_analysis_worker
+from pool_service.services.call_ai import _ffmpeg_executable, _reap_call_analysis_worker, _transcription_file, process_call_analysis, request_call_analysis, start_requested_call_analysis_worker
 from pool_service.communication_secrets import decrypt_secret, encrypt_secret
 from pool_service.communication_services import receive_message, users_with_conversation_access
 from pool_service.communication_services import conversation_capability
@@ -541,6 +541,34 @@ class CommunicationsTests(TestCase):
         self.assertEqual(analysis.processing_token, "newer-token")
         self.assertEqual(analysis.status, CallAnalysis.STATUS_PROCESSING)
         self.assertEqual(analysis.summary, "Новый результат")
+
+    def test_small_recording_uses_native_binary_file_handle_for_openai(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-ai-native-file",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-native-file-call",
+            employee=self.owner,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=15,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        call.recording_file.save(
+            "ai-native-file-call.mp3",
+            ContentFile(b"ID3test"),
+            save=True,
+        )
+
+        with _transcription_file(call) as recording:
+            self.assertIsInstance(recording, io.IOBase)
+            self.assertEqual(recording.read(), b"ID3test")
 
     @patch("pool_service.services.call_ai.os.access", return_value=True)
     @patch("pool_service.services.call_ai.os.path.isfile", return_value=True)
