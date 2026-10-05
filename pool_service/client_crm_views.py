@@ -29,6 +29,8 @@ from .models import Client, CrmItem, OrganizationAccess, Pool, ServiceTask
 
 
 IMPORT_ROLES = {"owner", "admin"}
+CLIENT_CARD_ROLES = {"owner", "admin", "service", "installer", "manager"}
+SERVICE_ONLY_ROLES = {"service", "installer"}
 logger = logging.getLogger(__name__)
 
 
@@ -44,18 +46,24 @@ def _can_manage_import(user, organization_id):
     ).exists()
 
 
+def _client_org_roles(user, organization_id):
+    if not user.is_authenticated or not user.is_active or not organization_id:
+        return set()
+    return set(
+        OrganizationAccess.objects.filter(
+            user=user,
+            organization_id=organization_id,
+        ).values_list("role", flat=True)
+    )
+
+
 def _can_view_client_card(user, client):
     if not user.is_authenticated or not user.is_active:
         return False
     if user.is_superuser:
         return True
-    return bool(
-        client.organization_id
-        and OrganizationAccess.objects.filter(
-            user=user,
-            organization_id=client.organization_id,
-        ).exists()
-    )
+    roles = _client_org_roles(user, client.organization_id)
+    return bool(roles & CLIENT_CARD_ROLES)
 
 
 def _user_label(user):
@@ -81,16 +89,18 @@ def client_detail(request, client_id):
     if profile and profile.merged_into_id:
         return redirect("client_detail", client_id=profile.merged_into_id)
 
+    org_roles = (
+        {"superuser"}
+        if request.user.is_superuser
+        else _client_org_roles(request.user, client.organization_id)
+    )
     can_manage = bool(
         request.user.is_superuser
-        or (
-            client.organization_id
-            and OrganizationAccess.objects.filter(
-                user=request.user,
-                organization_id=client.organization_id,
-                role__in=IMPORT_ROLES,
-            ).exists()
-        )
+        or (org_roles & IMPORT_ROLES)
+    )
+    service_only = bool(
+        org_roles & SERVICE_ONLY_ROLES
+        and not (org_roles & {"owner", "admin", "manager"})
     )
 
     if request.method == "POST":
@@ -189,14 +199,16 @@ def client_detail(request, client_id):
         task.status_label = task.get_status_display()
         task.type_label = task.get_task_type_display()
 
+    crm_item_qs = CrmItem.objects.filter(
+        Q(client=client) | Q(pool__client=client)
+    ).exclude(
+        is_archived=True,
+        archived_reason=CrmItem.ARCHIVE_REASON_DELETED,
+    )
+    if service_only:
+        crm_item_qs = crm_item_qs.filter(direction=CrmItem.DIRECTION_SERVICE)
     crm_items = list(
-        CrmItem.objects.filter(
-            Q(client=client) | Q(pool__client=client)
-        )
-        .exclude(
-            is_archived=True,
-            archived_reason=CrmItem.ARCHIVE_REASON_DELETED,
-        )
+        crm_item_qs
         .select_related("pool", "responsible")
         .distinct()
         .order_by("-updated_at", "-id")[:50]
@@ -210,11 +222,7 @@ def client_detail(request, client_id):
             organization_id=client.organization_id,
             user=request.user,
         ).first()
-        is_org_admin = OrganizationAccess.objects.filter(
-            user=request.user,
-            organization_id=client.organization_id,
-            role__in=IMPORT_ROLES,
-        ).exists()
+        is_org_admin = bool(org_roles & IMPORT_ROLES)
         can_view_all_calls = bool(
             request.user.is_superuser
             or is_org_admin
