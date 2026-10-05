@@ -33,6 +33,7 @@ from pool_service.operations_mcp_policy import can_access_operations_mcp
 
 OPERATIONS_SCOPE = "service2.operations"
 OFFLINE_ACCESS_SCOPE = "offline_access"
+ORGANIZATION_SCOPE_PREFIX = "service2.operations.organization:"
 SUPPORTED_SCOPES = frozenset({OPERATIONS_SCOPE, OFFLINE_ACCESS_SCOPE})
 AUTHORIZATION_CODE_GRANT = "authorization_code"
 REFRESH_TOKEN_GRANT = "refresh_token"
@@ -336,6 +337,15 @@ def principal_has_target_scope(client):
     return client.principal.organization_scopes.filter(organization=organization).exists()
 
 
+def _organization_scope(organization_id):
+    return f"{ORGANIZATION_SCOPE_PREFIX}{int(organization_id)}"
+
+
+def _grant_is_bound_to_organization(grant, organization):
+    scopes = grant.scopes if isinstance(grant.scopes, list) else []
+    return _organization_scope(organization.id) in scopes
+
+
 def validate_authorization_request(params):
     if not isinstance(params, dict):
         raise OperationsMcpOAuthError("invalid_request", "Некорректный OAuth запрос.")
@@ -413,11 +423,15 @@ def issue_authorization_code(*, authorization, user):
         # remaining independent grants.  Re-authorizing one Diagnostic link
         # must not revoke sibling Diagnostic grants or Finance grants.
         # Explicit revoke and refresh-token replay handling stay grant-scoped.
+        organization = target_organization()
+        grant_scopes = sorted(
+            set(authorization["scopes"]) | {_organization_scope(organization.id)}
+        )
         grant = FinanceMcpGrant.objects.create(
             client=client,
             principal=client.principal,
             authorized_by=user,
-            scopes=authorization["scopes"],
+            scopes=grant_scopes,
             resource=authorization["resource"],
         )
         FinanceMcpAuthorizationCode.objects.create(
@@ -452,7 +466,8 @@ def _grant_is_valid(grant, *, now, client, resource):
     except OperationsMcpConfigurationError:
         return False
     return bool(
-        principal_has_target_scope(client)
+        _grant_is_bound_to_organization(grant, organization)
+        and principal_has_target_scope(client)
         and can_access_operations_mcp(grant.authorized_by, organization)
     )
 
@@ -660,6 +675,7 @@ def authorization_server_metadata():
 
 __all__ = [
     "OPERATIONS_SCOPE",
+    "ORGANIZATION_SCOPE_PREFIX",
     "OperationsMcpConfigurationError",
     "OperationsMcpOAuthError",
     "authorization_redirect_uri",
