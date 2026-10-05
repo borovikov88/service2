@@ -243,6 +243,7 @@ def calls(request):
     queryset = PhoneCall.objects.filter(organization=organization).select_related(
         "employee",
         "employee_profile",
+        "client",
         "analysis",
     ).defer("analysis__transcript")
     if not can_view_all:
