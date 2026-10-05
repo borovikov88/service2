@@ -1,3 +1,5 @@
+import logging
+
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -5,12 +7,13 @@ from django.db.models import Count
 from django.http import HttpResponseForbidden
 from django.shortcuts import redirect, render
 
-from .client_crm_import import apply_ready_candidates, scan_onec_clients
-from .client_crm_models import ClientImportCandidate
+from .client_crm_import import apply_ready_candidates, request_client_import_scan
+from .client_crm_models import ClientImportCandidate, ClientImportRun
 from .models import OrganizationAccess
 
 
 IMPORT_ROLES = {"owner", "admin"}
+logger = logging.getLogger(__name__)
 
 
 def _can_manage_import(user, organization_id):
@@ -38,20 +41,45 @@ def client_onec_import(request):
         action = request.POST.get("action")
         if action == "scan":
             try:
-                result = scan_onec_clients()
+                run, started = request_client_import_scan(request.user)
             except Exception:
+                logger.exception("Failed to enqueue 1C client import")
                 messages.error(
                     request,
-                    "Не удалось получить клиентов из 1С. Данные CRM не изменены.",
+                    "Не удалось запустить обновление из 1С. Попробуйте ещё раз после обновления страницы.",
                 )
-            else:
+                return redirect("client_onec_import")
+            if started:
                 messages.success(
                     request,
-                    "Данные 1С обновлены: найдено "
-                    f"{result.get('total', 0)} покупателей.",
+                    "Обновление из 1С запущено. Можно закрыть страницу или открыть её на другом компьютере — процесс продолжится на сервере.",
+                )
+            elif run.status in {
+                ClientImportRun.STATUS_PENDING,
+                ClientImportRun.STATUS_RUNNING,
+            }:
+                messages.info(
+                    request,
+                    "Обновление из 1С уже выполняется. Повторный запуск не создан.",
+                )
+            else:
+                messages.error(
+                    request,
+                    run.error or "Не удалось запустить обновление из 1С.",
                 )
             return redirect("client_onec_import")
         if action == "apply":
+            latest_run = (
+                ClientImportRun.objects.filter(organization_id=organization_id)
+                .order_by("-requested_at", "-id")
+                .first()
+            )
+            if not latest_run or latest_run.status != ClientImportRun.STATUS_SUCCESS:
+                messages.warning(
+                    request,
+                    "Импортировать карточки можно только после полностью успешного обновления из 1С.",
+                )
+                return redirect("client_onec_import")
             result = apply_ready_candidates()
             if result["failed"]:
                 messages.warning(
@@ -66,6 +94,19 @@ def client_onec_import(request):
                 )
             return redirect("client_onec_import")
         return HttpResponseForbidden()
+
+    latest_run = (
+        ClientImportRun.objects.filter(organization_id=organization_id)
+        .order_by("-requested_at", "-id")
+        .first()
+    )
+    import_active = bool(
+        latest_run
+        and latest_run.status in {
+            ClientImportRun.STATUS_PENDING,
+            ClientImportRun.STATUS_RUNNING,
+        }
+    )
 
     candidates = ClientImportCandidate.objects.filter(
         organization_id=organization_id,
@@ -99,6 +140,13 @@ def client_onec_import(request):
                 organization_id=organization_id
             ).count(),
             "ready_count": summary.get(ClientImportCandidate.STATUS_READY, 0),
+            "latest_run": latest_run,
+            "import_active": import_active,
+            "can_apply": bool(
+                latest_run
+                and latest_run.status == ClientImportRun.STATUS_SUCCESS
+                and summary.get(ClientImportCandidate.STATUS_READY, 0)
+            ),
             "show_search": False,
             "show_add_button": False,
             "add_url": None,
