@@ -101,3 +101,22 @@ class ClientMergeTests(TestCase):
 
         with self.assertRaisesMessage(ValueError, "разные пользовательские аккаунты"):
             merge_clients(self.legacy.pk, self.target.pk)
+
+
+    def test_merge_rejects_target_that_is_already_merged(self):
+        other_target = Client.objects.create(
+            organization=self.organization,
+            client_type="legal",
+            name="Итоговая карточка",
+        )
+        ClientCRMProfile.objects.create(
+            client=other_target,
+            onec_ref="cccccccc-cccc-cccc-cccc-cccccccccccc",
+            source=ClientCRMProfile.SOURCE_ONEC,
+        )
+        target_profile = ClientCRMProfile.objects.get(client=self.target)
+        target_profile.merged_into = other_target
+        target_profile.save(update_fields=["merged_into", "updated_at"])
+
+        with self.assertRaisesMessage(ValueError, "Целевая карточка уже объединена"):
+            merge_clients(self.legacy.pk, self.target.pk)
