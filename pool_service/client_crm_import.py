@@ -93,6 +93,7 @@ def _buyer_rows(config, metadata_raw):
                 "КПП",
                 "ФИО",
                 "ДатаРождения",
+                "ДатаСоздания",
                 "НомерТелефонаДляПоиска",
                 "АдресЭПДляПоиска",
                 "Покупатель",
@@ -116,6 +117,50 @@ def _buyer_rows(config, metadata_raw):
         if not next_cursor or next_cursor == cursor:
             raise RuntimeError("1C buyer pagination did not advance")
         cursor = next_cursor
+
+
+def _recent_buyer_rows(config, metadata_raw, since):
+    since_value = timezone.localtime(since).replace(tzinfo=None).isoformat(timespec="seconds")
+    result = query_1c_rows(
+        config,
+        BUYER_ENTITY,
+        fields=[
+            "Ref_Key",
+            "Code",
+            "Description",
+            "НаименованиеПолное",
+            "ЮридическоеФизическоеЛицо",
+            "ВидКонтрагента",
+            "ИНН",
+            "КПП",
+            "ФИО",
+            "ДатаРождения",
+            "ДатаСоздания",
+            "НомерТелефонаДляПоиска",
+            "АдресЭПДляПоиска",
+            "Покупатель",
+            "Недействителен",
+        ],
+        filters=[
+            {"field": "DeletionMark", "op": "eq", "value": False},
+            {"field": "Покупатель", "op": "eq", "value": True},
+            {"field": "ДатаСоздания", "op": "ge", "value": since_value},
+        ],
+        limit=PAGE_SIZE,
+        include_deleted=False,
+        include_inactive=False,
+        order_by=[
+            {"field": "ДатаСоздания", "direction": "asc"},
+            {"field": "Code", "direction": "asc"},
+        ],
+        metadata_raw=metadata_raw,
+    )
+    rows = result.get("rows", [])
+    if not result.get("complete") and len(rows) >= PAGE_SIZE:
+        raise RuntimeError(
+            "Слишком много новых клиентов 1С за окно синхронизации; требуется полный импорт."
+        )
+    return rows
 
 
 def _contact_rows(config, refs, metadata_raw):
@@ -767,12 +812,13 @@ def _find_or_create_ip_person(company, candidate):
         (candidate.payload or {}).get("fio") or candidate.name
     )
     if person is None:
-        exact_name = " ".join(part for part in [last_name, first_name, middle_name] if part).strip()
-        named = list(person_matches.filter(name__iexact=exact_name)[:2]) if exact_name else []
-        if len(named) == 1:
-            person = named[0]
-        elif len(named) > 1:
-            raise ValueError("Для ИП найдено несколько физлиц с тем же ФИО")
+        exact_name = " ".join(
+            part for part in [last_name, first_name, middle_name] if part
+        ).strip()
+        if exact_name and person_matches.filter(name__iexact=exact_name).exists():
+            raise ValueError(
+                "Для ИП найдено физлицо с тем же ФИО, но без подтверждённого совпадения телефона"
+            )
     if person is None:
         person = Client.objects.create(
             organization=candidate.organization,
@@ -963,6 +1009,192 @@ def resolve_import_candidate(candidate_id, resolution, resolved_by=None):
     )
     _refresh_latest_run_counts(candidate.organization)
     return candidate
+
+
+def sync_recent_onec_clients(*, lookback_hours=48):
+    """Import newly created 1C buyers without a full catalog scan.
+
+    The query intentionally overlaps previous runs. source_ref uniqueness and
+    update_or_create make the operation idempotent, while the overlap protects
+    against delayed schedulers and short 1C outages.
+    """
+    organization = _target_organization()
+    active_run = ClientImportRun.objects.filter(
+        organization=organization,
+        status__in=[
+            ClientImportRun.STATUS_PENDING,
+            ClientImportRun.STATUS_RUNNING,
+            ClientImportRun.STATUS_APPLYING,
+        ],
+    ).exists()
+    if active_run:
+        return {"skipped": True, "reason": "manual_import_active"}
+
+    config = config_from_settings()
+    metadata_raw = fetch_metadata(config)
+    since = timezone.now() - timedelta(hours=max(int(lookback_hours), 1))
+    rows = _recent_buyer_rows(config, metadata_raw, since)
+    contacts_by_ref = _contact_rows(
+        config,
+        [row.get("Ref_Key") for row in rows],
+        metadata_raw,
+    )
+
+    result = {
+        "scanned": len(rows),
+        "imported": 0,
+        "refreshed": 0,
+        "review": 0,
+        "duplicate": 0,
+        "invalid": 0,
+        "skipped": 0,
+    }
+
+    for row in rows:
+        ref = str(row.get("Ref_Key") or "")
+        name = str(
+            row.get("Description") or row.get("НаименованиеПолное") or ""
+        ).strip()
+        source_kind = _source_kind(row)
+        existing = ClientImportCandidate.objects.filter(
+            organization=organization,
+            source_ref=ref,
+        ).first()
+        resolution = (
+            existing.resolution
+            if existing is not None
+            else ClientImportCandidate.RESOLUTION_AUTO
+        )
+        effective_kind = _effective_kind(source_kind, resolution)
+        inn = str(row.get("ИНН") or "").strip()
+        phones, emails = _candidate_contacts(
+            row, contacts_by_ref.get(ref, [])
+        )
+
+        if (
+            resolution != ClientImportCandidate.RESOLUTION_AUTO
+            and not (existing and existing.applied_at)
+        ):
+            matches, match_reason = [], ""
+        else:
+            matches, match_reason = _match_clients(
+                organization,
+                effective_kind,
+                inn,
+                phones,
+                ref,
+            )
+
+        status = ClientImportCandidate.STATUS_READY
+        reason = ""
+        matched_client = None
+        if not ref or not name:
+            status = ClientImportCandidate.STATUS_INVALID
+            reason = "Нет идентификатора или имени в 1С"
+        elif name.casefold().strip() in SYSTEM_NAMES:
+            status = ClientImportCandidate.STATUS_INVALID
+            reason = "Системная карточка 1С"
+        elif len(matches) > 1:
+            status = ClientImportCandidate.STATUS_DUPLICATE
+            reason = f"Несколько карточек Service2 совпали по: {match_reason}"
+        elif len(matches) == 1:
+            matched_client = matches[0]
+
+        # For a newly created 1C buyer, Ref_Key is the canonical identity.
+        # Unlike the historical first import, an absent INN alone is not a
+        # reason to block a brand-new company when no conflicting match exists.
+        if resolution == ClientImportCandidate.RESOLUTION_SKIP:
+            status = ClientImportCandidate.STATUS_SKIPPED
+            reason = "Не импортировать — решение пользователя"
+        elif resolution != ClientImportCandidate.RESOLUTION_AUTO and status not in {
+            ClientImportCandidate.STATUS_INVALID,
+            ClientImportCandidate.STATUS_DUPLICATE,
+        }:
+            status = ClientImportCandidate.STATUS_READY
+            reason = "Тип подтверждён пользователем"
+
+        payload = {
+            "phones": phones,
+            "emails": emails,
+            "onec_type": str(row.get("ВидКонтрагента") or ""),
+            "onec_person_kind": str(
+                row.get("ЮридическоеФизическоеЛицо") or ""
+            ),
+            "fio": str(row.get("ФИО") or "").strip(),
+            "created_at": str(row.get("ДатаСоздания") or ""),
+        }
+        candidate, _ = ClientImportCandidate.objects.update_or_create(
+            organization=organization,
+            source_ref=ref,
+            defaults={
+                "source_code": str(row.get("Code") or ""),
+                "source_kind": source_kind,
+                "name": name,
+                "legal_name": str(
+                    row.get("НаименованиеПолное") or ""
+                ).strip(),
+                "inn": inn,
+                "kpp": str(row.get("КПП") or "").strip(),
+                "phone": phones[0]["value"] if phones else "",
+                "email": emails[0]["value"] if emails else "",
+                "birth_date": _parse_date(row.get("ДатаРождения")),
+                "payload": payload,
+                "status": status,
+                "reason": reason,
+                "matched_client": matched_client,
+            },
+        )
+
+        if existing and existing.applied_at:
+            candidate.status = ClientImportCandidate.STATUS_IMPORTED
+            candidate.matched_client = existing.matched_client
+            candidate.applied_at = existing.applied_at
+            candidate.save(
+                update_fields=[
+                    "status",
+                    "matched_client",
+                    "applied_at",
+                    "updated_at",
+                ]
+            )
+
+        if candidate.status in {
+            ClientImportCandidate.STATUS_READY,
+            ClientImportCandidate.STATUS_IMPORTED,
+        }:
+            was_imported = bool(candidate.applied_at)
+            try:
+                apply_candidate(candidate)
+            except (ValueError, RuntimeError) as exc:
+                candidate.refresh_from_db()
+                if not candidate.applied_at:
+                    candidate.status = ClientImportCandidate.STATUS_REVIEW
+                    candidate.reason = str(exc)[:500]
+                    candidate.save(
+                        update_fields=["status", "reason", "updated_at"]
+                    )
+                    result["review"] += 1
+                else:
+                    logger.exception(
+                        "Failed to refresh imported 1C client %s", ref
+                    )
+            else:
+                if was_imported:
+                    result["refreshed"] += 1
+                else:
+                    result["imported"] += 1
+            continue
+
+        if candidate.status == ClientImportCandidate.STATUS_DUPLICATE:
+            result["duplicate"] += 1
+        elif candidate.status == ClientImportCandidate.STATUS_INVALID:
+            result["invalid"] += 1
+        elif candidate.status == ClientImportCandidate.STATUS_SKIPPED:
+            result["skipped"] += 1
+        else:
+            result["review"] += 1
+
+    return result
 
 
 def apply_ready_candidates(organization=None, run=None):
