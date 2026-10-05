@@ -21,6 +21,7 @@ from django.views.decorators.http import require_POST
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.debug import sensitive_post_parameters
 
+from pool_service.client_queries import active_clients
 from pool_service.communication_avito import (
     AvitoError,
     authorized_account_id as avito_authorized_account_id,
@@ -267,7 +268,7 @@ def calls(request):
     if request.GET.get("missed"): queryset = queryset.filter(result=PhoneCall.RESULT_MISSED)
     if request.GET.get("q"): queryset = queryset.filter(Q(phone_number__icontains=request.GET["q"]) | Q(contact_name__icontains=request.GET["q"]))
     employees = OrganizationAccess.objects.filter(organization=organization).select_related("user")
-    clients = Client.objects.filter(organization=organization).order_by("name", "id")
+    clients = active_clients(Client.objects.filter(organization=organization)).order_by("name", "id")
     return render(request, "pool_service/communications/calls.html", {
         "active_tab": "communications",
         "calls": queryset[:500],
