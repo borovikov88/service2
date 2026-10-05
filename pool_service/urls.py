@@ -81,6 +81,7 @@ from .views import (
     push_unsubscribe,
 )
 from . import views
+from .client_crm_views import client_onec_import
 from .security_views import (
     security_lock,
     security_pin_disable,
@@ -337,6 +338,7 @@ urlpatterns = [
     path("billing/request/", billing_request, name="billing_request"),
     path("billing/admin/", billing_admin, name="billing_admin"),
     path("clients/", clients_list, name="clients_list"),
+    path("clients/import/1c/", client_onec_import, name="client_onec_import"),
     path("crm/", crm_index, name="crm_index"),
     path("crm/tasks/", crm_tasks, name="crm_tasks"),
     path("crm/tasks/bulk/", crm_tasks_bulk_update, name="crm_tasks_bulk_update"),
