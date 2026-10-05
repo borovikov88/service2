@@ -469,3 +469,29 @@ class ClientCRMImportTests(TestCase):
         self.assertFalse(started)
         self.assertEqual(returned.pk, run.pk)
         launcher.assert_not_called()
+
+
+    def test_resolution_is_blocked_while_scan_or_apply_is_active(self):
+        user = get_user_model().objects.create_user(username="resolver-during-run")
+        candidate = self.candidate(
+            source_ref="abababab-abab-abab-abab-abababababab",
+            status=ClientImportCandidate.STATUS_REVIEW,
+        )
+        ClientImportRun.objects.create(
+            organization=self.organization,
+            status=ClientImportRun.STATUS_RUNNING,
+        )
+
+        with self.assertRaisesMessage(ValueError, "Дождитесь завершения"):
+            resolve_import_candidate(
+                candidate.pk,
+                ClientImportCandidate.RESOLUTION_SKIP,
+                user,
+            )
+
+        candidate.refresh_from_db()
+        self.assertEqual(candidate.status, ClientImportCandidate.STATUS_REVIEW)
+        self.assertEqual(
+            candidate.resolution,
+            ClientImportCandidate.RESOLUTION_AUTO,
+        )
