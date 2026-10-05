@@ -207,10 +207,12 @@ from .development_views import (
 )
 from .communication_views import (
     attachment_download,
+    call_analysis_bulk,
     call_analysis_retry,
     call_analysis_status,
     call_analysis_transcript,
     call_recording,
+    call_recording_upload,
     calls as communication_calls,
     channels as communication_channels,
     conversation_reply,
@@ -252,6 +254,8 @@ urlpatterns = [
     path("api/communications/website/<uuid:public_id>/chat/<str:session_id>/attachments/<int:attachment_id>/", website_chat_attachment, name="website_chat_attachment"),
     path("communications/", communication_conversations, name="communications_conversations"),
     path("communications/calls/", communication_calls, name="communications_calls"),
+    path("communications/calls/upload/", call_recording_upload, name="communication_call_recording_upload"),
+    path("communications/calls/analysis/bulk/", call_analysis_bulk, name="communication_call_analysis_bulk"),
     path("communications/calls/<int:call_id>/analysis/status/", call_analysis_status, name="communication_call_analysis_status"),
     path("communications/calls/<int:call_id>/analysis/transcript/", call_analysis_transcript, name="communication_call_analysis_transcript"),
 
