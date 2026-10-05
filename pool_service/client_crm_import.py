@@ -396,7 +396,10 @@ def request_client_import_scan(requested_by=None):
     stale_before = timezone.now() - timedelta(minutes=IMPORT_RUN_STALE_MINUTES)
 
     with transaction.atomic():
-        ClientImportRun.objects.select_for_update().filter(
+        # Lock the organization row so simultaneous clicks from different
+        # browsers cannot create two active imports.
+        organization = Organization.objects.select_for_update().get(pk=organization.pk)
+        ClientImportRun.objects.filter(
             organization=organization,
             status__in=[
                 ClientImportRun.STATUS_PENDING,
