@@ -48,6 +48,14 @@ if ! flock -s -n 9; then
     exit 0
 fi
 
-exec "$PYTHON_BIN" manage.py process_requested_call_analyses \
-    --limit "$LIMIT" \
+COMMAND_ARGS=(
+    manage.py
+    process_requested_call_analyses
+    --limit "$LIMIT"
     --idle-grace-seconds "$IDLE_GRACE_SECONDS"
+)
+if [[ "$WAIT_FOR_AI" == "1" ]]; then
+    COMMAND_ARGS+=(--drain)
+fi
+
+exec "$PYTHON_BIN" "${COMMAND_ARGS[@]}"
