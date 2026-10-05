@@ -10,7 +10,7 @@ if [[ ! -x "$PYTHON_BIN" || ! -d "$TMP_DIR" || ! -w "$TMP_DIR" ]]; then
     echo "Client import worker environment is unavailable" >&2
     exit 67
 fi
-if [[ ! "$RUN_ID" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+if [[ ! "$RUN_ID" =~ ^[0-9]+$ ]]; then
     echo "Invalid client import run id" >&2
     exit 64
 fi
