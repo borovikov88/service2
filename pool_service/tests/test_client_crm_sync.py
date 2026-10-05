@@ -4,7 +4,12 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from pool_service.client_crm_import import apply_ready_candidates
-from pool_service.client_crm_models import ClientCRMProfile, ClientCompanyLink, ClientImportCandidate
+from pool_service.client_crm_models import (
+    ClientCRMProfile,
+    ClientCompanyLink,
+    ClientContact,
+    ClientImportCandidate,
+)
 from pool_service.client_crm_sync import sync_recent_onec_clients
 from pool_service.models import Client, Organization
 
@@ -136,3 +141,68 @@ class ClientCRMAutoSyncTests(TestCase):
         self.assertEqual(result, {"imported": 0, "failed": 1})
         self.assertEqual(candidate.status, ClientImportCandidate.STATUS_REVIEW)
         self.assertFalse(ClientCompanyLink.objects.exists())
+
+
+    def test_refresh_removes_stale_onec_contact_but_keeps_manual_contact(self):
+        ref = "52345678-1234-1234-1234-1234567890ab"
+        client = Client.objects.create(
+            organization=self.organization,
+            client_type="private",
+            name="Contact Sync",
+            phone="10001",
+        )
+        ClientCRMProfile.objects.create(
+            client=client,
+            onec_ref=ref,
+            source=ClientCRMProfile.SOURCE_ONEC,
+        )
+        ClientImportCandidate.objects.create(
+            organization=self.organization,
+            source_ref=ref,
+            source_code="C-204",
+            source_kind=ClientImportCandidate.KIND_PRIVATE,
+            name="Contact Sync",
+            phone="10001",
+            status=ClientImportCandidate.STATUS_IMPORTED,
+            matched_client=client,
+            applied_at=timezone.now(),
+        )
+        ClientContact.objects.create(
+            client=client,
+            kind=ClientContact.KIND_PHONE,
+            value="10001",
+            match_value="10001",
+            sources=["onec"],
+            source_reference=ref,
+        )
+        manual = ClientContact.objects.create(
+            client=client,
+            kind=ClientContact.KIND_PHONE,
+            value="20002",
+            match_value="20002",
+            sources=["manual", "onec"],
+            source_reference=ref,
+        )
+
+        row = self._row(
+            Ref_Key=ref,
+            Code="C-204",
+            Description="Contact Sync",
+            НаименованиеПолное="Contact Sync",
+            ФИО="Contact Sync",
+            НомерТелефонаДляПоиска="",
+        )
+        result = self._sync([row])
+
+        client.refresh_from_db()
+        manual.refresh_from_db()
+        self.assertEqual(result["refreshed"], 1)
+        self.assertIsNone(client.phone)
+        self.assertFalse(
+            ClientContact.objects.filter(
+                client=client,
+                match_value="10001",
+            ).exists()
+        )
+        self.assertEqual(manual.sources, ["manual"])
+        self.assertEqual(manual.source_reference, "")
