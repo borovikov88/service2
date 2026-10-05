@@ -69,17 +69,15 @@ def client_onec_import(request):
                 )
             return redirect("client_onec_import")
         if action == "apply":
-            active_run = ClientImportRun.objects.filter(
-                organization_id=organization_id,
-                status__in=[
-                    ClientImportRun.STATUS_PENDING,
-                    ClientImportRun.STATUS_RUNNING,
-                ],
-            ).exists()
-            if active_run:
+            latest_run = (
+                ClientImportRun.objects.filter(organization_id=organization_id)
+                .order_by("-requested_at", "-id")
+                .first()
+            )
+            if not latest_run or latest_run.status != ClientImportRun.STATUS_SUCCESS:
                 messages.warning(
                     request,
-                    "Сначала дождитесь завершения обновления из 1С.",
+                    "Импортировать карточки можно только после полностью успешного обновления из 1С.",
                 )
                 return redirect("client_onec_import")
             result = apply_ready_candidates()
@@ -144,6 +142,11 @@ def client_onec_import(request):
             "ready_count": summary.get(ClientImportCandidate.STATUS_READY, 0),
             "latest_run": latest_run,
             "import_active": import_active,
+            "can_apply": bool(
+                latest_run
+                and latest_run.status == ClientImportRun.STATUS_SUCCESS
+                and summary.get(ClientImportCandidate.STATUS_READY, 0)
+            ),
             "show_search": False,
             "show_add_button": False,
             "add_url": None,
