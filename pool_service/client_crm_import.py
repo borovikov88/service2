@@ -606,7 +606,11 @@ def request_client_apply():
             .order_by("-requested_at", "-id")
             .first()
         )
-        if run is None or run.status != ClientImportRun.STATUS_SUCCESS:
+        if run is None:
+            raise ValueError("Импорт можно запустить только после успешного обновления из 1С")
+        if run.status == ClientImportRun.STATUS_APPLYING:
+            return run, False
+        if run.status != ClientImportRun.STATUS_SUCCESS:
             raise ValueError("Импорт можно запустить только после успешного обновления из 1С")
 
         ready_count = ClientImportCandidate.objects.filter(
