@@ -769,6 +769,20 @@ def resolve_import_candidate(candidate_id, resolution, resolved_by=None):
     if candidate.applied_at:
         raise ValueError("Импортированную карточку нельзя изменить")
 
+    manual_type_resolutions = {
+        ClientImportCandidate.RESOLUTION_LEGAL,
+        ClientImportCandidate.RESOLUTION_PRIVATE,
+        ClientImportCandidate.RESOLUTION_IP,
+    }
+    if candidate.status == ClientImportCandidate.STATUS_DUPLICATE and resolution in manual_type_resolutions:
+        raise ValueError(
+            "Для возможного дубля сначала нужно выбрать существующую карточку клиента."
+        )
+    if candidate.status == ClientImportCandidate.STATUS_INVALID and resolution in manual_type_resolutions:
+        raise ValueError(
+            "Некорректную системную карточку нельзя импортировать как обычного клиента."
+        )
+
     candidate.resolution = resolution
     candidate.resolved_by = resolved_by
     candidate.resolved_at = timezone.now() if resolution != ClientImportCandidate.RESOLUTION_AUTO else None
