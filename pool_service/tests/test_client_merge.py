@@ -40,7 +40,11 @@ class ClientMergeTests(TestCase):
             is_primary=True,
         )
 
-        result = merge_clients(self.legacy.pk, self.target.pk)
+        result = merge_clients(
+            self.legacy.pk,
+            self.target.pk,
+            organization_id=self.organization.pk,
+        )
 
         pool.refresh_from_db()
         self.target.refresh_from_db()
@@ -73,7 +77,11 @@ class ClientMergeTests(TestCase):
             phone="",
         )
 
-        merge_clients(self.legacy.pk, self.target.pk)
+        merge_clients(
+            self.legacy.pk,
+            self.target.pk,
+            organization_id=self.organization.pk,
+        )
 
         accesses = ClientAccess.objects.filter(user=user)
         self.assertEqual(accesses.count(), 1)
@@ -89,7 +97,11 @@ class ClientMergeTests(TestCase):
             name="Не импортирован",
         )
         with self.assertRaisesMessage(ValueError, "Целевая карточка должна быть импортирована из 1С"):
-            merge_clients(self.legacy.pk, other.pk)
+            merge_clients(
+                self.legacy.pk,
+                other.pk,
+                organization_id=self.organization.pk,
+            )
 
     def test_merge_rejects_conflicting_user_accounts(self):
         user_a = get_user_model().objects.create_user(username="legacy-user")
@@ -100,7 +112,11 @@ class ClientMergeTests(TestCase):
         self.target.save(update_fields=["user"])
 
         with self.assertRaisesMessage(ValueError, "разные пользовательские аккаунты"):
-            merge_clients(self.legacy.pk, self.target.pk)
+            merge_clients(
+            self.legacy.pk,
+            self.target.pk,
+            organization_id=self.organization.pk,
+        )
 
 
     def test_merge_rejects_target_that_is_already_merged(self):
@@ -119,4 +135,8 @@ class ClientMergeTests(TestCase):
         target_profile.save(update_fields=["merged_into", "updated_at"])
 
         with self.assertRaisesMessage(ValueError, "Целевая карточка уже объединена"):
-            merge_clients(self.legacy.pk, self.target.pk)
+            merge_clients(
+            self.legacy.pk,
+            self.target.pk,
+            organization_id=self.organization.pk,
+        )
