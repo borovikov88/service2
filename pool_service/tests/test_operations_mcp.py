@@ -262,6 +262,19 @@ class OperationsMcpTests(TestCase):
 
     def test_notification_tool_is_deduplicated(self):
         raw = self._token(raw="notification-token")
+        task = ServiceTask.objects.create(
+            organization=self.organization,
+            title="Проверить обещание клиента",
+            start_date=date(2026, 10, 7),
+            end_date=date(2026, 10, 7),
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            source_type=ServiceTask.SOURCE_MANAGER,
+            status=ServiceTask.STATUS_NEW,
+            visibility=ServiceTask.VISIBILITY_PRIVATE,
+            primary_responsible=self.manager,
+            created_by=self.owner,
+        )
+        task.responsibles.add(self.manager)
         payload = {
             "jsonrpc": "2.0",
             "id": 5,
@@ -273,6 +286,7 @@ class OperationsMcpTests(TestCase):
                     "title": "Проверьте задачу",
                     "message": "Срок наступил.",
                     "dedupe_key": "task-42-due",
+                    "task_id": task.id,
                 },
             },
         }
@@ -283,3 +297,79 @@ class OperationsMcpTests(TestCase):
         self.assertEqual(second.status_code, 200)
         self.assertEqual(first.json()["result"]["structuredContent"]["created_notifications"], 1)
         self.assertEqual(second.json()["result"]["structuredContent"]["created_notifications"], 0)
+        task.refresh_from_db()
+        self.assertEqual(
+            task.payload_json["operations_notification_keys"],
+            [f"{self.manager.id}:task-42-due"],
+        )
+
+    def test_non_crm_task_cannot_be_completed(self):
+        raw = self._token(raw="non-crm-token")
+        task = ServiceTask.objects.create(
+            organization=self.organization,
+            title="Плановый сервисный выезд",
+            start_date=date(2026, 10, 7),
+            end_date=date(2026, 10, 7),
+            task_type=ServiceTask.TYPE_SCHEDULED_VISIT,
+            source_type=ServiceTask.SOURCE_SYSTEM,
+            status=ServiceTask.STATUS_NEW,
+            visibility=ServiceTask.VISIBILITY_PRIVATE,
+            primary_responsible=self.manager,
+            created_by=self.owner,
+        )
+        task.responsibles.add(self.manager)
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {
+                "name": "complete_task",
+                "arguments": {"task_id": task.id},
+            },
+        }
+        with self._settings():
+            response = self._post(payload, token=raw)
+        self.assertTrue(response.json()["result"]["isError"])
+        task.refresh_from_db()
+        self.assertIsNone(task.completed_at)
+        self.assertEqual(task.status, ServiceTask.STATUS_NEW)
+
+    def test_notification_cannot_target_unrelated_employee(self):
+        raw = self._token(raw="participant-token")
+        unrelated = User.objects.create_user("unrelated-manager", password="test")
+        OrganizationAccess.objects.create(
+            user=unrelated,
+            organization=self.organization,
+            role="manager",
+        )
+        task = ServiceTask.objects.create(
+            organization=self.organization,
+            title="Отправить КП",
+            start_date=date(2026, 10, 7),
+            end_date=date(2026, 10, 7),
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            source_type=ServiceTask.SOURCE_MANAGER,
+            status=ServiceTask.STATUS_NEW,
+            visibility=ServiceTask.VISIBILITY_PRIVATE,
+            primary_responsible=self.manager,
+            created_by=self.owner,
+        )
+        task.responsibles.add(self.manager)
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "tools/call",
+            "params": {
+                "name": "send_employee_notification",
+                "arguments": {
+                    "employee_user_id": unrelated.id,
+                    "title": "Сообщение",
+                    "message": "Не должно быть отправлено",
+                    "dedupe_key": "unrelated",
+                    "task_id": task.id,
+                },
+            },
+        }
+        with self._settings():
+            response = self._post(payload, token=raw)
+        self.assertTrue(response.json()["result"]["isError"])
