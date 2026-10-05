@@ -784,6 +784,10 @@ def resolve_import_candidate(candidate_id, resolution, resolved_by=None):
         )
 
     candidate.resolution = resolution
+    if resolution in manual_type_resolutions:
+        # A manual type decision invalidates any earlier automatic match,
+        # especially matches created before phone matching was type-scoped.
+        candidate.matched_client = None
     candidate.resolved_by = resolved_by
     candidate.resolved_at = timezone.now() if resolution != ClientImportCandidate.RESOLUTION_AUTO else None
     candidate.resolution_note = (
@@ -807,6 +811,7 @@ def resolve_import_candidate(candidate_id, resolution, resolved_by=None):
     candidate.save(
         update_fields=[
             "resolution",
+            "matched_client",
             "resolution_note",
             "resolved_by",
             "resolved_at",
