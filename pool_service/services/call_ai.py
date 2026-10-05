@@ -446,9 +446,26 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
 
 def _reap_call_analysis_worker(process):
     try:
-        process.wait()
+        return_code = process.wait()
+        if return_code:
+            logger.error(
+                "Requested call analysis worker exited with code %s",
+                return_code,
+            )
     except Exception:
         logger.exception("Failed while reaping requested call analysis worker")
+
+
+def _call_ai_python_executable(base_dir):
+    production_python = os.path.join(
+        os.path.dirname(base_dir),
+        "venv",
+        "bin",
+        "python",
+    )
+    if os.path.isfile(production_python) and os.access(production_python, os.X_OK):
+        return production_python
+    return sys.executable
 
 
 def start_requested_call_analysis_worker():
@@ -460,7 +477,7 @@ def start_requested_call_analysis_worker():
         return False
 
     env = os.environ.copy()
-    env["SERVICE2_PYTHON"] = sys.executable
+    env["SERVICE2_PYTHON"] = _call_ai_python_executable(base_dir)
     try:
         process = subprocess.Popen(
             [bash, worker_script],
