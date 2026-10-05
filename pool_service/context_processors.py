@@ -213,10 +213,9 @@ def plan_status_context(request):
         user.is_superuser
         or communication_access.filter(can_view_conversations=True).exists()
     )
-    # Communications is still being rolled out. Keep the navigation entry
-    # owner/admin-only for now, while server-side capabilities remain the
-    # source of truth for direct access.
-    show_communications_menu = is_org_admin and can_access_communications
+    # Navigation follows the same capability gate as the server views.
+    # Managers can enter Communications and will still see only their own calls.
+    show_communications_menu = can_access_communications
 
     context = {
         "is_personal_user": personal_user,
