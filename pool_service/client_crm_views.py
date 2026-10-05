@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db.models import Count
@@ -27,7 +28,7 @@ def _can_manage_import(user, organization_id):
 @login_required
 def client_onec_import(request):
     try:
-        organization_id = int(getattr(__import__("django.conf").conf.settings, "ONEC_ODATA_TARGET_ORGANIZATION_ID", "") or 0)
+        organization_id = int(getattr(settings, "ONEC_ODATA_TARGET_ORGANIZATION_ID", "") or 0)
     except (TypeError, ValueError):
         organization_id = 0
     if not organization_id or not _can_manage_import(request.user, organization_id):
