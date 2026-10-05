@@ -284,7 +284,11 @@ def _match_clients(organization, source_kind, inn, phones, source_ref=""):
         | models.Q(crm_profile__merged_into__isnull=True)
     )
     if source_ref:
-        profile = ClientCRMProfile.objects.filter(onec_ref=source_ref).select_related("client").first()
+        profile = (
+            ClientCRMProfile.objects.filter(onec_ref=source_ref)
+            .select_related("client")
+            .first()
+        )
         if profile and profile.client.organization_id == organization.id:
             return [profile.client], "Ref_Key 1С"
 
@@ -294,26 +298,71 @@ def _match_clients(organization, source_kind, inn, phones, source_ref=""):
         else "legal"
     )
     typed_matches = matches.filter(client_type=expected_client_type)
+    phone_values = {item["match"] for item in phones if item.get("match")}
 
-    if source_kind in {ClientImportCandidate.KIND_LEGAL, ClientImportCandidate.KIND_IP} and inn:
-        by_inn = list(typed_matches.filter(inn=inn)[:3])
+    # Never let a new 1C Ref_Key steal a client already linked to another
+    # canonical 1C identity. Any INN/phone collision between different refs is
+    # a review case, even if only one existing card matches.
+    canonical_conflict_ids = set()
+    canonical = typed_matches.filter(
+        crm_profile__onec_ref__isnull=False,
+    )
+    if source_ref:
+        canonical = canonical.exclude(crm_profile__onec_ref=source_ref)
+    if inn and source_kind in {
+        ClientImportCandidate.KIND_LEGAL,
+        ClientImportCandidate.KIND_IP,
+    }:
+        canonical_conflict_ids.update(
+            canonical.filter(inn=inn).values_list("id", flat=True)
+        )
+    if phone_values:
+        canonical_conflict_ids.update(
+            ClientContact.objects.filter(
+                kind=ClientContact.KIND_PHONE,
+                match_value__in=phone_values,
+                client__in=canonical,
+            ).values_list("client_id", flat=True)
+        )
+        for client in canonical.exclude(phone__isnull=True).exclude(phone="").only(
+            "id", "phone"
+        ):
+            if normalize_phone(client.phone) in phone_values:
+                canonical_conflict_ids.add(client.id)
+    if canonical_conflict_ids:
+        return (
+            list(typed_matches.filter(id__in=canonical_conflict_ids)[:4]),
+            "совпадение с другим Ref_Key 1С",
+        )
+
+    # Automatic linking by INN/phone is allowed only to Service2 cards that
+    # are not already canonical identities of another 1C counterparty.
+    unlinked_matches = typed_matches.filter(
+        models.Q(crm_profile__isnull=True)
+        | models.Q(crm_profile__onec_ref__isnull=True)
+    )
+    if source_kind in {
+        ClientImportCandidate.KIND_LEGAL,
+        ClientImportCandidate.KIND_IP,
+    } and inn:
+        by_inn = list(unlinked_matches.filter(inn=inn)[:3])
         if by_inn:
             return by_inn, "ИНН"
-    phone_values = {item["match"] for item in phones if item.get("match")}
     if phone_values:
         contact_ids = ClientContact.objects.filter(
             kind=ClientContact.KIND_PHONE,
             match_value__in=phone_values,
-            client__organization=organization,
-            client__client_type=expected_client_type,
+            client__in=unlinked_matches,
         ).values_list("client_id", flat=True)
         legacy_ids = []
-        for client in typed_matches.exclude(phone__isnull=True).exclude(phone="").only("id", "phone"):
+        for client in unlinked_matches.exclude(phone__isnull=True).exclude(
+            phone=""
+        ).only("id", "phone"):
             if normalize_phone(client.phone) in phone_values:
                 legacy_ids.append(client.id)
         ids = set(contact_ids) | set(legacy_ids)
         if ids:
-            return list(typed_matches.filter(id__in=ids)[:4]), "телефон"
+            return list(unlinked_matches.filter(id__in=ids)[:4]), "телефон"
     return [], ""
 
 
@@ -394,6 +443,9 @@ def scan_onec_clients(run=None):
         elif name.casefold().strip() in SYSTEM_NAMES:
             status = ClientImportCandidate.STATUS_INVALID
             reason = "Системная карточка 1С"
+        elif match_reason == "совпадение с другим Ref_Key 1С":
+            status = ClientImportCandidate.STATUS_DUPLICATE
+            reason = "ИНН или телефон уже принадлежат другому клиенту 1С"
         elif len(matches) > 1:
             status = ClientImportCandidate.STATUS_DUPLICATE
             reason = f"Несколько карточек Service2 совпали по: {match_reason}"
@@ -910,6 +962,10 @@ def apply_candidate(candidate):
         client.save()
 
     profile, _ = ClientCRMProfile.objects.get_or_create(client=client)
+    if profile.onec_ref and profile.onec_ref != candidate.source_ref:
+        raise ValueError(
+            "Карточка Service2 уже связана с другим Ref_Key 1С"
+        )
 
     # Once a client is linked to 1C, 1C is the canonical source for its
     # business identity. Do not blank Service2 fields when 1C is empty, but
@@ -1138,6 +1194,9 @@ def sync_recent_onec_clients(*, lookback_hours=48):
         elif name.casefold().strip() in SYSTEM_NAMES:
             status = ClientImportCandidate.STATUS_INVALID
             reason = "Системная карточка 1С"
+        elif match_reason == "совпадение с другим Ref_Key 1С":
+            status = ClientImportCandidate.STATUS_DUPLICATE
+            reason = "ИНН или телефон уже принадлежат другому клиенту 1С"
         elif len(matches) > 1:
             status = ClientImportCandidate.STATUS_DUPLICATE
             reason = f"Несколько карточек Service2 совпали по: {match_reason}"
