@@ -171,5 +171,7 @@ class ClientCRMImportTests(TestCase):
         self.assertFalse(started_second)
         self.assertEqual(first.pk, second.pk)
         self.assertEqual(first.status, OneCODataSyncRun.STATUS_PENDING)
+        self.assertEqual(first.sync_scope.get("feature"), "crm_clients")
+        self.assertEqual(first.requested_report_types, ["crm_clients"])
         self.assertEqual(OneCODataSyncRun.objects.count(), 1)
         launcher.assert_called_once_with(first.pk)
