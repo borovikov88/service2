@@ -200,7 +200,9 @@
               {% endif %}
             </td>
             <td style="min-width: 310px;">
-              {% if candidate.status == "imported" %}
+              {% if import_active %}
+                <span class="text-muted small">Дождитесь завершения текущей операции</span>
+              {% elif candidate.status == "imported" %}
                 <span class="text-muted small">Уже импортирован</span>
               {% elif candidate.status == "duplicate" %}
                 <div class="small text-danger mb-1">Нужно отдельно выбрать существующую карточку.</div>
