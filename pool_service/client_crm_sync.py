@@ -15,6 +15,7 @@ from .client_crm_import import (
     _candidate_contacts,
     _contact_rows,
     _effective_kind,
+    _has_conflicting_onec_identity,
     _has_private_name_conflict,
     _match_clients,
     _parse_date,
@@ -130,6 +131,12 @@ def _stage_recent_candidate(organization, row, extra_contacts):
     elif len(matches) > 1:
         status = ClientImportCandidate.STATUS_DUPLICATE
         reason = f"Несколько карточек Service2 совпали по: {match_reason}"
+    elif len(matches) == 1 and _has_conflicting_onec_identity(matches, ref):
+        status = ClientImportCandidate.STATUS_DUPLICATE
+        reason = (
+            "Совпавший клиент уже связан с другой карточкой 1С: "
+            f"{match_reason}"
+        )
     elif len(matches) == 1:
         matched_client = matches[0]
     elif (
@@ -249,15 +256,19 @@ def sync_recent_onec_clients(*, lookback_hours=RECENT_LOOKBACK_HOURS):
     )
 
     result = defaultdict(int)
-    for row in rows:
-        ref = str(row.get("Ref_Key") or "")
-        with transaction.atomic():
-            # Manual staging decisions lock the same Organization row.  The
-            # lock keeps a five-minute sync from overwriting a decision made
-            # at the same moment in the UI.
-            locked_organization = organization_model.objects.select_for_update().get(
-                pk=organization.pk
-            )
+    with transaction.atomic():
+        # All direct staging/merge mutations lock this same Organization row.
+        # Hold it for the short DB mutation phase (network I/O has already
+        # completed) so manual decisions cannot interleave between rows.
+        locked_organization = organization_model.objects.select_for_update().get(
+            pk=organization.pk
+        )
+        _cleanup_stale_runs(locked_organization)
+        if _automatic_sync_blocked(locked_organization):
+            return {"skipped_active_run": 1}
+
+        for row in rows:
+            ref = str(row.get("Ref_Key") or "")
             candidate = _stage_recent_candidate(
                 locked_organization,
                 row,
