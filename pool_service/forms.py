@@ -864,10 +864,10 @@ class PoolForm(forms.ModelForm):
 
             if "client" in self.fields:
                 client_qs = Client.objects.none()
-                client_self = Client.objects.filter(user=user)
+                client_self = Client.objects.filter(user=user).filter(models.Q(crm_profile__isnull=True) | models.Q(crm_profile__merged_into__isnull=True))
 
                 if user.is_superuser:
-                    client_qs = Client.objects.all()
+                    client_qs = Client.objects.filter(models.Q(crm_profile__isnull=True) | models.Q(crm_profile__merged_into__isnull=True))
                     self.fields["client"].empty_label = "Выберите клиента"
                 elif client_self.exists():
                     client_qs = client_self
@@ -877,7 +877,7 @@ class PoolForm(forms.ModelForm):
                 else:
                     org_ids = OrganizationAccess.objects.filter(user=user).values_list("organization_id", flat=True)
                     if org_ids:
-                        client_qs = Client.objects.filter(organization_id__in=org_ids).distinct()
+                        client_qs = Client.objects.filter(organization_id__in=org_ids).filter(models.Q(crm_profile__isnull=True) | models.Q(crm_profile__merged_into__isnull=True)).distinct()
                     self.fields["client"].empty_label = "Выберите клиента"
 
                 self.fields["client"].queryset = client_qs
