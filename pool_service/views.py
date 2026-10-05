@@ -3735,6 +3735,14 @@ def clients_list(request):
 
 
 
+    clients_qs = clients_qs.filter(
+
+        Q(crm_profile__isnull=True) | Q(crm_profile__merged_into__isnull=True)
+
+    )
+
+
+
     clients = list(
 
         clients_qs.annotate(pool_count=Count("pool")).select_related("organization").order_by("name")

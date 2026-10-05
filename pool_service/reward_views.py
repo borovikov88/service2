@@ -11,6 +11,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 
+from pool_service.client_queries import active_clients
 from pool_service.models import Client, Employee, Pool
 from pool_service.reward_models import (
     OneCAuthorIdentity,
@@ -544,7 +545,7 @@ def employee_rewards(request):
         )
     )
     employees = _reward_selectable_employees(organization)
-    clients = Client.objects.filter(organization=organization).order_by("name", "id")
+    clients = active_clients(Client.objects.filter(organization=organization)).order_by("name", "id")
     pools = (
         Pool.objects.filter(organization=organization, is_deleted=False)
         .select_related("client")

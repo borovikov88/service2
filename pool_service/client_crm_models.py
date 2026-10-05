@@ -63,6 +63,21 @@ class ClientCRMProfile(models.Model):
     )
     notes = models.TextField(blank=True)
     last_synced_at = models.DateTimeField(null=True, blank=True)
+    merged_into = models.ForeignKey(
+        "pool_service.Client",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="merged_legacy_profiles",
+    )
+    merged_at = models.DateTimeField(null=True, blank=True)
+    merged_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="merged_client_profiles",
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -182,13 +197,28 @@ class ClientImportCandidate(models.Model):
     STATUS_REVIEW = "review"
     STATUS_DUPLICATE = "duplicate"
     STATUS_INVALID = "invalid"
+    STATUS_SKIPPED = "skipped"
     STATUS_IMPORTED = "imported"
     STATUS_CHOICES = [
         (STATUS_READY, "Готов к импорту"),
         (STATUS_REVIEW, "Нужно проверить"),
         (STATUS_DUPLICATE, "Возможный дубль"),
         (STATUS_INVALID, "Некорректные данные"),
+        (STATUS_SKIPPED, "Не импортировать"),
         (STATUS_IMPORTED, "Импортирован"),
+    ]
+
+    RESOLUTION_AUTO = "auto"
+    RESOLUTION_LEGAL = "legal"
+    RESOLUTION_PRIVATE = "private"
+    RESOLUTION_IP = "ip"
+    RESOLUTION_SKIP = "skip"
+    RESOLUTION_CHOICES = [
+        (RESOLUTION_AUTO, "По данным 1С"),
+        (RESOLUTION_LEGAL, "Юридическое лицо"),
+        (RESOLUTION_PRIVATE, "Физическое лицо"),
+        (RESOLUTION_IP, "ИП"),
+        (RESOLUTION_SKIP, "Не импортировать"),
     ]
 
     organization = models.ForeignKey(
@@ -213,6 +243,20 @@ class ClientImportCandidate(models.Model):
         default=STATUS_REVIEW,
     )
     reason = models.CharField(max_length=500, blank=True)
+    resolution = models.CharField(
+        max_length=16,
+        choices=RESOLUTION_CHOICES,
+        default=RESOLUTION_AUTO,
+    )
+    resolution_note = models.CharField(max_length=500, blank=True)
+    resolved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="resolved_client_import_candidates",
+    )
+    resolved_at = models.DateTimeField(null=True, blank=True)
     matched_client = models.ForeignKey(
         "pool_service.Client",
         on_delete=models.SET_NULL,
@@ -243,6 +287,16 @@ class ClientImportCandidate(models.Model):
             ),
         ]
 
+    @property
+    def effective_kind(self):
+        if self.resolution == self.RESOLUTION_LEGAL:
+            return self.KIND_LEGAL
+        if self.resolution == self.RESOLUTION_PRIVATE:
+            return self.KIND_PRIVATE
+        if self.resolution == self.RESOLUTION_IP:
+            return self.KIND_IP
+        return self.source_kind
+
     def __str__(self):
         return f"{self.name} ({self.get_status_display()})"
 
@@ -250,11 +304,13 @@ class ClientImportCandidate(models.Model):
 class ClientImportRun(models.Model):
     STATUS_PENDING = "pending"
     STATUS_RUNNING = "running"
+    STATUS_APPLYING = "applying"
     STATUS_SUCCESS = "success"
     STATUS_FAILED = "failed"
     STATUS_CHOICES = [
         (STATUS_PENDING, "В очереди"),
         (STATUS_RUNNING, "Загружается"),
+        (STATUS_APPLYING, "Импортируются клиенты"),
         (STATUS_SUCCESS, "Готово"),
         (STATUS_FAILED, "Ошибка"),
     ]

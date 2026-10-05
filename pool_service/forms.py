@@ -7,6 +7,7 @@ from django.utils.crypto import get_random_string
 from django.utils import timezone
 from django.urls import reverse
 from pathlib import Path
+from .client_queries import active_clients
 from .models import (
     WaterReading,
     Organization,
@@ -864,10 +865,10 @@ class PoolForm(forms.ModelForm):
 
             if "client" in self.fields:
                 client_qs = Client.objects.none()
-                client_self = Client.objects.filter(user=user)
+                client_self = active_clients(Client.objects.filter(user=user))
 
                 if user.is_superuser:
-                    client_qs = Client.objects.all()
+                    client_qs = active_clients()
                     self.fields["client"].empty_label = "Выберите клиента"
                 elif client_self.exists():
                     client_qs = client_self
@@ -877,7 +878,7 @@ class PoolForm(forms.ModelForm):
                 else:
                     org_ids = OrganizationAccess.objects.filter(user=user).values_list("organization_id", flat=True)
                     if org_ids:
-                        client_qs = Client.objects.filter(organization_id__in=org_ids).distinct()
+                        client_qs = active_clients(Client.objects.filter(organization_id__in=org_ids)).distinct()
                     self.fields["client"].empty_label = "Выберите клиента"
 
                 self.fields["client"].queryset = client_qs
@@ -1152,7 +1153,7 @@ class CrmItemForm(forms.ModelForm):
             self.fields["urgency"].required = direction == CrmItem.DIRECTION_SERVICE
 
         if organization:
-            self.fields["client"].queryset = Client.objects.filter(organization=organization).order_by("name")
+            self.fields["client"].queryset = active_clients(Client.objects.filter(organization=organization)).order_by("name")
             self.fields["pool"].queryset = Pool.objects.filter(
                 models.Q(organization=organization) | models.Q(client__organization=organization)
             ).order_by("client__name")

@@ -1,0 +1,334 @@
+from __future__ import annotations
+
+from difflib import SequenceMatcher
+import re
+
+from django.db import transaction
+from django.utils import timezone
+
+from .models import Client, ClientAccess, Organization
+from .client_crm_import import normalize_phone
+from .client_crm_models import (
+    ClientCRMProfile,
+    ClientCompanyLink,
+    ClientContact,
+    ClientImportCandidate,
+    ClientImportRun,
+)
+
+
+def _normalized_name(value):
+    text = re.sub(r"[^0-9a-zа-яё]+", " ", str(value or "").casefold())
+    stop = {"ооо", "оао", "ао", "ип", "мбдоу", "мбоу", "краевое", "муниципальное"}
+    return " ".join(part for part in text.split() if part and part not in stop)
+
+
+def _merge_profile(source, target, actor):
+    source_profile, _ = ClientCRMProfile.objects.get_or_create(client=source)
+    target_profile, _ = ClientCRMProfile.objects.get_or_create(client=target)
+
+    if source_profile.onec_ref and target_profile.onec_ref and source_profile.onec_ref != target_profile.onec_ref:
+        raise ValueError("Нельзя объединить две разные карточки, уже связанные с 1С")
+    if source_profile.merged_into_id:
+        raise ValueError("Исходная карточка уже объединена")
+
+    for field in ("middle_name", "birth_date", "legal_name", "kpp", "ogrn", "responsible", "manager", "notes"):
+        source_value = getattr(source_profile, field)
+        target_value = getattr(target_profile, field)
+        if source_value and not target_value:
+            setattr(target_profile, field, source_value)
+    target_profile.save()
+
+    source_profile.merged_into = target
+    source_profile.merged_at = timezone.now()
+    source_profile.merged_by = actor
+    source_profile.save(update_fields=["merged_into", "merged_at", "merged_by", "updated_at"])
+
+
+def _merge_contacts(source, target):
+    for contact in ClientContact.objects.filter(client=source).order_by("id"):
+        target_contacts = ClientContact.objects.filter(
+            client=target,
+            kind=contact.kind,
+        )
+        existing = None
+        if contact.match_value:
+            existing = target_contacts.filter(
+                match_value=contact.match_value,
+            ).first()
+        if existing is None:
+            existing = target_contacts.filter(value=contact.value).first()
+
+        if existing:
+            sources = list(existing.sources or [])
+            for value in contact.sources or []:
+                if value not in sources:
+                    sources.append(value)
+            changed = False
+            if sources != (existing.sources or []):
+                existing.sources = sources
+                changed = True
+            if contact.is_primary and not existing.is_primary:
+                existing.is_primary = True
+                changed = True
+            if not existing.match_value and contact.match_value:
+                existing.match_value = contact.match_value
+                changed = True
+            if not existing.label and contact.label:
+                existing.label = contact.label
+                changed = True
+            if changed:
+                existing.save()
+            contact.delete()
+        else:
+            contact.client = target
+            contact.save(update_fields=["client", "updated_at"])
+
+
+def _merge_company_link_metadata(existing, source_link):
+    changed = False
+    roles = list(existing.roles or [])
+    for role in source_link.roles or []:
+        if role not in roles:
+            roles.append(role)
+    if roles != (existing.roles or []):
+        existing.roles = roles
+        changed = True
+    if source_link.is_primary and not existing.is_primary:
+        existing.is_primary = True
+        changed = True
+    if not existing.position and source_link.position:
+        existing.position = source_link.position
+        changed = True
+    if not existing.source_reference and source_link.source_reference:
+        existing.source_reference = source_link.source_reference
+        changed = True
+    if source_link.automatic and not existing.automatic:
+        existing.automatic = True
+        changed = True
+    if (
+        existing.source == ClientCompanyLink.SOURCE_MANUAL
+        and source_link.source != ClientCompanyLink.SOURCE_MANUAL
+    ):
+        existing.source = source_link.source
+        changed = True
+    if changed:
+        existing.save()
+
+
+def _merge_company_links(source, target):
+    for link in list(ClientCompanyLink.objects.filter(company=source).select_related("person")):
+        if link.person_id == target.id:
+            link.delete()
+            continue
+        merged, created = ClientCompanyLink.objects.get_or_create(
+            company=target,
+            person=link.person,
+            defaults={
+                "position": link.position,
+                "roles": link.roles,
+                "is_primary": link.is_primary,
+                "source": link.source,
+                "source_reference": link.source_reference,
+                "automatic": link.automatic,
+            },
+        )
+        if not created:
+            _merge_company_link_metadata(merged, link)
+        link.delete()
+
+    for link in list(ClientCompanyLink.objects.filter(person=source).select_related("company")):
+        if link.company_id == target.id:
+            link.delete()
+            continue
+        merged, created = ClientCompanyLink.objects.get_or_create(
+            company=link.company,
+            person=target,
+            defaults={
+                "position": link.position,
+                "roles": link.roles,
+                "is_primary": link.is_primary,
+                "source": link.source,
+                "source_reference": link.source_reference,
+                "automatic": link.automatic,
+            },
+        )
+        if not created:
+            _merge_company_link_metadata(merged, link)
+        link.delete()
+
+
+def _merge_staff_access(source, target):
+    for access in ClientAccess.objects.filter(client=source).select_related("user"):
+        existing = ClientAccess.objects.filter(client=target, user=access.user).first()
+        if existing:
+            if existing.role == "viewer" and access.role == "editor":
+                existing.role = "editor"
+            if not existing.phone and access.phone:
+                existing.phone = access.phone
+            existing.save(update_fields=["role", "phone"])
+            access.delete()
+        else:
+            access.client = target
+            access.save(update_fields=["client"])
+
+
+def _generic_relations(source, target):
+    special_models = {
+        ClientCRMProfile,
+        ClientContact,
+        ClientCompanyLink,
+        ClientImportCandidate,
+        ClientAccess,
+    }
+    relations = list(Client._meta.related_objects)
+    # Move objects first because some reward links validate that pool.client
+    # and link.client are the same client.
+    relations.sort(key=lambda rel: 0 if rel.related_model.__name__ == "Pool" else 1)
+
+    moved = {}
+    for rel in relations:
+        model = rel.related_model
+        if model in special_models:
+            continue
+        if rel.many_to_many:
+            continue
+        field = rel.field
+        if rel.one_to_one:
+            source_obj = model.objects.filter(**{field.name: source}).first()
+            if not source_obj:
+                continue
+            if model.objects.filter(**{field.name: target}).exists():
+                raise ValueError(
+                    f"Нельзя автоматически объединить связь {model._meta.verbose_name}"
+                )
+            setattr(source_obj, field.name, target)
+            source_obj.save(update_fields=[field.name])
+            moved[model.__name__] = moved.get(model.__name__, 0) + 1
+            continue
+
+        count = model.objects.filter(**{field.name: source}).update(**{field.name: target})
+        if count:
+            moved[model.__name__] = moved.get(model.__name__, 0) + count
+    return moved
+
+
+@transaction.atomic
+def merge_clients(source_id, target_id, *, organization_id, actor=None):
+    if not organization_id:
+        raise ValueError("Организация для объединения не указана")
+    if source_id == target_id:
+        raise ValueError("Нельзя объединить карточку саму с собой")
+
+    organization = Organization.objects.select_for_update().get(pk=organization_id)
+    if ClientImportRun.objects.filter(
+        organization=organization,
+        status__in=[
+            ClientImportRun.STATUS_PENDING,
+            ClientImportRun.STATUS_RUNNING,
+            ClientImportRun.STATUS_APPLYING,
+        ],
+    ).exists():
+        raise ValueError(
+            "Дождитесь завершения обновления или импорта клиентов перед объединением."
+        )
+
+    locked = {
+        item.pk: item
+        for item in Client.objects.select_for_update()
+        .filter(
+            pk__in=[source_id, target_id],
+            organization_id=organization_id,
+        )
+        .select_related("organization")
+    }
+    source = locked.get(source_id)
+    target = locked.get(target_id)
+    if not source or not target:
+        raise ValueError("Карточка клиента не найдена")
+    if source.organization_id != target.organization_id:
+        raise ValueError("Клиенты относятся к разным организациям")
+
+    source_profile = ClientCRMProfile.objects.filter(client=source).first()
+    target_profile = ClientCRMProfile.objects.filter(client=target).first()
+    if source_profile and source_profile.merged_into_id:
+        raise ValueError("Исходная карточка уже объединена")
+    if target_profile is None or not target_profile.onec_ref:
+        raise ValueError("Целевая карточка должна быть импортирована из 1С")
+    if target_profile.merged_into_id:
+        raise ValueError("Целевая карточка уже объединена с другой карточкой")
+    if source_profile and source_profile.onec_ref:
+        raise ValueError("Исходная карточка уже связана с 1С")
+    if source.user_id and target.user_id and source.user_id != target.user_id:
+        raise ValueError(
+            "У обеих карточек есть разные пользовательские аккаунты. Такое объединение нужно разобрать отдельно."
+        )
+
+    moved = _generic_relations(source, target)
+    _merge_staff_access(source, target)
+    _merge_contacts(source, target)
+    _merge_company_links(source, target)
+    for candidate in ClientImportCandidate.objects.select_for_update().filter(
+        matched_client=source
+    ):
+        if candidate.source_ref == target_profile.onec_ref:
+            candidate.matched_client = target
+            candidate.save(update_fields=["matched_client", "updated_at"])
+            continue
+        candidate.matched_client = None
+        update_fields = ["matched_client", "updated_at"]
+        if not candidate.applied_at:
+            candidate.status = ClientImportCandidate.STATUS_REVIEW
+            candidate.reason = (
+                "Старая карточка объединена; требуется повторное сопоставление."
+            )
+            update_fields.extend(["status", "reason"])
+        candidate.save(update_fields=update_fields)
+
+    changed = []
+    if not target.phone and source.phone:
+        target.phone = source.phone
+        changed.append("phone")
+    if not target.email and source.email:
+        target.email = source.email
+        changed.append("email")
+    if not target.inn and source.inn:
+        target.inn = source.inn
+        changed.append("inn")
+    if not target.user_id and source.user_id:
+        user_id = source.user_id
+        source.user_id = None
+        source.save(update_fields=["user"])
+        target.user_id = user_id
+        changed.append("user")
+    if changed:
+        target.save(update_fields=changed)
+
+    _merge_profile(source, target, actor)
+    return {
+        "source_id": source.id,
+        "target_id": target.id,
+        "moved": moved,
+    }
+
+
+def merge_suggestions(source, targets, limit=5):
+    source_name = _normalized_name(source.name or source.company_name)
+    source_phone = normalize_phone(source.phone)
+    scored = []
+    for target in targets:
+        target_name = _normalized_name(target.name or target.company_name)
+        score = SequenceMatcher(None, source_name, target_name).ratio() if source_name and target_name else 0.0
+        target_phone = normalize_phone(target.phone)
+        if source_phone and target_phone and source_phone == target_phone:
+            score = max(score, 0.95)
+        if source.client_type == target.client_type:
+            score += 0.03
+        score = min(score, 1.0)
+        scored.append((score, target))
+    scored.sort(key=lambda item: (-item[0], item[1].name.casefold(), item[1].id))
+    return [
+        {"client": target, "score": round(score * 100)}
+        for score, target in scored[:limit]
+        if score >= 0.35
+    ]

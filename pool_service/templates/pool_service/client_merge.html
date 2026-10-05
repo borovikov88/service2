@@ -1,0 +1,296 @@
+{% extends 'pool_service/base.html' %}
+{% block title %}Объединение клиентов
+{% if selected_source %}
+<script>
+(function () {
+  const root = document.getElementById("merge-live-search");
+  const input = document.getElementById("merge-live-search-input");
+  const form = document.getElementById("merge-live-search-form");
+  const results = document.getElementById("merge-live-results");
+  const status = document.getElementById("merge-live-search-status");
+  if (!root || !input || !results || !status) return;
+
+  let timer = null;
+  let controller = null;
+  const searchUrl = root.dataset.searchUrl;
+  const sourceId = root.dataset.sourceId;
+  const sourceName = root.dataset.sourceName || "";
+  const csrf = root.dataset.csrf || "";
+  const mergeBlocked = root.dataset.mergeBlocked === "1";
+
+  function updateUrl(query) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("source", sourceId);
+    if (query) url.searchParams.set("q", query);
+    else url.searchParams.delete("q");
+    window.history.replaceState({}, "", url);
+  }
+
+  function render(items) {
+    results.replaceChildren();
+    if (!items.length) {
+      const empty = document.createElement("div");
+      empty.className = "text-muted py-3";
+      empty.textContent = "По запросу ничего не найдено.";
+      results.appendChild(empty);
+      return;
+    }
+    items.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "border rounded-3 p-3 d-flex flex-wrap justify-content-between align-items-center gap-2";
+
+      const info = document.createElement("div");
+      const title = document.createElement("div");
+      title.className = "fw-semibold";
+      title.textContent = item.name || "";
+      const meta = document.createElement("div");
+      meta.className = "small text-muted";
+      const parts = [];
+      if (item.phone) parts.push(item.phone);
+      if (item.inn) parts.push("ИНН " + item.inn);
+      meta.textContent = parts.join(" · ");
+      info.append(title, meta);
+
+      const mergeForm = document.createElement("form");
+      mergeForm.method = "post";
+      mergeForm.addEventListener("submit", function (event) {
+        if (!window.confirm("Объединить старую карточку «" + sourceName + "» с «" + (item.name || "") + "»?")) {
+          event.preventDefault();
+        }
+      });
+
+      const csrfInput = document.createElement("input");
+      csrfInput.type = "hidden";
+      csrfInput.name = "csrfmiddlewaretoken";
+      csrfInput.value = csrf;
+      const sourceInput = document.createElement("input");
+      sourceInput.type = "hidden";
+      sourceInput.name = "source_id";
+      sourceInput.value = sourceId;
+      const targetInput = document.createElement("input");
+      targetInput.type = "hidden";
+      targetInput.name = "target_id";
+      targetInput.value = String(item.id);
+      const button = document.createElement("button");
+      button.type = "submit";
+      button.className = "btn btn-primary btn-sm";
+      button.textContent = "Объединить";
+      button.disabled = mergeBlocked;
+      mergeForm.append(csrfInput, sourceInput, targetInput, button);
+
+      row.append(info, mergeForm);
+      results.appendChild(row);
+    });
+  }
+
+  async function search() {
+    const query = input.value.trim();
+    updateUrl(query);
+    if (controller) controller.abort();
+    if (query.length < 2) {
+      status.textContent = query ? "Введите ещё хотя бы один символ." : "";
+      results.replaceChildren();
+      return;
+    }
+
+    controller = new AbortController();
+    status.textContent = "Ищу…";
+    try {
+      const url = new URL(searchUrl, window.location.origin);
+      url.searchParams.set("q", query);
+      const response = await fetch(url, {
+        headers: {"X-Requested-With": "XMLHttpRequest"},
+        signal: controller.signal
+      });
+      if (!response.ok) throw new Error("search failed");
+      const payload = await response.json();
+      render(payload.results || []);
+      status.textContent = "";
+    } catch (error) {
+      if (error.name === "AbortError") return;
+      status.textContent = "Не удалось выполнить поиск.";
+    }
+  }
+
+  input.addEventListener("input", function () {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(search, 250);
+  });
+  form.addEventListener("submit", function (event) {
+    event.preventDefault();
+    window.clearTimeout(timer);
+    search();
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}
+{% block content %}
+{% include "pool_service/_admin_workspace_styles.html" %}
+<div class="admin-desktop">
+  <div class="admin-card card card-soft p-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+      <div>
+        <h4 class="fw-bold mb-1">Объединение клиентов</h4>
+        <div class="text-muted">Старая карточка Service2 остаётся архивной, а её объекты и история переносятся на выбранного клиента из 1С.</div>
+      </div>
+      <div class="d-flex gap-2">
+        <a class="btn btn-outline-primary" href="{% url 'client_onec_import' %}">
+          <i class="bi bi-database-down me-1"></i>Импорт из 1С
+        </a>
+        <a class="btn btn-outline-secondary" href="{% url 'clients_list' %}">
+          <i class="bi bi-arrow-left me-1"></i>К клиентам
+        </a>
+      </div>
+    </div>
+
+    {% if merge_blocked %}
+      <div class="alert alert-warning mb-4">
+        Сейчас выполняется обновление или импорт клиентов. Объединение станет доступно после завершения операции.
+      </div>
+    {% endif %}
+    {% if not canonical_count %}
+      <div class="alert alert-info mb-4">
+        Пока нет импортированных карточек 1С. Сначала импортируйте готовых клиентов, затем здесь можно будет объединить старые карточки с объектами.
+      </div>
+    {% endif %}
+
+    <div class="row g-4">
+      <div class="col-12 col-xl-4">
+        <div class="border rounded-3 p-3">
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <div class="fw-semibold">Старые карточки с объектами</div>
+            <span class="badge text-bg-secondary">{{ legacy_clients|length }}</span>
+          </div>
+
+          <div class="d-grid gap-2" style="max-height: 70vh; overflow:auto;">
+            {% for client in legacy_clients %}
+              <a href="?source={{ client.id }}" class="text-decoration-none text-reset">
+                <div class="border rounded-3 p-3 {% if selected_source and selected_source.id == client.id %}border-primary{% endif %}">
+                  <div class="fw-semibold">{{ client.name }}</div>
+                  <div class="small text-muted mt-1">
+                    Объектов: {{ client.pool_count }}
+                    {% if client.phone %} · {{ client.phone }}{% endif %}
+                  </div>
+                  {% for address in client.object_preview %}
+                    <div class="small mt-1"><i class="bi bi-geo-alt me-1"></i>{{ address }}</div>
+                  {% endfor %}
+                </div>
+              </a>
+            {% empty %}
+              <div class="text-muted py-4 text-center">
+                Старых карточек с объектами для объединения нет.
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      <div class="col-12 col-xl-8">
+        {% if selected_source %}
+          <div class="border rounded-3 p-4 mb-4">
+            <div class="text-muted small">Старая карточка Service2</div>
+            <h5 class="fw-bold mb-1">{{ selected_source.name }}</h5>
+            <div class="small text-muted">
+              {% if selected_source.phone %}{{ selected_source.phone }}{% endif %}
+              {% if selected_source.email %} · {{ selected_source.email }}{% endif %}
+            </div>
+
+            <div class="mt-3">
+              <div class="fw-semibold mb-2">Объекты</div>
+              {% for pool in selected_pools %}
+                <div class="border rounded-2 px-3 py-2 mb-2">
+                  <i class="bi bi-geo-alt me-1"></i>{{ pool.address }}
+                  <span class="text-muted small ms-2">{{ pool.get_object_type_display }}</span>
+                </div>
+              {% empty %}
+                <div class="text-muted">Нет активных объектов.</div>
+              {% endfor %}
+            </div>
+          </div>
+
+          {% if suggestions %}
+            <div class="mb-4">
+              <div class="fw-semibold mb-2">Предполагаемые совпадения</div>
+              <div class="d-grid gap-2">
+                {% for item in suggestions %}
+                  <div class="border rounded-3 p-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
+                    <div>
+                      <div class="fw-semibold">{{ item.client.name }}</div>
+                      <div class="small text-muted">
+                        Совпадение: {{ item.score }}%
+                        {% if item.client.phone %} · {{ item.client.phone }}{% endif %}
+                        {% if item.client.inn %} · ИНН {{ item.client.inn }}{% endif %}
+                      </div>
+                    </div>
+                    <form method="post" onsubmit="return confirm('Объединить старую карточку «{{ selected_source.name|escapejs }}» с «{{ item.client.name|escapejs }}»?');">
+                      {% csrf_token %}
+                      <input type="hidden" name="source_id" value="{{ selected_source.id }}">
+                      <input type="hidden" name="target_id" value="{{ item.client.id }}">
+                      <button class="btn btn-primary btn-sm" type="submit" {% if merge_blocked %}disabled{% endif %}>Объединить</button>
+                    </form>
+                  </div>
+                {% endfor %}
+              </div>
+            </div>
+          {% endif %}
+
+          <div
+            class="border rounded-3 p-3"
+            id="merge-live-search"
+            data-search-url="{% url 'client_merge_search' %}"
+            data-source-id="{{ selected_source.id }}"
+            data-source-name="{{ selected_source.name|escape }}"
+            data-csrf="{{ csrf_token }}"
+            data-merge-blocked="{% if merge_blocked %}1{% else %}0{% endif %}"
+          >
+            <div class="fw-semibold mb-2">Найти другого клиента из 1С</div>
+            <form method="get" class="mb-3" id="merge-live-search-form">
+              <input type="hidden" name="source" value="{{ selected_source.id }}">
+              <input
+                class="form-control"
+                type="search"
+                name="q"
+                id="merge-live-search-input"
+                value="{{ q }}"
+                placeholder="Название, телефон или ИНН"
+                autocomplete="off"
+              >
+              <noscript>
+                <button class="btn btn-outline-primary mt-2" type="submit">Найти</button>
+              </noscript>
+            </form>
+
+            <div class="small text-muted mb-2" id="merge-live-search-status" aria-live="polite"></div>
+            <div class="d-grid gap-2" id="merge-live-results">
+              {% for target in target_results %}
+                <div class="border rounded-3 p-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
+                  <div>
+                    <div class="fw-semibold">{{ target.name }}</div>
+                    <div class="small text-muted">
+                      {% if target.phone %}{{ target.phone }}{% endif %}
+                      {% if target.inn %} · ИНН {{ target.inn }}{% endif %}
+                    </div>
+                  </div>
+                  <form method="post" onsubmit="return confirm('Объединить старую карточку «{{ selected_source.name|escapejs }}» с «{{ target.name|escapejs }}»?');">
+                    {% csrf_token %}
+                    <input type="hidden" name="source_id" value="{{ selected_source.id }}">
+                    <input type="hidden" name="target_id" value="{{ target.id }}">
+                    <button class="btn btn-primary btn-sm" type="submit" {% if merge_blocked %}disabled{% endif %}>Объединить</button>
+                  </form>
+                </div>
+              {% empty %}
+                {% if q %}<div class="text-muted py-3">По запросу ничего не найдено.</div>{% endif %}
+              {% endfor %}
+            </div>
+          </div>
+        {% else %}
+          <div class="border rounded-3 p-5 text-center text-muted">
+            Выберите слева старую карточку с объектом. Система предложит похожих клиентов из 1С, но объединение выполняется только после вашего подтверждения.
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

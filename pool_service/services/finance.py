@@ -6,6 +6,7 @@ from django.contrib.auth.models import User
 from django.db.models import Q
 from django.urls import reverse
 
+from pool_service.client_queries import active_clients
 from pool_service.models import (
     AccountableTransaction,
     CashOperation,
@@ -441,7 +442,7 @@ def find_client_by_name(organization, name):
     normalized_name = " ".join((name or "").split()).casefold()
     if not normalized_name:
         return None
-    for client in Client.objects.filter(organization=organization).only("id", "name", "organization_id"):
+    for client in active_clients(Client.objects.filter(organization=organization)).only("id", "name", "organization_id"):
         if " ".join(client.name.split()).casefold() == normalized_name:
             return client
     return None

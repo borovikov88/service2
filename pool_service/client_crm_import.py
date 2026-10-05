@@ -11,7 +11,7 @@ import sys
 import threading
 
 from django.conf import settings
-from django.db import transaction
+from django.db import models, transaction
 from django.utils import timezone
 
 from .models import Client, Organization
@@ -159,6 +159,52 @@ def _source_kind(row):
     return ClientImportCandidate.KIND_PRIVATE
 
 
+def _effective_kind(source_kind, resolution):
+    if resolution == ClientImportCandidate.RESOLUTION_LEGAL:
+        return ClientImportCandidate.KIND_LEGAL
+    if resolution == ClientImportCandidate.RESOLUTION_PRIVATE:
+        return ClientImportCandidate.KIND_PRIVATE
+    if resolution == ClientImportCandidate.RESOLUTION_IP:
+        return ClientImportCandidate.KIND_IP
+    return source_kind
+
+
+def _refresh_latest_run_counts(organization):
+    counts = {
+        item["status"]: item["count"]
+        for item in ClientImportCandidate.objects.filter(
+            organization=organization
+        ).values("status").annotate(count=models.Count("id"))
+    }
+    latest = (
+        ClientImportRun.objects.filter(
+            organization=organization,
+            status=ClientImportRun.STATUS_SUCCESS,
+        )
+        .order_by("-requested_at", "-id")
+        .first()
+    )
+    if latest:
+        latest.ready_count = counts.get(ClientImportCandidate.STATUS_READY, 0)
+        latest.review_count = counts.get(ClientImportCandidate.STATUS_REVIEW, 0)
+        latest.duplicate_count = counts.get(ClientImportCandidate.STATUS_DUPLICATE, 0)
+        latest.invalid_count = (
+            counts.get(ClientImportCandidate.STATUS_INVALID, 0)
+            + counts.get(ClientImportCandidate.STATUS_SKIPPED, 0)
+        )
+        latest.imported_count = counts.get(ClientImportCandidate.STATUS_IMPORTED, 0)
+        latest.save(
+            update_fields=[
+                "ready_count",
+                "review_count",
+                "duplicate_count",
+                "invalid_count",
+                "imported_count",
+                "updated_at",
+            ]
+        )
+
+
 def _candidate_contacts(row, extra_rows):
     phones = []
     emails = []
@@ -188,13 +234,24 @@ def _candidate_contacts(row, extra_rows):
 
 
 def _match_clients(organization, source_kind, inn, phones, source_ref=""):
-    matches = Client.objects.filter(organization=organization)
+    matches = Client.objects.filter(organization=organization).filter(
+        models.Q(crm_profile__isnull=True)
+        | models.Q(crm_profile__merged_into__isnull=True)
+    )
     if source_ref:
         profile = ClientCRMProfile.objects.filter(onec_ref=source_ref).select_related("client").first()
         if profile and profile.client.organization_id == organization.id:
             return [profile.client], "Ref_Key 1С"
+
+    expected_client_type = (
+        "private"
+        if source_kind == ClientImportCandidate.KIND_PRIVATE
+        else "legal"
+    )
+    typed_matches = matches.filter(client_type=expected_client_type)
+
     if source_kind in {ClientImportCandidate.KIND_LEGAL, ClientImportCandidate.KIND_IP} and inn:
-        by_inn = list(matches.filter(client_type="legal", inn=inn)[:3])
+        by_inn = list(typed_matches.filter(inn=inn)[:3])
         if by_inn:
             return by_inn, "ИНН"
     phone_values = {item["match"] for item in phones if item.get("match")}
@@ -203,14 +260,15 @@ def _match_clients(organization, source_kind, inn, phones, source_ref=""):
             kind=ClientContact.KIND_PHONE,
             match_value__in=phone_values,
             client__organization=organization,
+            client__client_type=expected_client_type,
         ).values_list("client_id", flat=True)
         legacy_ids = []
-        for client in matches.exclude(phone__isnull=True).exclude(phone="").only("id", "phone"):
+        for client in typed_matches.exclude(phone__isnull=True).exclude(phone="").only("id", "phone"):
             if normalize_phone(client.phone) in phone_values:
                 legacy_ids.append(client.id)
         ids = set(contact_ids) | set(legacy_ids)
         if ids:
-            return list(matches.filter(id__in=ids)[:4]), "телефон"
+            return list(typed_matches.filter(id__in=ids)[:4]), "телефон"
     return [], ""
 
 
@@ -222,7 +280,10 @@ def _update_run_progress(run, *, processed_rows, totals):
         ready_count=totals.get(ClientImportCandidate.STATUS_READY, 0),
         review_count=totals.get(ClientImportCandidate.STATUS_REVIEW, 0),
         duplicate_count=totals.get(ClientImportCandidate.STATUS_DUPLICATE, 0),
-        invalid_count=totals.get(ClientImportCandidate.STATUS_INVALID, 0),
+        invalid_count=(
+            totals.get(ClientImportCandidate.STATUS_INVALID, 0)
+            + totals.get(ClientImportCandidate.STATUS_SKIPPED, 0)
+        ),
         imported_count=totals.get(ClientImportCandidate.STATUS_IMPORTED, 0),
         updated_at=timezone.now(),
     )
@@ -254,9 +315,30 @@ def scan_onec_clients(run=None):
         ref = str(row.get("Ref_Key") or "")
         name = str(row.get("Description") or row.get("НаименованиеПолное") or "").strip()
         source_kind = _source_kind(row)
+        existing = ClientImportCandidate.objects.filter(
+            organization=organization,
+            source_ref=ref,
+        ).only("resolution", "applied_at").first()
+        resolution = (
+            existing.resolution
+            if existing is not None
+            else ClientImportCandidate.RESOLUTION_AUTO
+        )
+        effective_kind = _effective_kind(source_kind, resolution)
         inn = str(row.get("ИНН") or "").strip()
         phones, emails = _candidate_contacts(row, contacts_by_ref.get(ref, []))
-        matches, match_reason = _match_clients(organization, source_kind, inn, phones, ref)
+        if (
+            resolution != ClientImportCandidate.RESOLUTION_AUTO
+            and not (existing and existing.applied_at)
+        ):
+            # Manual classification means "create/import this canonical 1C
+            # client as classified". Legacy Service2 cards are merged later
+            # through the explicit merge workspace, never guessed here.
+            matches, match_reason = [], ""
+        else:
+            matches, match_reason = _match_clients(
+                organization, effective_kind, inn, phones, ref
+            )
 
         status = ClientImportCandidate.STATUS_READY
         reason = ""
@@ -272,9 +354,23 @@ def scan_onec_clients(run=None):
             reason = f"Несколько карточек Service2 совпали по: {match_reason}"
         elif len(matches) == 1:
             matched_client = matches[0]
-        elif source_kind == ClientImportCandidate.KIND_LEGAL and not inn:
+        elif (
+            effective_kind == ClientImportCandidate.KIND_LEGAL
+            and not inn
+            and resolution == ClientImportCandidate.RESOLUTION_AUTO
+        ):
             status = ClientImportCandidate.STATUS_REVIEW
             reason = "У юридического лица не заполнен ИНН"
+
+        if resolution == ClientImportCandidate.RESOLUTION_SKIP:
+            status = ClientImportCandidate.STATUS_SKIPPED
+            reason = "Не импортировать — решение пользователя"
+        elif resolution != ClientImportCandidate.RESOLUTION_AUTO and status not in {
+            ClientImportCandidate.STATUS_INVALID,
+            ClientImportCandidate.STATUS_DUPLICATE,
+        }:
+            status = ClientImportCandidate.STATUS_READY
+            reason = "Тип подтверждён пользователем"
 
         payload = {
             "phones": phones,
@@ -302,7 +398,7 @@ def scan_onec_clients(run=None):
                 "matched_client": matched_client,
             },
         )
-        if candidate.applied_at and matched_client and candidate.status == ClientImportCandidate.STATUS_READY:
+        if candidate.applied_at:
             candidate.status = ClientImportCandidate.STATUS_IMPORTED
             candidate.save(update_fields=["status", "updated_at"])
 
@@ -404,6 +500,7 @@ def request_client_import_scan(requested_by=None):
             status__in=[
                 ClientImportRun.STATUS_PENDING,
                 ClientImportRun.STATUS_RUNNING,
+                ClientImportRun.STATUS_APPLYING,
             ],
             updated_at__lt=stale_before,
         ).update(
@@ -420,6 +517,7 @@ def request_client_import_scan(requested_by=None):
                 status__in=[
                     ClientImportRun.STATUS_PENDING,
                     ClientImportRun.STATUS_RUNNING,
+                    ClientImportRun.STATUS_APPLYING,
                 ],
             )
             .order_by("-requested_at", "-id")
@@ -438,6 +536,116 @@ def request_client_import_scan(requested_by=None):
         ClientImportRun.objects.filter(pk=run.pk).update(
             status=ClientImportRun.STATUS_FAILED,
             error="Не удалось запустить фоновый процесс импорта",
+            finished_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+        run.refresh_from_db()
+        return run, False
+    return run, True
+
+
+def _reap_client_apply_worker(process, run_id):
+    try:
+        return_code = process.wait()
+        if return_code:
+            logger.error(
+                "1C client apply worker exited with code %s for run_id=%s",
+                return_code,
+                run_id,
+            )
+            ClientImportRun.objects.filter(
+                pk=run_id,
+                status=ClientImportRun.STATUS_APPLYING,
+            ).update(
+                status=ClientImportRun.STATUS_FAILED,
+                error="Фоновый импорт клиентов завершился с ошибкой",
+                finished_at=timezone.now(),
+                updated_at=timezone.now(),
+            )
+    except Exception:
+        logger.exception("Failed while reaping 1C client apply worker")
+
+
+def start_client_apply_worker(run_id):
+    base_dir = str(settings.BASE_DIR)
+    worker_script = os.path.join(base_dir, "scripts", "run_client_apply_worker.sh")
+    bash = shutil.which("bash")
+    if not bash or not os.path.isfile(worker_script):
+        logger.error("1C client apply worker launcher is unavailable")
+        return False
+
+    env = os.environ.copy()
+    env["SERVICE2_PYTHON"] = _worker_python_executable(base_dir)
+    try:
+        process = subprocess.Popen(
+            [bash, worker_script, str(run_id)],
+            cwd=base_dir,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except OSError:
+        logger.exception("Failed to start 1C client apply worker")
+        return False
+
+    threading.Thread(
+        target=_reap_client_apply_worker,
+        args=(process, run_id),
+        daemon=True,
+        name="service2-client-apply-reaper",
+    ).start()
+    return True
+
+
+def request_client_apply():
+    organization = _target_organization()
+    with transaction.atomic():
+        organization = Organization.objects.select_for_update().get(pk=organization.pk)
+        run = (
+            ClientImportRun.objects.select_for_update()
+            .filter(organization=organization)
+            .order_by("-requested_at", "-id")
+            .first()
+        )
+        if run is None:
+            raise ValueError("Импорт можно запустить только после успешного обновления из 1С")
+        if run.status == ClientImportRun.STATUS_APPLYING:
+            return run, False
+        if run.status != ClientImportRun.STATUS_SUCCESS:
+            raise ValueError("Импорт можно запустить только после успешного обновления из 1С")
+
+        ready_count = ClientImportCandidate.objects.filter(
+            organization=organization,
+            status=ClientImportCandidate.STATUS_READY,
+        ).count()
+        if not ready_count:
+            return run, False
+
+        run.status = ClientImportRun.STATUS_APPLYING
+        run.error = ""
+        run.total_rows = ready_count
+        run.processed_rows = 0
+        run.started_at = timezone.now()
+        run.finished_at = None
+        run.save(
+            update_fields=[
+                "status",
+                "error",
+                "total_rows",
+                "processed_rows",
+                "started_at",
+                "finished_at",
+                "updated_at",
+            ]
+        )
+
+    if not start_client_apply_worker(run.pk):
+        ClientImportRun.objects.filter(pk=run.pk).update(
+            status=ClientImportRun.STATUS_FAILED,
+            error="Не удалось запустить фоновый импорт клиентов",
             finished_at=timezone.now(),
             updated_at=timezone.now(),
         )
@@ -479,7 +687,10 @@ def process_client_import_run(run_id):
             ready_count=result.get(ClientImportCandidate.STATUS_READY, 0),
             review_count=result.get(ClientImportCandidate.STATUS_REVIEW, 0),
             duplicate_count=result.get(ClientImportCandidate.STATUS_DUPLICATE, 0),
-            invalid_count=result.get(ClientImportCandidate.STATUS_INVALID, 0),
+            invalid_count=(
+                result.get(ClientImportCandidate.STATUS_INVALID, 0)
+                + result.get(ClientImportCandidate.STATUS_SKIPPED, 0)
+            ),
             imported_count=result.get(ClientImportCandidate.STATUS_IMPORTED, 0),
             error="",
             finished_at=timezone.now(),
@@ -605,9 +816,10 @@ def apply_candidate(candidate):
     }:
         raise ValueError("Карточка требует ручной проверки")
 
+    kind = candidate.effective_kind
     client = candidate.matched_client
     if client is None:
-        client_type = "private" if candidate.source_kind == ClientImportCandidate.KIND_PRIVATE else "legal"
+        client_type = "private" if kind == ClientImportCandidate.KIND_PRIVATE else "legal"
         last_name = first_name = middle_name = ""
         if client_type == "private":
             last_name, first_name, middle_name = _split_person_name(candidate.name)
@@ -634,9 +846,9 @@ def apply_candidate(candidate):
     profile, _ = ClientCRMProfile.objects.get_or_create(client=client)
     profile.legal_form = (
         ClientCRMProfile.LEGAL_FORM_IP
-        if candidate.source_kind == ClientImportCandidate.KIND_IP
+        if kind == ClientImportCandidate.KIND_IP
         else ClientCRMProfile.LEGAL_FORM_ENTITY
-        if candidate.source_kind == ClientImportCandidate.KIND_LEGAL
+        if kind == ClientImportCandidate.KIND_LEGAL
         else ClientCRMProfile.LEGAL_FORM_NONE
     )
     profile.middle_name = profile.middle_name or (_split_person_name(candidate.name)[2] if client.client_type == "private" else "")
@@ -651,7 +863,7 @@ def apply_candidate(candidate):
     profile.save()
     _sync_contacts(client, candidate)
 
-    if candidate.source_kind == ClientImportCandidate.KIND_IP:
+    if kind == ClientImportCandidate.KIND_IP:
         _find_or_create_ip_person(client, candidate)
 
     candidate.matched_client = client
@@ -662,14 +874,112 @@ def apply_candidate(candidate):
     return client
 
 
-def apply_ready_candidates(organization=None):
-    organization = organization or _target_organization()
-    candidates = ClientImportCandidate.objects.filter(
+@transaction.atomic
+def resolve_import_candidate(candidate_id, resolution, resolved_by=None):
+    allowed = {
+        ClientImportCandidate.RESOLUTION_AUTO,
+        ClientImportCandidate.RESOLUTION_LEGAL,
+        ClientImportCandidate.RESOLUTION_PRIVATE,
+        ClientImportCandidate.RESOLUTION_IP,
+        ClientImportCandidate.RESOLUTION_SKIP,
+    }
+    if resolution not in allowed:
+        raise ValueError("Недопустимое решение")
+
+    organization_id = ClientImportCandidate.objects.values_list(
+        "organization_id", flat=True
+    ).get(pk=candidate_id)
+    organization = Organization.objects.select_for_update().get(pk=organization_id)
+    if ClientImportRun.objects.filter(
         organization=organization,
-        status=ClientImportCandidate.STATUS_READY,
-    ).order_by("id")
+        status__in=[
+            ClientImportRun.STATUS_PENDING,
+            ClientImportRun.STATUS_RUNNING,
+            ClientImportRun.STATUS_APPLYING,
+        ],
+    ).exists():
+        raise ValueError(
+            "Дождитесь завершения текущего обновления или импорта клиентов."
+        )
+
+    candidate = (
+        ClientImportCandidate.objects.select_for_update()
+        .select_related("organization")
+        .get(pk=candidate_id, organization=organization)
+    )
+    if candidate.applied_at:
+        raise ValueError("Импортированную карточку нельзя изменить")
+
+    manual_type_resolutions = {
+        ClientImportCandidate.RESOLUTION_LEGAL,
+        ClientImportCandidate.RESOLUTION_PRIVATE,
+        ClientImportCandidate.RESOLUTION_IP,
+    }
+    if candidate.status == ClientImportCandidate.STATUS_DUPLICATE and resolution in manual_type_resolutions:
+        raise ValueError(
+            "Для возможного дубля сначала нужно выбрать существующую карточку клиента."
+        )
+    if candidate.status == ClientImportCandidate.STATUS_INVALID and resolution in manual_type_resolutions:
+        raise ValueError(
+            "Некорректную системную карточку нельзя импортировать как обычного клиента."
+        )
+
+    candidate.resolution = resolution
+    if resolution in manual_type_resolutions:
+        # A manual type decision invalidates any earlier automatic match,
+        # especially matches created before phone matching was type-scoped.
+        candidate.matched_client = None
+    candidate.resolved_by = resolved_by
+    candidate.resolved_at = timezone.now() if resolution != ClientImportCandidate.RESOLUTION_AUTO else None
+    candidate.resolution_note = (
+        "Ручное решение"
+        if resolution != ClientImportCandidate.RESOLUTION_AUTO
+        else ""
+    )
+
+    if resolution == ClientImportCandidate.RESOLUTION_SKIP:
+        candidate.status = ClientImportCandidate.STATUS_SKIPPED
+        candidate.reason = "Не импортировать — решение пользователя"
+    elif resolution == ClientImportCandidate.RESOLUTION_AUTO:
+        # A fresh scan will recalculate automatic diagnostics. Until then keep
+        # the row visible for review rather than silently marking it ready.
+        candidate.status = ClientImportCandidate.STATUS_REVIEW
+        candidate.reason = "Ручное решение сброшено; обновите данные из 1С"
+    else:
+        candidate.status = ClientImportCandidate.STATUS_READY
+        candidate.reason = "Тип подтверждён пользователем"
+
+    candidate.save(
+        update_fields=[
+            "resolution",
+            "matched_client",
+            "resolution_note",
+            "resolved_by",
+            "resolved_at",
+            "status",
+            "reason",
+            "updated_at",
+        ]
+    )
+    _refresh_latest_run_counts(candidate.organization)
+    return candidate
+
+
+def apply_ready_candidates(organization=None, run=None):
+    organization = organization or _target_organization()
+    candidate_ids = list(
+        ClientImportCandidate.objects.filter(
+            organization=organization,
+            status=ClientImportCandidate.STATUS_READY,
+        )
+        .order_by("id")
+        .values_list("id", flat=True)
+    )
+    total = len(candidate_ids)
     result = {"imported": 0, "failed": 0}
-    for candidate in candidates.iterator():
+    processed = 0
+    for candidate_id in candidate_ids:
+        candidate = ClientImportCandidate.objects.get(pk=candidate_id)
         try:
             apply_candidate(candidate)
         except (ValueError, RuntimeError):
@@ -679,4 +989,64 @@ def apply_ready_candidates(organization=None):
             result["failed"] += 1
         else:
             result["imported"] += 1
+        processed += 1
+        if run is not None and (processed % 25 == 0 or processed == total):
+            ClientImportRun.objects.filter(
+                pk=run.pk,
+                status=ClientImportRun.STATUS_APPLYING,
+            ).update(
+                total_rows=total,
+                processed_rows=processed,
+                imported_count=result["imported"],
+                review_count=result["failed"],
+                updated_at=timezone.now(),
+            )
     return result
+
+
+def process_client_apply_run(run_id):
+    run = (
+        ClientImportRun.objects.select_related("organization")
+        .filter(pk=run_id, status=ClientImportRun.STATUS_APPLYING)
+        .first()
+    )
+    if run is None:
+        return ClientImportRun.objects.get(pk=run_id)
+
+    try:
+        result = apply_ready_candidates(run.organization, run=run)
+    except Exception as exc:
+        logger.exception("1C client apply failed for run_id=%s", run_id)
+        code = getattr(exc, "code", exc.__class__.__name__)
+        ClientImportRun.objects.filter(pk=run_id).update(
+            status=ClientImportRun.STATUS_FAILED,
+            error=f"Ошибка импорта клиентов: {str(code)[:400]}",
+            finished_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+    else:
+        counts = {
+            item["status"]: item["count"]
+            for item in ClientImportCandidate.objects.filter(
+                organization=run.organization
+            ).values("status").annotate(count=models.Count("id"))
+        }
+        ClientImportRun.objects.filter(pk=run_id).update(
+            status=ClientImportRun.STATUS_SUCCESS,
+            ready_count=counts.get(ClientImportCandidate.STATUS_READY, 0),
+            review_count=counts.get(ClientImportCandidate.STATUS_REVIEW, 0),
+            duplicate_count=counts.get(ClientImportCandidate.STATUS_DUPLICATE, 0),
+            invalid_count=(
+                counts.get(ClientImportCandidate.STATUS_INVALID, 0)
+                + counts.get(ClientImportCandidate.STATUS_SKIPPED, 0)
+            ),
+            imported_count=counts.get(ClientImportCandidate.STATUS_IMPORTED, 0),
+            error=(
+                f"Требуют проверки после импорта: {result['failed']}"
+                if result["failed"]
+                else ""
+            ),
+            finished_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+    return ClientImportRun.objects.get(pk=run_id)

@@ -8,6 +8,7 @@ from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from PIL import Image, UnidentifiedImageError
 
+from pool_service.client_queries import active_clients
 from pool_service.finance_imports.validators import (
     MAX_XLSX_SIZE,
     safe_original_filename,
@@ -303,9 +304,11 @@ class ClientPaymentForm(forms.ModelForm):
         client_id = cleaned.get("client_id")
         destination_query = (cleaned.get("destination_query") or "").strip()
         if client_id:
-            self.resolved_client = Client.objects.filter(
-                id=client_id,
-                organization=self.organization,
+            self.resolved_client = active_clients(
+                Client.objects.filter(
+                    id=client_id,
+                    organization=self.organization,
+                )
             ).first()
             if not self.resolved_client:
                 self.add_error("destination_query", "Клиент не найден.")
@@ -391,9 +394,11 @@ class CardTransferPaymentForm(forms.ModelForm):
         client_id = cleaned.get("client_id")
         destination_query = (cleaned.get("destination_query") or "").strip()
         if client_id:
-            self.resolved_client = Client.objects.filter(
-                id=client_id,
-                organization=self.organization,
+            self.resolved_client = active_clients(
+                Client.objects.filter(
+                    id=client_id,
+                    organization=self.organization,
+                )
             ).first()
             if not self.resolved_client:
                 self.add_error("destination_query", "Клиент не найден.")
