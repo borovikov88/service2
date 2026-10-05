@@ -207,6 +207,8 @@ def materialize_call_commitments(call_id):
             created_tasks.append(task)
 
     for task in created_tasks:
-        notify_task_assignment(task, [task.primary_responsible], added_by=None)
+        payload = task.payload_json if isinstance(task.payload_json, dict) else {}
+        if payload.get("actor") == ACTOR_EMPLOYEE:
+            notify_task_assignment(task, [task.primary_responsible], added_by=None)
 
     return created_tasks
