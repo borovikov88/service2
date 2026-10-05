@@ -1,9 +1,44 @@
 import time
+from datetime import timedelta
 
+from django.conf import settings
 from django.core.management.base import BaseCommand
+from django.utils import timezone
 
 from pool_service.communication_models import CallAnalysis
-from pool_service.services.call_ai import process_call_analysis
+from pool_service.services.call_ai import (
+    DEFAULT_MAX_ATTEMPTS,
+    PROCESSING_STALE_MINUTES,
+    process_call_analysis,
+)
+
+
+def recover_stale_requested_analyses():
+    stale_before = timezone.now() - timedelta(minutes=PROCESSING_STALE_MINUTES)
+    max_attempts = int(
+        getattr(settings, "OPENAI_CALL_MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS)
+    )
+    stale = CallAnalysis.objects.filter(
+        requested_at__isnull=False,
+        status=CallAnalysis.STATUS_PROCESSING,
+        processing_started_at__lt=stale_before,
+    )
+
+    failed = stale.filter(attempts__gte=max_attempts).update(
+        status=CallAnalysis.STATUS_FAILED,
+        error="processing_stale_attempt_limit",
+        processing_token="",
+        processing_started_at=None,
+        processed_at=timezone.now(),
+        requested_at=None,
+    )
+    recovered = stale.filter(attempts__lt=max_attempts).update(
+        status=CallAnalysis.STATUS_PENDING,
+        error="processing_stale_requeued",
+        processing_token="",
+        processing_started_at=None,
+    )
+    return recovered, failed
 
 
 class Command(BaseCommand):
@@ -21,6 +56,12 @@ class Command(BaseCommand):
         attempted_ids = []
         processed = 0
         empty_checks = 0
+        recovered, failed_stale = recover_stale_requested_analyses()
+        if recovered or failed_stale:
+            self.stdout.write(
+                f"Recovered stale call analyses: {recovered}; "
+                f"failed at attempt limit: {failed_stale}"
+            )
 
         while drain or len(attempted_ids) < limit:
             queryset = (
