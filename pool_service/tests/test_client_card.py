@@ -150,3 +150,16 @@ class ClientCardTests(TestCase):
         self.assertEqual(profile.manager_id, employee.pk)
         self.assertEqual(profile.responsible_id, employee.pk)
         self.assertEqual(profile.notes, "Позвонить после поставки.")
+
+
+    def test_task_create_prefills_client_from_card(self):
+        response = self.client.get(
+            reverse("task_create"),
+            {"client": self.crm_client.pk},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            str(response.context["form"]["client"].value()),
+            str(self.crm_client.pk),
+        )
