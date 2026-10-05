@@ -268,7 +268,22 @@ def merge_clients(source_id, target_id, *, organization_id, actor=None):
     _merge_staff_access(source, target)
     _merge_contacts(source, target)
     _merge_company_links(source, target)
-    ClientImportCandidate.objects.filter(matched_client=source).update(matched_client=target)
+    for candidate in ClientImportCandidate.objects.select_for_update().filter(
+        matched_client=source
+    ):
+        if candidate.source_ref == target_profile.onec_ref:
+            candidate.matched_client = target
+            candidate.save(update_fields=["matched_client", "updated_at"])
+            continue
+        candidate.matched_client = None
+        update_fields = ["matched_client", "updated_at"]
+        if not candidate.applied_at:
+            candidate.status = ClientImportCandidate.STATUS_REVIEW
+            candidate.reason = (
+                "Старая карточка объединена; требуется повторное сопоставление."
+            )
+            update_fields.extend(["status", "reason"])
+        candidate.save(update_fields=update_fields)
 
     changed = []
     if not target.phone and source.phone:
