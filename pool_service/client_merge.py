@@ -196,6 +196,8 @@ def merge_clients(source_id, target_id, actor=None):
         raise ValueError("Исходная карточка уже объединена")
     if target_profile is None or not target_profile.onec_ref:
         raise ValueError("Целевая карточка должна быть импортирована из 1С")
+    if target_profile.merged_into_id:
+        raise ValueError("Целевая карточка уже объединена с другой карточкой")
     if source_profile and source_profile.onec_ref:
         raise ValueError("Исходная карточка уже связана с 1С")
     if source.user_id and target.user_id and source.user_id != target.user_id:
