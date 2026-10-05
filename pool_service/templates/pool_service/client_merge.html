@@ -1,5 +1,130 @@
 {% extends 'pool_service/base.html' %}
-{% block title %}Объединение клиентов{% endblock %}
+{% block title %}Объединение клиентов
+{% if selected_source %}
+<script>
+(function () {
+  const root = document.getElementById("merge-live-search");
+  const input = document.getElementById("merge-live-search-input");
+  const form = document.getElementById("merge-live-search-form");
+  const results = document.getElementById("merge-live-results");
+  const status = document.getElementById("merge-live-search-status");
+  if (!root || !input || !results || !status) return;
+
+  let timer = null;
+  let controller = null;
+  const searchUrl = root.dataset.searchUrl;
+  const sourceId = root.dataset.sourceId;
+  const sourceName = root.dataset.sourceName || "";
+  const csrf = root.dataset.csrf || "";
+  const mergeBlocked = root.dataset.mergeBlocked === "1";
+
+  function updateUrl(query) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("source", sourceId);
+    if (query) url.searchParams.set("q", query);
+    else url.searchParams.delete("q");
+    window.history.replaceState({}, "", url);
+  }
+
+  function render(items) {
+    results.replaceChildren();
+    if (!items.length) {
+      const empty = document.createElement("div");
+      empty.className = "text-muted py-3";
+      empty.textContent = "По запросу ничего не найдено.";
+      results.appendChild(empty);
+      return;
+    }
+    items.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "border rounded-3 p-3 d-flex flex-wrap justify-content-between align-items-center gap-2";
+
+      const info = document.createElement("div");
+      const title = document.createElement("div");
+      title.className = "fw-semibold";
+      title.textContent = item.name || "";
+      const meta = document.createElement("div");
+      meta.className = "small text-muted";
+      const parts = [];
+      if (item.phone) parts.push(item.phone);
+      if (item.inn) parts.push("ИНН " + item.inn);
+      meta.textContent = parts.join(" · ");
+      info.append(title, meta);
+
+      const mergeForm = document.createElement("form");
+      mergeForm.method = "post";
+      mergeForm.addEventListener("submit", function (event) {
+        if (!window.confirm("Объединить старую карточку «" + sourceName + "» с «" + (item.name || "") + "»?")) {
+          event.preventDefault();
+        }
+      });
+
+      const csrfInput = document.createElement("input");
+      csrfInput.type = "hidden";
+      csrfInput.name = "csrfmiddlewaretoken";
+      csrfInput.value = csrf;
+      const sourceInput = document.createElement("input");
+      sourceInput.type = "hidden";
+      sourceInput.name = "source_id";
+      sourceInput.value = sourceId;
+      const targetInput = document.createElement("input");
+      targetInput.type = "hidden";
+      targetInput.name = "target_id";
+      targetInput.value = String(item.id);
+      const button = document.createElement("button");
+      button.type = "submit";
+      button.className = "btn btn-primary btn-sm";
+      button.textContent = "Объединить";
+      button.disabled = mergeBlocked;
+      mergeForm.append(csrfInput, sourceInput, targetInput, button);
+
+      row.append(info, mergeForm);
+      results.appendChild(row);
+    });
+  }
+
+  async function search() {
+    const query = input.value.trim();
+    updateUrl(query);
+    if (controller) controller.abort();
+    if (query.length < 2) {
+      status.textContent = query ? "Введите ещё хотя бы один символ." : "";
+      results.replaceChildren();
+      return;
+    }
+
+    controller = new AbortController();
+    status.textContent = "Ищу…";
+    try {
+      const url = new URL(searchUrl, window.location.origin);
+      url.searchParams.set("q", query);
+      const response = await fetch(url, {
+        headers: {"X-Requested-With": "XMLHttpRequest"},
+        signal: controller.signal
+      });
+      if (!response.ok) throw new Error("search failed");
+      const payload = await response.json();
+      render(payload.results || []);
+      status.textContent = "";
+    } catch (error) {
+      if (error.name === "AbortError") return;
+      status.textContent = "Не удалось выполнить поиск.";
+    }
+  }
+
+  input.addEventListener("input", function () {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(search, 250);
+  });
+  form.addEventListener("submit", function (event) {
+    event.preventDefault();
+    window.clearTimeout(timer);
+    search();
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}
 {% block content %}
 {% include "pool_service/_admin_workspace_styles.html" %}
 <div class="admin-desktop">
@@ -110,37 +235,54 @@
             </div>
           {% endif %}
 
-          <div class="border rounded-3 p-3">
+          <div
+            class="border rounded-3 p-3"
+            id="merge-live-search"
+            data-search-url="{% url 'client_merge_search' %}"
+            data-source-id="{{ selected_source.id }}"
+            data-source-name="{{ selected_source.name|escape }}"
+            data-csrf="{{ csrf_token }}"
+            data-merge-blocked="{% if merge_blocked %}1{% else %}0{% endif %}"
+          >
             <div class="fw-semibold mb-2">Найти другого клиента из 1С</div>
-            <form method="get" class="d-flex gap-2 mb-3">
+            <form method="get" class="mb-3" id="merge-live-search-form">
               <input type="hidden" name="source" value="{{ selected_source.id }}">
-              <input class="form-control" type="search" name="q" value="{{ q }}" placeholder="Название, телефон или ИНН">
-              <button class="btn btn-outline-primary" type="submit">Найти</button>
+              <input
+                class="form-control"
+                type="search"
+                name="q"
+                id="merge-live-search-input"
+                value="{{ q }}"
+                placeholder="Название, телефон или ИНН"
+                autocomplete="off"
+              >
+              <noscript>
+                <button class="btn btn-outline-primary mt-2" type="submit">Найти</button>
+              </noscript>
             </form>
 
-            {% if q %}
-              <div class="d-grid gap-2">
-                {% for target in target_results %}
-                  <div class="border rounded-3 p-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
-                    <div>
-                      <div class="fw-semibold">{{ target.name }}</div>
-                      <div class="small text-muted">
-                        {% if target.phone %}{{ target.phone }}{% endif %}
-                        {% if target.inn %} · ИНН {{ target.inn }}{% endif %}
-                      </div>
+            <div class="small text-muted mb-2" id="merge-live-search-status" aria-live="polite"></div>
+            <div class="d-grid gap-2" id="merge-live-results">
+              {% for target in target_results %}
+                <div class="border rounded-3 p-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
+                  <div>
+                    <div class="fw-semibold">{{ target.name }}</div>
+                    <div class="small text-muted">
+                      {% if target.phone %}{{ target.phone }}{% endif %}
+                      {% if target.inn %} · ИНН {{ target.inn }}{% endif %}
                     </div>
-                    <form method="post" onsubmit="return confirm('Объединить старую карточку «{{ selected_source.name|escapejs }}» с «{{ target.name|escapejs }}»?');">
-                      {% csrf_token %}
-                      <input type="hidden" name="source_id" value="{{ selected_source.id }}">
-                      <input type="hidden" name="target_id" value="{{ target.id }}">
-                      <button class="btn btn-primary btn-sm" type="submit" {% if merge_blocked %}disabled{% endif %}>Объединить</button>
-                    </form>
                   </div>
-                {% empty %}
-                  <div class="text-muted py-3">По запросу ничего не найдено.</div>
-                {% endfor %}
-              </div>
-            {% endif %}
+                  <form method="post" onsubmit="return confirm('Объединить старую карточку «{{ selected_source.name|escapejs }}» с «{{ target.name|escapejs }}»?');">
+                    {% csrf_token %}
+                    <input type="hidden" name="source_id" value="{{ selected_source.id }}">
+                    <input type="hidden" name="target_id" value="{{ target.id }}">
+                    <button class="btn btn-primary btn-sm" type="submit" {% if merge_blocked %}disabled{% endif %}>Объединить</button>
+                  </form>
+                </div>
+              {% empty %}
+                {% if q %}<div class="text-muted py-3">По запросу ничего не найдено.</div>{% endif %}
+              {% endfor %}
+            </div>
           </div>
         {% else %}
           <div class="border rounded-3 p-5 text-center text-muted">
