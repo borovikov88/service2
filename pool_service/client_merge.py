@@ -173,14 +173,19 @@ def _generic_relations(source, target):
 
 
 @transaction.atomic
-def merge_clients(source_id, target_id, actor=None):
+def merge_clients(source_id, target_id, *, organization_id, actor=None):
+    if not organization_id:
+        raise ValueError("Организация для объединения не указана")
     if source_id == target_id:
         raise ValueError("Нельзя объединить карточку саму с собой")
 
     locked = {
         item.pk: item
         for item in Client.objects.select_for_update()
-        .filter(pk__in=[source_id, target_id])
+        .filter(
+            pk__in=[source_id, target_id],
+            organization_id=organization_id,
+        )
         .select_related("organization")
     }
     source = locked.get(source_id)
