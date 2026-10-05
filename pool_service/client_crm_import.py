@@ -175,8 +175,12 @@ def _candidate_contacts(row, extra_rows):
     return phones, emails
 
 
-def _match_clients(organization, source_kind, inn, phones):
+def _match_clients(organization, source_kind, inn, phones, source_ref=""):
     matches = Client.objects.filter(organization=organization)
+    if source_ref:
+        profile = ClientCRMProfile.objects.filter(onec_ref=source_ref).select_related("client").first()
+        if profile and profile.client.organization_id == organization.id:
+            return [profile.client], "Ref_Key 1С"
     if source_kind in {ClientImportCandidate.KIND_LEGAL, ClientImportCandidate.KIND_IP} and inn:
         by_inn = list(matches.filter(client_type="legal", inn=inn)[:3])
         if by_inn:
@@ -212,7 +216,7 @@ def scan_onec_clients():
             source_kind = _source_kind(row)
             inn = str(row.get("ИНН") or "").strip()
             phones, emails = _candidate_contacts(row, contacts_by_ref.get(ref, []))
-            matches, match_reason = _match_clients(organization, source_kind, inn, phones)
+            matches, match_reason = _match_clients(organization, source_kind, inn, phones, ref)
 
             status = ClientImportCandidate.STATUS_READY
             reason = ""
