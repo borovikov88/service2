@@ -4,7 +4,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db.models import Count, Q
-from django.http import HttpResponseForbidden
+from django.http import HttpResponseForbidden, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
@@ -14,6 +14,7 @@ from .client_crm_import import (
     resolve_import_candidate,
 )
 from .client_crm_models import ClientCRMProfile, ClientImportCandidate, ClientImportRun
+from .client_queries import active_clients
 from .client_merge import merge_clients, merge_suggestions
 from .models import Client, OrganizationAccess, Pool
 
@@ -362,4 +363,48 @@ def client_merge_index(request):
             "show_add_button": False,
             "add_url": None,
         },
+    )
+
+
+
+@login_required
+def client_merge_search(request):
+    try:
+        organization_id = int(
+            getattr(settings, "ONEC_ODATA_TARGET_ORGANIZATION_ID", "") or 0
+        )
+    except (TypeError, ValueError):
+        organization_id = 0
+    if not organization_id or not _can_manage_import(request.user, organization_id):
+        return HttpResponseForbidden()
+
+    q = (request.GET.get("q") or "").strip()
+    if len(q) < 2:
+        return JsonResponse({"results": []})
+
+    queryset = active_clients(
+        Client.objects.filter(
+            organization_id=organization_id,
+            crm_profile__onec_ref__isnull=False,
+        )
+    ).filter(
+        Q(name__icontains=q)
+        | Q(company_name__icontains=q)
+        | Q(phone__icontains=q)
+        | Q(inn__icontains=q)
+    ).order_by("name", "id")[:30]
+
+    return JsonResponse(
+        {
+            "results": [
+                {
+                    "id": client.id,
+                    "name": client.name,
+                    "phone": client.phone or "",
+                    "inn": client.inn or "",
+                    "client_type": client.client_type,
+                }
+                for client in queryset
+            ]
+        }
     )
