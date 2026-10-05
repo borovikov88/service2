@@ -63,10 +63,15 @@ def client_onec_import(request):
             elif run.status in {
                 ClientImportRun.STATUS_PENDING,
                 ClientImportRun.STATUS_RUNNING,
+                ClientImportRun.STATUS_APPLYING,
             }:
                 messages.info(
                     request,
-                    "Обновление из 1С уже выполняется. Повторный запуск не создан.",
+                    (
+                        "Импорт клиентов уже выполняется."
+                        if run.status == ClientImportRun.STATUS_APPLYING
+                        else "Обновление из 1С уже выполняется. Повторный запуск не создан."
+                    ),
                 )
             else:
                 messages.error(
