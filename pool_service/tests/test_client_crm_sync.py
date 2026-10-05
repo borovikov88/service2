@@ -4,7 +4,11 @@ from unittest.mock import patch
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from pool_service.client_crm_import import apply_ready_candidates
+from pool_service.client_crm_import import (
+    _contact_rows,
+    apply_candidate,
+    apply_ready_candidates,
+)
 from pool_service.client_crm_models import (
     ClientCRMProfile,
     ClientCompanyLink,
@@ -295,7 +299,7 @@ class ClientCRMAutoSyncTests(TestCase):
             organization=self.organization,
             client_type="private",
             name="Existing Identity",
-            phone="30003",
+            phone="+7 999 300-00-03",
         )
         ClientCRMProfile.objects.create(
             client=existing,
@@ -309,7 +313,7 @@ class ClientCRMAutoSyncTests(TestCase):
             Description="Different Identity",
             НаименованиеПолное="Different Identity",
             ФИО="Different Identity",
-            НомерТелефонаДляПоиска="30003",
+            НомерТелефонаДляПоиска="+7 999 300-00-03",
         )
         result = self._sync([row])
 
@@ -323,3 +327,180 @@ class ClientCRMAutoSyncTests(TestCase):
             ClientImportCandidate.STATUS_DUPLICATE,
         )
         self.assertIsNone(candidate.matched_client)
+
+
+    def test_incomplete_contact_batch_aborts_reconciliation(self):
+        with patch(
+            "pool_service.client_crm_import.query_1c_rows",
+            return_value={"rows": [], "complete": False},
+        ):
+            with self.assertRaisesMessage(
+                RuntimeError,
+                "contact batch is incomplete",
+            ):
+                _contact_rows(
+                    object(),
+                    ["12345678-1234-1234-1234-1234567890ab"],
+                    b"metadata",
+                )
+
+    def test_full_sync_does_not_apply_ready_candidate_missing_from_snapshot(self):
+        stale_candidate = ClientImportCandidate.objects.create(
+            organization=self.organization,
+            source_ref="82345678-1234-1234-1234-1234567890ab",
+            source_code="C-206",
+            source_kind=ClientImportCandidate.KIND_PRIVATE,
+            name="Removed 1C Buyer",
+            status=ClientImportCandidate.STATUS_READY,
+        )
+
+        with override_settings(
+            ONEC_ODATA_TARGET_ORGANIZATION_ID=str(self.organization.pk)
+        ), patch(
+            "pool_service.client_crm_sync.scan_onec_clients",
+            return_value={"total": 0, "_seen_refs": []},
+        ):
+            result = sync_all_onec_clients()
+
+        stale_candidate.refresh_from_db()
+        self.assertEqual(stale_candidate.status, ClientImportCandidate.STATUS_READY)
+        self.assertIsNone(stale_candidate.applied_at)
+        self.assertEqual(result["apply"]["imported"], 0)
+
+    def test_existing_ip_link_refreshes_person_scalars(self):
+        ref = "92345678-1234-1234-1234-1234567890ab"
+        company = Client.objects.create(
+            organization=self.organization,
+            client_type="legal",
+            name="IP Old",
+            company_name="IP Old",
+        )
+        ClientCRMProfile.objects.create(
+            client=company,
+            onec_ref=ref,
+            source=ClientCRMProfile.SOURCE_ONEC,
+            legal_form=ClientCRMProfile.LEGAL_FORM_IP,
+        )
+        person = Client.objects.create(
+            organization=self.organization,
+            client_type="private",
+            name="Old Person",
+            first_name="Old",
+            last_name="Person",
+            phone="+7 999 111-11-11",
+            email="old@example.test",
+        )
+        person_profile = ClientCRMProfile.objects.create(
+            client=person,
+            source=ClientCRMProfile.SOURCE_ONEC_IP,
+        )
+        ClientCompanyLink.objects.create(
+            company=company,
+            person=person,
+            source=ClientCompanyLink.SOURCE_ONEC_IP,
+            source_reference=ref,
+            automatic=True,
+            is_primary=True,
+        )
+        candidate = ClientImportCandidate.objects.create(
+            organization=self.organization,
+            source_ref=ref,
+            source_code="C-207",
+            source_kind=ClientImportCandidate.KIND_IP,
+            name="ИП Иванов Иван Иванович",
+            legal_name="ИП Иванов Иван Иванович",
+            phone="+7 999 222-22-22",
+            email="new@example.test",
+            birth_date=timezone.localdate(),
+            status=ClientImportCandidate.STATUS_IMPORTED,
+            matched_client=company,
+            applied_at=timezone.now(),
+            payload={
+                "fio": "Иванов Иван Иванович",
+                "phones": [
+                    {
+                        "value": "+7 999 222-22-22",
+                        "match": "79992222222",
+                        "label": "Основной",
+                    }
+                ],
+                "emails": [
+                    {
+                        "value": "new@example.test",
+                        "match": "new@example.test",
+                        "label": "Основной",
+                    }
+                ],
+            },
+        )
+
+        apply_candidate(candidate)
+
+        person.refresh_from_db()
+        person_profile.refresh_from_db()
+        self.assertEqual(person.name, "Иванов Иван Иванович")
+        self.assertEqual(person.first_name, "Иван")
+        self.assertEqual(person.last_name, "Иванов")
+        self.assertEqual(person.phone, "+7 999 222-22-22")
+        self.assertEqual(person.email, "new@example.test")
+        self.assertEqual(person_profile.middle_name, "Иванович")
+        self.assertEqual(person_profile.birth_date, candidate.birth_date)
+
+    def test_same_onec_ref_reconciles_client_type_and_removes_stale_ip_link(self):
+        ref = "a2345678-1234-1234-1234-1234567890ab"
+        company = Client.objects.create(
+            organization=self.organization,
+            client_type="legal",
+            name="Old IP",
+            company_name="Old IP",
+        )
+        ClientCRMProfile.objects.create(
+            client=company,
+            onec_ref=ref,
+            source=ClientCRMProfile.SOURCE_ONEC,
+            legal_form=ClientCRMProfile.LEGAL_FORM_IP,
+        )
+        person = Client.objects.create(
+            organization=self.organization,
+            client_type="private",
+            name="Linked Person",
+        )
+        ClientCompanyLink.objects.create(
+            company=company,
+            person=person,
+            source=ClientCompanyLink.SOURCE_ONEC_IP,
+            source_reference=ref,
+            automatic=True,
+        )
+        candidate = ClientImportCandidate.objects.create(
+            organization=self.organization,
+            source_ref=ref,
+            source_code="C-208",
+            source_kind=ClientImportCandidate.KIND_PRIVATE,
+            name="Петров Петр Петрович",
+            legal_name="",
+            status=ClientImportCandidate.STATUS_IMPORTED,
+            matched_client=company,
+            applied_at=timezone.now(),
+            payload={"fio": "Петров Петр Петрович", "phones": [], "emails": []},
+        )
+
+        apply_candidate(candidate)
+
+        company.refresh_from_db()
+        company.crm_profile.refresh_from_db()
+        self.assertEqual(company.client_type, "private")
+        self.assertIsNone(company.company_name)
+        self.assertEqual(company.first_name, "Петр")
+        self.assertEqual(company.last_name, "Петров")
+        self.assertEqual(
+            company.crm_profile.legal_form,
+            ClientCRMProfile.LEGAL_FORM_NONE,
+        )
+        self.assertFalse(
+            ClientCompanyLink.objects.filter(
+                company=company,
+                source=ClientCompanyLink.SOURCE_ONEC_IP,
+                source_reference=ref,
+            ).exists()
+        )
