@@ -239,8 +239,16 @@ def _match_clients(organization, source_kind, inn, phones, source_ref=""):
         profile = ClientCRMProfile.objects.filter(onec_ref=source_ref).select_related("client").first()
         if profile and profile.client.organization_id == organization.id:
             return [profile.client], "Ref_Key 1С"
+
+    expected_client_type = (
+        "private"
+        if source_kind == ClientImportCandidate.KIND_PRIVATE
+        else "legal"
+    )
+    typed_matches = matches.filter(client_type=expected_client_type)
+
     if source_kind in {ClientImportCandidate.KIND_LEGAL, ClientImportCandidate.KIND_IP} and inn:
-        by_inn = list(matches.filter(client_type="legal", inn=inn)[:3])
+        by_inn = list(typed_matches.filter(inn=inn)[:3])
         if by_inn:
             return by_inn, "ИНН"
     phone_values = {item["match"] for item in phones if item.get("match")}
@@ -249,14 +257,15 @@ def _match_clients(organization, source_kind, inn, phones, source_ref=""):
             kind=ClientContact.KIND_PHONE,
             match_value__in=phone_values,
             client__organization=organization,
+            client__client_type=expected_client_type,
         ).values_list("client_id", flat=True)
         legacy_ids = []
-        for client in matches.exclude(phone__isnull=True).exclude(phone="").only("id", "phone"):
+        for client in typed_matches.exclude(phone__isnull=True).exclude(phone="").only("id", "phone"):
             if normalize_phone(client.phone) in phone_values:
                 legacy_ids.append(client.id)
         ids = set(contact_ids) | set(legacy_ids)
         if ids:
-            return list(matches.filter(id__in=ids)[:4]), "телефон"
+            return list(typed_matches.filter(id__in=ids)[:4]), "телефон"
     return [], ""
 
 
