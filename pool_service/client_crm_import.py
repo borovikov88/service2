@@ -277,7 +277,10 @@ def _update_run_progress(run, *, processed_rows, totals):
         ready_count=totals.get(ClientImportCandidate.STATUS_READY, 0),
         review_count=totals.get(ClientImportCandidate.STATUS_REVIEW, 0),
         duplicate_count=totals.get(ClientImportCandidate.STATUS_DUPLICATE, 0),
-        invalid_count=totals.get(ClientImportCandidate.STATUS_INVALID, 0),
+        invalid_count=(
+            totals.get(ClientImportCandidate.STATUS_INVALID, 0)
+            + totals.get(ClientImportCandidate.STATUS_SKIPPED, 0)
+        ),
         imported_count=totals.get(ClientImportCandidate.STATUS_IMPORTED, 0),
         updated_at=timezone.now(),
     )
@@ -559,7 +562,10 @@ def process_client_import_run(run_id):
             ready_count=result.get(ClientImportCandidate.STATUS_READY, 0),
             review_count=result.get(ClientImportCandidate.STATUS_REVIEW, 0),
             duplicate_count=result.get(ClientImportCandidate.STATUS_DUPLICATE, 0),
-            invalid_count=result.get(ClientImportCandidate.STATUS_INVALID, 0),
+            invalid_count=(
+                result.get(ClientImportCandidate.STATUS_INVALID, 0)
+                + result.get(ClientImportCandidate.STATUS_SKIPPED, 0)
+            ),
             imported_count=result.get(ClientImportCandidate.STATUS_IMPORTED, 0),
             error="",
             finished_at=timezone.now(),
