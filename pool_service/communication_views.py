@@ -1,4 +1,5 @@
 from datetime import date
+import mimetypes
 import os
 import re
 import secrets
@@ -7,6 +8,7 @@ from urllib.parse import urlsplit
 from django.contrib import messages
 from django.contrib.auth.models import User
 from django.contrib.auth.decorators import login_required
+from django.conf import settings
 from django.core.exceptions import PermissionDenied
 from django.core.files.images import get_image_dimensions
 from django.db import transaction
@@ -34,10 +36,11 @@ from pool_service.communication_models import (
     ConversationAssignment, ConversationMessage, ConversationReadState,
     CallAnalysis, MessageAttachment, PhoneCall, TelephonyConnection,
 )
+from pool_service.communication_recordings import looks_like_audio_file
 from pool_service.communication_secrets import encrypt_secret
 from pool_service.communication_services import conversation_capability, optimize_message_image, organization_access
 from pool_service.services.call_ai import request_call_analysis, start_requested_call_analysis_worker
-from pool_service.models import Notification, OrganizationAccess
+from pool_service.models import Client, Notification, OrganizationAccess
 
 
 def _context(request, capability):
@@ -241,6 +244,7 @@ def calls(request):
     queryset = PhoneCall.objects.filter(organization=organization).select_related(
         "employee",
         "employee_profile",
+        "client",
         "analysis",
     ).defer("analysis__transcript")
     if not can_view_all:
@@ -263,13 +267,148 @@ def calls(request):
     if request.GET.get("missed"): queryset = queryset.filter(result=PhoneCall.RESULT_MISSED)
     if request.GET.get("q"): queryset = queryset.filter(Q(phone_number__icontains=request.GET["q"]) | Q(contact_name__icontains=request.GET["q"]))
     employees = OrganizationAccess.objects.filter(organization=organization).select_related("user")
+    clients = Client.objects.filter(organization=organization).order_by("name", "id")
     return render(request, "pool_service/communications/calls.html", {
         "active_tab": "communications",
         "calls": queryset[:500],
         "employees": employees,
+        "clients": clients,
         "can_listen": conversation_capability(request.user, "can_listen_calls", organization),
         "can_view_all": can_view_all,
     })
+
+
+MANUAL_CALL_ALLOWED_EXTENSIONS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm"}
+MANUAL_CALL_MAX_FILES = 50
+
+
+def _manual_recording_connection(organization):
+    connection, _ = TelephonyConnection.objects.get_or_create(
+        organization=organization,
+        external_id="manual-upload",
+        defaults={
+            "name": "Загруженные записи",
+            "is_active": True,
+        },
+    )
+    return connection
+
+
+@login_required
+@require_POST
+def call_recording_upload(request):
+    organization = _context(request, "can_listen_calls")
+    if not conversation_capability(request.user, "can_view_all_calls", organization):
+        raise PermissionDenied
+
+    files = request.FILES.getlist("recordings")
+    if not files:
+        messages.error(request, "Выберите хотя бы один аудиофайл.")
+        return redirect("communications_calls")
+    if len(files) > MANUAL_CALL_MAX_FILES:
+        messages.error(request, f"За один раз можно загрузить не более {MANUAL_CALL_MAX_FILES} записей.")
+        return redirect("communications_calls")
+
+    client = None
+    client_id = (request.POST.get("client") or "").strip()
+    if client_id:
+        if not client_id.isdigit():
+            return HttpResponseBadRequest("Некорректный клиент.")
+        client = get_object_or_404(Client, pk=client_id, organization=organization)
+
+    direction = request.POST.get("direction") or PhoneCall.DIRECTION_IN
+    if direction not in {PhoneCall.DIRECTION_IN, PhoneCall.DIRECTION_OUT}:
+        return HttpResponseBadRequest("Некорректное направление.")
+
+    max_bytes = int(getattr(settings, "COMMUNICATION_RECORDING_MAX_BYTES", 50 * 1024 * 1024))
+    rejected = []
+    for uploaded in files:
+        extension = os.path.splitext(uploaded.name or "")[1].lower()
+        if extension not in MANUAL_CALL_ALLOWED_EXTENSIONS:
+            rejected.append(f"{uploaded.name}: неподдерживаемый формат")
+            continue
+        if uploaded.size <= 0:
+            rejected.append(f"{uploaded.name}: пустой файл")
+            continue
+        if uploaded.size > max_bytes:
+            rejected.append(f"{uploaded.name}: файл больше допустимого размера")
+            continue
+        prefix = uploaded.read(32)
+        uploaded.seek(0)
+        if not looks_like_audio_file(prefix, extension):
+            rejected.append(f"{uploaded.name}: файл не похож на поддерживаемую аудиозапись")
+    if rejected:
+        messages.error(request, "Не загружено: " + "; ".join(rejected[:5]))
+        return redirect("communications_calls")
+
+    connection = _manual_recording_connection(organization)
+    created = 0
+    for uploaded in files:
+        call = PhoneCall(
+            organization=organization,
+            connection=connection,
+            external_id=f"manual-{secrets.token_hex(16)}",
+            client=client,
+            contact_name=(client.name if client else ""),
+            phone_number=((client.phone or "") if client else ""),
+            direction=direction,
+            started_at=timezone.now(),
+            duration_seconds=0,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+            recording_downloaded_at=timezone.now(),
+        )
+        call.recording_file.save(uploaded.name, uploaded, save=False)
+        call.save()
+        created += 1
+
+    messages.success(
+        request,
+        f"Загружено записей: {created}. Расшифровка не запускалась.",
+    )
+    return redirect("communications_calls")
+
+
+@login_required
+@require_POST
+def call_analysis_bulk(request):
+    organization = _context(request, "can_listen_calls")
+    raw_ids = request.POST.getlist("call_ids")
+    call_ids = [int(value) for value in raw_ids if value.isdigit()]
+    if not call_ids:
+        messages.info(request, "Выберите записи для расшифровки.")
+        return redirect("communications_calls")
+
+    queryset = PhoneCall.objects.filter(
+        pk__in=call_ids,
+        organization=organization,
+    ).exclude(recording_file="").filter(
+        Q(analysis__isnull=True)
+        | Q(analysis__status=CallAnalysis.STATUS_FAILED)
+        | Q(
+            analysis__status=CallAnalysis.STATUS_PENDING,
+            analysis__requested_at__isnull=True,
+        )
+    )
+    if not conversation_capability(request.user, "can_view_all_calls", organization):
+        queryset = queryset.filter(employee=request.user)
+
+    queued = 0
+    for call_id in queryset.order_by("pk").values_list("pk", flat=True):
+        if request_call_analysis(call_id, allow_reanalysis=False):
+            queued += 1
+
+    if queued:
+        if start_requested_call_analysis_worker():
+            messages.success(request, f"Поставлено на расшифровку: {queued}.")
+        else:
+            messages.warning(
+                request,
+                f"Поставлено в очередь: {queued}. Резервный обработчик подхватит записи позже.",
+            )
+    else:
+        messages.info(request, "Новые записи в очередь не добавлены.")
+    return redirect("communications_calls")
 
 
 @login_required
@@ -379,9 +518,10 @@ def call_recording(request, call_id):
     range_header = request.headers.get("Range", "").strip()
 
     if download_requested or not range_header:
+        content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
         response = FileResponse(
             open(file_path, "rb"),
-            content_type="audio/mpeg",
+            content_type=content_type,
             as_attachment=download_requested,
             filename=os.path.basename(file_path),
         )
@@ -425,7 +565,7 @@ def call_recording(request, call_id):
     response = StreamingHttpResponse(
         _recording_range_iterator(open(file_path, "rb"), start, length),
         status=206,
-        content_type="audio/mpeg",
+        content_type=mimetypes.guess_type(file_path)[0] or "application/octet-stream",
     )
     response["Content-Length"] = str(length)
     response["Content-Range"] = f"bytes {start}-{end}/{file_size}"

@@ -7,7 +7,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.contrib.auth.hashers import check_password, make_password
 
-from pool_service.models import Employee, Organization, OrganizationAccess
+from pool_service.models import Client, Employee, Organization, OrganizationAccess
 from pool_service.storage import private_media_storage
 
 
@@ -416,6 +416,13 @@ class PhoneCall(models.Model):
         blank=True,
         related_name="phone_calls",
     )
+    client = models.ForeignKey(
+        Client,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="phone_calls",
+    )
     provider_user = models.CharField(max_length=255, blank=True)
     provider_extension = models.CharField(max_length=64, blank=True)
     contact_name = models.CharField(max_length=255, blank=True)
@@ -455,6 +462,11 @@ class PhoneCall(models.Model):
             and self.employee_profile.organization_id != self.organization_id
         ):
             raise ValidationError("Call employee profile must belong to the organization.")
+        if (
+            self.client_id
+            and self.client.organization_id != self.organization_id
+        ):
+            raise ValidationError("Call client must belong to the organization.")
 
 
 class CallAnalysis(models.Model):
