@@ -261,3 +261,28 @@ class ClientCRMAutoSyncTests(TestCase):
         self.assertEqual(run.status, ClientImportRun.STATUS_SUCCESS)
         self.assertEqual(result["scan"], {"total": 0})
         self.assertEqual(result["apply"], {"imported": 0, "failed": 0})
+
+
+    def test_private_name_only_conflict_waits_for_review(self):
+        Client.objects.create(
+            organization=self.organization,
+            client_type="private",
+            name="Sync Client",
+        )
+
+        result = self._sync([self._row()])
+
+        self.assertEqual(result["review"], 1)
+        self.assertEqual(
+            Client.objects.filter(
+                organization=self.organization,
+                client_type="private",
+                name="Sync Client",
+            ).count(),
+            1,
+        )
+        candidate = ClientImportCandidate.objects.get(
+            source_ref="12345678-1234-1234-1234-1234567890ab"
+        )
+        self.assertEqual(candidate.status, ClientImportCandidate.STATUS_REVIEW)
+        self.assertIn("нет телефона", candidate.reason)
