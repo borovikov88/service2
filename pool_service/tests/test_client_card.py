@@ -152,14 +152,33 @@ class ClientCardTests(TestCase):
         self.assertEqual(profile.notes, "Позвонить после поставки.")
 
 
-    def test_task_create_prefills_client_from_card(self):
-        response = self.client.get(
+    def test_task_create_links_client_from_card(self):
+        get_response = self.client.get(
             reverse("task_create"),
             {"client": self.crm_client.pk},
         )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(get_response.status_code, 200)
         self.assertEqual(
-            str(response.context["form"]["client"].value()),
-            str(self.crm_client.pk),
+            get_response.context["linked_client"].pk,
+            self.crm_client.pk,
         )
+
+        post_response = self.client.post(
+            reverse("task_create"),
+            {
+                "title": "Задача из карточки",
+                "description": "",
+                "start_date": "2026-10-06",
+                "end_date": "2026-10-06",
+                "start_time": "",
+                "end_time": "",
+                "responsibles": [str(self.owner.pk)],
+                "client_id": str(self.crm_client.pk),
+                "next": reverse("client_detail", args=[self.crm_client.pk]),
+            },
+        )
+
+        self.assertEqual(post_response.status_code, 302)
+        task = ServiceTask.objects.get(title="Задача из карточки")
+        self.assertEqual(task.client_id, self.crm_client.pk)
