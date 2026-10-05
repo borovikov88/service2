@@ -286,3 +286,40 @@ class ClientCRMAutoSyncTests(TestCase):
         )
         self.assertEqual(candidate.status, ClientImportCandidate.STATUS_REVIEW)
         self.assertIn("нет телефона", candidate.reason)
+
+
+    def test_phone_match_cannot_replace_different_onec_identity(self):
+        existing_ref = "62345678-1234-1234-1234-1234567890ab"
+        new_ref = "72345678-1234-1234-1234-1234567890ab"
+        existing = Client.objects.create(
+            organization=self.organization,
+            client_type="private",
+            name="Existing Identity",
+            phone="30003",
+        )
+        ClientCRMProfile.objects.create(
+            client=existing,
+            onec_ref=existing_ref,
+            source=ClientCRMProfile.SOURCE_ONEC,
+        )
+
+        row = self._row(
+            Ref_Key=new_ref,
+            Code="C-205",
+            Description="Different Identity",
+            НаименованиеПолное="Different Identity",
+            ФИО="Different Identity",
+            НомерТелефонаДляПоиска="30003",
+        )
+        result = self._sync([row])
+
+        existing.refresh_from_db()
+        existing.crm_profile.refresh_from_db()
+        self.assertEqual(result["review"], 1)
+        self.assertEqual(existing.crm_profile.onec_ref, existing_ref)
+        candidate = ClientImportCandidate.objects.get(source_ref=new_ref)
+        self.assertEqual(
+            candidate.status,
+            ClientImportCandidate.STATUS_DUPLICATE,
+        )
+        self.assertIsNone(candidate.matched_client)
