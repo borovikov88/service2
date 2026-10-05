@@ -3,6 +3,7 @@ name: Sync recent 1C clients
 on:
   schedule:
     - cron: "*/5 * * * *"
+    - cron: "31 20 * * *"
   workflow_dispatch:
 
 permissions:
@@ -16,7 +17,7 @@ jobs:
   sync:
     name: Import new 1C clients
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     environment: production
     steps:
       - name: Configure SSH
@@ -39,7 +40,7 @@ jobs:
           if [[ "$PORT" != "22" ]]; then HOST_LOOKUP="[$DEPLOY_HOST]:$PORT"; fi
           ssh-keygen -F "$HOST_LOOKUP" -f ~/.ssh/known_hosts >/dev/null
 
-      - name: Import recently created 1C buyers
+      - name: Synchronize 1C clients
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
@@ -51,9 +52,13 @@ jobs:
           test -n "$DEPLOY_USER"
           test -n "$DEPLOY_APP_PATH"
           PORT="${DEPLOY_PORT:-22}"
+          SYNC_COMMAND="sync_recent_onec_clients --lookback-hours 48"
+          if [[ "${{ github.event_name }}" == "schedule" && "${{ github.event.schedule }}" == "31 20 * * *" ]]; then
+            SYNC_COMMAND="sync_full_onec_clients"
+          fi
           printf -v REMOTE_COMMAND \
-            'set -Eeuo pipefail; cd %q; exec 8>../tmp/service2-client-import.lock; if flock -n 8; then exec 9>../tmp/service2-deploy.lock; flock -s -w 120 9; ../venv/bin/python -B manage.py sync_recent_onec_clients --lookback-hours 48; else echo "Client import already running; recent sync skipped."; fi' \
-            "$DEPLOY_APP_PATH"
+            'set -Eeuo pipefail; cd %q; exec 8>../tmp/service2-client-import.lock; if flock -n 8; then exec 9>../tmp/service2-deploy.lock; flock -s -w 120 9; ../venv/bin/python -B manage.py %s; else echo "Client import already running; automatic sync skipped."; fi' \
+            "$DEPLOY_APP_PATH" "$SYNC_COMMAND"
           ssh -i ~/.ssh/service2_deploy \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
