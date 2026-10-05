@@ -122,6 +122,7 @@ def client_detail(request, client_id):
             return User.objects.filter(
                 pk=user_id,
                 organizationaccess__organization_id=client.organization_id,
+                organizationaccess__role__in=CLIENT_CARD_ROLES,
                 is_active=True,
             ).distinct().first()
 
@@ -256,6 +257,7 @@ def client_detail(request, client_id):
         staff_options = list(
             User.objects.filter(
                 organizationaccess__organization_id=client.organization_id,
+                organizationaccess__role__in=CLIENT_CARD_ROLES,
                 is_active=True,
             )
             .distinct()
@@ -303,6 +305,10 @@ def client_detail(request, client_id):
             "calls_total": calls_total,
             "can_view_calls": can_view_calls,
             "can_manage": can_manage,
+            "can_view_object_finance": bool(
+                request.user.is_superuser
+                or (org_roles & {"owner", "admin", "manager"})
+            ),
             "staff_options": staff_options,
             "active_tasks_count": active_tasks_count,
             "open_crm_count": open_crm_count,
