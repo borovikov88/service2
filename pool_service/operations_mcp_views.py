@@ -22,6 +22,7 @@ from pool_service.models import (
     Client,
     FinanceMcpAuditEvent,
     Notification,
+    Organization,
     OrganizationAccess,
     ServiceTask,
     ServiceTaskChange,
@@ -166,7 +167,7 @@ def _tool_definitions():
                 "dedupe_key": {"type": "string", "minLength": 1, "maxLength": 80},
                 "task_id": {"type": "integer", "minimum": 1},
             },
-            required=("employee_user_id", "title", "message", "dedupe_key"),
+            required=("employee_user_id", "title", "message", "dedupe_key", "task_id"),
             idempotent=True,
         ),
     ]
@@ -295,6 +296,7 @@ def _list_control_tasks(organization, arguments):
     queryset = (
         ServiceTask.objects.filter(
             organization=organization,
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
             is_archived=False,
             completed_at__isnull=True,
         )
@@ -352,6 +354,9 @@ def _create_task(authenticated, organization, arguments):
         },
     )
     key = _as_text(arguments.get("idempotency_key"), "idempotency_key", required=True, maximum=80)
+    # Serialize create requests per organization so concurrent MCP retries
+    # cannot both pass the JSON idempotency lookup before either insert commits.
+    organization = Organization.objects.select_for_update().get(pk=organization.pk)
     existing = ServiceTask.objects.filter(
         organization=organization,
         payload_json__operations_mcp_idempotency_key=key,
@@ -426,7 +431,13 @@ def _reschedule_task(authenticated, organization, arguments):
     due_time = _as_time(arguments.get("due_time"), "due_time")
     reason = _as_text(arguments.get("reason"), "reason", required=True, maximum=500)
     task = _task_for_org(organization, task_id)
-    if not task or task.is_archived or task.completed_at or task.status in {ServiceTask.STATUS_DONE, ServiceTask.STATUS_CANCELLED}:
+    if (
+        not task
+        or task.task_type != ServiceTask.TYPE_CRM_FOLLOWUP
+        or task.is_archived
+        or task.completed_at
+        or task.status in {ServiceTask.STATUS_DONE, ServiceTask.STATUS_CANCELLED}
+    ):
         raise ValueError("task_id")
     actor = _authorized_actor(authenticated)
     old_date = task.end_date or task.start_date
@@ -462,7 +473,7 @@ def _complete_task(authenticated, organization, arguments):
     task_id = _as_int(arguments.get("task_id"), "task_id")
     comment = _as_text(arguments.get("comment"), "comment", maximum=1000)
     task = _task_for_org(organization, task_id)
-    if not task:
+    if not task or task.task_type != ServiceTask.TYPE_CRM_FOLLOWUP:
         raise ValueError("task_id")
     if task.is_completed_archive or task.completed_at or task.status == ServiceTask.STATUS_DONE:
         return {"completed": False, "task": _task_data(task)}
@@ -482,25 +493,45 @@ def _complete_task(authenticated, organization, arguments):
     return {"completed": True, "task": _task_data(task)}
 
 
+@transaction.atomic
 def _send_employee_notification(authenticated, organization, arguments):
     _reject_unknown(arguments, {"employee_user_id", "title", "message", "dedupe_key", "task_id"})
     employee_id = _as_int(arguments.get("employee_user_id"), "employee_user_id")
-    employee = _staff_user(organization, employee_id)
-    if not employee:
-        raise ValueError("employee_user_id")
     title = _as_text(arguments.get("title"), "title", required=True, maximum=200)
     message = _as_text(arguments.get("message"), "message", required=True, maximum=2000)
     key = _as_text(arguments.get("dedupe_key"), "dedupe_key", required=True, maximum=80)
-    action_url = ""
-    if arguments.get("task_id") is not None:
-        task_id = _as_int(arguments["task_id"], "task_id")
-        task = _task_for_org(organization, task_id)
-        if not task:
-            raise ValueError("task_id")
-        action_url = reverse("task_edit", kwargs={"task_id": task.id})
-    full_dedupe_key = f"operations_mcp:{key}"
-    if Notification.objects.filter(user=employee, dedupe_key=full_dedupe_key).exists():
+    task_id = _as_int(arguments.get("task_id"), "task_id")
+
+    # The task row is the serialization point and the durable dedupe ledger.
+    task = (
+        ServiceTask.objects.select_for_update()
+        .select_related("primary_responsible")
+        .prefetch_related("responsibles")
+        .filter(pk=task_id, organization=organization, task_type=ServiceTask.TYPE_CRM_FOLLOWUP)
+        .first()
+    )
+    if not task or task.is_archived or task.completed_at:
+        raise ValueError("task_id")
+    participant_ids = {user.id for user in task.responsibles.all()}
+    if task.primary_responsible_id:
+        participant_ids.add(task.primary_responsible_id)
+    if employee_id not in participant_ids:
+        raise ValueError("employee_user_id")
+    employee = _staff_user(organization, employee_id)
+    if not employee:
+        raise ValueError("employee_user_id")
+
+    payload = dict(task.payload_json) if isinstance(task.payload_json, dict) else {}
+    sent_keys = payload.get("operations_notification_keys")
+    if not isinstance(sent_keys, list):
+        sent_keys = []
+    marker = f"{employee.id}:{key}"
+    if marker in sent_keys:
         return {"created_notifications": 0, "employee_user_id": employee.id}
+    if len(sent_keys) >= 50:
+        raise ValueError("dedupe_key")
+
+    action_url = reverse("task_edit", kwargs={"task_id": task.id})
     created = notify_users(
         [employee],
         title=title,
@@ -509,10 +540,14 @@ def _send_employee_notification(authenticated, organization, arguments):
         level="info",
         action_url=action_url,
         organization=organization,
-        dedupe_key=full_dedupe_key,
+        dedupe_key=f"operations_mcp:{task.id}:{key}",
         send_in_app=True,
         send_push=True,
     )
+    sent_keys.append(marker)
+    payload["operations_notification_keys"] = sent_keys
+    task.payload_json = payload
+    task.save(update_fields=["payload_json", "updated_at"])
     return {"created_notifications": len(created), "employee_user_id": employee.id}
 
 
