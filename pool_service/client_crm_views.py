@@ -150,14 +150,15 @@ def client_detail(request, client_id):
         .distinct()
         .order_by("-updated_at", "-id")
     )
-    is_admin = (
-        request.user.is_superuser
-        or OrganizationAccess.objects.filter(
-            user=request.user,
-            organization_id=client.organization_id,
-            role__in=IMPORT_ROLES,
-        ).exists()
-    )
+    user_roles = set()
+    if client.organization_id and not request.user.is_superuser:
+        user_roles = set(
+            OrganizationAccess.objects.filter(
+                user=request.user,
+                organization_id=client.organization_id,
+            ).values_list("role", flat=True)
+        )
+    is_admin = request.user.is_superuser or bool(user_roles & IMPORT_ROLES)
     if not is_admin:
         tasks_qs = tasks_qs.filter(
             Q(created_by=request.user)
@@ -166,19 +167,24 @@ def client_detail(request, client_id):
         ).distinct()
     tasks = list(tasks_qs[:30])
 
-    crm_items = list(
-        CrmItem.objects.filter(
-            client=client,
-            organization_id=client.organization_id,
-            is_archived=False,
+    crm_items_qs = CrmItem.objects.filter(
+        client=client,
+        organization_id=client.organization_id,
+        is_archived=False,
+    ).select_related("pool", "responsible")
+    if (
+        not request.user.is_superuser
+        and not (user_roles & {"owner", "admin", "manager"})
+    ):
+        crm_items_qs = crm_items_qs.filter(
+            direction=CrmItem.DIRECTION_SERVICE
         )
-        .select_related("pool", "responsible")
-        .order_by("-updated_at", "-id")[:20]
-    )
+    crm_items = list(crm_items_qs.order_by("-updated_at", "-id")[:20])
 
     calls_qs = client.phone_calls.select_related(
         "employee",
         "employee_profile",
+        "analysis",
     ).order_by("-started_at", "-id")
     call_access = None
     if client.organization_id and not request.user.is_superuser:
