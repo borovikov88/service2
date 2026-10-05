@@ -339,18 +339,32 @@ def sync_all_onec_clients():
         )
 
     try:
-        scan_result = scan_onec_clients(run=run)
+        scan_result = scan_onec_clients(
+            run=run,
+            return_seen_refs=True,
+        )
+        seen_refs = list(scan_result.pop("_seen_refs", []))
+        ready_ids = list(
+            ClientImportCandidate.objects.filter(
+                organization=organization,
+                status=ClientImportCandidate.STATUS_READY,
+                source_ref__in=seen_refs,
+            )
+            .order_by("id")
+            .values_list("id", flat=True)
+        )
         ClientImportRun.objects.filter(pk=run.pk).update(
             status=ClientImportRun.STATUS_APPLYING,
             processed_rows=0,
-            total_rows=ClientImportCandidate.objects.filter(
-                organization=organization,
-                status=ClientImportCandidate.STATUS_READY,
-            ).count(),
+            total_rows=len(ready_ids),
             updated_at=timezone.now(),
         )
         run.refresh_from_db()
-        apply_result = apply_ready_candidates(organization, run=run)
+        apply_result = apply_ready_candidates(
+            organization,
+            run=run,
+            candidate_ids=ready_ids,
+        )
 
         refreshed = 0
         refresh_failed = 0
