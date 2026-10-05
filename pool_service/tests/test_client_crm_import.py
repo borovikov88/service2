@@ -3,12 +3,18 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 
-from pool_service.client_crm_import import apply_candidate, apply_ready_candidates, scan_onec_clients
+from pool_service.client_crm_import import (
+    apply_candidate,
+    apply_ready_candidates,
+    request_client_import_scan,
+    scan_onec_clients,
+)
 from pool_service.client_crm_models import (
     ClientCRMProfile,
     ClientCompanyLink,
     ClientContact,
     ClientImportCandidate,
+    ClientImportRun,
 )
 from pool_service.models import Client, Organization
 
@@ -112,10 +118,14 @@ class ClientCRMImportTests(TestCase):
                 return {"rows": [], "complete": True}
 
             with patch("pool_service.client_crm_import.config_from_settings", return_value=object()), patch(
+                "pool_service.client_crm_import.fetch_metadata", return_value=b"metadata"
+            ) as metadata_mock, patch(
                 "pool_service.client_crm_import.query_1c_rows", side_effect=fake_query
             ):
                 scan_onec_clients()
                 scan_onec_clients()
+
+        self.assertEqual(metadata_mock.call_count, 2)
 
         self.assertEqual(ClientImportCandidate.objects.count(), 1)
         candidate = ClientImportCandidate.objects.get()
@@ -147,3 +157,20 @@ class ClientCRMImportTests(TestCase):
         self.assertEqual(imported.pk, company.pk)
         self.assertEqual(Client.objects.filter(organization=self.organization).count(), 1)
         self.assertEqual(imported.crm_profile.onec_ref, candidate.source_ref)
+
+
+    @override_settings(ONEC_ODATA_TARGET_ORGANIZATION_ID="")
+    def test_request_scan_returns_immediately_and_reuses_active_run(self):
+        user = get_user_model().objects.create_user(username="crm-import-owner")
+        with override_settings(ONEC_ODATA_TARGET_ORGANIZATION_ID=str(self.organization.id)), patch(
+            "pool_service.client_crm_import.start_client_import_worker", return_value=True
+        ) as launcher:
+            first, started_first = request_client_import_scan(user)
+            second, started_second = request_client_import_scan(user)
+
+        self.assertTrue(started_first)
+        self.assertFalse(started_second)
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(first.status, ClientImportRun.STATUS_PENDING)
+        self.assertEqual(ClientImportRun.objects.count(), 1)
+        launcher.assert_called_once_with(first.pk)
