@@ -6,6 +6,8 @@ from django.test import TestCase, override_settings
 from pool_service.client_crm_import import (
     apply_candidate,
     apply_ready_candidates,
+    process_client_apply_run,
+    request_client_apply,
     request_client_import_scan,
     resolve_import_candidate,
     scan_onec_clients,
@@ -373,3 +375,97 @@ class ClientCRMImportTests(TestCase):
         self.assertEqual(candidate.resolution, ClientImportCandidate.RESOLUTION_LEGAL)
         self.assertEqual(candidate.status, ClientImportCandidate.STATUS_READY)
         self.assertIsNone(candidate.matched_client)
+
+
+    @override_settings(ONEC_ODATA_TARGET_ORGANIZATION_ID="")
+    def test_request_apply_runs_in_background_and_reuses_active_run(self):
+        candidate = self.candidate(
+            source_ref="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            source_kind=ClientImportCandidate.KIND_LEGAL,
+            name="ООО Фоновый импорт",
+            legal_name="ООО Фоновый импорт",
+            inn="2222999999",
+            payload={"fio": "", "phones": [], "emails": []},
+        )
+        run = ClientImportRun.objects.create(
+            organization=self.organization,
+            status=ClientImportRun.STATUS_SUCCESS,
+            total_rows=1,
+            processed_rows=1,
+            ready_count=1,
+        )
+
+        with override_settings(ONEC_ODATA_TARGET_ORGANIZATION_ID=str(self.organization.id)), patch(
+            "pool_service.client_crm_import.start_client_apply_worker",
+            return_value=True,
+        ) as launcher:
+            first, started_first = request_client_apply()
+            second, started_second = request_client_apply()
+
+        first.refresh_from_db()
+        self.assertTrue(started_first)
+        self.assertFalse(started_second)
+        self.assertEqual(first.pk, run.pk)
+        self.assertEqual(second.pk, run.pk)
+        self.assertEqual(first.status, ClientImportRun.STATUS_APPLYING)
+        self.assertEqual(first.total_rows, 1)
+        self.assertEqual(first.processed_rows, 0)
+        launcher.assert_called_once_with(run.pk)
+        candidate.refresh_from_db()
+        self.assertEqual(candidate.status, ClientImportCandidate.STATUS_READY)
+
+    @override_settings(ONEC_ODATA_TARGET_ORGANIZATION_ID="")
+    def test_process_client_apply_run_imports_ready_candidates_and_finishes(self):
+        candidate = self.candidate(
+            source_ref="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            source_kind=ClientImportCandidate.KIND_LEGAL,
+            name="ООО Завершение импорта",
+            legal_name="ООО Завершение импорта",
+            inn="2222888888",
+            payload={"fio": "", "phones": [], "emails": []},
+        )
+        run = ClientImportRun.objects.create(
+            organization=self.organization,
+            status=ClientImportRun.STATUS_APPLYING,
+            total_rows=1,
+            processed_rows=0,
+            ready_count=1,
+        )
+
+        with override_settings(ONEC_ODATA_TARGET_ORGANIZATION_ID=str(self.organization.id)):
+            finished = process_client_apply_run(run.pk)
+
+        candidate.refresh_from_db()
+        finished.refresh_from_db()
+        self.assertEqual(candidate.status, ClientImportCandidate.STATUS_IMPORTED)
+        self.assertIsNotNone(candidate.applied_at)
+        self.assertIsNotNone(candidate.matched_client)
+        self.assertEqual(candidate.matched_client.client_type, "legal")
+        self.assertEqual(
+            candidate.matched_client.crm_profile.onec_ref,
+            candidate.source_ref,
+        )
+        self.assertEqual(finished.status, ClientImportRun.STATUS_SUCCESS)
+        self.assertEqual(finished.processed_rows, 1)
+        self.assertEqual(finished.imported_count, 1)
+        self.assertEqual(finished.ready_count, 0)
+
+    @override_settings(ONEC_ODATA_TARGET_ORGANIZATION_ID="")
+    def test_scan_request_does_not_start_while_mass_import_is_active(self):
+        run = ClientImportRun.objects.create(
+            organization=self.organization,
+            status=ClientImportRun.STATUS_APPLYING,
+            total_rows=10,
+            processed_rows=3,
+        )
+        user = get_user_model().objects.create_user(username="scan-during-apply")
+
+        with override_settings(ONEC_ODATA_TARGET_ORGANIZATION_ID=str(self.organization.id)), patch(
+            "pool_service.client_crm_import.start_client_import_worker",
+            return_value=True,
+        ) as launcher:
+            returned, started = request_client_import_scan(user)
+
+        self.assertFalse(started)
+        self.assertEqual(returned.pk, run.pk)
+        launcher.assert_not_called()
