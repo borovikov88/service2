@@ -28,8 +28,10 @@ from pool_service.models import (
     ExpenseChange,
     ExpensePeriod,
     ExpenseReceipt,
+    Notification,
     Organization,
     OrganizationAccess,
+    Profile,
 )
 from pool_service.services.finance import accountable_balance, company_cash_balance, ensure_default_categories, format_money, kkm_cash_balance, manager_cash_balance
 
@@ -307,6 +309,62 @@ class FinanceTests(TestCase):
         self.assertNotIn("pool", response.context["form"].fields)
         self.assertNotContains(response, "Объект клиента")
         self.assertNotContains(response, "data-pool-select")
+
+    @patch("pool_service.services.notifications.send_push_to_users")
+    def test_accountant_receives_relevant_finance_notification(self, send_push):
+        response = self.create_expense()
+
+        self.assertEqual(response.status_code, 302)
+        expense = Expense.objects.get()
+        self.assertTrue(
+            Notification.objects.filter(
+                user=self.accountant,
+                kind="finance",
+                title="Новый расход на проверке",
+                organization=self.organization,
+                client=expense.client,
+            ).exists()
+        )
+        pushed_user_ids = {
+            user.id
+            for call in send_push.call_args_list
+            for user in call.args[0]
+        }
+        self.assertIn(self.accountant.id, pushed_user_ids)
+
+    @patch("pool_service.services.notifications.send_push_to_users")
+    def test_accountant_personal_notification_switches_block_finance_delivery(self, send_push):
+        profile = Profile.objects.get(user=self.accountant)
+        profile.in_app_notifications_enabled = False
+        profile.push_notifications_enabled = False
+        profile.save(
+            update_fields=[
+                "in_app_notifications_enabled",
+                "push_notifications_enabled",
+            ]
+        )
+
+        response = self.create_expense()
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(
+            Notification.objects.filter(
+                user=self.accountant,
+                kind="finance",
+            ).exists()
+        )
+        pushed_user_ids = {
+            user.id
+            for call in send_push.call_args_list
+            for user in call.args[0]
+        }
+        self.assertNotIn(self.accountant.id, pushed_user_ids)
+        self.assertTrue(
+            Notification.objects.filter(
+                user=self.owner,
+                kind="finance",
+            ).exists()
+        )
 
     def test_accountant_has_full_finance_access(self):
         self.client.force_login(self.accountant)
