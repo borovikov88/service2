@@ -233,6 +233,20 @@ def _candidate_contacts(row, extra_rows):
     return phones, emails
 
 
+def _has_private_name_conflict(organization, name):
+    normalized_name = str(name or "").strip()
+    if not normalized_name:
+        return False
+    return Client.objects.filter(
+        organization=organization,
+        client_type="private",
+        name__iexact=normalized_name,
+    ).filter(
+        models.Q(crm_profile__isnull=True)
+        | models.Q(crm_profile__merged_into__isnull=True)
+    ).exists()
+
+
 def _match_clients(organization, source_kind, inn, phones, source_ref=""):
     matches = Client.objects.filter(organization=organization).filter(
         models.Q(crm_profile__isnull=True)
@@ -361,6 +375,14 @@ def scan_onec_clients(run=None):
         ):
             status = ClientImportCandidate.STATUS_REVIEW
             reason = "У юридического лица не заполнен ИНН"
+        elif (
+            effective_kind == ClientImportCandidate.KIND_PRIVATE
+            and not phones
+            and resolution == ClientImportCandidate.RESOLUTION_AUTO
+            and _has_private_name_conflict(organization, name)
+        ):
+            status = ClientImportCandidate.STATUS_REVIEW
+            reason = "Есть физлицо с тем же ФИО, но нет телефона для безопасного сопоставления"
 
         if resolution == ClientImportCandidate.RESOLUTION_SKIP:
             status = ClientImportCandidate.STATUS_SKIPPED
