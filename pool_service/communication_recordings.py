@@ -108,6 +108,23 @@ def _looks_like_mp3(prefix):
     return len(prefix) >= 2 and prefix[0] == 0xFF and (prefix[1] & 0xE0) == 0xE0
 
 
+def looks_like_audio_file(prefix, extension):
+    extension = (extension or "").lower()
+    if not prefix:
+        return False
+    if extension in {".mp3", ".mpga"}:
+        return _looks_like_mp3(prefix)
+    if extension == ".wav":
+        return len(prefix) >= 12 and prefix.startswith(b"RIFF") and prefix[8:12] == b"WAVE"
+    if extension in {".m4a", ".mp4"}:
+        return len(prefix) >= 12 and prefix[4:8] == b"ftyp"
+    if extension == ".webm":
+        return prefix.startswith(b"\x1a\x45\xdf\xa3")
+    if extension in {".mpeg"}:
+        return _looks_like_mp3(prefix) or prefix.startswith(b"\x00\x00\x01")
+    return False
+
+
 def _safe_filename(call):
     raw = re.sub(r"[^A-Za-z0-9._-]+", "_", call.external_id or "call").strip("._")
     if not raw:
