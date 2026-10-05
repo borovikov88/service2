@@ -100,7 +100,7 @@
       <form method="post" onsubmit="return confirm('Импортировать все карточки со статусом «Готов к импорту»?');">
         {% csrf_token %}
         <input type="hidden" name="action" value="apply">
-        <button class="btn btn-success" type="submit" {% if not ready_count or import_active %}disabled{% endif %}>
+        <button class="btn btn-success" type="submit" {% if not can_apply %}disabled{% endif %}>
           <i class="bi bi-check2-circle me-1"></i>Импортировать готовые ({{ ready_count }})
         </button>
       </form>
