@@ -25,6 +25,7 @@ from django.utils import timezone
 from django.views.decorators.clickjacking import xframe_options_sameorigin
 from django.views.decorators.http import require_POST
 
+from pool_service.client_queries import active_clients
 from pool_service.finance_forms import (
     AccountableTransactionForm,
     AccountableReturnRequestForm,
@@ -404,7 +405,7 @@ def _normalized_expense_report_filters(values, organization, prefix=""):
     if client_value == Expense.DESTINATION_OFFICE:
         normalized["client"] = client_value
     else:
-        organization_id("client", Client.objects.filter(organization=organization))
+        organization_id("client", active_clients(Client.objects.filter(organization=organization)))
 
     source = (values.get(f"{prefix}source") or "").strip()
     if source in dict(Expense.SOURCE_CHOICES):
@@ -551,7 +552,7 @@ def _expense_for_user(request, expense_uuid):
 
 def _client_options(organization):
     options = []
-    clients = Client.objects.filter(organization=organization).order_by("name")
+    clients = active_clients(Client.objects.filter(organization=organization)).order_by("name")
     for client in clients:
         details = client.phone or client.inn or ""
         label = f"{client.name} — {details}" if details else client.name
@@ -1645,7 +1646,7 @@ def finance_card_transfer_dashboard(request):
         "pool_service/finance/card_transfer_dashboard.html",
         {
             "payments": payments,
-            "clients": Client.objects.filter(organization=organization).order_by("name"),
+            "clients": active_clients(Client.objects.filter(organization=organization)).order_by("name"),
             "selected_client_id": selected_client_id,
             "date_from": parsed_date_from.isoformat() if parsed_date_from else "",
             "date_to": parsed_date_to.isoformat() if parsed_date_to else "",
