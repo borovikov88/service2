@@ -277,7 +277,7 @@
                 </div>
                 <div class="text-end">
                   <div class="small">{{ pool.get_service_status_display }}</div>
-                  {% if pool.service_monthly_price %}<div class="text-muted small">{{ pool.service_monthly_price }} ₽/мес.</div>{% endif %}
+                  {% if can_view_object_finance and pool.service_monthly_price %}<div class="text-muted small">{{ pool.service_monthly_price }} ₽/мес.</div>{% endif %}
                 </div>
               </div>
             </a>
