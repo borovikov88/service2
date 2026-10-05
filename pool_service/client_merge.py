@@ -198,6 +198,10 @@ def merge_clients(source_id, target_id, actor=None):
         raise ValueError("Целевая карточка должна быть импортирована из 1С")
     if source_profile and source_profile.onec_ref:
         raise ValueError("Исходная карточка уже связана с 1С")
+    if source.user_id and target.user_id and source.user_id != target.user_id:
+        raise ValueError(
+            "У обеих карточек есть разные пользовательские аккаунты. Такое объединение нужно разобрать отдельно."
+        )
 
     moved = _generic_relations(source, target)
     _merge_staff_access(source, target)
