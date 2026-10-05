@@ -246,7 +246,11 @@
           {% if call.analysis.status != 'pending' or call.analysis.requested_at %}
           <tr>
             <td colspan="7" class="p-0">
-              <div class="call-analysis">
+              <div
+                class="call-analysis"
+                data-call-analysis-status="{{ call.analysis.status }}"
+                data-analysis-status-url="{% url 'communication_call_analysis_status' call.pk %}"
+              >
                 {% if call.analysis and call.analysis.status == 'ready' %}
                   <div class="d-flex flex-wrap align-items-start justify-content-between gap-2">
                     <div class="call-analysis__summary">
@@ -341,6 +345,49 @@
     const secs = whole % 60;
     return `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
   };
+
+  const activeAnalysisNodes = Array.from(
+    document.querySelectorAll(
+      '[data-call-analysis-status="pending"], [data-call-analysis-status="processing"]'
+    )
+  );
+  if (activeAnalysisNodes.length) {
+    let analysisPollRunning = false;
+    const pollAnalysisStatus = async () => {
+      if (document.visibilityState !== "visible" || analysisPollRunning) return;
+      analysisPollRunning = true;
+      try {
+        for (const node of activeAnalysisNodes) {
+          const url = node.dataset.analysisStatusUrl;
+          if (!url) continue;
+          const response = await fetch(url, {
+            headers: {"X-Requested-With": "XMLHttpRequest"},
+            credentials: "same-origin",
+            cache: "no-store",
+          });
+          if (!response.ok) continue;
+          const payload = await response.json();
+          const status = payload.status || "none";
+          node.dataset.callAnalysisStatus = status;
+          if (status !== "pending" && status !== "processing") {
+            window.location.reload();
+            return;
+          }
+        }
+      } catch (_error) {
+        // Keep the current page usable; the next poll will retry.
+      } finally {
+        analysisPollRunning = false;
+      }
+    };
+    pollAnalysisStatus();
+    const analysisPollTimer = window.setInterval(pollAnalysisStatus, 5000);
+    window.addEventListener(
+      "pagehide",
+      () => window.clearInterval(analysisPollTimer),
+      {once: true}
+    );
+  }
 
   document.querySelectorAll("[data-call-transcript]").forEach((details) => {
     let loaded = false;
