@@ -68,7 +68,7 @@ jobs:
           fi
 
           printf -v REMOTE_COMMAND \
-            'set -Eeuo pipefail; cd %q; exec 8>../tmp/service2-client-sync.lock; if flock -n 8; then exec 9>../tmp/service2-deploy.lock; flock -s -w 300 9; ../venv/bin/python -B manage.py sync_onec_clients --mode %q; else echo "Client sync already running; skipping."; fi' \
+            'set -Eeuo pipefail; cd %q; exec 8>../tmp/service2-client-import.lock; if flock -n 8; then exec 9>../tmp/service2-deploy.lock; flock -s -w 300 9; ../venv/bin/python -B manage.py sync_onec_clients --mode %q; else echo "Client sync already running; skipping."; fi' \
             "$DEPLOY_APP_PATH" "$MODE"
 
           ssh -i ~/.ssh/service2_deploy \
