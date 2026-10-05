@@ -6,13 +6,14 @@ import re
 from django.db import transaction
 from django.utils import timezone
 
-from .models import Client, ClientAccess
+from .models import Client, ClientAccess, Organization
 from .client_crm_import import normalize_phone
 from .client_crm_models import (
     ClientCRMProfile,
     ClientCompanyLink,
     ClientContact,
     ClientImportCandidate,
+    ClientImportRun,
 )
 
 
@@ -218,6 +219,19 @@ def merge_clients(source_id, target_id, *, organization_id, actor=None):
         raise ValueError("Организация для объединения не указана")
     if source_id == target_id:
         raise ValueError("Нельзя объединить карточку саму с собой")
+
+    organization = Organization.objects.select_for_update().get(pk=organization_id)
+    if ClientImportRun.objects.filter(
+        organization=organization,
+        status__in=[
+            ClientImportRun.STATUS_PENDING,
+            ClientImportRun.STATUS_RUNNING,
+            ClientImportRun.STATUS_APPLYING,
+        ],
+    ).exists():
+        raise ValueError(
+            "Дождитесь завершения обновления или импорта клиентов перед объединением."
+        )
 
     locked = {
         item.pk: item
