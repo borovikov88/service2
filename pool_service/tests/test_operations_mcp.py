@@ -1,6 +1,7 @@
 import hashlib
 import json
 from datetime import date, timedelta
+from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
@@ -19,7 +20,7 @@ from pool_service.models import (
     OrganizationAccess,
     ServiceTask,
 )
-from pool_service.operations_mcp_auth import OPERATIONS_SCOPE
+from pool_service.operations_mcp_auth import OPERATIONS_SCOPE, _organization_scope
 from pool_service.operations_mcp_policy import can_access_operations_mcp
 
 
@@ -84,11 +85,14 @@ class OperationsMcpTests(TestCase):
 
     def _token(self, *, resource=RESOURCE, scopes=None, authorized_by=None, raw="operations-token"):
         scopes = scopes or [OPERATIONS_SCOPE]
+        grant_scopes = list(scopes)
+        if resource == RESOURCE and OPERATIONS_SCOPE in scopes:
+            grant_scopes.append(_organization_scope(self.organization.id))
         grant = FinanceMcpGrant.objects.create(
             client=self.oauth_client,
             principal=self.principal,
             authorized_by=authorized_by or self.owner,
-            scopes=scopes,
+            scopes=grant_scopes,
             resource=resource,
         )
         FinanceMcpAccessToken.objects.create(
@@ -178,6 +182,74 @@ class OperationsMcpTests(TestCase):
                 token=raw,
             )
         self.assertEqual(response.status_code, 401)
+
+    def test_token_is_bound_to_consented_organization(self):
+        raw = self._token(raw="organization-bound-token")
+        OrganizationAccess.objects.create(
+            user=self.owner,
+            organization=self.other_org,
+            role="owner",
+        )
+        FinanceMcpPrincipalOrganization.objects.create(
+            principal=self.principal,
+            organization=self.other_org,
+            granted_by=self.owner,
+        )
+        with override_settings(
+            ADVISOR_OPERATIONS_MCP_ORGANIZATION_ID=str(self.other_org.id),
+        ):
+            response = self._post(
+                {"jsonrpc": "2.0", "id": 23, "method": "tools/list", "params": {}},
+                token=raw,
+            )
+        self.assertEqual(response.status_code, 401)
+
+    def test_audit_failure_rolls_back_task_write(self):
+        raw = self._token(raw="audit-rollback-token")
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 24,
+            "method": "tools/call",
+            "params": {
+                "name": "create_task",
+                "arguments": {
+                    "idempotency_key": "audit-rollback",
+                    "title": "Не должна сохраниться",
+                    "responsible_user_id": self.manager.id,
+                    "due_date": "2026-10-07",
+                },
+            },
+        }
+
+        from pool_service import operations_mcp_views
+
+        real_audit = operations_mcp_views._audit
+
+        def fail_success_audit(authenticated, name, *, result, started, response_bytes=0):
+            if result == "success":
+                raise RuntimeError("audit unavailable")
+            return real_audit(
+                authenticated,
+                name,
+                result=result,
+                started=started,
+                response_bytes=response_bytes,
+            )
+
+        with self._settings(), patch(
+            "pool_service.operations_mcp_views._audit",
+            side_effect=fail_success_audit,
+        ):
+            response = self._post(payload, token=raw)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["result"]["isError"])
+        self.assertFalse(
+            ServiceTask.objects.filter(
+                organization=self.organization,
+                payload_json__operations_mcp_idempotency_key="audit-rollback",
+            ).exists()
+        )
 
     def test_create_task_is_idempotent_and_audited(self):
         raw = self._token()
