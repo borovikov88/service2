@@ -245,9 +245,10 @@ def merge_suggestions(source, targets, limit=5):
         score = SequenceMatcher(None, source_name, target_name).ratio() if source_name and target_name else 0.0
         target_phone = normalize_phone(target.phone)
         if source_phone and target_phone and source_phone == target_phone:
-            score += 1.0
+            score = max(score, 0.95)
         if source.client_type == target.client_type:
-            score += 0.05
+            score += 0.03
+        score = min(score, 1.0)
         scored.append((score, target))
     scored.sort(key=lambda item: (-item[0], item[1].name.casefold(), item[1].id))
     return [
