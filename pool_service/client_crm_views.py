@@ -80,6 +80,19 @@ def client_onec_import(request):
                 )
             return redirect("client_onec_import")
         if action == "resolve":
+            if ClientImportRun.objects.filter(
+                organization_id=organization_id,
+                status__in=[
+                    ClientImportRun.STATUS_PENDING,
+                    ClientImportRun.STATUS_RUNNING,
+                    ClientImportRun.STATUS_APPLYING,
+                ],
+            ).exists():
+                messages.warning(
+                    request,
+                    "Дождитесь завершения текущего обновления или импорта клиентов.",
+                )
+                return redirect("client_onec_import")
             try:
                 candidate_id = int(request.POST.get("candidate_id") or 0)
             except (TypeError, ValueError):
@@ -216,6 +229,19 @@ def client_merge_index(request):
         return HttpResponseForbidden()
 
     if request.method == "POST":
+        if ClientImportRun.objects.filter(
+            organization_id=organization_id,
+            status__in=[
+                ClientImportRun.STATUS_PENDING,
+                ClientImportRun.STATUS_RUNNING,
+                ClientImportRun.STATUS_APPLYING,
+            ],
+        ).exists():
+            messages.warning(
+                request,
+                "Дождитесь завершения обновления или импорта клиентов перед объединением.",
+            )
+            return redirect("client_merge_index")
         try:
             source_id = int(request.POST.get("source_id") or 0)
             target_id = int(request.POST.get("target_id") or 0)
@@ -233,6 +259,15 @@ def client_merge_index(request):
                 f"Карточки объединены. Перенесено связанных записей: {moved_total}.",
             )
         return redirect("client_merge_index")
+
+    merge_blocked = ClientImportRun.objects.filter(
+        organization_id=organization_id,
+        status__in=[
+            ClientImportRun.STATUS_PENDING,
+            ClientImportRun.STATUS_RUNNING,
+            ClientImportRun.STATUS_APPLYING,
+        ],
+    ).exists()
 
     legacy_qs = (
         Client.objects.filter(
@@ -317,6 +352,7 @@ def client_merge_index(request):
             "target_results": target_results,
             "q": q,
             "canonical_count": len(canonical),
+            "merge_blocked": merge_blocked,
             "show_search": False,
             "show_add_button": False,
             "add_url": None,
