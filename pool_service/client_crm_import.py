@@ -324,9 +324,18 @@ def scan_onec_clients(run=None):
         effective_kind = _effective_kind(source_kind, resolution)
         inn = str(row.get("ИНН") or "").strip()
         phones, emails = _candidate_contacts(row, contacts_by_ref.get(ref, []))
-        matches, match_reason = _match_clients(
-            organization, effective_kind, inn, phones, ref
-        )
+        if (
+            resolution != ClientImportCandidate.RESOLUTION_AUTO
+            and not (existing and existing.applied_at)
+        ):
+            # Manual classification means "create/import this canonical 1C
+            # client as classified". Legacy Service2 cards are merged later
+            # through the explicit merge workspace, never guessed here.
+            matches, match_reason = [], ""
+        else:
+            matches, match_reason = _match_clients(
+                organization, effective_kind, inn, phones, ref
+            )
 
         status = ClientImportCandidate.STATUS_READY
         reason = ""
