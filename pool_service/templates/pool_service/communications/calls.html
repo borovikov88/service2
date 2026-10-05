@@ -204,15 +204,17 @@
           {% if can_listen %}
             <td>
               {% if call.recording_file %}
-                <input
-                  class="form-check-input"
-                  type="checkbox"
-                  name="call_ids"
-                  value="{{ call.pk }}"
-                  form="bulk-analysis-form"
-                  data-call-select
-                  aria-label="Выбрать запись {{ call.pk }}"
-                >
+                {% if not call.analysis or call.analysis.status == 'failed' or call.analysis.status == 'pending' and not call.analysis.requested_at %}
+                  <input
+                    class="form-check-input"
+                    type="checkbox"
+                    name="call_ids"
+                    value="{{ call.pk }}"
+                    form="bulk-analysis-form"
+                    data-call-select
+                    aria-label="Выбрать запись {{ call.pk }}"
+                  >
+                {% endif %}
               {% endif %}
             </td>
           {% endif %}
