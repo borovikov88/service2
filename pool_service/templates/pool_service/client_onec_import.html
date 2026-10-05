@@ -1,0 +1,157 @@
+{% extends 'pool_service/base.html' %}
+{% block title %}Импорт клиентов из 1С{% endblock %}
+{% block content %}
+{% include "pool_service/_admin_workspace_styles.html" %}
+<div class="admin-desktop">
+  <div class="admin-card card card-soft p-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+      <div>
+        <h4 class="fw-bold mb-1">Импорт клиентов из 1С</h4>
+        <div class="text-muted">Сначала обновляем кандидатов, затем отдельно применяем только безопасно сопоставленные записи.</div>
+      </div>
+      <a class="btn btn-outline-secondary" href="{% url 'clients_list' %}">
+        <i class="bi bi-arrow-left me-1"></i>К клиентам
+      </a>
+    </div>
+
+    <div class="row g-3 mb-4">
+      <div class="col-6 col-lg-2">
+        <div class="border rounded-3 p-3 h-100">
+          <div class="text-muted small">Всего</div>
+          <div class="fs-4 fw-bold">{{ total_candidates }}</div>
+        </div>
+      </div>
+      <div class="col-6 col-lg-2">
+        <a class="text-decoration-none text-reset" href="?status=ready">
+          <div class="border rounded-3 p-3 h-100">
+            <div class="text-muted small">Готовы</div>
+            <div class="fs-4 fw-bold">{{ summary.ready|default:0 }}</div>
+          </div>
+        </a>
+      </div>
+      <div class="col-6 col-lg-2">
+        <a class="text-decoration-none text-reset" href="?status=review">
+          <div class="border rounded-3 p-3 h-100">
+            <div class="text-muted small">Проверить</div>
+            <div class="fs-4 fw-bold">{{ summary.review|default:0 }}</div>
+          </div>
+        </a>
+      </div>
+      <div class="col-6 col-lg-2">
+        <a class="text-decoration-none text-reset" href="?status=duplicate">
+          <div class="border rounded-3 p-3 h-100">
+            <div class="text-muted small">Дубли</div>
+            <div class="fs-4 fw-bold">{{ summary.duplicate|default:0 }}</div>
+          </div>
+        </a>
+      </div>
+      <div class="col-6 col-lg-2">
+        <a class="text-decoration-none text-reset" href="?status=invalid">
+          <div class="border rounded-3 p-3 h-100">
+            <div class="text-muted small">Некорректные</div>
+            <div class="fs-4 fw-bold">{{ summary.invalid|default:0 }}</div>
+          </div>
+        </a>
+      </div>
+      <div class="col-6 col-lg-2">
+        <a class="text-decoration-none text-reset" href="?status=imported">
+          <div class="border rounded-3 p-3 h-100">
+            <div class="text-muted small">Импортированы</div>
+            <div class="fs-4 fw-bold">{{ summary.imported|default:0 }}</div>
+          </div>
+        </a>
+      </div>
+    </div>
+
+    <div class="d-flex flex-wrap gap-2 align-items-center mb-4">
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="scan">
+        <button class="btn btn-primary" type="submit">
+          <i class="bi bi-arrow-repeat me-1"></i>Обновить из 1С
+        </button>
+      </form>
+      <form method="post" onsubmit="return confirm('Импортировать все карточки со статусом «Готов к импорту»?');">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="apply">
+        <button class="btn btn-success" type="submit" {% if not ready_count %}disabled{% endif %}>
+          <i class="bi bi-check2-circle me-1"></i>Импортировать готовые ({{ ready_count }})
+        </button>
+      </form>
+      <div class="ms-lg-auto text-muted small">
+        Компании: {{ kinds.legal|default:0 }} · ИП: {{ kinds.ip|default:0 }} · Физлица: {{ kinds.private|default:0 }}
+      </div>
+    </div>
+
+    {% if current_status %}
+      <div class="mb-3">
+        <a href="{% url 'client_onec_import' %}" class="btn btn-sm btn-outline-secondary">Сбросить фильтр</a>
+      </div>
+    {% endif %}
+
+    <div class="table-responsive">
+      <table class="table align-middle">
+        <thead class="small text-muted">
+          <tr>
+            <th>Клиент из 1С</th>
+            <th>Тип</th>
+            <th>ИНН</th>
+            <th>Телефон / Email</th>
+            <th>Статус</th>
+            <th>Сопоставление</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for candidate in candidates %}
+          <tr>
+            <td>
+              <div class="fw-semibold">{{ candidate.name }}</div>
+              {% if candidate.legal_name and candidate.legal_name != candidate.name %}
+                <div class="text-muted small">{{ candidate.legal_name }}</div>
+              {% endif %}
+              <div class="text-muted small">1С: {{ candidate.source_code|default:"—" }}</div>
+            </td>
+            <td>{{ candidate.get_source_kind_display }}</td>
+            <td>{{ candidate.inn|default:"—" }}</td>
+            <td>
+              <div>{{ candidate.phone|default:"—" }}</div>
+              {% if candidate.email %}<div class="text-muted small">{{ candidate.email }}</div>{% endif %}
+            </td>
+            <td>
+              {% if candidate.status == "ready" %}
+                <span class="badge text-bg-success">Готов</span>
+              {% elif candidate.status == "review" %}
+                <span class="badge text-bg-warning">Проверить</span>
+              {% elif candidate.status == "duplicate" %}
+                <span class="badge text-bg-danger">Возможный дубль</span>
+              {% elif candidate.status == "invalid" %}
+                <span class="badge text-bg-secondary">Не импортировать</span>
+              {% else %}
+                <span class="badge text-bg-primary">Импортирован</span>
+              {% endif %}
+              {% if candidate.reason %}<div class="small text-muted mt-1">{{ candidate.reason }}</div>{% endif %}
+            </td>
+            <td>
+              {% if candidate.matched_client %}
+                {{ candidate.matched_client.name }}
+              {% else %}
+                <span class="text-muted">Новая карточка</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% empty %}
+          <tr>
+            <td colspan="6" class="text-center text-muted py-5">
+              Данные ещё не загружены. Нажмите «Обновить из 1С».
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if total_candidates > 500 %}
+      <div class="text-muted small mt-2">На странице показаны первые 500 записей. Используйте фильтры по статусу.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
