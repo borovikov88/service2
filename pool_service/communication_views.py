@@ -273,6 +273,28 @@ def calls(request):
 
 
 @login_required
+def call_analysis_status(request, call_id):
+    organization = _context(request, "can_listen_calls")
+    call = get_object_or_404(
+        PhoneCall.objects.select_related("analysis"),
+        pk=call_id,
+        organization=organization,
+    )
+    if (
+        not conversation_capability(request.user, "can_view_all_calls", organization)
+        and call.employee_id != request.user.id
+    ):
+        raise PermissionDenied
+    analysis = getattr(call, "analysis", None)
+    if analysis is None:
+        return JsonResponse({"status": "none"})
+    return JsonResponse({
+        "status": analysis.status,
+        "error": analysis.error,
+    })
+
+
+@login_required
 def call_analysis_transcript(request, call_id):
     organization = _context(request, "can_listen_calls")
     call = get_object_or_404(
