@@ -25,12 +25,18 @@
           <div class="fw-semibold">
             {% if latest_run.status == "pending" %}Обновление из 1С поставлено в очередь
             {% elif latest_run.status == "running" %}Обновление из 1С выполняется
-            {% elif latest_run.status == "success" %}Последнее обновление из 1С завершено
-            {% else %}Последнее обновление завершилось ошибкой{% endif %}
+            {% elif latest_run.status == "applying" %}Импортируются готовые клиенты
+            {% elif latest_run.status == "success" %}
+              {% if latest_run.imported_count %}Импорт клиентов завершён{% else %}Последнее обновление из 1С завершено{% endif %}
+            {% else %}Последняя операция завершилась ошибкой{% endif %}
           </div>
           <div class="small">
             {% if latest_run.total_rows %}
-              Обработано {{ latest_run.processed_rows }} из {{ latest_run.total_rows }}
+              {% if latest_run.status == "applying" %}
+                Импортировано/обработано {{ latest_run.processed_rows }} из {{ latest_run.total_rows }}
+              {% else %}
+                Обработано {{ latest_run.processed_rows }} из {{ latest_run.total_rows }}
+              {% endif %}
             {% elif import_active %}
               Получаем данные из 1С…
             {% endif %}
