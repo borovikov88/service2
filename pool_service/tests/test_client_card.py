@@ -102,7 +102,7 @@ class ClientCardTests(TestCase):
             reverse("client_detail", args=[self.crm_client.pk])
         )
 
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 403)
 
     def test_merged_legacy_card_redirects_to_canonical_client(self):
         legacy = Client.objects.create(
@@ -204,7 +204,7 @@ class ClientCardTests(TestCase):
             reverse("client_detail", args=[self.crm_client.pk])
         )
 
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 302)
 
     def test_service_role_sees_only_service_crm_direction(self):
         service_user = get_user_model().objects.create_user(
