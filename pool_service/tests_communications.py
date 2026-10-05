@@ -1063,6 +1063,83 @@ class CommunicationsTests(TestCase):
         call_command("process_requested_call_analyses", "--limit", "1")
         process_analysis.assert_called_once_with(requested_call.pk)
 
+    @override_settings(OPENAI_CALL_MAX_ATTEMPTS=5)
+    @patch(
+        "pool_service.management.commands.process_requested_call_analyses.process_call_analysis",
+        return_value=True,
+    )
+    def test_requested_call_worker_recovers_stale_processing_request(self, process_analysis):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-ai-worker-stale",
+        )
+        stale_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-worker-stale",
+            employee=self.owner,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=25,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        stale_call.recording_file.save(
+            "ai-worker-stale.mp3",
+            ContentFile(b"ID3test"),
+            save=True,
+        )
+        fresh_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-worker-fresh",
+            employee=self.owner,
+            phone_number="+79001112234",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=25,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        fresh_call.recording_file.save(
+            "ai-worker-fresh.mp3",
+            ContentFile(b"ID3test"),
+            save=True,
+        )
+        requested_at = timezone.now() - timedelta(hours=1)
+        stale = CallAnalysis.objects.create(
+            call=stale_call,
+            status=CallAnalysis.STATUS_PROCESSING,
+            requested_at=requested_at,
+            processing_started_at=timezone.now() - timedelta(minutes=31),
+            processing_token="stale-token",
+            attempts=1,
+        )
+        fresh = CallAnalysis.objects.create(
+            call=fresh_call,
+            status=CallAnalysis.STATUS_PROCESSING,
+            requested_at=timezone.now(),
+            processing_started_at=timezone.now() - timedelta(minutes=5),
+            processing_token="fresh-token",
+            attempts=1,
+        )
+
+        call_command("process_requested_call_analyses", "--limit", "2")
+
+        process_analysis.assert_called_once_with(stale_call.pk)
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, CallAnalysis.STATUS_PENDING)
+        self.assertEqual(stale.error, "processing_stale_requeued")
+        self.assertEqual(stale.processing_token, "")
+        self.assertIsNone(stale.processing_started_at)
+        self.assertEqual(stale.requested_at, requested_at)
+
+        fresh.refresh_from_db()
+        self.assertEqual(fresh.status, CallAnalysis.STATUS_PROCESSING)
+        self.assertEqual(fresh.processing_token, "fresh-token")
+
     @patch(
         "pool_service.management.commands.process_requested_call_analyses.process_call_analysis"
     )
