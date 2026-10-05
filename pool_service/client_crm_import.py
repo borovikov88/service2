@@ -709,35 +709,91 @@ def _split_person_name(value):
 
 def _sync_contacts(client, candidate):
     payload = candidate.payload or {}
-    sources = ["onec"]
-    for kind, key in ((ClientContact.KIND_PHONE, "phones"), (ClientContact.KIND_EMAIL, "emails")):
+    source_name = "onec"
+    desired = set()
+
+    for kind, key in (
+        (ClientContact.KIND_PHONE, "phones"),
+        (ClientContact.KIND_EMAIL, "emails"),
+    ):
         for item in payload.get(key, []):
             value = str(item.get("value") or "").strip()
             if not value:
                 continue
-            match_value = normalize_phone(value) if kind == ClientContact.KIND_PHONE else normalize_email(value)
-            contact, created = ClientContact.objects.get_or_create(
-                client=client,
-                kind=kind,
-                value=value,
-                defaults={
-                    "match_value": match_value,
-                    "label": str(item.get("label") or "")[:120],
-                    "is_primary": False,
-                    "sources": sources,
-                    "source_reference": candidate.source_ref,
-                },
+            match_value = (
+                normalize_phone(value)
+                if kind == ClientContact.KIND_PHONE
+                else normalize_email(value)
             )
-            if not created:
-                changed = False
-                if contact.match_value != match_value:
-                    contact.match_value = match_value
-                    changed = True
-                if "onec" not in (contact.sources or []):
-                    contact.sources = list(contact.sources or []) + ["onec"]
-                    changed = True
-                if changed:
-                    contact.save(update_fields=["match_value", "sources", "updated_at"])
+            if not match_value:
+                continue
+            desired.add((kind, match_value))
+
+            contact = (
+                ClientContact.objects.filter(
+                    client=client,
+                    kind=kind,
+                    match_value=match_value,
+                )
+                .order_by("-is_primary", "id")
+                .first()
+            )
+            if contact is None:
+                contact = ClientContact.objects.create(
+                    client=client,
+                    kind=kind,
+                    value=value,
+                    match_value=match_value,
+                    label=str(item.get("label") or "")[:120],
+                    is_primary=False,
+                    sources=[source_name],
+                    source_reference=candidate.source_ref,
+                )
+                continue
+
+            changed_fields = []
+            sources = list(contact.sources or [])
+            if source_name not in sources:
+                sources.append(source_name)
+                contact.sources = sources
+                changed_fields.append("sources")
+            if contact.source_reference != candidate.source_ref:
+                contact.source_reference = candidate.source_ref
+                changed_fields.append("source_reference")
+            label = str(item.get("label") or "")[:120]
+            if label and not contact.label:
+                contact.label = label
+                changed_fields.append("label")
+            if changed_fields:
+                contact.save(update_fields=changed_fields + ["updated_at"])
+
+    onec_contacts = list(
+        ClientContact.objects.filter(
+            client=client,
+            source_reference=candidate.source_ref,
+        )
+    )
+    for contact in onec_contacts:
+        identity = (contact.kind, contact.match_value)
+        if identity in desired:
+            continue
+        sources = [
+            value
+            for value in (contact.sources or [])
+            if value != source_name
+        ]
+        if not sources:
+            contact.delete()
+            continue
+        contact.sources = sources
+        contact.source_reference = ""
+        contact.save(
+            update_fields=[
+                "sources",
+                "source_reference",
+                "updated_at",
+            ]
+        )
 
 
 def _find_or_create_ip_person(company, candidate):
@@ -830,6 +886,7 @@ def apply_candidate(candidate):
 
     kind = candidate.effective_kind
     client = candidate.matched_client
+    already_linked_to_same_onec = False
     if client is None:
         client_type = "private" if kind == ClientImportCandidate.KIND_PRIVATE else "legal"
         last_name = first_name = middle_name = ""
@@ -860,12 +917,9 @@ def apply_candidate(candidate):
                 client.company_name = None
             else:
                 client.company_name = candidate.legal_name or candidate.name or client.company_name
-            if candidate.inn:
-                client.inn = candidate.inn
-            if candidate.phone:
-                client.phone = candidate.phone
-            if candidate.email:
-                client.email = candidate.email
+            client.inn = candidate.inn or None
+            client.phone = candidate.phone or None
+            client.email = candidate.email or None
         else:
             if candidate.inn and not client.inn:
                 client.inn = candidate.inn
@@ -883,10 +937,24 @@ def apply_candidate(candidate):
         if kind == ClientImportCandidate.KIND_LEGAL
         else ClientCRMProfile.LEGAL_FORM_NONE
     )
-    profile.middle_name = profile.middle_name or (_split_person_name(candidate.name)[2] if client.client_type == "private" else "")
-    profile.birth_date = candidate.birth_date or profile.birth_date
-    profile.legal_name = candidate.legal_name or profile.legal_name
-    profile.kpp = candidate.kpp or profile.kpp
+    if already_linked_to_same_onec:
+        profile.middle_name = (
+            _split_person_name(candidate.name)[2]
+            if client.client_type == "private"
+            else ""
+        )
+        profile.birth_date = candidate.birth_date
+        profile.legal_name = candidate.legal_name
+        profile.kpp = candidate.kpp
+    else:
+        profile.middle_name = profile.middle_name or (
+            _split_person_name(candidate.name)[2]
+            if client.client_type == "private"
+            else ""
+        )
+        profile.birth_date = candidate.birth_date or profile.birth_date
+        profile.legal_name = candidate.legal_name or profile.legal_name
+        profile.kpp = candidate.kpp or profile.kpp
     profile.onec_ref = candidate.source_ref
     profile.onec_code = candidate.source_code
     profile.onec_name = candidate.name
