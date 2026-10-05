@@ -1376,10 +1376,32 @@ class CommunicationsTests(TestCase):
             )
             calls.append(call)
 
+        ready_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="manual-bulk-ready",
+            phone_number="",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        ready_call.recording_file.save(
+            "manual-bulk-ready.mp3",
+            ContentFile(b"ID3ready"),
+            save=True,
+        )
+        CallAnalysis.objects.create(
+            call=ready_call,
+            status=CallAnalysis.STATUS_READY,
+            transcript="Уже готово",
+            summary="Готовый анализ",
+        )
+
         self.client.login(username="owner", password="test")
         response = self.client.post(
             reverse("communication_call_analysis_bulk"),
-            {"call_ids": [str(call.pk) for call in calls]},
+            {"call_ids": [str(call.pk) for call in calls] + [str(ready_call.pk)]},
         )
         self.assertRedirects(response, reverse("communications_calls"))
         self.assertEqual(
@@ -1387,6 +1409,13 @@ class CommunicationsTests(TestCase):
             [call.pk for call in calls],
         )
         start_worker.assert_called_once_with()
+
+        page = self.client.get(reverse("communications_calls"))
+        self.assertNotContains(
+            page,
+            f'value="{ready_call.pk}" form="bulk-analysis-form"',
+            html=False,
+        )
 
     @override_settings(
         COMMUNICATION_RECORDING_DOWNLOAD_TIMEOUT_SECONDS=2,
