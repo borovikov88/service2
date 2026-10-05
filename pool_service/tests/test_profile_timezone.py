@@ -37,6 +37,31 @@ class ProfileTimezoneTests(TestCase):
         profile = Profile.objects.get(user=self.user)
         self.assertEqual(profile.timezone, "Asia/Barnaul")
 
+    def test_accountant_can_manage_personal_notification_switches(self):
+        accountant = User.objects.create_user(username="accountant-profile", password="pass")
+        OrganizationAccess.objects.create(user=accountant, organization=self.org, role="accountant")
+        self.client.force_login(accountant)
+
+        response = self.client.get(reverse("profile"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'name="in_app_notifications_enabled"')
+        self.assertContains(response, 'name="push_notifications_enabled"')
+        self.assertNotContains(response, "Настройки организации")
+
+        response = self.client.post(
+            reverse("profile"),
+            {
+                "notification_settings": "1",
+                "personal_notification_settings": "1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        profile = Profile.objects.get(user=accountant)
+        self.assertFalse(profile.in_app_notifications_enabled)
+        self.assertFalse(profile.push_notifications_enabled)
+
     @override_settings(USE_TZ=True, TIME_ZONE="UTC")
     def test_profile_timezone_is_used_for_datetime_output(self):
         profile = Profile.objects.get(user=self.user)
