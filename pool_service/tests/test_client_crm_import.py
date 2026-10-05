@@ -11,6 +11,7 @@ from pool_service.client_crm_import import (
     request_client_import_scan,
     resolve_import_candidate,
     scan_onec_clients,
+    sync_recent_onec_clients,
 )
 from pool_service.client_crm_models import (
     ClientCRMProfile,
@@ -494,4 +495,167 @@ class ClientCRMImportTests(TestCase):
         self.assertEqual(
             candidate.resolution,
             ClientImportCandidate.RESOLUTION_AUTO,
+        )
+
+
+    @override_settings(ONEC_ODATA_TARGET_ORGANIZATION_ID="")
+    def test_recent_sync_auto_imports_new_legal_client_without_inn(self):
+        buyer_rows = [
+            {
+                "Ref_Key": "12121212-1212-1212-1212-121212121212",
+                "Code": "НФ-020001",
+                "Description": "Новый клиент без ИНН",
+                "НаименованиеПолное": "Новый клиент без ИНН",
+                "ЮридическоеФизическоеЛицо": "ЮридическоеЛицо",
+                "ВидКонтрагента": "ЮридическоеЛицо",
+                "ИНН": "",
+                "КПП": "",
+                "ФИО": "",
+                "ДатаРождения": "0001-01-01T00:00:00",
+                "ДатаСоздания": "2026-10-05T00:00:00",
+                "НомерТелефонаДляПоиска": "79130001122",
+                "АдресЭПДляПоиска": "",
+                "Покупатель": True,
+                "Недействителен": False,
+            }
+        ]
+
+        def fake_query(_config, entity_set, **kwargs):
+            if entity_set == "Catalog_Контрагенты":
+                return {"rows": buyer_rows, "complete": True}
+            return {"rows": [], "complete": True}
+
+        with override_settings(
+            ONEC_ODATA_TARGET_ORGANIZATION_ID=str(self.organization.id)
+        ), patch(
+            "pool_service.client_crm_import.config_from_settings",
+            return_value=object(),
+        ), patch(
+            "pool_service.client_crm_import.fetch_metadata",
+            return_value=b"metadata",
+        ), patch(
+            "pool_service.client_crm_import.query_1c_rows",
+            side_effect=fake_query,
+        ):
+            result = sync_recent_onec_clients(lookback_hours=48)
+
+        self.assertEqual(result["imported"], 1)
+        candidate = ClientImportCandidate.objects.get(
+            source_ref=buyer_rows[0]["Ref_Key"]
+        )
+        self.assertEqual(candidate.status, ClientImportCandidate.STATUS_IMPORTED)
+        self.assertEqual(candidate.matched_client.client_type, "legal")
+        self.assertEqual(
+            candidate.matched_client.crm_profile.onec_ref,
+            buyer_rows[0]["Ref_Key"],
+        )
+
+    @override_settings(ONEC_ODATA_TARGET_ORGANIZATION_ID="")
+    def test_recent_sync_leaves_ambiguous_phone_for_review(self):
+        for index in range(2):
+            Client.objects.create(
+                organization=self.organization,
+                client_type="legal",
+                name=f"Старый клиент {index}",
+                phone="+7 913 333-44-55",
+            )
+        buyer_rows = [
+            {
+                "Ref_Key": "13131313-1313-1313-1313-131313131313",
+                "Code": "НФ-020002",
+                "Description": "Неоднозначный новый клиент",
+                "НаименованиеПолное": "Неоднозначный новый клиент",
+                "ЮридическоеФизическоеЛицо": "ЮридическоеЛицо",
+                "ВидКонтрагента": "ЮридическоеЛицо",
+                "ИНН": "",
+                "КПП": "",
+                "ФИО": "",
+                "ДатаРождения": "0001-01-01T00:00:00",
+                "ДатаСоздания": "2026-10-05T00:00:00",
+                "НомерТелефонаДляПоиска": "79133334455",
+                "АдресЭПДляПоиска": "",
+                "Покупатель": True,
+                "Недействителен": False,
+            }
+        ]
+
+        def fake_query(_config, entity_set, **kwargs):
+            if entity_set == "Catalog_Контрагенты":
+                return {"rows": buyer_rows, "complete": True}
+            return {"rows": [], "complete": True}
+
+        with override_settings(
+            ONEC_ODATA_TARGET_ORGANIZATION_ID=str(self.organization.id)
+        ), patch(
+            "pool_service.client_crm_import.config_from_settings",
+            return_value=object(),
+        ), patch(
+            "pool_service.client_crm_import.fetch_metadata",
+            return_value=b"metadata",
+        ), patch(
+            "pool_service.client_crm_import.query_1c_rows",
+            side_effect=fake_query,
+        ):
+            result = sync_recent_onec_clients(lookback_hours=48)
+
+        self.assertEqual(result["duplicate"], 1)
+        candidate = ClientImportCandidate.objects.get(
+            source_ref=buyer_rows[0]["Ref_Key"]
+        )
+        self.assertEqual(candidate.status, ClientImportCandidate.STATUS_DUPLICATE)
+        self.assertIsNone(candidate.applied_at)
+
+    @override_settings(ONEC_ODATA_TARGET_ORGANIZATION_ID="")
+    def test_recent_sync_does_not_auto_merge_ip_person_by_name_only(self):
+        Client.objects.create(
+            organization=self.organization,
+            client_type="private",
+            name="Петров Петр Петрович",
+        )
+        buyer_rows = [
+            {
+                "Ref_Key": "14141414-1414-1414-1414-141414141414",
+                "Code": "НФ-020003",
+                "Description": "ИП Петров Петр Петрович",
+                "НаименованиеПолное": "ИП Петров Петр Петрович",
+                "ЮридическоеФизическоеЛицо": "ЮридическоеЛицо",
+                "ВидКонтрагента": "ИндивидуальныйПредприниматель",
+                "ИНН": "220000000002",
+                "КПП": "",
+                "ФИО": "Петров Петр Петрович",
+                "ДатаРождения": "0001-01-01T00:00:00",
+                "ДатаСоздания": "2026-10-05T00:00:00",
+                "НомерТелефонаДляПоиска": "",
+                "АдресЭПДляПоиска": "",
+                "Покупатель": True,
+                "Недействителен": False,
+            }
+        ]
+
+        def fake_query(_config, entity_set, **kwargs):
+            if entity_set == "Catalog_Контрагенты":
+                return {"rows": buyer_rows, "complete": True}
+            return {"rows": [], "complete": True}
+
+        with override_settings(
+            ONEC_ODATA_TARGET_ORGANIZATION_ID=str(self.organization.id)
+        ), patch(
+            "pool_service.client_crm_import.config_from_settings",
+            return_value=object(),
+        ), patch(
+            "pool_service.client_crm_import.fetch_metadata",
+            return_value=b"metadata",
+        ), patch(
+            "pool_service.client_crm_import.query_1c_rows",
+            side_effect=fake_query,
+        ):
+            result = sync_recent_onec_clients(lookback_hours=48)
+
+        self.assertEqual(result["review"], 1)
+        candidate = ClientImportCandidate.objects.get(
+            source_ref=buyer_rows[0]["Ref_Key"]
+        )
+        self.assertEqual(candidate.status, ClientImportCandidate.STATUS_REVIEW)
+        self.assertFalse(
+            ClientCRMProfile.objects.filter(onec_ref=buyer_rows[0]["Ref_Key"]).exists()
         )
