@@ -19,7 +19,11 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from pool_service.finance_mcp_auth import CHATGPT_CLIENT_ID_METADATA_URL
+from pool_service.finance_mcp_auth import (
+    CHATGPT_CLIENT_ID_METADATA_URL,
+    FinanceMcpConfigurationError,
+    issuer_url as finance_issuer_url,
+)
 from pool_service.models import (
     FinanceMcpAccessToken,
     FinanceMcpAuthorizationCode,
@@ -147,10 +151,13 @@ def resource_url():
 
 
 def issuer_url():
-    configured = getattr(settings, "ADVISOR_OPERATIONS_MCP_AUTH_ISSUER", "")
-    if not configured:
-        configured = getattr(settings, "SITE_URL", "")
-    return _https_url(configured, field="ADVISOR_OPERATIONS_MCP_AUTH_ISSUER")
+    """Use the single reviewed authorization-server issuer shared by all MCPs."""
+    try:
+        return finance_issuer_url()
+    except FinanceMcpConfigurationError as exc:
+        raise OperationsMcpConfigurationError(
+            "Shared MCP authorization issuer is not configured."
+        ) from exc
 
 
 def protected_resource_metadata_url():
@@ -365,7 +372,8 @@ def validate_authorization_request(params):
             "invalid_target", "OAuth resource не соответствует Operations MCP."
         )
     client = client_for_authorization(params.get("client_id"), params.get("redirect_uri"))
-    if not principal_has_target_scope(client):
+    organization = target_organization()
+    if not client.principal.organization_scopes.filter(organization=organization).exists():
         raise OperationsMcpOAuthError("access_denied", "Operations principal не имеет target scope.", status=403)
     return {
         "client": client,
@@ -374,6 +382,7 @@ def validate_authorization_request(params):
         "resource": resource,
         "scopes": _normalize_scopes(params.get("scope")),
         "code_challenge": challenge,
+        "organization_id": organization.id,
     }
 
 
@@ -424,6 +433,12 @@ def issue_authorization_code(*, authorization, user):
         # must not revoke sibling Diagnostic grants or Finance grants.
         # Explicit revoke and refresh-token replay handling stay grant-scoped.
         organization = target_organization()
+        if organization.id != authorization.get("organization_id"):
+            raise OperationsMcpOAuthError(
+                "access_denied",
+                "Целевая организация изменилась после показа согласия.",
+                status=403,
+            )
         grant_scopes = sorted(
             set(authorization["scopes"]) | {_organization_scope(organization.id)}
         )
