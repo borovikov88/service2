@@ -4540,6 +4540,7 @@ def crm_list(request, direction):
 
 
 @login_required
+@transaction.atomic
 def crm_bulk_update(request, direction):
     if request.method != "POST":
         return redirect("crm_list", direction=direction)
@@ -4596,7 +4597,7 @@ def crm_bulk_update(request, direction):
             item.save(update_fields=["stage", "updated_at"])
             sync_crm_archive_state(item, request.user)
             if not item.is_archived:
-                for linked_task in item.service_tasks.all():
+                for linked_task in item.service_tasks.select_for_update().all():
                     sync_task_with_crm_item(linked_task)
             changed += 1
         messages.success(request, f"Этап обновлён у записей: {changed}.")
@@ -4631,7 +4632,7 @@ def crm_bulk_update(request, direction):
                 continue
             item.responsible = responsible
             item.save(update_fields=["responsible", "updated_at"])
-            for linked_task in item.service_tasks.all():
+            for linked_task in item.service_tasks.select_for_update().all():
                 linked_task.primary_responsible = responsible
                 linked_task.save(update_fields=["primary_responsible", "updated_at"])
                 sync_crm_item_for_task(linked_task)
