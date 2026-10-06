@@ -699,6 +699,7 @@ def megafon_webhook(request, public_id):
                 "employee_profile": effective_employee_profile,
                 "provider_user": effective_provider_user,
                 "provider_extension": effective_provider_extension,
+                "client": client,
                 "contact_name": client.name if client else "",
                 "phone_number": format_phone(phone),
                 "direction": direction,
