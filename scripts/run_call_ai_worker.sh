@@ -15,10 +15,12 @@ cd "$APP_DIR"
 LIMIT="${1:-10}"
 WAIT_FOR_AI="${2:-1}"
 IDLE_GRACE_SECONDS="${3:-0}"
+CONCURRENCY="${4:-3}"
 
 [[ "$LIMIT" =~ ^[0-9]+$ ]]
 [[ "$WAIT_FOR_AI" == "0" || "$WAIT_FOR_AI" == "1" ]]
 [[ "$IDLE_GRACE_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]]
+[[ "$CONCURRENCY" =~ ^[1-4]$ ]]
 
 # Only durable manual launchers participate in the successor mutex.
 # Scheduled fallback is deliberately non-waiting and must never consume this slot.
@@ -64,6 +66,7 @@ COMMAND_ARGS=(
     process_requested_call_analyses
     --limit "$LIMIT"
     --idle-grace-seconds "$IDLE_GRACE_SECONDS"
+    --concurrency "$CONCURRENCY"
 )
 if [[ "$WAIT_FOR_AI" == "1" ]]; then
     COMMAND_ARGS+=(--drain)

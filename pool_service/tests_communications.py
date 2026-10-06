@@ -2,6 +2,7 @@ from datetime import timedelta
 import io
 from importlib import import_module
 import logging
+import threading
 from unittest.mock import MagicMock, patch
 
 from django.apps import apps
@@ -805,6 +806,7 @@ class CommunicationsTests(TestCase):
         kwargs = popen.call_args.kwargs
         self.assertEqual(command[0], "/bin/bash")
         self.assertTrue(command[1].endswith("scripts/run_call_ai_worker.sh"))
+        self.assertEqual(command[2:], ["10", "1", "0", "3"])
         self.assertTrue(kwargs["start_new_session"])
         self.assertTrue(kwargs["close_fds"])
         self.assertEqual(
@@ -1149,6 +1151,61 @@ class CommunicationsTests(TestCase):
         fresh.refresh_from_db()
         self.assertEqual(fresh.status, CallAnalysis.STATUS_PROCESSING)
         self.assertEqual(fresh.processing_token, "fresh-token")
+
+    @patch(
+        "pool_service.management.commands.process_requested_call_analyses.process_call_analysis"
+    )
+    def test_requested_call_worker_processes_batch_concurrently(self, process_analysis):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-ai-worker-concurrent",
+        )
+        call_ids = []
+        for index in range(3):
+            call = PhoneCall.objects.create(
+                organization=self.organization,
+                connection=telephony,
+                external_id=f"ai-worker-concurrent-{index}",
+                employee=self.owner,
+                phone_number=f"+7900111223{index}",
+                direction=PhoneCall.DIRECTION_IN,
+                started_at=timezone.now(),
+                duration_seconds=25,
+                result=PhoneCall.RESULT_ANSWERED,
+                recording_status=PhoneCall.RECORDING_STORED,
+            )
+            call.recording_file.save(
+                f"ai-worker-concurrent-{index}.mp3",
+                ContentFile(b"ID3test"),
+                save=True,
+            )
+            CallAnalysis.objects.create(
+                call=call,
+                status=CallAnalysis.STATUS_PENDING,
+                requested_at=timezone.now(),
+            )
+            call_ids.append(call.pk)
+
+        barrier = threading.Barrier(3, timeout=2)
+
+        def process_side_effect(_call_id):
+            barrier.wait()
+            return True
+
+        process_analysis.side_effect = process_side_effect
+        call_command(
+            "process_requested_call_analyses",
+            "--limit",
+            "3",
+            "--concurrency",
+            "3",
+        )
+
+        self.assertCountEqual(
+            [item.args[0] for item in process_analysis.call_args_list],
+            call_ids,
+        )
 
     @patch(
         "pool_service.management.commands.process_requested_call_analyses.process_call_analysis"
