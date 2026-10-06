@@ -611,6 +611,64 @@ class OperationsMcpTests(TestCase):
         self.assertEqual(delivery["push_delivery_result"], "blocked_not_authorized")
         self.assertNotIn("push_delivered_at", delivery)
 
+    @patch("pool_service.operations_mcp_views.send_push_to_users")
+    def test_idempotent_retry_does_not_recreate_assignment_after_access_revoked(self, send_push):
+        raw = self._token(raw="revoked-idempotent-assignment-token")
+        task = ServiceTask.objects.create(
+            organization=self.organization,
+            title="Старая задача без durable notification",
+            start_date=date(2026, 10, 7),
+            end_date=date(2026, 10, 7),
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            source_type=ServiceTask.SOURCE_MANAGER,
+            status=ServiceTask.STATUS_NEW,
+            visibility=ServiceTask.VISIBILITY_PRIVATE,
+            primary_responsible=self.manager,
+            created_by=self.owner,
+            payload_json={
+                "source": "operations_mcp",
+                "operations_mcp_idempotency_key": "revoked-idempotent-assignment",
+            },
+        )
+        task.responsibles.add(self.manager)
+        OrganizationAccess.objects.filter(
+            user=self.manager,
+            organization=self.organization,
+        ).delete()
+
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 33,
+            "method": "tools/call",
+            "params": {
+                "name": "create_task",
+                "arguments": {
+                    "idempotency_key": "revoked-idempotent-assignment",
+                    "title": task.title,
+                    "responsible_user_id": self.manager.id,
+                    "due_date": "2026-10-07",
+                },
+            },
+        }
+        with self._settings(), self.captureOnCommitCallbacks(execute=True):
+            response = self._post(payload, token=raw)
+
+        self.assertFalse(response.json()["result"]["isError"])
+        self.assertFalse(
+            response.json()["result"]["structuredContent"]["created"]
+        )
+        self.assertFalse(
+            Notification.objects.filter(
+                user=self.manager,
+                dedupe_key=f"operations_mcp:task:{task.id}:assignment",
+            ).exists()
+        )
+        send_push.assert_not_called()
+        task.refresh_from_db()
+        delivery = task.payload_json["operations_assignment_delivery"]
+        self.assertEqual(delivery["push_delivery_result"], "blocked_not_authorized")
+        self.assertNotIn("push_delivered_at", delivery)
+
     def test_cross_organization_responsible_is_rejected(self):
         raw = self._token(raw="cross-org-token")
         payload = {
