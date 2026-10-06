@@ -8,6 +8,7 @@ from django.utils import timezone
 from pool_service.communication_models import PhoneCall
 from pool_service.communication_recordings import download_call_recording
 from pool_service.services.call_commitment_control import process_call_commitment_controls
+from pool_service.operations_mcp_views import process_pending_operations_pushes
 
 
 class Command(BaseCommand):
@@ -93,6 +94,7 @@ class Command(BaseCommand):
                     failed += 1
 
         control = process_call_commitment_controls()
+        operations_push = process_pending_operations_pushes(limit=100)
 
         self.stdout.write(
             self.style.SUCCESS(
@@ -107,5 +109,14 @@ class Command(BaseCommand):
                 f"due_reminders={control['due_reminders']} "
                 f"escalations={control['escalations']} "
                 f"without_deadline={control['without_deadline']}"
+            )
+        )
+        self.stdout.write(
+            self.style.SUCCESS(
+                "Operations push retry: "
+                f"checked={operations_push['checked']} "
+                f"assignment_attempts={operations_push['assignment_attempts']} "
+                f"notification_attempts={operations_push['notification_attempts']} "
+                f"delivered={operations_push['delivered']}"
             )
         )
