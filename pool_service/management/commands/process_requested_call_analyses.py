@@ -1,8 +1,10 @@
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
+from django.db import close_old_connections
 from django.utils import timezone
 
 from pool_service.communication_models import CallAnalysis
@@ -47,11 +49,13 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--limit", type=int, default=1)
         parser.add_argument("--idle-grace-seconds", type=float, default=0.0)
+        parser.add_argument("--concurrency", type=int, default=1)
         parser.add_argument("--drain", action="store_true")
 
     def handle(self, *args, **options):
         limit = max(1, min(int(options["limit"]), 10))
         idle_grace = max(0.0, min(float(options["idle_grace_seconds"]), 5.0))
+        concurrency = max(1, min(int(options["concurrency"]), 4))
         drain = bool(options["drain"])
         attempted_ids = []
         processed = 0
@@ -62,6 +66,13 @@ class Command(BaseCommand):
                 f"Recovered stale call analyses: {recovered}; "
                 f"failed at attempt limit: {failed_stale}"
             )
+
+        def process_one(call_id):
+            close_old_connections()
+            try:
+                return bool(process_call_analysis(call_id))
+            finally:
+                close_old_connections()
 
         while drain or len(attempted_ids) < limit:
             queryset = (
@@ -76,8 +87,13 @@ class Command(BaseCommand):
             if attempted_ids:
                 queryset = queryset.exclude(call_id__in=attempted_ids)
 
-            call_id = queryset.values_list("call_id", flat=True).first()
-            if call_id is None:
+            batch_size = concurrency
+            if not drain:
+                batch_size = min(batch_size, limit - len(attempted_ids))
+            call_ids = list(
+                queryset.values_list("call_id", flat=True)[:batch_size]
+            )
+            if not call_ids:
                 if idle_grace > 0 and empty_checks == 0:
                     empty_checks += 1
                     time.sleep(idle_grace)
@@ -85,9 +101,12 @@ class Command(BaseCommand):
                 break
 
             empty_checks = 0
-            attempted_ids.append(call_id)
-            if process_call_analysis(call_id):
-                processed += 1
+            attempted_ids.extend(call_ids)
+            if len(call_ids) == 1:
+                processed += int(process_one(call_ids[0]))
+            else:
+                with ThreadPoolExecutor(max_workers=len(call_ids)) as executor:
+                    processed += sum(executor.map(process_one, call_ids))
 
         self.stdout.write(
             self.style.SUCCESS(
