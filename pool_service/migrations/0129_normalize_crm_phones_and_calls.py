@@ -80,7 +80,10 @@ def normalize_existing_phone_data(apps, schema_editor):
         for item in raw_phones:
             item = dict(item or {})
             normalized = _normalize_phone(item.get("value") or item.get("match"))
-            if not normalized or normalized in seen:
+            if not normalized:
+                normalized_phones.append(item)
+                continue
+            if normalized in seen:
                 continue
             seen.add(normalized)
             item["value"] = _format_phone(normalized)
@@ -111,6 +114,7 @@ def normalize_existing_phone_data(apps, schema_editor):
         Client.objects.exclude(pk__in=merged_ids)
         .only("id", "organization_id", "phone")
     )
+    active_by_id = {client.id: client for client in active_clients}
     phone_map = {}
     for client in active_clients:
         normalized = _normalize_phone(client.phone)
@@ -125,7 +129,7 @@ def normalize_existing_phone_data(apps, schema_editor):
         normalized = _normalize_phone(contact.match_value or contact.value)
         if not normalized:
             continue
-        client = next((item for item in active_clients if item.id == contact.client_id), None)
+        client = active_by_id.get(contact.client_id)
         if client is not None:
             phone_map.setdefault((client.organization_id, normalized), set()).add(client.id)
 
