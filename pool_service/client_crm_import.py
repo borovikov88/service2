@@ -24,6 +24,7 @@ from .client_crm_models import (
 )
 from .onec_diagnostic import config_from_settings, fetch_metadata
 from .onec_diagnostic_universal import query_1c_rows
+from .phone_utils import canonical_phone_value, normalize_phone
 
 
 BUYER_ENTITY = "Catalog_Контрагенты"
@@ -35,14 +36,6 @@ IMPORT_RUN_STALE_MINUTES = 120
 
 logger = logging.getLogger(__name__)
 
-
-def normalize_phone(value: str | None) -> str:
-    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
-    if len(digits) == 11 and digits[0] in {"7", "8"}:
-        digits = "7" + digits[1:]
-    elif len(digits) == 10:
-        digits = "7" + digits
-    return digits if 10 <= len(digits) <= 15 else ""
 
 
 def normalize_email(value: str | None) -> str:
@@ -217,7 +210,7 @@ def _candidate_contacts(row, extra_rows):
         value = str(raw or "").strip()
         normalized = normalize_phone(value)
         if value and normalized and all(item["match"] != normalized for item in phones):
-            phones.append({"value": value, "match": normalized, "label": label})
+            phones.append({"value": canonical_phone_value(value), "match": normalized, "label": label})
 
     def add_email(raw, label=""):
         value = str(raw or "").strip()
