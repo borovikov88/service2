@@ -572,6 +572,68 @@ class CommunicationsTests(TestCase):
             self.assertIsInstance(recording, io.IOBase)
             self.assertEqual(recording.read(), b"ID3test")
 
+    def test_admin_can_open_uploaded_audio_status_recording_and_transcript(self):
+        admin = User.objects.create_user("audio-admin", password="test")
+        OrganizationAccess.objects.create(
+            user=admin,
+            organization=self.organization,
+            role="admin",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            source_kind=PhoneCall.SOURCE_UPLOADED,
+            connection=None,
+            external_id="upload-admin-access",
+            phone_number="",
+            contact_name="",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=0,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        call.recording_file.save(
+            "upload-admin-access.mp3",
+            ContentFile(b"ID3admin"),
+            save=True,
+        )
+        CallAnalysis.objects.create(
+            call=call,
+            status=CallAnalysis.STATUS_READY,
+            transcript="Полная расшифровка доступна администратору.",
+            summary="Итог",
+        )
+
+        self.client.login(username="audio-admin", password="test")
+        status_response = self.client.get(
+            reverse("communication_call_analysis_status", args=[call.pk])
+        )
+        self.assertEqual(status_response.status_code, 200)
+        self.assertEqual(status_response.json()["status"], CallAnalysis.STATUS_READY)
+
+        transcript_response = self.client.get(
+            reverse("communication_call_analysis_transcript", args=[call.pk])
+        )
+        self.assertEqual(transcript_response.status_code, 200)
+        self.assertEqual(
+            transcript_response.json()["transcript"],
+            "Полная расшифровка доступна администратору.",
+        )
+
+        recording_response = self.client.get(
+            reverse("communication_call_recording", args=[call.pk])
+        )
+        self.assertEqual(recording_response.status_code, 200)
+
+        self.client.logout()
+        self.client.login(username="worker", password="test")
+        self.assertEqual(
+            self.client.get(
+                reverse("communication_call_analysis_transcript", args=[call.pk])
+            ).status_code,
+            403,
+        )
+
     @patch("pool_service.services.call_ai.os.access", return_value=True)
     @patch("pool_service.services.call_ai.os.path.isfile", return_value=True)
     @patch("pool_service.services.call_ai.imageio_ffmpeg.get_ffmpeg_exe", return_value="/venv/imageio_ffmpeg/ffmpeg")
@@ -1225,6 +1287,86 @@ class CommunicationsTests(TestCase):
             [item.args[0] for item in process_analysis.call_args_list],
             call_ids,
         )
+
+    @patch(
+        "pool_service.management.commands.process_requested_call_analyses.time.sleep"
+    )
+    @patch(
+        "pool_service.management.commands.process_requested_call_analyses.process_call_analysis"
+    )
+    def test_durable_worker_retries_transient_pending_call_in_same_run(
+        self,
+        process_analysis,
+        sleep,
+    ):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-ai-worker-transient",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ai-worker-transient",
+            employee=self.owner,
+            phone_number="+79001112239",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=25,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        call.recording_file.save(
+            "ai-worker-transient.mp3",
+            ContentFile(b"ID3test"),
+            save=True,
+        )
+        analysis = CallAnalysis.objects.create(
+            call=call,
+            status=CallAnalysis.STATUS_PENDING,
+            requested_at=timezone.now(),
+        )
+
+        attempts = {"count": 0}
+
+        def process_side_effect(call_id):
+            self.assertEqual(call_id, call.pk)
+            attempts["count"] += 1
+            analysis.refresh_from_db()
+            if attempts["count"] == 1:
+                analysis.attempts = 1
+                analysis.status = CallAnalysis.STATUS_PENDING
+                analysis.error = "openai_processing_failed"
+                analysis.save(
+                    update_fields=["attempts", "status", "error", "updated_at"]
+                )
+                return False
+            analysis.status = CallAnalysis.STATUS_READY
+            analysis.requested_at = None
+            analysis.error = ""
+            analysis.save(
+                update_fields=["status", "requested_at", "error", "updated_at"]
+            )
+            return True
+
+        process_analysis.side_effect = process_side_effect
+        call_command(
+            "process_requested_call_analyses",
+            "--limit",
+            "1",
+            "--concurrency",
+            "1",
+            "--drain",
+        )
+
+        self.assertEqual(
+            [item.args[0] for item in process_analysis.call_args_list],
+            [call.pk, call.pk],
+        )
+        sleep.assert_called_once_with(2.0)
+        analysis.refresh_from_db()
+        self.assertEqual(analysis.status, CallAnalysis.STATUS_READY)
+        self.assertIsNone(analysis.requested_at)
 
     @patch(
         "pool_service.management.commands.process_requested_call_analyses.process_call_analysis"
