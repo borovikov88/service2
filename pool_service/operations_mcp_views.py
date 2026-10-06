@@ -484,9 +484,9 @@ def _schedule_employee_notification_push(task_id, marker):
 
 
 def process_pending_operations_pushes(*, limit=PUSH_RETRY_BATCH_LIMIT):
-    """Retry durable Operations push deliveries left pending after commit/process failure."""
+    """Retry pending Operations pushes without letting terminal rows starve the queue."""
     limit = max(1, min(int(limit), 500))
-    task_ids = list(
+    queryset = (
         ServiceTask.objects.filter(
             task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
             payload_json__isnull=False,
@@ -495,8 +495,8 @@ def process_pending_operations_pushes(*, limit=PUSH_RETRY_BATCH_LIMIT):
             Q(payload_json__has_key=ASSIGNMENT_DELIVERY_PAYLOAD_KEY)
             | Q(payload_json__has_key=EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY)
         )
+        .only("id", "payload_json", "primary_responsible_id", "updated_at")
         .order_by("updated_at", "id")
-        .values_list("id", flat=True)[:limit]
     )
 
     result = {
@@ -506,40 +506,53 @@ def process_pending_operations_pushes(*, limit=PUSH_RETRY_BATCH_LIMIT):
         "delivered": 0,
     }
 
-    for task_id in task_ids:
-        task = ServiceTask.objects.filter(pk=task_id).only(
-            "id",
-            "payload_json",
-            "primary_responsible_id",
-        ).first()
-        if not task:
-            continue
-        payload = task.payload_json if isinstance(task.payload_json, dict) else {}
+    def attempts_used():
+        return result["assignment_attempts"] + result["notification_attempts"]
 
+    for task in queryset.iterator(chunk_size=200):
+        if attempts_used() >= limit:
+            break
+
+        payload = task.payload_json if isinstance(task.payload_json, dict) else {}
         assignment = payload.get(ASSIGNMENT_DELIVERY_PAYLOAD_KEY)
-        if isinstance(assignment, dict):
-            result["checked"] += 1
+        deliveries = payload.get(EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY)
+        if not isinstance(assignment, dict) and not isinstance(deliveries, dict):
+            continue
+
+        result["checked"] += 1
+
+        if isinstance(assignment, dict) and attempts_used() < limit:
             assignment_result = assignment.get("push_delivery_result")
             if (
                 not assignment.get("push_delivered_at")
-                and assignment_result not in {"blocked_not_authorized", "blocked_push_disabled", "skipped_self"}
+                and assignment_result
+                not in {
+                    "blocked_not_authorized",
+                    "blocked_push_disabled",
+                    "skipped_self",
+                }
             ):
-                responsible_id = assignment.get("responsible_user_id") or task.primary_responsible_id
+                responsible_id = (
+                    assignment.get("responsible_user_id")
+                    or task.primary_responsible_id
+                )
                 if responsible_id:
                     result["assignment_attempts"] += 1
-                    result["delivered"] += int(bool(_retry_assignment_push(task.id, responsible_id)))
+                    result["delivered"] += int(
+                        bool(_retry_assignment_push(task.id, responsible_id))
+                    )
 
-        deliveries = payload.get(EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY)
         if isinstance(deliveries, dict):
-            if not isinstance(assignment, dict):
-                result["checked"] += 1
             for marker, delivery in list(deliveries.items()):
+                if attempts_used() >= limit:
+                    break
                 if not isinstance(delivery, dict):
                     continue
                 delivery_result = delivery.get("push_delivery_result")
                 if (
                     delivery.get("push_delivered_at")
-                    or delivery_result in {"blocked_not_authorized", "blocked_push_disabled"}
+                    or delivery_result
+                    in {"blocked_not_authorized", "blocked_push_disabled"}
                 ):
                     continue
                 result["notification_attempts"] += 1
