@@ -45,9 +45,13 @@ from pool_service.operations_mcp_auth import (
     validate_authorization_request,
 )
 from pool_service.operations_mcp_policy import ALLOWED_ROLES
+from pool_service.services.crm_locking import locked_task_for_completion
 from pool_service.services.notifications import notify_task_assignment, notify_users
 from pool_service.services.push_notifications import send_push_to_users
 from pool_service.services.task_archive import archive_task
+
+
+OPERATIONAL_STAFF_ROLES = frozenset({"owner", "admin", "manager", "service", "installer"})
 
 
 TOOL_NAMES = (
@@ -248,6 +252,7 @@ def _staff_user(organization, user_id):
             pk=user_id,
             is_active=True,
             organizationaccess__organization=organization,
+            organizationaccess__role__in=OPERATIONAL_STAFF_ROLES,
         )
         .distinct()
         .first()
@@ -480,7 +485,7 @@ def _complete_task(authenticated, organization, arguments):
     _reject_unknown(arguments, {"task_id", "comment"})
     task_id = _as_int(arguments.get("task_id"), "task_id")
     comment = _as_text(arguments.get("comment"), "comment", maximum=1000)
-    task = _task_for_org(organization, task_id, for_update=True)
+    task = locked_task_for_completion(organization=organization, task_id=task_id)
     if not task or task.task_type != ServiceTask.TYPE_CRM_FOLLOWUP:
         raise ValueError("task_id")
     if task.is_completed_archive or task.completed_at or task.status == ServiceTask.STATUS_DONE:
