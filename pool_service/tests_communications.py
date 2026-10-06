@@ -1313,11 +1313,6 @@ class CommunicationsTests(TestCase):
         self.assertNotContains(response, "Ожидает автоматической расшифровки.")
 
     def test_manual_recordings_page_is_owner_only_and_separate_from_phone_history(self):
-        manual_connection = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="Загруженные записи",
-            external_id="manual-upload",
-        )
         telephony = TelephonyConnection.objects.create(
             organization=self.organization,
             name="МегаФон",
@@ -1325,8 +1320,9 @@ class CommunicationsTests(TestCase):
         )
         manual_call = PhoneCall.objects.create(
             organization=self.organization,
-            connection=manual_connection,
-            external_id="manual-separated",
+            source_kind=PhoneCall.SOURCE_UPLOADED,
+            connection=None,
+            external_id="upload-separated",
             phone_number="",
             contact_name="",
             direction=PhoneCall.DIRECTION_IN,
@@ -1371,7 +1367,7 @@ class CommunicationsTests(TestCase):
 
         manual_page = self.client.get(reverse("communication_manual_recordings"))
         self.assertEqual(manual_page.status_code, 200)
-        self.assertContains(manual_page, "Загрузка и расшифровка файлов")
+        self.assertContains(manual_page, "Аудиофайлы")
         self.assertContains(
             manual_page,
             reverse("communication_call_recording", args=[manual_call.pk]),
@@ -1397,6 +1393,18 @@ class CommunicationsTests(TestCase):
             reverse("communication_manual_recordings"),
         )
 
+    def test_channels_page_never_lists_legacy_manual_upload_connection(self):
+        TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="Загруженные записи",
+            external_id="manual-upload",
+        )
+        self.client.login(username="owner", password="test")
+        response = self.client.get(reverse("communications_channels"))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "Загруженные записи")
+        self.assertNotContains(response, "manual-upload")
+
     def test_owner_can_upload_multiple_call_recordings_for_client_without_auto_analysis(self):
         client = ServiceClient.objects.create(
             organization=self.organization,
@@ -1409,7 +1417,6 @@ class CommunicationsTests(TestCase):
             reverse("communication_call_recording_upload"),
             {
                 "client": str(client.pk),
-                "direction": PhoneCall.DIRECTION_OUT,
                 "recordings": [
                     SimpleUploadedFile("first.mp3", b"ID3first", content_type="audio/mpeg"),
                     SimpleUploadedFile(
@@ -1424,7 +1431,7 @@ class CommunicationsTests(TestCase):
 
         calls = PhoneCall.objects.filter(
             organization=self.organization,
-            connection__external_id="manual-upload",
+            source_kind=PhoneCall.SOURCE_UPLOADED,
         ).order_by("pk")
         self.assertEqual(calls.count(), 2)
         self.assertEqual(set(calls.values_list("client_id", flat=True)), {client.pk})
@@ -1437,25 +1444,35 @@ class CommunicationsTests(TestCase):
             {"+79001234567"},
         )
         self.assertEqual(
-            set(calls.values_list("direction", flat=True)),
-            {PhoneCall.DIRECTION_OUT},
+            set(calls.values_list("source_kind", flat=True)),
+            {PhoneCall.SOURCE_UPLOADED},
+        )
+        self.assertEqual(
+            set(calls.values_list("connection_id", flat=True)),
+            {None},
         )
         self.assertEqual(
             set(calls.values_list("recording_status", flat=True)),
             {PhoneCall.RECORDING_STORED},
         )
         self.assertFalse(CallAnalysis.objects.filter(call__in=calls).exists())
+        self.assertFalse(
+            TelephonyConnection.objects.filter(
+                organization=self.organization,
+                external_id="manual-upload",
+            ).exists()
+        )
         for call in calls:
             self.assertTrue(call.recording_file)
 
         phone_page = self.client.get(reverse("communications_calls"))
         self.assertNotContains(phone_page, "Иван Клиент")
-        self.assertNotContains(phone_page, "Загрузка и расшифровка файлов")
+        self.assertNotContains(phone_page, "Аудиофайлы")
 
         page = self.client.get(reverse("communication_manual_recordings"))
         self.assertContains(page, "Иван Клиент")
         self.assertContains(page, calls[0].recording_filename)
-        self.assertContains(page, "Загрузка и расшифровка файлов")
+        self.assertContains(page, "Аудиофайлы")
         self.assertContains(page, "Расшифровать выбранные")
         self.assertContains(page, 'data-call-select', html=False)
 
@@ -1482,20 +1499,16 @@ class CommunicationsTests(TestCase):
         self.assertFalse(
             PhoneCall.objects.filter(
                 organization=self.organization,
-                connection__external_id="manual-upload",
+                source_kind=PhoneCall.SOURCE_UPLOADED,
             ).exists()
         )
 
     def test_bulk_safe_request_does_not_reset_ready_analysis(self):
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="Загруженные записи",
-            external_id="manual-atomic",
-        )
         call = PhoneCall.objects.create(
             organization=self.organization,
-            connection=telephony,
-            external_id="manual-atomic-ready",
+            source_kind=PhoneCall.SOURCE_UPLOADED,
+            connection=None,
+            external_id="upload-atomic-ready",
             phone_number="",
             direction=PhoneCall.DIRECTION_IN,
             started_at=timezone.now(),
@@ -1556,7 +1569,7 @@ class CommunicationsTests(TestCase):
         self.assertFalse(
             PhoneCall.objects.filter(
                 organization=self.organization,
-                connection__external_id="manual-upload",
+                source_kind=PhoneCall.SOURCE_UPLOADED,
             ).exists()
         )
 
@@ -1567,17 +1580,13 @@ class CommunicationsTests(TestCase):
         request_analysis,
         start_worker,
     ):
-        telephony = TelephonyConnection.objects.create(
-            organization=self.organization,
-            name="Загруженные записи",
-            external_id="manual-upload",
-        )
         calls = []
         for index in range(2):
             call = PhoneCall.objects.create(
                 organization=self.organization,
-                connection=telephony,
-                external_id=f"manual-bulk-{index}",
+                source_kind=PhoneCall.SOURCE_UPLOADED,
+                connection=None,
+                external_id=f"upload-bulk-{index}",
                 phone_number="",
                 direction=PhoneCall.DIRECTION_IN,
                 started_at=timezone.now(),
@@ -1593,8 +1602,9 @@ class CommunicationsTests(TestCase):
 
         ready_call = PhoneCall.objects.create(
             organization=self.organization,
-            connection=telephony,
-            external_id="manual-bulk-ready",
+            source_kind=PhoneCall.SOURCE_UPLOADED,
+            connection=None,
+            external_id="upload-bulk-ready",
             phone_number="",
             direction=PhoneCall.DIRECTION_IN,
             started_at=timezone.now(),
