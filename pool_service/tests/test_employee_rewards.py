@@ -13,7 +13,11 @@ from pool_service.reward_models import (
     RewardParticipation,
     RewardSchemeVersion,
 )
-from pool_service.reward_views import _percent_value, _reward_selectable_employees
+from pool_service.reward_views import (
+    _percent_value,
+    _reward_order_groups,
+    _reward_selectable_employees,
+)
 from pool_service.services.rewards import (
     add_documentation_participant,
     calculate_month,
@@ -267,6 +271,88 @@ class EmployeeRewardCalculationTests(TestCase):
         self.assertNotIn(on_leave.id, ids)
         self.assertNotIn(inactive.id, ids)
         self.assertNotIn(future.id, ids)
+
+    def test_rewards_page_groups_distinct_expense_invoices_by_customer(self):
+        OrganizationAccess.objects.create(
+            user=self.user,
+            organization=self.org,
+            role="owner",
+        )
+        customer_guid = "99999999-9999-4999-8999-999999999999"
+        first = self.add_row(1801, "1000.00", doc="doc-customer-a")
+        second = self.add_row(1802, "2000.00", doc="doc-customer-b")
+        documents = (
+            (
+                first,
+                "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa",
+                "A-1",
+            ),
+            (
+                second,
+                "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb",
+                "A-2",
+            ),
+        )
+        for row, recorder, number in documents:
+            row.source_recorder = recorder
+            row.source_data = {
+                **row.source_data,
+                "recorder": recorder,
+                "customer_guid": customer_guid,
+                "document_number": number,
+            }
+            row.save(update_fields=["source_recorder", "source_data"])
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse("finance_employee_rewards"),
+            {"month": "2026-09"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        customer_groups = [
+            group
+            for group in response.context["order_groups"]
+            if group["is_customer_group"]
+        ]
+        self.assertEqual(len(customer_groups), 1)
+        self.assertEqual(customer_groups[0]["document_count"], 2)
+        self.assertEqual(
+            Decimal(customer_groups[0]["revenue"]),
+            Decimal("3000.00"),
+        )
+        self.assertContains(response, "Расходные накладные · документов: 2")
+
+    def test_reward_customer_groups_do_not_merge_retail_checks(self):
+        orders = [
+            {
+                "scope_key": "check-1",
+                "source_document_type": "Document_ЧекККМ",
+                "customer_guid": "same-customer",
+                "customer": "Розница",
+                "revenue": "100.00",
+                "cost": "60.00",
+                "gross_profit": "40.00",
+                "problems": [],
+            },
+            {
+                "scope_key": "check-2",
+                "source_document_type": "Document_ЧекККМ",
+                "customer_guid": "same-customer",
+                "customer": "Розница",
+                "revenue": "200.00",
+                "cost": "120.00",
+                "gross_profit": "80.00",
+                "problems": [],
+            },
+        ]
+
+        groups = _reward_order_groups(orders)
+
+        self.assertEqual(len(groups), 2)
+        self.assertTrue(
+            all(not group["is_customer_group"] for group in groups)
+        )
 
     def test_rewards_page_get_normalizes_non_string_source_labels_and_author_id(self):
         OrganizationAccess.objects.create(
