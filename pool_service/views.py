@@ -173,6 +173,7 @@ from .services.phone_verification import (
 from .services.notifications import notify_reading_out_of_range, notify_superusers, notify_task_assignment
 from .services.task_archive import archive_task, restore_task
 from .services.crm_archive import archive_crm_item, restore_crm_item, sync_crm_archive_state
+from .services.crm_locking import lock_crm_graph, locked_task_with_crm_graph
 from .services.task_generation import sync_crm_item_for_task, sync_task_with_crm_item
 
 
@@ -4572,11 +4573,20 @@ def crm_bulk_update(request, direction):
         messages.warning(request, "Не выбраны записи CRM.")
         return redirect(_crm_bulk_redirect_url(request, direction))
 
-    items = CrmItem.objects.filter(id__in=selected_ids, direction=direction, is_archived=False)
+    items_qs = CrmItem.objects.filter(id__in=selected_ids, direction=direction, is_archived=False)
     if org:
-        items = items.filter(organization=org)
+        items_qs = items_qs.filter(organization=org)
 
-    items = list(items.select_related("responsible"))
+    candidate_ids = list(items_qs.order_by("id").values_list("id", flat=True))
+    _locked_tasks, locked_items = lock_crm_graph(candidate_ids)
+    items = [
+        item
+        for item in locked_items
+        if item.id in set(candidate_ids)
+        and item.direction == direction
+        and not item.is_archived
+        and (not org or item.organization_id == org.id)
+    ]
     if not items:
         messages.warning(request, "Подходящие записи CRM не найдены.")
         return redirect(_crm_bulk_redirect_url(request, direction))
@@ -4597,7 +4607,7 @@ def crm_bulk_update(request, direction):
             item.save(update_fields=["stage", "updated_at"])
             sync_crm_archive_state(item, request.user)
             if not item.is_archived:
-                for linked_task in item.service_tasks.select_for_update().all():
+                for linked_task in item.service_tasks.all():
                     sync_task_with_crm_item(linked_task)
             changed += 1
         messages.success(request, f"Этап обновлён у записей: {changed}.")
@@ -4632,7 +4642,7 @@ def crm_bulk_update(request, direction):
                 continue
             item.responsible = responsible
             item.save(update_fields=["responsible", "updated_at"])
-            for linked_task in item.service_tasks.select_for_update().all():
+            for linked_task in item.service_tasks.all():
                 linked_task.primary_responsible = responsible
                 linked_task.save(update_fields=["primary_responsible", "updated_at"])
                 sync_crm_item_for_task(linked_task)
@@ -4827,7 +4837,7 @@ def crm_create(request, direction):
 
 
 @login_required
-
+@transaction.atomic
 def crm_edit(request, direction, item_id):
 
     readonly = _deny_superuser_write(request)
@@ -4873,6 +4883,15 @@ def crm_edit(request, direction, item_id):
     return_context = _crm_edit_return_context(request, direction, item)
 
     if request.method == "POST":
+        _locked_tasks, locked_items = lock_crm_graph([item.id])
+        item = next((locked for locked in locked_items if locked.id == item.id), None)
+        if (
+            not item
+            or item.direction != direction
+            or item.is_archived
+            or (org and item.organization_id != org.id)
+        ):
+            return HttpResponseNotFound("CRM item changed while editing.")
 
         form = CrmItemForm(request.POST, instance=item, direction=direction, organization=org)
 
@@ -5007,6 +5026,7 @@ def archive_list(request):
 
 @login_required
 @require_POST
+@transaction.atomic
 def archive_restore_task(request, task_id):
     readonly = _deny_superuser_write(request)
     if readonly:
@@ -5015,7 +5035,10 @@ def archive_restore_task(request, task_id):
     if blocked:
         return blocked
 
-    task = get_object_or_404(ServiceTask, pk=task_id, is_archived=True)
+    seed = get_object_or_404(ServiceTask, pk=task_id, is_archived=True)
+    task = locked_task_with_crm_graph(organization=seed.organization, task_id=seed.id)
+    if not task or not task.is_archived:
+        return HttpResponseNotFound("Task archive state changed.")
     if not _task_can_view(task, request.user):
         return HttpResponseForbidden()
 
@@ -5030,6 +5053,7 @@ def archive_restore_task(request, task_id):
 
 @login_required
 @require_POST
+@transaction.atomic
 def archive_restore_crm_item(request, item_id):
     readonly = _deny_superuser_write(request)
     if readonly:
@@ -5040,7 +5064,11 @@ def archive_restore_crm_item(request, item_id):
     if not _can_access_crm(request.user):
         return HttpResponseForbidden()
 
-    item = get_object_or_404(CrmItem, pk=item_id, is_archived=True)
+    seed = get_object_or_404(CrmItem, pk=item_id, is_archived=True)
+    _locked_tasks, locked_items = lock_crm_graph([seed.id])
+    item = next((locked for locked in locked_items if locked.id == seed.id), None)
+    if not item or not item.is_archived:
+        return HttpResponseNotFound("CRM archive state changed.")
     if not request.user.is_superuser:
         org = organization_for_user(request.user)
         if not org or item.organization_id != org.id:
@@ -5053,6 +5081,7 @@ def archive_restore_crm_item(request, item_id):
 
 @login_required
 @require_POST
+@transaction.atomic
 def archive_bulk_update(request):
     readonly = _deny_superuser_write(request)
     if readonly:
