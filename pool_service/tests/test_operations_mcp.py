@@ -20,6 +20,7 @@ from pool_service.models import (
     Notification,
     Organization,
     OrganizationAccess,
+    Profile,
     ServiceTask,
 )
 from pool_service.operations_mcp_auth import (
@@ -184,6 +185,41 @@ class OperationsMcpTests(TestCase):
         with override_settings(
             ADVISOR_OPERATIONS_MCP_ORGANIZATION_ID=str(self.other_org.id),
         ):
+            approved = self.client.post(
+                reverse("operations_mcp_authorize"),
+                data=post_data,
+            )
+
+        self.assertEqual(approved.status_code, 302)
+        query = parse_qs(urlsplit(approved["Location"]).query)
+        self.assertEqual(query.get("error"), ["access_denied"])
+        self.assertFalse(FinanceMcpGrant.objects.exists())
+
+    def test_consent_binding_rejects_scope_escalation(self):
+        self.client.force_login(self.owner)
+        oauth_params = {
+            "response_type": "code",
+            "client_id": CHATGPT_CLIENT_ID_METADATA_URL,
+            "redirect_uri": REDIRECT,
+            "state": "consent-scope-escalation",
+            "code_challenge_method": "S256",
+            "code_challenge": "B" * 43,
+            "resource": RESOURCE,
+            "scope": OPERATIONS_SCOPE,
+        }
+
+        with self._settings():
+            shown = self.client.get(reverse("operations_mcp_authorize"), oauth_params)
+        self.assertEqual(shown.status_code, 200)
+        consent_binding = shown.context["consent_binding"]
+
+        post_data = dict(oauth_params)
+        post_data.update({
+            "decision": "approve",
+            "scope": f"{OPERATIONS_SCOPE} offline_access",
+            "consent_binding": consent_binding,
+        })
+        with self._settings():
             approved = self.client.post(
                 reverse("operations_mcp_authorize"),
                 data=post_data,
@@ -483,6 +519,93 @@ class OperationsMcpTests(TestCase):
         self.assertEqual(second_delivery["push_delivery_result"], "sent")
         self.assertTrue(second_delivery["push_delivered_at"])
         self.assertEqual(send_push.call_count, 2)
+
+    def test_assignment_notification_is_durable_when_in_app_is_disabled(self):
+        Profile.objects.create(
+            user=self.manager,
+            in_app_notifications_enabled=False,
+            push_notifications_enabled=True,
+        )
+        raw = self._token(raw="durable-assignment-token")
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 32,
+            "method": "tools/call",
+            "params": {
+                "name": "create_task",
+                "arguments": {
+                    "idempotency_key": "durable-assignment",
+                    "title": "Отправить расчёт",
+                    "responsible_user_id": self.manager.id,
+                    "due_date": "2026-10-07",
+                },
+            },
+        }
+
+        with self._settings(), self.captureOnCommitCallbacks(execute=False):
+            response = self._post(payload, token=raw)
+
+        self.assertFalse(response.json()["result"]["isError"])
+        task = ServiceTask.objects.get(
+            payload_json__operations_mcp_idempotency_key="durable-assignment"
+        )
+        notification = Notification.objects.get(
+            user=self.manager,
+            dedupe_key=f"operations_mcp:task:{task.id}:assignment",
+        )
+        self.assertEqual(notification.kind, "task_assignment")
+        self.assertEqual(notification.message, task.title)
+        self.assertEqual(
+            task.payload_json["operations_assignment_delivery"]["notification_id"],
+            notification.id,
+        )
+
+    @patch("pool_service.operations_mcp_views.send_push_to_users")
+    def test_assignment_push_is_blocked_after_org_access_revocation(self, send_push):
+        from pool_service.operations_mcp_views import _retry_assignment_push
+
+        task = ServiceTask.objects.create(
+            organization=self.organization,
+            title="Закрытая для бывшего сотрудника задача",
+            start_date=date(2026, 10, 7),
+            end_date=date(2026, 10, 7),
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            source_type=ServiceTask.SOURCE_MANAGER,
+            status=ServiceTask.STATUS_NEW,
+            visibility=ServiceTask.VISIBILITY_PRIVATE,
+            primary_responsible=self.manager,
+            created_by=self.owner,
+            payload_json={
+                "source": "operations_mcp",
+                "operations_assignment_delivery": {
+                    "responsible_user_id": self.manager.id,
+                    "added_by_user_id": self.owner.id,
+                    "notification_dedupe_key": "operations_mcp:revoked:assignment",
+                },
+            },
+        )
+        task.responsibles.add(self.manager)
+        Notification.objects.create(
+            user=self.manager,
+            organization=self.organization,
+            kind="task_assignment",
+            level="info",
+            title="Новая задача",
+            message=task.title,
+            action_url=reverse("task_edit", kwargs={"task_id": task.id}),
+            dedupe_key="operations_mcp:revoked:assignment",
+        )
+        OrganizationAccess.objects.filter(
+            user=self.manager,
+            organization=self.organization,
+        ).delete()
+
+        self.assertEqual(_retry_assignment_push(task.id, self.manager.id), 0)
+        send_push.assert_not_called()
+        task.refresh_from_db()
+        delivery = task.payload_json["operations_assignment_delivery"]
+        self.assertEqual(delivery["push_delivery_result"], "blocked_not_authorized")
+        self.assertNotIn("push_delivered_at", delivery)
 
     def test_cross_organization_responsible_is_rejected(self):
         raw = self._token(raw="cross-org-token")
