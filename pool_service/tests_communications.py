@@ -354,6 +354,7 @@ class CommunicationsTests(TestCase):
         OPENAI_API_KEY="test-key",
         OPENAI_CALL_TRANSCRIPTION_MODEL="gpt-4o-transcribe-diarize",
         OPENAI_CALL_ANALYSIS_MODEL="gpt-5.6-luna",
+        OPENAI_CALL_TRANSCRIPTION_TIMEOUT_SECONDS=345,
     )
     @patch("pool_service.services.call_ai._client")
     def test_call_ai_transcribes_speakers_and_extracts_structured_summary(self, client_factory):
@@ -404,6 +405,11 @@ class CommunicationsTests(TestCase):
         self.assertEqual(analysis.facts["request"], "Бассейн")
         self.assertEqual(analysis.transcription_model, "gpt-4o-transcribe-diarize")
         self.assertEqual(analysis.analysis_model, "gpt-5.6-luna")
+        self.assertEqual(
+            client_factory.call_args_list[0].kwargs,
+            {"timeout_seconds": 345.0},
+        )
+        self.assertEqual(client_factory.call_args_list[1].kwargs, {})
 
         kwargs = client.audio.transcriptions.create.call_args.kwargs
         self.assertEqual(kwargs["response_format"], "diarized_json")
