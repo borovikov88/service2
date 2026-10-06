@@ -234,7 +234,7 @@
           <td>
             {% if call.phone_number %}{{ call.phone_number }}{% else %}<span class="text-muted">—</span>{% endif %}
             {% if call.client %}
-              <br><small class="text-muted">{{ call.client.name }}</small>
+              <br><small><a class="text-decoration-none" href="{% url 'client_detail' call.client.id %}">{{ call.client.name }}</a></small>
             {% elif call.contact_name %}
               <br><small class="text-muted">{{ call.contact_name }}</small>
             {% endif %}
