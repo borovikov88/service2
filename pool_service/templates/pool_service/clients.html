@@ -25,6 +25,9 @@
   </div>
   <div class="tab-content">
     <div class="tab-pane fade show active" id="companies-pane" role="tabpanel" aria-labelledby="companies-tab">
+      <div class="mb-3">
+        <input class="form-control" type="search" placeholder="Поиск по компании, телефону, email или ИНН" autocomplete="off" data-client-live-search="#companies-pane">
+      </div>
       <div class="table-responsive">
         <table class="table align-middle">
           <thead class="small text-muted">
@@ -40,14 +43,23 @@
           </thead>
           <tbody>
             {% for company in companies %}
-              <tr>
+              <tr data-client-row data-client-search="{{ company.name }} {{ company.phone }} {{ company.email }} {{ company.inn }} {{ company.search_contacts }}">
                 <td class="fw-semibold"><a class="text-decoration-none" href="{% url 'client_detail' company.id %}">{{ company.name }}</a></td>
-                <td>{{ company.phone|default:"-" }}</td>
+                <td>{{ company.display_phone|default:"-" }}</td>
                 <td>{{ company.email|default:"-" }}</td>
                 <td>{{ company.pool_count|default:0 }}</td>
                 <td>
-                  {% if company.primary_contact or company.staff_contacts %}
+                  {% if company.crm_people or company.primary_contact or company.staff_contacts %}
                     <div class="d-flex flex-column gap-1">
+                      {% if company.crm_people %}
+                        {% for link in company.crm_people %}
+                          <div>
+                            <a class="fw-semibold text-decoration-none" href="{% url 'client_detail' link.person.id %}">{{ link.person.name }}</a>
+                            {% if link.position %}<span class="text-muted small"> · {{ link.position }}</span>{% endif %}
+                            {% if link.is_primary %}<span class="badge text-bg-primary ms-1">Основной</span>{% endif %}
+                          </div>
+                        {% endfor %}
+                      {% endif %}
                       {% if company.primary_contact %}
                         <div class="fw-semibold">{{ company.primary_contact.name|default:"-" }}</div>
                         {% if company.primary_contact.position %}
@@ -127,6 +139,9 @@
       </div>
     </div>
     <div class="tab-pane fade" id="contacts-pane" role="tabpanel" aria-labelledby="contacts-tab">
+      <div class="mb-3">
+        <input class="form-control" type="search" placeholder="Поиск по имени, телефону, email или компании" autocomplete="off" data-client-live-search="#contacts-pane">
+      </div>
       <div class="mb-4">
         <div class="fw-semibold mb-2">&#1060;&#1080;&#1079;&#1080;&#1095;&#1077;&#1089;&#1082;&#1080;&#1077; &#1083;&#1080;&#1094;&#1072;</div>
         <div class="table-responsive">
@@ -144,12 +159,18 @@
             </thead>
             <tbody>
               {% for client in private_contacts %}
-                <tr>
+                <tr data-client-row data-client-search="{{ client.name }} {{ client.phone }} {{ client.email }} {{ client.inn }} {{ client.company_name }} {{ client.search_contacts }}">
                   <td class="fw-semibold"><a class="text-decoration-none" href="{% url 'client_detail' client.id %}">{{ client.name }}</a></td>
-                  <td>{{ client.phone|default:"-" }}</td>
+                  <td>{{ client.display_phone|default:"-" }}</td>
                   <td>{{ client.email|default:"-" }}</td>
                   <td>
-                    {% if client.company_name %}
+                    {% if client.crm_companies %}
+                      <div class="d-flex flex-column gap-1">
+                        {% for link in client.crm_companies %}
+                          <a class="text-decoration-none" href="{% url 'client_detail' link.company.id %}">{{ link.company.name }}</a>
+                        {% endfor %}
+                      </div>
+                    {% elif client.company_name %}
                       {{ client.company_name }}
                     {% else %}
                       &#1063;&#1072;&#1089;&#1090;&#1085;&#1099;&#1081; &#1082;&#1083;&#1080;&#1077;&#1085;&#1090;

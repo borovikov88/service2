@@ -29,6 +29,8 @@ from pool_service.communication_recordings import download_call_recording
 from pool_service.communication_services import receive_message
 from pool_service.services.employee_identity_sync import resolve_call_employee
 from pool_service.models import Client, OrganizationAccess
+from pool_service.client_crm_models import ClientCompanyLink, ClientContact
+from pool_service.phone_utils import format_phone, normalize_phone
 from pool_service.communication_avito import AvitoError, ingest_webhook
 
 
@@ -357,20 +359,51 @@ def _megafon_connection(request, public_id, data):
     return connection, telephony
 
 
-def _normalize_phone(value):
-    digits = "".join(character for character in str(value or "") if character.isdigit())
-    if len(digits) >= 10:
-        return digits[-10:]
-    return digits
-
-
 def _megafon_contact(organization, phone):
-    normalized = _normalize_phone(phone)
+    normalized = normalize_phone(phone)
     if not normalized:
         return None
-    for client in Client.objects.filter(organization=organization).only("id", "name", "phone"):
-        if _normalize_phone(client.phone) == normalized:
-            return client
+
+    client_ids = set(
+        ClientContact.objects.filter(
+            client__organization=organization,
+            kind=ClientContact.KIND_PHONE,
+            match_value=normalized,
+        ).values_list("client_id", flat=True)
+    )
+    for client in Client.objects.filter(organization=organization).exclude(phone__isnull=True).exclude(phone="").only("id", "phone"):
+        if normalize_phone(client.phone) == normalized:
+            client_ids.add(client.id)
+
+    if len(client_ids) == 1:
+        return Client.objects.filter(
+            pk=next(iter(client_ids)),
+            organization=organization,
+        ).first()
+    if not client_ids:
+        return None
+
+    candidates = list(
+        Client.objects.filter(
+            pk__in=client_ids,
+            organization=organization,
+        ).only("id", "client_type", "name")
+    )
+    private_candidates = [item for item in candidates if item.client_type == "private"]
+    if len(private_candidates) == 1:
+        person = private_candidates[0]
+        company_ids = {
+            item.id for item in candidates
+            if item.client_type == "legal"
+        }
+        linked_company_ids = set(
+            ClientCompanyLink.objects.filter(
+                person_id=person.id,
+                company_id__in=company_ids,
+            ).values_list("company_id", flat=True)
+        )
+        if company_ids and company_ids == linked_company_ids:
+            return person
     return None
 
 
@@ -629,7 +662,7 @@ def megafon_webhook(request, public_id):
     with transaction.atomic():
         existing_call = (
             PhoneCall.objects.select_for_update()
-            .select_related("employee", "employee_profile")
+            .select_related("employee", "employee_profile", "client")
             .filter(
                 connection=telephony,
                 external_id=call_id,
@@ -696,6 +729,16 @@ def megafon_webhook(request, public_id):
         effective_provider_extension = extension or (
             existing_call.provider_extension if existing_call else ""
         )
+        effective_client = client or (
+            existing_call.client
+            if existing_call and existing_call.client_id
+            else None
+        )
+        effective_contact_name = (
+            effective_client.name
+            if effective_client
+            else (existing_call.contact_name if existing_call else "")
+        )
 
         phone_call, created = PhoneCall.objects.update_or_create(
             connection=telephony,
@@ -706,8 +749,9 @@ def megafon_webhook(request, public_id):
                 "employee_profile": effective_employee_profile,
                 "provider_user": effective_provider_user,
                 "provider_extension": effective_provider_extension,
-                "contact_name": client.name if client else "",
-                "phone_number": phone,
+                "client": effective_client,
+                "contact_name": effective_contact_name,
+                "phone_number": format_phone(phone),
                 "direction": direction,
                 "started_at": started_at,
                 "duration_seconds": duration_seconds,
