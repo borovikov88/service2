@@ -3750,10 +3750,19 @@ def clients_list(request):
         .prefetch_related(
             "person_links__person",
             "company_links__company",
+            "crm_contacts",
         )
         .order_by("name")
 
     )
+
+    for client in clients:
+
+        client.crm_search_values = " ".join(
+            contact.value for contact in client.crm_contacts.all()
+            if contact.value
+        )
+
 
     companies = [client for client in clients if client.client_type == "legal"]
 
