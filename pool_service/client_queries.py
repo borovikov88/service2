@@ -32,17 +32,35 @@ def find_active_client_by_phone(organization, phone):
     )
 
     if not matches:
+        variants = phone_variants(phone)
         matches = list(
             active_clients(
                 Client.objects.filter(
                     organization=organization,
-                    phone__in=phone_variants(phone),
+                    phone__in=variants,
                 )
             )
             .select_related("crm_profile")
             .distinct()
             .order_by("id")[:6]
         )
+
+    if not matches:
+        legacy_matches = []
+        for item in (
+            active_clients(
+                Client.objects.filter(organization=organization)
+                .exclude(phone__isnull=True)
+                .exclude(phone="")
+            )
+            .select_related("crm_profile")
+            .only("id", "client_type", "phone", "organization_id", "crm_profile__legal_form")
+        ):
+            if normalize_phone(item.phone) == normalized:
+                legacy_matches.append(item)
+                if len(legacy_matches) >= 6:
+                    break
+        matches = legacy_matches
 
     if len(matches) == 1:
         return matches[0]
