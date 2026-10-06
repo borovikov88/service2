@@ -269,7 +269,7 @@ def _prepare_call_display(calls, organization):
     for call in calls:
         call.display_phone = format_phone(call.phone_number)
         call.resolved_client = call.client
-        if call.resolved_client_id:
+        if call.client_id:
             continue
         key = normalize_phone(call.phone_number)
         ids = clients_by_phone.get(key, set())
