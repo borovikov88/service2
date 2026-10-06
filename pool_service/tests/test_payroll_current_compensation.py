@@ -16,6 +16,7 @@ from pool_service.finance_imports.payroll_plan import (
 )
 from pool_service.finance_imports.odata_payroll_plan import read_current_plan
 from pool_service.models import (
+    DataAuditLog,
     Employee,
     EmployeeOneCIdentity,
     Organization,
