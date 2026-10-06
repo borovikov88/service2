@@ -78,7 +78,10 @@ def _authorize_call_access(request, call):
     if not access:
         raise PermissionDenied
     if _is_manual_recording_call(call):
-        if access.role != "owner":
+        if not (
+            access.role in {"owner", "admin"}
+            or request.user.is_superuser
+        ):
             raise PermissionDenied
         return access.organization
     if not conversation_capability(request.user, "can_listen_calls", access.organization):
