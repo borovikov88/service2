@@ -34,7 +34,7 @@ from django.views.decorators.http import require_POST
 
 from django.urls import reverse, reverse_lazy
 
-from django.db import connection
+from django.db import connection, transaction
 
 from django.db.models import Count, Q, Max, Case, When, Value, IntegerField
 
@@ -173,6 +173,7 @@ from .services.phone_verification import (
 from .services.notifications import notify_reading_out_of_range, notify_superusers, notify_task_assignment
 from .services.task_archive import archive_task, restore_task
 from .services.crm_archive import archive_crm_item, restore_crm_item, sync_crm_archive_state
+from .services.crm_locking import lock_crm_graph, locked_task_with_crm_graph
 from .services.task_generation import sync_crm_item_for_task, sync_task_with_crm_item
 
 
@@ -4077,6 +4078,7 @@ def crm_tasks(request):
 
 
 @login_required
+@transaction.atomic
 def crm_tasks_bulk_update(request):
     if request.method != "POST":
         return redirect("crm_tasks")
@@ -4110,7 +4112,30 @@ def crm_tasks_bulk_update(request):
             Q(created_by=request.user) | Q(primary_responsible=request.user) | Q(responsibles=request.user)
         ).distinct()
 
-    tasks = list(tasks_qs.select_related("primary_responsible", "crm_item"))
+    candidate_rows = list(
+        tasks_qs.order_by("id").values("id", "crm_item_id")
+    )
+    candidate_ids = {row["id"] for row in candidate_rows}
+    crm_item_ids = [
+        row["crm_item_id"] for row in candidate_rows if row["crm_item_id"]
+    ]
+    locked_tasks, _locked_items = lock_crm_graph(
+        crm_item_ids,
+        extra_task_ids=candidate_ids,
+    )
+    is_admin_or_owner = _is_org_admin_or_owner(request.user, org)
+    tasks = [
+        task
+        for task in locked_tasks
+        if task.id in candidate_ids
+        and task.organization_id == (org.id if org else None)
+        and (
+            is_admin_or_owner
+            or task.created_by_id == request.user.id
+            or task.primary_responsible_id == request.user.id
+            or task.responsibles.filter(id=request.user.id).exists()
+        )
+    ]
     if not tasks:
         messages.warning(request, "Подходящие задачи не найдены.")
         return redirect(reverse("crm_tasks"))
@@ -4539,6 +4564,7 @@ def crm_list(request, direction):
 
 
 @login_required
+@transaction.atomic
 def crm_bulk_update(request, direction):
     if request.method != "POST":
         return redirect("crm_list", direction=direction)
@@ -4570,11 +4596,20 @@ def crm_bulk_update(request, direction):
         messages.warning(request, "Не выбраны записи CRM.")
         return redirect(_crm_bulk_redirect_url(request, direction))
 
-    items = CrmItem.objects.filter(id__in=selected_ids, direction=direction, is_archived=False)
+    items_qs = CrmItem.objects.filter(id__in=selected_ids, direction=direction, is_archived=False)
     if org:
-        items = items.filter(organization=org)
+        items_qs = items_qs.filter(organization=org)
 
-    items = list(items.select_related("responsible"))
+    candidate_ids = list(items_qs.order_by("id").values_list("id", flat=True))
+    _locked_tasks, locked_items = lock_crm_graph(candidate_ids)
+    items = [
+        item
+        for item in locked_items
+        if item.id in set(candidate_ids)
+        and item.direction == direction
+        and not item.is_archived
+        and (not org or item.organization_id == org.id)
+    ]
     if not items:
         messages.warning(request, "Подходящие записи CRM не найдены.")
         return redirect(_crm_bulk_redirect_url(request, direction))
@@ -4825,7 +4860,7 @@ def crm_create(request, direction):
 
 
 @login_required
-
+@transaction.atomic
 def crm_edit(request, direction, item_id):
 
     readonly = _deny_superuser_write(request)
@@ -4871,6 +4906,15 @@ def crm_edit(request, direction, item_id):
     return_context = _crm_edit_return_context(request, direction, item)
 
     if request.method == "POST":
+        _locked_tasks, locked_items = lock_crm_graph([item.id])
+        item = next((locked for locked in locked_items if locked.id == item.id), None)
+        if (
+            not item
+            or item.direction != direction
+            or item.is_archived
+            or (org and item.organization_id != org.id)
+        ):
+            return HttpResponseNotFound("CRM item changed while editing.")
 
         form = CrmItemForm(request.POST, instance=item, direction=direction, organization=org)
 
@@ -5005,6 +5049,7 @@ def archive_list(request):
 
 @login_required
 @require_POST
+@transaction.atomic
 def archive_restore_task(request, task_id):
     readonly = _deny_superuser_write(request)
     if readonly:
@@ -5013,7 +5058,10 @@ def archive_restore_task(request, task_id):
     if blocked:
         return blocked
 
-    task = get_object_or_404(ServiceTask, pk=task_id, is_archived=True)
+    seed = get_object_or_404(ServiceTask, pk=task_id, is_archived=True)
+    task = locked_task_with_crm_graph(organization=seed.organization, task_id=seed.id)
+    if not task or not task.is_archived:
+        return HttpResponseNotFound("Task archive state changed.")
     if not _task_can_view(task, request.user):
         return HttpResponseForbidden()
 
@@ -5028,6 +5076,7 @@ def archive_restore_task(request, task_id):
 
 @login_required
 @require_POST
+@transaction.atomic
 def archive_restore_crm_item(request, item_id):
     readonly = _deny_superuser_write(request)
     if readonly:
@@ -5038,7 +5087,11 @@ def archive_restore_crm_item(request, item_id):
     if not _can_access_crm(request.user):
         return HttpResponseForbidden()
 
-    item = get_object_or_404(CrmItem, pk=item_id, is_archived=True)
+    seed = get_object_or_404(CrmItem, pk=item_id, is_archived=True)
+    _locked_tasks, locked_items = lock_crm_graph([seed.id])
+    item = next((locked for locked in locked_items if locked.id == seed.id), None)
+    if not item or not item.is_archived:
+        return HttpResponseNotFound("CRM archive state changed.")
     if not request.user.is_superuser:
         org = organization_for_user(request.user)
         if not org or item.organization_id != org.id:
@@ -5051,6 +5104,7 @@ def archive_restore_crm_item(request, item_id):
 
 @login_required
 @require_POST
+@transaction.atomic
 def archive_bulk_update(request):
     readonly = _deny_superuser_write(request)
     if readonly:
@@ -5089,18 +5143,43 @@ def archive_bulk_update(request):
         except (TypeError, ValueError):
             continue
 
-    tasks = ServiceTask.objects.filter(id__in=task_ids, is_archived=True)
-    items = CrmItem.objects.filter(id__in=item_ids, is_archived=True)
+    tasks_qs = ServiceTask.objects.filter(id__in=task_ids, is_archived=True)
+    items_qs = CrmItem.objects.filter(id__in=item_ids, is_archived=True)
     pools = Pool.objects.filter(uuid__in=pool_uuids, is_deleted=True)
     readings = WaterReading.objects.filter(uuid__in=reading_uuids, is_deleted=True).select_related("pool")
     if org:
-        tasks = tasks.filter(organization=org)
-        items = items.filter(organization=org)
+        tasks_qs = tasks_qs.filter(organization=org)
+        items_qs = items_qs.filter(organization=org)
         pools = pools.filter(Q(organization=org) | Q(client__organization=org)).distinct()
         readings = readings.filter(Q(pool__organization=org) | Q(pool__client__organization=org)).distinct()
 
-    tasks = list(tasks)
-    items = list(items)
+    task_candidates = list(
+        tasks_qs.order_by("id").values("id", "crm_item_id")
+    )
+    item_candidate_ids = list(
+        items_qs.order_by("id").values_list("id", flat=True)
+    )
+    graph_item_ids = item_candidate_ids + [
+        row["crm_item_id"] for row in task_candidates if row["crm_item_id"]
+    ]
+    locked_tasks, locked_items = lock_crm_graph(
+        graph_item_ids,
+        extra_task_ids=[row["id"] for row in task_candidates],
+    )
+    selected_task_ids = {row["id"] for row in task_candidates}
+    selected_item_ids = set(item_candidate_ids)
+    tasks = [
+        task for task in locked_tasks
+        if task.id in selected_task_ids
+        and task.is_archived
+        and (not org or task.organization_id == org.id)
+    ]
+    items = [
+        item for item in locked_items
+        if item.id in selected_item_ids
+        and item.is_archived
+        and (not org or item.organization_id == org.id)
+    ]
     pools = list(pools)
     readings = list(readings)
     if not tasks and not items and not pools and not readings:
@@ -7507,6 +7586,7 @@ def task_create(request):
 
 
 @login_required
+@transaction.atomic
 def task_edit(request, task_id):
     readonly = _deny_superuser_write(request)
     if readonly:
@@ -7518,7 +7598,8 @@ def task_edit(request, task_id):
     is_modal = _is_modal_request(request)
     is_edit_mode = request.method == "POST" or request.GET.get("edit") == "1"
 
-    task = get_object_or_404(ServiceTask, pk=task_id)
+    task_queryset = ServiceTask.objects.select_for_update() if request.method == "POST" else ServiceTask.objects
+    task = get_object_or_404(task_queryset, pk=task_id)
     if not _task_can_view(task, request.user):
         return HttpResponseForbidden()
     if task.is_archived:
@@ -7797,6 +7878,7 @@ def task_edit(request, task_id):
 
 
 @login_required
+@transaction.atomic
 def task_delete(request, task_id):
     if request.method != "POST":
         return redirect("task_edit", task_id=task_id)
@@ -7808,7 +7890,7 @@ def task_delete(request, task_id):
     if blocked:
         return blocked
 
-    task = get_object_or_404(ServiceTask, pk=task_id)
+    task = get_object_or_404(ServiceTask.objects.select_for_update(), pk=task_id)
     if not _task_can_edit(task, request.user):
         return HttpResponseForbidden()
 
@@ -7829,6 +7911,7 @@ def task_delete(request, task_id):
 
 @csrf_protect
 @login_required
+@transaction.atomic
 def task_move(request):
     if request.method != "POST":
         return JsonResponse({"ok": False, "error": "method_not_allowed"}, status=405)
@@ -7853,7 +7936,7 @@ def task_move(request):
     except ValueError:
         return JsonResponse({"ok": False, "error": "invalid_date"}, status=400)
 
-    task = get_object_or_404(ServiceTask, pk=task_id)
+    task = get_object_or_404(ServiceTask.objects.select_for_update(), pk=task_id)
     if not _task_can_edit(task, request.user):
         return JsonResponse({"ok": False, "error": "forbidden"}, status=403)
     if task.is_archived:
