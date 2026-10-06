@@ -114,6 +114,12 @@ OPENAI_CALL_TIMEOUT_SECONDS = _env_float(
     minimum=10,
     maximum=300,
 )
+OPENAI_CALL_TRANSCRIPTION_TIMEOUT_SECONDS = _env_float(
+    "OPENAI_CALL_TRANSCRIPTION_TIMEOUT_SECONDS",
+    300,
+    minimum=30,
+    maximum=900,
+)
 OPENAI_CALL_MAX_ATTEMPTS = _env_int(
     "OPENAI_CALL_MAX_ATTEMPTS",
     5,
