@@ -1,3 +1,4 @@
+import os
 import uuid
 
 from django.contrib.auth.models import User
@@ -451,6 +452,10 @@ class PhoneCall(models.Model):
     class Meta:
         unique_together = ("connection", "external_id")
         ordering = ["-started_at"]
+
+    @property
+    def recording_filename(self):
+        return os.path.basename(self.recording_file.name or "")
 
     def clean(self):
         if self.connection_id and self.organization_id and self.connection.organization_id != self.organization_id:

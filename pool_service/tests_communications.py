@@ -1312,6 +1312,91 @@ class CommunicationsTests(TestCase):
         self.assertNotContains(response, "Расшифровка запускается вручную.")
         self.assertNotContains(response, "Ожидает автоматической расшифровки.")
 
+    def test_manual_recordings_page_is_owner_only_and_separate_from_phone_history(self):
+        manual_connection = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="Загруженные записи",
+            external_id="manual-upload",
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-live-history",
+        )
+        manual_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=manual_connection,
+            external_id="manual-separated",
+            phone_number="",
+            contact_name="",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        manual_call.recording_file.save(
+            "manual-separated.mp3",
+            ContentFile(b"ID3manual"),
+            save=True,
+        )
+        live_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="live-separated",
+            employee=self.owner,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        live_call.recording_file.save(
+            "live-separated.mp3",
+            ContentFile(b"ID3live"),
+            save=True,
+        )
+
+        self.client.login(username="owner", password="test")
+        phone_page = self.client.get(reverse("communications_calls"))
+        self.assertEqual(phone_page.status_code, 200)
+        self.assertContains(phone_page, "+79001112233")
+        self.assertNotContains(
+            phone_page,
+            reverse("communication_call_recording", args=[manual_call.pk]),
+        )
+        self.assertContains(
+            phone_page,
+            reverse("communication_manual_recordings"),
+        )
+
+        manual_page = self.client.get(reverse("communication_manual_recordings"))
+        self.assertEqual(manual_page.status_code, 200)
+        self.assertContains(manual_page, "Загрузка и расшифровка файлов")
+        self.assertContains(
+            manual_page,
+            reverse("communication_call_recording", args=[manual_call.pk]),
+        )
+        self.assertNotContains(manual_page, "+79001112233")
+        self.assertNotContains(manual_page, "Не сопоставлен")
+
+        self.client.logout()
+        self.client.login(username="worker", password="test")
+        self.assertEqual(
+            self.client.get(reverse("communication_manual_recordings")).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.get(
+                reverse("communication_call_recording", args=[manual_call.pk])
+            ).status_code,
+            403,
+        )
+        worker_phone_page = self.client.get(reverse("communications_calls"))
+        self.assertNotContains(
+            worker_phone_page,
+            reverse("communication_manual_recordings"),
+        )
+
     def test_owner_can_upload_multiple_call_recordings_for_client_without_auto_analysis(self):
         client = ServiceClient.objects.create(
             organization=self.organization,
@@ -1335,7 +1420,7 @@ class CommunicationsTests(TestCase):
                 ],
             },
         )
-        self.assertRedirects(response, reverse("communications_calls"))
+        self.assertRedirects(response, reverse("communication_manual_recordings"))
 
         calls = PhoneCall.objects.filter(
             organization=self.organization,
@@ -1363,8 +1448,14 @@ class CommunicationsTests(TestCase):
         for call in calls:
             self.assertTrue(call.recording_file)
 
-        page = self.client.get(reverse("communications_calls"))
+        phone_page = self.client.get(reverse("communications_calls"))
+        self.assertNotContains(phone_page, "Иван Клиент")
+        self.assertNotContains(phone_page, "Загрузка и расшифровка файлов")
+
+        page = self.client.get(reverse("communication_manual_recordings"))
         self.assertContains(page, "Иван Клиент")
+        self.assertContains(page, calls[0].recording_filename)
+        self.assertContains(page, "Загрузка и расшифровка файлов")
         self.assertContains(page, "Расшифровать выбранные")
         self.assertContains(page, 'data-call-select', html=False)
 
@@ -1387,7 +1478,7 @@ class CommunicationsTests(TestCase):
                 ],
             },
         )
-        self.assertRedirects(response, reverse("communications_calls"))
+        self.assertRedirects(response, reverse("communication_manual_recordings"))
         self.assertFalse(
             PhoneCall.objects.filter(
                 organization=self.organization,
@@ -1479,7 +1570,7 @@ class CommunicationsTests(TestCase):
         telephony = TelephonyConnection.objects.create(
             organization=self.organization,
             name="Загруженные записи",
-            external_id="manual-bulk",
+            external_id="manual-upload",
         )
         calls = []
         for index in range(2):
@@ -1523,11 +1614,36 @@ class CommunicationsTests(TestCase):
         )
 
         self.client.login(username="owner", password="test")
+        live_connection = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-bulk-excluded",
+        )
+        live_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=live_connection,
+            external_id="live-bulk-excluded",
+            employee=self.owner,
+            phone_number="+79001119999",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        live_call.recording_file.save(
+            "live-bulk-excluded.mp3",
+            ContentFile(b"ID3live"),
+            save=True,
+        )
+
         response = self.client.post(
             reverse("communication_call_analysis_bulk"),
-            {"call_ids": [str(call.pk) for call in calls] + [str(ready_call.pk)]},
+            {
+                "call_ids": [str(call.pk) for call in calls]
+                + [str(ready_call.pk), str(live_call.pk)]
+            },
         )
-        self.assertRedirects(response, reverse("communications_calls"))
+        self.assertRedirects(response, reverse("communication_manual_recordings"))
         self.assertEqual(
             [item.args[0] for item in request_analysis.call_args_list],
             [call.pk for call in calls],
@@ -1540,7 +1656,7 @@ class CommunicationsTests(TestCase):
         )
         start_worker.assert_called_once_with()
 
-        page = self.client.get(reverse("communications_calls"))
+        page = self.client.get(reverse("communication_manual_recordings"))
         self.assertNotContains(
             page,
             f'value="{ready_call.pk}" form="bulk-analysis-form"',

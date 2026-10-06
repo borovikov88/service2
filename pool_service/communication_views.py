@@ -44,9 +44,49 @@ from pool_service.services.call_ai import request_call_analysis, start_requested
 from pool_service.models import Client, Notification, OrganizationAccess
 
 
+MANUAL_RECORDING_CONNECTION_ID = "manual-upload"
+
+
 def _context(request, capability):
     access = organization_access(request.user)
     if not access or not conversation_capability(request.user, capability, access.organization):
+        raise PermissionDenied
+    return access.organization
+
+
+def _can_access_manual_recordings(user, organization):
+    access = organization_access(user, organization)
+    return bool(access and access.role == "owner")
+
+
+def _owner_communications_context(request):
+    access = organization_access(request.user)
+    if not access or access.role != "owner":
+        raise PermissionDenied
+    return access.organization
+
+
+def _is_manual_recording_call(call):
+    return bool(
+        call.connection_id
+        and getattr(call.connection, "external_id", "") == MANUAL_RECORDING_CONNECTION_ID
+    )
+
+
+def _authorize_call_access(request, call):
+    access = organization_access(request.user, call.organization)
+    if not access:
+        raise PermissionDenied
+    if _is_manual_recording_call(call):
+        if access.role != "owner":
+            raise PermissionDenied
+        return access.organization
+    if not conversation_capability(request.user, "can_listen_calls", access.organization):
+        raise PermissionDenied
+    if (
+        not conversation_capability(request.user, "can_view_all_calls", access.organization)
+        and call.employee_id != request.user.id
+    ):
         raise PermissionDenied
     return access.organization
 
@@ -89,6 +129,7 @@ def conversations(request):
         "can_reply": conversation_capability(request.user, "can_reply_conversations", organization),
         "can_take": conversation_capability(request.user, "can_take_conversation", organization),
         "can_assign": conversation_capability(request.user, "can_assign_conversation", organization),
+        "can_access_manual_recordings": _can_access_manual_recordings(request.user, organization),
         "staff": OrganizationAccess.objects.filter(organization=organization).exclude(role="accountant").select_related("user"),
     })
 
@@ -242,7 +283,9 @@ def calls(request):
         raise PermissionDenied
     organization = access.organization
     can_view_all = conversation_capability(request.user, "can_view_all_calls", organization)
-    queryset = PhoneCall.objects.filter(organization=organization).select_related(
+    queryset = PhoneCall.objects.filter(organization=organization).exclude(
+        connection__external_id=MANUAL_RECORDING_CONNECTION_ID,
+    ).select_related(
         "employee",
         "employee_profile",
         "client",
@@ -268,14 +311,67 @@ def calls(request):
     if request.GET.get("missed"): queryset = queryset.filter(result=PhoneCall.RESULT_MISSED)
     if request.GET.get("q"): queryset = queryset.filter(Q(phone_number__icontains=request.GET["q"]) | Q(contact_name__icontains=request.GET["q"]))
     employees = OrganizationAccess.objects.filter(organization=organization).select_related("user")
-    clients = active_clients(Client.objects.filter(organization=organization)).order_by("name", "id")
     return render(request, "pool_service/communications/calls.html", {
         "active_tab": "communications",
         "calls": queryset[:500],
         "employees": employees,
-        "clients": clients,
         "can_listen": conversation_capability(request.user, "can_listen_calls", organization),
         "can_view_all": can_view_all,
+        "can_access_manual_recordings": _can_access_manual_recordings(request.user, organization),
+        "manual_archive": False,
+    })
+
+
+@login_required
+def manual_recordings(request):
+    organization = _owner_communications_context(request)
+    queryset = PhoneCall.objects.filter(
+        organization=organization,
+        connection__external_id=MANUAL_RECORDING_CONNECTION_ID,
+    ).select_related(
+        "connection",
+        "client",
+        "analysis",
+    ).defer("analysis__transcript")
+
+    try:
+        date_from = date.fromisoformat(request.GET["date_from"]) if request.GET.get("date_from") else None
+        date_to = date.fromisoformat(request.GET["date_to"]) if request.GET.get("date_to") else None
+    except ValueError:
+        return HttpResponseBadRequest("Некорректный период.")
+    if date_from and date_to and date_from > date_to:
+        return HttpResponseBadRequest("Начало периода не может быть позже окончания.")
+    if date_from:
+        queryset = queryset.filter(started_at__date__gte=date_from)
+    if date_to:
+        queryset = queryset.filter(started_at__date__lte=date_to)
+
+    client_id = (request.GET.get("client") or "").strip()
+    if client_id:
+        if not client_id.isdigit():
+            return HttpResponseBadRequest("Некорректный клиент.")
+        queryset = queryset.filter(client_id=int(client_id))
+
+    query = (request.GET.get("q") or "").strip()
+    if query:
+        queryset = queryset.filter(
+            Q(client__name__icontains=query)
+            | Q(contact_name__icontains=query)
+            | Q(phone_number__icontains=query)
+            | Q(recording_file__icontains=query)
+        )
+
+    clients = active_clients(
+        Client.objects.filter(organization=organization)
+    ).order_by("name", "id")
+    return render(request, "pool_service/communications/calls.html", {
+        "active_tab": "communications",
+        "calls": queryset[:500],
+        "clients": clients,
+        "can_listen": True,
+        "can_view_all": True,
+        "can_access_manual_recordings": True,
+        "manual_archive": True,
     })
 
 
@@ -286,7 +382,7 @@ MANUAL_CALL_MAX_FILES = 50
 def _manual_recording_connection(organization):
     connection, _ = TelephonyConnection.objects.get_or_create(
         organization=organization,
-        external_id="manual-upload",
+        external_id=MANUAL_RECORDING_CONNECTION_ID,
         defaults={
             "name": "Загруженные записи",
             "is_active": True,
@@ -298,17 +394,15 @@ def _manual_recording_connection(organization):
 @login_required
 @require_POST
 def call_recording_upload(request):
-    organization = _context(request, "can_listen_calls")
-    if not conversation_capability(request.user, "can_view_all_calls", organization):
-        raise PermissionDenied
+    organization = _owner_communications_context(request)
 
     files = request.FILES.getlist("recordings")
     if not files:
         messages.error(request, "Выберите хотя бы один аудиофайл.")
-        return redirect("communications_calls")
+        return redirect("communication_manual_recordings")
     if len(files) > MANUAL_CALL_MAX_FILES:
         messages.error(request, f"За один раз можно загрузить не более {MANUAL_CALL_MAX_FILES} записей.")
-        return redirect("communications_calls")
+        return redirect("communication_manual_recordings")
 
     client = None
     client_id = (request.POST.get("client") or "").strip()
@@ -340,7 +434,7 @@ def call_recording_upload(request):
             rejected.append(f"{uploaded.name}: файл не похож на поддерживаемую аудиозапись")
     if rejected:
         messages.error(request, "Не загружено: " + "; ".join(rejected[:5]))
-        return redirect("communications_calls")
+        return redirect("communication_manual_recordings")
 
     connection = _manual_recording_connection(organization)
     created = 0
@@ -367,22 +461,23 @@ def call_recording_upload(request):
         request,
         f"Загружено записей: {created}. Расшифровка не запускалась.",
     )
-    return redirect("communications_calls")
+    return redirect("communication_manual_recordings")
 
 
 @login_required
 @require_POST
 def call_analysis_bulk(request):
-    organization = _context(request, "can_listen_calls")
+    organization = _owner_communications_context(request)
     raw_ids = request.POST.getlist("call_ids")
     call_ids = [int(value) for value in raw_ids if value.isdigit()]
     if not call_ids:
         messages.info(request, "Выберите записи для расшифровки.")
-        return redirect("communications_calls")
+        return redirect("communication_manual_recordings")
 
     queryset = PhoneCall.objects.filter(
         pk__in=call_ids,
         organization=organization,
+        connection__external_id=MANUAL_RECORDING_CONNECTION_ID,
     ).exclude(recording_file="").filter(
         Q(analysis__isnull=True)
         | Q(analysis__status=CallAnalysis.STATUS_FAILED)
@@ -391,9 +486,6 @@ def call_analysis_bulk(request):
             analysis__requested_at__isnull=True,
         )
     )
-    if not conversation_capability(request.user, "can_view_all_calls", organization):
-        queryset = queryset.filter(employee=request.user)
-
     queued = 0
     for call_id in queryset.order_by("pk").values_list("pk", flat=True):
         if request_call_analysis(call_id, allow_reanalysis=False):
@@ -409,22 +501,20 @@ def call_analysis_bulk(request):
             )
     else:
         messages.info(request, "Новые записи в очередь не добавлены.")
-    return redirect("communications_calls")
+    return redirect("communication_manual_recordings")
 
 
 @login_required
 def call_analysis_status(request, call_id):
-    organization = _context(request, "can_listen_calls")
-    call = get_object_or_404(
-        PhoneCall.objects.select_related("analysis"),
-        pk=call_id,
-        organization=organization,
-    )
-    if (
-        not conversation_capability(request.user, "can_view_all_calls", organization)
-        and call.employee_id != request.user.id
-    ):
+    access = organization_access(request.user)
+    if not access:
         raise PermissionDenied
+    call = get_object_or_404(
+        PhoneCall.objects.select_related("analysis", "connection"),
+        pk=call_id,
+        organization=access.organization,
+    )
+    _authorize_call_access(request, call)
     analysis = getattr(call, "analysis", None)
     if analysis is None:
         return JsonResponse({"status": "none"})
@@ -436,17 +526,15 @@ def call_analysis_status(request, call_id):
 
 @login_required
 def call_analysis_transcript(request, call_id):
-    organization = _context(request, "can_listen_calls")
-    call = get_object_or_404(
-        PhoneCall.objects.select_related("analysis"),
-        pk=call_id,
-        organization=organization,
-    )
-    if (
-        not conversation_capability(request.user, "can_view_all_calls", organization)
-        and call.employee_id != request.user.id
-    ):
+    access = organization_access(request.user)
+    if not access:
         raise PermissionDenied
+    call = get_object_or_404(
+        PhoneCall.objects.select_related("analysis", "connection"),
+        pk=call_id,
+        organization=access.organization,
+    )
+    _authorize_call_access(request, call)
     analysis = getattr(call, "analysis", None)
     if not analysis or analysis.status != CallAnalysis.STATUS_READY:
         raise Http404
@@ -456,20 +544,23 @@ def call_analysis_transcript(request, call_id):
 @login_required
 @require_POST
 def call_analysis_retry(request, call_id):
-    organization = _context(request, "can_listen_calls")
-    call = get_object_or_404(
-        PhoneCall,
-        pk=call_id,
-        organization=organization,
-    )
-    if (
-        not conversation_capability(request.user, "can_view_all_calls", organization)
-        and call.employee_id != request.user.id
-    ):
+    access = organization_access(request.user)
+    if not access:
         raise PermissionDenied
+    call = get_object_or_404(
+        PhoneCall.objects.select_related("connection"),
+        pk=call_id,
+        organization=access.organization,
+    )
+    _authorize_call_access(request, call)
+    redirect_name = (
+        "communication_manual_recordings"
+        if _is_manual_recording_call(call)
+        else "communications_calls"
+    )
     if not call.recording_file:
         messages.error(request, "Сначала должна быть сохранена запись звонка.")
-        return redirect("communications_calls")
+        return redirect(redirect_name)
     if request_call_analysis(call.pk):
         if start_requested_call_analysis_worker():
             messages.success(request, "Расшифровка и анализ запущены.")
@@ -480,7 +571,7 @@ def call_analysis_retry(request, call_id):
             )
     else:
         messages.info(request, "Этот звонок уже обрабатывается.")
-    return redirect("communications_calls")
+    return redirect(redirect_name)
 
 
 def _recording_range_iterator(file_handle, start, length, chunk_size=64 * 1024):
@@ -499,13 +590,15 @@ def _recording_range_iterator(file_handle, start, length, chunk_size=64 * 1024):
 
 @login_required
 def call_recording(request, call_id):
-    organization = _context(request, "can_listen_calls")
-    call = get_object_or_404(PhoneCall, pk=call_id, organization=organization)
-    if (
-        not conversation_capability(request.user, "can_view_all_calls", organization)
-        and call.employee_id != request.user.id
-    ):
+    access = organization_access(request.user)
+    if not access:
         raise PermissionDenied
+    call = get_object_or_404(
+        PhoneCall.objects.select_related("connection"),
+        pk=call_id,
+        organization=access.organization,
+    )
+    _authorize_call_access(request, call)
     if not call.recording_file:
         raise Http404
 
