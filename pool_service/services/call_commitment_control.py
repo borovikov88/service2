@@ -3,11 +3,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
 from django.contrib.auth.models import User
+from django.db import transaction
 from django.urls import reverse
 from django.utils import timezone
 
 from pool_service.models import OrganizationAccess, ServiceTask
 from pool_service.services.notifications import notify_users
+from pool_service.services.push_notifications import send_push_to_users
 
 
 CONTROL_SOURCE = "call_analysis"
@@ -138,7 +140,7 @@ def process_call_commitment_controls(*, now=None):
         now = now.replace(tzinfo=ZoneInfo("UTC"))
     now_local = now.astimezone(_communication_zone())
 
-    tasks = (
+    candidate_ids = list(
         ServiceTask.objects.filter(
             task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
             source_type=ServiceTask.SOURCE_SYSTEM,
@@ -152,15 +154,8 @@ def process_call_commitment_controls(*, now=None):
                 ServiceTask.STATUS_CANCELLED,
             ]
         )
-        .select_related(
-            "organization",
-            "client",
-            "pool",
-            "pool__client",
-            "primary_responsible",
-        )
-        .prefetch_related("responsibles")
         .order_by("id")
+        .values_list("id", flat=True)
     )
 
     result = {
@@ -170,80 +165,136 @@ def process_call_commitment_controls(*, now=None):
         "without_deadline": 0,
     }
 
-    for task in tasks:
-        payload = _payload(task)
-        if payload.get("source") != CONTROL_SOURCE:
-            continue
-        actor = str(payload.get("actor") or "").strip().lower()
-        if actor not in {ACTOR_EMPLOYEE, ACTOR_CLIENT}:
-            continue
-
-        result["checked"] += 1
-        deadline = _effective_deadline(task, payload)
-        if deadline is None:
-            result["without_deadline"] += 1
-            continue
-        if now_local < deadline:
-            continue
-
-        deadline_key = _deadline_key(deadline)
-        state = payload.get("control_state")
-        if not isinstance(state, dict) or state.get("deadline_key") != deadline_key:
-            state = {"deadline_key": deadline_key}
-
-        changed = False
-        action_url = reverse("task_edit", kwargs={"task_id": task.id})
-
-        if not state.get("due_reminder_sent_at"):
-            recipients = _task_recipients(task)
-            if recipients:
-                title, message = _due_notification(task, actor)
-                notify_users(
-                    recipients,
-                    title=title,
-                    message=message,
-                    kind="task_assignment",
-                    level="warning",
-                    action_url=action_url,
-                    organization=task.organization,
-                    client=task.client,
-                    dedupe_key=f"call_control:{task.id}:due:{deadline_key}",
-                    send_in_app=True,
-                    send_push=True,
+    for task_id in candidate_ids:
+        with transaction.atomic():
+            # Share the same row-lock protocol as MCP and interactive task
+            # writers. Re-check eligibility after acquiring the lock so a task
+            # completed/archived in parallel cannot emit stale notifications or
+            # overwrite newer payload markers.
+            task = (
+                ServiceTask.objects.select_for_update()
+                .filter(
+                    pk=task_id,
+                    task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+                    source_type=ServiceTask.SOURCE_SYSTEM,
+                    auto_created=True,
+                    is_archived=False,
+                    completed_at__isnull=True,
                 )
-                state["due_reminder_sent_at"] = now.isoformat()
-                result["due_reminders"] += 1
-                changed = True
-
-        escalation_delay = (
-            IMPORTANT_ESCALATION_DELAY
-            if task.priority == ServiceTask.PRIORITY_HIGH
-            else NORMAL_ESCALATION_DELAY
-        )
-        if now_local >= deadline + escalation_delay and not state.get("escalated_at"):
-            owners = _owner_recipients(task)
-            if owners:
-                title, message = _escalation_notification(task, actor)
-                notify_users(
-                    owners,
-                    title=title,
-                    message=message,
-                    kind="task_assignment",
-                    level="critical",
-                    action_url=action_url,
-                    organization=task.organization,
-                    client=task.client,
-                    dedupe_key=f"call_control:{task.id}:escalation:{deadline_key}",
-                    send_in_app=True,
-                    send_push=True,
+                .exclude(
+                    status__in=[
+                        ServiceTask.STATUS_DONE,
+                        ServiceTask.STATUS_CANCELLED,
+                    ]
                 )
-                state["escalated_at"] = now.isoformat()
-                result["escalations"] += 1
-                changed = True
+                .select_related(
+                    "organization",
+                    "client",
+                    "pool",
+                    "pool__client",
+                    "primary_responsible",
+                )
+                .prefetch_related("responsibles")
+                .first()
+            )
+            if task is None:
+                continue
 
-        if changed:
-            payload["control_state"] = state
-            task.payload_json = payload
-            task.save(update_fields=["payload_json", "updated_at"])
+            payload = _payload(task)
+            if payload.get("source") != CONTROL_SOURCE:
+                continue
+            actor = str(payload.get("actor") or "").strip().lower()
+            if actor not in {ACTOR_EMPLOYEE, ACTOR_CLIENT}:
+                continue
+
+            result["checked"] += 1
+            deadline = _effective_deadline(task, payload)
+            if deadline is None:
+                result["without_deadline"] += 1
+                continue
+            if now_local < deadline:
+                continue
+
+            deadline_key = _deadline_key(deadline)
+            state = payload.get("control_state")
+            if not isinstance(state, dict) or state.get("deadline_key") != deadline_key:
+                state = {"deadline_key": deadline_key}
+
+            changed = False
+            action_url = reverse("task_edit", kwargs={"task_id": task.id})
+
+            if not state.get("due_reminder_sent_at"):
+                recipients = _task_recipients(task)
+                if recipients:
+                    title, message = _due_notification(task, actor)
+                    notify_users(
+                        recipients,
+                        title=title,
+                        message=message,
+                        kind="task_assignment",
+                        level="warning",
+                        action_url=action_url,
+                        organization=task.organization,
+                        client=task.client,
+                        dedupe_key=f"call_control:{task.id}:due:{deadline_key}",
+                        send_in_app=True,
+                        send_push=False,
+                    )
+                    transaction.on_commit(
+                        lambda recipients=tuple(recipients), title=title, message=message, action_url=action_url: send_push_to_users(
+                            recipients,
+                            title=title,
+                            message=message,
+                            action_url=action_url,
+                        ),
+                        robust=True,
+                    )
+                    state["due_reminder_sent_at"] = now.isoformat()
+                    result["due_reminders"] += 1
+                    changed = True
+
+            escalation_delay = (
+                IMPORTANT_ESCALATION_DELAY
+                if task.priority == ServiceTask.PRIORITY_HIGH
+                else NORMAL_ESCALATION_DELAY
+            )
+            if now_local >= deadline + escalation_delay and not state.get("escalated_at"):
+                owners = _owner_recipients(task)
+                if owners:
+                    title, message = _escalation_notification(task, actor)
+                    notify_users(
+                        owners,
+                        title=title,
+                        message=message,
+                        kind="task_assignment",
+                        level="critical",
+                        action_url=action_url,
+                        organization=task.organization,
+                        client=task.client,
+                        dedupe_key=f"call_control:{task.id}:escalation:{deadline_key}",
+                        send_in_app=True,
+                        send_push=False,
+                    )
+                    transaction.on_commit(
+                        lambda owners=tuple(owners), title=title, message=message, action_url=action_url: send_push_to_users(
+                            owners,
+                            title=title,
+                            message=message,
+                            action_url=action_url,
+                        ),
+                        robust=True,
+                    )
+                    state["escalated_at"] = now.isoformat()
+                    result["escalations"] += 1
+                    changed = True
+
+            if changed:
+                # Merge the control namespace into the payload loaded after the
+                # row lock. This preserves Operations MCP dedupe markers and
+                # any other concurrent payload additions committed beforehand.
+                payload["control_state"] = state
+                task.payload_json = payload
+                task.save(update_fields=["payload_json", "updated_at"])
 
     return result
+
