@@ -941,6 +941,79 @@ class OperationsMcpTests(TestCase):
         self.assertTrue(delivery["push_delivered_at"])
         send_push.assert_called_once()
 
+    @patch("pool_service.operations_mcp_views.send_push_to_users", return_value=1)
+    def test_terminal_deliveries_do_not_starve_pending_retry_limit(self, send_push):
+        from pool_service.operations_mcp_views import process_pending_operations_pushes
+
+        terminal = ServiceTask.objects.create(
+            organization=self.organization,
+            title="Уже доставлено",
+            start_date=date(2026, 10, 7),
+            end_date=date(2026, 10, 7),
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            source_type=ServiceTask.SOURCE_MANAGER,
+            status=ServiceTask.STATUS_NEW,
+            visibility=ServiceTask.VISIBILITY_PRIVATE,
+            primary_responsible=self.manager,
+            created_by=self.owner,
+            payload_json={
+                "source": "operations_mcp",
+                "operations_assignment_delivery": {
+                    "responsible_user_id": self.manager.id,
+                    "added_by_user_id": self.owner.id,
+                    "notification_dedupe_key": "operations_mcp:terminal:assignment",
+                    "push_delivery_result": "sent",
+                    "push_delivered_at": timezone.now().isoformat(),
+                },
+            },
+        )
+        terminal.responsibles.add(self.manager)
+        ServiceTask.objects.filter(pk=terminal.pk).update(
+            updated_at=timezone.now() - timedelta(days=1)
+        )
+
+        pending = ServiceTask.objects.create(
+            organization=self.organization,
+            title="Нужно доставить",
+            start_date=date(2026, 10, 7),
+            end_date=date(2026, 10, 7),
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            source_type=ServiceTask.SOURCE_MANAGER,
+            status=ServiceTask.STATUS_NEW,
+            visibility=ServiceTask.VISIBILITY_PRIVATE,
+            primary_responsible=self.manager,
+            created_by=self.owner,
+            payload_json={
+                "source": "operations_mcp",
+                "operations_assignment_delivery": {
+                    "responsible_user_id": self.manager.id,
+                    "added_by_user_id": self.owner.id,
+                    "notification_dedupe_key": "operations_mcp:pending:assignment",
+                    "push_delivery_result": "pending_retry",
+                },
+            },
+        )
+        pending.responsibles.add(self.manager)
+        Notification.objects.create(
+            user=self.manager,
+            organization=self.organization,
+            kind="task_assignment",
+            level="info",
+            title="Новая задача",
+            message=pending.title,
+            action_url=reverse("task_edit", kwargs={"task_id": pending.id}),
+            dedupe_key="operations_mcp:pending:assignment",
+        )
+
+        result = process_pending_operations_pushes(limit=1)
+
+        self.assertEqual(result["assignment_attempts"], 1)
+        self.assertEqual(result["delivered"], 1)
+        pending.refresh_from_db()
+        delivery = pending.payload_json["operations_assignment_delivery"]
+        self.assertEqual(delivery["push_delivery_result"], "sent")
+        send_push.assert_called_once()
+
     @patch("pool_service.operations_mcp_views.send_push_to_users")
     def test_disabled_push_is_final_not_retryable(self, send_push):
         from pool_service.operations_mcp_views import process_pending_operations_pushes
