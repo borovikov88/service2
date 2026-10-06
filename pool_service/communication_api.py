@@ -622,7 +622,7 @@ def megafon_webhook(request, public_id):
     with transaction.atomic():
         existing_call = (
             PhoneCall.objects.select_for_update()
-            .select_related("employee", "employee_profile")
+            .select_related("employee", "employee_profile", "client")
             .filter(
                 connection=telephony,
                 external_id=call_id,
@@ -689,6 +689,14 @@ def megafon_webhook(request, public_id):
         effective_provider_extension = extension or (
             existing_call.provider_extension if existing_call else ""
         )
+        effective_client = client or (
+            existing_call.client if existing_call and existing_call.client_id else None
+        )
+        effective_contact_name = (
+            effective_client.name
+            if effective_client
+            else (existing_call.contact_name if existing_call else "")
+        )
 
         phone_call, created = PhoneCall.objects.update_or_create(
             connection=telephony,
@@ -699,8 +707,8 @@ def megafon_webhook(request, public_id):
                 "employee_profile": effective_employee_profile,
                 "provider_user": effective_provider_user,
                 "provider_extension": effective_provider_extension,
-                "client": client,
-                "contact_name": client.name if client else "",
+                "client": effective_client,
+                "contact_name": effective_contact_name,
                 "phone_number": format_phone(phone),
                 "direction": direction,
                 "started_at": started_at,
