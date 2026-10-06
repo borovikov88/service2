@@ -4106,13 +4106,29 @@ def crm_tasks_bulk_update(request):
         messages.warning(request, "Не выбраны задачи.")
         return redirect(reverse("crm_tasks"))
 
-    tasks_qs = ServiceTask.objects.select_for_update().filter(id__in=selected_ids, organization=org)
+    tasks_qs = ServiceTask.objects.filter(id__in=selected_ids, organization=org)
     if not _is_org_admin_or_owner(request.user, org):
         tasks_qs = tasks_qs.filter(
             Q(created_by=request.user) | Q(primary_responsible=request.user) | Q(responsibles=request.user)
         ).distinct()
 
-    tasks = list(tasks_qs.select_related("primary_responsible", "crm_item"))
+    candidate_rows = list(
+        tasks_qs.order_by("id").values("id", "crm_item_id")
+    )
+    candidate_ids = {row["id"] for row in candidate_rows}
+    crm_item_ids = [
+        row["crm_item_id"] for row in candidate_rows if row["crm_item_id"]
+    ]
+    locked_tasks, _locked_items = lock_crm_graph(
+        crm_item_ids,
+        extra_task_ids=candidate_ids,
+    )
+    tasks = [
+        task
+        for task in locked_tasks
+        if task.id in candidate_ids
+        and task.organization_id == (org.id if org else None)
+    ]
     if not tasks:
         messages.warning(request, "Подходящие задачи не найдены.")
         return redirect(reverse("crm_tasks"))
