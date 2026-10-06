@@ -503,6 +503,41 @@ class OperationsMcpTests(TestCase):
         self.assertIsNone(task.completed_at)
         self.assertEqual(task.status, ServiceTask.STATUS_NEW)
 
+    def test_notification_rejects_cancelled_task(self):
+        raw = self._token(raw="cancelled-notification-token")
+        task = ServiceTask.objects.create(
+            organization=self.organization,
+            title="Отменённая задача",
+            start_date=date(2026, 10, 7),
+            end_date=date(2026, 10, 7),
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            source_type=ServiceTask.SOURCE_MANAGER,
+            status=ServiceTask.STATUS_CANCELLED,
+            visibility=ServiceTask.VISIBILITY_PRIVATE,
+            primary_responsible=self.manager,
+            created_by=self.owner,
+        )
+        task.responsibles.add(self.manager)
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": {
+                "name": "send_employee_notification",
+                "arguments": {
+                    "employee_user_id": self.manager.id,
+                    "title": "Не отправлять",
+                    "message": "Отменённая задача не должна уведомлять.",
+                    "dedupe_key": "cancelled-task",
+                    "task_id": task.id,
+                },
+            },
+        }
+        with self._settings():
+            response = self._post(payload, token=raw)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["result"]["isError"])
+
     def test_notification_cannot_target_unrelated_employee(self):
         raw = self._token(raw="participant-token")
         unrelated = User.objects.create_user("unrelated-manager", password="test")
