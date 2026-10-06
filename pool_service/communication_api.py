@@ -689,8 +689,10 @@ def megafon_webhook(request, public_id):
         effective_provider_extension = extension or (
             existing_call.provider_extension if existing_call else ""
         )
-        effective_client = client or (
-            existing_call.client if existing_call and existing_call.client_id else None
+        effective_client = (
+            existing_call.client
+            if existing_call and existing_call.client_id
+            else client
         )
         effective_contact_name = (
             effective_client.name
