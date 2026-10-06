@@ -79,6 +79,15 @@
       >
         <i class="bi bi-telephone"></i><span>Звонки</span>
       </a>
+      {% if can_access_manual_recordings %}
+      <a
+        class="communications-tab {% if request.resolver_match.url_name == 'communication_manual_recordings' %}is-active{% endif %}"
+        href="{% url 'communication_manual_recordings' %}"
+        {% if request.resolver_match.url_name == 'communication_manual_recordings' %}aria-current="page"{% endif %}
+      >
+        <i class="bi bi-file-earmark-music"></i><span>Файлы</span>
+      </a>
+      {% endif %}
     </nav>
   </div>
   {% if can_manage_communication_channels %}

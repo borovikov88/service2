@@ -1,5 +1,5 @@
 {% extends "pool_service/base.html" %}
-{% block title %}Звонки{% endblock %}
+{% block title %}{% if manual_archive %}Файлы звонков{% else %}Звонки{% endif %}{% endblock %}
 {% block content %}
 {% include "pool_service/communications/_section_nav.html" %}
 <style>
@@ -82,7 +82,11 @@
   }
 </style>
 
-{% if can_view_all and can_listen %}
+{% if manual_archive %}
+<div class="mb-3">
+  <h2 class="h5 mb-1">Загрузка и расшифровка файлов</h2>
+  <div class="text-muted">Архив загруженных вручную записей. Он не смешивается с актуальной телефонией.</div>
+</div>
 <form
   class="card card-body mb-3"
   method="post"
@@ -136,7 +140,18 @@
       <label class="form-label">По</label>
       <input class="form-control" type="date" name="date_to" value="{{ request.GET.date_to }}">
     </div>
-    {% if can_view_all %}
+    {% if manual_archive %}
+      <div class="col-md">
+        <label class="form-label">Клиент</label>
+        <select class="form-select" name="client">
+          <option value="">Все</option>
+          {% for client in clients %}
+            <option value="{{ client.pk }}" {% if request.GET.client == client.pk|stringformat:'s' %}selected{% endif %}>{{ client.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    {% endif %}
+    {% if can_view_all and not manual_archive %}
       <div class="col-md">
         <label class="form-label">Сотрудник</label>
         <select class="form-select" name="employee">
@@ -149,6 +164,7 @@
         </select>
       </div>
     {% endif %}
+    {% if not manual_archive %}
     <div class="col-md">
       <label class="form-label">Направление</label>
       <select class="form-select" name="direction">
@@ -157,21 +173,24 @@
         <option value="out" {% if request.GET.direction == 'out' %}selected{% endif %}>Исходящие</option>
       </select>
     </div>
+    {% endif %}
     <div class="col-md">
-      <label class="form-label">Номер или имя</label>
+      <label class="form-label">{% if manual_archive %}Клиент или файл{% else %}Номер или имя{% endif %}</label>
       <input class="form-control" name="q" value="{{ request.GET.q }}">
     </div>
     <div class="col-md-auto d-flex align-items-end gap-2">
+      {% if not manual_archive %}
       <label class="form-check mb-2">
         <input class="form-check-input" type="checkbox" name="missed" value="1" {% if request.GET.missed %}checked{% endif %}>
         пропущенные
       </label>
+      {% endif %}
       <button class="btn btn-primary">Найти</button>
     </div>
   </div>
 </form>
 
-{% if can_listen %}
+{% if manual_archive %}
 <form id="bulk-analysis-form" method="post" action="{% url 'communication_call_analysis_bulk' %}" class="mb-2">
   {% csrf_token %}
   <button class="btn btn-outline-primary btn-sm" type="submit">
@@ -184,24 +203,26 @@
   <table class="table align-middle mb-0">
     <thead>
       <tr>
-        {% if can_listen %}
+        {% if manual_archive %}
           <th style="width:42px">
             <input class="form-check-input" type="checkbox" data-call-select-all aria-label="Выбрать все записи">
           </th>
         {% endif %}
         <th>Дата и время</th>
-        <th>Сотрудник</th>
-        <th>Номер / имя</th>
+        {% if not manual_archive %}<th>Сотрудник</th>{% endif %}
+        <th>{% if manual_archive %}Клиент{% else %}Номер / имя{% endif %}</th>
+        {% if not manual_archive %}
         <th>Направление</th>
         <th>Длительность</th>
         <th>Результат</th>
+        {% endif %}
         <th>Запись</th>
       </tr>
     </thead>
     <tbody>
       {% for call in calls %}
         <tr>
-          {% if can_listen %}
+          {% if manual_archive %}
             <td>
               {% if call.recording_file %}
                 {% if not call.analysis or call.analysis.status == 'failed' or call.analysis.status == 'pending' and not call.analysis.requested_at %}
@@ -219,6 +240,7 @@
             </td>
           {% endif %}
           <td>{{ call.started_at|date:"d.m.Y H:i" }}</td>
+          {% if not manual_archive %}
           <td>
             {% if call.employee_profile %}
               {{ call.employee_profile.display_name }}
@@ -231,17 +253,33 @@
               <span class="text-muted">Не сопоставлен</span>
             {% endif %}
           </td>
+          {% endif %}
           <td>
-            {% if call.phone_number %}{{ call.phone_number }}{% else %}<span class="text-muted">—</span>{% endif %}
-            {% if call.client %}
-              <br><small class="text-muted">{{ call.client.name }}</small>
-            {% elif call.contact_name %}
-              <br><small class="text-muted">{{ call.contact_name }}</small>
+            {% if manual_archive %}
+              {% if call.client %}
+                {{ call.client.name }}
+              {% elif call.contact_name %}
+                {{ call.contact_name }}
+              {% else %}
+                <span class="text-muted">Не определён</span>
+              {% endif %}
+              {% if call.recording_filename %}
+                <br><small class="text-muted">{{ call.recording_filename }}</small>
+              {% endif %}
+            {% else %}
+              {% if call.phone_number %}{{ call.phone_number }}{% else %}<span class="text-muted">—</span>{% endif %}
+              {% if call.client %}
+                <br><small class="text-muted">{{ call.client.name }}</small>
+              {% elif call.contact_name %}
+                <br><small class="text-muted">{{ call.contact_name }}</small>
+              {% endif %}
             {% endif %}
           </td>
+          {% if not manual_archive %}
           <td>{{ call.get_direction_display }}</td>
           <td>{{ call.duration_seconds }} сек.</td>
           <td>{{ call.get_result_display }}</td>
+          {% endif %}
           <td>
             {% if can_listen and call.recording_file %}
               <div class="call-player" data-call-player>
@@ -324,7 +362,7 @@
         {% if can_listen and call.recording_file and call.analysis %}
           {% if call.analysis.status != 'pending' or call.analysis.requested_at %}
           <tr>
-            <td colspan="{% if can_listen %}8{% else %}7{% endif %}" class="p-0">
+            <td colspan="{% if manual_archive %}4{% else %}7{% endif %}" class="p-0">
               <div
                 class="call-analysis"
                 data-call-analysis-status="{{ call.analysis.status }}"
@@ -408,7 +446,7 @@
         {% endif %}
       {% empty %}
         <tr>
-          <td colspan="{% if can_listen %}8{% else %}7{% endif %}" class="text-center text-muted p-4">Звонков не найдено.</td>
+          <td colspan="{% if manual_archive %}4{% else %}7{% endif %}" class="text-center text-muted p-4">Звонков не найдено.</td>
         </tr>
       {% endfor %}
     </tbody>
