@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 import mimetypes
 import os
 import re
@@ -40,7 +40,7 @@ from pool_service.communication_models import (
 from pool_service.communication_recordings import looks_like_audio_file
 from pool_service.communication_secrets import encrypt_secret
 from pool_service.communication_services import conversation_capability, optimize_message_image, organization_access
-from pool_service.services.call_ai import request_call_analysis, start_requested_call_analysis_worker
+from pool_service.services.call_ai import PROCESSING_STALE_MINUTES, request_call_analysis, start_requested_call_analysis_worker
 from pool_service.models import Client, Notification, OrganizationAccess
 
 
@@ -92,6 +92,33 @@ def _authorize_call_access(request, call):
     ):
         raise PermissionDenied
     return access.organization
+
+
+def _wake_uploaded_audio_worker_if_needed(organization, *, include_fresh_pending=False):
+    now = timezone.now()
+    stale_before = now - timedelta(minutes=PROCESSING_STALE_MINUTES)
+    pending_before = now if include_fresh_pending else now - timedelta(seconds=30)
+    needs_worker = (
+        CallAnalysis.objects.filter(
+            call__organization=organization,
+            call__source_kind=PhoneCall.SOURCE_UPLOADED,
+            requested_at__isnull=False,
+        )
+        .filter(
+            Q(
+                status=CallAnalysis.STATUS_PENDING,
+                requested_at__lte=pending_before,
+            )
+            | Q(
+                status=CallAnalysis.STATUS_PROCESSING,
+                processing_started_at__lt=stale_before,
+            )
+        )
+        .exists()
+    )
+    if needs_worker:
+        start_requested_call_analysis_worker()
+    return needs_worker
 
 
 @login_required
@@ -329,6 +356,10 @@ def calls(request):
 @login_required
 def manual_recordings(request):
     organization = _owner_communications_context(request)
+    _wake_uploaded_audio_worker_if_needed(
+        organization,
+        include_fresh_pending=True,
+    )
     queryset = PhoneCall.objects.filter(
         organization=organization,
         source_kind=PhoneCall.SOURCE_UPLOADED,
@@ -505,6 +536,8 @@ def call_analysis_status(request, call_id):
     analysis = getattr(call, "analysis", None)
     if analysis is None:
         return JsonResponse({"status": "none"})
+    if _is_manual_recording_call(call):
+        _wake_uploaded_audio_worker_if_needed(call.organization)
     return JsonResponse({
         "status": analysis.status,
         "error": analysis.error,
