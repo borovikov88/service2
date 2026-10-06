@@ -1,5 +1,5 @@
 {% extends "pool_service/base.html" %}
-{% block title %}{% if manual_archive %}Файлы звонков{% else %}Звонки{% endif %}{% endblock %}
+{% block title %}{% if manual_archive %}Аудиофайлы{% else %}Звонки{% endif %}{% endblock %}
 {% block content %}
 {% include "pool_service/communications/_section_nav.html" %}
 <style>
@@ -84,8 +84,8 @@
 
 {% if manual_archive %}
 <div class="mb-3">
-  <h2 class="h5 mb-1">Загрузка и расшифровка файлов</h2>
-  <div class="text-muted">Архив загруженных вручную записей. Он не смешивается с актуальной телефонией.</div>
+  <h2 class="h5 mb-1">Аудиофайлы</h2>
+  <div class="text-muted">Загружайте скачанные записи и расшифровывайте их отдельно от телефонии.</div>
 </div>
 <form
   class="card card-body mb-3"
@@ -116,15 +116,8 @@
         {% endfor %}
       </select>
     </div>
-    <div style="min-width:150px">
-      <label class="form-label">Направление</label>
-      <select class="form-select" name="direction">
-        <option value="in">Входящие</option>
-        <option value="out">Исходящие</option>
-      </select>
-    </div>
     <button class="btn btn-primary" type="submit">
-      <i class="bi bi-upload me-1"></i>Загрузить записи
+      <i class="bi bi-upload me-1"></i>Загрузить аудио
     </button>
   </div>
 </form>
