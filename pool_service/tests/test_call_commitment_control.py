@@ -199,6 +199,28 @@ class CallCommitmentControlTests(TestCase):
             2,
         )
 
+    @patch("pool_service.services.call_commitment_control.send_push_to_users")
+    def test_control_preserves_operations_payload_markers_and_defers_push(self, send_push):
+        task = self._task()
+        payload = dict(task.payload_json)
+        payload["operations_notification_keys"] = ["42:dot-dedupe"]
+        task.payload_json = payload
+        task.save(update_fields=["payload_json", "updated_at"])
+
+        now = datetime(2026, 10, 6, 10, 15, tzinfo=BARNAUL)
+        with self.captureOnCommitCallbacks(execute=False) as callbacks:
+            result = process_call_commitment_controls(now=now)
+            self.assertEqual(result["due_reminders"], 1)
+            self.assertFalse(send_push.called)
+
+        self.assertEqual(len(callbacks), 1)
+        task.refresh_from_db()
+        self.assertEqual(
+            task.payload_json["operations_notification_keys"],
+            ["42:dot-dedupe"],
+        )
+        self.assertTrue(task.payload_json["control_state"]["due_reminder_sent_at"])
+
     @patch("pool_service.services.notifications.send_push_to_users")
     def test_completed_commitment_is_ignored(self, _send_push):
         task = self._task()
