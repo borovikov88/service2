@@ -1,9 +1,12 @@
+from unittest.mock import patch
+
 from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
 from pool_service.models import Client, CrmItem, Organization, OrganizationAccess, Pool, ServiceTask
+from pool_service.services.crm_locking import lock_crm_graph as real_lock_crm_graph
 
 
 class CrmBulkUpdateTests(TestCase):
@@ -117,3 +120,45 @@ class CrmBulkUpdateTests(TestCase):
         self.assertEqual(self.item_a.responsible, self.new_responsible)
         self.assertEqual(self.item_b.responsible, self.new_responsible)
         self.assertEqual(self.task.primary_responsible, self.new_responsible)
+
+
+    @patch("pool_service.views.lock_crm_graph", wraps=real_lock_crm_graph)
+    def test_task_bulk_update_uses_shared_crm_graph_lock_order(self, lock_graph):
+        second_task = ServiceTask.objects.create(
+            organization=self.organization,
+            title="Вторая CRM-задача",
+            start_date=timezone.now().date(),
+            end_date=timezone.now().date(),
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            status=ServiceTask.STATUS_NEW,
+            client=self.client_record,
+            pool=self.pool,
+            crm_item=self.item_b,
+            primary_responsible=self.manager,
+            created_by=self.service,
+        )
+        second_task.responsibles.add(self.manager)
+
+        self.client.force_login(self.admin)
+        response = self.client.post(
+            reverse("crm_tasks_bulk_update"),
+            {
+                "task_ids": [self.task.id, second_task.id],
+                "bulk_action": "set_status",
+                "bulk_status": ServiceTask.STATUS_IN_PROGRESS,
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.task.refresh_from_db()
+        second_task.refresh_from_db()
+        self.assertEqual(self.task.status, ServiceTask.STATUS_IN_PROGRESS)
+        self.assertEqual(second_task.status, ServiceTask.STATUS_IN_PROGRESS)
+
+        lock_graph.assert_called_once()
+        args, kwargs = lock_graph.call_args
+        self.assertEqual(set(args[0]), {self.item_a.id, self.item_b.id})
+        self.assertEqual(
+            set(kwargs["extra_task_ids"]),
+            {self.task.id, second_task.id},
+        )
