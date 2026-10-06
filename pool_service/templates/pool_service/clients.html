@@ -307,7 +307,7 @@
   document.addEventListener("DOMContentLoaded", function () {
     const normalizeSearch = (value) => String(value || "")
       .toLocaleLowerCase("ru-RU")
-      .replace(/[\\s+()\\-–—._]/g, "");
+      .replace(/[\s+()\-–—._]/g, "");
 
     document.querySelectorAll("[data-client-live-search]").forEach((input) => {
       const selector = input.getAttribute("data-client-live-search");
