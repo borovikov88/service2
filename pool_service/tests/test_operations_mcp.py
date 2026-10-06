@@ -17,6 +17,7 @@ from pool_service.models import (
     FinanceMcpGrant,
     FinanceMcpPrincipal,
     FinanceMcpPrincipalOrganization,
+    Notification,
     Organization,
     OrganizationAccess,
     ServiceTask,
@@ -366,6 +367,18 @@ class OperationsMcpTests(TestCase):
         self.assertEqual(task.primary_responsible, self.manager)
         self.assertEqual(task.created_by, self.owner)
         self.assertEqual(task.end_date.isoformat(), "2026-10-07")
+        assignment_key = f"operations_mcp:task:{task.id}:assignment"
+        self.assertEqual(
+            Notification.objects.filter(
+                user=self.manager,
+                dedupe_key=assignment_key,
+            ).count(),
+            1,
+        )
+        self.assertEqual(
+            task.payload_json["operations_assignment_delivery"]["notification_dedupe_key"],
+            assignment_key,
+        )
         self.assertTrue(
             FinanceMcpAuditEvent.objects.filter(
                 grant__resource=RESOURCE,
@@ -373,6 +386,103 @@ class OperationsMcpTests(TestCase):
                 result="success",
             ).exists()
         )
+
+    @patch("pool_service.operations_mcp_views._retry_assignment_push")
+    def test_idempotent_create_requeues_pending_assignment_push(self, retry_push):
+        raw = self._token(raw="assignment-retry-token")
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 31,
+            "method": "tools/call",
+            "params": {
+                "name": "create_task",
+                "arguments": {
+                    "idempotency_key": "assignment-retry",
+                    "title": "Перезвонить клиенту",
+                    "responsible_user_id": self.manager.id,
+                    "due_date": "2026-10-07",
+                },
+            },
+        }
+
+        with self._settings(), self.captureOnCommitCallbacks(execute=True):
+            first = self._post(payload, token=raw)
+        with self._settings(), self.captureOnCommitCallbacks(execute=True):
+            second = self._post(payload, token=raw)
+
+        self.assertFalse(first.json()["result"]["isError"])
+        self.assertFalse(second.json()["result"]["isError"])
+        self.assertEqual(
+            ServiceTask.objects.filter(
+                organization=self.organization,
+                payload_json__operations_mcp_idempotency_key="assignment-retry",
+            ).count(),
+            1,
+        )
+        task = ServiceTask.objects.get(
+            payload_json__operations_mcp_idempotency_key="assignment-retry"
+        )
+        self.assertEqual(
+            Notification.objects.filter(
+                user=self.manager,
+                dedupe_key=f"operations_mcp:task:{task.id}:assignment",
+            ).count(),
+            1,
+        )
+        self.assertEqual(retry_push.call_count, 2)
+        self.assertEqual(
+            [call.args for call in retry_push.call_args_list],
+            [(task.id, self.manager.id), (task.id, self.manager.id)],
+        )
+
+    @patch("pool_service.operations_mcp_views.send_push_to_users", side_effect=[0, 1])
+    def test_assignment_push_marker_remains_retryable_until_delivery(self, send_push):
+        from pool_service.operations_mcp_views import _retry_assignment_push
+
+        task = ServiceTask.objects.create(
+            organization=self.organization,
+            title="Отправить КП",
+            start_date=date(2026, 10, 7),
+            end_date=date(2026, 10, 7),
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            source_type=ServiceTask.SOURCE_MANAGER,
+            status=ServiceTask.STATUS_NEW,
+            visibility=ServiceTask.VISIBILITY_PRIVATE,
+            primary_responsible=self.manager,
+            created_by=self.owner,
+            payload_json={
+                "source": "operations_mcp",
+                "operations_assignment_delivery": {
+                    "responsible_user_id": self.manager.id,
+                    "added_by_user_id": self.owner.id,
+                    "notification_dedupe_key": "operations_mcp:test:assignment",
+                },
+            },
+        )
+        task.responsibles.add(self.manager)
+        Notification.objects.create(
+            user=self.manager,
+            organization=self.organization,
+            kind="task_assignment",
+            level="info",
+            title="Новая задача",
+            message=task.title,
+            action_url=reverse("task_edit", kwargs={"task_id": task.id}),
+            dedupe_key="operations_mcp:test:assignment",
+        )
+
+        self.assertEqual(_retry_assignment_push(task.id, self.manager.id), 0)
+        task.refresh_from_db()
+        first_delivery = task.payload_json["operations_assignment_delivery"]
+        self.assertEqual(first_delivery["push_delivery_result"], "pending_retry")
+        self.assertNotIn("push_delivered_at", first_delivery)
+
+        self.assertEqual(_retry_assignment_push(task.id, self.manager.id), 1)
+        task.refresh_from_db()
+        second_delivery = task.payload_json["operations_assignment_delivery"]
+        self.assertEqual(second_delivery["push_delivery_result"], "sent")
+        self.assertTrue(second_delivery["push_delivered_at"])
+        self.assertEqual(send_push.call_count, 2)
 
     def test_cross_organization_responsible_is_rejected(self):
         raw = self._token(raw="cross-org-token")
