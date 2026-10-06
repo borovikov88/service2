@@ -47,7 +47,6 @@ from pool_service.operations_mcp_auth import (
 from pool_service.operations_mcp_policy import ALLOWED_ROLES
 from pool_service.services.crm_locking import locked_task_for_completion
 from pool_service.services.notifications import (
-    notify_task_assignment,
     notify_users,
     task_assignment_notification_content,
 )
@@ -318,7 +317,27 @@ def _retry_assignment_push(task_id, responsible_user_id):
             pk=responsible_user_id,
             is_active=True,
         ).first()
-        if not responsible:
+        has_operational_access = bool(
+            responsible
+            and OrganizationAccess.objects.select_for_update().filter(
+                user_id=responsible.id,
+                organization=task.organization,
+                role__in=OPERATIONAL_STAFF_ROLES,
+            ).exists()
+        )
+        is_participant = bool(
+            responsible
+            and (
+                task.primary_responsible_id == responsible.id
+                or task.responsibles.filter(id=responsible.id).exists()
+            )
+        )
+        if not has_operational_access or not is_participant:
+            delivery["push_last_attempt_at"] = timezone.now().isoformat()
+            delivery["push_delivery_result"] = "blocked_not_authorized"
+            payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
+            task.payload_json = payload
+            task.save(update_fields=["payload_json", "updated_at"])
             return 0
 
         added_by_id = delivery.get("added_by_user_id")
@@ -358,18 +377,28 @@ def _retry_assignment_push(task_id, responsible_user_id):
 
 def _ensure_assignment_delivery(task, responsible, actor):
     dedupe_key = _assignment_notification_key(task.id)
-    notify_task_assignment(
-        task,
-        [responsible],
-        added_by=actor,
-        send_push=False,
-        dedupe_key=dedupe_key,
-    )
+    notification = None
+    if not actor or actor.id != responsible.id:
+        title, message, action_url = task_assignment_notification_content(task)
+        notification, _created = Notification.objects.get_or_create(
+            user=responsible,
+            dedupe_key=dedupe_key,
+            defaults={
+                "organization": task.organization,
+                "kind": "task_assignment",
+                "level": "info",
+                "title": title,
+                "message": message,
+                "action_url": action_url,
+            },
+        )
 
     payload, delivery = _assignment_delivery(task)
-    delivery.setdefault("responsible_user_id", responsible.id)
-    delivery.setdefault("added_by_user_id", actor.id if actor else None)
-    delivery.setdefault("notification_dedupe_key", dedupe_key)
+    delivery["responsible_user_id"] = responsible.id
+    delivery["added_by_user_id"] = actor.id if actor else None
+    delivery["notification_dedupe_key"] = dedupe_key
+    if notification:
+        delivery["notification_id"] = notification.id
     payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
     task.payload_json = payload
     task.save(update_fields=["payload_json", "updated_at"])
@@ -975,6 +1004,7 @@ def _consent_binding(authorization):
             "resource": authorization["resource"],
             "redirect_uri": authorization["redirect_uri"],
             "code_challenge": authorization["code_challenge"],
+            "scopes": sorted(authorization["scopes"]),
         },
         salt=_CONSENT_BINDING_SALT,
         compress=True,
@@ -999,6 +1029,7 @@ def _validate_consent_binding(value, authorization):
         "resource": authorization["resource"],
         "redirect_uri": authorization["redirect_uri"],
         "code_challenge": authorization["code_challenge"],
+        "scopes": sorted(authorization["scopes"]),
     }
     return bound == expected
 
