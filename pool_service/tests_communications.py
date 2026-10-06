@@ -48,6 +48,7 @@ from pool_service.services.employee_identity_sync import (
     sync_onec_employee_identities,
 )
 from pool_service.communication_api import _payload
+from pool_service.client_crm_models import ClientContact
 from pool_service.finance_imports.odata_profit import ODataConfig, ODataPreviewError
 from pool_service.management.commands.send_avito_outbox import claim_message
 from pool_service.models import Client as ServiceClient, Employee, EmployeeOneCIdentity, Notification, Organization, OrganizationAccess
@@ -2179,7 +2180,9 @@ class CommunicationsTests(TestCase):
         self.assertTrue(locked_resolver.call_args.kwargs["lock_identity"])
         call = PhoneCall.objects.get(connection=telephony, external_id="call-123")
         self.assertEqual(call.employee, self.worker)
+        self.assertEqual(call.client.name, "Тестовый клиент")
         self.assertEqual(call.contact_name, "Тестовый клиент")
+        self.assertEqual(call.phone_number, "+7 900 111 2233")
         self.assertEqual(call.result, PhoneCall.RESULT_ANSWERED)
         self.assertEqual(call.duration_seconds, 91)
         self.assertEqual(call.started_at.isoformat(), "2026-10-03T09:00:00+00:00")
@@ -2222,6 +2225,63 @@ class CommunicationsTests(TestCase):
             provider_connection.settings["megafon_last_event_ext"],
             "601",
         )
+
+
+    def test_megafon_call_matches_secondary_crm_phone(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон офис",
+            external_id="megafon-secondary",
+        )
+        service_client = ServiceClient.objects.create(
+            organization=self.organization,
+            name="Клиент с дополнительным номером",
+            phone="+7 900 000 0000",
+        )
+        ClientContact.objects.create(
+            client=service_client,
+            kind=ClientContact.KIND_PHONE,
+            value="+7 900 111 2233",
+            match_value="79001112233",
+            label="Мобильный",
+        )
+        megafon_channel = CommunicationChannel.objects.create(
+            organization=self.organization,
+            kind=CommunicationChannel.KIND_MEGAFON,
+            name="МегаФон",
+        )
+        provider_connection = ChannelConnection.objects.create(
+            channel=megafon_channel,
+            name="МегаФон офис",
+            external_id="megafon-secondary",
+            settings={},
+        )
+        provider_connection.set_api_token("crm-token")
+        provider_connection.save(update_fields=["api_token_hash"])
+
+        response = Client().post(
+            reverse("megafon_webhook", args=[provider_connection.public_id]),
+            {
+                "cmd": "history",
+                "crm_token": "crm-token",
+                "callid": "call-secondary-phone",
+                "phone": "8 (900) 111-22-33",
+                "type": "in",
+                "start": "2026-10-06 09:30:00",
+                "duration": "42",
+                "status": "Success",
+                "user": "worker",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+
+        call = PhoneCall.objects.get(
+            connection=telephony,
+            external_id="call-secondary-phone",
+        )
+        self.assertEqual(call.client, service_client)
+        self.assertEqual(call.contact_name, service_client.name)
+        self.assertEqual(call.phone_number, "+7 900 111 2233")
 
         transferred = webhook_client.post(
             webhook_url,

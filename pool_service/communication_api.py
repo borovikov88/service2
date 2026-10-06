@@ -28,7 +28,9 @@ from pool_service.communication_models import (
 from pool_service.communication_recordings import download_call_recording
 from pool_service.communication_services import receive_message
 from pool_service.services.employee_identity_sync import resolve_call_employee
-from pool_service.models import Client, OrganizationAccess
+from pool_service.models import OrganizationAccess
+from pool_service.client_queries import find_active_client_by_phone
+from pool_service.phone_utils import format_phone, normalize_phone
 from pool_service.communication_avito import AvitoError, ingest_webhook
 
 
@@ -358,20 +360,11 @@ def _megafon_connection(request, public_id, data):
 
 
 def _normalize_phone(value):
-    digits = "".join(character for character in str(value or "") if character.isdigit())
-    if len(digits) >= 10:
-        return digits[-10:]
-    return digits
+    return normalize_phone(value)
 
 
 def _megafon_contact(organization, phone):
-    normalized = _normalize_phone(phone)
-    if not normalized:
-        return None
-    for client in Client.objects.filter(organization=organization).only("id", "name", "phone"):
-        if _normalize_phone(client.phone) == normalized:
-            return client
-    return None
+    return find_active_client_by_phone(organization, phone)
 
 
 def _megafon_employee(organization, provider_user, extension=""):
@@ -629,7 +622,7 @@ def megafon_webhook(request, public_id):
     with transaction.atomic():
         existing_call = (
             PhoneCall.objects.select_for_update()
-            .select_related("employee", "employee_profile")
+            .select_related("employee", "employee_profile", "client")
             .filter(
                 connection=telephony,
                 external_id=call_id,
@@ -696,6 +689,16 @@ def megafon_webhook(request, public_id):
         effective_provider_extension = extension or (
             existing_call.provider_extension if existing_call else ""
         )
+        effective_client = (
+            existing_call.client
+            if existing_call and existing_call.client_id
+            else client
+        )
+        effective_contact_name = (
+            effective_client.name
+            if effective_client
+            else (existing_call.contact_name if existing_call else "")
+        )
 
         phone_call, created = PhoneCall.objects.update_or_create(
             connection=telephony,
@@ -706,8 +709,9 @@ def megafon_webhook(request, public_id):
                 "employee_profile": effective_employee_profile,
                 "provider_user": effective_provider_user,
                 "provider_extension": effective_provider_extension,
-                "contact_name": client.name if client else "",
-                "phone_number": phone,
+                "client": effective_client,
+                "contact_name": effective_contact_name,
+                "phone_number": format_phone(phone),
                 "direction": direction,
                 "started_at": started_at,
                 "duration_seconds": duration_seconds,

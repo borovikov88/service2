@@ -3745,9 +3745,24 @@ def clients_list(request):
 
     clients = list(
 
-        clients_qs.annotate(pool_count=Count("pool")).select_related("organization").order_by("name")
+        clients_qs.annotate(pool_count=Count("pool"))
+        .select_related("organization")
+        .prefetch_related(
+            "person_links__person",
+            "company_links__company",
+            "crm_contacts",
+        )
+        .order_by("name")
 
     )
+
+    for client in clients:
+
+        client.crm_search_values = " ".join(
+            contact.value for contact in client.crm_contacts.all()
+            if contact.value
+        )
+
 
     companies = [client for client in clients if client.client_type == "legal"]
 
@@ -3800,7 +3815,12 @@ def clients_list(request):
         company.primary_contact = primary_contact
 
         company.staff_contacts = staff_by_client.get(company.id, [])
+        company.crm_people_links = list(company.person_links.all())
 
+
+    for client in private_contacts:
+
+        client.crm_company_links = list(client.company_links.all())
 
 
     pool_staff = (

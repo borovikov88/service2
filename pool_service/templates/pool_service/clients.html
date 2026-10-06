@@ -19,12 +19,21 @@
         <button class="nav-link active" id="companies-tab" data-bs-toggle="tab" data-bs-target="#companies-pane" type="button" role="tab" aria-controls="companies-pane" aria-selected="true">&#1050;&#1086;&#1084;&#1087;&#1072;&#1085;&#1080;&#1080;</button>
       </li>
       <li class="nav-item" role="presentation">
-        <button class="nav-link" id="contacts-tab" data-bs-toggle="tab" data-bs-target="#contacts-pane" type="button" role="tab" aria-controls="contacts-pane" aria-selected="false">&#1050;&#1086;&#1085;&#1090;&#1072;&#1082;&#1090;&#1099;</button>
+        <button class="nav-link" id="contacts-tab" data-bs-toggle="tab" data-bs-target="#contacts-pane" type="button" role="tab" aria-controls="contacts-pane" aria-selected="false">Физические лица</button>
       </li>
     </ul>
   </div>
   <div class="tab-content">
     <div class="tab-pane fade show active" id="companies-pane" role="tabpanel" aria-labelledby="companies-tab">
+      <div class="mb-3">
+        <div class="input-group">
+          <span class="input-group-text"><i class="bi bi-search"></i></span>
+          <input class="form-control" type="search" autocomplete="off"
+                 placeholder="Поиск по названию, ИНН, телефону, email или связанному человеку"
+                 data-client-live-search="#companies-list">
+        </div>
+        <div class="text-muted small mt-1" data-search-count-for="#companies-list"></div>
+      </div>
       <div class="table-responsive">
         <table class="table align-middle">
           <thead class="small text-muted">
@@ -38,16 +47,25 @@
               {% if is_org_staff and not user.is_superuser %}<th class="text-end"></th>{% endif %}
             </tr>
           </thead>
-          <tbody>
+          <tbody id="companies-list">
             {% for company in companies %}
-              <tr>
+              <tr data-search-row>
                 <td class="fw-semibold"><a class="text-decoration-none" href="{% url 'client_detail' company.id %}">{{ company.name }}</a></td>
                 <td>{{ company.phone|default:"-" }}</td>
                 <td>{{ company.email|default:"-" }}</td>
                 <td>{{ company.pool_count|default:0 }}</td>
                 <td>
-                  {% if company.primary_contact or company.staff_contacts %}
+                  {% if company.crm_people_links or company.primary_contact or company.staff_contacts %}
                     <div class="d-flex flex-column gap-1">
+                      {% if company.crm_people_links %}
+                        {% for link in company.crm_people_links %}
+                          <div>
+                            <a class="fw-semibold text-decoration-none" href="{% url 'client_detail' link.person.id %}">{{ link.person.name }}</a>
+                            {% if link.is_primary %}<span class="badge text-bg-primary ms-1">Основной</span>{% endif %}
+                            {% if link.position %}<div class="text-muted small">{{ link.position }}</div>{% endif %}
+                          </div>
+                        {% endfor %}
+                      {% endif %}
                       {% if company.primary_contact %}
                         <div class="fw-semibold">{{ company.primary_contact.name|default:"-" }}</div>
                         {% if company.primary_contact.position %}
@@ -128,7 +146,18 @@
     </div>
     <div class="tab-pane fade" id="contacts-pane" role="tabpanel" aria-labelledby="contacts-tab">
       <div class="mb-4">
-        <div class="fw-semibold mb-2">&#1060;&#1080;&#1079;&#1080;&#1095;&#1077;&#1089;&#1082;&#1080;&#1077; &#1083;&#1080;&#1094;&#1072;</div>
+        <div class="d-flex flex-wrap justify-content-between align-items-end gap-2 mb-2">
+          <div class="fw-semibold">Физические лица</div>
+          <div class="client-live-search flex-grow-1" style="max-width: 640px;">
+            <div class="input-group">
+              <span class="input-group-text"><i class="bi bi-search"></i></span>
+              <input class="form-control" type="search" autocomplete="off"
+                     placeholder="Поиск по ФИО, телефону, email или компании"
+                     data-client-live-search="#private-clients-list">
+            </div>
+            <div class="text-muted small mt-1" data-search-count-for="#private-clients-list"></div>
+          </div>
+        </div>
         <div class="table-responsive">
           <table class="table align-middle">
             <thead class="small text-muted">
@@ -142,17 +171,26 @@
                 {% if is_org_staff and not user.is_superuser %}<th class="text-end"></th>{% endif %}
               </tr>
             </thead>
-            <tbody>
+            <tbody id="private-clients-list">
               {% for client in private_contacts %}
-                <tr>
+                <tr data-search-row>
                   <td class="fw-semibold"><a class="text-decoration-none" href="{% url 'client_detail' client.id %}">{{ client.name }}</a></td>
                   <td>{{ client.phone|default:"-" }}</td>
                   <td>{{ client.email|default:"-" }}</td>
                   <td>
-                    {% if client.company_name %}
+                    {% if client.crm_company_links %}
+                      <div class="d-flex flex-column gap-1">
+                        {% for link in client.crm_company_links %}
+                          <div>
+                            <a class="text-decoration-none" href="{% url 'client_detail' link.company.id %}">{{ link.company.name }}</a>
+                            {% if link.is_primary %}<span class="badge text-bg-primary ms-1">Основная</span>{% endif %}
+                          </div>
+                        {% endfor %}
+                      </div>
+                    {% elif client.company_name %}
                       {{ client.company_name }}
                     {% else %}
-                      &#1063;&#1072;&#1089;&#1090;&#1085;&#1099;&#1081; &#1082;&#1083;&#1080;&#1077;&#1085;&#1090;
+                      <span class="text-muted">Частный клиент</span>
                     {% endif %}
                   </td>
                   <td>{{ client.pool_count|default:0 }}</td>
@@ -267,6 +305,37 @@
 </div>
 <script>
   document.addEventListener("DOMContentLoaded", function () {
+    const normalizeSearch = (value) => String(value || "")
+      .toLocaleLowerCase("ru-RU")
+      .replace(/[\s+()\-–—._]/g, "");
+
+    document.querySelectorAll("[data-client-live-search]").forEach((input) => {
+      const selector = input.getAttribute("data-client-live-search");
+      const container = document.querySelector(selector);
+      if (!container) return;
+      const rows = Array.from(container.querySelectorAll("[data-search-row]"));
+      const counter = document.querySelector('[data-search-count-for="' + selector + '"]');
+
+      const applySearch = () => {
+        const query = normalizeSearch(input.value);
+        let visible = 0;
+        rows.forEach((row) => {
+          const searchable = row.textContent + " " + (row.dataset.searchExtra || "");
+          const matches = !query || normalizeSearch(searchable).includes(query);
+          row.classList.toggle("d-none", !matches);
+          if (matches) visible += 1;
+        });
+        if (counter) {
+          counter.textContent = query
+            ? "Найдено: " + visible + " из " + rows.length
+            : "Всего: " + rows.length;
+        }
+      };
+
+      input.addEventListener("input", applySearch);
+      applySearch();
+    });
+
     const modalEl = document.getElementById("clientDeleteBlockedModal");
     if (!modalEl) return;
     const modal = new bootstrap.Modal(modalEl);
