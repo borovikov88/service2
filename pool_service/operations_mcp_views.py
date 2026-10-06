@@ -46,7 +46,11 @@ from pool_service.operations_mcp_auth import (
 )
 from pool_service.operations_mcp_policy import ALLOWED_ROLES
 from pool_service.services.crm_locking import locked_task_for_completion
-from pool_service.services.notifications import notify_task_assignment, notify_users
+from pool_service.services.notifications import (
+    notify_task_assignment,
+    notify_users,
+    task_assignment_notification_content,
+)
 from pool_service.services.push_notifications import send_push_to_users
 from pool_service.services.task_archive import archive_task
 
@@ -271,6 +275,107 @@ def _task_for_org(organization, task_id, *, for_update=False):
     )
 
 
+ASSIGNMENT_DELIVERY_PAYLOAD_KEY = "operations_assignment_delivery"
+
+
+def _assignment_notification_key(task_id):
+    return f"operations_mcp:task:{int(task_id)}:assignment"
+
+
+def _assignment_delivery(task):
+    payload = dict(task.payload_json) if isinstance(task.payload_json, dict) else {}
+    delivery = payload.get(ASSIGNMENT_DELIVERY_PAYLOAD_KEY)
+    if not isinstance(delivery, dict):
+        delivery = {}
+    return payload, dict(delivery)
+
+
+def _schedule_assignment_push(task_id, responsible_user_id):
+    if not responsible_user_id:
+        return
+    transaction.on_commit(
+        lambda: _retry_assignment_push(task_id, responsible_user_id),
+        robust=True,
+    )
+
+
+def _retry_assignment_push(task_id, responsible_user_id):
+    with transaction.atomic():
+        task = (
+            ServiceTask.objects.select_for_update()
+            .select_related("organization", "client", "pool", "water_reading")
+            .filter(pk=task_id)
+            .first()
+        )
+        if not task:
+            return 0
+
+        payload, delivery = _assignment_delivery(task)
+        if delivery.get("push_delivered_at"):
+            return 0
+
+        responsible = User.objects.filter(
+            pk=responsible_user_id,
+            is_active=True,
+        ).first()
+        if not responsible:
+            return 0
+
+        added_by_id = delivery.get("added_by_user_id")
+        if added_by_id and int(added_by_id) == responsible.id:
+            delivery["push_delivered_at"] = timezone.now().isoformat()
+            delivery["push_delivery_result"] = "skipped_self"
+            payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
+            task.payload_json = payload
+            task.save(update_fields=["payload_json", "updated_at"])
+            return 0
+
+        title, message, action_url = task_assignment_notification_content(task)
+        dedupe_key = delivery.get("notification_dedupe_key") or _assignment_notification_key(task.id)
+        notification = Notification.objects.filter(
+            user=responsible,
+            dedupe_key=dedupe_key,
+        ).first()
+        sent = send_push_to_users(
+            [responsible],
+            title=title,
+            message=message,
+            action_url=action_url,
+            notification=notification,
+        )
+        delivery["push_last_attempt_at"] = timezone.now().isoformat()
+        delivery["push_last_sent_count"] = int(sent or 0)
+        if sent:
+            delivery["push_delivered_at"] = timezone.now().isoformat()
+            delivery["push_delivery_result"] = "sent"
+        else:
+            delivery["push_delivery_result"] = "pending_retry"
+        payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
+        task.payload_json = payload
+        task.save(update_fields=["payload_json", "updated_at"])
+        return int(sent or 0)
+
+
+def _ensure_assignment_delivery(task, responsible, actor):
+    dedupe_key = _assignment_notification_key(task.id)
+    notify_task_assignment(
+        task,
+        [responsible],
+        added_by=actor,
+        send_push=False,
+        dedupe_key=dedupe_key,
+    )
+
+    payload, delivery = _assignment_delivery(task)
+    delivery.setdefault("responsible_user_id", responsible.id)
+    delivery.setdefault("added_by_user_id", actor.id if actor else None)
+    delivery.setdefault("notification_dedupe_key", dedupe_key)
+    payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
+    task.payload_json = payload
+    task.save(update_fields=["payload_json", "updated_at"])
+    _schedule_assignment_push(task.id, responsible.id)
+
+
 def _task_data(task):
     payload = task.payload_json if isinstance(task.payload_json, dict) else {}
     return {
@@ -367,11 +472,21 @@ def _create_task(authenticated, organization, arguments):
     # Serialize create requests per organization so concurrent MCP retries
     # cannot both pass the JSON idempotency lookup before either insert commits.
     organization = Organization.objects.select_for_update().get(pk=organization.pk)
-    existing = ServiceTask.objects.filter(
-        organization=organization,
-        payload_json__operations_mcp_idempotency_key=key,
-    ).first()
+    existing = (
+        ServiceTask.objects.select_related("primary_responsible", "created_by")
+        .filter(
+            organization=organization,
+            payload_json__operations_mcp_idempotency_key=key,
+        )
+        .first()
+    )
     if existing:
+        if existing.primary_responsible:
+            _ensure_assignment_delivery(
+                existing,
+                existing.primary_responsible,
+                existing.created_by,
+            )
         return {"created": False, "task": _task_data(existing)}
 
     title = _as_text(arguments.get("title"), "title", required=True, maximum=255)
@@ -429,10 +544,7 @@ def _create_task(authenticated, organization, arguments):
         action=ServiceTaskChange.ACTION_CREATED,
         new_value=task.title,
     )
-    transaction.on_commit(
-        lambda: notify_task_assignment(task, [responsible], added_by=actor),
-        robust=True,
-    )
+    _ensure_assignment_delivery(task, responsible, actor)
     return {"created": True, "task": _task_data(task)}
 
 
