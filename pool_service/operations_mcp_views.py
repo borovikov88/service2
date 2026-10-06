@@ -518,7 +518,12 @@ def _send_employee_notification(authenticated, organization, arguments):
         .filter(pk=task_id, organization=organization, task_type=ServiceTask.TYPE_CRM_FOLLOWUP)
         .first()
     )
-    if not task or task.is_archived or task.completed_at:
+    if (
+        not task
+        or task.is_archived
+        or task.completed_at
+        or task.status in {ServiceTask.STATUS_DONE, ServiceTask.STATUS_CANCELLED}
+    ):
         raise ValueError("task_id")
     participant_ids = {user.id for user in task.responsibles.all()}
     if task.primary_responsible_id:
