@@ -4077,6 +4077,7 @@ def crm_tasks(request):
 
 
 @login_required
+@transaction.atomic
 def crm_tasks_bulk_update(request):
     if request.method != "POST":
         return redirect("crm_tasks")
@@ -4104,7 +4105,7 @@ def crm_tasks_bulk_update(request):
         messages.warning(request, "Не выбраны задачи.")
         return redirect(reverse("crm_tasks"))
 
-    tasks_qs = ServiceTask.objects.filter(id__in=selected_ids, organization=org)
+    tasks_qs = ServiceTask.objects.select_for_update().filter(id__in=selected_ids, organization=org)
     if not _is_org_admin_or_owner(request.user, org):
         tasks_qs = tasks_qs.filter(
             Q(created_by=request.user) | Q(primary_responsible=request.user) | Q(responsibles=request.user)
