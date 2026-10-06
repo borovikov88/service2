@@ -1,4 +1,5 @@
 from collections import defaultdict
+from contextlib import nullcontext
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
@@ -22,37 +23,36 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         apply_changes = options["apply"]
-        clients = list(
-            Client.objects.select_related("organization")
-            .exclude(phone__isnull=True)
-            .exclude(phone="")
-            .order_by("organization_id", "id")
-        )
-        contacts = list(
+        # The apply snapshot must be acquired inside the same transaction that
+        # writes it. The separate deployment dry-run is never reused for writes.
+        with transaction.atomic() if apply_changes else nullcontext():
+            self._run(apply_changes=apply_changes)
+
+    def _run(self, *, apply_changes):
+        def read_rows(queryset):
+            if apply_changes:
+                queryset = queryset.select_for_update()
+            return list(queryset)
+
+        # Lock parents first, including clients without a legacy primary phone.
+        # Do not join nullable relations in a FOR UPDATE query. Organization
+        # lookup uses this locked snapshot, not lazy per-contact queries.
+        all_clients = read_rows(Client.objects.order_by("id"))
+        client_org = {item.pk: item.organization_id for item in all_clients}
+        clients = [item for item in all_clients if item.phone]
+        contacts = read_rows(
             ClientContact.objects.filter(kind=ClientContact.KIND_PHONE)
-            .select_related("client__organization")
-            .order_by("client_id", "-is_primary", "id")
+            .order_by("client_id", "id")
         )
-        calls = list(
-            PhoneCall.objects.select_related("organization", "client")
-            .exclude(phone_number="")
-            .order_by("organization_id", "id")
+        calls = read_rows(
+            PhoneCall.objects.exclude(phone_number="").order_by("id")
         )
 
-        all_values = [(item.organization_id, item.phone) for item in clients]
-        all_values += [
-            (item.client.organization_id, item.value) for item in contacts
-        ]
-        all_values += [(item.organization_id, item.phone_number) for item in calls]
-
-        valid = 0
-        invalid = 0
-        for _organization_id, value in all_values:
-            if normalize_phone(value):
-                valid += 1
-            else:
-                invalid += 1
-
+        all_values = [item.phone for item in clients]
+        all_values += [item.value for item in contacts]
+        all_values += [item.phone_number for item in calls]
+        valid = sum(bool(normalize_phone(value)) for value in all_values)
+        invalid = len(all_values) - valid
         ownership = defaultdict(set)
         for client in clients:
             normalized = normalize_phone(client.phone)
@@ -61,15 +61,12 @@ class Command(BaseCommand):
         for contact in contacts:
             normalized = normalize_phone(contact.value)
             if normalized:
-                ownership[(contact.client.organization_id, normalized)].add(
+                ownership[(client_org[contact.client_id], normalized)].add(
                     contact.client_id
                 )
         conflicts = {
-            key: client_ids
-            for key, client_ids in ownership.items()
-            if len(client_ids) > 1
+            key: ids for key, ids in ownership.items() if len(ids) > 1
         }
-
         self.stdout.write(
             "Phone audit: "
             f"client={len(clients)}, contacts={len(contacts)}, calls={len(calls)}, "
@@ -77,175 +74,132 @@ class Command(BaseCommand):
             f"cross_client_conflicts={len(conflicts)}"
         )
         conflict_client_count = len(
-            {client_id for client_ids in conflicts.values() for client_id in client_ids}
+            {client_id for ids in conflicts.values() for client_id in ids}
         )
         self.stdout.write(
             f"Phone conflict summary: groups={len(conflicts)}, "
             f"affected_clients={conflict_client_count}"
         )
-
         if not apply_changes:
             self.stdout.write("Dry-run only. Re-run with --apply to persist changes.")
             return
 
         stats = defaultdict(int)
-        with transaction.atomic():
-            for client in clients:
-                normalized = normalize_phone(client.phone)
-                if not normalized:
-                    continue
-                display = canonical_phone_value(client.phone)
-                if display != client.phone:
-                    Client.objects.filter(pk=client.pk).update(phone=display)
-                    client.phone = display
-                    stats["client_phone_updated"] += 1
+        for client in clients:
+            if not normalize_phone(client.phone):
+                continue
+            display = canonical_phone_value(client.phone)
+            if display != client.phone:
+                Client.objects.filter(pk=client.pk).update(phone=display)
+                client.phone = display
+                stats["client_phone_updated"] += 1
 
-            grouped = defaultdict(list)
-            for contact in contacts:
-                normalized = normalize_phone(contact.value)
-                if normalized:
-                    grouped[(contact.client_id, normalized)].append(contact)
-                else:
-                    if contact.match_value:
-                        ClientContact.objects.filter(pk=contact.pk).update(
-                            match_value=""
-                        )
-                        stats["invalid_match_cleared"] += 1
+        grouped = defaultdict(list)
+        for contact in contacts:
+            normalized = normalize_phone(contact.value)
+            if normalized:
+                grouped[(contact.client_id, normalized)].append(contact)
+            elif contact.match_value:
+                ClientContact.objects.filter(pk=contact.pk).update(match_value="")
+                stats["invalid_match_cleared"] += 1
 
-            for (_client_id, normalized), items in grouped.items():
-                keeper = sorted(
-                    items,
-                    key=lambda item: (not item.is_primary, item.id),
-                )[0]
-                sources = []
-                for item in items:
-                    for source in item.sources or []:
-                        if source not in sources:
-                            sources.append(source)
-                keeper.sources = sources
-                keeper.is_primary = any(item.is_primary for item in items)
-                keeper.match_value = normalized
-                keeper.value = canonical_phone_value(keeper.value)
-                # Delete same-client duplicates before canonicalizing the keeper:
-                # one duplicate may already own the canonical display value and
-                # the model has a unique (client, kind, value) constraint.
-                for duplicate in items:
-                    if duplicate.pk == keeper.pk:
-                        continue
+        for (_client_id, normalized), items in grouped.items():
+            keeper = min(items, key=lambda item: (not item.is_primary, item.id))
+            sources = []
+            for item in items:
+                for source in item.sources or []:
+                    if source not in sources:
+                        sources.append(source)
+            desired = {
+                "sources": sources,
+                "is_primary": any(item.is_primary for item in items),
+                "match_value": normalized,
+                "value": canonical_phone_value(keeper.value),
+            }
+            changed_fields = []
+            for field, value in desired.items():
+                if getattr(keeper, field) != value:
+                    setattr(keeper, field, value)
+                    changed_fields.append(field)
+            # Remove duplicates before saving a canonical value which one of
+            # them may already own. All candidate rows are locked above.
+            for duplicate in items:
+                if duplicate.pk != keeper.pk:
                     duplicate.delete()
                     stats["duplicate_contacts_merged"] += 1
-                keeper.save(
-                    update_fields=[
-                        "sources",
-                        "is_primary",
-                        "match_value",
-                        "value",
-                        "updated_at",
-                    ]
-                )
+            if changed_fields:
+                keeper.save(update_fields=changed_fields + ["updated_at"])
                 stats["contacts_normalized"] += 1
 
-            # Every legacy primary phone gets a normalized ClientContact so all
-            # matching paths can use the same indexed value.
-            for client in clients:
-                normalized = normalize_phone(client.phone)
-                if not normalized:
-                    continue
-                contact = (
-                    ClientContact.objects.filter(
-                        client=client,
-                        kind=ClientContact.KIND_PHONE,
-                        match_value=normalized,
-                    )
-                    .order_by("-is_primary", "id")
-                    .first()
-                )
-                if contact is None:
-                    ClientContact.objects.create(
-                        client=client,
-                        kind=ClientContact.KIND_PHONE,
-                        value=canonical_phone_value(client.phone),
-                        match_value=normalized,
-                        label="Основной",
-                        is_primary=True,
-                        sources=["legacy"],
-                    )
-                    stats["legacy_contacts_created"] += 1
-
-            # Build one in-memory resolver for the historical call pass.
-            # This avoids rescanning all clients for every PhoneCall.
-            active_client_list = list(
-                active_clients(Client.objects.all()).only(
-                    "id",
-                    "organization_id",
-                    "name",
-                    "phone",
-                )
-            )
-            client_by_id = {client.id: client for client in active_client_list}
-            resolution = defaultdict(set)
-            for active_client in active_client_list:
-                normalized = normalize_phone(active_client.phone)
-                if normalized:
-                    resolution[
-                        (active_client.organization_id, normalized)
-                    ].add(active_client.id)
-            active_ids = list(client_by_id)
-            if active_ids:
-                contact_rows = ClientContact.objects.filter(
-                    client_id__in=active_ids,
+        for client in clients:
+            normalized = normalize_phone(client.phone)
+            if not normalized:
+                continue
+            if not ClientContact.objects.filter(
+                client=client,
+                kind=ClientContact.KIND_PHONE,
+                match_value=normalized,
+            ).exists():
+                ClientContact.objects.create(
+                    client=client,
                     kind=ClientContact.KIND_PHONE,
-                ).values_list(
-                    "client_id",
-                    "client__organization_id",
-                    "match_value",
+                    value=canonical_phone_value(client.phone),
+                    match_value=normalized,
+                    label="\u041e\u0441\u043d\u043e\u0432\u043d\u043e\u0439",
+                    is_primary=True,
+                    sources=["legacy"],
                 )
-                for client_id, organization_id, match_value in contact_rows:
-                    if match_value:
-                        resolution[(organization_id, match_value)].add(client_id)
+                stats["legacy_contacts_created"] += 1
 
-            for call in calls:
-                normalized = normalize_phone(call.phone_number)
+        # Resolve all historical calls in one pass over the locked clients.
+        active_ids = set(
+            active_clients(Client.objects.all()).values_list("id", flat=True)
+        )
+        client_by_id = {
+            item.id: item for item in all_clients if item.id in active_ids
+        }
+        resolution = defaultdict(set)
+        for client in client_by_id.values():
+            normalized = normalize_phone(client.phone)
+            if normalized:
+                resolution[(client.organization_id, normalized)].add(client.id)
+        if client_by_id:
+            contact_rows = ClientContact.objects.filter(
+                client_id__in=client_by_id,
+                kind=ClientContact.KIND_PHONE,
+            ).values_list("client_id", "match_value")
+            for client_id, match_value in contact_rows:
+                if match_value:
+                    resolution[(client_org[client_id], match_value)].add(client_id)
+
+        for call in calls:
+            updates = {}
+            display = canonical_phone_value(call.phone_number)
+            if display != call.phone_number:
+                updates["phone_number"] = display
+            # Manual/trusted assignments acquired under lock take precedence.
+            if call.client_id is not None:
+                stats["calls_existing_assignment_preserved"] += 1
+            else:
                 match_ids = resolution.get(
-                    (call.organization_id, normalized),
+                    (call.organization_id, normalize_phone(call.phone_number)),
                     set(),
                 )
-                display = canonical_phone_value(call.phone_number)
-                updates = {}
-                if display != call.phone_number:
-                    updates["phone_number"] = display
-
-                # Existing non-null client links may have been selected manually
-                # or created by another trusted workflow. Never overwrite them
-                # during a phone-format backfill.
-                if call.client_id is not None:
-                    stats["calls_existing_assignment_preserved"] += 1
-                    if updates:
-                        PhoneCall.objects.filter(pk=call.pk).update(**updates)
-                        stats["calls_updated"] += 1
-                    continue
-
                 if len(match_ids) == 1:
                     client_id = next(iter(match_ids))
-                    matched_client = client_by_id[client_id]
-                    if call.client_id != client_id:
-                        updates["client_id"] = client_id
-                    if call.contact_name != matched_client.name:
-                        updates["contact_name"] = matched_client.name
+                    updates["client_id"] = client_id
+                    updates["contact_name"] = client_by_id[client_id].name
                     stats["calls_unambiguous"] += 1
                 elif len(match_ids) > 1:
-                    if call.client_id is not None:
-                        updates["client_id"] = None
-                    if call.contact_name != "Несколько клиентов":
-                        updates["contact_name"] = "Несколько клиентов"
+                    ambiguous = "\u041d\u0435\u0441\u043a\u043e\u043b\u044c\u043a\u043e \u043a\u043b\u0438\u0435\u043d\u0442\u043e\u0432"
+                    if call.contact_name != ambiguous:
+                        updates["contact_name"] = ambiguous
                     stats["calls_ambiguous"] += 1
                 else:
-                    if call.client_id is not None:
-                        updates["client_id"] = None
                     stats["calls_unmatched"] += 1
-                if updates:
-                    PhoneCall.objects.filter(pk=call.pk).update(**updates)
-                    stats["calls_updated"] += 1
+            if updates:
+                PhoneCall.objects.filter(pk=call.pk).update(**updates)
+                stats["calls_updated"] += 1
 
         self.stdout.write(
             self.style.SUCCESS(

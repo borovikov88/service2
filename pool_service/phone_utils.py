@@ -7,11 +7,13 @@ _RU_MATCH_RE = re.compile(r"^\d{10}$")
 
 
 def normalize_phone(value: str | None) -> str:
-    """Return a stable match key without guessing non-Russian numbers.
+    """Return the historical national key for Russian numbers.
 
-    Russian phones use the historical Service2 10-digit national key so
-    authentication and existing phone lookups remain compatible. Explicit
-    foreign international numbers keep their country code as +<digits>.
+    Other accepted country-code numbers share a +<digits> key with or without
+    the input's leading plus. Explicit international numbers are never stripped
+    to the Russian ten-digit namespace. Bare ten-digit input remains Russian,
+    as required by the CRM input contract; ambiguous foreign local input must
+    include its country code and leading plus.
     """
     raw = str(value or "").strip()
     if not raw:
@@ -29,7 +31,7 @@ def normalize_phone(value: str | None) -> str:
     if len(digits) == 10:
         return digits
     if 8 <= len(digits) <= 15:
-        return digits
+        return "+" + digits
     return ""
 
 
