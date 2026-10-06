@@ -47,6 +47,7 @@ from pool_service.finance_forms import (
     EmployeeIdentityMappingForm,
     EmployeeServiceUserMappingForm,
     EmployeeCompensationMonthForm,
+    EmployeeEmploymentStatusForm,
     CashFlowArticleMappingForm,
     ManagementMoneyPlanForm,
 )
@@ -4537,7 +4538,9 @@ def finance_payroll_employee_profile(request, employee_id):
         ),
         "payroll_history": payroll_history,
         "compensation_form": compensation_form,
+        "employment_status_form": EmployeeEmploymentStatusForm(instance=employee),
         "can_edit_compensation": can_manage_finance(request.user, organization),
+        "can_edit_employment_status": can_manage_finance(request.user, organization),
         "active_tab": "finance",
     })
 
@@ -4659,6 +4662,101 @@ def finance_payroll_employee_compensation_update(request, employee_id):
         f"Составляющие зарплаты за {compensation.period_month:%m.%Y} сохранены.",
     )
     return redirect("finance_payroll_employee_profile", employee_id=employee.pk)
+
+
+@login_required
+@require_POST
+def finance_payroll_employee_status_update(request, employee_id):
+    organization, denied = _payroll_access(
+        request,
+        lambda user, org: (
+            can_view_employee_hr(user, org)
+            and can_manage_finance(user, org)
+        ),
+    )
+    if denied:
+        return denied
+
+    employee = get_object_or_404(
+        Employee,
+        pk=employee_id,
+        organization=organization,
+    )
+
+    with transaction.atomic():
+        locked = Employee.objects.select_for_update().get(
+            pk=employee.pk,
+            organization=organization,
+        )
+        form = EmployeeEmploymentStatusForm(request.POST, instance=locked)
+        if not form.is_valid():
+            messages.error(
+                request,
+                "Не удалось изменить кадровый статус. Проверьте значения.",
+            )
+            return redirect(
+                "finance_payroll_employee_profile",
+                employee_id=employee.pk,
+            )
+
+        before = {
+            "employment_status": locked.employment_status,
+            "is_active": locked.is_active,
+            "dismissed_at": (
+                locked.dismissed_at.isoformat()
+                if locked.dismissed_at
+                else None
+            ),
+        }
+        updated = form.save(commit=False)
+        if updated.employment_status == Employee.STATUS_DISMISSED:
+            updated.is_active = False
+            if updated.dismissed_at is None:
+                updated.dismissed_at = timezone.localdate()
+        else:
+            updated.is_active = True
+            updated.dismissed_at = None
+        updated.full_clean()
+        updated.save(
+            update_fields=[
+                "employment_status",
+                "is_active",
+                "dismissed_at",
+                "updated_at",
+            ]
+        )
+        after = {
+            "employment_status": updated.employment_status,
+            "is_active": updated.is_active,
+            "dismissed_at": (
+                updated.dismissed_at.isoformat()
+                if updated.dismissed_at
+                else None
+            ),
+        }
+        changed_fields = [
+            key for key in before if before[key] != after[key]
+        ]
+        if changed_fields:
+            DataAuditLog.objects.create(
+                entity_type="Employee",
+                entity_id=str(updated.pk),
+                action=DataAuditLog.ACTION_UPDATE,
+                organization=organization,
+                actor=request.user,
+                before=before,
+                after={**after, "source": "manual_hr_status"},
+                changed_fields=changed_fields,
+            )
+
+    messages.success(
+        request,
+        f"Кадровый статус «{updated.get_employment_status_display()}» сохранён.",
+    )
+    return redirect(
+        "finance_payroll_employee_profile",
+        employee_id=updated.pk,
+    )
 
 
 @login_required

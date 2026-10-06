@@ -90,11 +90,17 @@ class PayrollPlanReaderTests(TestCase):
                     },
                 ]]
             if entity == "Catalog_Сотрудники":
-                return [[{
+                row = {
                     "Ref_Key": EMPLOYEE_GUID,
                     "Description": "Иванов Иван Иванович",
                     "DeletionMark": False,
-                }]]
+                }
+                if "Недействителен" in options.get("$select", ""):
+                    row.update({
+                        "Недействителен": False,
+                        "ВАрхиве": False,
+                    })
+                return [[row]]
             if entity == "Catalog_ВидыНачисленийИУдержаний":
                 return [[
                     {
@@ -132,6 +138,48 @@ class PayrollPlanReaderTests(TestCase):
         reader.check_time.assert_called_once()
 
     @patch("pool_service.finance_imports.odata_payroll_plan.Reader")
+    def test_reader_checks_tracked_employee_status_without_current_plan_rows(
+        self, reader_cls
+    ):
+        reader = reader_cls.return_value
+
+        def pages(entity, options):
+            if entity == "InformationRegister_ПлановыеНачисленияИУдержания_RecordType":
+                return [[]]
+            if entity == "Catalog_Сотрудники":
+                self.assertIn("Недействителен", options.get("$select", ""))
+                return [[{
+                    "Ref_Key": EMPLOYEE_GUID,
+                    "Description": "Алексеев Иван Алексеевич",
+                    "DeletionMark": False,
+                    "Недействителен": True,
+                    "ВАрхиве": False,
+                }]]
+            raise AssertionError(entity)
+
+        reader.pages_for.side_effect = pages
+
+        result = read_current_plan(
+            {
+                "ONEC_ODATA_ORGANIZATION_GUIDS": ORG_GUID,
+                "ONEC_ODATA_PAYROLL_CURRENCY_GUID": CURRENCY_GUID,
+            },
+            date(2026, 9, 20),
+            employee_guids=[EMPLOYEE_GUID],
+        )
+
+        self.assertEqual(result["items"], [])
+        self.assertEqual(
+            result["employee_statuses"],
+            [{
+                "employee_guid": EMPLOYEE_GUID,
+                "deletion_mark": False,
+                "inactive": True,
+                "archived": False,
+            }],
+        )
+
+    @patch("pool_service.finance_imports.odata_payroll_plan.Reader")
     def test_reader_does_not_resurrect_cancelled_salary(self, reader_cls):
         reader = reader_cls.return_value
 
@@ -162,11 +210,17 @@ class PayrollPlanReaderTests(TestCase):
                     },
                 ]]
             if entity == "Catalog_Сотрудники":
-                return [[{
+                row = {
                     "Ref_Key": EMPLOYEE_GUID,
                     "Description": "Иванов Иван Иванович",
                     "DeletionMark": False,
-                }]]
+                }
+                if "Недействителен" in options.get("$select", ""):
+                    row.update({
+                        "Недействителен": False,
+                        "ВАрхиве": False,
+                    })
+                return [[row]]
             if entity == "Catalog_ВидыНачисленийИУдержаний":
                 return [[{
                     "Ref_Key": TYPE_GUID,
@@ -335,6 +389,14 @@ class PayrollCurrentCompensationTests(TestCase):
             "selected_organizations": [ORG_GUID],
             "currency_guid": CURRENCY_GUID,
             "source_rows": 1,
+            "employee_statuses": [
+                {
+                    "employee_guid": EMPLOYEE_GUID,
+                    "deletion_mark": False,
+                    "inactive": False,
+                    "archived": False,
+                }
+            ],
             "items": [
                 {
                     "organization_guid": ORG_GUID,
@@ -368,6 +430,143 @@ class PayrollCurrentCompensationTests(TestCase):
         self.assertEqual(PayrollPlanItem.objects.count(), 1)
         identity = EmployeeOneCIdentity.objects.get(onec_employee_id=EMPLOYEE_GUID)
         self.assertEqual(identity.raw_name, "Иванов Иван Иванович")
+
+    @patch("pool_service.finance_imports.payroll_plan._require_access")
+    @patch("pool_service.finance_imports.payroll_plan.auto_coverage_config")
+    @patch("pool_service.finance_imports.payroll_plan.config_from_settings")
+    @patch("pool_service.finance_imports.payroll_plan._read_plan_payload")
+    def test_refresh_deactivates_invalid_onec_employee_even_when_plan_is_unchanged(
+        self, reader, config, _coverage, _access
+    ):
+        identity = self.identity()
+        employee = identity.employee
+        config.return_value = {
+            "ONEC_ODATA_ORGANIZATION_GUIDS": ORG_GUID,
+            "ONEC_ODATA_PAYROLL_CURRENCY_GUID": CURRENCY_GUID,
+        }
+        as_of = date(2026, 9, 20)
+        base_payload = {
+            "kind": "payroll_plan_snapshot_v1",
+            "period_month": "2026-09-01",
+            "as_of": "2026-09-20",
+            "selected_organizations": [ORG_GUID],
+            "currency_guid": CURRENCY_GUID,
+            "source_rows": 1,
+            "items": [
+                {
+                    "organization_guid": ORG_GUID,
+                    "employee_guid": EMPLOYEE_GUID,
+                    "employee_name": identity.raw_name,
+                    "accrual_type_guid": TYPE_GUID,
+                    "accrual_type_name": "Оклад",
+                    "amount": "60000.00",
+                    "source_period": "2026-06-04",
+                    "source_rows": 1,
+                    "is_base_salary": True,
+                }
+            ],
+        }
+        active = {
+            **base_payload,
+            "employee_statuses": [{
+                "employee_guid": EMPLOYEE_GUID,
+                "deletion_mark": False,
+                "inactive": False,
+                "archived": False,
+            }],
+        }
+        inactive = {
+            **base_payload,
+            "employee_statuses": [{
+                "employee_guid": EMPLOYEE_GUID,
+                "deletion_mark": False,
+                "inactive": True,
+                "archived": False,
+            }],
+        }
+        reader.side_effect = [active, inactive]
+
+        first, created = refresh_payroll_plan_snapshot(
+            self.organization, self.user, as_of=as_of
+        )
+        second, created_again = refresh_payroll_plan_snapshot(
+            self.organization, self.user, as_of=as_of
+        )
+
+        self.assertTrue(created)
+        self.assertFalse(created_again)
+        self.assertEqual(first.pk, second.pk)
+        employee.refresh_from_db()
+        self.assertFalse(employee.is_active)
+        self.assertEqual(employee.employment_status, Employee.STATUS_DISMISSED)
+
+    @patch("pool_service.finance_imports.payroll_plan._require_access")
+    @patch("pool_service.finance_imports.payroll_plan.auto_coverage_config")
+    @patch("pool_service.finance_imports.payroll_plan.config_from_settings")
+    @patch("pool_service.finance_imports.payroll_plan._read_plan_payload")
+    def test_inactive_old_identity_does_not_disable_employee_with_active_identity(
+        self, reader, config, _coverage, _access
+    ):
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Иванов Иван Иванович",
+        )
+        EmployeeOneCIdentity.objects.create(
+            organization=self.organization,
+            employee=employee,
+            raw_name=employee.display_name,
+            normalized_name=employee.display_name.casefold(),
+            onec_employee_id=EMPLOYEE_GUID,
+            status=EmployeeOneCIdentity.STATUS_AUTO_MATCHED,
+            match_method=EmployeeOneCIdentity.MATCH_EXTERNAL_ID,
+        )
+        second_guid = "66666666-6666-6666-6666-666666666666"
+        EmployeeOneCIdentity.objects.create(
+            organization=self.organization,
+            employee=employee,
+            raw_name=employee.display_name,
+            normalized_name=employee.display_name.casefold(),
+            onec_employee_id=second_guid,
+            status=EmployeeOneCIdentity.STATUS_AUTO_MATCHED,
+            match_method=EmployeeOneCIdentity.MATCH_EXTERNAL_ID,
+        )
+        config.return_value = {
+            "ONEC_ODATA_ORGANIZATION_GUIDS": ORG_GUID,
+            "ONEC_ODATA_PAYROLL_CURRENCY_GUID": CURRENCY_GUID,
+        }
+        reader.return_value = {
+            "kind": "payroll_plan_snapshot_v1",
+            "period_month": "2026-09-01",
+            "as_of": "2026-09-20",
+            "selected_organizations": [ORG_GUID],
+            "currency_guid": CURRENCY_GUID,
+            "source_rows": 0,
+            "items": [],
+            "employee_statuses": [
+                {
+                    "employee_guid": EMPLOYEE_GUID,
+                    "deletion_mark": False,
+                    "inactive": True,
+                    "archived": False,
+                },
+                {
+                    "employee_guid": second_guid,
+                    "deletion_mark": False,
+                    "inactive": False,
+                    "archived": False,
+                },
+            ],
+        }
+
+        refresh_payroll_plan_snapshot(
+            self.organization,
+            self.user,
+            as_of=date(2026, 9, 20),
+        )
+
+        employee.refresh_from_db()
+        self.assertTrue(employee.is_active)
+        self.assertEqual(employee.employment_status, Employee.STATUS_EMPLOYED)
 
     @patch("pool_service.finance_imports.payroll_plan._require_access")
     @patch("pool_service.finance_imports.payroll_plan.auto_coverage_config")
