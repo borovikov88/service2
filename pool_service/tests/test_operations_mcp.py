@@ -2,6 +2,7 @@ import hashlib
 import json
 from datetime import date, timedelta
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
@@ -20,7 +21,12 @@ from pool_service.models import (
     OrganizationAccess,
     ServiceTask,
 )
-from pool_service.operations_mcp_auth import OPERATIONS_SCOPE, _organization_scope
+from pool_service.operations_mcp_auth import (
+    OPERATIONS_SCOPE,
+    _organization_scope,
+    authorization_redirect_uri,
+    protected_resource_metadata,
+)
 from pool_service.operations_mcp_policy import can_access_operations_mcp
 
 
@@ -117,6 +123,69 @@ class OperationsMcpTests(TestCase):
             content_type="application/json",
             **headers,
         )
+
+    def test_operations_uses_shared_finance_issuer(self):
+        with override_settings(
+            ADVISOR_FINANCE_MCP_AUTH_ISSUER="https://shared-issuer.example",
+            ADVISOR_OPERATIONS_MCP_AUTH_ISSUER="https://wrong-operations-issuer.example",
+        ):
+            metadata = protected_resource_metadata()
+            redirect_uri = authorization_redirect_uri(REDIRECT, state="issuer-test")
+
+        self.assertEqual(
+            metadata["authorization_servers"],
+            ["https://shared-issuer.example"],
+        )
+        self.assertEqual(
+            parse_qs(urlsplit(redirect_uri).query)["iss"],
+            ["https://shared-issuer.example"],
+        )
+
+    def test_consent_rejects_target_change_after_page_is_shown(self):
+        OrganizationAccess.objects.create(
+            user=self.owner,
+            organization=self.other_org,
+            role="owner",
+        )
+        FinanceMcpPrincipalOrganization.objects.create(
+            principal=self.principal,
+            organization=self.other_org,
+            granted_by=self.owner,
+        )
+        self.client.force_login(self.owner)
+        oauth_params = {
+            "response_type": "code",
+            "client_id": CHATGPT_CLIENT_ID_METADATA_URL,
+            "redirect_uri": REDIRECT,
+            "state": "consent-org-switch",
+            "code_challenge_method": "S256",
+            "code_challenge": "A" * 43,
+            "resource": RESOURCE,
+            "scope": OPERATIONS_SCOPE,
+        }
+
+        with self._settings():
+            shown = self.client.get(reverse("operations_mcp_authorize"), oauth_params)
+        self.assertEqual(shown.status_code, 200)
+        consent_binding = shown.context["consent_binding"]
+
+        post_data = dict(oauth_params)
+        post_data.update({
+            "decision": "approve",
+            "consent_binding": consent_binding,
+        })
+        with override_settings(
+            ADVISOR_OPERATIONS_MCP_ORGANIZATION_ID=str(self.other_org.id),
+        ):
+            approved = self.client.post(
+                reverse("operations_mcp_authorize"),
+                data=post_data,
+            )
+
+        self.assertEqual(approved.status_code, 302)
+        query = parse_qs(urlsplit(approved["Location"]).query)
+        self.assertEqual(query.get("error"), ["access_denied"])
+        self.assertFalse(FinanceMcpGrant.objects.exists())
 
     def test_owner_admin_policy_denies_manager(self):
         self.assertTrue(can_access_operations_mcp(self.owner, self.organization))
