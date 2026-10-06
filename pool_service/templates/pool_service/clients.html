@@ -320,7 +320,8 @@
         const query = normalizeSearch(input.value);
         let visible = 0;
         rows.forEach((row) => {
-          const matches = !query || normalizeSearch(row.textContent).includes(query);
+          const searchable = row.textContent + " " + (row.dataset.searchExtra || "");
+          const matches = !query || normalizeSearch(searchable).includes(query);
           row.classList.toggle("d-none", !matches);
           if (matches) visible += 1;
         });
