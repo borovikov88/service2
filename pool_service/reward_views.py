@@ -112,6 +112,84 @@ def _reward_selectable_employees(organization):
     )
 
 
+def _reward_order_groups(orders, open_order=""):
+    """Presentation-only grouping for repeated 1C expense invoices by customer."""
+    groups = {}
+    sequence = []
+
+    for ui_index, order in enumerate(orders, start=1):
+        order["ui_index"] = ui_index
+        is_expense_invoice = (
+            order.get("source_document_type") == "Document_РасходнаяНакладная"
+        )
+        customer_key = None
+        if is_expense_invoice:
+            if order.get("client_id"):
+                customer_key = ("client", str(order["client_id"]))
+            elif order.get("customer_guid"):
+                customer_key = ("onec", str(order["customer_guid"]).lower())
+
+        if customer_key:
+            key = ("expense-customer",) + customer_key
+            kind = "expense-customer"
+        else:
+            key = ("single", order.get("scope_key"))
+            kind = "single"
+
+        if key not in groups:
+            group = {
+                "key": "|".join(str(part) for part in key),
+                "kind": kind,
+                "orders": [],
+            }
+            groups[key] = group
+            sequence.append(group)
+        groups[key]["orders"].append(order)
+
+    for group in sequence:
+        documents = group["orders"]
+        first = documents[0]
+        group["is_customer_group"] = (
+            group["kind"] == "expense-customer" and len(documents) > 1
+        )
+        group["document_count"] = len(documents)
+        group["customer"] = (
+            first.get("client_name")
+            or first.get("customer")
+            or "Без клиента"
+        )
+        group["attention_count"] = sum(
+            1 for item in documents if item.get("problems")
+        )
+        group["open"] = any(
+            item.get("scope_key") == open_order for item in documents
+        )
+        group["revenue"] = str(
+            sum(
+                (Decimal(str(item.get("revenue") or "0")) for item in documents),
+                Decimal("0"),
+            )
+        )
+        costs = [item.get("cost") for item in documents]
+        group["cost"] = (
+            None
+            if any(value is None for value in costs)
+            else str(sum((Decimal(str(value)) for value in costs), Decimal("0")))
+        )
+        gross_profits = [item.get("gross_profit") for item in documents]
+        group["gross_profit"] = (
+            None
+            if any(value is None for value in gross_profits)
+            else str(
+                sum(
+                    (Decimal(str(value)) for value in gross_profits),
+                    Decimal("0"),
+                )
+            )
+        )
+    return sequence
+
+
 def _rewards_redirect(request, period_month, *, default_tab="orders"):
     tab = (request.POST.get("return_tab") or default_tab).strip()
     if tab not in {"orders", "attention", "employees", "settings"}:
@@ -517,6 +595,8 @@ def employee_rewards(request):
     # Orders stay fully rendered so the page can use the project-standard live
     # search without a reload. The query is kept only to restore the field/URL.
     orders = workspace["orders"]
+    open_order = request.GET.get("open", "")
+    order_groups = _reward_order_groups(orders, open_order=open_order)
     attention_keys = {item["scope_key"] for item in workspace["attention"]}
     attention = [item for item in orders if item["scope_key"] in attention_keys]
 
@@ -584,6 +664,7 @@ def employee_rewards(request):
         {
             "data": data,
             "orders": orders,
+            "order_groups": order_groups,
             "attention_orders": attention,
             "filled_order_count": max(0, len(orders) - len(attention)),
             "blocking_issues": blocking_issues,
@@ -596,7 +677,7 @@ def employee_rewards(request):
             "scheme": scheme,
             "search_query": query,
             "selected_tab": selected_tab,
-            "open_order": request.GET.get("open", ""),
+            "open_order": open_order,
             "can_manage_participation": can_manage_participation(
                 request.user, organization
             ),
