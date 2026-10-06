@@ -371,6 +371,9 @@ from .models import (
 
 )
 
+from .client_crm_models import ClientCompanyLink
+from .phone_utils import format_phone
+
 from .services.permissions import (
 
     is_personal_free,
@@ -3745,7 +3748,10 @@ def clients_list(request):
 
     clients = list(
 
-        clients_qs.annotate(pool_count=Count("pool")).select_related("organization").order_by("name")
+        clients_qs.annotate(pool_count=Count("pool"))
+        .select_related("organization")
+        .prefetch_related("crm_contacts")
+        .order_by("name")
 
     )
 
@@ -3758,6 +3764,29 @@ def clients_list(request):
     staff_by_client = {}
 
     company_ids = [client.id for client in companies]
+    private_ids = [client.id for client in private_contacts]
+    people_by_company = {client_id: [] for client_id in company_ids}
+    companies_by_person = {client_id: [] for client_id in private_ids}
+    if company_ids or private_ids:
+        relation_qs = ClientCompanyLink.objects.filter(
+            Q(company_id__in=company_ids) | Q(person_id__in=private_ids)
+        ).select_related("company", "person").order_by("-is_primary", "id")
+        for link in relation_qs:
+            if link.company_id in people_by_company:
+                people_by_company[link.company_id].append(link)
+            if link.person_id in companies_by_person:
+                companies_by_person[link.person_id].append(link)
+
+    for client in clients:
+        client.display_phone = format_phone(client.phone)
+        client.search_contacts = " ".join(
+            contact.value
+            for contact in client.crm_contacts.all()
+            if contact.value
+        )
+
+    for client in private_contacts:
+        client.crm_companies = companies_by_person.get(client.id, [])
 
     if company_ids:
 
@@ -3787,7 +3816,7 @@ def clients_list(request):
 
             "position": company.contact_position,
 
-            "phone": company.phone,
+            "phone": company.display_phone,
 
             "email": company.email,
 
@@ -3800,6 +3829,7 @@ def clients_list(request):
         company.primary_contact = primary_contact
 
         company.staff_contacts = staff_by_client.get(company.id, [])
+        company.crm_people = people_by_company.get(company.id, [])
 
 
 
