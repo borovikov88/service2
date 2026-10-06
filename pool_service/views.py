@@ -4123,11 +4123,18 @@ def crm_tasks_bulk_update(request):
         crm_item_ids,
         extra_task_ids=candidate_ids,
     )
+    is_admin_or_owner = _is_org_admin_or_owner(request.user, org)
     tasks = [
         task
         for task in locked_tasks
         if task.id in candidate_ids
         and task.organization_id == (org.id if org else None)
+        and (
+            is_admin_or_owner
+            or task.created_by_id == request.user.id
+            or task.primary_responsible_id == request.user.id
+            or task.responsibles.filter(id=request.user.id).exists()
+        )
     ]
     if not tasks:
         messages.warning(request, "Подходящие задачи не найдены.")
