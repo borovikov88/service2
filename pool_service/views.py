@@ -138,7 +138,6 @@ from .forms import (
 
     ClientInviteAcceptForm,
 
-    normalize_phone,
 
     OrganizationWaterNormsForm,
 
@@ -171,6 +170,8 @@ from .services.phone_verification import (
 )
 
 from .services.notifications import notify_reading_out_of_range, notify_superusers, notify_task_assignment
+from .client_crm_models import ClientCompanyLink, ClientContact, ClientCRMProfile
+from .phone_utils import format_phone, normalize_account_phone, normalize_phone as normalize_crm_phone
 from .services.task_archive import archive_task, restore_task
 from .services.crm_archive import archive_crm_item, restore_crm_item, sync_crm_archive_state
 from .services.task_generation import sync_crm_item_for_task, sync_task_with_crm_item
@@ -203,7 +204,7 @@ def _user_phone_digits(user):
 
     if client and client.phone:
 
-        return normalize_phone(client.phone)
+        return normalize_account_phone(client.phone)
 
     return None
 
@@ -220,43 +221,11 @@ def _smsru_phone(digits):
 
 
 def _format_call_phone_display(phone):
-
-    digits = "".join(filter(str.isdigit, phone or ""))
-
-    if digits.startswith("8") and len(digits) == 11:
-
-        digits = "7" + digits[1:]
-
-    if len(digits) == 11 and digits.startswith("7"):
-
-        return f"+7 {digits[1:4]} {digits[4:7]} {digits[7:9]} {digits[9:11]}"
-
-    return phone
-
-
-
+    return format_phone(phone)
 
 
 def _format_profile_phone_display(phone):
-
-    digits = normalize_phone(phone) if phone else ""
-
-    if not digits:
-
-        digits = "".join(filter(str.isdigit, phone or ""))
-
-        if len(digits) == 11 and digits.startswith(("7", "8")):
-
-            digits = digits[1:]
-
-    if len(digits) == 10:
-
-        return f"+7 {digits[0:3]} {digits[3:6]} {digits[6:]}"
-
-    return phone
-
-
-
+    return format_phone(phone)
 
 
 def _remaining_phone_attempts(profile):
@@ -3696,163 +3665,161 @@ def users_view(request):
 
 
 @login_required
-
 def clients_list(request):
-
     allowed_roles = ORG_STAFF_ROLES
-
     is_allowed = request.user.is_superuser or OrganizationAccess.objects.filter(
-
         user=request.user, role__in=allowed_roles
-
     ).exists()
-
     if not is_allowed:
-
         return HttpResponseForbidden()
 
-
-
     if request.user.is_superuser:
-
         clients_qs = Client.objects.all()
-
         pool_staff_qs = PoolAccess.objects.all()
-
     else:
-
         org_ids = OrganizationAccess.objects.filter(user=request.user).values_list(
-
-            "organization_id",
-
-            flat=True,
-
+            "organization_id", flat=True
         )
-
         clients_qs = Client.objects.filter(organization_id__in=org_ids).distinct()
-
         pool_staff_qs = PoolAccess.objects.filter(pool__organization_id__in=org_ids)
 
-
-
     clients_qs = clients_qs.filter(
-
         Q(crm_profile__isnull=True) | Q(crm_profile__merged_into__isnull=True)
-
     )
-
-
-
     clients = list(
-
-        clients_qs.annotate(pool_count=Count("pool")).select_related("organization").order_by("name")
-
+        clients_qs.annotate(pool_count=Count("pool"))
+        .select_related("organization", "crm_profile")
+        .order_by("name")
     )
-
     companies = [client for client in clients if client.client_type == "legal"]
-
     private_contacts = [client for client in clients if client.client_type != "legal"]
 
+    client_ids = [client.id for client in clients]
+    contacts_by_client = {}
+    for contact in ClientContact.objects.filter(client_id__in=client_ids).order_by(
+        "client_id", "-is_primary", "id"
+    ):
+        contacts_by_client.setdefault(contact.client_id, []).append(contact)
 
+    links = list(
+        ClientCompanyLink.objects.filter(
+            Q(company_id__in=client_ids) | Q(person_id__in=client_ids)
+        )
+        .select_related("company", "person")
+        .order_by("-is_primary", "id")
+    )
+    people_by_company = {}
+    companies_by_person = {}
+    for link in links:
+        people_by_company.setdefault(link.company_id, []).append(link)
+        companies_by_person.setdefault(link.person_id, []).append(link)
 
-    staff_by_client = {}
+    def phone_terms(value):
+        normalized = normalize_crm_phone(value)
+        digits = "".join(ch for ch in normalized if ch.isdigit())
+        return [value or "", format_phone(value), normalized, digits]
 
-    company_ids = [client.id for client in companies]
-
-    if company_ids:
-
-        staff_accesses = (
-
-            ClientAccess.objects.filter(client_id__in=company_ids)
-
-            .select_related("user")
-
-            .order_by("user__last_name", "user__first_name")
-
+    for item in clients:
+        item.phone_display = format_phone(item.phone)
+        profile = getattr(item, "crm_profile", None)
+        search_parts = [
+            item.name,
+            item.company_name,
+            item.inn,
+            item.email,
+            getattr(profile, "legal_name", "") if profile else "",
+            *phone_terms(item.phone),
+        ]
+        for contact in contacts_by_client.get(item.id, []):
+            search_parts.extend([contact.value, contact.match_value])
+        if item.client_type == "legal":
+            legacy_contact_name = " ".join(
+                part for part in [item.first_name, item.last_name] if part
+            ).strip()
+            item.primary_contact = {
+                "name": legacy_contact_name,
+                "position": item.contact_position,
+                "phone": item.phone_display,
+                "email": item.email,
+            }
+            if not any(item.primary_contact.values()):
+                item.primary_contact = None
+            search_parts.extend(
+                [
+                    legacy_contact_name,
+                    item.contact_position,
+                ]
+            )
+            item.linked_people = people_by_company.get(item.id, [])
+            for link in item.linked_people:
+                link.person.phone_display = format_phone(link.person.phone)
+                search_parts.extend(
+                    [
+                        link.person.name,
+                        link.position,
+                        link.person.email,
+                        *phone_terms(link.person.phone),
+                    ]
+                )
+        else:
+            item.linked_companies = companies_by_person.get(item.id, [])
+            for link in item.linked_companies:
+                link.company.phone_display = format_phone(link.company.phone)
+                search_parts.extend(
+                    [
+                        link.company.name,
+                        link.position,
+                        link.company.inn,
+                        link.company.email,
+                        *phone_terms(link.company.phone),
+                    ]
+                )
+        item.search_text = " ".join(
+            str(value).strip().casefold()
+            for value in search_parts
+            if value
         )
 
+    staff_by_client = {}
+    company_ids = [client.id for client in companies]
+    if company_ids:
+        staff_accesses = (
+            ClientAccess.objects.filter(client_id__in=company_ids)
+            .select_related("user")
+            .order_by("user__last_name", "user__first_name")
+        )
         for access in staff_accesses:
-
             staff_by_client.setdefault(access.client_id, []).append(access)
 
-
-
     for company in companies:
-
-        contact_name = " ".join(part for part in [company.first_name, company.last_name] if part).strip()
-
-        primary_contact = {
-
-            "name": contact_name,
-
-            "position": company.contact_position,
-
-            "phone": company.phone,
-
-            "email": company.email,
-
-        }
-
-        if not any(primary_contact.values()):
-
-            primary_contact = None
-
-        company.primary_contact = primary_contact
-
         company.staff_contacts = staff_by_client.get(company.id, [])
 
-
-
     pool_staff = (
-
         pool_staff_qs.select_related("pool", "pool__client", "pool__organization", "user")
-
         .order_by("pool__client__name", "pool__address", "user__last_name", "user__first_name")
-
     )
 
-
-
     return render(
-
         request,
-
         "pool_service/clients.html",
-
         {
-
-            "page_title": "\u041a\u043b\u0438\u0435\u043d\u0442\u044b",
-
-            "page_subtitle": "\u041a\u043e\u043d\u0442\u0430\u043a\u0442\u044b \u0438 \u043e\u0431\u044a\u0435\u043a\u0442\u044b \u043a\u043b\u0438\u0435\u043d\u0442\u043e\u0432 \u0432 \u043e\u0434\u043d\u043e\u043c \u0441\u043f\u0438\u0441\u043a\u0435",
-
+            "page_title": "Клиенты",
+            "page_subtitle": "Контакты и объекты клиентов в одном списке",
             "companies": companies,
-
             "private_contacts": private_contacts,
-
             "pool_staff": pool_staff,
-
             "active_tab": "clients",
-
-            "page_action_label": None if request.user.is_superuser else "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u043a\u043b\u0438\u0435\u043d\u0442\u0430",
-
+            "page_action_label": None if request.user.is_superuser else "Добавить клиента",
             "page_action_url": (
                 None
                 if request.user.is_superuser
                 else f"{reverse('client_create')}?{urlencode({'return_to': CLIENT_CREATE_RETURN_CLIENTS_LIST})}"
             ),
-
             "show_search": False,
-
             "show_add_button": False,
-
             "add_url": None,
-
         },
-
     )
-
-
-
 
 
 @login_required

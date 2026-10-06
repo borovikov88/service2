@@ -12,7 +12,8 @@ from django.conf import settings
 from django.core.exceptions import PermissionDenied
 from django.core.files.images import get_image_dimensions
 from django.db import transaction
-from django.db.models import OuterRef, Q, Subquery
+from django.db.models import OuterRef, Q, Subquery, Value
+from django.db.models.functions import Replace
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequest, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -22,6 +23,8 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.debug import sensitive_post_parameters
 
 from pool_service.client_queries import active_clients
+from pool_service.client_phone_matching import clients_by_phones
+from pool_service.phone_utils import canonical_phone_value, format_phone, normalize_phone
 from pool_service.communication_avito import (
     AvitoError,
     authorized_account_id as avito_authorized_account_id,
@@ -313,11 +316,60 @@ def calls(request):
         queryset = queryset.filter(employee_id=employee_id)
     if request.GET.get("direction") in ("in", "out"): queryset = queryset.filter(direction=request.GET["direction"])
     if request.GET.get("missed"): queryset = queryset.filter(result=PhoneCall.RESULT_MISSED)
-    if request.GET.get("q"): queryset = queryset.filter(Q(phone_number__icontains=request.GET["q"]) | Q(contact_name__icontains=request.GET["q"]))
+    if request.GET.get("q"):
+        query = request.GET["q"].strip()
+        normalized_query = normalize_phone(query)
+        canonical_query = canonical_phone_value(query)
+        raw_phone_digits = "".join(ch for ch in query if ch.isdigit())
+        normalized_digits = "".join(ch for ch in normalized_query if ch.isdigit())
+        phone_query = (
+            normalized_digits[-10:]
+            if len(normalized_digits) >= 10
+            else raw_phone_digits[-10:]
+        )
+        phone_digits_expression = "phone_number"
+        for separator in ("+", " ", "-", "(", ")", "."):
+            phone_digits_expression = Replace(
+                phone_digits_expression,
+                Value(separator),
+                Value(""),
+            )
+        queryset = queryset.annotate(
+            phone_number_digits=phone_digits_expression
+        )
+        phone_filter = (
+            Q(phone_number__icontains=query)
+            | Q(phone_number__icontains=canonical_query)
+            | Q(contact_name__icontains=query)
+            | Q(client__name__icontains=query)
+        )
+        if phone_query:
+            phone_filter |= Q(phone_number_digits__icontains=phone_query)
+        queryset = queryset.filter(phone_filter)
     employees = OrganizationAccess.objects.filter(organization=organization).select_related("user")
+    calls = list(queryset[:500])
+    unresolved_phone_values = [
+        call.phone_number
+        for call in calls
+        if not call.client_id and normalize_phone(call.phone_number)
+    ]
+    phone_matches = clients_by_phones(organization, unresolved_phone_values)
+    for call in calls:
+        call.phone_display = format_phone(call.phone_number)
+        if call.client_id:
+            call.resolved_client = call.client
+            call.ambiguous_clients = []
+            continue
+        matches = phone_matches.get(normalize_phone(call.phone_number), [])
+        if len(matches) == 1:
+            call.resolved_client = matches[0]
+            call.ambiguous_clients = []
+        else:
+            call.resolved_client = None
+            call.ambiguous_clients = matches
     return render(request, "pool_service/communications/calls.html", {
         "active_tab": "communications",
-        "calls": queryset[:500],
+        "calls": calls,
         "employees": employees,
         "can_listen": conversation_capability(request.user, "can_listen_calls", organization),
         "can_view_all": can_view_all,
@@ -432,7 +484,7 @@ def call_recording_upload(request):
             external_id=f"upload-{secrets.token_hex(16)}",
             client=client,
             contact_name=(client.name if client else ""),
-            phone_number=((client.phone or "") if client else ""),
+            phone_number=(canonical_phone_value(client.phone) if client else ""),
             direction=PhoneCall.DIRECTION_IN,
             started_at=timezone.now(),
             duration_seconds=0,

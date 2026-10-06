@@ -8,6 +8,8 @@ from django.utils import timezone
 from django.urls import reverse
 from pathlib import Path
 from .client_queries import active_clients
+from .phone_utils import canonical_phone_value, normalize_account_phone, normalize_phone as normalize_crm_phone
+from .client_crm_models import ClientContact
 from .models import (
     WaterReading,
     Organization,
@@ -224,17 +226,8 @@ class RegistrationForm(forms.Form):
         required=True,
     )
 
-    def _normalize_phone(self, raw):
-        if not raw:
-            return None
-        digits = "".join(filter(str.isdigit, raw))
-        if digits.startswith("7") and len(digits) == 11:
-            digits = digits[1:]
-        if digits.startswith("8") and len(digits) == 11:
-            digits = digits[1:]
-        if len(digits) != 10:
-            return None
-        return digits
+    def _normalize_account_phone(self, raw):
+        return normalize_account_phone(raw) or None
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -259,7 +252,7 @@ class RegistrationForm(forms.Form):
     def clean(self):
         cleaned = super().clean()
         phone_raw = cleaned.get("user_phone") or cleaned.get("org_phone")
-        username = self._normalize_phone(phone_raw)
+        username = self._normalize_account_phone(phone_raw)
         self._normalized_username = username
         if phone_raw and not username:
             self.add_error("user_phone", "Телефон должен содержать 10 цифр (код +7/8)")
@@ -313,7 +306,7 @@ class RegistrationForm(forms.Form):
 
     def save(self):
         data = self.cleaned_data
-        username = getattr(self, "_normalized_username", None) or self._normalize_phone(
+        username = getattr(self, "_normalized_username", None) or self._normalize_account_phone(
             data.get("user_phone") or data.get("org_phone")
         )
         user = User.objects.create_user(
@@ -346,19 +339,6 @@ class RegistrationForm(forms.Form):
                 email=data.get("email"),
             )
         return user
-
-
-def normalize_phone(raw):
-    if not raw:
-        return None
-    digits = "".join(filter(str.isdigit, raw))
-    if digits.startswith("7") and len(digits) == 11:
-        digits = digits[1:]
-    if digits.startswith("8") and len(digits) == 11:
-        digits = digits[1:]
-    if len(digits) != 10:
-        return None
-    return digits
 
 
 _SERVICE_FREQUENCY_THRESHOLDS = [
@@ -405,7 +385,7 @@ class PersonalSignupForm(forms.Form):
     def clean(self):
         cleaned = super().clean()
         phone_raw = cleaned.get("phone")
-        username = normalize_phone(phone_raw)
+        username = normalize_account_phone(phone_raw)
         self._normalized_username = username
         if phone_raw and not username:
             self.add_error("phone", "\u041d\u0435\u043a\u043e\u0440\u0440\u0435\u043a\u0442\u043d\u044b\u0439 \u0442\u0435\u043b\u0435\u0444\u043e\u043d")
@@ -430,7 +410,7 @@ class PersonalSignupForm(forms.Form):
 
     def save(self):
         data = self.cleaned_data
-        username = self._normalized_username or normalize_phone(data.get("phone"))
+        username = self._normalized_username or normalize_account_phone(data.get("phone"))
         user = User.objects.create_user(
             username=username,
             password=data["password1"],
@@ -474,7 +454,7 @@ class CompanySignupForm(forms.Form):
     def clean(self):
         cleaned = super().clean()
         phone_raw = cleaned.get("owner_phone")
-        username = normalize_phone(phone_raw)
+        username = normalize_account_phone(phone_raw)
         self._normalized_username = username
         if phone_raw and not username:
             self.add_error("owner_phone", "\u041d\u0435\u043a\u043e\u0440\u0440\u0435\u043a\u0442\u043d\u044b\u0439 \u0442\u0435\u043b\u0435\u0444\u043e\u043d")
@@ -503,7 +483,7 @@ class CompanySignupForm(forms.Form):
 
     def save(self):
         data = self.cleaned_data
-        username = self._normalized_username or normalize_phone(data.get("owner_phone"))
+        username = self._normalized_username or normalize_account_phone(data.get("owner_phone"))
         user = User.objects.create_user(
             username=username,
             password=data["password1"],
@@ -571,13 +551,8 @@ class ClientCreateForm(forms.Form):
         phone_raw = cleaned.get("phone")
         ctype = cleaned.get("client_type") or "private"
         if phone_raw:
-            digits = "".join(filter(str.isdigit, phone_raw))
-            if digits.startswith("7") and len(digits) == 11:
-                digits = digits[1:]
-            if digits.startswith("8") and len(digits) == 11:
-                digits = digits[1:]
-            if len(digits) != 10:
-                self.add_error("phone", "Телефон должен содержать 10 цифр (код +7/8)")
+            if not normalize_crm_phone(phone_raw):
+                self.add_error("phone", "Укажите корректный номер телефона")
         else:
             self.add_error("phone", "Укажите телефон")
 
@@ -606,9 +581,75 @@ class ClientCreateForm(forms.Form):
         client.name = name_val
         client.inn = data.get("inn")
         client.contact_position = data.get("contact_position")
-        client.phone = data.get("phone")
+        client.phone = canonical_phone_value(data.get("phone"))
         client.email = data.get("email")
         client.save()
+
+        normalized_phone = normalize_crm_phone(client.phone)
+        if normalized_phone:
+            manual_contacts = list(
+                ClientContact.objects.filter(
+                    client=client,
+                    kind=ClientContact.KIND_PHONE,
+                ).order_by("-is_primary", "id")
+            )
+            target = next(
+                (
+                    contact
+                    for contact in manual_contacts
+                    if contact.match_value == normalized_phone
+                ),
+                None,
+            )
+            for contact in manual_contacts:
+                if contact.pk == getattr(target, "pk", None):
+                    continue
+                sources = list(contact.sources or [])
+                if "manual" not in sources:
+                    continue
+                sources = [source for source in sources if source != "manual"]
+                if sources:
+                    contact.sources = sources
+                    if contact.is_primary:
+                        contact.is_primary = False
+                    contact.save(
+                        update_fields=["sources", "is_primary", "updated_at"]
+                    )
+                else:
+                    contact.delete()
+            if target is None:
+                target = ClientContact.objects.create(
+                    client=client,
+                    kind=ClientContact.KIND_PHONE,
+                    value=client.phone,
+                    match_value=normalized_phone,
+                    label="Основной",
+                    is_primary=True,
+                    sources=["manual"],
+                )
+            else:
+                sources = list(target.sources or [])
+                if "manual" not in sources:
+                    sources.append("manual")
+                target.value = client.phone
+                target.match_value = normalized_phone
+                target.label = target.label or "Основной"
+                target.is_primary = True
+                target.sources = sources
+                target.save(
+                    update_fields=[
+                        "value",
+                        "match_value",
+                        "label",
+                        "is_primary",
+                        "sources",
+                        "updated_at",
+                    ]
+                )
+            ClientContact.objects.filter(
+                client=client,
+                kind=ClientContact.KIND_PHONE,
+            ).exclude(pk=target.pk).update(is_primary=False)
         return client
 
 
@@ -665,7 +706,7 @@ class ClientInviteForm(forms.Form):
 
     def clean_phone(self):
         value = self.cleaned_data.get("phone", "")
-        digits = normalize_phone(value)
+        digits = normalize_account_phone(value)
         if not digits:
             raise forms.ValidationError("Телефон должен содержать 10 цифр (код +7/8)")
         return value
@@ -690,7 +731,7 @@ class ClientInviteAcceptForm(forms.Form):
 
     def clean_phone(self):
         value = self.cleaned_data.get("phone", "")
-        digits = normalize_phone(value)
+        digits = normalize_account_phone(value)
         if not digits:
             raise forms.ValidationError("Телефон должен содержать 10 цифр (код +7/8)")
         return value
@@ -960,7 +1001,7 @@ class EmailOrUsernameAuthenticationForm(AuthenticationForm):
                         "\u041d\u0435\u0441\u043a\u043e\u043b\u044c\u043a\u043e \u0430\u043a\u043a\u0430\u0443\u043d\u0442\u043e\u0432 \u0441 \u044d\u0442\u0438\u043c email. \u0418\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0439\u0442\u0435 \u043b\u043e\u0433\u0438\u043d."
                     )
             else:
-                phone_digits = normalize_phone(username)
+                phone_digits = normalize_account_phone(username)
                 if phone_digits:
                     user = User.objects.filter(username=phone_digits).first()
                     if user and not user.is_active:

@@ -39,7 +39,7 @@ class ClientCRMImportTests(TestCase):
             "email": "ivanov@example.test",
             "payload": {
                 "fio": "Иванов Иван Иванович",
-                "phones": [{"value": "+7 913 000-00-01", "match": "79130000001", "label": "Основной"}],
+                "phones": [{"value": "+7 913 000-00-01", "match": "9130000001", "label": "Основной"}],
                 "emails": [{"value": "ivanov@example.test", "match": "ivanov@example.test", "label": "Основной"}],
             },
             "status": ClientImportCandidate.STATUS_READY,
@@ -64,8 +64,99 @@ class ClientCRMImportTests(TestCase):
             ClientContact.objects.filter(
                 client=link.person,
                 kind=ClientContact.KIND_PHONE,
-                match_value="79130000001",
+                match_value="9130000001",
             ).exists()
+        )
+
+    def test_ip_import_normalizes_stale_persisted_phone_match(self):
+        person = Client.objects.create(
+            organization=self.organization,
+            client_type="private",
+            name="Иванов Иван Иванович",
+            phone="+7 913 000 00 01",
+        )
+        ClientContact.objects.create(
+            client=person,
+            kind=ClientContact.KIND_PHONE,
+            value="+7 913 000 00 01",
+            match_value="9130000001",
+            is_primary=True,
+        )
+        candidate = self.candidate(
+            payload={
+                "fio": "Иванов Иван Иванович",
+                "phones": [
+                    {
+                        "value": "+7 913 000-00-01",
+                        "match": "79130000001",
+                        "label": "Основной",
+                    }
+                ],
+                "emails": [],
+            },
+        )
+
+        company = apply_candidate(candidate)
+
+        link = ClientCompanyLink.objects.get(
+            company=company,
+            source=ClientCompanyLink.SOURCE_ONEC_IP,
+        )
+        self.assertEqual(link.person_id, person.pk)
+        company.refresh_from_db()
+        person.refresh_from_db()
+        self.assertEqual(company.phone, "+7 913 000 0001")
+        self.assertEqual(person.phone, "+7 913 000 0001")
+        self.assertTrue(
+            ClientContact.objects.filter(
+                client=person,
+                kind=ClientContact.KIND_PHONE,
+                value="+7 913 000 0001",
+                match_value="9130000001",
+            ).exists()
+        )
+        self.assertEqual(
+            Client.objects.filter(
+                organization=self.organization,
+                client_type="private",
+                name="Иванов Иван Иванович",
+            ).count(),
+            1,
+        )
+
+    def test_ip_does_not_merge_existing_person_by_name_only(self):
+        existing = Client.objects.create(
+            organization=self.organization,
+            client_type="private",
+            name="Иванов Иван Иванович",
+            phone="",
+        )
+        candidate = self.candidate(
+            phone="",
+            payload={
+                "fio": "Иванов Иван Иванович",
+                "phones": [],
+                "emails": [],
+            },
+        )
+
+        with self.assertRaisesMessage(
+            ValueError,
+            "тем же ФИО без подтверждающего телефона",
+        ):
+            apply_candidate(candidate)
+
+        self.assertTrue(Client.objects.filter(pk=existing.pk).exists())
+        self.assertEqual(
+            Client.objects.filter(
+                organization=self.organization,
+                client_type="private",
+                name="Иванов Иван Иванович",
+            ).count(),
+            1,
+        )
+        self.assertFalse(
+            ClientCRMProfile.objects.filter(onec_ref=candidate.source_ref).exists()
         )
 
     def test_ready_ip_with_ambiguous_phone_is_sent_to_review_without_partial_import(self):
@@ -80,7 +171,7 @@ class ClientCRMImportTests(TestCase):
                 client=person,
                 kind=ClientContact.KIND_PHONE,
                 value="+7 913 000-00-01",
-                match_value="79130000001",
+                match_value="9130000001",
             )
         candidate = self.candidate()
 

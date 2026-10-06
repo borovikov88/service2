@@ -441,7 +441,7 @@ class ClientCRMAutoSyncTests(TestCase):
         self.assertEqual(person.name, "Иванов Иван Иванович")
         self.assertEqual(person.first_name, "Иван")
         self.assertEqual(person.last_name, "Иванов")
-        self.assertEqual(person.phone, "+7 999 222-22-22")
+        self.assertEqual(person.phone, "+7 999 222 2222")
         self.assertEqual(person.email, "new@example.test")
         self.assertEqual(person_profile.middle_name, "Иванович")
         self.assertEqual(person_profile.birth_date, candidate.birth_date)
