@@ -15,6 +15,8 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from .models import Client, Organization
+from .client_queries import relink_unassigned_calls_for_client
+from .phone_utils import format_phone, normalize_phone
 from .client_crm_models import (
     ClientCRMProfile,
     ClientCompanyLink,
@@ -34,15 +36,6 @@ SYSTEM_NAMES = {"розничный покупатель"}
 IMPORT_RUN_STALE_MINUTES = 120
 
 logger = logging.getLogger(__name__)
-
-
-def normalize_phone(value: str | None) -> str:
-    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
-    if len(digits) == 11 and digits[0] in {"7", "8"}:
-        digits = "7" + digits[1:]
-    elif len(digits) == 10:
-        digits = "7" + digits
-    return digits if 10 <= len(digits) <= 15 else ""
 
 
 def normalize_email(value: str | None) -> str:
@@ -217,7 +210,13 @@ def _candidate_contacts(row, extra_rows):
         value = str(raw or "").strip()
         normalized = normalize_phone(value)
         if value and normalized and all(item["match"] != normalized for item in phones):
-            phones.append({"value": value, "match": normalized, "label": label})
+            phones.append(
+                {
+                    "value": format_phone(value),
+                    "match": normalized,
+                    "label": label,
+                }
+            )
 
     def add_email(raw, label=""):
         value = str(raw or "").strip()
@@ -772,11 +771,11 @@ def _sync_contacts(client, candidate):
             value = str(item.get("value") or "").strip()
             if not value:
                 continue
-            match_value = (
-                normalize_phone(value)
-                if kind == ClientContact.KIND_PHONE
-                else normalize_email(value)
-            )
+            if kind == ClientContact.KIND_PHONE:
+                value = format_phone(value)
+                match_value = normalize_phone(value)
+            else:
+                match_value = normalize_email(value)
             if not match_value:
                 continue
             desired.add((kind, match_value))
@@ -816,6 +815,12 @@ def _sync_contacts(client, candidate):
             if label and not contact.label:
                 contact.label = label
                 changed_fields.append("label")
+            if contact.value != value:
+                contact.value = value
+                changed_fields.append("value")
+            if contact.match_value != match_value:
+                contact.match_value = match_value
+                changed_fields.append("match_value")
             if changed_fields:
                 contact.save(update_fields=changed_fields + ["updated_at"])
 
@@ -969,6 +974,7 @@ def apply_candidate(candidate):
 
     kind = candidate.effective_kind
     client = candidate.matched_client
+    was_previously_applied = bool(candidate.applied_at)
     already_linked_to_same_onec = False
     if client is None:
         client_type = "private" if kind == ClientImportCandidate.KIND_PRIVATE else "legal"
@@ -1053,8 +1059,9 @@ def apply_candidate(candidate):
     profile.save()
     _sync_contacts(client, candidate)
 
+    linked_person = None
     if kind == ClientImportCandidate.KIND_IP:
-        _find_or_create_ip_person(client, candidate)
+        linked_person = _find_or_create_ip_person(client, candidate)
     elif already_linked_to_same_onec:
         ClientCompanyLink.objects.filter(
             company=client,
@@ -1068,6 +1075,11 @@ def apply_candidate(candidate):
     candidate.reason = ""
     candidate.applied_at = timezone.now()
     candidate.save(update_fields=["matched_client", "status", "reason", "applied_at", "updated_at"])
+
+    if not was_previously_applied:
+        relink_unassigned_calls_for_client(client)
+        if linked_person is not None and linked_person.pk != client.pk:
+            relink_unassigned_calls_for_client(linked_person)
     return client
 
 
