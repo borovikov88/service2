@@ -1018,8 +1018,9 @@ class CommunicationsTests(TestCase):
         OPENAI_API_KEY="test-key",
         OPENAI_CALL_MAX_ATTEMPTS=2,
     )
+    @patch("pool_service.services.call_ai.connections.close_all")
     @patch("pool_service.services.call_ai._client", side_effect=RuntimeError("temporary"))
-    def test_requested_call_retries_until_attempt_limit(self, _client):
+    def test_requested_call_retries_until_attempt_limit(self, _client, close_all):
         telephony = TelephonyConnection.objects.create(
             organization=self.organization,
             name="МегаФон",
@@ -1056,6 +1057,7 @@ class CommunicationsTests(TestCase):
         self.assertEqual(analysis.status, CallAnalysis.STATUS_FAILED)
         self.assertEqual(analysis.attempts, 2)
         self.assertIsNone(analysis.requested_at)
+        self.assertGreaterEqual(close_all.call_count, 4)
 
     @override_settings(
         OPENAI_API_KEY="test-key",
