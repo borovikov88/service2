@@ -56,13 +56,15 @@ def _can_access_manual_recordings(user, organization):
     access = organization_access(user, organization)
     return bool(
         access
-        and (access.role == "owner" or user.is_superuser)
+        and (access.role in {"owner", "admin"} or user.is_superuser)
     )
 
 
 def _owner_communications_context(request):
     access = organization_access(request.user)
-    if not access or not (access.role == "owner" or request.user.is_superuser):
+    if not access or not (
+        access.role in {"owner", "admin"} or request.user.is_superuser
+    ):
         raise PermissionDenied
     return access.organization
 
