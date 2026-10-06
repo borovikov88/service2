@@ -30,6 +30,7 @@ from pool_service.operations_mcp_auth import (
     protected_resource_metadata,
 )
 from pool_service.operations_mcp_policy import can_access_operations_mcp
+from pool_service.services.notifications import task_assignment_notification_content
 
 
 RESOURCE = "https://service2.example/mcp/operations"
@@ -558,7 +559,8 @@ class OperationsMcpTests(TestCase):
             dedupe_key=f"operations_mcp:task:{task.id}:assignment",
         )
         self.assertEqual(notification.kind, "task_assignment")
-        self.assertEqual(notification.message, task.title)
+        _title, expected_message, _action_url = task_assignment_notification_content(task)
+        self.assertEqual(notification.message, expected_message)
         self.assertEqual(
             task.payload_json["operations_assignment_delivery"]["notification_id"],
             notification.id,
