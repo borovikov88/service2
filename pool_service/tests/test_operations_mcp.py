@@ -827,10 +827,159 @@ class OperationsMcpTests(TestCase):
         self.assertEqual(first.json()["result"]["structuredContent"]["created_notifications"], 1)
         self.assertEqual(second.json()["result"]["structuredContent"]["created_notifications"], 0)
         task.refresh_from_db()
-        self.assertEqual(
-            task.payload_json["operations_notification_keys"],
-            [f"{self.manager.id}:task-42-due"],
+        deliveries = task.payload_json["operations_employee_notification_deliveries"]
+        marker = f"{self.manager.id}:task-42-due"
+        self.assertIn(marker, deliveries)
+        self.assertEqual(deliveries[marker]["employee_user_id"], self.manager.id)
+
+    @patch("pool_service.operations_mcp_views.send_push_to_users", side_effect=[0, 1])
+    def test_pending_employee_notification_is_retried_by_scanner(self, send_push):
+        from pool_service.operations_mcp_views import process_pending_operations_pushes
+
+        profile, _created = Profile.objects.get_or_create(user=self.manager)
+        profile.in_app_notifications_enabled = False
+        profile.push_notifications_enabled = True
+        profile.save(
+            update_fields=[
+                "in_app_notifications_enabled",
+                "push_notifications_enabled",
+            ]
         )
+        raw = self._token(raw="notification-scanner-token")
+        task = ServiceTask.objects.create(
+            organization=self.organization,
+            title="Проверить клиента",
+            start_date=date(2026, 10, 7),
+            end_date=date(2026, 10, 7),
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            source_type=ServiceTask.SOURCE_MANAGER,
+            status=ServiceTask.STATUS_NEW,
+            visibility=ServiceTask.VISIBILITY_PRIVATE,
+            primary_responsible=self.manager,
+            created_by=self.owner,
+        )
+        task.responsibles.add(self.manager)
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 51,
+            "method": "tools/call",
+            "params": {
+                "name": "send_employee_notification",
+                "arguments": {
+                    "employee_user_id": self.manager.id,
+                    "title": "Проверьте клиента",
+                    "message": "Клиент обещал оплатить.",
+                    "dedupe_key": "scanner-retry",
+                    "task_id": task.id,
+                },
+            },
+        }
+
+        with self._settings(), self.captureOnCommitCallbacks(execute=True):
+            response = self._post(payload, token=raw)
+
+        self.assertFalse(response.json()["result"]["isError"])
+        task.refresh_from_db()
+        marker = f"{self.manager.id}:scanner-retry"
+        first = task.payload_json["operations_employee_notification_deliveries"][marker]
+        self.assertEqual(first["push_delivery_result"], "pending_retry")
+        self.assertNotIn("push_delivered_at", first)
+
+        result = process_pending_operations_pushes(limit=100)
+        self.assertEqual(result["notification_attempts"], 1)
+        self.assertEqual(result["delivered"], 1)
+        task.refresh_from_db()
+        second = task.payload_json["operations_employee_notification_deliveries"][marker]
+        self.assertEqual(second["push_delivery_result"], "sent")
+        self.assertTrue(second["push_delivered_at"])
+        self.assertEqual(send_push.call_count, 2)
+
+    @patch("pool_service.operations_mcp_views.send_push_to_users", return_value=1)
+    def test_pending_assignment_is_retried_by_scanner_without_client_retry(self, send_push):
+        from pool_service.operations_mcp_views import process_pending_operations_pushes
+
+        task = ServiceTask.objects.create(
+            organization=self.organization,
+            title="Отправить смету",
+            start_date=date(2026, 10, 7),
+            end_date=date(2026, 10, 7),
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            source_type=ServiceTask.SOURCE_MANAGER,
+            status=ServiceTask.STATUS_NEW,
+            visibility=ServiceTask.VISIBILITY_PRIVATE,
+            primary_responsible=self.manager,
+            created_by=self.owner,
+            payload_json={
+                "source": "operations_mcp",
+                "operations_assignment_delivery": {
+                    "responsible_user_id": self.manager.id,
+                    "added_by_user_id": self.owner.id,
+                    "notification_dedupe_key": "operations_mcp:scanner:assignment",
+                    "push_delivery_result": "pending_retry",
+                },
+            },
+        )
+        task.responsibles.add(self.manager)
+        Notification.objects.create(
+            user=self.manager,
+            organization=self.organization,
+            kind="task_assignment",
+            level="info",
+            title="Новая задача",
+            message=task.title,
+            action_url=reverse("task_edit", kwargs={"task_id": task.id}),
+            dedupe_key="operations_mcp:scanner:assignment",
+        )
+
+        result = process_pending_operations_pushes(limit=100)
+
+        self.assertEqual(result["assignment_attempts"], 1)
+        self.assertEqual(result["delivered"], 1)
+        task.refresh_from_db()
+        delivery = task.payload_json["operations_assignment_delivery"]
+        self.assertEqual(delivery["push_delivery_result"], "sent")
+        self.assertTrue(delivery["push_delivered_at"])
+        send_push.assert_called_once()
+
+    @patch("pool_service.operations_mcp_views.send_push_to_users")
+    def test_disabled_push_is_final_not_retryable(self, send_push):
+        from pool_service.operations_mcp_views import process_pending_operations_pushes
+
+        profile, _created = Profile.objects.get_or_create(user=self.manager)
+        profile.push_notifications_enabled = False
+        profile.save(update_fields=["push_notifications_enabled"])
+        task = ServiceTask.objects.create(
+            organization=self.organization,
+            title="Без push",
+            start_date=date(2026, 10, 7),
+            end_date=date(2026, 10, 7),
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            source_type=ServiceTask.SOURCE_MANAGER,
+            status=ServiceTask.STATUS_NEW,
+            visibility=ServiceTask.VISIBILITY_PRIVATE,
+            primary_responsible=self.manager,
+            created_by=self.owner,
+            payload_json={
+                "source": "operations_mcp",
+                "operations_assignment_delivery": {
+                    "responsible_user_id": self.manager.id,
+                    "added_by_user_id": self.owner.id,
+                    "notification_dedupe_key": "operations_mcp:no-push:assignment",
+                    "push_delivery_result": "pending_retry",
+                },
+            },
+        )
+        task.responsibles.add(self.manager)
+
+        first = process_pending_operations_pushes(limit=100)
+        second = process_pending_operations_pushes(limit=100)
+
+        self.assertEqual(first["assignment_attempts"], 1)
+        self.assertEqual(second["assignment_attempts"], 0)
+        send_push.assert_not_called()
+        task.refresh_from_db()
+        delivery = task.payload_json["operations_assignment_delivery"]
+        self.assertEqual(delivery["push_delivery_result"], "blocked_push_disabled")
 
     def test_non_crm_task_cannot_be_completed(self):
         raw = self._token(raw="non-crm-token")
