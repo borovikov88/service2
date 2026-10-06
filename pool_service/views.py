@@ -5120,18 +5120,43 @@ def archive_bulk_update(request):
         except (TypeError, ValueError):
             continue
 
-    tasks = ServiceTask.objects.filter(id__in=task_ids, is_archived=True)
-    items = CrmItem.objects.filter(id__in=item_ids, is_archived=True)
+    tasks_qs = ServiceTask.objects.filter(id__in=task_ids, is_archived=True)
+    items_qs = CrmItem.objects.filter(id__in=item_ids, is_archived=True)
     pools = Pool.objects.filter(uuid__in=pool_uuids, is_deleted=True)
     readings = WaterReading.objects.filter(uuid__in=reading_uuids, is_deleted=True).select_related("pool")
     if org:
-        tasks = tasks.filter(organization=org)
-        items = items.filter(organization=org)
+        tasks_qs = tasks_qs.filter(organization=org)
+        items_qs = items_qs.filter(organization=org)
         pools = pools.filter(Q(organization=org) | Q(client__organization=org)).distinct()
         readings = readings.filter(Q(pool__organization=org) | Q(pool__client__organization=org)).distinct()
 
-    tasks = list(tasks)
-    items = list(items)
+    task_candidates = list(
+        tasks_qs.order_by("id").values("id", "crm_item_id")
+    )
+    item_candidate_ids = list(
+        items_qs.order_by("id").values_list("id", flat=True)
+    )
+    graph_item_ids = item_candidate_ids + [
+        row["crm_item_id"] for row in task_candidates if row["crm_item_id"]
+    ]
+    locked_tasks, locked_items = lock_crm_graph(
+        graph_item_ids,
+        extra_task_ids=[row["id"] for row in task_candidates],
+    )
+    selected_task_ids = {row["id"] for row in task_candidates}
+    selected_item_ids = set(item_candidate_ids)
+    tasks = [
+        task for task in locked_tasks
+        if task.id in selected_task_ids
+        and task.is_archived
+        and (not org or task.organization_id == org.id)
+    ]
+    items = [
+        item for item in locked_items
+        if item.id in selected_item_ids
+        and item.is_archived
+        and (not org or item.organization_id == org.id)
+    ]
     pools = list(pools)
     readings = list(readings)
     if not tasks and not items and not pools and not readings:
