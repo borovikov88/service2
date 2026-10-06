@@ -162,3 +162,33 @@ class CrmBulkUpdateTests(TestCase):
             set(kwargs["extra_task_ids"]),
             {self.task.id, second_task.id},
         )
+
+
+    @patch("pool_service.views.lock_crm_graph")
+    def test_task_bulk_update_rechecks_permission_after_lock(self, lock_graph):
+        def revoke_then_lock(item_ids, *, extra_task_ids=()):
+            ServiceTask.objects.filter(pk=self.task.id).update(
+                primary_responsible=self.new_responsible
+            )
+            self.task.responsibles.remove(self.manager)
+            return real_lock_crm_graph(
+                item_ids,
+                extra_task_ids=extra_task_ids,
+            )
+
+        lock_graph.side_effect = revoke_then_lock
+        self.client.force_login(self.manager)
+
+        response = self.client.post(
+            reverse("crm_tasks_bulk_update"),
+            {
+                "task_ids": [self.task.id],
+                "bulk_action": "set_status",
+                "bulk_status": ServiceTask.STATUS_IN_PROGRESS,
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.primary_responsible, self.new_responsible)
+        self.assertEqual(self.task.status, ServiceTask.STATUS_NEW)
