@@ -16,6 +16,7 @@ from pool_service.finance_imports.payroll_plan import (
 )
 from pool_service.finance_imports.odata_payroll_plan import read_current_plan
 from pool_service.models import (
+    DataAuditLog,
     Employee,
     EmployeeOneCIdentity,
     Organization,
@@ -94,6 +95,8 @@ class PayrollPlanReaderTests(TestCase):
                     "Ref_Key": EMPLOYEE_GUID,
                     "Description": "Иванов Иван Иванович",
                     "DeletionMark": False,
+                    "Недействителен": False,
+                    "ВАрхиве": False,
                 }]]
             if entity == "Catalog_ВидыНачисленийИУдержаний":
                 return [[
@@ -124,12 +127,59 @@ class PayrollPlanReaderTests(TestCase):
         )
 
         self.assertEqual(result["source_rows"], 3)
+        self.assertEqual(
+            result["employee_states"],
+            [{
+                "employee_guid": EMPLOYEE_GUID,
+                "employee_name": "Иванов Иван Иванович",
+                "inactive": False,
+            }],
+        )
         by_type = {item["accrual_type_name"]: item for item in result["items"]}
         self.assertEqual(by_type["Оклад"]["amount"], "60000.00")
         self.assertTrue(by_type["Оклад"]["is_base_salary"])
         self.assertEqual(by_type["Доплата"]["amount"], "5000.00")
         self.assertFalse(by_type["Доплата"]["is_base_salary"])
         reader.check_time.assert_called_once()
+
+    @patch("pool_service.finance_imports.odata_payroll_plan.Reader")
+    def test_reader_reads_inactive_mapped_employee_without_plan_rows(self, reader_cls):
+        reader = reader_cls.return_value
+
+        def pages(entity, options):
+            if entity == "InformationRegister_ПлановыеНачисленияИУдержания_RecordType":
+                return [[]]
+            if entity == "Catalog_Сотрудники":
+                return [[{
+                    "Ref_Key": EMPLOYEE_GUID,
+                    "Description": "Иванов Иван Иванович",
+                    "DeletionMark": False,
+                    "Недействителен": True,
+                    "ВАрхиве": False,
+                }]]
+            if entity == "Catalog_ВидыНачисленийИУдержаний":
+                return []
+            raise AssertionError(entity)
+
+        reader.pages_for.side_effect = pages
+        result = read_current_plan(
+            {
+                "ONEC_ODATA_ORGANIZATION_GUIDS": ORG_GUID,
+                "ONEC_ODATA_PAYROLL_CURRENCY_GUID": CURRENCY_GUID,
+            },
+            date(2026, 9, 20),
+            employee_guids=[EMPLOYEE_GUID],
+        )
+
+        self.assertEqual(result["items"], [])
+        self.assertEqual(
+            result["employee_states"],
+            [{
+                "employee_guid": EMPLOYEE_GUID,
+                "employee_name": "Иванов Иван Иванович",
+                "inactive": True,
+            }],
+        )
 
     @patch("pool_service.finance_imports.odata_payroll_plan.Reader")
     def test_reader_does_not_resurrect_cancelled_salary(self, reader_cls):
@@ -166,6 +216,8 @@ class PayrollPlanReaderTests(TestCase):
                     "Ref_Key": EMPLOYEE_GUID,
                     "Description": "Иванов Иван Иванович",
                     "DeletionMark": False,
+                    "Недействителен": False,
+                    "ВАрхиве": False,
                 }]]
             if entity == "Catalog_ВидыНачисленийИУдержаний":
                 return [[{
@@ -335,6 +387,13 @@ class PayrollCurrentCompensationTests(TestCase):
             "selected_organizations": [ORG_GUID],
             "currency_guid": CURRENCY_GUID,
             "source_rows": 1,
+            "employee_states": [
+                {
+                    "employee_guid": EMPLOYEE_GUID,
+                    "employee_name": "Иванов Иван Иванович",
+                    "inactive": False,
+                }
+            ],
             "items": [
                 {
                     "organization_guid": ORG_GUID,
@@ -368,6 +427,61 @@ class PayrollCurrentCompensationTests(TestCase):
         self.assertEqual(PayrollPlanItem.objects.count(), 1)
         identity = EmployeeOneCIdentity.objects.get(onec_employee_id=EMPLOYEE_GUID)
         self.assertEqual(identity.raw_name, "Иванов Иван Иванович")
+
+    @patch("pool_service.finance_imports.payroll_plan._require_access")
+    @patch("pool_service.finance_imports.payroll_plan.auto_coverage_config")
+    @patch("pool_service.finance_imports.payroll_plan.config_from_settings")
+    @patch("pool_service.finance_imports.payroll_plan._read_plan_payload")
+    def test_refresh_deactivates_employee_marked_inactive_in_onec(
+        self, reader, config, _coverage, _access
+    ):
+        identity = self.identity()
+        employee = identity.employee
+        config.return_value = {
+            "ONEC_ODATA_ORGANIZATION_GUIDS": ORG_GUID,
+            "ONEC_ODATA_PAYROLL_CURRENCY_GUID": CURRENCY_GUID,
+        }
+        reader.return_value = {
+            "kind": "payroll_plan_snapshot_v1",
+            "period_month": "2026-09-01",
+            "as_of": "2026-09-20",
+            "selected_organizations": [ORG_GUID],
+            "currency_guid": CURRENCY_GUID,
+            "source_rows": 0,
+            "employee_states": [
+                {
+                    "employee_guid": EMPLOYEE_GUID,
+                    "employee_name": "Иванов Иван Иванович",
+                    "inactive": True,
+                }
+            ],
+            "items": [],
+        }
+
+        refresh_payroll_plan_snapshot(
+            self.organization,
+            self.user,
+            as_of=date(2026, 9, 20),
+        )
+
+        employee.refresh_from_db()
+        identity.refresh_from_db()
+        self.assertFalse(employee.is_active)
+        self.assertEqual(employee.employment_status, Employee.STATUS_DISMISSED)
+        self.assertFalse(identity.source_active)
+        self.assertIsNotNone(identity.last_seen_at)
+        self.assertTrue(
+            DataAuditLog.objects.filter(
+                entity_type="Employee",
+                entity_id=str(employee.pk),
+                action=DataAuditLog.ACTION_UPDATE,
+            ).exists()
+        )
+        reader.assert_called_once_with(
+            config.return_value,
+            date(2026, 9, 20),
+            employee_guids=[EMPLOYEE_GUID],
+        )
 
     @patch("pool_service.finance_imports.payroll_plan._require_access")
     @patch("pool_service.finance_imports.payroll_plan.auto_coverage_config")

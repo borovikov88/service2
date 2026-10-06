@@ -57,7 +57,7 @@ def _normalize_name(value):
     return re.sub(r"\s+", " ", (value or "").strip()).casefold().replace("ё", "е")
 
 
-def _catalog_rows(reader, entity, ids, fields, *, kind):
+def _catalog_rows(reader, entity, ids, fields, *, kind, required_ids=None):
     result = {}
     ordered = sorted(ids)
     for start in range(0, len(ordered), 40):
@@ -79,10 +79,18 @@ def _catalog_rows(reader, entity, ids, fields, *, kind):
                 key = guid(row.get("Ref_Key"))
                 if key not in requested or key in result:
                     raise PayrollError("CATALOG_INVALID", "catalog")
-                if row.get("DeletionMark") is not False:
+                deletion_mark = row.get("DeletionMark")
+                if type(deletion_mark) is not bool:
                     raise PayrollError("CATALOG_INVALID", "catalog")
-                if kind == "type" and row.get("IsFolder") is not False:
-                    raise PayrollError("CATALOG_INVALID", "catalog")
+                if kind == "type":
+                    if deletion_mark is not False or row.get("IsFolder") is not False:
+                        raise PayrollError("CATALOG_INVALID", "catalog")
+                elif kind == "employee":
+                    if (
+                        type(row.get("Недействителен")) is not bool
+                        or type(row.get("ВАрхиве")) is not bool
+                    ):
+                        raise PayrollError("CATALOG_INVALID", "catalog")
                 description = row.get("Description")
                 if (
                     not isinstance(description, str)
@@ -93,13 +101,27 @@ def _catalog_rows(reader, entity, ids, fields, *, kind):
                 item = {"description": description.strip()}
                 if kind == "type":
                     item["type_value"] = identifier(row.get("Тип"))
+                elif kind == "employee":
+                    item["inactive"] = bool(
+                        deletion_mark
+                        or row["Недействителен"]
+                        or row["ВАрхиве"]
+                    )
                 result[key] = item
-        if not requested.issubset(result):
+        required = requested if required_ids is None else requested.intersection(required_ids)
+        if not required.issubset(result):
             raise PayrollError("CATALOG_INCOMPLETE", "catalog")
     return result
 
 
-def read_current_plan(config, as_of, *, organization_guids=(), opener=None):
+def read_current_plan(
+    config,
+    as_of,
+    *,
+    organization_guids=(),
+    employee_guids=(),
+    opener=None,
+):
     if not isinstance(as_of, date):
         raise PayrollError("INVALID_DATE", "config")
     raw_orgs = config.get("ONEC_ODATA_ORGANIZATION_GUIDS") or ""
@@ -123,6 +145,9 @@ def read_current_plan(config, as_of, *, organization_guids=(), opener=None):
     ):
         raise PayrollError("INVALID_CONFIG", "config")
     currency = guid(config.get("ONEC_ODATA_PAYROLL_CURRENCY_GUID"))
+    mapped_employee_guids = {guid(value) for value in employee_guids}
+    if len(mapped_employee_guids) > 1000:
+        raise PayrollError("RESPONSE_LIMIT", "config")
     reader = Reader(config, opener)
 
     next_day = date.fromordinal(as_of.toordinal() + 1)
@@ -176,9 +201,16 @@ def read_current_plan(config, as_of, *, organization_guids=(), opener=None):
     employee_catalog = _catalog_rows(
         reader,
         EMPLOYEE_CATALOG,
-        employees,
-        ("Ref_Key", "Description", "DeletionMark"),
+        employees | mapped_employee_guids,
+        (
+            "Ref_Key",
+            "Description",
+            "DeletionMark",
+            "Недействителен",
+            "ВАрхиве",
+        ),
         kind="employee",
+        required_ids=employees,
     )
     type_catalog = _catalog_rows(
         reader,
@@ -238,6 +270,15 @@ def read_current_plan(config, as_of, *, organization_guids=(), opener=None):
             }
         )
 
+    employee_states = [
+        {
+            "employee_guid": employee_guid,
+            "employee_name": values["description"],
+            "inactive": values["inactive"],
+        }
+        for employee_guid, values in sorted(employee_catalog.items())
+    ]
+
     result = {
         "kind": "payroll_plan_snapshot_v1",
         "period_month": as_of.replace(day=1).isoformat(),
@@ -245,6 +286,7 @@ def read_current_plan(config, as_of, *, organization_guids=(), opener=None):
         "selected_organizations": sorted(selected),
         "currency_guid": currency,
         "source_rows": len(records),
+        "employee_states": employee_states,
         "items": items,
     }
     reader.check_time()
@@ -258,6 +300,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app-dir", required=True)
     parser.add_argument("--as-of", required=True)
+    parser.add_argument("--employee-guid", action="append", default=[])
     args = parser.parse_args(argv)
 
     stage = "runtime"
@@ -277,7 +320,11 @@ def main(argv=None):
         except ValueError:
             raise PayrollError("INVALID_DATE", "config") from None
         config = {**dotenv_values(Path(args.app_dir) / ".env"), **os.environ}
-        result = read_current_plan(config, as_of)
+        result = read_current_plan(
+            config,
+            as_of,
+            employee_guids=args.employee_guid,
+        )
         stage = "output"
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0
