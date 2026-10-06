@@ -22,6 +22,8 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.debug import sensitive_post_parameters
 
 from pool_service.client_queries import active_clients
+from pool_service.client_crm_models import ClientContact
+from pool_service.phone_utils import format_phone, normalize_phone
 from pool_service.communication_avito import (
     AvitoError,
     authorized_account_id as avito_authorized_account_id,
@@ -232,6 +234,50 @@ def attachment_download(request, attachment_id):
     return response
 
 
+def _prepare_call_display(calls, organization):
+    phone_keys = {
+        normalize_phone(call.phone_number)
+        for call in calls
+        if normalize_phone(call.phone_number)
+    }
+    clients_by_phone = {key: set() for key in phone_keys}
+    if phone_keys:
+        for contact in ClientContact.objects.filter(
+            client__organization=organization,
+            kind=ClientContact.KIND_PHONE,
+            match_value__in=phone_keys,
+        ).values("match_value", "client_id"):
+            clients_by_phone.setdefault(contact["match_value"], set()).add(contact["client_id"])
+
+        for client in Client.objects.filter(
+            organization=organization,
+        ).exclude(phone__isnull=True).exclude(phone="").only("id", "phone"):
+            key = normalize_phone(client.phone)
+            if key in clients_by_phone:
+                clients_by_phone[key].add(client.id)
+
+    unique_client_ids = {
+        next(iter(ids))
+        for ids in clients_by_phone.values()
+        if len(ids) == 1
+    }
+    clients_by_id = {
+        client.id: client
+        for client in Client.objects.filter(id__in=unique_client_ids)
+    }
+
+    for call in calls:
+        call.display_phone = format_phone(call.phone_number)
+        call.resolved_client = call.client
+        if call.resolved_client_id:
+            continue
+        key = normalize_phone(call.phone_number)
+        ids = clients_by_phone.get(key, set())
+        if len(ids) == 1:
+            call.resolved_client = clients_by_id.get(next(iter(ids)))
+    return calls
+
+
 @login_required
 def calls(request):
     access = organization_access(request.user)
@@ -269,9 +315,10 @@ def calls(request):
     if request.GET.get("q"): queryset = queryset.filter(Q(phone_number__icontains=request.GET["q"]) | Q(contact_name__icontains=request.GET["q"]))
     employees = OrganizationAccess.objects.filter(organization=organization).select_related("user")
     clients = active_clients(Client.objects.filter(organization=organization)).order_by("name", "id")
+    call_rows = _prepare_call_display(list(queryset[:500]), organization)
     return render(request, "pool_service/communications/calls.html", {
         "active_tab": "communications",
-        "calls": queryset[:500],
+        "calls": call_rows,
         "employees": employees,
         "clients": clients,
         "can_listen": conversation_capability(request.user, "can_listen_calls", organization),
