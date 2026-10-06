@@ -289,6 +289,22 @@ def _assignment_delivery(task):
     return payload, dict(delivery)
 
 
+def _assignment_recipient_is_authorized(task, responsible):
+    if not responsible or not responsible.is_active:
+        return False
+    has_operational_access = OrganizationAccess.objects.select_for_update().filter(
+        user_id=responsible.id,
+        organization=task.organization,
+        role__in=OPERATIONAL_STAFF_ROLES,
+    ).exists()
+    if not has_operational_access:
+        return False
+    return bool(
+        task.primary_responsible_id == responsible.id
+        or task.responsibles.filter(id=responsible.id).exists()
+    )
+
+
 def _schedule_assignment_push(task_id, responsible_user_id):
     if not responsible_user_id:
         return
@@ -317,22 +333,7 @@ def _retry_assignment_push(task_id, responsible_user_id):
             pk=responsible_user_id,
             is_active=True,
         ).first()
-        has_operational_access = bool(
-            responsible
-            and OrganizationAccess.objects.select_for_update().filter(
-                user_id=responsible.id,
-                organization=task.organization,
-                role__in=OPERATIONAL_STAFF_ROLES,
-            ).exists()
-        )
-        is_participant = bool(
-            responsible
-            and (
-                task.primary_responsible_id == responsible.id
-                or task.responsibles.filter(id=responsible.id).exists()
-            )
-        )
-        if not has_operational_access or not is_participant:
+        if not _assignment_recipient_is_authorized(task, responsible):
             delivery["push_last_attempt_at"] = timezone.now().isoformat()
             delivery["push_delivery_result"] = "blocked_not_authorized"
             payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
@@ -377,6 +378,22 @@ def _retry_assignment_push(task_id, responsible_user_id):
 
 def _ensure_assignment_delivery(task, responsible, actor):
     dedupe_key = _assignment_notification_key(task.id)
+    payload, delivery = _assignment_delivery(task)
+    if not _assignment_recipient_is_authorized(task, responsible):
+        Notification.objects.filter(
+            user=responsible,
+            dedupe_key=dedupe_key,
+        ).delete()
+        delivery["responsible_user_id"] = responsible.id if responsible else None
+        delivery["added_by_user_id"] = actor.id if actor else None
+        delivery["notification_dedupe_key"] = dedupe_key
+        delivery["push_last_attempt_at"] = timezone.now().isoformat()
+        delivery["push_delivery_result"] = "blocked_not_authorized"
+        payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
+        task.payload_json = payload
+        task.save(update_fields=["payload_json", "updated_at"])
+        return False
+
     notification = None
     if not actor or actor.id != responsible.id:
         title, message, action_url = task_assignment_notification_content(task)
@@ -393,7 +410,6 @@ def _ensure_assignment_delivery(task, responsible, actor):
             },
         )
 
-    payload, delivery = _assignment_delivery(task)
     delivery["responsible_user_id"] = responsible.id
     delivery["added_by_user_id"] = actor.id if actor else None
     delivery["notification_dedupe_key"] = dedupe_key
@@ -403,6 +419,7 @@ def _ensure_assignment_delivery(task, responsible, actor):
     task.payload_json = payload
     task.save(update_fields=["payload_json", "updated_at"])
     _schedule_assignment_push(task.id, responsible.id)
+    return True
 
 
 def _task_data(task):
@@ -502,7 +519,8 @@ def _create_task(authenticated, organization, arguments):
     # cannot both pass the JSON idempotency lookup before either insert commits.
     organization = Organization.objects.select_for_update().get(pk=organization.pk)
     existing = (
-        ServiceTask.objects.select_related("primary_responsible", "created_by")
+        ServiceTask.objects.select_for_update()
+        .select_related("primary_responsible", "created_by")
         .filter(
             organization=organization,
             payload_json__operations_mcp_idempotency_key=key,
