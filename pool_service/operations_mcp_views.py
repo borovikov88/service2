@@ -25,6 +25,7 @@ from pool_service.models import (
     Notification,
     Organization,
     OrganizationAccess,
+    Profile,
     ServiceTask,
     ServiceTaskChange,
 )
@@ -275,6 +276,8 @@ def _task_for_org(organization, task_id, *, for_update=False):
 
 
 ASSIGNMENT_DELIVERY_PAYLOAD_KEY = "operations_assignment_delivery"
+EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY = "operations_employee_notification_deliveries"
+PUSH_RETRY_BATCH_LIMIT = 100
 
 
 def _assignment_notification_key(task_id):
@@ -374,6 +377,165 @@ def _retry_assignment_push(task_id, responsible_user_id):
         task.payload_json = payload
         task.save(update_fields=["payload_json", "updated_at"])
         return int(sent or 0)
+
+
+
+def _profile_allows_push(user):
+    profile = Profile.objects.filter(user=user).only("push_notifications_enabled").first()
+    return True if profile is None else bool(profile.push_notifications_enabled)
+
+
+def _notification_deliveries(task):
+    payload = dict(task.payload_json) if isinstance(task.payload_json, dict) else {}
+    deliveries = payload.get(EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY)
+    if not isinstance(deliveries, dict):
+        deliveries = {}
+    return payload, dict(deliveries)
+
+
+def _retry_employee_notification_push(task_id, marker):
+    with transaction.atomic():
+        task = (
+            ServiceTask.objects.select_for_update()
+            .select_related("organization", "primary_responsible")
+            .prefetch_related("responsibles")
+            .filter(pk=task_id, task_type=ServiceTask.TYPE_CRM_FOLLOWUP)
+            .first()
+        )
+        if not task:
+            return 0
+
+        payload, deliveries = _notification_deliveries(task)
+        delivery = deliveries.get(marker)
+        if not isinstance(delivery, dict):
+            return 0
+        delivery = dict(delivery)
+        if delivery.get("push_delivered_at"):
+            return 0
+        if delivery.get("push_delivery_result") in {
+            "blocked_not_authorized",
+            "blocked_push_disabled",
+        }:
+            return 0
+
+        employee_id = delivery.get("employee_user_id")
+        employee = User.objects.filter(pk=employee_id, is_active=True).first()
+        if not employee or not _assignment_recipient_is_authorized(task, employee):
+            delivery["push_last_attempt_at"] = timezone.now().isoformat()
+            delivery["push_delivery_result"] = "blocked_not_authorized"
+            deliveries[marker] = delivery
+            payload[EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY] = deliveries
+            task.payload_json = payload
+            task.save(update_fields=["payload_json", "updated_at"])
+            return 0
+
+        if not _profile_allows_push(employee):
+            delivery["push_last_attempt_at"] = timezone.now().isoformat()
+            delivery["push_delivery_result"] = "blocked_push_disabled"
+            deliveries[marker] = delivery
+            payload[EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY] = deliveries
+            task.payload_json = payload
+            task.save(update_fields=["payload_json", "updated_at"])
+            return 0
+
+        notification = None
+        notification_id = delivery.get("notification_id")
+        if notification_id:
+            notification = Notification.objects.filter(
+                pk=notification_id,
+                user=employee,
+            ).first()
+
+        sent = send_push_to_users(
+            [employee],
+            title=str(delivery.get("title") or ""),
+            message=str(delivery.get("message") or ""),
+            action_url=str(delivery.get("action_url") or ""),
+            notification=notification,
+        )
+        delivery["push_last_attempt_at"] = timezone.now().isoformat()
+        delivery["push_last_sent_count"] = int(sent or 0)
+        if sent:
+            delivery["push_delivered_at"] = timezone.now().isoformat()
+            delivery["push_delivery_result"] = "sent"
+        else:
+            delivery["push_delivery_result"] = "pending_retry"
+        deliveries[marker] = delivery
+        payload[EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY] = deliveries
+        task.payload_json = payload
+        task.save(update_fields=["payload_json", "updated_at"])
+        return int(sent or 0)
+
+
+def _schedule_employee_notification_push(task_id, marker):
+    transaction.on_commit(
+        lambda: _retry_employee_notification_push(task_id, marker),
+        robust=True,
+    )
+
+
+def process_pending_operations_pushes(*, limit=PUSH_RETRY_BATCH_LIMIT):
+    """Retry durable Operations push deliveries left pending after commit/process failure."""
+    limit = max(1, min(int(limit), 500))
+    task_ids = list(
+        ServiceTask.objects.filter(
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            payload_json__isnull=False,
+        )
+        .exclude(payload_json={})
+        .order_by("updated_at", "id")
+        .values_list("id", flat=True)[:limit]
+    )
+
+    result = {
+        "checked": 0,
+        "assignment_attempts": 0,
+        "notification_attempts": 0,
+        "delivered": 0,
+    }
+
+    for task_id in task_ids:
+        task = ServiceTask.objects.filter(pk=task_id).only(
+            "id",
+            "payload_json",
+            "primary_responsible_id",
+        ).first()
+        if not task:
+            continue
+        payload = task.payload_json if isinstance(task.payload_json, dict) else {}
+
+        assignment = payload.get(ASSIGNMENT_DELIVERY_PAYLOAD_KEY)
+        if isinstance(assignment, dict):
+            result["checked"] += 1
+            assignment_result = assignment.get("push_delivery_result")
+            if (
+                not assignment.get("push_delivered_at")
+                and assignment_result not in {"blocked_not_authorized", "blocked_push_disabled", "skipped_self"}
+            ):
+                responsible_id = assignment.get("responsible_user_id") or task.primary_responsible_id
+                if responsible_id:
+                    result["assignment_attempts"] += 1
+                    result["delivered"] += int(bool(_retry_assignment_push(task.id, responsible_id)))
+
+        deliveries = payload.get(EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY)
+        if isinstance(deliveries, dict):
+            if not isinstance(assignment, dict):
+                result["checked"] += 1
+            for marker, delivery in list(deliveries.items()):
+                if not isinstance(delivery, dict):
+                    continue
+                delivery_result = delivery.get("push_delivery_result")
+                if (
+                    delivery.get("push_delivered_at")
+                    or delivery_result in {"blocked_not_authorized", "blocked_push_disabled"}
+                ):
+                    continue
+                result["notification_attempts"] += 1
+                result["delivered"] += int(
+                    bool(_retry_employee_notification_push(task.id, marker))
+                )
+
+    return result
 
 
 def _ensure_assignment_delivery(task, responsible, actor):
@@ -674,7 +836,6 @@ def _send_employee_notification(authenticated, organization, arguments):
     key = _as_text(arguments.get("dedupe_key"), "dedupe_key", required=True, maximum=80)
     task_id = _as_int(arguments.get("task_id"), "task_id")
 
-    # The task row is the serialization point and the durable dedupe ledger.
     task = (
         ServiceTask.objects.select_for_update()
         .select_related("primary_responsible")
@@ -689,6 +850,7 @@ def _send_employee_notification(authenticated, organization, arguments):
         or task.status in {ServiceTask.STATUS_DONE, ServiceTask.STATUS_CANCELLED}
     ):
         raise ValueError("task_id")
+
     participant_ids = {user.id for user in task.responsibles.all()}
     if task.primary_responsible_id:
         participant_ids.add(task.primary_responsible_id)
@@ -698,14 +860,18 @@ def _send_employee_notification(authenticated, organization, arguments):
     if not employee:
         raise ValueError("employee_user_id")
 
-    payload = dict(task.payload_json) if isinstance(task.payload_json, dict) else {}
-    sent_keys = payload.get("operations_notification_keys")
-    if not isinstance(sent_keys, list):
-        sent_keys = []
+    payload, deliveries = _notification_deliveries(task)
     marker = f"{employee.id}:{key}"
-    if marker in sent_keys:
+    existing = deliveries.get(marker)
+    if isinstance(existing, dict):
+        if (
+            not existing.get("push_delivered_at")
+            and existing.get("push_delivery_result")
+            not in {"blocked_not_authorized", "blocked_push_disabled"}
+        ):
+            _schedule_employee_notification_push(task.id, marker)
         return {"created_notifications": 0, "employee_user_id": employee.id}
-    if len(sent_keys) >= 50:
+    if len(deliveries) >= 50:
         raise ValueError("dedupe_key")
 
     action_url = reverse("task_edit", kwargs={"task_id": task.id})
@@ -722,20 +888,25 @@ def _send_employee_notification(authenticated, organization, arguments):
         send_push=False,
     )
     notification = created[0] if created else None
-    transaction.on_commit(
-        lambda: send_push_to_users(
-            [employee],
-            title=title,
-            message=message,
-            action_url=action_url,
-            notification=notification,
+
+    deliveries[marker] = {
+        "employee_user_id": employee.id,
+        "title": title,
+        "message": message,
+        "action_url": action_url,
+        "notification_id": notification.id if notification else None,
+        "notification_dedupe_key": f"operations_mcp:{task.id}:{key}",
+        "push_delivery_result": (
+            "pending_retry" if _profile_allows_push(employee) else "blocked_push_disabled"
         ),
-        robust=True,
-    )
-    sent_keys.append(marker)
-    payload["operations_notification_keys"] = sent_keys
+    }
+    payload[EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY] = deliveries
     task.payload_json = payload
     task.save(update_fields=["payload_json", "updated_at"])
+
+    if deliveries[marker]["push_delivery_result"] == "pending_retry":
+        _schedule_employee_notification_push(task.id, marker)
+
     return {"created_notifications": len(created), "employee_user_id": employee.id}
 
 
