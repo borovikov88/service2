@@ -12,7 +12,7 @@ from datetime import timedelta
 from uuid import uuid4
 
 from django.conf import settings
-from django.db import transaction
+from django.db import connections, transaction
 from django.db.models import F
 from django.utils import timezone
 from openai import OpenAI
@@ -411,6 +411,12 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
     )
     call = analysis.call
 
+    # Do not keep a MySQL connection open while waiting on external AI calls.
+    # Production MySQL may expire an idle connection before OpenAI returns,
+    # which previously left the analysis stuck in PROCESSING when the error
+    # handler then tried to reuse the dead connection.
+    connections.close_all()
+
     try:
         client = _client()
         transcript = (analysis.transcript or "").strip()
@@ -429,6 +435,9 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
             if not checkpointed:
                 return False
 
+        # The checkpoint query opens a new connection. Release it before the
+        # second potentially long OpenAI request for summary/facts.
+        connections.close_all()
         summary, facts, analysis_model = _analyze_transcript(client, call, transcript)
         completed = CallAnalysis.objects.filter(
             pk=analysis.pk,
@@ -456,6 +465,9 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
                 )
         return bool(completed)
     except Exception as exc:
+        # If the exception happened after a long external request or during a
+        # stale DB write, force the status update through a fresh connection.
+        connections.close_all()
         quota_exhausted = _is_openai_credit_balance_exhausted(exc)
         code = str(exc)
         if quota_exhausted:
