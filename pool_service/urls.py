@@ -256,8 +256,8 @@ urlpatterns = [
     path("communications/", communication_conversations, name="communications_conversations"),
     path("communications/calls/", communication_calls, name="communications_calls"),
     path("communications/files/", communication_manual_recordings, name="communication_manual_recordings"),
-    path("communications/calls/upload/", call_recording_upload, name="communication_call_recording_upload"),
-    path("communications/calls/analysis/bulk/", call_analysis_bulk, name="communication_call_analysis_bulk"),
+    path("communications/files/upload/", call_recording_upload, name="communication_call_recording_upload"),
+    path("communications/files/analysis/bulk/", call_analysis_bulk, name="communication_call_analysis_bulk"),
     path("communications/calls/<int:call_id>/analysis/status/", call_analysis_status, name="communication_call_analysis_status"),
     path("communications/calls/<int:call_id>/analysis/transcript/", call_analysis_transcript, name="communication_call_analysis_transcript"),
 
