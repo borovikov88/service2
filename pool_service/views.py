@@ -34,7 +34,7 @@ from django.views.decorators.http import require_POST
 
 from django.urls import reverse, reverse_lazy
 
-from django.db import connection
+from django.db import connection, transaction
 
 from django.db.models import Count, Q, Max, Case, When, Value, IntegerField
 
@@ -7508,6 +7508,7 @@ def task_create(request):
 
 
 @login_required
+@transaction.atomic
 def task_edit(request, task_id):
     readonly = _deny_superuser_write(request)
     if readonly:
@@ -7519,7 +7520,8 @@ def task_edit(request, task_id):
     is_modal = _is_modal_request(request)
     is_edit_mode = request.method == "POST" or request.GET.get("edit") == "1"
 
-    task = get_object_or_404(ServiceTask, pk=task_id)
+    task_queryset = ServiceTask.objects.select_for_update() if request.method == "POST" else ServiceTask.objects
+    task = get_object_or_404(task_queryset, pk=task_id)
     if not _task_can_view(task, request.user):
         return HttpResponseForbidden()
     if task.is_archived:
@@ -7798,6 +7800,7 @@ def task_edit(request, task_id):
 
 
 @login_required
+@transaction.atomic
 def task_delete(request, task_id):
     if request.method != "POST":
         return redirect("task_edit", task_id=task_id)
@@ -7809,7 +7812,7 @@ def task_delete(request, task_id):
     if blocked:
         return blocked
 
-    task = get_object_or_404(ServiceTask, pk=task_id)
+    task = get_object_or_404(ServiceTask.objects.select_for_update(), pk=task_id)
     if not _task_can_edit(task, request.user):
         return HttpResponseForbidden()
 
@@ -7830,6 +7833,7 @@ def task_delete(request, task_id):
 
 @csrf_protect
 @login_required
+@transaction.atomic
 def task_move(request):
     if request.method != "POST":
         return JsonResponse({"ok": False, "error": "method_not_allowed"}, status=405)
@@ -7854,7 +7858,7 @@ def task_move(request):
     except ValueError:
         return JsonResponse({"ok": False, "error": "invalid_date"}, status=400)
 
-    task = get_object_or_404(ServiceTask, pk=task_id)
+    task = get_object_or_404(ServiceTask.objects.select_for_update(), pk=task_id)
     if not _task_can_edit(task, request.user):
         return JsonResponse({"ok": False, "error": "forbidden"}, status=403)
     if task.is_archived:
