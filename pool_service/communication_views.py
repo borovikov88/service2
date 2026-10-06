@@ -22,7 +22,7 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.debug import sensitive_post_parameters
 
 from pool_service.client_queries import active_clients
-from pool_service.client_crm_models import ClientContact
+from pool_service.client_crm_models import ClientCompanyLink, ClientContact
 from pool_service.phone_utils import format_phone, normalize_phone
 from pool_service.communication_avito import (
     AvitoError,
@@ -256,15 +256,38 @@ def _prepare_call_display(calls, organization):
             if key in clients_by_phone:
                 clients_by_phone[key].add(client.id)
 
-    unique_client_ids = {
-        next(iter(ids))
-        for ids in clients_by_phone.values()
-        if len(ids) == 1
-    }
+    all_candidate_ids = set()
+    for ids in clients_by_phone.values():
+        all_candidate_ids.update(ids)
     clients_by_id = {
         client.id: client
-        for client in Client.objects.filter(id__in=unique_client_ids)
+        for client in Client.objects.filter(id__in=all_candidate_ids)
     }
+    links_by_person = {}
+    if all_candidate_ids:
+        for person_id, company_id in ClientCompanyLink.objects.filter(
+            person_id__in=all_candidate_ids,
+            company_id__in=all_candidate_ids,
+        ).values_list("person_id", "company_id"):
+            links_by_person.setdefault(person_id, set()).add(company_id)
+
+    resolved_by_phone = {}
+    for key, ids in clients_by_phone.items():
+        if len(ids) == 1:
+            resolved_by_phone[key] = clients_by_id.get(next(iter(ids)))
+            continue
+
+        candidates = [clients_by_id[item_id] for item_id in ids if item_id in clients_by_id]
+        private_candidates = [item for item in candidates if item.client_type == "private"]
+        if len(private_candidates) != 1:
+            continue
+        person = private_candidates[0]
+        company_ids = {
+            item.id for item in candidates
+            if item.client_type == "legal"
+        }
+        if company_ids and company_ids == links_by_person.get(person.id, set()).intersection(company_ids):
+            resolved_by_phone[key] = person
 
     for call in calls:
         call.display_phone = format_phone(call.phone_number)
@@ -272,11 +295,8 @@ def _prepare_call_display(calls, organization):
         if call.client_id:
             continue
         key = normalize_phone(call.phone_number)
-        ids = clients_by_phone.get(key, set())
-        if len(ids) == 1:
-            call.resolved_client = clients_by_id.get(next(iter(ids)))
+        call.resolved_client = resolved_by_phone.get(key)
     return calls
-
 
 @login_required
 def calls(request):
