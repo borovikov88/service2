@@ -779,6 +779,25 @@ class CommunicationsTests(TestCase):
         request_analysis.assert_called_once_with(call.pk)
         start_worker.assert_called_once_with()
 
+        admin = User.objects.create_user("communications-admin", password="test")
+        OrganizationAccess.objects.create(
+            user=admin,
+            organization=self.organization,
+            role="admin",
+        )
+
+        self.client.logout()
+        self.client.login(username="communications-admin", password="test")
+        admin_calls = self.client.get(reverse("communications_calls"))
+        self.assertEqual(admin_calls.status_code, 200)
+        self.assertContains(
+            admin_calls,
+            reverse("communication_manual_recordings"),
+        )
+        admin_audio = self.client.get(reverse("communication_manual_recordings"))
+        self.assertEqual(admin_audio.status_code, 200)
+        self.assertContains(admin_audio, "Аудиофайлы")
+
         self.client.logout()
         self.client.login(username="worker", password="test")
         forbidden = self.client.post(
@@ -1312,7 +1331,7 @@ class CommunicationsTests(TestCase):
         self.assertNotContains(response, "Расшифровка запускается вручную.")
         self.assertNotContains(response, "Ожидает автоматической расшифровки.")
 
-    def test_manual_recordings_page_is_owner_only_and_separate_from_phone_history(self):
+    def test_audio_files_page_is_owner_or_admin_only_and_separate_from_phone_history(self):
         telephony = TelephonyConnection.objects.create(
             organization=self.organization,
             name="МегаФон",
