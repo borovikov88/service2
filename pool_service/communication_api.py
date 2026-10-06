@@ -29,6 +29,8 @@ from pool_service.communication_recordings import download_call_recording
 from pool_service.communication_services import receive_message
 from pool_service.services.employee_identity_sync import resolve_call_employee
 from pool_service.models import Client, OrganizationAccess
+from pool_service.client_crm_models import ClientContact
+from pool_service.phone_utils import format_phone, normalize_phone
 from pool_service.communication_avito import AvitoError, ingest_webhook
 
 
@@ -357,21 +359,25 @@ def _megafon_connection(request, public_id, data):
     return connection, telephony
 
 
-def _normalize_phone(value):
-    digits = "".join(character for character in str(value or "") if character.isdigit())
-    if len(digits) >= 10:
-        return digits[-10:]
-    return digits
-
-
 def _megafon_contact(organization, phone):
-    normalized = _normalize_phone(phone)
+    normalized = normalize_phone(phone)
     if not normalized:
         return None
-    for client in Client.objects.filter(organization=organization).only("id", "name", "phone"):
-        if _normalize_phone(client.phone) == normalized:
-            return client
-    return None
+
+    client_ids = set(
+        ClientContact.objects.filter(
+            client__organization=organization,
+            kind=ClientContact.KIND_PHONE,
+            match_value=normalized,
+        ).values_list("client_id", flat=True)
+    )
+    for client in Client.objects.filter(organization=organization).exclude(phone__isnull=True).exclude(phone="").only("id", "phone"):
+        if normalize_phone(client.phone) == normalized:
+            client_ids.add(client.id)
+
+    if len(client_ids) != 1:
+        return None
+    return Client.objects.filter(pk=next(iter(client_ids)), organization=organization).first()
 
 
 def _megafon_employee(organization, provider_user, extension=""):
@@ -706,8 +712,9 @@ def megafon_webhook(request, public_id):
                 "employee_profile": effective_employee_profile,
                 "provider_user": effective_provider_user,
                 "provider_extension": effective_provider_extension,
+                "client": client,
                 "contact_name": client.name if client else "",
-                "phone_number": phone,
+                "phone_number": format_phone(phone),
                 "direction": direction,
                 "started_at": started_at,
                 "duration_seconds": duration_seconds,
