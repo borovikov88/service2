@@ -6,6 +6,7 @@ from time import monotonic
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
+from django.core import signing
 from django.contrib.auth.models import User
 from django.contrib.auth.views import redirect_to_login
 from django.db import transaction
@@ -839,6 +840,47 @@ def _oauth_error_page(_error):
     return transport._no_store(HttpResponseBadRequest("OAuth authorization request was rejected."))
 
 
+_CONSENT_BINDING_SALT = "service2.operations-mcp.consent.v1"
+_CONSENT_BINDING_MAX_AGE = 600
+
+
+def _consent_binding(authorization):
+    return signing.dumps(
+        {
+            "organization_id": authorization["organization_id"],
+            "state": authorization["state"],
+            "client_id": authorization["client"].client_id,
+            "resource": authorization["resource"],
+            "redirect_uri": authorization["redirect_uri"],
+            "code_challenge": authorization["code_challenge"],
+        },
+        salt=_CONSENT_BINDING_SALT,
+        compress=True,
+    )
+
+
+def _validate_consent_binding(value, authorization):
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        bound = signing.loads(
+            value,
+            salt=_CONSENT_BINDING_SALT,
+            max_age=_CONSENT_BINDING_MAX_AGE,
+        )
+    except signing.BadSignature:
+        return False
+    expected = {
+        "organization_id": authorization["organization_id"],
+        "state": authorization["state"],
+        "client_id": authorization["client"].client_id,
+        "resource": authorization["resource"],
+        "redirect_uri": authorization["redirect_uri"],
+        "code_challenge": authorization["code_challenge"],
+    }
+    return bound == expected
+
+
 @require_http_methods(["GET", "POST"])
 def operations_oauth_authorize(request):
     if not is_enabled():
@@ -875,7 +917,22 @@ def operations_oauth_authorize(request):
                     "organizations": scoped_organizations(client),
                     "scope": " ".join(authorization["scopes"]),
                     "oauth_params": params,
+                    "consent_binding": _consent_binding(authorization),
                 },
+            )
+        )
+
+    if request.method == "POST" and not _validate_consent_binding(
+        request.POST.get("consent_binding"),
+        authorization,
+    ):
+        return transport._no_store(
+            redirect(
+                authorization_redirect_uri(
+                    authorization["redirect_uri"],
+                    state=authorization["state"],
+                    error="access_denied",
+                )
             )
         )
 
