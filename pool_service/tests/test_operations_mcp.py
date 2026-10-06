@@ -47,6 +47,7 @@ class OperationsMcpTests(TestCase):
         self.organization = Organization.objects.create(name="Operations MCP org")
         self.owner = User.objects.create_user("operations-owner", password="test")
         self.manager = User.objects.create_user("operations-manager", password="test")
+        self.accountant = User.objects.create_user("operations-accountant", password="test")
         OrganizationAccess.objects.create(
             user=self.owner,
             organization=self.organization,
@@ -56,6 +57,11 @@ class OperationsMcpTests(TestCase):
             user=self.manager,
             organization=self.organization,
             role="manager",
+        )
+        OrganizationAccess.objects.create(
+            user=self.accountant,
+            organization=self.organization,
+            role="accountant",
         )
         self.other_org = Organization.objects.create(name="Other org")
         self.other_user = User.objects.create_user("other-user", password="test")
@@ -393,6 +399,63 @@ class OperationsMcpTests(TestCase):
                 payload_json__operations_mcp_idempotency_key="cross-org"
             ).exists()
         )
+
+    def test_finance_only_accountant_cannot_receive_operations_work(self):
+        raw = self._token(raw="accountant-restriction-token")
+        create_payload = {
+            "jsonrpc": "2.0",
+            "id": 41,
+            "method": "tools/call",
+            "params": {
+                "name": "create_task",
+                "arguments": {
+                    "idempotency_key": "accountant-task",
+                    "title": "Операционная задача бухгалтеру",
+                    "responsible_user_id": self.accountant.id,
+                    "due_date": "2026-10-07",
+                },
+            },
+        }
+        with self._settings():
+            create_response = self._post(create_payload, token=raw)
+        self.assertTrue(create_response.json()["result"]["isError"])
+        self.assertFalse(
+            ServiceTask.objects.filter(
+                payload_json__operations_mcp_idempotency_key="accountant-task"
+            ).exists()
+        )
+
+        task = ServiceTask.objects.create(
+            organization=self.organization,
+            title="Тестовая CRM-задача",
+            start_date=date(2026, 10, 7),
+            end_date=date(2026, 10, 7),
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            source_type=ServiceTask.SOURCE_MANAGER,
+            status=ServiceTask.STATUS_NEW,
+            visibility=ServiceTask.VISIBILITY_PRIVATE,
+            primary_responsible=self.accountant,
+            created_by=self.owner,
+        )
+        task.responsibles.add(self.accountant)
+        notify_payload = {
+            "jsonrpc": "2.0",
+            "id": 42,
+            "method": "tools/call",
+            "params": {
+                "name": "send_employee_notification",
+                "arguments": {
+                    "employee_user_id": self.accountant.id,
+                    "title": "Не отправлять",
+                    "message": "Finance-only role must not receive Operations notifications.",
+                    "dedupe_key": "accountant-notification",
+                    "task_id": task.id,
+                },
+            },
+        }
+        with self._settings():
+            notify_response = self._post(notify_payload, token=raw)
+        self.assertTrue(notify_response.json()["result"]["isError"])
 
     def test_reschedule_task_is_idempotent(self):
         raw = self._token(raw="reschedule-token")
