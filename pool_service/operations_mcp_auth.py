@@ -169,23 +169,15 @@ def protected_resource_metadata_url():
 
 
 def authorization_server_metadata_url():
-    site_url = getattr(settings, "SITE_URL", "")
-    if not site_url:
-        raise OperationsMcpConfigurationError("SITE_URL must be configured.")
-    root = _https_url(site_url, field="SITE_URL")
-    return f"{root}/.well-known/oauth-authorization-server/operations"
+    return f"{issuer_url()}/.well-known/oauth-authorization-server"
 
 
 def authorization_endpoint_url():
-    site_url = getattr(settings, "SITE_URL", "")
-    root = _https_url(site_url, field="SITE_URL")
-    return f"{root}/oauth/operations/authorize"
+    return f"{issuer_url()}/oauth/finance/authorize"
 
 
 def token_endpoint_url():
-    site_url = getattr(settings, "SITE_URL", "")
-    root = _https_url(site_url, field="SITE_URL")
-    return f"{root}/oauth/operations/token"
+    return f"{issuer_url()}/oauth/finance/token"
 
 
 def _positive_setting(name, default, *, minimum, maximum):
