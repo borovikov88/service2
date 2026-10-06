@@ -31,6 +31,7 @@
         {% for key, value in oauth_params.items %}
           <input type="hidden" name="{{ key }}" value="{{ value }}">
         {% endfor %}
+        <input type="hidden" name="consent_binding" value="{{ consent_binding }}">
         <button class="btn btn-primary" type="submit" name="decision" value="approve">Разрешить управление задачами</button>
         <button class="btn btn-outline-secondary" type="submit" name="decision" value="deny">Отказать</button>
       </form>
