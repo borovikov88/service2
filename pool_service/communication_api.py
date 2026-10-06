@@ -29,7 +29,7 @@ from pool_service.communication_recordings import download_call_recording
 from pool_service.communication_services import receive_message
 from pool_service.services.employee_identity_sync import resolve_call_employee
 from pool_service.models import Client, OrganizationAccess
-from pool_service.client_crm_models import ClientContact
+from pool_service.client_crm_models import ClientCompanyLink, ClientContact
 from pool_service.phone_utils import format_phone, normalize_phone
 from pool_service.communication_avito import AvitoError, ingest_webhook
 
@@ -375,9 +375,36 @@ def _megafon_contact(organization, phone):
         if normalize_phone(client.phone) == normalized:
             client_ids.add(client.id)
 
-    if len(client_ids) != 1:
+    if len(client_ids) == 1:
+        return Client.objects.filter(
+            pk=next(iter(client_ids)),
+            organization=organization,
+        ).first()
+    if not client_ids:
         return None
-    return Client.objects.filter(pk=next(iter(client_ids)), organization=organization).first()
+
+    candidates = list(
+        Client.objects.filter(
+            pk__in=client_ids,
+            organization=organization,
+        ).only("id", "client_type", "name")
+    )
+    private_candidates = [item for item in candidates if item.client_type == "private"]
+    if len(private_candidates) == 1:
+        person = private_candidates[0]
+        company_ids = {
+            item.id for item in candidates
+            if item.client_type == "legal"
+        }
+        linked_company_ids = set(
+            ClientCompanyLink.objects.filter(
+                person_id=person.id,
+                company_id__in=company_ids,
+            ).values_list("company_id", flat=True)
+        )
+        if company_ids and company_ids == linked_company_ids:
+            return person
+    return None
 
 
 def _megafon_employee(organization, provider_user, extension=""):
@@ -635,7 +662,7 @@ def megafon_webhook(request, public_id):
     with transaction.atomic():
         existing_call = (
             PhoneCall.objects.select_for_update()
-            .select_related("employee", "employee_profile")
+            .select_related("employee", "employee_profile", "client")
             .filter(
                 connection=telephony,
                 external_id=call_id,
@@ -702,6 +729,16 @@ def megafon_webhook(request, public_id):
         effective_provider_extension = extension or (
             existing_call.provider_extension if existing_call else ""
         )
+        effective_client = client or (
+            existing_call.client
+            if existing_call and existing_call.client_id
+            else None
+        )
+        effective_contact_name = (
+            effective_client.name
+            if effective_client
+            else (existing_call.contact_name if existing_call else "")
+        )
 
         phone_call, created = PhoneCall.objects.update_or_create(
             connection=telephony,
@@ -712,8 +749,8 @@ def megafon_webhook(request, public_id):
                 "employee_profile": effective_employee_profile,
                 "provider_user": effective_provider_user,
                 "provider_extension": effective_provider_extension,
-                "client": client,
-                "contact_name": client.name if client else "",
+                "client": effective_client,
+                "contact_name": effective_contact_name,
                 "phone_number": format_phone(phone),
                 "direction": direction,
                 "started_at": started_at,
