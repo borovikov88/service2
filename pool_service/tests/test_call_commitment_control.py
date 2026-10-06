@@ -212,8 +212,8 @@ class CallCommitmentControlTests(TestCase):
             result = process_call_commitment_controls(now=now)
             self.assertEqual(result["due_reminders"], 1)
             self.assertFalse(send_push.called)
-            self.assertEqual(len(callbacks), 1)
 
+        self.assertEqual(len(callbacks), 1)
         task.refresh_from_db()
         self.assertEqual(
             task.payload_json["operations_notification_keys"],
