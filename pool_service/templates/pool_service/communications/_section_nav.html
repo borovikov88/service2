@@ -57,8 +57,15 @@
   }
   @media (max-width:575.98px){
     .communications-toolbar{align-items:flex-start}
-    .communications-tab{padding:.45rem .72rem}
-    .communications-tab span{display:none}
+    .communications-tabs{
+      display:flex;
+      flex-wrap:wrap;
+      border-radius:16px;
+    }
+    .communications-tab{
+      padding:.4rem .6rem;
+      font-size:.86rem;
+    }
   }
 </style>
 <div class="communications-toolbar">
@@ -85,7 +92,7 @@
         href="{% url 'communication_manual_recordings' %}"
         {% if request.resolver_match.url_name == 'communication_manual_recordings' %}aria-current="page"{% endif %}
       >
-        <i class="bi bi-file-earmark-music"></i><span>Файлы</span>
+        <i class="bi bi-file-earmark-music"></i><span>Аудиофайлы</span>
       </a>
       {% endif %}
     </nav>
