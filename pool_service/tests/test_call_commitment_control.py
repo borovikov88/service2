@@ -241,6 +241,15 @@ class CallCommitmentControlTests(TestCase):
 
 class CallRecordingSyncControlIntegrationTests(TestCase):
     @patch(
+        "pool_service.management.commands.sync_call_recordings.process_pending_operations_pushes",
+        return_value={
+            "checked": 0,
+            "assignment_attempts": 0,
+            "notification_attempts": 0,
+            "delivered": 0,
+        },
+    )
+    @patch(
         "pool_service.management.commands.sync_call_recordings.process_call_commitment_controls",
         return_value={
             "checked": 0,
@@ -249,6 +258,11 @@ class CallRecordingSyncControlIntegrationTests(TestCase):
             "without_deadline": 0,
         },
     )
-    def test_recording_sync_runs_commitment_control_even_without_recordings(self, control):
+    def test_recording_sync_runs_controls_even_without_recordings(
+        self,
+        commitment_control,
+        operations_push,
+    ):
         call_command("sync_call_recordings", "--limit", "1")
-        control.assert_called_once_with()
+        commitment_control.assert_called_once_with()
+        operations_push.assert_called_once_with(limit=100)
