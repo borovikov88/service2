@@ -390,6 +390,13 @@ class TelephonyEmployeeIdentity(models.Model):
 
 
 class PhoneCall(models.Model):
+    SOURCE_TELEPHONY = "telephony"
+    SOURCE_UPLOADED = "uploaded"
+    SOURCE_CHOICES = [
+        (SOURCE_TELEPHONY, "Телефония"),
+        (SOURCE_UPLOADED, "Загруженный аудиофайл"),
+    ]
+
     DIRECTION_IN = "in"
     DIRECTION_OUT = "out"
     RESULT_ANSWERED = "answered"
@@ -407,7 +414,19 @@ class PhoneCall(models.Model):
         (RECORDING_FAILED, "Ошибка сохранения"),
     ]
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="phone_calls")
-    connection = models.ForeignKey(TelephonyConnection, on_delete=models.PROTECT, related_name="calls")
+    source_kind = models.CharField(
+        max_length=16,
+        choices=SOURCE_CHOICES,
+        default=SOURCE_TELEPHONY,
+        db_index=True,
+    )
+    connection = models.ForeignKey(
+        TelephonyConnection,
+        on_delete=models.PROTECT,
+        related_name="calls",
+        null=True,
+        blank=True,
+    )
     external_id = models.CharField(max_length=255)
     employee = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="phone_calls")
     employee_profile = models.ForeignKey(
@@ -458,6 +477,10 @@ class PhoneCall(models.Model):
         return os.path.basename(self.recording_file.name or "")
 
     def clean(self):
+        if self.source_kind == self.SOURCE_TELEPHONY and not self.connection_id:
+            raise ValidationError("Telephony call requires a telephony connection.")
+        if self.source_kind == self.SOURCE_UPLOADED and self.connection_id:
+            raise ValidationError("Uploaded audio must not use a telephony connection.")
         if self.connection_id and self.organization_id and self.connection.organization_id != self.organization_id:
             raise ValidationError("Telephony connection belongs to another organization.")
         if self.employee_id and not self.employee.organizationaccess_set.filter(organization_id=self.organization_id).exists():
