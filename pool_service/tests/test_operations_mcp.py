@@ -521,10 +521,14 @@ class OperationsMcpTests(TestCase):
         self.assertEqual(send_push.call_count, 2)
 
     def test_assignment_notification_is_durable_when_in_app_is_disabled(self):
-        Profile.objects.create(
-            user=self.manager,
-            in_app_notifications_enabled=False,
-            push_notifications_enabled=True,
+        profile, _created = Profile.objects.get_or_create(user=self.manager)
+        profile.in_app_notifications_enabled = False
+        profile.push_notifications_enabled = True
+        profile.save(
+            update_fields=[
+                "in_app_notifications_enabled",
+                "push_notifications_enabled",
+            ]
         )
         raw = self._token(raw="durable-assignment-token")
         payload = {
