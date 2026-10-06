@@ -527,7 +527,7 @@ def start_requested_call_analysis_worker():
     env["SERVICE2_PYTHON"] = _call_ai_python_executable(base_dir)
     try:
         process = subprocess.Popen(
-            [bash, worker_script],
+            [bash, worker_script, "10", "1", "0", "3"],
             cwd=base_dir,
             env=env,
             stdin=subprocess.DEVNULL,
