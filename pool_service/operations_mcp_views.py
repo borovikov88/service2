@@ -10,6 +10,7 @@ from django.core import signing
 from django.contrib.auth.models import User
 from django.contrib.auth.views import redirect_to_login
 from django.db import transaction
+from django.db.models import Q
 from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseNotFound, HttpResponseServerError, JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
@@ -344,6 +345,14 @@ def _retry_assignment_push(task_id, responsible_user_id):
             task.save(update_fields=["payload_json", "updated_at"])
             return 0
 
+        if not _profile_allows_push(responsible):
+            delivery["push_last_attempt_at"] = timezone.now().isoformat()
+            delivery["push_delivery_result"] = "blocked_push_disabled"
+            payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
+            task.payload_json = payload
+            task.save(update_fields=["payload_json", "updated_at"])
+            return 0
+
         added_by_id = delivery.get("added_by_user_id")
         if added_by_id and int(added_by_id) == responsible.id:
             delivery["push_delivered_at"] = timezone.now().isoformat()
@@ -482,7 +491,10 @@ def process_pending_operations_pushes(*, limit=PUSH_RETRY_BATCH_LIMIT):
             task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
             payload_json__isnull=False,
         )
-        .exclude(payload_json={})
+        .filter(
+            Q(payload_json__has_key=ASSIGNMENT_DELIVERY_PAYLOAD_KEY)
+            | Q(payload_json__has_key=EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY)
+        )
         .order_by("updated_at", "id")
         .values_list("id", flat=True)[:limit]
     )
