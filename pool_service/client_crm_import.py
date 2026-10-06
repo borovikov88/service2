@@ -24,6 +24,7 @@ from .client_crm_models import (
 )
 from .onec_diagnostic import config_from_settings, fetch_metadata
 from .onec_diagnostic_universal import query_1c_rows
+from .phone_utils import format_phone, normalize_phone
 
 
 BUYER_ENTITY = "Catalog_Контрагенты"
@@ -34,15 +35,6 @@ SYSTEM_NAMES = {"розничный покупатель"}
 IMPORT_RUN_STALE_MINUTES = 120
 
 logger = logging.getLogger(__name__)
-
-
-def normalize_phone(value: str | None) -> str:
-    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
-    if len(digits) == 11 and digits[0] in {"7", "8"}:
-        digits = "7" + digits[1:]
-    elif len(digits) == 10:
-        digits = "7" + digits
-    return digits if 10 <= len(digits) <= 15 else ""
 
 
 def normalize_email(value: str | None) -> str:
@@ -214,8 +206,9 @@ def _candidate_contacts(row, extra_rows):
     emails = []
 
     def add_phone(raw, label=""):
-        value = str(raw or "").strip()
-        normalized = normalize_phone(value)
+        raw_value = str(raw or "").strip()
+        normalized = normalize_phone(raw_value)
+        value = format_phone(raw_value)
         if value and normalized and all(item["match"] != normalized for item in phones):
             phones.append({"value": value, "match": normalized, "label": label})
 
@@ -812,6 +805,9 @@ def _sync_contacts(client, candidate):
             if contact.source_reference != candidate.source_ref:
                 contact.source_reference = candidate.source_ref
                 changed_fields.append("source_reference")
+            if contact.value != value:
+                contact.value = value
+                changed_fields.append("value")
             label = str(item.get("label") or "")[:120]
             if label and not contact.label:
                 contact.label = label
