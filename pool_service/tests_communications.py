@@ -394,6 +394,7 @@ class CommunicationsTests(TestCase):
         OPENAI_API_KEY="test-key",
         OPENAI_CALL_TRANSCRIPTION_MODEL="gpt-4o-transcribe-diarize",
         OPENAI_CALL_ANALYSIS_MODEL="gpt-5.6-luna",
+        OPENAI_CALL_TRANSCRIPTION_TIMEOUT_SECONDS=345,
     )
     @patch("pool_service.services.call_ai._client")
     def test_call_ai_transcribes_speakers_and_extracts_structured_summary(self, client_factory):
@@ -444,6 +445,11 @@ class CommunicationsTests(TestCase):
         self.assertEqual(analysis.facts["request"], "Бассейн")
         self.assertEqual(analysis.transcription_model, "gpt-4o-transcribe-diarize")
         self.assertEqual(analysis.analysis_model, "gpt-5.6-luna")
+        self.assertEqual(
+            client_factory.call_args_list[0].kwargs,
+            {"timeout_seconds": 345.0},
+        )
+        self.assertEqual(client_factory.call_args_list[1].kwargs, {})
 
         kwargs = client.audio.transcriptions.create.call_args.kwargs
         self.assertEqual(kwargs["response_format"], "diarized_json")
@@ -1595,6 +1601,74 @@ class CommunicationsTests(TestCase):
             worker_phone_page,
             reverse("communication_manual_recordings"),
         )
+
+    @patch("pool_service.communication_views.start_requested_call_analysis_worker")
+    def test_audio_files_page_wakes_worker_for_pending_uploads(self, start_worker):
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            source_kind=PhoneCall.SOURCE_UPLOADED,
+            connection=None,
+            external_id="upload-page-wake",
+            phone_number="",
+            contact_name="",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        call.recording_file.save(
+            "upload-page-wake.mp3",
+            ContentFile(b"ID3wake"),
+            save=True,
+        )
+        CallAnalysis.objects.create(
+            call=call,
+            status=CallAnalysis.STATUS_PENDING,
+            requested_at=timezone.now(),
+        )
+
+        self.client.login(username="owner", password="test")
+        response = self.client.get(reverse("communication_manual_recordings"))
+        self.assertEqual(response.status_code, 200)
+        start_worker.assert_called_once_with()
+
+    @patch("pool_service.communication_views.start_requested_call_analysis_worker")
+    def test_audio_status_poll_wakes_worker_for_stale_processing(self, start_worker):
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            source_kind=PhoneCall.SOURCE_UPLOADED,
+            connection=None,
+            external_id="upload-status-wake",
+            phone_number="",
+            contact_name="",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        call.recording_file.save(
+            "upload-status-wake.mp3",
+            ContentFile(b"ID3wake"),
+            save=True,
+        )
+        CallAnalysis.objects.create(
+            call=call,
+            status=CallAnalysis.STATUS_PROCESSING,
+            requested_at=timezone.now() - timedelta(hours=2),
+            processing_started_at=timezone.now() - timedelta(hours=2),
+            processing_token="stale-token",
+        )
+
+        self.client.login(username="owner", password="test")
+        response = self.client.get(
+            reverse("communication_call_analysis_status", args=[call.pk])
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["status"],
+            CallAnalysis.STATUS_PROCESSING,
+        )
+        start_worker.assert_called_once_with()
 
     def test_channels_page_never_lists_legacy_manual_upload_connection(self):
         TelephonyConnection.objects.create(

@@ -38,11 +38,15 @@ def _setting(name, default):
     return getattr(settings, name, default)
 
 
-def _client():
+def _client(*, timeout_seconds=None):
     api_key = (_setting("OPENAI_API_KEY", "") or "").strip()
     if not api_key:
         raise CallAnalysisError("openai_api_key_missing")
-    timeout = float(_setting("OPENAI_CALL_TIMEOUT_SECONDS", 120))
+    timeout = float(
+        timeout_seconds
+        if timeout_seconds is not None
+        else _setting("OPENAI_CALL_TIMEOUT_SECONDS", 120)
+    )
     return OpenAI(api_key=api_key, timeout=timeout, max_retries=1)
 
 
@@ -418,12 +422,15 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
     connections.close_all()
 
     try:
-        client = _client()
         transcript = (analysis.transcript or "").strip()
         transcription_model = analysis.transcription_model
 
         if not transcript:
-            transcript, transcription_model = _transcribe(client, call)
+            transcription_timeout = float(
+                _setting("OPENAI_CALL_TRANSCRIPTION_TIMEOUT_SECONDS", 300)
+            )
+            transcription_client = _client(timeout_seconds=transcription_timeout)
+            transcript, transcription_model = _transcribe(transcription_client, call)
             checkpointed = CallAnalysis.objects.filter(
                 pk=analysis.pk,
                 status=CallAnalysis.STATUS_PROCESSING,
@@ -438,7 +445,12 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
         # The checkpoint query opens a new connection. Release it before the
         # second potentially long OpenAI request for summary/facts.
         connections.close_all()
-        summary, facts, analysis_model = _analyze_transcript(client, call, transcript)
+        analysis_client = _client()
+        summary, facts, analysis_model = _analyze_transcript(
+            analysis_client,
+            call,
+            transcript,
+        )
         completed = CallAnalysis.objects.filter(
             pk=analysis.pk,
             status=CallAnalysis.STATUS_PROCESSING,
