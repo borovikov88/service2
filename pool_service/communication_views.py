@@ -44,8 +44,6 @@ from pool_service.services.call_ai import request_call_analysis, start_requested
 from pool_service.models import Client, Notification, OrganizationAccess
 
 
-MANUAL_RECORDING_CONNECTION_ID = "manual-upload"
-
 
 def _context(request, capability):
     access = organization_access(request.user)
@@ -56,21 +54,21 @@ def _context(request, capability):
 
 def _can_access_manual_recordings(user, organization):
     access = organization_access(user, organization)
-    return bool(access and access.role == "owner")
+    return bool(
+        access
+        and (access.role == "owner" or user.is_superuser)
+    )
 
 
 def _owner_communications_context(request):
     access = organization_access(request.user)
-    if not access or access.role != "owner":
+    if not access or not (access.role == "owner" or request.user.is_superuser):
         raise PermissionDenied
     return access.organization
 
 
 def _is_manual_recording_call(call):
-    return bool(
-        call.connection_id
-        and getattr(call.connection, "external_id", "") == MANUAL_RECORDING_CONNECTION_ID
-    )
+    return call.source_kind == PhoneCall.SOURCE_UPLOADED
 
 
 def _authorize_call_access(request, call):
@@ -283,8 +281,9 @@ def calls(request):
         raise PermissionDenied
     organization = access.organization
     can_view_all = conversation_capability(request.user, "can_view_all_calls", organization)
-    queryset = PhoneCall.objects.filter(organization=organization).exclude(
-        connection__external_id=MANUAL_RECORDING_CONNECTION_ID,
+    queryset = PhoneCall.objects.filter(
+        organization=organization,
+        source_kind=PhoneCall.SOURCE_TELEPHONY,
     ).select_related(
         "employee",
         "employee_profile",
@@ -327,9 +326,8 @@ def manual_recordings(request):
     organization = _owner_communications_context(request)
     queryset = PhoneCall.objects.filter(
         organization=organization,
-        connection__external_id=MANUAL_RECORDING_CONNECTION_ID,
+        source_kind=PhoneCall.SOURCE_UPLOADED,
     ).select_related(
-        "connection",
         "client",
         "analysis",
     ).defer("analysis__transcript")
@@ -379,18 +377,6 @@ MANUAL_CALL_ALLOWED_EXTENSIONS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wa
 MANUAL_CALL_MAX_FILES = 50
 
 
-def _manual_recording_connection(organization):
-    connection, _ = TelephonyConnection.objects.get_or_create(
-        organization=organization,
-        external_id=MANUAL_RECORDING_CONNECTION_ID,
-        defaults={
-            "name": "Загруженные записи",
-            "is_active": True,
-        },
-    )
-    return connection
-
-
 @login_required
 @require_POST
 def call_recording_upload(request):
@@ -410,10 +396,6 @@ def call_recording_upload(request):
         if not client_id.isdigit():
             return HttpResponseBadRequest("Некорректный клиент.")
         client = get_object_or_404(Client, pk=client_id, organization=organization)
-
-    direction = request.POST.get("direction") or PhoneCall.DIRECTION_IN
-    if direction not in {PhoneCall.DIRECTION_IN, PhoneCall.DIRECTION_OUT}:
-        return HttpResponseBadRequest("Некорректное направление.")
 
     max_bytes = int(getattr(settings, "COMMUNICATION_RECORDING_MAX_BYTES", 50 * 1024 * 1024))
     rejected = []
@@ -436,17 +418,17 @@ def call_recording_upload(request):
         messages.error(request, "Не загружено: " + "; ".join(rejected[:5]))
         return redirect("communication_manual_recordings")
 
-    connection = _manual_recording_connection(organization)
     created = 0
     for uploaded in files:
         call = PhoneCall(
             organization=organization,
-            connection=connection,
-            external_id=f"manual-{secrets.token_hex(16)}",
+            source_kind=PhoneCall.SOURCE_UPLOADED,
+            connection=None,
+            external_id=f"upload-{secrets.token_hex(16)}",
             client=client,
             contact_name=(client.name if client else ""),
             phone_number=((client.phone or "") if client else ""),
-            direction=direction,
+            direction=PhoneCall.DIRECTION_IN,
             started_at=timezone.now(),
             duration_seconds=0,
             result=PhoneCall.RESULT_ANSWERED,
@@ -477,7 +459,7 @@ def call_analysis_bulk(request):
     queryset = PhoneCall.objects.filter(
         pk__in=call_ids,
         organization=organization,
-        connection__external_id=MANUAL_RECORDING_CONNECTION_ID,
+        source_kind=PhoneCall.SOURCE_UPLOADED,
     ).exclude(recording_file="").filter(
         Q(analysis__isnull=True)
         | Q(analysis__status=CallAnalysis.STATUS_FAILED)
@@ -853,7 +835,9 @@ def channels(request):
         },
     ]
     telephony_connections = list(
-        TelephonyConnection.objects.filter(organization=organization).order_by("pk")
+        TelephonyConnection.objects.filter(organization=organization)
+        .exclude(external_id="manual-upload")
+        .order_by("pk")
     )
     megafon_connections = {
         item.external_id: item
