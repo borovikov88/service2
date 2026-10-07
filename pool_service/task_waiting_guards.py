@@ -79,6 +79,11 @@ def guarded_task_move(request):
         task, denied = _locked_candidate(task_id, request.user)
         if denied is not None:
             return denied
+        if task is not None and task.status == ServiceTask.STATUS_CANCELLED:
+            return JsonResponse(
+                {"ok": False, "error": "cancelled_task"},
+                status=400,
+            )
         if task is not None and waiting_control(task)[0]:
             return _waiting_conflict(request, task, as_json=True)
     return views.task_move(request)
