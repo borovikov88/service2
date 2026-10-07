@@ -65,6 +65,21 @@ def relationship_results(client, query):
         for field in fields:
             clause |= Q(**{field + "__iregex": pattern})
         query_filter &= clause
+    phone_key = normalize_phone(query)
+    if phone_key:
+        # Scope first, then normalize, then cap the final result. Capping a
+        # general phone lookup first could hide eligible people behind many
+        # company matches (or behind contacts already linked to this card).
+        legacy_ids = [
+            pk for pk, phone in queryset.exclude(phone__isnull=True).exclude(phone="")
+            .values_list("pk", "phone").iterator(chunk_size=500)
+            if normalize_phone(phone) == phone_key
+        ]
+        contact_ids = ClientContact.objects.filter(
+            client_id__in=queryset.values("pk"), kind=ClientContact.KIND_PHONE,
+            match_value=phone_key,
+        ).values("client_id")
+        query_filter |= Q(pk__in=legacy_ids) | Q(pk__in=contact_ids)
     rows = list(queryset.filter(query_filter).distinct().order_by("name", "id")[:LOOKUP_LIMIT + 1])
     response = JsonResponse({
         "results": [
