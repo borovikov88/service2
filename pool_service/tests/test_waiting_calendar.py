@@ -131,6 +131,34 @@ class WaitingCalendarTests(TestCase):
         self.assertIsNone(state_for(self.task)["next_check_at"])
         self.assertFalse(waiting_control(self.task)[0])
 
+    @patch("pool_service.views._redirect_if_access_blocked", return_value=None)
+    def test_cancelled_waiting_task_is_removed_from_calendar_and_cannot_move(self, _blocked):
+        self.apply()
+        self.apply("cancel", comment="Client cancelled the meeting")
+        self.assertEqual(self.task.status, ServiceTask.STATUS_CANCELLED)
+        self.assertFalse(waiting_control(self.task)[0])
+        self.assertEqual(self.task.title, "Meeting at the site")
+
+        response = self.client.get(
+            reverse("readings_all"),
+            {"month": self.check_date.strftime("%Y-%m")},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn(
+            self.task.pk,
+            [entry["id"] for entry in response.context["task_search_index"]],
+        )
+        move = self.client.post(
+            reverse("task_move"),
+            data=json.dumps({
+                "task_id": self.task.pk,
+                "target_date": (self.check_date + timedelta(days=1)).isoformat(),
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(move.status_code, 400)
+        self.assertEqual(move.json()["error"], "cancelled_task")
+
     def test_human_reschedule_restores_agreement_and_actual_date(self):
         self.apply()
         new_date = self.check_date + timedelta(days=3)
