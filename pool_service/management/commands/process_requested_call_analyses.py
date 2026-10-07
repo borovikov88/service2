@@ -58,6 +58,7 @@ class Command(BaseCommand):
         concurrency = max(1, min(int(options["concurrency"]), 4))
         drain = bool(options["drain"])
         attempted_ids = []
+        completed_ids = set()
         processed = 0
         empty_checks = 0
         recovered, failed_stale = recover_stale_requested_analyses()
@@ -84,7 +85,9 @@ class Command(BaseCommand):
                 .exclude(call__recording_file="")
                 .order_by("requested_at", "pk")
             )
-            if attempted_ids:
+            if completed_ids:
+                queryset = queryset.exclude(call_id__in=completed_ids)
+            if attempted_ids and not drain:
                 queryset = queryset.exclude(call_id__in=attempted_ids)
 
             batch_size = concurrency
@@ -103,10 +106,22 @@ class Command(BaseCommand):
             empty_checks = 0
             attempted_ids.extend(call_ids)
             if len(call_ids) == 1:
-                processed += int(process_one(call_ids[0]))
+                results = [process_one(call_ids[0])]
             else:
                 with ThreadPoolExecutor(max_workers=len(call_ids)) as executor:
-                    processed += sum(executor.map(process_one, call_ids))
+                    results = list(executor.map(process_one, call_ids))
+            processed += sum(results)
+            completed_ids.update(
+                call_id
+                for call_id, succeeded in zip(call_ids, results)
+                if succeeded
+            )
+
+            # Durable/manual workers must finish retryable queue rows themselves.
+            # process_call_analysis leaves a transient failure in PENDING with
+            # requested_at preserved until OPENAI_CALL_MAX_ATTEMPTS is reached.
+            if drain and not all(results):
+                time.sleep(2.0)
 
         self.stdout.write(
             self.style.SUCCESS(

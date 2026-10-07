@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 import mimetypes
 import os
 import re
@@ -12,7 +12,8 @@ from django.conf import settings
 from django.core.exceptions import PermissionDenied
 from django.core.files.images import get_image_dimensions
 from django.db import transaction
-from django.db.models import OuterRef, Q, Subquery
+from django.db.models import OuterRef, Q, Subquery, Value
+from django.db.models.functions import Replace
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequest, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -22,6 +23,8 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.debug import sensitive_post_parameters
 
 from pool_service.client_queries import active_clients
+from pool_service.client_phone_matching import clients_by_phones
+from pool_service.phone_utils import canonical_phone_value, format_phone, normalize_phone
 from pool_service.communication_avito import (
     AvitoError,
     authorized_account_id as avito_authorized_account_id,
@@ -40,7 +43,7 @@ from pool_service.communication_models import (
 from pool_service.communication_recordings import looks_like_audio_file
 from pool_service.communication_secrets import encrypt_secret
 from pool_service.communication_services import conversation_capability, optimize_message_image, organization_access
-from pool_service.services.call_ai import request_call_analysis, start_requested_call_analysis_worker
+from pool_service.services.call_ai import PROCESSING_STALE_MINUTES, request_call_analysis, start_requested_call_analysis_worker
 from pool_service.models import Client, Notification, OrganizationAccess
 
 
@@ -78,7 +81,10 @@ def _authorize_call_access(request, call):
     if not access:
         raise PermissionDenied
     if _is_manual_recording_call(call):
-        if access.role != "owner":
+        if not (
+            access.role in {"owner", "admin"}
+            or request.user.is_superuser
+        ):
             raise PermissionDenied
         return access.organization
     if not conversation_capability(request.user, "can_listen_calls", access.organization):
@@ -89,6 +95,33 @@ def _authorize_call_access(request, call):
     ):
         raise PermissionDenied
     return access.organization
+
+
+def _wake_uploaded_audio_worker_if_needed(organization, *, include_fresh_pending=False):
+    now = timezone.now()
+    stale_before = now - timedelta(minutes=PROCESSING_STALE_MINUTES)
+    pending_before = now if include_fresh_pending else now - timedelta(seconds=30)
+    needs_worker = (
+        CallAnalysis.objects.filter(
+            call__organization=organization,
+            call__source_kind=PhoneCall.SOURCE_UPLOADED,
+            requested_at__isnull=False,
+        )
+        .filter(
+            Q(
+                status=CallAnalysis.STATUS_PENDING,
+                requested_at__lte=pending_before,
+            )
+            | Q(
+                status=CallAnalysis.STATUS_PROCESSING,
+                processing_started_at__lt=stale_before,
+            )
+        )
+        .exists()
+    )
+    if needs_worker:
+        start_requested_call_analysis_worker()
+    return needs_worker
 
 
 @login_required
@@ -310,11 +343,60 @@ def calls(request):
         queryset = queryset.filter(employee_id=employee_id)
     if request.GET.get("direction") in ("in", "out"): queryset = queryset.filter(direction=request.GET["direction"])
     if request.GET.get("missed"): queryset = queryset.filter(result=PhoneCall.RESULT_MISSED)
-    if request.GET.get("q"): queryset = queryset.filter(Q(phone_number__icontains=request.GET["q"]) | Q(contact_name__icontains=request.GET["q"]))
+    if request.GET.get("q"):
+        query = request.GET["q"].strip()
+        normalized_query = normalize_phone(query)
+        canonical_query = canonical_phone_value(query)
+        raw_phone_digits = "".join(ch for ch in query if ch.isdigit())
+        normalized_digits = "".join(ch for ch in normalized_query if ch.isdigit())
+        phone_query = (
+            normalized_digits[-10:]
+            if len(normalized_digits) >= 10
+            else raw_phone_digits[-10:]
+        )
+        phone_digits_expression = "phone_number"
+        for separator in ("+", " ", "-", "(", ")", "."):
+            phone_digits_expression = Replace(
+                phone_digits_expression,
+                Value(separator),
+                Value(""),
+            )
+        queryset = queryset.annotate(
+            phone_number_digits=phone_digits_expression
+        )
+        phone_filter = (
+            Q(phone_number__icontains=query)
+            | Q(phone_number__icontains=canonical_query)
+            | Q(contact_name__icontains=query)
+            | Q(client__name__icontains=query)
+        )
+        if phone_query:
+            phone_filter |= Q(phone_number_digits__icontains=phone_query)
+        queryset = queryset.filter(phone_filter)
     employees = OrganizationAccess.objects.filter(organization=organization).select_related("user")
+    calls = list(queryset[:500])
+    unresolved_phone_values = [
+        call.phone_number
+        for call in calls
+        if not call.client_id and normalize_phone(call.phone_number)
+    ]
+    phone_matches = clients_by_phones(organization, unresolved_phone_values)
+    for call in calls:
+        call.phone_display = format_phone(call.phone_number)
+        if call.client_id:
+            call.resolved_client = call.client
+            call.ambiguous_clients = []
+            continue
+        matches = phone_matches.get(normalize_phone(call.phone_number), [])
+        if len(matches) == 1:
+            call.resolved_client = matches[0]
+            call.ambiguous_clients = []
+        else:
+            call.resolved_client = None
+            call.ambiguous_clients = matches
     return render(request, "pool_service/communications/calls.html", {
         "active_tab": "communications",
-        "calls": queryset[:500],
+        "calls": calls,
         "employees": employees,
         "can_listen": conversation_capability(request.user, "can_listen_calls", organization),
         "can_view_all": can_view_all,
@@ -326,6 +408,10 @@ def calls(request):
 @login_required
 def manual_recordings(request):
     organization = _owner_communications_context(request)
+    _wake_uploaded_audio_worker_if_needed(
+        organization,
+        include_fresh_pending=True,
+    )
     queryset = PhoneCall.objects.filter(
         organization=organization,
         source_kind=PhoneCall.SOURCE_UPLOADED,
@@ -429,7 +515,7 @@ def call_recording_upload(request):
             external_id=f"upload-{secrets.token_hex(16)}",
             client=client,
             contact_name=(client.name if client else ""),
-            phone_number=((client.phone or "") if client else ""),
+            phone_number=(canonical_phone_value(client.phone) if client else ""),
             direction=PhoneCall.DIRECTION_IN,
             started_at=timezone.now(),
             duration_seconds=0,
@@ -502,6 +588,8 @@ def call_analysis_status(request, call_id):
     analysis = getattr(call, "analysis", None)
     if analysis is None:
         return JsonResponse({"status": "none"})
+    if _is_manual_recording_call(call):
+        _wake_uploaded_audio_worker_if_needed(call.organization)
     return JsonResponse({
         "status": analysis.status,
         "error": analysis.error,

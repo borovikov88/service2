@@ -23,6 +23,7 @@ from .client_crm_models import (
     ClientImportRun,
 )
 from .client_queries import active_clients
+from .phone_utils import format_phone
 from .client_merge import merge_clients, merge_suggestions
 from .communication_models import CommunicationAccess, PhoneCall
 from .models import Client, CrmItem, OrganizationAccess, Pool, ServiceTask
@@ -107,40 +108,110 @@ def client_detail(request, client_id):
         if not can_manage:
             return HttpResponseForbidden()
         action = (request.POST.get("action") or "").strip()
-        if action != "save_profile":
-            return HttpResponseForbidden()
 
-        profile, _ = ClientCRMProfile.objects.get_or_create(client=client)
+        if action == "save_profile":
+            profile, _ = ClientCRMProfile.objects.get_or_create(client=client)
 
-        def staff_user(raw_value):
+            def staff_user(raw_value):
+                try:
+                    user_id = int(raw_value or 0)
+                except (TypeError, ValueError):
+                    return None
+                if not user_id or not client.organization_id:
+                    return None
+                return User.objects.filter(
+                    pk=user_id,
+                    organizationaccess__organization_id=client.organization_id,
+                    organizationaccess__role__in=CLIENT_CARD_ROLES,
+                    is_active=True,
+                ).distinct().first()
+
+            manager = staff_user(request.POST.get("manager"))
+            responsible = staff_user(request.POST.get("responsible"))
+            profile.manager = manager
+            profile.responsible = responsible
+            profile.notes = (request.POST.get("notes") or "").strip()
+            profile.save(
+                update_fields=[
+                    "manager",
+                    "responsible",
+                    "notes",
+                    "updated_at",
+                ]
+            )
+            messages.success(request, "Карточка клиента обновлена.")
+            return redirect("client_detail", client_id=client.id)
+
+        if action == "add_company_link":
             try:
-                user_id = int(raw_value or 0)
+                related_id = int(request.POST.get("related_client") or 0)
             except (TypeError, ValueError):
-                return None
-            if not user_id or not client.organization_id:
-                return None
-            return User.objects.filter(
-                pk=user_id,
-                organizationaccess__organization_id=client.organization_id,
-                organizationaccess__role__in=CLIENT_CARD_ROLES,
-                is_active=True,
-            ).distinct().first()
+                related_id = 0
+            expected_type = "private" if client.client_type == "legal" else "legal"
+            related = active_clients(
+                Client.objects.filter(
+                    pk=related_id,
+                    organization_id=client.organization_id,
+                    client_type=expected_type,
+                )
+            ).first()
+            if related is None:
+                messages.error(request, "Не удалось найти клиента для связи.")
+                return redirect("client_detail", client_id=client.id)
+            company = client if client.client_type == "legal" else related
+            person = related if client.client_type == "legal" else client
+            is_primary = request.POST.get("is_primary") == "1"
+            link, created = ClientCompanyLink.objects.get_or_create(
+                company=company,
+                person=person,
+                defaults={
+                    "position": (request.POST.get("position") or "").strip()[:160],
+                    "is_primary": is_primary,
+                    "source": ClientCompanyLink.SOURCE_MANUAL,
+                    "automatic": False,
+                },
+            )
+            if not created:
+                link.position = (request.POST.get("position") or "").strip()[:160]
+                link.is_primary = is_primary
+                link.save(update_fields=["position", "is_primary", "updated_at"])
+            if is_primary:
+                ClientCompanyLink.objects.filter(company=company).exclude(pk=link.pk).update(
+                    is_primary=False
+                )
+            messages.success(request, "Связь добавлена.")
+            return redirect("client_detail", client_id=client.id)
 
-        manager = staff_user(request.POST.get("manager"))
-        responsible = staff_user(request.POST.get("responsible"))
-        profile.manager = manager
-        profile.responsible = responsible
-        profile.notes = (request.POST.get("notes") or "").strip()
-        profile.save(
-            update_fields=[
-                "manager",
-                "responsible",
-                "notes",
-                "updated_at",
-            ]
-        )
-        messages.success(request, "Карточка клиента обновлена.")
-        return redirect("client_detail", client_id=client.id)
+        if action in {"update_company_link", "delete_company_link"}:
+            try:
+                link_id = int(request.POST.get("link_id") or 0)
+            except (TypeError, ValueError):
+                link_id = 0
+            link_filter = Q(company=client) if client.client_type == "legal" else Q(person=client)
+            link = ClientCompanyLink.objects.filter(link_filter, pk=link_id).first()
+            if link is None:
+                return HttpResponseForbidden()
+            if action == "delete_company_link":
+                if link.automatic:
+                    messages.error(
+                        request,
+                        "Автоматическую связь ИП из 1С нельзя удалить вручную.",
+                    )
+                else:
+                    link.delete()
+                    messages.success(request, "Связь удалена.")
+                return redirect("client_detail", client_id=client.id)
+            link.position = (request.POST.get("position") or "").strip()[:160]
+            link.is_primary = request.POST.get("is_primary") == "1"
+            link.save(update_fields=["position", "is_primary", "updated_at"])
+            if link.is_primary:
+                ClientCompanyLink.objects.filter(company=link.company).exclude(pk=link.pk).update(
+                    is_primary=False
+                )
+            messages.success(request, "Связь обновлена.")
+            return redirect("client_detail", client_id=client.id)
+
+        return HttpResponseForbidden()
 
     contacts = list(
         ClientContact.objects.filter(client=client).order_by(
@@ -151,6 +222,9 @@ def client_detail(request, client_id):
     )
     phones = [item for item in contacts if item.kind == ClientContact.KIND_PHONE]
     emails = [item for item in contacts if item.kind == ClientContact.KIND_EMAIL]
+    client.phone_display = format_phone(client.phone)
+    for item in phones:
+        item.display_value = format_phone(item.value)
 
     if client.client_type == "legal":
         relationship_links = list(
@@ -166,6 +240,28 @@ def client_detail(request, client_id):
             .order_by("-is_primary", "company__name", "id")
         )
         relationship_mode = "companies"
+
+    for link in relationship_links:
+        related = link.person if relationship_mode == "people" else link.company
+        related.phone_display = format_phone(related.phone)
+
+    relationship_options = []
+    if can_manage and client.organization_id:
+        expected_type = "private" if client.client_type == "legal" else "legal"
+        linked_ids = {
+            link.person_id if client.client_type == "legal" else link.company_id
+            for link in relationship_links
+        }
+        relationship_options = list(
+            active_clients(
+                Client.objects.filter(
+                    organization_id=client.organization_id,
+                    client_type=expected_type,
+                )
+            )
+            .exclude(pk__in=linked_ids)
+            .order_by("name", "id")[:2000]
+        )
 
     pools = list(
         Pool.objects.filter(client=client, is_deleted=False)
@@ -262,6 +358,7 @@ def client_detail(request, client_id):
         minutes, seconds = divmod(call.duration_seconds or 0, 60)
         call.duration_display = f"{minutes}:{seconds:02d}"
         call.analysis_obj = getattr(call, "analysis", None)
+        call.phone_display = format_phone(call.phone_number)
 
     staff_options = []
     if can_manage and client.organization_id:
@@ -298,6 +395,7 @@ def client_detail(request, client_id):
             "emails": emails,
             "relationship_links": relationship_links,
             "relationship_mode": relationship_mode,
+            "relationship_options": relationship_options,
             "pools": pools,
             "tasks": tasks,
             "crm_items": crm_items,

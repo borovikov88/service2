@@ -19,12 +19,16 @@
         <button class="nav-link active" id="companies-tab" data-bs-toggle="tab" data-bs-target="#companies-pane" type="button" role="tab" aria-controls="companies-pane" aria-selected="true">&#1050;&#1086;&#1084;&#1087;&#1072;&#1085;&#1080;&#1080;</button>
       </li>
       <li class="nav-item" role="presentation">
-        <button class="nav-link" id="contacts-tab" data-bs-toggle="tab" data-bs-target="#contacts-pane" type="button" role="tab" aria-controls="contacts-pane" aria-selected="false">&#1050;&#1086;&#1085;&#1090;&#1072;&#1082;&#1090;&#1099;</button>
+        <button class="nav-link" id="contacts-tab" data-bs-toggle="tab" data-bs-target="#contacts-pane" type="button" role="tab" aria-controls="contacts-pane" aria-selected="false">Физические лица</button>
       </li>
     </ul>
   </div>
   <div class="tab-content">
     <div class="tab-pane fade show active" id="companies-pane" role="tabpanel" aria-labelledby="companies-tab">
+      <div class="mb-3">
+        <input class="form-control" type="search" placeholder="Поиск по названию, ИНН, телефону, email или контактному лицу" data-client-search="companies" autocomplete="off">
+        <div class="text-muted small mt-1" data-client-search-count="companies"></div>
+      </div>
       <div class="table-responsive">
         <table class="table align-middle">
           <thead class="small text-muted">
@@ -40,41 +44,34 @@
           </thead>
           <tbody>
             {% for company in companies %}
-              <tr>
+              <tr data-client-row="companies" data-search="{{ company.search_text }}">
                 <td class="fw-semibold"><a class="text-decoration-none" href="{% url 'client_detail' company.id %}">{{ company.name }}</a></td>
-                <td>{{ company.phone|default:"-" }}</td>
+                <td>{{ company.phone_display|default:"-" }}</td>
                 <td>{{ company.email|default:"-" }}</td>
                 <td>{{ company.pool_count|default:0 }}</td>
                 <td>
-                  {% if company.primary_contact or company.staff_contacts %}
+                  {% if company.linked_people or company.primary_contact or company.staff_contacts %}
                     <div class="d-flex flex-column gap-1">
-                      {% if company.primary_contact %}
-                        <div class="fw-semibold">{{ company.primary_contact.name|default:"-" }}</div>
-                        {% if company.primary_contact.position %}
-                          <div class="text-muted small">{{ company.primary_contact.position }}</div>
-                        {% endif %}
-                        {% if company.primary_contact.phone or company.primary_contact.email %}
-                          <div class="text-muted small">
-                            {% if company.primary_contact.phone %}{{ company.primary_contact.phone }}{% endif %}
-                            {% if company.primary_contact.email %}
-                              {% if company.primary_contact.phone %} &middot; {% endif %}
-                              {{ company.primary_contact.email }}
-                            {% endif %}
-                          </div>
-                        {% endif %}
+                      {% for link in company.linked_people %}
+                        <div>
+                          <a class="fw-semibold text-decoration-none" href="{% url 'client_detail' link.person.id %}">{{ link.person.name }}</a>
+                          {% if link.position %}<span class="text-muted small"> · {{ link.position }}</span>{% endif %}
+                          {% if link.person.phone_display %}<div class="text-muted small">{{ link.person.phone_display }}</div>{% endif %}
+                        </div>
+                      {% endfor %}
+                      {% if not company.linked_people and company.primary_contact %}
+                        <div>
+                          {% if company.primary_contact.name %}<span class="fw-semibold">{{ company.primary_contact.name }}</span>{% endif %}
+                          {% if company.primary_contact.position %}<span class="text-muted small"> · {{ company.primary_contact.position }}</span>{% endif %}
+                          {% if company.primary_contact.phone %}<div class="text-muted small">{{ company.primary_contact.phone }}</div>{% endif %}
+                          {% if company.primary_contact.email %}<div class="text-muted small">{{ company.primary_contact.email }}</div>{% endif %}
+                        </div>
                       {% endif %}
                       {% if company.staff_contacts %}
-                        <div class="text-muted small mt-1">&#1057;&#1086;&#1090;&#1088;&#1091;&#1076;&#1085;&#1080;&#1082;&#1080;:</div>
-                        <div class="d-flex flex-column gap-1">
-                          {% for access in company.staff_contacts %}
-                            <div class="small">
-                              <span class="fw-semibold">
-                                {% if access.user.get_full_name %}{{ access.user.get_full_name }}{% else %}{{ access.user.username }}{% endif %}
-                              </span>
-                              <span class="text-muted">&middot; {{ access.phone|default:access.user.email|default:access.user.username }}</span>
-                            </div>
-                          {% endfor %}
-                        </div>
+                        <div class="text-muted small mt-1">Сотрудники по доступу:</div>
+                        {% for access in company.staff_contacts %}
+                          <div class="small">{{ access.user.get_full_name|default:access.user.username }}</div>
+                        {% endfor %}
                       {% endif %}
                     </div>
                   {% else %}
@@ -127,6 +124,10 @@
       </div>
     </div>
     <div class="tab-pane fade" id="contacts-pane" role="tabpanel" aria-labelledby="contacts-tab">
+      <div class="mb-3">
+        <input class="form-control" type="search" placeholder="Поиск по ФИО, телефону, email или компании" data-client-search="people" autocomplete="off">
+        <div class="text-muted small mt-1" data-client-search-count="people"></div>
+      </div>
       <div class="mb-4">
         <div class="fw-semibold mb-2">&#1060;&#1080;&#1079;&#1080;&#1095;&#1077;&#1089;&#1082;&#1080;&#1077; &#1083;&#1080;&#1094;&#1072;</div>
         <div class="table-responsive">
@@ -144,15 +145,24 @@
             </thead>
             <tbody>
               {% for client in private_contacts %}
-                <tr>
+                <tr data-client-row="people" data-search="{{ client.search_text }}">
                   <td class="fw-semibold"><a class="text-decoration-none" href="{% url 'client_detail' client.id %}">{{ client.name }}</a></td>
-                  <td>{{ client.phone|default:"-" }}</td>
+                  <td>{{ client.phone_display|default:"-" }}</td>
                   <td>{{ client.email|default:"-" }}</td>
                   <td>
-                    {% if client.company_name %}
+                    {% if client.linked_companies %}
+                      <div class="d-flex flex-column gap-1">
+                        {% for link in client.linked_companies %}
+                          <div>
+                            <a class="text-decoration-none" href="{% url 'client_detail' link.company.id %}">{{ link.company.name }}</a>
+                            {% if link.position %}<span class="text-muted small"> · {{ link.position }}</span>{% endif %}
+                          </div>
+                        {% endfor %}
+                      </div>
+                    {% elif client.company_name %}
                       {{ client.company_name }}
                     {% else %}
-                      &#1063;&#1072;&#1089;&#1090;&#1085;&#1099;&#1081; &#1082;&#1083;&#1080;&#1077;&#1085;&#1090;
+                      Частный клиент
                     {% endif %}
                   </td>
                   <td>{{ client.pool_count|default:0 }}</td>
@@ -267,6 +277,81 @@
 </div>
 <script>
   document.addEventListener("DOMContentLoaded", function () {
+    const normalizeQuery = (value) => {
+      const raw = (value || "").trim().toLocaleLowerCase("ru-RU");
+      const digits = raw.replace(/\D/g, "");
+      return {raw, digits};
+    };
+    const searchParams = new URLSearchParams(window.location.search);
+    const searchParamByGroup = {
+      companies: "companies_q",
+      people: "people_q",
+    };
+    const replaceUrl = () => {
+      const query = searchParams.toString();
+      history.replaceState(
+        null,
+        "",
+        window.location.pathname + (query ? "?" + query : "") + window.location.hash
+      );
+    };
+    document.querySelectorAll("[data-client-search]").forEach((input) => {
+      const group = input.dataset.clientSearch;
+      const paramName = searchParamByGroup[group];
+      const rows = Array.from(document.querySelectorAll('[data-client-row="' + group + '"]'));
+      const counter = document.querySelector('[data-client-search-count="' + group + '"]');
+      if (paramName && searchParams.has(paramName)) {
+        input.value = searchParams.get(paramName) || "";
+      }
+      const apply = (syncUrl) => {
+        const query = normalizeQuery(input.value);
+        let visible = 0;
+        rows.forEach((row) => {
+          const text = (row.dataset.search || "").toLocaleLowerCase("ru-RU");
+          const textDigits = text.replace(/\D/g, "");
+          const matched = !query.raw || text.includes(query.raw) || (query.digits.length >= 4 && textDigits.includes(query.digits));
+          row.hidden = !matched;
+          if (matched) visible += 1;
+        });
+        if (counter) counter.textContent = query.raw ? "Найдено: " + visible : "";
+        if (syncUrl && paramName) {
+          if (input.value.trim()) {
+            searchParams.set(paramName, input.value.trim());
+          } else {
+            searchParams.delete(paramName);
+          }
+          replaceUrl();
+        }
+      };
+      let searchTimer = null;
+      input.addEventListener("input", () => {
+        window.clearTimeout(searchTimer);
+        searchTimer = window.setTimeout(() => apply(true), 250);
+      });
+      apply(false);
+    });
+
+    const tabButtons = {
+      companies: document.getElementById("companies-tab"),
+      people: document.getElementById("contacts-tab"),
+    };
+    const initialTab = searchParams.get("clients_tab");
+    if (initialTab && tabButtons[initialTab]) {
+      bootstrap.Tab.getOrCreateInstance(tabButtons[initialTab]).show();
+    } else if (searchParams.get("people_q") && tabButtons.people) {
+      bootstrap.Tab.getOrCreateInstance(tabButtons.people).show();
+    }
+    Object.entries(tabButtons).forEach(([name, button]) => {
+      if (!button) return;
+      button.addEventListener("shown.bs.tab", () => {
+        if (name === "companies") {
+          searchParams.delete("clients_tab");
+        } else {
+          searchParams.set("clients_tab", name);
+        }
+        replaceUrl();
+      });
+    });
     const modalEl = document.getElementById("clientDeleteBlockedModal");
     if (!modalEl) return;
     const modal = new bootstrap.Modal(modalEl);

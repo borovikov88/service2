@@ -12,7 +12,7 @@ from datetime import timedelta
 from uuid import uuid4
 
 from django.conf import settings
-from django.db import transaction
+from django.db import connections, transaction
 from django.db.models import F
 from django.utils import timezone
 from openai import OpenAI
@@ -38,11 +38,15 @@ def _setting(name, default):
     return getattr(settings, name, default)
 
 
-def _client():
+def _client(*, timeout_seconds=None):
     api_key = (_setting("OPENAI_API_KEY", "") or "").strip()
     if not api_key:
         raise CallAnalysisError("openai_api_key_missing")
-    timeout = float(_setting("OPENAI_CALL_TIMEOUT_SECONDS", 120))
+    timeout = float(
+        timeout_seconds
+        if timeout_seconds is not None
+        else _setting("OPENAI_CALL_TIMEOUT_SECONDS", 120)
+    )
     return OpenAI(api_key=api_key, timeout=timeout, max_retries=1)
 
 
@@ -411,13 +415,22 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
     )
     call = analysis.call
 
+    # Do not keep a MySQL connection open while waiting on external AI calls.
+    # Production MySQL may expire an idle connection before OpenAI returns,
+    # which previously left the analysis stuck in PROCESSING when the error
+    # handler then tried to reuse the dead connection.
+    connections.close_all()
+
     try:
-        client = _client()
         transcript = (analysis.transcript or "").strip()
         transcription_model = analysis.transcription_model
 
         if not transcript:
-            transcript, transcription_model = _transcribe(client, call)
+            transcription_timeout = float(
+                _setting("OPENAI_CALL_TRANSCRIPTION_TIMEOUT_SECONDS", 300)
+            )
+            transcription_client = _client(timeout_seconds=transcription_timeout)
+            transcript, transcription_model = _transcribe(transcription_client, call)
             checkpointed = CallAnalysis.objects.filter(
                 pk=analysis.pk,
                 status=CallAnalysis.STATUS_PROCESSING,
@@ -429,7 +442,15 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
             if not checkpointed:
                 return False
 
-        summary, facts, analysis_model = _analyze_transcript(client, call, transcript)
+        # The checkpoint query opens a new connection. Release it before the
+        # second potentially long OpenAI request for summary/facts.
+        connections.close_all()
+        analysis_client = _client()
+        summary, facts, analysis_model = _analyze_transcript(
+            analysis_client,
+            call,
+            transcript,
+        )
         completed = CallAnalysis.objects.filter(
             pk=analysis.pk,
             status=CallAnalysis.STATUS_PROCESSING,
@@ -456,6 +477,9 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
                 )
         return bool(completed)
     except Exception as exc:
+        # If the exception happened after a long external request or during a
+        # stale DB write, force the status update through a fresh connection.
+        connections.close_all()
         quota_exhausted = _is_openai_credit_balance_exhausted(exc)
         code = str(exc)
         if quota_exhausted:

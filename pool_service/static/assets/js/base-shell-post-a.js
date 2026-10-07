@@ -14,9 +14,12 @@
 
     function applyPhoneMasks(root) {
       const scope = root || document;
-      const selector = ".phone-mask, input[type='tel'], input[name*='phone'], input[name*='Phone']";
+      // CRM accepts international numbers; only the server normalizes them.
+      // Apply the exclusion to every branch, including name/type selectors.
+      const selector = [".phone-mask", "input[type='tel']", "input[name*='phone']", "input[name*='Phone']"]
+        .map((selector) => `${selector}:not([data-crm-phone])`).join(", ");
       scope.querySelectorAll(selector).forEach((inp) => {
-        if (inp.dataset.phoneMask === "1") return;
+        if (inp.hasAttribute("data-crm-phone") || inp.dataset.phoneMask === "1") return;
         inp.dataset.phoneMask = "1";
         inp.classList.add("phone-mask");
         inp.value = formatPhoneMask(inp.value || "+7");
