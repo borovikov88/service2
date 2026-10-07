@@ -66,7 +66,7 @@ def internal_call_sync_due(organization, *, max_age_minutes=10):
     for provider in providers:
         settings_data = provider.settings if isinstance(provider.settings, dict) else {}
         if not (
-            str(settings_data.get("megafon_api_endpoint") or "").strip()
+            str(settings_data.get("megafon_api_base_url") or "").strip()
             and str(settings_data.get("megafon_api_key_encrypted") or "").strip()
         ):
             continue
@@ -82,7 +82,7 @@ def internal_call_sync_due(organization, *, max_age_minutes=10):
         if synced_through < threshold:
             return True
 
-    return False if configured else False
+    return False
 
 
 def _sync_python_executable(base_dir):
