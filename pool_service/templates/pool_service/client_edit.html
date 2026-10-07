@@ -1,0 +1,82 @@
+{% extends "pool_service/base.html" %}
+{% load crm_phone_fields %}
+{% block title %}Редактирование — {{ client.name }}{% endblock %}
+{% block content %}
+{% include "pool_service/_admin_workspace_styles.html" %}
+<div class="admin-desktop">
+  <div class="admin-card card card-soft p-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+      <div>
+        <h4 class="fw-bold mb-1">Редактирование клиента</h4>
+        <div class="text-muted">{{ client.name }}</div>
+        <div class="small text-muted mt-1">
+          {% if client.client_type == "legal" %}{% if profile.legal_form == "ip" %}ИП{% else %}Компания{% endif %}{% else %}Физическое лицо{% endif %}
+          {% if profile.onec_code %} · код 1С {{ profile.onec_code }}{% endif %}
+        </div>
+      </div>
+      <a class="btn btn-outline-secondary btn-sm" href="{{ return_url }}"><i class="bi bi-arrow-left me-1"></i>В карточку</a>
+    </div>
+    <form method="post" data-crm-editor>
+      {% csrf_token %}
+      <input type="hidden" name="return_tab" value="{{ return_tab }}">
+      {% if client_form.errors or profile_form.errors %}
+        <div class="alert alert-danger" role="alert">Проверьте выделенные поля. Изменения пока не сохранены.</div>
+      {% endif %}
+      {{ client_form.non_field_errors }}{{ profile_form.non_field_errors }}
+      <div class="row g-4">
+        <div class="col-12 col-xl-6">
+          <section class="border rounded-3 p-3 p-md-4 h-100">
+            <h6 class="fw-bold mb-3">Основные сведения и контакты</h6>
+            <div class="row g-3">
+              {% for field in client_form %}
+                <div class="{% if field.name == 'name' %}col-12{% else %}col-12 col-md-6{% endif %}">
+                  <label class="form-label small text-muted" for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %} *{% endif %}</label>
+                  {% if field.name == "phone" %}{% crm_phone_input field %}{% else %}{{ field }}{% endif %}
+                  {% for error in field.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+                  {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+                </div>
+              {% endfor %}
+            </div>
+            <p class="text-muted small mt-3 mb-0">Иностранный телефон указывайте с кодом страны. Остальные номера и адреса не удаляются при изменении основного контакта.</p>
+          </section>
+        </div>
+        <div class="col-12 col-xl-6">
+          <section class="border rounded-3 p-3 p-md-4 h-100">
+            <h6 class="fw-bold mb-3">{% if client.client_type == "legal" %}Реквизиты и работа с компанией{% else %}Личные данные и работа с клиентом{% endif %}</h6>
+            <div class="row g-3">
+              {% for field in profile_form %}
+                <div class="{% if field.name == 'notes' or field.name == 'legal_name' %}col-12{% else %}col-12 col-md-6{% endif %}">
+                  <label class="form-label small text-muted" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                  {{ field }}
+                  {% for error in field.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+                </div>
+              {% endfor %}
+            </div>
+          </section>
+        </div>
+        <div class="col-12">
+          <section class="border rounded-3 p-3 p-md-4">
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+              <h6 class="fw-bold mb-0">Все сохранённые контакты и связи</h6>
+              <a class="btn btn-outline-secondary btn-sm" href="{{ contacts_url }}">Компании и контактные лица</a>
+            </div>
+            <div class="d-flex flex-wrap gap-2">
+              {% for contact in contacts %}
+                <div class="border rounded-2 px-3 py-2">
+                  <div>{{ contact.get_kind_display }}: {{ contact.value }}</div>
+                  {% if contact.label %}<div class="small text-muted">{{ contact.label }}</div>{% endif %}
+                </div>
+              {% empty %}<div class="text-muted small">Дополнительные контакты не добавлены.</div>{% endfor %}
+            </div>
+            <div class="text-muted small mt-3">Изменения сохраняются в Service2. Связь с 1С и автоматические связи ИП не меняются; данные обратно в 1С не отправляются.</div>
+          </section>
+        </div>
+      </div>
+      <div class="d-flex flex-wrap gap-2 justify-content-end border-top pt-3 mt-4">
+        <a class="btn btn-outline-secondary" href="{{ return_url }}">Отмена</a>
+        <button class="btn btn-primary" type="submit">Сохранить изменения</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

@@ -277,8 +277,11 @@
 </div>
 <script>
   document.addEventListener("DOMContentLoaded", function () {
+    const normalizeText = (value) => String(value || "").normalize("NFKC")
+      .toLocaleLowerCase("ru-RU").replace(/ё/g, "е")
+      .replace(/[^\p{L}\p{N}]+/gu, " ").trim();
     const normalizeQuery = (value) => {
-      const raw = (value || "").trim().toLocaleLowerCase("ru-RU");
+      const raw = normalizeText(value);
       const digits = raw.replace(/\D/g, "");
       return {raw, digits};
     };
@@ -307,9 +310,9 @@
         const query = normalizeQuery(input.value);
         let visible = 0;
         rows.forEach((row) => {
-          const text = (row.dataset.search || "").toLocaleLowerCase("ru-RU");
+          const text = normalizeText(row.dataset.search);
           const textDigits = text.replace(/\D/g, "");
-          const matched = !query.raw || text.includes(query.raw) || (query.digits.length >= 4 && textDigits.includes(query.digits));
+          const matched = !query.raw || query.raw.split(" ").every((token) => text.includes(token)) || (query.digits.length >= 4 && textDigits.includes(query.digits));
           row.hidden = !matched;
           if (matched) visible += 1;
         });

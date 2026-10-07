@@ -53,6 +53,8 @@ from pool_service.services.employee_identity_sync import (
 )
 from pool_service.services.megafon_internal_calls import (
     MegafonInternalCallSyncError,
+    internal_call_sync_due,
+    start_call_recording_sync_worker,
     sync_megafon_internal_calls,
 )
 from pool_service.communication_api import _payload
@@ -3494,6 +3496,95 @@ class CommunicationsTests(TestCase):
                 external_id="call-long-ext",
             ).exists()
         )
+
+    def test_megafon_internal_sync_due_uses_matching_configured_provider(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон freshness",
+            external_id="megafon-freshness",
+        )
+        channel = CommunicationChannel.objects.create(
+            organization=self.organization,
+            kind=CommunicationChannel.KIND_MEGAFON,
+            name="МегаФон freshness",
+        )
+        provider = ChannelConnection.objects.create(
+            channel=channel,
+            name="МегаФон freshness",
+            external_id=telephony.external_id,
+            settings={
+                "megafon_api_base_url": "https://example.megapbx.ru/sys/crm_api.wcgp",
+                "megafon_api_key_encrypted": "encrypted-test-value",
+            },
+        )
+
+        self.assertTrue(internal_call_sync_due(self.organization))
+
+        provider.settings = {
+            **provider.settings,
+            "megafon_internal_history_synced_through": timezone.now().isoformat(),
+        }
+        provider.save(update_fields=["settings"])
+        self.assertFalse(internal_call_sync_due(self.organization))
+
+        provider.settings = {
+            **provider.settings,
+            "megafon_internal_history_synced_through": (
+                timezone.now() - timedelta(minutes=20)
+            ).isoformat(),
+        }
+        provider.save(update_fields=["settings"])
+        self.assertTrue(
+            internal_call_sync_due(self.organization, max_age_minutes=10)
+        )
+
+    @patch("pool_service.services.megafon_internal_calls.threading.Thread")
+    @patch("pool_service.services.megafon_internal_calls.subprocess.Popen")
+    @patch(
+        "pool_service.services.megafon_internal_calls.shutil.which",
+        return_value="/bin/bash",
+    )
+    @patch(
+        "pool_service.services.megafon_internal_calls.os.access",
+        return_value=True,
+    )
+    @patch(
+        "pool_service.services.megafon_internal_calls.os.path.isfile",
+        return_value=True,
+    )
+    def test_internal_sync_worker_uses_locked_shell_launcher(
+        self,
+        _isfile,
+        _access,
+        _which,
+        popen,
+        thread,
+    ):
+        process = MagicMock()
+        popen.return_value = process
+
+        self.assertTrue(start_call_recording_sync_worker(limit=123))
+
+        command = popen.call_args.args[0]
+        self.assertEqual(command[0], "/bin/bash")
+        self.assertTrue(command[1].endswith("scripts/run_call_recording_sync.sh"))
+        self.assertEqual(command[2], "123")
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+        thread.assert_called_once()
+        thread.return_value.start.assert_called_once_with()
+
+    @patch("pool_service.communication_crm.start_call_recording_sync_worker")
+    @patch(
+        "pool_service.communication_crm.internal_call_sync_due",
+        return_value=True,
+    )
+    def test_calls_page_wakes_stale_internal_sync(self, due, start_worker):
+        self.client.login(username="owner", password="test")
+        response = self.client.get(reverse("communications_calls"))
+
+        self.assertEqual(response.status_code, 200)
+        due.assert_called_once_with(self.organization)
+        start_worker.assert_called_once_with(limit=100)
 
     @patch(
         "pool_service.services.megafon_internal_calls._megafon_api_credentials"

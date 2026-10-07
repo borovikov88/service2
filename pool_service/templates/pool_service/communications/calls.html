@@ -1,4 +1,5 @@
 {% extends "pool_service/base.html" %}
+{% load static %}
 {% block title %}{% if manual_archive %}Аудиофайлы{% else %}Звонки{% endif %}{% endblock %}
 {% block content %}
 {% include "pool_service/communications/_section_nav.html" %}
@@ -123,13 +124,8 @@
       <div class="form-text">Можно выбрать до 50 файлов. После загрузки расшифровка не запускается автоматически.</div>
     </div>
     <div style="min-width:240px">
-      <label class="form-label">Клиент для всей пачки</label>
-      <select class="form-select" name="client">
-        <option value="">Не определён</option>
-        {% for client in clients %}
-          <option value="{{ client.pk }}">{{ client.name }}</option>
-        {% endfor %}
-      </select>
+      <label class="form-label" for="upload-client-lookup">Клиент для всей пачки</label>
+      {% include "pool_service/_client_lookup.html" with lookup_id="upload-client-lookup" lookup_url=client_lookup_url lookup_name="client" lookup_label="Клиент для всей пачки" lookup_required=False lookup_selected=None only %}
     </div>
     <button class="btn btn-primary" type="submit">
       <i class="bi bi-upload me-1"></i>Загрузить аудио
@@ -149,13 +145,8 @@
       <input class="form-control" type="date" name="date_to" value="{{ request.GET.date_to }}">
     </div>
     <div class="col-md">
-      <label class="form-label">Клиент</label>
-      <select class="form-select" name="client">
-        <option value="">Все</option>
-        {% for client in clients %}
-          <option value="{{ client.pk }}" {% if request.GET.client == client.pk|stringformat:'s' %}selected{% endif %}>{{ client.name }}</option>
-        {% endfor %}
-      </select>
+      <label class="form-label" for="filter-client-lookup">Клиент</label>
+      {% include "pool_service/_client_lookup.html" with lookup_id="filter-client-lookup" lookup_url=client_lookup_url lookup_name="client" lookup_label="Фильтр по клиенту" lookup_required=False lookup_selected=selected_client only %}
     </div>
     {% if can_view_all and not manual_archive %}
       <div class="col-md">
@@ -321,42 +312,41 @@
           </td>
           {% endif %}
           <td>
-            {% if manual_archive %}
-              {% if call.client %}
-                {{ call.client.name }}
-              {% elif call.contact_name %}
-                {{ call.contact_name }}
-              {% else %}
-                <span class="text-muted">Не определён</span>
-              {% endif %}
-              {% if call.recording_filename %}
-                <br><small class="text-muted">{{ call.recording_filename }}</small>
+            {% if call.direction == 'internal' %}
+              <span>Внутренний звонок</span>
+              {% if call.provider_extension or call.peer_provider_extension %}
+                <br><small class="text-muted">
+                  {{ call.provider_extension|default:call.provider_user }}
+                  <i class="bi bi-arrow-right mx-1"></i>
+                  {{ call.peer_provider_extension|default:call.peer_provider_user }}
+                </small>
               {% endif %}
             {% else %}
-              {% if call.direction == 'internal' %}
-                <span>Внутренний звонок</span>
-                {% if call.provider_extension or call.peer_provider_extension %}
-                  <br><small class="text-muted">
-                    {{ call.provider_extension|default:call.provider_user }}
-                    <i class="bi bi-arrow-right mx-1"></i>
-                    {{ call.peer_provider_extension|default:call.peer_provider_user }}
-                  </small>
-                {% endif %}
-              {% else %}
-                {% if call.phone_number %}{{ call.phone_display }}{% else %}<span class="text-muted">—</span>{% endif %}
-                {% if call.resolved_client %}
-                  <br><small><a class="text-decoration-none" href="{% url 'client_detail' call.resolved_client.id %}">{{ call.resolved_client.name }}</a></small>
-                {% elif call.ambiguous_clients %}
-                  <div class="small mt-1">
-                    <span class="text-warning">Несколько клиентов:</span>
-                    {% for matched_client in call.ambiguous_clients %}
-                      <a class="text-decoration-none" href="{% url 'client_detail' matched_client.id %}">{{ matched_client.name }}</a>{% if not forloop.last %}, {% endif %}
-                    {% endfor %}
-                  </div>
-                {% elif call.contact_name %}
-                  <br><small class="text-muted">{{ call.contact_name }}</small>
-                {% endif %}
+            <div class="d-flex align-items-center gap-2">
+              {% if call.phone_number %}{{ call.phone_display }}{% elif not manual_archive %}<span class="text-muted">—</span>{% endif %}
+              {% if call.create_client_url %}
+                <a class="btn btn-outline-primary btn-sm" href="{{ call.create_client_url }}" data-call-create-client aria-label="Создать компанию или физлицо для номера {{ call.phone_display }}" title="Создать компанию или физлицо">
+                  <i class="bi bi-plus-lg" aria-hidden="true"></i>
+                </a>
               {% endif %}
+            </div>
+            {% if call.resolved_client %}
+              <div class="small"><a class="text-decoration-none" href="{% url 'client_detail' call.resolved_client.id %}">{{ call.resolved_client.name }}</a></div>
+            {% elif call.ambiguous_clients %}
+              <div class="small mt-1">
+                <span class="text-warning">Несколько клиентов:</span>
+                {% for matched_client in call.ambiguous_clients %}
+                  <a class="text-decoration-none" href="{% url 'client_detail' matched_client.id %}">{{ matched_client.name }}</a>{% if not forloop.last %}, {% endif %}
+                {% endfor %}
+              </div>
+            {% elif call.contact_name %}
+              <div class="small text-muted">{{ call.contact_name }}</div>
+            {% elif manual_archive %}
+              <span class="text-muted">Не определён</span>
+            {% endif %}
+            {% endif %}
+            {% if manual_archive and call.recording_filename %}
+              <div class="small text-muted">{{ call.recording_filename }}</div>
             {% endif %}
           </td>
           {% if not manual_archive %}
@@ -562,6 +552,7 @@
   </table>
 </div>
 
+<script src="{% static 'assets/js/crm-client-picker.js' %}" defer></script>
 <script>
 (() => {
   const selectAll = document.querySelector("[data-call-select-all]");
