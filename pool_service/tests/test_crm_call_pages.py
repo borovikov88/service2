@@ -5,7 +5,8 @@ from unittest.mock import patch
 import io
 
 from django.contrib.auth import get_user_model
-from django.test import Client as Browser, TestCase
+from django.core.exceptions import PermissionDenied
+from django.test import Client as Browser, RequestFactory, TestCase
 from django.urls import resolve, reverse
 from django.utils import timezone
 from docx import Document
@@ -158,7 +159,17 @@ class CRMCallPageIntegrationTests(TestCase):
         accountant = get_user_model().objects.create_user(username="call-page-accountant")
         OrganizationAccess.objects.create(user=accountant, organization=self.org, role="accountant")
         self.client.force_login(accountant)
-        self.assertEqual(self.client.get(reverse("communication_client_lookup", args=["telephony"]), {"q": "Page"}).status_code, 403)
+        lookup_url = reverse("communication_client_lookup", args=["telephony"])
+        # FinanceOnlyRoleMiddleware redirects safe requests before the view runs.
+        self.assertRedirects(
+            self.client.get(lookup_url, {"q": "Page"}),
+            reverse("finance_dashboard"), fetch_redirect_response=False,
+        )
+        # The view must independently deny access when called without middleware.
+        request = RequestFactory().get(lookup_url, {"q": "Page"})
+        request.user = accountant
+        with self.assertRaises(PermissionDenied):
+            resolve(lookup_url).func(request, source_kind="telephony")
         self.assertFalse(Client.objects.exists())
 
     def test_lazy_fields_do_not_render_the_directory_and_selected_value_survives(self):
@@ -260,3 +271,40 @@ class CRMCallPageIntegrationTests(TestCase):
         self.assertEqual(self.page_ids(self.calls_url, {"client": international.pk}), {second.pk})
         self.assertEqual(self.card_ids(russian), {first.pk})
         self.assertEqual(self.card_ids(international), {second.pk})
+
+    def test_long_international_call_phone_creates_both_client_types_and_keeps_history(self):
+        cases = (
+            ("private", "telephony", "+358 (40) 123-456-78-90"),
+            ("legal", "telephony", "+358 (40) 123-456-78-91"),
+            ("private", "uploaded", "+123 (4567) 8901-2345"),
+            ("legal", "uploaded", "+123 (4567) 8901-2346"),
+        )
+        for index, (kind, source, raw) in enumerate(cases):
+            with self.subTest(kind=kind, source=source):
+                self.assertGreater(len(raw), Client._meta.get_field("phone").max_length)
+                self.assertLessEqual(len(raw), PhoneCall._meta.get_field("phone_number").max_length)
+                expected = "+" + "".join(ch for ch in raw if ch.isdigit())
+                call = self.call(phone=raw, source_kind=source)
+                url = reverse("communication_call_client_create", args=[call.pk])
+                count = Client.objects.count()
+                page = self.client.get(url, {"client_type": kind})
+                self.assertEqual(page.status_code, 200)
+                self.assertEqual(page.context["client_form"]["phone"].value(), expected)
+                self.assertEqual(Client.objects.count(), count)
+                data = {"client_type": kind, "name": f"International caller {index}", "phone": "89000000000"}
+                response = self.client.post(url, data)
+                self.assertEqual(response.status_code, 302)
+                customer = Client.objects.get(name=data["name"])
+                self.assertEqual(customer.phone, expected)
+                self.assertEqual(customer.client_type, kind)
+                contact = ClientContact.objects.get(client=customer, kind="phone")
+                self.assertEqual(contact.match_value, expected)
+                list_url = self.calls_url if source == "telephony" else self.files_url
+                self.assertEqual(self.page_ids(list_url, {"client": customer.pk}), {call.pk})
+                self.assertEqual(self.card_ids(customer), {call.pk})
+                repeat = self.client.post(url, data)
+                self.assertEqual(repeat.status_code, 200)
+                self.assertEqual(Client.objects.count(), count + 1)
+                call.refresh_from_db()
+                self.assertEqual(call.phone_number, raw)
+                self.assertIsNone(call.client_id)
