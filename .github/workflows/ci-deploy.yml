@@ -43,6 +43,10 @@ jobs:
 
   test:
     name: Django checks and tests
+    needs: scope
+    outputs:
+      service_deploy: ${{ needs.scope.outputs.service_deploy }}
+      calculator_deploy: ${{ needs.scope.outputs.calculator_deploy }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -74,7 +78,7 @@ jobs:
             .github/workflows/direct-pr-review.yml .github/workflows/ci-deploy.yml \
             .github/workflows/development-codex.yml .github/workflows/codex-plan-connection.yml \
             .github/workflows/production-health.yml .github/workflows/call-recordings-sync.yml \
-            .github/workflows/employee-identity-sync.yml .github/workflows/aqualine22-calculator.yml
+            .github/workflows/employee-identity-sync.yml
       - name: Verify water calculator and publication boundaries
         run: |
           node --test tools/aqualine22-calculator/tests/engine.test.mjs
@@ -92,8 +96,8 @@ jobs:
     name: Deploy tested main to Passenger
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      github.ref == 'refs/heads/main' && needs.scope.outputs.service_deploy == 'true'
-    needs: [test, scope]
+      github.ref == 'refs/heads/main' && needs.test.outputs.service_deploy == 'true'
+    needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: production
@@ -291,8 +295,8 @@ jobs:
     name: Publish calculator to the verified informational website
     if: >-
       github.event_name == 'push' && github.ref == 'refs/heads/main' &&
-      needs.scope.outputs.calculator_deploy == 'true'
-    needs: [test, scope]
+      needs.test.outputs.calculator_deploy == 'true'
+    needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: production

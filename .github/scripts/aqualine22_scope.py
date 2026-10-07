@@ -5,7 +5,6 @@ import re
 import subprocess
 
 CALCULATOR_FILES = {
-    ".github/workflows/aqualine22-calculator.yml",
     ".github/scripts/aqualine22_remote.py",
     ".github/scripts/aqualine22_calculator_host.py",
     ".github/scripts/aqualine22_scope.py",
