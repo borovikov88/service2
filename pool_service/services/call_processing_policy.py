@@ -59,6 +59,7 @@ class CallFacts:
     participants: tuple[int, ...]
     counterpart_numbers: frozenset[str]
     started_at: datetime
+    counterpart_numbers_by_participant: tuple[tuple[int, frozenset[str]], ...] = ()
     verified: bool = False
     source: str = "telephony"
     direction: str = "in"
@@ -92,9 +93,22 @@ Returned permission is a policy proposal, not authorization to invoke a paid
 provider. A production worker also needs revalidation, budgets and dispatch.
 """
     participants = tuple(dict.fromkeys(call.participants))
+    counterpart_by_participant = {
+        uid: frozenset(numbers)
+        for uid, numbers in call.counterpart_numbers_by_participant
+        if uid in participants
+    }
+    if call.direction != "internal":
+        for uid in participants:
+            counterpart_by_participant.setdefault(uid, call.counterpart_numbers)
+
     # Run before every other outcome, including "already ready", to avoid
     # leaking a private call's analysis state through the preview.
-    if any(personal_numbers.get(uid, frozenset()) & call.counterpart_numbers for uid in participants):
+    if any(
+        personal_numbers.get(uid, frozenset())
+        & counterpart_by_participant.get(uid, frozenset())
+        for uid in participants
+    ):
         return Decision("exclude", "personal")
     if call.source != "telephony":
         return Decision("exclude", "manual_upload")
@@ -104,13 +118,15 @@ provider. A production worker also needs revalidation, budgets and dispatch.
         return Decision("exclude", "mapping_required")
     if call.direction == "internal" and len(participants) != 2:
         return Decision("exclude", "mapping_required")
+    if call.direction == "internal" and (
+        set(counterpart_by_participant) != set(participants)
+        or any(not counterpart_by_participant.get(uid) for uid in participants)
+    ):
+        return Decision("exclude", "privacy_mapping_required")
     if not call.answered or call.duration_seconds <= 0:
         return Decision("exclude", "no_conversation")
     if call.direction != "internal" and not call.counterpart_numbers:
         return Decision("exclude", "number_unknown")
-    # A hidden/extension-only counterpart cannot bypass a personal deny-list.
-    if not call.counterpart_numbers and any(personal_numbers.get(uid) for uid in participants):
-        return Decision("exclude", "privacy_mapping_required")
     for uid in participants:
         rule = rules.get(uid)
         if rule is None or rule.mode == MANUAL:
@@ -128,7 +144,10 @@ provider. A production worker also needs revalidation, budgets and dispatch.
                 return Decision("exclude", "historical")
         if rule.mode == ALLOWLIST:
             staff_match = rule.include_staff and len(participants) == 2
-            number_match = bool(rule.work_numbers & call.counterpart_numbers)
+            number_match = bool(
+                rule.work_numbers
+                & counterpart_by_participant.get(uid, call.counterpart_numbers)
+            )
             if not (staff_match or number_match):
                 return Decision("exclude", "not_allowed")
     if call.analysis_status == "ready":
