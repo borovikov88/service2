@@ -31,6 +31,10 @@ from .communication_models import PhoneCall
 from .communication_services import conversation_capability, organization_access
 from .models import Client, Organization, OrganizationAccess
 from .phone_utils import canonical_phone_value, format_phone, normalize_phone
+from .services.megafon_internal_calls import (
+    internal_call_sync_due,
+    start_call_recording_sync_worker,
+)
 from .services.permissions import company_has_access
 
 
@@ -199,6 +203,8 @@ def _call_screen(request, source_kind):
     organization, view_all = _scope(request.user, source_kind)
     if source_kind == PhoneCall.SOURCE_UPLOADED:
         legacy._wake_uploaded_audio_worker_if_needed(organization, include_fresh_pending=True)
+    elif internal_call_sync_due(organization):
+        start_call_recording_sync_worker(limit=100)
     try:
         queryset, selected = _filtered_calls(request, source_kind, organization, view_all)
     except ValueError as exc:
