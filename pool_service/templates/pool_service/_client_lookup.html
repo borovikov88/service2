@@ -1,0 +1,9 @@
+<div class="position-relative" data-crm-lookup data-lookup-url="{{ lookup_url }}" data-lookup-required="{% if lookup_required %}true{% else %}false{% endif %}">
+  <div class="input-group">
+    <input class="form-control" type="search" id="{{ lookup_id }}" value="{{ lookup_selected.name|default:'' }}" placeholder="Введите минимум 3 символа" maxlength="160" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="{{ lookup_id }}-results" aria-describedby="{{ lookup_id }}-status" aria-label="{{ lookup_label|default:'Клиент' }}" data-lookup-input {% if lookup_required %}required{% endif %}>
+    <button class="btn btn-outline-secondary" type="button" data-lookup-clear aria-label="Очистить выбранного клиента" title="Очистить"><i class="bi bi-x-lg" aria-hidden="true"></i></button>
+  </div>
+  <input type="hidden" name="{{ lookup_name|default:'client' }}" value="{{ lookup_selected.pk|default:'' }}" data-lookup-value>
+  <div class="list-group position-absolute start-0 end-0 shadow-sm" id="{{ lookup_id }}-results" role="listbox" data-lookup-results hidden style="z-index:1050;max-height:18rem;overflow-y:auto;"></div>
+  <div class="form-text small" id="{{ lookup_id }}-status" aria-live="polite" data-lookup-status>Введите минимум 3 символа.</div>
+</div>

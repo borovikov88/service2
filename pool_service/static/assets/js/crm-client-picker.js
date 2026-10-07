@@ -4,13 +4,32 @@
     Array.from(String(value || "").normalize("NFKC").replace(/[^\p{L}\p{N}]/gu, "")).length >= 3;
 
   function initPicker(root) {
+    if (root.dataset.lookupInitialized === "true") return;
     const input = root.querySelector("[data-lookup-input]");
     const selected = root.querySelector("[data-lookup-value]");
     const results = root.querySelector("[data-lookup-results]");
     const status = root.querySelector("[data-lookup-status]");
+    const clearButton = root.querySelector("[data-lookup-clear]");
     if (!input || !selected || !results || !status) return;
+    root.dataset.lookupInitialized = "true";
+    const required = root.dataset.lookupRequired !== "false";
     let timer = null, controller = null, version = 0, items = [], active = -1;
     const chooseMessage = "Выберите значение из результатов поиска.";
+    function validity() {
+      const invalid = !selected.value && (required || Boolean(input.value.trim()));
+      input.setCustomValidity(invalid ? chooseMessage : "");
+      return !invalid;
+    }
+    function emitChange() {
+      if (typeof selected.dispatchEvent === "function" && typeof Event === "function") {
+        selected.dispatchEvent(new Event("change", {bubbles: true}));
+      }
+    }
+    function cancel() {
+      version += 1;
+      window.clearTimeout(timer);
+      if (controller) controller.abort();
+    }
     function close() {
       results.replaceChildren();
       results.hidden = true;
@@ -20,14 +39,13 @@
       active = -1;
     }
     function choose(item) {
-      version += 1;
-      window.clearTimeout(timer);
-      if (controller) controller.abort();
+      cancel();
       selected.value = String(item.id);
       input.value = item.name;
-      input.setCustomValidity("");
+      validity();
       status.textContent = "Выбрано: " + item.name;
       close();
+      emitChange();
       input.focus();
     }
     function highlight(index) {
@@ -43,11 +61,10 @@
       }
     }
     function changed() {
-      const ticket = ++version;
-      window.clearTimeout(timer);
-      if (controller) controller.abort();
+      cancel();
+      const ticket = version;
       selected.value = "";
-      input.setCustomValidity(chooseMessage);
+      validity();
       close();
       const query = input.value.trim();
       if (!searchable(query)) {
@@ -59,9 +76,10 @@
         controller = new AbortController();
         try {
           const url = new URL(root.dataset.lookupUrl, window.location.href);
+          if (url.origin !== new URL(window.location.href).origin) throw new Error("Invalid lookup origin");
           url.searchParams.set("q", query);
           const response = await fetch(url, {
-            credentials: "same-origin",
+            credentials: "same-origin", cache: "no-store",
             headers: {"Accept": "application/json"},
             signal: controller.signal,
           });
@@ -111,9 +129,7 @@
     });
     input.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
-        ++version;
-        window.clearTimeout(timer);
-        if (controller) controller.abort();
+        cancel();
         close();
       } else if (!results.hidden && items.length && ["ArrowDown", "ArrowUp", "Enter"].includes(event.key)) {
         event.preventDefault();
@@ -122,24 +138,29 @@
         else highlight((active + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length);
       }
     });
-    if (input.form) {
-      input.form.addEventListener("submit", (event) => {
-        if (!selected.value) {
-          event.preventDefault();
-          input.setCustomValidity(chooseMessage);
-          input.reportValidity();
-        }
-      });
-    }
+    if (clearButton) clearButton.addEventListener("click", () => {
+      cancel();
+      input.value = "";
+      selected.value = "";
+      close();
+      validity();
+      status.textContent = "Введите минимум 3 символа.";
+      emitChange();
+      input.focus();
+    });
+    if (input.form) input.form.addEventListener("submit", (event) => {
+      if (!validity()) {
+        event.preventDefault();
+        input.reportValidity();
+      }
+    });
     document.addEventListener("click", (event) => {
       if (!root.contains(event.target)) {
-        ++version;
-        window.clearTimeout(timer);
-        if (controller) controller.abort();
+        cancel();
         close();
       }
     });
-    input.setCustomValidity(selected.value ? "" : chooseMessage);
+    validity();
     status.textContent = selected.value ? "" : "Введите минимум 3 символа.";
   }
 
