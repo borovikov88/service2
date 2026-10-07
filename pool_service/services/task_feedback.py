@@ -20,6 +20,7 @@ from pool_service.models import OrganizationAccess, ServiceTask, ServiceTaskChan
 from pool_service.services.crm_locking import locked_task_with_crm_graph
 from pool_service.services.task_archive import archive_task
 from pool_service.services.task_feedback_permissions import lock_feedback_actor
+from pool_service.services.task_waiting_schedule import finish_waiting_check, schedule_waiting_check
 
 NAMESPACE = "task_feedback"
 EVENT_SCHEMA = "service2.task-feedback.v1"
@@ -216,10 +217,12 @@ def apply_feedback(*, task_id, user, action, comment, expected_version, request_
         state["mode"] = "waiting"
         state["next_check_at"] = next_check_at.isoformat()
         task.status = ServiceTask.STATUS_WAITING
-        task.end_date = task.end_time = task.start_time = task.due_at = None
+        zone = ZoneInfo(getattr(settings, "COMMUNICATION_TIME_ZONE", "Asia/Barnaul"))
+        changed_fields += schedule_waiting_check(task, state, next_check_at.astimezone(zone))
         payload["needs_due_date"] = True
-        changed_fields += ["status", "end_date", "end_time", "start_time", "due_at"]
+        changed_fields.append("status")
     elif action == "reschedule":
+        changed_fields += finish_waiting_check(task, state)
         state["mode"] = "active"
         state["next_check_at"] = None
         task.status = ServiceTask.STATUS_NEW
@@ -229,6 +232,7 @@ def apply_feedback(*, task_id, user, action, comment, expected_version, request_
         payload["needs_due_date"] = False
         changed_fields += ["status", "start_date", "end_date", "start_time", "end_time", "due_at"]
     elif action in {"cancel", "complete"}:
+        changed_fields += finish_waiting_check(task, state)
         state["mode"] = action
         state["next_check_at"] = None
         task.status = ServiceTask.STATUS_CANCELLED if action == "cancel" else ServiceTask.STATUS_DONE

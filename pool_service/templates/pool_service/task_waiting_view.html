@@ -1,0 +1,13 @@
+{% load task_waiting %}
+{% task_waiting_details task as waiting %}
+{% if waiting.is_waiting %}
+  {% include "pool_service/task_view_body.html" with task_due_text="не согласован" task_due_variant="muted" task_period_text="Дата не согласована" task_time_text="—" can_edit_task=False %}
+  <section class="card card-soft p-3 mt-3" data-waiting-check>
+    <div class="fw-semibold">Дата встречи пока не согласована</div>
+    <div class="mt-2">Следующая внутренняя проверка: <strong>{{ waiting.next_check_label }}</strong></div>
+    {% if waiting.reason %}<div class="mt-2">Причина: {{ waiting.reason }}</div>{% endif %}
+    <p class="text-muted small mt-2 mb-0">В календаре показан контроль ожидания, а не новая встреча с клиентом. Первоначальная договорённость сохранена в истории. Для изменения используйте «Обсуждение и изменения».</p>
+  </section>
+{% else %}
+  {% include "pool_service/task_view_body.html" %}
+{% endif %}

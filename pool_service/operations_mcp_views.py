@@ -55,6 +55,8 @@ from pool_service.services.notifications import (
 from pool_service.services.push_notifications import send_push_to_users
 from pool_service.services.task_archive import archive_task
 from pool_service.services.operations_push_queue import sync_queue
+from pool_service.services.task_feedback import waiting_control
+from pool_service.services.task_waiting_schedule import release_waiting_schedule, waiting_schedule_metadata
 
 
 OPERATIONAL_STAFF_ROLES = frozenset({"owner", "admin", "manager", "service", "installer"})
@@ -623,6 +625,7 @@ def _task_data(task):
         "completed": bool(task.completed_at),
         "archived": task.is_archived,
         "updated_at": task.updated_at.isoformat() if task.updated_at else None,
+        **waiting_schedule_metadata(task),
     }
 
 
@@ -787,12 +790,14 @@ def _reschedule_task(authenticated, organization, arguments):
     ):
         raise ValueError("task_id")
     actor = _authorized_actor(authenticated, organization)
-    old_date = task.end_date or task.start_date
-    old_time = task.end_time or task.start_time
-    old = f"{old_date} {old_time or ''}".strip()
+    waiting, _check = waiting_control(task)
+    old_date = None if waiting else (task.end_date or task.start_date)
+    old_time = None if waiting else (task.end_time or task.start_time)
+    old = "waiting_without_appointment" if waiting else f"{old_date} {old_time or ''}".strip()
     new_time = due_time if arguments.get("due_time") is not None else old_time
-    if old_date == due_date and old_time == new_time:
+    if not waiting and old_date == due_date and old_time == new_time:
         return {"changed": False, "task": _task_data(task)}
+    waiting_fields = release_waiting_schedule(task) if waiting else []
     task.start_date = due_date
     task.end_date = due_date
     task.start_time = new_time
@@ -802,7 +807,7 @@ def _reschedule_task(authenticated, organization, arguments):
         if new_time
         else None
     )
-    task.save(update_fields=["start_date", "end_date", "start_time", "end_time", "due_at", "updated_at"])
+    task.save(update_fields=["start_date", "end_date", "start_time", "end_time", "due_at", "updated_at", *waiting_fields])
     ServiceTaskChange.objects.create(
         task=task,
         changed_by=actor,
@@ -827,8 +832,9 @@ def _complete_task(authenticated, organization, arguments):
         return {"completed": False, "task": _task_data(task)}
     if task.is_archived or task.status == ServiceTask.STATUS_CANCELLED:
         raise ValueError("task_id")
+    waiting_fields = release_waiting_schedule(task, mode="complete", status=ServiceTask.STATUS_DONE)
     task.status = ServiceTask.STATUS_DONE
-    task.save(update_fields=["status", "updated_at"])
+    task.save(update_fields=["status", "updated_at", *waiting_fields])
     archive_task(task, ServiceTask.ARCHIVE_REASON_COMPLETED, actor)
     ServiceTaskChange.objects.create(
         task=task,
