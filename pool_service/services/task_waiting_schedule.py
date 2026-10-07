@@ -33,6 +33,7 @@ local_check must already use the configured communication timezone.
     state["agreement_title"] = original_title
     state["waiting_calendar_title"] = calendar_title
     state["calendar_kind"] = "internal_check"
+    state.pop("appointment_unknown", None)
     task.title = calendar_title
     task.start_date = local_check.date()
     # Do not put the internal check time into appointment-time fields: a later
@@ -58,6 +59,17 @@ def waiting_schedule_metadata(task) -> dict:
     payload = task.payload_json if isinstance(task.payload_json, dict) else {}
     state = payload.get("task_feedback")
     state = state if isinstance(state, dict) else {}
+    if state.get("appointment_unknown"):
+        return {
+            "schedule_kind": "no_appointment",
+            "next_check_at": None,
+            "calendar_check_date": None,
+            "agreement_title": task.title,
+            "start_date": None,
+            "end_date": None,
+            "start_time": None,
+            "end_time": None,
+        }
     waiting = (
         task.status == "waiting" and task.end_date is None
         and state.get("mode") == "waiting"
@@ -95,6 +107,10 @@ atomically with its explicit deadline/completion update and history entry.
     fields = finish_waiting_check(task, state)
     state["mode"] = mode
     state["next_check_at"] = None
+    if mode in {"complete", "cancel"}:
+        state["appointment_unknown"] = True
+    else:
+        state.pop("appointment_unknown", None)
     state["requires_review"] = True
     state["revision"] = int(state.get("revision", 0)) + 1
     state["control_revision"] = int(state.get("control_revision", 0)) + 1
@@ -104,3 +120,33 @@ atomically with its explicit deadline/completion update and history entry.
     task.payload_json = payload
     task.status = status
     return fields + ["payload_json", "status"]
+
+
+
+def restore_completed_without_appointment(task) -> list[str]:
+    """Reopen a completed waiting task without inventing an appointment.
+
+    The legacy start_date may still contain the old internal-check key. Keep it
+    non-authoritative and return the task to waiting so only an explicit
+    reschedule can create a new client appointment.
+    """
+    payload = dict(task.payload_json) if isinstance(task.payload_json, dict) else {}
+    state = payload.get("task_feedback")
+    if (
+        not isinstance(state, dict)
+        or state.get("mode") != "complete"
+        or not state.get("appointment_unknown")
+    ):
+        return []
+    state = dict(state)
+    state["mode"] = "waiting"
+    state["next_check_at"] = None
+    state["requires_review"] = True
+    state["revision"] = int(state.get("revision", 0)) + 1
+    state["control_revision"] = int(state.get("control_revision", 0)) + 1
+    payload["task_feedback"] = state
+    payload["needs_due_date"] = True
+    payload.pop("control_state", None)
+    task.payload_json = payload
+    task.status = "waiting"
+    return ["payload_json", "status"]
