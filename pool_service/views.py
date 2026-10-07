@@ -176,6 +176,8 @@ from .services.task_archive import archive_task, restore_task
 from .services.crm_archive import archive_crm_item, restore_crm_item, sync_crm_archive_state
 from .services.crm_locking import lock_crm_graph, locked_task_with_crm_graph
 from .services.task_generation import sync_crm_item_for_task, sync_task_with_crm_item
+from .services.task_feedback import waiting_control
+from .services.task_waiting_schedule import release_waiting_schedule
 
 
 
@@ -4117,19 +4119,54 @@ def crm_tasks_bulk_update(request):
             messages.error(request, "Выберите корректный статус.")
             return redirect(reverse("crm_tasks"))
 
+        skipped_waiting = 0
         for task in tasks:
-            if task.status == status and not (status == ServiceTask.STATUS_DONE and not task.is_completed_archive):
+            waiting, _next_check = waiting_control(task)
+            if waiting and status in {
+                ServiceTask.STATUS_NEW,
+                ServiceTask.STATUS_IN_PROGRESS,
+            }:
+                # A bulk status toggle has no new agreed deadline. Refuse to
+                # reinterpret the internal check day as an appointment.
+                skipped_waiting += 1
                 continue
+            if task.status == status and not (
+                status == ServiceTask.STATUS_DONE and not task.is_completed_archive
+            ):
+                continue
+
+            waiting_fields = []
+            if waiting and status in {
+                ServiceTask.STATUS_CANCELLED,
+                ServiceTask.STATUS_DONE,
+            }:
+                waiting_fields = release_waiting_schedule(
+                    task,
+                    mode=("cancel" if status == ServiceTask.STATUS_CANCELLED else "complete"),
+                    status=status,
+                )
             task.status = status
             if status == ServiceTask.STATUS_DONE:
+                if waiting_fields:
+                    task.save(update_fields=list(dict.fromkeys([
+                        *waiting_fields, "status", "updated_at",
+                    ])))
                 archive_task(task, ServiceTask.ARCHIVE_REASON_COMPLETED, request.user)
             else:
                 if task.is_completed_archive:
                     restore_task(task, request.user)
-                task.save(update_fields=["status", "updated_at"])
+                task.save(update_fields=list(dict.fromkeys([
+                    *waiting_fields, "status", "updated_at",
+                ])))
                 sync_crm_item_for_task(task)
             changed += 1
         messages.success(request, f"Статус обновлён у задач: {changed}.")
+        if skipped_waiting:
+            messages.warning(
+                request,
+                "Задачи в ожидании без новой даты не переведены в активный статус. "
+                "Сначала укажите новую дату через «Обсуждение и изменения».",
+            )
         return redirect(reverse("crm_tasks"))
 
     if action == "set_responsible":
@@ -4167,6 +4204,16 @@ def crm_tasks_bulk_update(request):
         for task in tasks:
             if task.is_deleted_archive:
                 continue
+            waiting, _next_check = waiting_control(task)
+            if waiting:
+                waiting_fields = release_waiting_schedule(
+                    task,
+                    mode="cancel",
+                    status=ServiceTask.STATUS_CANCELLED,
+                )
+                task.save(update_fields=list(dict.fromkeys([
+                    *waiting_fields, "status", "updated_at",
+                ])))
             archive_task(task, ServiceTask.ARCHIVE_REASON_DELETED, request.user)
             changed += 1
         messages.success(request, f"В архив отправлено задач: {changed}.")
@@ -8562,7 +8609,9 @@ def readings_all(request):
     task_search_index = []
 
     if task_org:
-        task_qs = ServiceTask.objects.filter(organization=task_org, is_archived=False)
+        task_qs = ServiceTask.objects.filter(
+            organization=task_org, is_archived=False
+        ).exclude(status=ServiceTask.STATUS_CANCELLED)
         if not can_view_all_org_tasks:
             task_qs = task_qs.filter(responsibles=request.user)
         if responsible_filter_set:
