@@ -46,7 +46,7 @@ from pool_service.operations_mcp_auth import (
     target_organization,
     validate_authorization_request,
 )
-from pool_service.operations_mcp_policy import ALLOWED_ROLES
+from pool_service.operations_mcp_policy import ALLOWED_ROLES, locked_operations_actor
 from pool_service.services.crm_locking import locked_task_for_completion
 from pool_service.services.notifications import (
     notify_users,
@@ -245,11 +245,11 @@ def _communication_zone():
         return ZoneInfo("UTC")
 
 
-def _authorized_actor(authenticated):
-    actor = authenticated.grant.authorized_by
-    if not actor or not actor.is_active:
-        raise PermissionError("actor")
-    return actor
+def _authorized_actor(authenticated, organization):
+    # The cached grant supplies identity only; mutable authority is read under
+    # lock after the operation has obtained its business-row locks.
+    actor_id = getattr(authenticated.grant.authorized_by, "pk", None)
+    return locked_operations_actor(actor_id, organization)
 
 
 def _staff_user(organization, user_id):
@@ -702,6 +702,7 @@ def _create_task(authenticated, organization, arguments):
         )
         .first()
     )
+    actor = _authorized_actor(authenticated, organization)
     if existing:
         if existing.primary_responsible:
             _ensure_assignment_delivery(
@@ -730,7 +731,6 @@ def _create_task(authenticated, organization, arguments):
         if not client:
             raise ValueError("client_id")
 
-    actor = _authorized_actor(authenticated)
     due_at = None
     if due_time:
         due_at = datetime.combine(due_date, due_time).replace(tzinfo=_communication_zone())
@@ -786,7 +786,7 @@ def _reschedule_task(authenticated, organization, arguments):
         or task.status in {ServiceTask.STATUS_DONE, ServiceTask.STATUS_CANCELLED}
     ):
         raise ValueError("task_id")
-    actor = _authorized_actor(authenticated)
+    actor = _authorized_actor(authenticated, organization)
     old_date = task.end_date or task.start_date
     old_time = task.end_time or task.start_time
     old = f"{old_date} {old_time or ''}".strip()
@@ -822,11 +822,11 @@ def _complete_task(authenticated, organization, arguments):
     task = locked_task_for_completion(organization=organization, task_id=task_id)
     if not task or task.task_type != ServiceTask.TYPE_CRM_FOLLOWUP:
         raise ValueError("task_id")
+    actor = _authorized_actor(authenticated, organization)
     if task.is_completed_archive or task.completed_at or task.status == ServiceTask.STATUS_DONE:
         return {"completed": False, "task": _task_data(task)}
     if task.is_archived or task.status == ServiceTask.STATUS_CANCELLED:
         raise ValueError("task_id")
-    actor = _authorized_actor(authenticated)
     task.status = ServiceTask.STATUS_DONE
     task.save(update_fields=["status", "updated_at"])
     archive_task(task, ServiceTask.ARCHIVE_REASON_COMPLETED, actor)
@@ -863,6 +863,7 @@ def _send_employee_notification(authenticated, organization, arguments):
         or task.status in {ServiceTask.STATUS_DONE, ServiceTask.STATUS_CANCELLED}
     ):
         raise ValueError("task_id")
+    _authorized_actor(authenticated, organization)
 
     participant_ids = {user.id for user in task.responsibles.all()}
     if task.primary_responsible_id:
@@ -1092,7 +1093,9 @@ def operations_mcp(request):
 
     if method == "tools/list":
         return transport._mcp_response(
-            transport._jsonrpc_result(request_id, {"tools": _tool_definitions()}),
+            transport._jsonrpc_result(
+                request_id, {"tools": _tool_definitions()}
+            ),
             protocol_version=protocol_version,
         )
 
