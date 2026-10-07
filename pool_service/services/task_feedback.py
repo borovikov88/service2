@@ -19,6 +19,7 @@ from django.utils import timezone
 from pool_service.models import OrganizationAccess, ServiceTask, ServiceTaskChange
 from pool_service.services.crm_locking import locked_task_with_crm_graph
 from pool_service.services.task_archive import archive_task
+from pool_service.services.task_feedback_permissions import lock_feedback_actor
 
 NAMESPACE = "task_feedback"
 EVENT_SCHEMA = "service2.task-feedback.v1"
@@ -170,11 +171,9 @@ def apply_feedback(*, task_id, user, action, comment, expected_version, request_
     task = locked_task_with_crm_graph(organization=seed.organization, task_id=task_id)
     if not task or not has_access(task, user, write=True):
         raise PermissionDenied
-    # Permissions may have been revoked while waiting for task/CRM locks.
-    if not OrganizationAccess.objects.select_for_update().filter(
-        organization_id=task.organization_id, user_id=user.pk,
-    ).exists():
-        raise PermissionDenied
+    # Early checks may be stale after waiting for task/CRM locks. Re-evaluate
+    # the same edit policy from current locked user/role/participant rows.
+    user = lock_feedback_actor(task, user)
     if task.task_type != ServiceTask.TYPE_CRM_FOLLOWUP:
         raise ValidationError("Эти действия предназначены для задач CRM-сопровождения.")
 
