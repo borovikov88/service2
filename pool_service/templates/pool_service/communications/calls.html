@@ -399,17 +399,28 @@
                     </button>
                   </form>
                 {% elif call.analysis.status == 'pending' or call.analysis.status == 'processing' %}
-                  <button
-                    class="btn btn-outline-secondary btn-sm call-player__analysis"
-                    type="button"
-                    disabled
-                    data-call-analysis-status="{{ call.analysis.status }}"
-                    data-analysis-status-url="{% url 'communication_call_analysis_status' call.pk %}"
-                    aria-label="{% if call.analysis.status == 'pending' %}В очереди на расшифровку{% else %}Расшифровываем разговор{% endif %}"
-                    title="{% if call.analysis.status == 'pending' %}В очереди на расшифровку{% else %}Расшифровываем разговор{% endif %}"
+                  <form
+                    class="m-0 d-inline-flex"
+                    method="post"
+                    action="{% url 'communication_call_analysis_retry' call.pk %}"
                   >
-                    <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
-                  </button>
+                    {% csrf_token %}
+                    <button
+                      class="btn btn-outline-secondary btn-sm call-player__analysis"
+                      type="submit"
+                      data-call-analysis-status="{{ call.analysis.status }}"
+                      data-analysis-status-url="{% url 'communication_call_analysis_status' call.pk %}"
+                      aria-label="{% if call.analysis.status == 'pending' %}В очереди на расшифровку{% else %}Расшифровываем разговор{% endif %}"
+                      title="{% if call.analysis.status == 'pending' %}В очереди на расшифровку — нажмите для повторного запроса{% else %}Расшифровываем разговор — нажмите, если зависло{% endif %}"
+                    >
+                      <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+                      {% if call.analysis.status == 'processing' %}
+                        <span class="visually-hidden">Повторить, если зависло</span>
+                      {% else %}
+                        <span class="visually-hidden">Повторить запрос на расшифровку</span>
+                      {% endif %}
+                    </button>
+                  </form>
                 {% elif call.analysis.status == 'ready' %}
                   <button
                     class="btn btn-outline-success btn-sm call-player__analysis"
@@ -434,7 +445,7 @@
                       class="btn btn-outline-warning btn-sm call-player__analysis"
                       type="submit"
                       aria-label="Повторить расшифровку"
-                      title="{% if call.analysis.error == 'openai_credit_balance_exhausted' %}Закончились кредиты OpenAI — повторить после пополнения{% else %}Расшифровка не удалась — повторить{% endif %}"
+                      title="{% if call.analysis.error == 'openai_credit_balance_exhausted' %}Закончились кредиты OpenAI API. Пополните баланс и повторите.{% else %}Расшифровка не удалась — повторить{% endif %}"
                     >
                       <i class="bi bi-exclamation-triangle-fill"></i>
                     </button>
