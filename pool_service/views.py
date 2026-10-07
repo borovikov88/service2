@@ -7967,8 +7967,8 @@ def task_move(request):
         return JsonResponse({"ok": False, "error": "archived_task"}, status=400)
     if task.completed_at:
         return JsonResponse({"ok": False, "error": "completed_task"}, status=400)
-    if task.status in {ServiceTask.STATUS_DONE, ServiceTask.STATUS_CANCELLED}:
-        return JsonResponse({"ok": False, "error": "closed_task"}, status=400)
+    if task.status == ServiceTask.STATUS_CANCELLED:
+        return JsonResponse({"ok": False, "error": "cancelled_task"}, status=400)
 
     old_start = task.start_date
     old_end = task.end_date or task.start_date
@@ -8623,12 +8623,7 @@ def readings_all(request):
     if task_org:
         task_qs = ServiceTask.objects.filter(
             organization=task_org, is_archived=False
-        ).exclude(
-            status__in=[
-                ServiceTask.STATUS_DONE,
-                ServiceTask.STATUS_CANCELLED,
-            ]
-        )
+        ).exclude(status=ServiceTask.STATUS_CANCELLED)
         if not can_view_all_org_tasks:
             task_qs = task_qs.filter(responsibles=request.user)
         if responsible_filter_set:
