@@ -251,6 +251,46 @@ class CommunicationsTests(TestCase):
         self.assertContains(dialogs_page, reverse("communications_channels"))
         self.assertContains(dialogs_page, "communications-tabs")
 
+    def test_calls_search_matches_digit_fragment_across_phone_formatting(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-search-fragment",
+        )
+        matched = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="search-fragment-match",
+            employee=self.owner,
+            phone_number="+7 962 811 1913",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="search-fragment-other",
+            employee=self.owner,
+            phone_number="+7 900 111 2233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+
+        self.client.login(username="owner", password="test")
+        response = self.client.get(reverse("communications_calls"), {"q": "962811"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "+7 962 811 1913")
+        self.assertNotContains(response, "+7 900 111 2233")
+        self.assertContains(
+            response,
+            reverse("communication_call_recording", args=[matched.pk]),
+            count=0,
+        )
+
+
     def test_calls_page_embeds_private_recording_player_and_supports_ranges(self):
         telephony = TelephonyConnection.objects.create(
             organization=self.organization,
@@ -1524,7 +1564,7 @@ class CommunicationsTests(TestCase):
         self.client.login(username="owner", password="test")
         phone_page = self.client.get(reverse("communications_calls"))
         self.assertEqual(phone_page.status_code, 200)
-        self.assertContains(phone_page, "+79001112233")
+        self.assertContains(phone_page, "+7 900 111 2233")
         self.assertNotContains(
             phone_page,
             reverse("communication_call_recording", args=[manual_call.pk]),
@@ -1678,7 +1718,7 @@ class CommunicationsTests(TestCase):
         )
         self.assertEqual(
             set(calls.values_list("phone_number", flat=True)),
-            {"+79001234567"},
+            {"+7 900 123 4567"},
         )
         self.assertEqual(
             set(calls.values_list("source_kind", flat=True)),
@@ -2989,6 +3029,42 @@ class CommunicationsTests(TestCase):
                 external_id="call-long-ext",
             ).exists()
         )
+
+    def test_megafon_history_replay_preserves_assigned_client(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization, name="МегаФон replay", external_id="megafon-replay",
+        )
+        channel = CommunicationChannel.objects.create(
+            organization=self.organization, kind=CommunicationChannel.KIND_MEGAFON, name="МегаФон replay",
+        )
+        provider_connection = ChannelConnection(
+            channel=channel, name="МегаФон replay", external_id="megafon-replay",
+        )
+        provider_connection.set_api_token("megafon-crm-token")
+        provider_connection.save()
+        auto_client = ServiceClient.objects.create(
+            organization=self.organization, name="Автоматически найденный", phone="+7 900 111 22 33",
+        )
+        assigned_client = ServiceClient.objects.create(
+            organization=self.organization, name="Исправленный вручную", phone="+7 900 999 88 77",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization, connection=telephony, external_id="replayed-client-call",
+            client=assigned_client, contact_name="Исправленный вручную", phone_number="+7 900 111 2233",
+            direction=PhoneCall.DIRECTION_IN, started_at=timezone.now(), result=PhoneCall.RESULT_ANSWERED,
+        )
+        response = Client().post(
+            reverse("megafon_webhook", args=[provider_connection.public_id]),
+            {"cmd":"history","crm_token":"megafon-crm-token","callid":"replayed-client-call",
+             "phone":"+79001112233","type":"in","start":"2026-10-03 16:00:00",
+             "duration":"42","status":"Success"},
+        )
+        self.assertEqual(response.status_code, 200)
+        call.refresh_from_db()
+        self.assertEqual(call.client, assigned_client)
+        self.assertEqual(call.contact_name, "Исправленный вручную")
+        self.assertNotEqual(call.client, auto_client)
+        self.assertEqual(call.duration_seconds, 42)
 
     def test_megafon_account_sync_auto_matches_employee_and_backfills_calls(self):
         self.worker.first_name = "Дарья"
@@ -4787,16 +4863,16 @@ class CommunicationsTests(TestCase):
             PhoneCall.objects.create(organization=self.organization, connection=telephony, external_id=str(index), employee=employee, phone_number=f"7000000000{index}", direction="in", started_at=timezone.now() - timedelta(minutes=index), result="answered")
         self.client.login(username="worker", password="test")
         response = self.client.get(reverse("communications_calls"))
-        self.assertContains(response, "70000000000")
-        self.assertNotContains(response, "70000000001")
+        self.assertContains(response, "+7 000 000 0000")
+        self.assertNotContains(response, "+7 000 000 0001")
         self.assertNotContains(response, 'name="employee"')
         scoped = self.client.get(reverse("communications_calls"), {"employee": self.other.pk})
-        self.assertContains(scoped, "70000000000")
-        self.assertNotContains(scoped, "70000000001")
+        self.assertContains(scoped, "+7 000 000 0000")
+        self.assertNotContains(scoped, "+7 000 000 0001")
         self.client.logout(); self.client.login(username="owner", password="test")
         response = self.client.get(reverse("communications_calls"))
-        self.assertContains(response, "70000000000")
-        self.assertContains(response, "70000000001")
+        self.assertContains(response, "+7 000 000 0000")
+        self.assertContains(response, "+7 000 000 0001")
         self.assertContains(response, 'name="employee"')
         self.assertEqual(self.client.get(reverse("communications_calls"), {"date_from": "not-a-date"}).status_code, 400)
         self.assertEqual(self.client.get(reverse("communications_calls"), {"date_from": "2026-02-02", "date_to": "2026-02-01"}).status_code, 400)
@@ -4813,7 +4889,7 @@ class CommunicationsTests(TestCase):
             connection=telephony,
             external_id="call-recording",
             employee=self.worker,
-            phone_number="70000000000",
+            phone_number="+7 000 000 0000",
             direction=PhoneCall.DIRECTION_IN,
             started_at=timezone.now(),
             result=PhoneCall.RESULT_ANSWERED,

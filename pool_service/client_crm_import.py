@@ -24,6 +24,7 @@ from .client_crm_models import (
 )
 from .onec_diagnostic import config_from_settings, fetch_metadata
 from .onec_diagnostic_universal import query_1c_rows
+from .phone_utils import canonical_phone_value, normalize_phone
 
 
 BUYER_ENTITY = "Catalog_Контрагенты"
@@ -35,14 +36,6 @@ IMPORT_RUN_STALE_MINUTES = 120
 
 logger = logging.getLogger(__name__)
 
-
-def normalize_phone(value: str | None) -> str:
-    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
-    if len(digits) == 11 and digits[0] in {"7", "8"}:
-        digits = "7" + digits[1:]
-    elif len(digits) == 10:
-        digits = "7" + digits
-    return digits if 10 <= len(digits) <= 15 else ""
 
 
 def normalize_email(value: str | None) -> str:
@@ -217,7 +210,7 @@ def _candidate_contacts(row, extra_rows):
         value = str(raw or "").strip()
         normalized = normalize_phone(value)
         if value and normalized and all(item["match"] != normalized for item in phones):
-            phones.append({"value": value, "match": normalized, "label": label})
+            phones.append({"value": canonical_phone_value(value), "match": normalized, "label": label})
 
     def add_email(raw, label=""):
         value = str(raw or "").strip()
@@ -235,6 +228,23 @@ def _candidate_contacts(row, extra_rows):
         elif "Почт" in kind:
             add_email(contact.get("АдресЭП") or contact.get("Представление"), label)
     return phones, emails
+
+
+def _phone_match_values(items):
+    """Normalize phone keys from current or persisted import payloads."""
+    values = set()
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        # The visible value is authoritative. Older staged candidates may keep
+        # an 11-digit Russian key in "match", so normalize either representation
+        # with the current shared contract before comparing it to CRM contacts.
+        for raw_value in (item.get("value"), item.get("match")):
+            normalized = normalize_phone(raw_value)
+            if normalized:
+                values.add(normalized)
+                break
+    return values
 
 
 def _has_conflicting_onec_identity(matches, source_ref):
@@ -286,7 +296,7 @@ def _match_clients(organization, source_kind, inn, phones, source_ref=""):
         by_inn = list(typed_matches.filter(inn=inn)[:3])
         if by_inn:
             return by_inn, "ИНН"
-    phone_values = {item["match"] for item in phones if item.get("match")}
+    phone_values = _phone_match_values(phones)
     if phone_values:
         contact_ids = ClientContact.objects.filter(
             kind=ClientContact.KIND_PHONE,
@@ -779,6 +789,11 @@ def _sync_contacts(client, candidate):
             )
             if not match_value:
                 continue
+            stored_value = (
+                canonical_phone_value(value)
+                if kind == ClientContact.KIND_PHONE
+                else value
+            )
             desired.add((kind, match_value))
 
             contact = (
@@ -794,7 +809,7 @@ def _sync_contacts(client, candidate):
                 contact = ClientContact.objects.create(
                     client=client,
                     kind=kind,
-                    value=value,
+                    value=stored_value,
                     match_value=match_value,
                     label=str(item.get("label") or "")[:120],
                     is_primary=False,
@@ -804,6 +819,9 @@ def _sync_contacts(client, candidate):
                 continue
 
             changed_fields = []
+            if contact.value != stored_value:
+                contact.value = stored_value
+                changed_fields.append("value")
             sources = list(contact.sources or [])
             if source_name not in sources:
                 sources.append(source_name)
@@ -862,7 +880,7 @@ def _find_or_create_ip_person(company, candidate):
     refresh_linked_person = existing_link is not None
 
     phones = (candidate.payload or {}).get("phones", [])
-    phone_values = {item.get("match") for item in phones if item.get("match")}
+    phone_values = _phone_match_values(phones)
     person_matches = Client.objects.filter(
         organization=candidate.organization,
         client_type="private",
@@ -887,6 +905,11 @@ def _find_or_create_ip_person(company, candidate):
     last_name, first_name, middle_name = _split_person_name(
         (candidate.payload or {}).get("fio") or candidate.name
     )
+    candidate_phone = (
+        canonical_phone_value(candidate.phone)
+        if candidate.phone
+        else None
+    )
     if person is None:
         exact_name = " ".join(part for part in [last_name, first_name, middle_name] if part).strip()
         named = list(person_matches.filter(name__iexact=exact_name)[:2]) if exact_name else []
@@ -901,10 +924,20 @@ def _find_or_create_ip_person(company, candidate):
             name=" ".join(part for part in [last_name, first_name, middle_name] if part).strip() or candidate.name,
             first_name=first_name or None,
             last_name=last_name or None,
-            phone=candidate.phone or None,
+            phone=candidate_phone,
             email=candidate.email or None,
         )
     profile, _ = ClientCRMProfile.objects.get_or_create(client=person)
+    if (
+        not refresh_linked_person
+        and candidate_phone
+        and person.phone != candidate_phone
+        and normalize_phone(person.phone) == normalize_phone(candidate_phone)
+    ):
+        # A first-time IP match by phone is already identity-confirmed. Keep the
+        # legacy scalar in the same canonical representation as CRM contacts.
+        person.phone = candidate_phone
+        person.save(update_fields=["phone"])
     if refresh_linked_person:
         person_name = " ".join(
             part for part in [last_name, first_name, middle_name] if part
@@ -912,7 +945,7 @@ def _find_or_create_ip_person(company, candidate):
         person.name = person_name
         person.first_name = first_name or None
         person.last_name = last_name or None
-        person.phone = candidate.phone or None
+        person.phone = candidate_phone
         person.email = candidate.email or None
         person.save(
             update_fields=[
@@ -968,6 +1001,11 @@ def apply_candidate(candidate):
         raise ValueError("Карточка требует ручной проверки")
 
     kind = candidate.effective_kind
+    candidate_phone = (
+        canonical_phone_value(candidate.phone)
+        if candidate.phone
+        else None
+    )
     client = candidate.matched_client
     already_linked_to_same_onec = False
     if client is None:
@@ -982,7 +1020,7 @@ def apply_candidate(candidate):
             company_name=candidate.name if client_type == "legal" else None,
             first_name=first_name or None,
             last_name=last_name or None,
-            phone=candidate.phone or None,
+            phone=candidate_phone,
             email=candidate.email or None,
             inn=candidate.inn or None,
         )
@@ -1008,13 +1046,13 @@ def apply_candidate(candidate):
                 client.last_name = None
                 client.company_name = candidate.legal_name or candidate.name or None
             client.inn = candidate.inn or None
-            client.phone = candidate.phone or None
+            client.phone = candidate_phone
             client.email = candidate.email or None
         else:
             if candidate.inn and not client.inn:
                 client.inn = candidate.inn
-            if not client.phone and candidate.phone:
-                client.phone = candidate.phone
+            if not client.phone and candidate_phone:
+                client.phone = candidate_phone
             if not client.email and candidate.email:
                 client.email = candidate.email
         client.save()

@@ -90,7 +90,7 @@
                 <dt class="col-sm-4 text-muted fw-normal">Тип</dt>
                 <dd class="col-sm-8">{{ client_kind_label }}</dd>
                 <dt class="col-sm-4 text-muted fw-normal">Телефон</dt>
-                <dd class="col-sm-8">{{ client.phone|default:"—" }}</dd>
+                <dd class="col-sm-8">{{ client.phone_display|default:"—" }}</dd>
                 <dt class="col-sm-4 text-muted fw-normal">Email</dt>
                 <dd class="col-sm-8">{{ client.email|default:"—" }}</dd>
                 <dt class="col-sm-4 text-muted fw-normal">ИНН</dt>
@@ -177,14 +177,14 @@
               <div class="d-grid gap-2">
                 {% if client.phone %}
                   <div class="d-flex justify-content-between gap-2 border rounded-2 px-3 py-2">
-                    <a href="tel:{{ client.phone }}" class="text-decoration-none">{{ client.phone }}</a>
+                    <a href="tel:{{ client.phone }}" class="text-decoration-none">{{ client.phone_display }}</a>
                     <span class="badge text-bg-secondary">Основной</span>
                   </div>
                 {% endif %}
                 {% for contact in phones %}
                   {% if contact.value != client.phone %}
                     <div class="d-flex justify-content-between gap-2 border rounded-2 px-3 py-2">
-                      <a href="tel:{{ contact.value }}" class="text-decoration-none">{{ contact.value }}</a>
+                      <a href="tel:{{ contact.value }}" class="text-decoration-none">{{ contact.display_value }}</a>
                       <span class="text-muted small">{{ contact.label|default:"1С" }}</span>
                     </div>
                   {% endif %}
@@ -221,42 +221,88 @@
 
           <div class="col-12">
             <div class="border rounded-3 p-4">
-              {% if relationship_mode == "people" %}
-                <h6 class="fw-bold mb-3">Связанные люди</h6>
-                <div class="d-grid gap-2">
-                  {% for link in relationship_links %}
-                    <div class="border rounded-2 px-3 py-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
+              <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+                <h6 class="fw-bold mb-0">{% if relationship_mode == "people" %}Контактные лица{% else %}Компании{% endif %}</h6>
+              </div>
+
+              <div class="d-grid gap-2">
+                {% for link in relationship_links %}
+                  <div class="border rounded-2 px-3 py-3">
+                    <div class="d-flex flex-wrap justify-content-between align-items-start gap-2">
                       <div>
-                        <a class="fw-semibold text-decoration-none" href="{% url 'client_detail' link.person.id %}">{{ link.person.name }}</a>
-                        <div class="text-muted small">
-                          {% if link.position %}{{ link.position }}{% endif %}
-                          {% if link.roles %}{% if link.position %} · {% endif %}{{ link.roles|join:", " }}{% endif %}
-                        </div>
+                        {% if relationship_mode == "people" %}
+                          <a class="fw-semibold text-decoration-none" href="{% url 'client_detail' link.person.id %}">{{ link.person.name }}</a>
+                          {% if link.person.phone_display %}<div class="small mt-1">{{ link.person.phone_display }}</div>{% endif %}
+                        {% else %}
+                          <a class="fw-semibold text-decoration-none" href="{% url 'client_detail' link.company.id %}">{{ link.company.name }}</a>
+                          {% if link.company.phone_display %}<div class="small mt-1">{{ link.company.phone_display }}</div>{% endif %}
+                        {% endif %}
+                        {% if link.position %}<div class="text-muted small">{{ link.position }}</div>{% endif %}
+                        {% if link.roles %}<div class="text-muted small">{{ link.roles }}</div>{% endif %}
                       </div>
-                      {% if link.is_primary %}<span class="badge text-bg-primary">Основной контакт</span>{% endif %}
-                    </div>
-                  {% empty %}
-                    <div class="text-muted">Связанные люди пока не добавлены.</div>
-                  {% endfor %}
-                </div>
-              {% else %}
-                <h6 class="fw-bold mb-3">Связанные компании</h6>
-                <div class="d-grid gap-2">
-                  {% for link in relationship_links %}
-                    <div class="border rounded-2 px-3 py-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
-                      <div>
-                        <a class="fw-semibold text-decoration-none" href="{% url 'client_detail' link.company.id %}">{{ link.company.name }}</a>
-                        <div class="text-muted small">
-                          {% if link.position %}{{ link.position }}{% endif %}
-                          {% if link.roles %}{% if link.position %} · {% endif %}{{ link.roles|join:", " }}{% endif %}
-                        </div>
+                      <div class="d-flex align-items-center gap-2">
+                        {% if link.is_primary %}<span class="badge text-bg-primary">Основной контакт</span>{% endif %}
+                        {% if link.automatic %}<span class="badge text-bg-secondary">1С / ИП</span>{% endif %}
                       </div>
-                      {% if link.is_primary %}<span class="badge text-bg-primary">Основная связь</span>{% endif %}
                     </div>
-                  {% empty %}
-                    <div class="text-muted">Связанные компании пока не добавлены.</div>
-                  {% endfor %}
-                </div>
+                    {% if can_manage %}
+                      <form method="post" class="row g-2 align-items-end mt-2">
+                        {% csrf_token %}
+                        <input type="hidden" name="action" value="update_company_link">
+                        <input type="hidden" name="link_id" value="{{ link.id }}">
+                        <div class="col-12 col-md-6">
+                          <label class="form-label small text-muted mb-1">Должность</label>
+                          <input class="form-control form-control-sm" type="text" name="position" value="{{ link.position }}">
+                        </div>
+                        <div class="col-auto">
+                          <div class="form-check mb-1">
+                            <input class="form-check-input" type="checkbox" name="is_primary" value="1" id="primary-link-{{ link.id }}" {% if link.is_primary %}checked{% endif %}>
+                            <label class="form-check-label small" for="primary-link-{{ link.id }}">Основной</label>
+                          </div>
+                        </div>
+                        <div class="col-auto ms-md-auto d-flex gap-2">
+                          <button class="btn btn-outline-primary btn-sm" type="submit">Сохранить</button>
+                          {% if not link.automatic %}
+                            <button class="btn btn-outline-danger btn-sm" type="submit" name="action" value="delete_company_link" onclick="return confirm('Удалить связь?');">Удалить</button>
+                          {% endif %}
+                        </div>
+                      </form>
+                    {% endif %}
+                  </div>
+                {% empty %}
+                  <div class="text-muted">{% if relationship_mode == "people" %}Контактные лица пока не добавлены.{% else %}Компании пока не добавлены.{% endif %}</div>
+                {% endfor %}
+              </div>
+
+              {% if can_manage %}
+                <form method="post" class="border-top mt-3 pt-3">
+                  {% csrf_token %}
+                  <input type="hidden" name="action" value="add_company_link">
+                  <div class="row g-2 align-items-end">
+                    <div class="col-12 col-lg-5">
+                      <label class="form-label small text-muted">{% if relationship_mode == "people" %}Физическое лицо{% else %}Компания{% endif %}</label>
+                      <select class="form-select" name="related_client" required>
+                        <option value="">Выберите...</option>
+                        {% for related in relationship_options %}
+                          <option value="{{ related.id }}">{{ related.name }}</option>
+                        {% endfor %}
+                      </select>
+                    </div>
+                    <div class="col-12 col-lg-4">
+                      <label class="form-label small text-muted">Должность</label>
+                      <input class="form-control" type="text" name="position" maxlength="160">
+                    </div>
+                    <div class="col-auto">
+                      <div class="form-check mb-2">
+                        <input class="form-check-input" type="checkbox" name="is_primary" value="1" id="new-primary-link">
+                        <label class="form-check-label" for="new-primary-link">Основной</label>
+                      </div>
+                    </div>
+                    <div class="col-auto">
+                      <button class="btn btn-primary" type="submit">Добавить связь</button>
+                    </div>
+                  </div>
+                </form>
               {% endif %}
             </div>
           </div>
@@ -360,7 +406,7 @@
                   <tr>
                     <td>{{ call.started_at|date:"d.m.Y H:i" }}</td>
                     <td>{{ call.get_direction_display }}</td>
-                    <td>{{ call.phone_number }}</td>
+                    <td>{{ call.phone_display }}</td>
                     <td>{% if call.employee %}{{ call.employee.get_full_name|default:call.employee.username }}{% else %}—{% endif %}</td>
                     <td>{{ call.duration_display }}</td>
                     <td>{{ call.get_result_display }}</td>

@@ -30,6 +30,8 @@ from pool_service.communication_services import receive_message
 from pool_service.services.employee_identity_sync import resolve_call_employee
 from pool_service.models import Client, OrganizationAccess
 from pool_service.communication_avito import AvitoError, ingest_webhook
+from pool_service.client_phone_matching import clients_by_phone
+from pool_service.phone_utils import canonical_phone_value
 
 
 MAX_BODY_BYTES = 64 * 1024
@@ -357,22 +359,17 @@ def _megafon_connection(request, public_id, data):
     return connection, telephony
 
 
-def _normalize_phone(value):
-    digits = "".join(character for character in str(value or "") if character.isdigit())
-    if len(digits) >= 10:
-        return digits[-10:]
-    return digits
+def _megafon_contacts(organization, phone):
+    return clients_by_phone(organization, phone)
 
 
-def _megafon_contact(organization, phone):
-    normalized = _normalize_phone(phone)
-    if not normalized:
-        return None
-    for client in Client.objects.filter(organization=organization).only("id", "name", "phone"):
-        if _normalize_phone(client.phone) == normalized:
-            return client
-    return None
-
+def _megafon_contact_resolution(organization, phone):
+    matches = _megafon_contacts(organization, phone)
+    if len(matches) == 1:
+        return matches[0], matches[0].name
+    if len(matches) > 1:
+        return None, "Несколько клиентов"
+    return None, ""
 
 def _megafon_employee(organization, provider_user, extension=""):
     candidates = {
@@ -572,17 +569,21 @@ def megafon_webhook(request, public_id):
                 extension,
                 provider_user,
             )
-        client = _megafon_contact(connection.channel.organization, phone)
+        client, contact_name = _megafon_contact_resolution(
+            connection.channel.organization, phone
+        )
         return JsonResponse({
             "accepted": True,
             "event": event_type,
-            "contact_name": client.name if client else "",
+            "contact_name": contact_name,
         })
 
     if cmd == "contact":
         phone = str(data.get("phone", "") or "").strip()
-        client = _megafon_contact(connection.channel.organization, phone)
-        return JsonResponse({"contact_name": client.name} if client else {})
+        client, contact_name = _megafon_contact_resolution(
+            connection.channel.organization, phone
+        )
+        return JsonResponse({"contact_name": contact_name} if contact_name else {})
 
     if cmd != "history":
         return JsonResponse({"accepted": True, "ignored": True})
@@ -619,7 +620,9 @@ def megafon_webhook(request, public_id):
     except ValueError as exc:
         return _error(str(exc))
 
-    client = _megafon_contact(connection.channel.organization, phone)
+    client, contact_name = _megafon_contact_resolution(
+            connection.channel.organization, phone
+        )
     result = (
         PhoneCall.RESULT_ANSWERED
         if status.casefold() == "success"
@@ -629,7 +632,7 @@ def megafon_webhook(request, public_id):
     with transaction.atomic():
         existing_call = (
             PhoneCall.objects.select_for_update()
-            .select_related("employee", "employee_profile")
+            .select_related("employee", "employee_profile", "client")
             .filter(
                 connection=telephony,
                 external_id=call_id,
@@ -696,6 +699,16 @@ def megafon_webhook(request, public_id):
         effective_provider_extension = extension or (
             existing_call.provider_extension if existing_call else ""
         )
+        effective_client = client
+        effective_contact_name = contact_name
+        if existing_call and existing_call.client_id:
+            # A replay from MegaFon must not undo a manual or otherwise trusted
+            # CRM assignment already stored on the historical call.
+            effective_client = existing_call.client
+            effective_contact_name = (
+                existing_call.contact_name
+                or (existing_call.client.name if existing_call.client else "")
+            )
 
         phone_call, created = PhoneCall.objects.update_or_create(
             connection=telephony,
@@ -706,8 +719,9 @@ def megafon_webhook(request, public_id):
                 "employee_profile": effective_employee_profile,
                 "provider_user": effective_provider_user,
                 "provider_extension": effective_provider_extension,
-                "contact_name": client.name if client else "",
-                "phone_number": phone,
+                "client": effective_client,
+                "contact_name": effective_contact_name,
+                "phone_number": canonical_phone_value(phone),
                 "direction": direction,
                 "started_at": started_at,
                 "duration_seconds": duration_seconds,

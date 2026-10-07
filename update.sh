@@ -208,6 +208,18 @@ python manage.py check --deploy
 echo "===== Applying migrations ====="
 python manage.py migrate --noinput
 
+PHONE_NORMALIZATION_MARKER="../tmp/client-phone-normalization-v1"
+if [[ ! -f "$PHONE_NORMALIZATION_MARKER" ]]; then
+    echo "===== Auditing client phones ====="
+    python manage.py normalize_client_phones
+
+    echo "===== Normalizing client phones ====="
+    python manage.py normalize_client_phones --apply
+    touch "$PHONE_NORMALIZATION_MARKER"
+else
+    echo "===== Client phone normalization already applied ====="
+fi
+
 echo "===== Collecting static files ====="
 python manage.py collectstatic --noinput
 
