@@ -231,18 +231,31 @@ This simulates future rules against history; it does not request processing.
     rows, selected_seconds, selected_count, private_count = [], 0, 0, 0
     for row in calls[:PREVIEW_LIMIT]:
         participants = tuple(uid for uid in (row["employee_id"], row["peer_employee_id"]) if uid)
-        keys = set()
+        external_keys = set()
         key = phone_key(row["phone_number"])
         if key:
-            keys.add(key)
+            external_keys.add(key)
+        counterpart_pairs = []
+        keys = set(external_keys)
         if row["direction"] == PhoneCall.DIRECTION_INTERNAL:
+            keys.clear()
             for uid in participants:
-                keys.update(user_numbers.get(uid, set()))
+                peer_keys = set()
+                for peer_uid in participants:
+                    if peer_uid != uid:
+                        peer_keys.update(user_numbers.get(peer_uid, set()))
+                counterpart_pairs.append((uid, frozenset(peer_keys)))
+                keys.update(peer_keys)
+        else:
+            counterpart_pairs = [
+                (uid, frozenset(external_keys)) for uid in participants
+            ]
         is_verified = verified(row) and (
             verified(row, "peer_") if row["direction"] == PhoneCall.DIRECTION_INTERNAL or row["peer_employee_id"] else True
         )
         facts = CallFacts(
             participants=participants, counterpart_numbers=frozenset(keys),
+            counterpart_numbers_by_participant=tuple(counterpart_pairs),
             started_at=row["started_at"], verified=is_verified,
             direction=row["direction"], answered=row["result"] == PhoneCall.RESULT_ANSWERED,
             duration_seconds=row["duration_seconds"],
