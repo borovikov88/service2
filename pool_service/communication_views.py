@@ -749,52 +749,20 @@ def calls(request):
     if not can_view_all:
         queryset = queryset.filter(employee=request.user)
     try:
-        date_from = date.fromisoformat(request.GET["date_from"]) if request.GET.get("date_from") else None
-        date_to = date.fromisoformat(request.GET["date_to"]) if request.GET.get("date_to") else None
-    except ValueError:
-        return HttpResponseBadRequest("Некорректный период.")
-    if date_from and date_to and date_from > date_to:
-        return HttpResponseBadRequest("Начало периода не может быть позже окончания.")
-    if date_from: queryset = queryset.filter(started_at__date__gte=date_from)
-    if date_to: queryset = queryset.filter(started_at__date__lte=date_to)
-    employee_id = request.GET.get("employee")
-    if employee_id and can_view_all:
-        if not employee_id.isdigit() or not OrganizationAccess.objects.filter(organization=organization, user_id=employee_id).exists():
-            return HttpResponseBadRequest("Некорректный сотрудник.")
-        queryset = queryset.filter(employee_id=employee_id)
-    if request.GET.get("direction") in ("in", "out"): queryset = queryset.filter(direction=request.GET["direction"])
-    if request.GET.get("missed"): queryset = queryset.filter(result=PhoneCall.RESULT_MISSED)
-    if request.GET.get("q"):
-        query = request.GET["q"].strip()
-        normalized_query = normalize_phone(query)
-        canonical_query = canonical_phone_value(query)
-        raw_phone_digits = "".join(ch for ch in query if ch.isdigit())
-        normalized_digits = "".join(ch for ch in normalized_query if ch.isdigit())
-        phone_query = (
-            normalized_digits[-10:]
-            if len(normalized_digits) >= 10
-            else raw_phone_digits[-10:]
+        queryset = _filter_telephony_calls(
+            request,
+            queryset,
+            organization,
+            can_view_all,
         )
-        phone_digits_expression = "phone_number"
-        for separator in ("+", " ", "-", "(", ")", "."):
-            phone_digits_expression = Replace(
-                phone_digits_expression,
-                Value(separator),
-                Value(""),
-            )
-        queryset = queryset.annotate(
-            phone_number_digits=phone_digits_expression
-        )
-        phone_filter = (
-            Q(phone_number__icontains=query)
-            | Q(phone_number__icontains=canonical_query)
-            | Q(contact_name__icontains=query)
-            | Q(client__name__icontains=query)
-        )
-        if phone_query:
-            phone_filter |= Q(phone_number_digits__icontains=phone_query)
-        queryset = queryset.filter(phone_filter)
-    employees = OrganizationAccess.objects.filter(organization=organization).select_related("user")
+    except ValueError as exc:
+        return HttpResponseBadRequest(str(exc))
+    employees = OrganizationAccess.objects.filter(
+        organization=organization
+    ).select_related("user")
+    clients = active_clients(
+        Client.objects.filter(organization=organization)
+    ).order_by("name", "id")
     calls = list(queryset[:500])
     unresolved_phone_values = [
         call.phone_number
@@ -819,6 +787,7 @@ def calls(request):
         "active_tab": "communications",
         "calls": calls,
         "employees": employees,
+        "clients": clients,
         "can_listen": conversation_capability(request.user, "can_listen_calls", organization),
         "can_view_all": can_view_all,
         "can_access_manual_recordings": _can_access_manual_recordings(request.user, organization),
@@ -842,31 +811,9 @@ def manual_recordings(request):
     ).defer("analysis__transcript")
 
     try:
-        date_from = date.fromisoformat(request.GET["date_from"]) if request.GET.get("date_from") else None
-        date_to = date.fromisoformat(request.GET["date_to"]) if request.GET.get("date_to") else None
-    except ValueError:
-        return HttpResponseBadRequest("Некорректный период.")
-    if date_from and date_to and date_from > date_to:
-        return HttpResponseBadRequest("Начало периода не может быть позже окончания.")
-    if date_from:
-        queryset = queryset.filter(started_at__date__gte=date_from)
-    if date_to:
-        queryset = queryset.filter(started_at__date__lte=date_to)
-
-    client_id = (request.GET.get("client") or "").strip()
-    if client_id:
-        if not client_id.isdigit():
-            return HttpResponseBadRequest("Некорректный клиент.")
-        queryset = queryset.filter(client_id=int(client_id))
-
-    query = (request.GET.get("q") or "").strip()
-    if query:
-        queryset = queryset.filter(
-            Q(client__name__icontains=query)
-            | Q(contact_name__icontains=query)
-            | Q(phone_number__icontains=query)
-            | Q(recording_file__icontains=query)
-        )
+        queryset = _filter_uploaded_audio(request, queryset, organization)
+    except ValueError as exc:
+        return HttpResponseBadRequest(str(exc))
 
     clients = active_clients(
         Client.objects.filter(organization=organization)
