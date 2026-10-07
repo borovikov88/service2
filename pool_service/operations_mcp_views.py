@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import date, datetime
 from time import monotonic
@@ -267,6 +268,36 @@ def _staff_user(organization, user_id):
     )
 
 
+def _locked_staff_user(organization, user_id):
+    """Return a current active operational employee under row locks."""
+    user = (
+        User.objects.select_for_update()
+        .filter(pk=user_id, is_active=True)
+        .first()
+    )
+    if not user:
+        return None
+    allowed = OrganizationAccess.objects.select_for_update().filter(
+        user_id=user.id,
+        organization=organization,
+        role__in=OPERATIONAL_STAFF_ROLES,
+    ).exists()
+    return user if allowed else None
+
+
+def _locked_task_recipient(task, user_id):
+    """Lock and re-read a task recipient before any private notification."""
+    user = _locked_staff_user(task.organization, user_id)
+    if not user:
+        return None
+    if (
+        task.primary_responsible_id != user.id
+        and not task.responsibles.filter(id=user.id).exists()
+    ):
+        return None
+    return user
+
+
 def _task_for_org(organization, task_id, *, for_update=False):
     queryset = ServiceTask.objects
     if for_update:
@@ -279,6 +310,7 @@ def _task_for_org(organization, task_id, *, for_update=False):
     )
 
 
+CREATE_COMMAND_HASH_PAYLOAD_KEY = "operations_mcp_create_command_hash"
 ASSIGNMENT_DELIVERY_PAYLOAD_KEY = "operations_assignment_delivery"
 EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY = "operations_employee_notification_deliveries"
 PUSH_PENDING_PAYLOAD_KEY = "operations_push_pending"
@@ -353,18 +385,10 @@ def _assignment_delivery(task):
 
 
 def _assignment_recipient_is_authorized(task, responsible):
-    if not responsible or not responsible.is_active:
-        return False
-    has_operational_access = OrganizationAccess.objects.select_for_update().filter(
-        user_id=responsible.id,
-        organization=task.organization,
-        role__in=OPERATIONAL_STAFF_ROLES,
-    ).exists()
-    if not has_operational_access:
-        return False
+    # Compatibility wrapper for callers/tests; do not trust the supplied
+    # in-memory user object for mutable authorization state.
     return bool(
-        task.primary_responsible_id == responsible.id
-        or task.responsibles.filter(id=responsible.id).exists()
+        _locked_task_recipient(task, getattr(responsible, "id", None))
     )
 
 
@@ -398,11 +422,8 @@ def _retry_assignment_push(task_id, responsible_user_id):
             _save_push_payload(task, payload)
             return 0
 
-        responsible = User.objects.filter(
-            pk=responsible_user_id,
-            is_active=True,
-        ).first()
-        if not _assignment_recipient_is_authorized(task, responsible):
+        responsible = _locked_task_recipient(task, responsible_user_id)
+        if not responsible:
             delivery["push_last_attempt_at"] = timezone.now().isoformat()
             delivery["push_delivery_result"] = "blocked_not_authorized"
             payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
@@ -489,8 +510,8 @@ def _retry_employee_notification_push(task_id, marker):
             return 0
 
         employee_id = delivery.get("employee_user_id")
-        employee = User.objects.filter(pk=employee_id, is_active=True).first()
-        if not employee or not _assignment_recipient_is_authorized(task, employee):
+        employee = _locked_task_recipient(task, employee_id)
+        if not employee:
             delivery["push_last_attempt_at"] = timezone.now().isoformat()
             delivery["push_delivery_result"] = "blocked_not_authorized"
             deliveries[marker] = delivery
@@ -558,12 +579,15 @@ def _ensure_assignment_delivery(task, responsible, actor):
             payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
             _save_push_payload(task, payload)
         return False
-    if not _assignment_recipient_is_authorized(task, responsible):
+
+    responsible_id = getattr(responsible, "id", None)
+    responsible = _locked_task_recipient(task, responsible_id)
+    if not responsible:
         Notification.objects.filter(
-            user=responsible,
+            user_id=responsible_id,
             dedupe_key=dedupe_key,
         ).delete()
-        delivery["responsible_user_id"] = responsible.id if responsible else None
+        delivery["responsible_user_id"] = responsible_id
         delivery["added_by_user_id"] = actor.id if actor else None
         delivery["notification_dedupe_key"] = dedupe_key
         delivery["push_last_attempt_at"] = timezone.now().isoformat()
@@ -677,6 +701,61 @@ def _get_call_analysis(organization, arguments):
     }
 
 
+def _normalized_create_task_command(arguments):
+    title = _as_text(arguments.get("title"), "title", required=True, maximum=255)
+    description = _as_text(arguments.get("description"), "description", maximum=4000)
+    responsible_id = _as_int(
+        arguments.get("responsible_user_id"),
+        "responsible_user_id",
+    )
+    due_date = _as_date(arguments.get("due_date"), "due_date")
+    due_time = _as_time(arguments.get("due_time"), "due_time")
+    priority = arguments.get("priority") or ServiceTask.PRIORITY_NORMAL
+    if priority not in {
+        ServiceTask.PRIORITY_LOW,
+        ServiceTask.PRIORITY_NORMAL,
+        ServiceTask.PRIORITY_HIGH,
+    }:
+        raise ValueError("priority")
+    client_id = None
+    if arguments.get("client_id") is not None:
+        client_id = _as_int(arguments.get("client_id"), "client_id")
+    return {
+        "title": title,
+        "description": description,
+        "responsible_user_id": responsible_id,
+        "due_date": due_date.isoformat(),
+        "due_time": due_time.strftime("%H:%M") if due_time else None,
+        "client_id": client_id,
+        "priority": priority,
+    }
+
+
+def _create_task_command_hash(command):
+    return hashlib.sha256(
+        json.dumps(
+            command,
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _task_as_legacy_create_command(task):
+    due_date = task.end_date or task.start_date
+    due_time = task.end_time or task.start_time
+    return {
+        "title": str(task.title or "").strip(),
+        "description": str(task.description or "").strip(),
+        "responsible_user_id": task.primary_responsible_id,
+        "due_date": due_date.isoformat() if due_date else None,
+        "due_time": due_time.strftime("%H:%M") if due_time else None,
+        "client_id": task.client_id,
+        "priority": task.priority or ServiceTask.PRIORITY_NORMAL,
+    }
+
+
 @transaction.atomic
 def _create_task(authenticated, organization, arguments):
     _reject_unknown(
@@ -692,7 +771,15 @@ def _create_task(authenticated, organization, arguments):
             "priority",
         },
     )
-    key = _as_text(arguments.get("idempotency_key"), "idempotency_key", required=True, maximum=80)
+    key = _as_text(
+        arguments.get("idempotency_key"),
+        "idempotency_key",
+        required=True,
+        maximum=80,
+    )
+    command = _normalized_create_task_command(arguments)
+    command_hash = _create_task_command_hash(command)
+
     # Serialize create requests per organization so concurrent MCP retries
     # cannot both pass the JSON idempotency lookup before either insert commits.
     organization = Organization.objects.select_for_update().get(pk=organization.pk)
@@ -707,6 +794,25 @@ def _create_task(authenticated, organization, arguments):
     )
     actor = _authorized_actor(authenticated, organization)
     if existing:
+        payload = (
+            dict(existing.payload_json)
+            if isinstance(existing.payload_json, dict)
+            else {}
+        )
+        stored_hash = payload.get(CREATE_COMMAND_HASH_PAYLOAD_KEY)
+        if isinstance(stored_hash, str) and stored_hash:
+            if stored_hash != command_hash:
+                raise ValueError("idempotency_key")
+        else:
+            # Compatibility for tasks created before command hashes existed.
+            # We can safely adopt the key only while the current task still
+            # exactly represents the original creation command.
+            if _task_as_legacy_create_command(existing) != command:
+                raise ValueError("idempotency_key")
+            payload[CREATE_COMMAND_HASH_PAYLOAD_KEY] = command_hash
+            existing.payload_json = payload
+            existing.save(update_fields=["payload_json", "updated_at"])
+
         if existing.primary_responsible:
             _ensure_assignment_delivery(
                 existing,
@@ -715,32 +821,38 @@ def _create_task(authenticated, organization, arguments):
             )
         return {"created": False, "task": _task_data(existing)}
 
-    title = _as_text(arguments.get("title"), "title", required=True, maximum=255)
-    description = _as_text(arguments.get("description"), "description", maximum=4000)
-    responsible_id = _as_int(arguments.get("responsible_user_id"), "responsible_user_id")
-    responsible = _staff_user(organization, responsible_id)
+    responsible = _locked_staff_user(
+        organization,
+        command["responsible_user_id"],
+    )
     if not responsible:
         raise ValueError("responsible_user_id")
-    due_date = _as_date(arguments.get("due_date"), "due_date")
-    due_time = _as_time(arguments.get("due_time"), "due_time")
-    priority = arguments.get("priority") or ServiceTask.PRIORITY_NORMAL
-    if priority not in {ServiceTask.PRIORITY_LOW, ServiceTask.PRIORITY_NORMAL, ServiceTask.PRIORITY_HIGH}:
-        raise ValueError("priority")
 
     client = None
-    if arguments.get("client_id") is not None:
-        client_id = _as_int(arguments.get("client_id"), "client_id")
-        client = Client.objects.filter(pk=client_id, organization=organization).first()
+    if command["client_id"] is not None:
+        client = Client.objects.filter(
+            pk=command["client_id"],
+            organization=organization,
+        ).first()
         if not client:
             raise ValueError("client_id")
 
+    due_date = date.fromisoformat(command["due_date"])
+    due_time = (
+        datetime.strptime(command["due_time"], "%H:%M").time()
+        if command["due_time"]
+        else None
+    )
     due_at = None
     if due_time:
-        due_at = datetime.combine(due_date, due_time).replace(tzinfo=_communication_zone())
+        due_at = datetime.combine(due_date, due_time).replace(
+            tzinfo=_communication_zone()
+        )
+
     task = ServiceTask.objects.create(
         organization=organization,
-        title=title,
-        description=description,
+        title=command["title"],
+        description=command["description"],
         start_date=due_date,
         end_date=due_date,
         start_time=due_time,
@@ -749,7 +861,7 @@ def _create_task(authenticated, organization, arguments):
         source_type=ServiceTask.SOURCE_MANAGER,
         status=ServiceTask.STATUS_NEW,
         visibility=ServiceTask.VISIBILITY_PRIVATE,
-        priority=priority,
+        priority=command["priority"],
         client=client,
         created_by=actor,
         primary_responsible=responsible,
@@ -759,6 +871,7 @@ def _create_task(authenticated, organization, arguments):
         payload_json={
             "source": "operations_mcp",
             "operations_mcp_idempotency_key": key,
+            CREATE_COMMAND_HASH_PAYLOAD_KEY: command_hash,
             "operations_mcp_grant_id": authenticated.grant.id,
         },
     )
@@ -876,7 +989,7 @@ def _send_employee_notification(authenticated, organization, arguments):
         participant_ids.add(task.primary_responsible_id)
     if employee_id not in participant_ids:
         raise ValueError("employee_user_id")
-    employee = _staff_user(organization, employee_id)
+    employee = _locked_task_recipient(task, employee_id)
     if not employee:
         raise ValueError("employee_user_id")
 
