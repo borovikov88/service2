@@ -96,6 +96,7 @@ def _authorize_call_access(request, call):
     if (
         not conversation_capability(request.user, "can_view_all_calls", access.organization)
         and call.employee_id != request.user.id
+        and call.peer_employee_id != request.user.id
     ):
         raise PermissionDenied
     return access.organization
@@ -362,7 +363,9 @@ def _filter_telephony_calls(request, queryset, organization, can_view_all):
             ).exists()
         ):
             raise ValueError("Некорректный сотрудник.")
-        queryset = queryset.filter(employee_id=employee_id)
+        queryset = queryset.filter(
+            Q(employee_id=employee_id) | Q(peer_employee_id=employee_id)
+        )
 
     client_id = (request.GET.get("client") or "").strip()
     if client_id:
@@ -403,7 +406,7 @@ def _filter_telephony_calls(request, queryset, organization, can_view_all):
         queryset = queryset.filter(client_filter)
 
     direction = request.GET.get("direction")
-    if direction in ("in", "out"):
+    if direction in ("in", "out", PhoneCall.DIRECTION_INTERNAL):
         queryset = queryset.filter(direction=direction)
     if request.GET.get("missed"):
         queryset = queryset.filter(result=PhoneCall.RESULT_MISSED)
@@ -427,6 +430,16 @@ def _filter_telephony_calls(request, queryset, organization, can_view_all):
             | Q(phone_number__icontains=canonical_query)
             | Q(contact_name__icontains=query)
             | Q(client__name__icontains=query)
+            | Q(provider_user__icontains=query)
+            | Q(provider_extension__icontains=query)
+            | Q(peer_provider_user__icontains=query)
+            | Q(peer_provider_extension__icontains=query)
+            | Q(employee_profile__display_name__icontains=query)
+            | Q(peer_employee_profile__display_name__icontains=query)
+            | Q(employee__first_name__icontains=query)
+            | Q(employee__last_name__icontains=query)
+            | Q(peer_employee__first_name__icontains=query)
+            | Q(peer_employee__last_name__icontains=query)
         )
         if phone_query:
             phone_filter |= Q(phone_number_digits__icontains=phone_query)
@@ -501,6 +514,8 @@ def _transcript_export_records(queryset, organization):
             "client",
             "employee",
             "employee_profile",
+            "peer_employee",
+            "peer_employee_profile",
         )
         .order_by("started_at", "pk")
     )
@@ -513,7 +528,25 @@ def _transcript_export_records(queryset, organization):
         elif call.employee:
             employee = call.employee.get_full_name() or call.employee.username
         else:
-            employee = ""
+            employee = call.provider_user or call.provider_extension
+
+        if call.direction == PhoneCall.DIRECTION_INTERNAL:
+            if call.peer_employee_profile:
+                peer_employee = call.peer_employee_profile.display_name
+            elif call.peer_employee:
+                peer_employee = (
+                    call.peer_employee.get_full_name()
+                    or call.peer_employee.username
+                )
+            else:
+                peer_employee = (
+                    call.contact_name
+                    or call.peer_provider_user
+                    or call.peer_provider_extension
+                )
+            employee = " → ".join(
+                value for value in (employee, peer_employee) if value
+            )
 
         started_at = call.started_at
         if timezone.is_aware(started_at):
@@ -710,7 +743,9 @@ def call_transcripts_export(request, source_kind):
             source_kind=PhoneCall.SOURCE_TELEPHONY,
         )
         if not can_view_all:
-            queryset = queryset.filter(employee=request.user)
+            queryset = queryset.filter(
+                Q(employee=request.user) | Q(peer_employee=request.user)
+            )
         try:
             queryset = _filter_telephony_calls(
                 request,
@@ -743,11 +778,15 @@ def calls(request):
     ).select_related(
         "employee",
         "employee_profile",
+        "peer_employee",
+        "peer_employee_profile",
         "client",
         "analysis",
     ).defer("analysis__transcript")
     if not can_view_all:
-        queryset = queryset.filter(employee=request.user)
+        queryset = queryset.filter(
+            Q(employee=request.user) | Q(peer_employee=request.user)
+        )
     try:
         queryset = _filter_telephony_calls(
             request,
