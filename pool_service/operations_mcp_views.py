@@ -278,7 +278,63 @@ def _task_for_org(organization, task_id, *, for_update=False):
 
 ASSIGNMENT_DELIVERY_PAYLOAD_KEY = "operations_assignment_delivery"
 EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY = "operations_employee_notification_deliveries"
+PUSH_PENDING_PAYLOAD_KEY = "operations_push_pending"
 PUSH_RETRY_BATCH_LIMIT = 100
+PUSH_RETRY_CANDIDATE_LIMIT = 500
+_TERMINAL_PUSH_RESULTS = frozenset({
+    "sent", "skipped_self", "blocked_not_authorized",
+    "blocked_push_disabled", "blocked_task_closed",
+})
+
+
+def _push_delivery_is_pending(delivery):
+    return bool(
+        isinstance(delivery, dict)
+        and delivery
+        and not delivery.get("push_delivered_at")
+        and delivery.get("push_delivery_result") not in _TERMINAL_PUSH_RESULTS
+    )
+
+
+def _payload_has_pending_pushes(payload):
+    if _push_delivery_is_pending(payload.get(ASSIGNMENT_DELIVERY_PAYLOAD_KEY)):
+        return True
+    deliveries = payload.get(EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY)
+    return isinstance(deliveries, dict) and any(
+        _push_delivery_is_pending(delivery) for delivery in deliveries.values()
+    )
+
+
+def _save_push_payload(task, payload):
+    # Callers hold the task row lock (or have just created the task). Keep the
+    # selection flag atomic with delivery state; retain all idempotency history.
+    payload[PUSH_PENDING_PAYLOAD_KEY] = _payload_has_pending_pushes(payload)
+    task.payload_json = payload
+    task.save(update_fields=["payload_json", "updated_at"])
+
+
+def _refresh_push_pending_flag(task_id):
+    # Re-read under lock: a concurrent new notification must not be removed from
+    # the queue using the consumer's older snapshot. Legacy terminal rows are
+    # retired in bounded batches, without changing their business timestamps.
+    with transaction.atomic():
+        task = ServiceTask.objects.select_for_update().only("id", "payload_json").filter(pk=task_id).first()
+        if not task or not isinstance(task.payload_json, dict):
+            return
+        payload = dict(task.payload_json)
+        pending = _payload_has_pending_pushes(payload)
+        if payload.get(PUSH_PENDING_PAYLOAD_KEY) is not pending:
+            payload[PUSH_PENDING_PAYLOAD_KEY] = pending
+            task.payload_json = payload
+            task.save(update_fields=["payload_json"])
+
+
+def _task_is_closed(task):
+    return bool(
+        task.is_archived
+        or task.completed_at
+        or task.status in {ServiceTask.STATUS_DONE, ServiceTask.STATUS_CANCELLED}
+    )
 
 
 def _assignment_notification_key(task_id):
@@ -330,7 +386,13 @@ def _retry_assignment_push(task_id, responsible_user_id):
             return 0
 
         payload, delivery = _assignment_delivery(task)
-        if delivery.get("push_delivered_at"):
+        if not _push_delivery_is_pending(delivery):
+            return 0
+        if _task_is_closed(task):
+            delivery["push_last_attempt_at"] = timezone.now().isoformat()
+            delivery["push_delivery_result"] = "blocked_task_closed"
+            payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
+            _save_push_payload(task, payload)
             return 0
 
         responsible = User.objects.filter(
@@ -341,16 +403,14 @@ def _retry_assignment_push(task_id, responsible_user_id):
             delivery["push_last_attempt_at"] = timezone.now().isoformat()
             delivery["push_delivery_result"] = "blocked_not_authorized"
             payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
-            task.payload_json = payload
-            task.save(update_fields=["payload_json", "updated_at"])
+            _save_push_payload(task, payload)
             return 0
 
         if not _profile_allows_push(responsible):
             delivery["push_last_attempt_at"] = timezone.now().isoformat()
             delivery["push_delivery_result"] = "blocked_push_disabled"
             payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
-            task.payload_json = payload
-            task.save(update_fields=["payload_json", "updated_at"])
+            _save_push_payload(task, payload)
             return 0
 
         added_by_id = delivery.get("added_by_user_id")
@@ -358,8 +418,7 @@ def _retry_assignment_push(task_id, responsible_user_id):
             delivery["push_delivered_at"] = timezone.now().isoformat()
             delivery["push_delivery_result"] = "skipped_self"
             payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
-            task.payload_json = payload
-            task.save(update_fields=["payload_json", "updated_at"])
+            _save_push_payload(task, payload)
             return 0
 
         title, message, action_url = task_assignment_notification_content(task)
@@ -383,8 +442,7 @@ def _retry_assignment_push(task_id, responsible_user_id):
         else:
             delivery["push_delivery_result"] = "pending_retry"
         payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
-        task.payload_json = payload
-        task.save(update_fields=["payload_json", "updated_at"])
+        _save_push_payload(task, payload)
         return int(sent or 0)
 
 
@@ -416,15 +474,15 @@ def _retry_employee_notification_push(task_id, marker):
 
         payload, deliveries = _notification_deliveries(task)
         delivery = deliveries.get(marker)
-        if not isinstance(delivery, dict):
+        if not _push_delivery_is_pending(delivery):
             return 0
         delivery = dict(delivery)
-        if delivery.get("push_delivered_at"):
-            return 0
-        if delivery.get("push_delivery_result") in {
-            "blocked_not_authorized",
-            "blocked_push_disabled",
-        }:
+        if _task_is_closed(task):
+            delivery["push_last_attempt_at"] = timezone.now().isoformat()
+            delivery["push_delivery_result"] = "blocked_task_closed"
+            deliveries[marker] = delivery
+            payload[EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY] = deliveries
+            _save_push_payload(task, payload)
             return 0
 
         employee_id = delivery.get("employee_user_id")
@@ -434,8 +492,7 @@ def _retry_employee_notification_push(task_id, marker):
             delivery["push_delivery_result"] = "blocked_not_authorized"
             deliveries[marker] = delivery
             payload[EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY] = deliveries
-            task.payload_json = payload
-            task.save(update_fields=["payload_json", "updated_at"])
+            _save_push_payload(task, payload)
             return 0
 
         if not _profile_allows_push(employee):
@@ -443,8 +500,7 @@ def _retry_employee_notification_push(task_id, marker):
             delivery["push_delivery_result"] = "blocked_push_disabled"
             deliveries[marker] = delivery
             payload[EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY] = deliveries
-            task.payload_json = payload
-            task.save(update_fields=["payload_json", "updated_at"])
+            _save_push_payload(task, payload)
             return 0
 
         notification = None
@@ -471,8 +527,7 @@ def _retry_employee_notification_push(task_id, marker):
             delivery["push_delivery_result"] = "pending_retry"
         deliveries[marker] = delivery
         payload[EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY] = deliveries
-        task.payload_json = payload
-        task.save(update_fields=["payload_json", "updated_at"])
+        _save_push_payload(task, payload)
         return int(sent or 0)
 
 
@@ -484,7 +539,7 @@ def _schedule_employee_notification_push(task_id, marker):
 
 
 def process_pending_operations_pushes(*, limit=PUSH_RETRY_BATCH_LIMIT):
-    """Retry pending Operations pushes without letting terminal rows starve the queue."""
+    """Bound both inspected task rows and delivery attempts, preserving progress."""
     limit = max(1, min(int(limit), 500))
     queryset = (
         ServiceTask.objects.filter(
@@ -495,8 +550,12 @@ def process_pending_operations_pushes(*, limit=PUSH_RETRY_BATCH_LIMIT):
             Q(payload_json__has_key=ASSIGNMENT_DELIVERY_PAYLOAD_KEY)
             | Q(payload_json__has_key=EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY)
         )
+        .filter(
+            Q(payload_json__operations_push_pending=True)
+            | Q(payload_json__operations_push_pending__isnull=True)
+        )
         .only("id", "payload_json", "primary_responsible_id", "updated_at")
-        .order_by("updated_at", "id")
+        .order_by("updated_at", "id")[:PUSH_RETRY_CANDIDATE_LIMIT]
     )
 
     result = {
@@ -509,51 +568,32 @@ def process_pending_operations_pushes(*, limit=PUSH_RETRY_BATCH_LIMIT):
     def attempts_used():
         return result["assignment_attempts"] + result["notification_attempts"]
 
-    for task in queryset.iterator(chunk_size=200):
+    for task in queryset:
         if attempts_used() >= limit:
             break
-
+        result["checked"] += 1
         payload = task.payload_json if isinstance(task.payload_json, dict) else {}
+        if not _payload_has_pending_pushes(payload):
+            _refresh_push_pending_flag(task.id)
+            continue
         assignment = payload.get(ASSIGNMENT_DELIVERY_PAYLOAD_KEY)
         deliveries = payload.get(EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY)
-        if not isinstance(assignment, dict) and not isinstance(deliveries, dict):
-            continue
 
-        result["checked"] += 1
-
-        if isinstance(assignment, dict) and attempts_used() < limit:
-            assignment_result = assignment.get("push_delivery_result")
-            if (
-                not assignment.get("push_delivered_at")
-                and assignment_result
-                not in {
-                    "blocked_not_authorized",
-                    "blocked_push_disabled",
-                    "skipped_self",
-                }
-            ):
-                responsible_id = (
-                    assignment.get("responsible_user_id")
-                    or task.primary_responsible_id
-                )
-                if responsible_id:
-                    result["assignment_attempts"] += 1
-                    result["delivered"] += int(
-                        bool(_retry_assignment_push(task.id, responsible_id))
-                    )
+        if _push_delivery_is_pending(assignment) and attempts_used() < limit:
+            responsible_id = (
+                assignment.get("responsible_user_id")
+                or task.primary_responsible_id
+            )
+            result["assignment_attempts"] += 1
+            result["delivered"] += int(
+                bool(_retry_assignment_push(task.id, responsible_id))
+            )
 
         if isinstance(deliveries, dict):
-            for marker, delivery in list(deliveries.items()):
+            for marker, delivery in deliveries.items():
                 if attempts_used() >= limit:
                     break
-                if not isinstance(delivery, dict):
-                    continue
-                delivery_result = delivery.get("push_delivery_result")
-                if (
-                    delivery.get("push_delivered_at")
-                    or delivery_result
-                    in {"blocked_not_authorized", "blocked_push_disabled"}
-                ):
+                if not _push_delivery_is_pending(delivery):
                     continue
                 result["notification_attempts"] += 1
                 result["delivered"] += int(
@@ -566,6 +606,13 @@ def process_pending_operations_pushes(*, limit=PUSH_RETRY_BATCH_LIMIT):
 def _ensure_assignment_delivery(task, responsible, actor):
     dedupe_key = _assignment_notification_key(task.id)
     payload, delivery = _assignment_delivery(task)
+    if _task_is_closed(task):
+        if not delivery.get("push_delivered_at"):
+            delivery["push_last_attempt_at"] = timezone.now().isoformat()
+            delivery["push_delivery_result"] = "blocked_task_closed"
+            payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
+            _save_push_payload(task, payload)
+        return False
     if not _assignment_recipient_is_authorized(task, responsible):
         Notification.objects.filter(
             user=responsible,
@@ -577,8 +624,7 @@ def _ensure_assignment_delivery(task, responsible, actor):
         delivery["push_last_attempt_at"] = timezone.now().isoformat()
         delivery["push_delivery_result"] = "blocked_not_authorized"
         payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
-        task.payload_json = payload
-        task.save(update_fields=["payload_json", "updated_at"])
+        _save_push_payload(task, payload)
         return False
 
     notification = None
@@ -603,8 +649,7 @@ def _ensure_assignment_delivery(task, responsible, actor):
     if notification:
         delivery["notification_id"] = notification.id
     payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
-    task.payload_json = payload
-    task.save(update_fields=["payload_json", "updated_at"])
+    _save_push_payload(task, payload)
     _schedule_assignment_push(task.id, responsible.id)
     return True
 
@@ -889,11 +934,7 @@ def _send_employee_notification(authenticated, organization, arguments):
     marker = f"{employee.id}:{key}"
     existing = deliveries.get(marker)
     if isinstance(existing, dict):
-        if (
-            not existing.get("push_delivered_at")
-            and existing.get("push_delivery_result")
-            not in {"blocked_not_authorized", "blocked_push_disabled"}
-        ):
+        if _push_delivery_is_pending(existing):
             _schedule_employee_notification_push(task.id, marker)
         return {"created_notifications": 0, "employee_user_id": employee.id}
     if len(deliveries) >= 50:
@@ -926,8 +967,7 @@ def _send_employee_notification(authenticated, organization, arguments):
         ),
     }
     payload[EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY] = deliveries
-    task.payload_json = payload
-    task.save(update_fields=["payload_json", "updated_at"])
+    _save_push_payload(task, payload)
 
     if deliveries[marker]["push_delivery_result"] == "pending_retry":
         _schedule_employee_notification_push(task.id, marker)
