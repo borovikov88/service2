@@ -30,6 +30,7 @@ from pool_service.operations_mcp_auth import (
     protected_resource_metadata,
 )
 from pool_service.operations_mcp_policy import can_access_operations_mcp
+from pool_service.operations_models import OperationsPushQueue
 from pool_service.services.notifications import task_assignment_notification_content
 
 
@@ -363,6 +364,7 @@ class OperationsMcpTests(TestCase):
                 payload_json__operations_mcp_idempotency_key="audit-rollback",
             ).exists()
         )
+        self.assertFalse(OperationsPushQueue.objects.exists())
 
     def test_create_task_is_idempotent_and_audited(self):
         raw = self._token()
@@ -930,6 +932,8 @@ class OperationsMcpTests(TestCase):
             action_url=reverse("task_edit", kwargs={"task_id": task.id}),
             dedupe_key="operations_mcp:scanner:assignment",
         )
+        # Direct ORM fixtures bypass the producer: include its durable queue row.
+        OperationsPushQueue.objects.create(task=task)
 
         result = process_pending_operations_pushes(limit=100)
 
@@ -939,6 +943,7 @@ class OperationsMcpTests(TestCase):
         delivery = task.payload_json["operations_assignment_delivery"]
         self.assertEqual(delivery["push_delivery_result"], "sent")
         self.assertTrue(delivery["push_delivered_at"])
+        self.assertFalse(OperationsPushQueue.objects.filter(task=task).exists())
         send_push.assert_called_once()
 
     @patch("pool_service.operations_mcp_views.send_push_to_users", return_value=1)
@@ -1004,14 +1009,18 @@ class OperationsMcpTests(TestCase):
             action_url=reverse("task_edit", kwargs={"task_id": pending.id}),
             dedupe_key="operations_mcp:pending:assignment",
         )
+        OperationsPushQueue.objects.create(task=pending)
+        self.assertFalse(OperationsPushQueue.objects.filter(task=terminal).exists())
 
         result = process_pending_operations_pushes(limit=1)
 
+        self.assertEqual(result["checked"], 1)
         self.assertEqual(result["assignment_attempts"], 1)
         self.assertEqual(result["delivered"], 1)
         pending.refresh_from_db()
         delivery = pending.payload_json["operations_assignment_delivery"]
         self.assertEqual(delivery["push_delivery_result"], "sent")
+        self.assertFalse(OperationsPushQueue.objects.filter(task=pending).exists())
         send_push.assert_called_once()
 
     @patch("pool_service.operations_mcp_views.send_push_to_users")
@@ -1043,12 +1052,15 @@ class OperationsMcpTests(TestCase):
             },
         )
         task.responsibles.add(self.manager)
+        OperationsPushQueue.objects.create(task=task)
 
         first = process_pending_operations_pushes(limit=100)
         second = process_pending_operations_pushes(limit=100)
 
         self.assertEqual(first["assignment_attempts"], 1)
         self.assertEqual(second["assignment_attempts"], 0)
+        self.assertEqual(second["checked"], 0)
+        self.assertFalse(OperationsPushQueue.objects.filter(task=task).exists())
         send_push.assert_not_called()
         task.refresh_from_db()
         delivery = task.payload_json["operations_assignment_delivery"]
@@ -1159,3 +1171,52 @@ class OperationsMcpTests(TestCase):
         with self._settings():
             response = self._post(payload, token=raw)
         self.assertTrue(response.json()["result"]["isError"])
+
+    @patch("pool_service.operations_mcp_views.send_push_to_users", return_value=1)
+    def test_create_api_persists_queue_before_assignment_callback(self, send_push):
+        from pool_service.operations_mcp_views import process_pending_operations_pushes
+
+        profile, _ = Profile.objects.get_or_create(user=self.manager)
+        profile.push_notifications_enabled = True
+        profile.save(update_fields=["push_notifications_enabled"])
+        raw = self._token(raw="queued-create-token")
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 61,
+            "method": "tools/call",
+            "params": {
+                "name": "create_task",
+                "arguments": {
+                    "idempotency_key": "durable-create-queue",
+                    "title": "Delivery survives a lost on-commit callback",
+                    "responsible_user_id": self.manager.id,
+                    "due_date": "2026-10-08",
+                },
+            },
+        }
+        # Simulate a worker that exits before the post-commit callback executes.
+        # No manually seeded queue row: the real MCP producer must persist it.
+        with self._settings(), self.captureOnCommitCallbacks(execute=False) as callbacks:
+            response = self._post(payload, token=raw)
+        self.assertFalse(response.json()["result"]["isError"])
+        task = ServiceTask.objects.get(
+            payload_json__operations_mcp_idempotency_key="durable-create-queue",
+        )
+        self.assertEqual(len(callbacks), 1)
+        self.assertTrue(OperationsPushQueue.objects.filter(task=task).exists())
+        send_push.assert_not_called()
+
+        result = process_pending_operations_pushes(limit=1)
+        self.assertEqual(result["assignment_attempts"], 1)
+        self.assertEqual(result["delivered"], 1)
+        self.assertFalse(OperationsPushQueue.objects.filter(task=task).exists())
+        self.assertEqual(process_pending_operations_pushes(limit=1)["checked"], 0)
+        task.refresh_from_db()
+        self.assertEqual(
+            task.payload_json["operations_assignment_delivery"]["push_delivery_result"],
+            "sent",
+        )
+        self.assertEqual(Notification.objects.filter(
+            user=self.manager, dedupe_key=f"operations_mcp:task:{task.pk}:assignment",
+        ).count(), 1)
+        send_push.assert_called_once()
