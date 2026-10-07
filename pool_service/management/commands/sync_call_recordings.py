@@ -5,10 +5,14 @@ from django.core.management.base import BaseCommand
 from django.db.models import Q
 from django.utils import timezone
 
-from pool_service.communication_models import PhoneCall
+from pool_service.communication_models import PhoneCall, TelephonyConnection
 from pool_service.communication_recordings import download_call_recording
 from pool_service.services.call_commitment_control import process_call_commitment_controls
 from pool_service.operations_mcp_views import process_pending_operations_pushes
+from pool_service.services.megafon_internal_calls import (
+    MegafonInternalCallSyncError,
+    sync_megafon_internal_calls,
+)
 
 
 class Command(BaseCommand):
@@ -25,6 +29,25 @@ class Command(BaseCommand):
         force = bool(options.get("force"))
         stale_before = timezone.now() - timedelta(minutes=30)
 
+        internal_checked = 0
+        internal_created = 0
+        internal_updated = 0
+        internal_errors = []
+        if call_id is None:
+            for telephony in TelephonyConnection.objects.filter(
+                is_active=True,
+            ).select_related("organization"):
+                try:
+                    result = sync_megafon_internal_calls(telephony)
+                except MegafonInternalCallSyncError as exc:
+                    internal_errors.append(
+                        f"{telephony.pk}:{str(exc)[:160]}"
+                    )
+                else:
+                    internal_checked += result["checked"]
+                    internal_created += result["created"]
+                    internal_updated += result["updated"]
+
         queryset = PhoneCall.objects.filter(
             recording_ref__isnull=False,
         ).exclude(recording_ref="")
@@ -37,7 +60,6 @@ class Command(BaseCommand):
             )
             retryable_failures = (
                 Q(recording_error="provider_unavailable")
-                | Q(recording_error="recording_storage_error")
                 | Q(recording_error__in=[
                     "provider_http_404",
                     "provider_http_408",
@@ -45,6 +67,7 @@ class Command(BaseCommand):
                     "provider_http_425",
                     "provider_http_429",
                 ])
+                | Q(recording_error="recording_storage_error")
                 | Q(recording_error__startswith="provider_http_5")
             )
             queryset = queryset.filter(
@@ -96,6 +119,19 @@ class Command(BaseCommand):
         control = process_call_commitment_controls()
         operations_push = process_pending_operations_pushes(limit=100)
 
+        self.stdout.write(
+            self.style.SUCCESS(
+                "MegaFon internal call sync: "
+                f"checked={internal_checked} created={internal_created} "
+                f"updated={internal_updated} errors={len(internal_errors)}"
+            )
+        )
+        for error in internal_errors:
+            self.stderr.write(
+                self.style.WARNING(
+                    f"MegaFon internal call sync skipped line: {error}"
+                )
+            )
         self.stdout.write(
             self.style.SUCCESS(
                 f"Call recording sync: checked={len(ids)} saved={saved} "
