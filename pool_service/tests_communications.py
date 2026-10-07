@@ -2032,7 +2032,11 @@ class CommunicationsTests(TestCase):
             self.assertTrue(call.recording_file)
 
         phone_page = self.client.get(reverse("communications_calls"))
-        self.assertNotContains(phone_page, "Иван Клиент")
+        self.assertNotContains(
+            phone_page,
+            reverse("communication_call_recording", args=[calls[0].pk]),
+        )
+        self.assertNotContains(phone_page, calls[0].recording_filename)
         self.assertNotContains(phone_page, "Загрузить аудио")
 
         page = self.client.get(reverse("communication_manual_recordings"))
