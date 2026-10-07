@@ -344,11 +344,7 @@
     Object.entries(tabButtons).forEach(([name, button]) => {
       if (!button) return;
       button.addEventListener("shown.bs.tab", () => {
-        if (name === "companies") {
-          searchParams.delete("clients_tab");
-        } else {
-          searchParams.set("clients_tab", name);
-        }
+        searchParams.set("clients_tab", name);
         replaceUrl();
       });
     });

@@ -1,4 +1,5 @@
 from datetime import timedelta
+import csv
 import io
 from importlib import import_module
 import logging
@@ -16,6 +17,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, RequestFactory, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from docx import Document
 
 from pool_service.communication_models import AvitoCredential, CallAnalysis, CommunicationAccess, CommunicationChannel, ChannelConnection, Conversation, ConversationMessage, MessageAttachment, PhoneCall, TelephonyConnection, TelephonyEmployeeIdentity, WebsiteRequest
 from pool_service.communication_avito import (
@@ -1489,6 +1491,293 @@ class CommunicationsTests(TestCase):
             [first_call.pk, second_call.pk],
         )
 
+    def test_call_transcript_csv_export_respects_client_phone_filter(self):
+        client = ServiceClient.objects.create(
+            organization=self.organization,
+            client_type="private",
+            name="Клиент Экспорт",
+            phone="+7 900 111 2233",
+        )
+        other_client = ServiceClient.objects.create(
+            organization=self.organization,
+            client_type="private",
+            name="Другой клиент",
+            phone="+7 900 999 8877",
+        )
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-export-csv",
+        )
+
+        matching_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="export-match",
+            employee=self.owner,
+            phone_number="79001112233",
+            contact_name="",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=61,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        matching_call.recording_file.save(
+            "export-match.mp3",
+            ContentFile(b"ID3match"),
+            save=True,
+        )
+        CallAnalysis.objects.create(
+            call=matching_call,
+            status=CallAnalysis.STATUS_READY,
+            summary="Итог нужного разговора",
+            transcript="Полный текст нужного разговора",
+        )
+
+        other_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="export-other",
+            employee=self.owner,
+            client=other_client,
+            phone_number="+79009998877",
+            direction=PhoneCall.DIRECTION_OUT,
+            started_at=timezone.now(),
+            duration_seconds=30,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        other_call.recording_file.save(
+            "export-other.mp3",
+            ContentFile(b"ID3other"),
+            save=True,
+        )
+        CallAnalysis.objects.create(
+            call=other_call,
+            status=CallAnalysis.STATUS_READY,
+            summary="Чужой итог",
+            transcript="Чужая расшифровка",
+        )
+
+        pending_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="export-pending",
+            employee=self.owner,
+            client=client,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=15,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        pending_call.recording_file.save(
+            "export-pending.mp3",
+            ContentFile(b"ID3pending"),
+            save=True,
+        )
+        CallAnalysis.objects.create(
+            call=pending_call,
+            status=CallAnalysis.STATUS_PENDING,
+            requested_at=timezone.now(),
+        )
+
+        self.client.login(username="owner", password="test")
+        response = self.client.get(
+            reverse("communication_call_transcripts_export"),
+            {
+                "format": "csv",
+                "client": str(client.pk),
+                "q": "9001112233",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "text/csv; charset=utf-8")
+        rows = list(
+            csv.reader(
+                io.StringIO(response.content.decode("utf-8-sig"))
+            )
+        )
+        body = "\n".join(",".join(row) for row in rows)
+        self.assertIn("Полный текст нужного разговора", body)
+        self.assertIn("Клиент Экспорт", body)
+        self.assertNotIn("Чужая расшифровка", body)
+        self.assertNotIn("export-pending", body)
+        self.assertEqual(len(rows), 2)
+
+    def test_audio_transcript_docx_export_respects_filters(self):
+        client = ServiceClient.objects.create(
+            organization=self.organization,
+            client_type="private",
+            name="Александр Экспорт",
+            phone="+79001234567",
+        )
+        other_client = ServiceClient.objects.create(
+            organization=self.organization,
+            client_type="private",
+            name="Не тот клиент",
+            phone="+79007654321",
+        )
+        target = PhoneCall.objects.create(
+            organization=self.organization,
+            source_kind=PhoneCall.SOURCE_UPLOADED,
+            connection=None,
+            external_id="upload-export-target",
+            client=client,
+            contact_name=client.name,
+            phone_number=client.phone,
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        target.recording_file.save(
+            "target-export.mp3",
+            ContentFile(b"ID3target"),
+            save=True,
+        )
+        CallAnalysis.objects.create(
+            call=target,
+            status=CallAnalysis.STATUS_READY,
+            summary="Нужный итог",
+            transcript="Нужная полная расшифровка",
+        )
+
+        other = PhoneCall.objects.create(
+            organization=self.organization,
+            source_kind=PhoneCall.SOURCE_UPLOADED,
+            connection=None,
+            external_id="upload-export-other",
+            client=other_client,
+            contact_name=other_client.name,
+            phone_number=other_client.phone,
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        other.recording_file.save(
+            "other-export.mp3",
+            ContentFile(b"ID3other"),
+            save=True,
+        )
+        CallAnalysis.objects.create(
+            call=other,
+            status=CallAnalysis.STATUS_READY,
+            summary="Другой итог",
+            transcript="Другая полная расшифровка",
+        )
+
+        today = timezone.localdate().isoformat()
+        self.client.login(username="owner", password="test")
+        response = self.client.get(
+            reverse("communication_audio_transcripts_export"),
+            {
+                "format": "docx",
+                "client": str(client.pk),
+                "date_from": today,
+                "date_to": today,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["Content-Type"],
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        self.assertTrue(response.content.startswith(b"PK"))
+
+        document = Document(io.BytesIO(response.content))
+        text_parts = [paragraph.text for paragraph in document.paragraphs]
+        for table in document.tables:
+            for row in table.rows:
+                text_parts.extend(cell.text for cell in row.cells)
+        text = "\n".join(text_parts)
+        self.assertIn("Александр Экспорт", text)
+        self.assertIn("Нужная полная расшифровка", text)
+        self.assertIn("target-export.mp3", text)
+        self.assertNotIn("Другая полная расшифровка", text)
+
+    def test_transcript_txt_export_is_scoped_to_current_user_calls(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-export-scope",
+        )
+        owner_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="owner-export-only",
+            employee=self.owner,
+            phone_number="+79001110000",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        owner_call.recording_file.save(
+            "owner-export-only.mp3",
+            ContentFile(b"ID3owner"),
+            save=True,
+        )
+        CallAnalysis.objects.create(
+            call=owner_call,
+            status=CallAnalysis.STATUS_READY,
+            transcript="Секрет владельца",
+        )
+        worker_call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="worker-export-own",
+            employee=self.worker,
+            phone_number="+79002220000",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        worker_call.recording_file.save(
+            "worker-export-own.mp3",
+            ContentFile(b"ID3worker"),
+            save=True,
+        )
+        CallAnalysis.objects.create(
+            call=worker_call,
+            status=CallAnalysis.STATUS_READY,
+            transcript="Расшифровка сотрудника",
+        )
+
+        self.client.login(username="worker", password="test")
+        response = self.client.get(
+            reverse("communication_call_transcripts_export"),
+            {"format": "txt"},
+        )
+        self.assertEqual(response.status_code, 200)
+        text = response.content.decode("utf-8-sig")
+        self.assertIn("Расшифровка сотрудника", text)
+        self.assertNotIn("Секрет владельца", text)
+
+    def test_call_pages_show_filtered_export_controls(self):
+        self.client.login(username="owner", password="test")
+
+        calls_page = self.client.get(reverse("communications_calls"))
+        self.assertEqual(calls_page.status_code, 200)
+        self.assertContains(
+            calls_page,
+            reverse("communication_call_transcripts_export"),
+        )
+        self.assertContains(calls_page, "Word (.docx)")
+        self.assertContains(calls_page, 'name="client"', html=False)
+
+        audio_page = self.client.get(reverse("communication_manual_recordings"))
+        self.assertEqual(audio_page.status_code, 200)
+        self.assertContains(
+            audio_page,
+            reverse("communication_audio_transcripts_export"),
+        )
+        self.assertContains(audio_page, "Word (.docx)")
+
     def test_calls_page_offers_manual_transcription_for_unanalysed_recording(self):
         telephony = TelephonyConnection.objects.create(
             organization=self.organization,
@@ -1520,6 +1809,109 @@ class CommunicationsTests(TestCase):
         )
         self.assertNotContains(response, "Расшифровка запускается вручную.")
         self.assertNotContains(response, "Ожидает автоматической расшифровки.")
+
+    def test_ready_call_analysis_is_collapsed_behind_ready_button(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-ready-toggle",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ready-toggle-call",
+            employee=self.owner,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=42,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        call.recording_file.save(
+            "ready-toggle.mp3",
+            ContentFile(b"ID3ready"),
+            save=True,
+        )
+        CallAnalysis.objects.create(
+            call=call,
+            status=CallAnalysis.STATUS_READY,
+            summary="Краткий итог разговора",
+            transcript="Полная готовая расшифровка",
+        )
+
+        self.client.login(username="owner", password="test")
+        response = self.client.get(reverse("communications_calls"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "btn-outline-success btn-sm call-player__analysis")
+        self.assertContains(response, 'data-call-analysis-toggle', html=False)
+        self.assertContains(
+            response,
+            f'data-analysis-target="call-analysis-{call.pk}"',
+            html=False,
+        )
+        self.assertContains(
+            response,
+            f'id="call-analysis-{call.pk}"',
+            html=False,
+        )
+        self.assertContains(response, "call-analysis-row", html=False)
+        self.assertContains(response, "hidden", html=False)
+        self.assertContains(response, "Краткий итог разговора")
+        self.assertNotContains(response, "Поставлено в очередь на расшифровку.")
+        self.assertNotContains(response, "Расшифровываем разговор…")
+
+    def test_processing_call_uses_inline_spinner_without_analysis_row(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-processing-inline",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="processing-inline-call",
+            employee=self.owner,
+            phone_number="+79001112234",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=55,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        call.recording_file.save(
+            "processing-inline.mp3",
+            ContentFile(b"ID3processing"),
+            save=True,
+        )
+        CallAnalysis.objects.create(
+            call=call,
+            status=CallAnalysis.STATUS_PROCESSING,
+            requested_at=timezone.now(),
+            processing_started_at=timezone.now(),
+            processing_token="processing-inline-token",
+        )
+
+        self.client.login(username="owner", password="test")
+        response = self.client.get(reverse("communications_calls"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            'data-call-analysis-status="processing"',
+            html=False,
+        )
+        self.assertContains(response, "spinner-border spinner-border-sm", html=False)
+        self.assertContains(response, 'aria-label="Расшифровываем разговор"', html=False)
+        self.assertNotContains(
+            response,
+            f'id="call-analysis-{call.pk}"',
+            html=False,
+        )
+        self.assertContains(
+            response,
+            '<span class="visually-hidden">Повторить, если зависло</span>',
+            html=False,
+        )
 
     def test_audio_files_page_is_owner_or_admin_only_and_separate_from_phone_history(self):
         telephony = TelephonyConnection.objects.create(
@@ -1743,7 +2135,11 @@ class CommunicationsTests(TestCase):
             self.assertTrue(call.recording_file)
 
         phone_page = self.client.get(reverse("communications_calls"))
-        self.assertNotContains(phone_page, "Иван Клиент")
+        self.assertNotContains(
+            phone_page,
+            reverse("communication_call_recording", args=[calls[0].pk]),
+        )
+        self.assertNotContains(phone_page, calls[0].recording_filename)
         self.assertNotContains(phone_page, "Загрузить аудио")
 
         page = self.client.get(reverse("communication_manual_recordings"))

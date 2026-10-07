@@ -1,4 +1,6 @@
 from datetime import date, timedelta
+import csv
+import io
 import mimetypes
 import os
 import re
@@ -21,7 +23,9 @@ from django.utils import timezone
 from django.views.decorators.http import require_POST
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.debug import sensitive_post_parameters
+from docx import Document
 
+from pool_service.client_crm_models import ClientContact
 from pool_service.client_queries import active_clients
 from pool_service.client_phone_matching import clients_by_phones
 from pool_service.phone_utils import canonical_phone_value, format_phone, normalize_phone
@@ -306,6 +310,423 @@ def attachment_download(request, attachment_id):
     return response
 
 
+def _call_filter_dates(request):
+    try:
+        date_from = (
+            date.fromisoformat(request.GET["date_from"])
+            if request.GET.get("date_from")
+            else None
+        )
+        date_to = (
+            date.fromisoformat(request.GET["date_to"])
+            if request.GET.get("date_to")
+            else None
+        )
+    except ValueError as exc:
+        raise ValueError("Некорректный период.") from exc
+    if date_from and date_to and date_from > date_to:
+        raise ValueError("Начало периода не может быть позже окончания.")
+    return date_from, date_to
+
+
+def _phone_digits_expression():
+    expression = "phone_number"
+    for separator in ("+", " ", "-", "(", ")", "."):
+        expression = Replace(
+            expression,
+            Value(separator),
+            Value(""),
+        )
+    return expression
+
+
+def _apply_date_filters(queryset, request):
+    date_from, date_to = _call_filter_dates(request)
+    if date_from:
+        queryset = queryset.filter(started_at__date__gte=date_from)
+    if date_to:
+        queryset = queryset.filter(started_at__date__lte=date_to)
+    return queryset
+
+
+def _filter_telephony_calls(request, queryset, organization, can_view_all):
+    queryset = _apply_date_filters(queryset, request)
+
+    employee_id = (request.GET.get("employee") or "").strip()
+    if employee_id and can_view_all:
+        if (
+            not employee_id.isdigit()
+            or not OrganizationAccess.objects.filter(
+                organization=organization,
+                user_id=employee_id,
+            ).exists()
+        ):
+            raise ValueError("Некорректный сотрудник.")
+        queryset = queryset.filter(employee_id=employee_id)
+
+    client_id = (request.GET.get("client") or "").strip()
+    if client_id:
+        if not client_id.isdigit():
+            raise ValueError("Некорректный клиент.")
+        client = active_clients(
+            Client.objects.filter(
+                organization=organization,
+                pk=int(client_id),
+            )
+        ).first()
+        if client is None:
+            raise ValueError("Некорректный клиент.")
+
+        phone_values = set(
+            ClientContact.objects.filter(
+                client=client,
+                kind=ClientContact.KIND_PHONE,
+            )
+            .exclude(match_value="")
+            .values_list("match_value", flat=True)
+        )
+        legacy_phone = normalize_phone(client.phone)
+        if legacy_phone:
+            phone_values.add(legacy_phone)
+
+        client_filter = Q(client_id=client.pk)
+        if phone_values:
+            queryset = queryset.annotate(
+                phone_number_digits=_phone_digits_expression()
+            )
+            for phone_value in phone_values:
+                digits = "".join(ch for ch in phone_value if ch.isdigit())
+                if digits:
+                    client_filter |= Q(
+                        phone_number_digits__icontains=digits[-10:]
+                    )
+        queryset = queryset.filter(client_filter)
+
+    direction = request.GET.get("direction")
+    if direction in ("in", "out"):
+        queryset = queryset.filter(direction=direction)
+    if request.GET.get("missed"):
+        queryset = queryset.filter(result=PhoneCall.RESULT_MISSED)
+
+    query = (request.GET.get("q") or "").strip()
+    if query:
+        normalized_query = normalize_phone(query)
+        canonical_query = canonical_phone_value(query)
+        raw_phone_digits = "".join(ch for ch in query if ch.isdigit())
+        normalized_digits = "".join(ch for ch in normalized_query if ch.isdigit())
+        phone_query = (
+            normalized_digits[-10:]
+            if len(normalized_digits) >= 10
+            else raw_phone_digits[-10:]
+        )
+        queryset = queryset.annotate(
+            phone_number_digits=_phone_digits_expression()
+        )
+        phone_filter = (
+            Q(phone_number__icontains=query)
+            | Q(phone_number__icontains=canonical_query)
+            | Q(contact_name__icontains=query)
+            | Q(client__name__icontains=query)
+        )
+        if phone_query:
+            phone_filter |= Q(phone_number_digits__icontains=phone_query)
+        queryset = queryset.filter(phone_filter)
+
+    return queryset
+
+
+def _filter_uploaded_audio(request, queryset, organization):
+    queryset = _apply_date_filters(queryset, request)
+
+    client_id = (request.GET.get("client") or "").strip()
+    if client_id:
+        if not client_id.isdigit():
+            raise ValueError("Некорректный клиент.")
+        if not Client.objects.filter(
+            pk=int(client_id),
+            organization=organization,
+        ).exists():
+            raise ValueError("Некорректный клиент.")
+        queryset = queryset.filter(client_id=int(client_id))
+
+    query = (request.GET.get("q") or "").strip()
+    if query:
+        normalized_query = normalize_phone(query)
+        canonical_query = canonical_phone_value(query)
+        phone_digits = "".join(ch for ch in normalized_query if ch.isdigit())
+        queryset = queryset.annotate(
+            phone_number_digits=_phone_digits_expression()
+        )
+        search_filter = (
+            Q(client__name__icontains=query)
+            | Q(contact_name__icontains=query)
+            | Q(phone_number__icontains=query)
+            | Q(phone_number__icontains=canonical_query)
+            | Q(recording_file__icontains=query)
+        )
+        if phone_digits:
+            search_filter |= Q(
+                phone_number_digits__icontains=phone_digits[-10:]
+            )
+        queryset = queryset.filter(search_filter)
+
+    return queryset
+
+
+def _resolve_export_clients(calls, organization):
+    unresolved = [
+        call.phone_number
+        for call in calls
+        if not call.client_id and normalize_phone(call.phone_number)
+    ]
+    phone_matches = clients_by_phones(organization, unresolved)
+    resolved = {}
+    for call in calls:
+        if call.client_id:
+            resolved[call.pk] = call.client
+            continue
+        matches = phone_matches.get(normalize_phone(call.phone_number), [])
+        resolved[call.pk] = matches[0] if len(matches) == 1 else None
+    return resolved
+
+
+def _transcript_export_records(queryset, organization):
+    calls = list(
+        queryset.filter(
+            analysis__status=CallAnalysis.STATUS_READY,
+        )
+        .exclude(analysis__transcript="")
+        .select_related(
+            "analysis",
+            "client",
+            "employee",
+            "employee_profile",
+        )
+        .order_by("started_at", "pk")
+    )
+    resolved_clients = _resolve_export_clients(calls, organization)
+    records = []
+    for call in calls:
+        client = resolved_clients.get(call.pk)
+        if call.employee_profile:
+            employee = call.employee_profile.display_name
+        elif call.employee:
+            employee = call.employee.get_full_name() or call.employee.username
+        else:
+            employee = ""
+
+        started_at = call.started_at
+        if timezone.is_aware(started_at):
+            started_at = timezone.localtime(started_at)
+
+        records.append({
+            "date_time": started_at.strftime("%d.%m.%Y %H:%M"),
+            "client": client.name if client else (call.contact_name or ""),
+            "phone": format_phone(call.phone_number),
+            "employee": employee,
+            "direction": call.get_direction_display(),
+            "duration": call.duration_seconds,
+            "file_name": call.recording_filename,
+            "summary": (call.analysis.summary or "").strip(),
+            "transcript": (call.analysis.transcript or "").strip(),
+        })
+    return records
+
+
+def _safe_csv_cell(value):
+    text = "" if value is None else str(value)
+    if text[:1] in {"=", "+", "-", "@"}:
+        return "'" + text
+    return text
+
+
+def _transcript_export_response(records, export_format, source_kind):
+    label = "аудиофайлов" if source_kind == PhoneCall.SOURCE_UPLOADED else "звонков"
+    today = timezone.localdate().isoformat()
+    base_name = f"transcripts_{source_kind}_{today}"
+
+    if export_format == "txt":
+        parts = [f"Расшифровки {label}", f"Количество: {len(records)}", ""]
+        for index, record in enumerate(records, start=1):
+            parts.extend([
+                f"{index}. {record['date_time']}",
+                f"Клиент: {record['client'] or '—'}",
+                f"Телефон: {record['phone'] or '—'}",
+            ])
+            if record["employee"]:
+                parts.append(f"Сотрудник: {record['employee']}")
+            if source_kind == PhoneCall.SOURCE_TELEPHONY:
+                parts.append(f"Направление: {record['direction']}")
+                parts.append(f"Длительность: {record['duration']} сек.")
+            elif record["file_name"]:
+                parts.append(f"Файл: {record['file_name']}")
+            parts.extend([
+                "",
+                "Итог разговора:",
+                record["summary"] or "—",
+                "",
+                "Полная расшифровка:",
+                record["transcript"] or "—",
+                "",
+                "=" * 80,
+                "",
+            ])
+        response = HttpResponse(
+            "\ufeff" + "\n".join(parts),
+            content_type="text/plain; charset=utf-8",
+        )
+        response["Content-Disposition"] = f'attachment; filename="{base_name}.txt"'
+        return response
+
+    if export_format == "csv":
+        buffer = io.StringIO(newline="")
+        writer = csv.writer(buffer)
+        writer.writerow([
+            "Дата и время",
+            "Клиент",
+            "Телефон",
+            "Сотрудник",
+            "Направление",
+            "Длительность, сек.",
+            "Файл",
+            "Итог разговора",
+            "Полная расшифровка",
+        ])
+        for record in records:
+            writer.writerow([
+                _safe_csv_cell(record["date_time"]),
+                _safe_csv_cell(record["client"]),
+                _safe_csv_cell(record["phone"]),
+                _safe_csv_cell(record["employee"]),
+                _safe_csv_cell(
+                    record["direction"]
+                    if source_kind == PhoneCall.SOURCE_TELEPHONY
+                    else ""
+                ),
+                record["duration"] if source_kind == PhoneCall.SOURCE_TELEPHONY else "",
+                _safe_csv_cell(record["file_name"]),
+                _safe_csv_cell(record["summary"]),
+                _safe_csv_cell(record["transcript"]),
+            ])
+        response = HttpResponse(
+            "\ufeff" + buffer.getvalue(),
+            content_type="text/csv; charset=utf-8",
+        )
+        response["Content-Disposition"] = f'attachment; filename="{base_name}.csv"'
+        return response
+
+    if export_format == "docx":
+        document = Document()
+        document.add_heading(f"Расшифровки {label}", 0)
+        document.add_paragraph(f"Количество: {len(records)}")
+
+        if not records:
+            document.add_paragraph("По выбранным фильтрам готовых расшифровок нет.")
+
+        for index, record in enumerate(records, start=1):
+            title_parts = [record["date_time"]]
+            if record["client"]:
+                title_parts.append(record["client"])
+            elif record["phone"]:
+                title_parts.append(record["phone"])
+            document.add_heading(
+                f"{index}. " + " — ".join(title_parts),
+                level=1,
+            )
+
+            metadata = []
+            if record["phone"]:
+                metadata.append(("Телефон", record["phone"]))
+            if record["employee"]:
+                metadata.append(("Сотрудник", record["employee"]))
+            if source_kind == PhoneCall.SOURCE_TELEPHONY:
+                metadata.append(("Направление", record["direction"]))
+                metadata.append(("Длительность", f"{record['duration']} сек."))
+            elif record["file_name"]:
+                metadata.append(("Файл", record["file_name"]))
+
+            if metadata:
+                table = document.add_table(rows=0, cols=2)
+                table.style = "Table Grid"
+                for key, value in metadata:
+                    cells = table.add_row().cells
+                    cells[0].text = key
+                    cells[1].text = str(value)
+
+            document.add_heading("Итог разговора", level=2)
+            document.add_paragraph(record["summary"] or "—")
+            document.add_heading("Полная расшифровка", level=2)
+            document.add_paragraph(record["transcript"] or "—")
+
+        output = io.BytesIO()
+        document.save(output)
+        response = HttpResponse(
+            output.getvalue(),
+            content_type=(
+                "application/vnd.openxmlformats-officedocument."
+                "wordprocessingml.document"
+            ),
+        )
+        response["Content-Disposition"] = f'attachment; filename="{base_name}.docx"'
+        return response
+
+    return HttpResponseBadRequest("Неизвестный формат выгрузки.")
+
+
+@login_required
+def call_transcripts_export(request, source_kind):
+    export_format = (request.GET.get("format") or "txt").lower()
+    if export_format not in {"txt", "csv", "docx"}:
+        return HttpResponseBadRequest("Неизвестный формат выгрузки.")
+
+    if source_kind == PhoneCall.SOURCE_UPLOADED:
+        organization = _owner_communications_context(request)
+        queryset = PhoneCall.objects.filter(
+            organization=organization,
+            source_kind=PhoneCall.SOURCE_UPLOADED,
+        )
+        try:
+            queryset = _filter_uploaded_audio(request, queryset, organization)
+        except ValueError as exc:
+            return HttpResponseBadRequest(str(exc))
+    elif source_kind == PhoneCall.SOURCE_TELEPHONY:
+        access = organization_access(request.user)
+        if not access:
+            raise PermissionDenied
+        organization = access.organization
+        if not conversation_capability(
+            request.user,
+            "can_listen_calls",
+            organization,
+        ):
+            raise PermissionDenied
+        can_view_all = conversation_capability(
+            request.user,
+            "can_view_all_calls",
+            organization,
+        )
+        queryset = PhoneCall.objects.filter(
+            organization=organization,
+            source_kind=PhoneCall.SOURCE_TELEPHONY,
+        )
+        if not can_view_all:
+            queryset = queryset.filter(employee=request.user)
+        try:
+            queryset = _filter_telephony_calls(
+                request,
+                queryset,
+                organization,
+                can_view_all,
+            )
+        except ValueError as exc:
+            return HttpResponseBadRequest(str(exc))
+    else:
+        return HttpResponseBadRequest("Некорректный источник.")
+
+    records = _transcript_export_records(queryset, organization)
+    return _transcript_export_response(records, export_format, source_kind)
+
+
 @login_required
 def calls(request):
     access = organization_access(request.user)
@@ -328,52 +749,20 @@ def calls(request):
     if not can_view_all:
         queryset = queryset.filter(employee=request.user)
     try:
-        date_from = date.fromisoformat(request.GET["date_from"]) if request.GET.get("date_from") else None
-        date_to = date.fromisoformat(request.GET["date_to"]) if request.GET.get("date_to") else None
-    except ValueError:
-        return HttpResponseBadRequest("Некорректный период.")
-    if date_from and date_to and date_from > date_to:
-        return HttpResponseBadRequest("Начало периода не может быть позже окончания.")
-    if date_from: queryset = queryset.filter(started_at__date__gte=date_from)
-    if date_to: queryset = queryset.filter(started_at__date__lte=date_to)
-    employee_id = request.GET.get("employee")
-    if employee_id and can_view_all:
-        if not employee_id.isdigit() or not OrganizationAccess.objects.filter(organization=organization, user_id=employee_id).exists():
-            return HttpResponseBadRequest("Некорректный сотрудник.")
-        queryset = queryset.filter(employee_id=employee_id)
-    if request.GET.get("direction") in ("in", "out"): queryset = queryset.filter(direction=request.GET["direction"])
-    if request.GET.get("missed"): queryset = queryset.filter(result=PhoneCall.RESULT_MISSED)
-    if request.GET.get("q"):
-        query = request.GET["q"].strip()
-        normalized_query = normalize_phone(query)
-        canonical_query = canonical_phone_value(query)
-        raw_phone_digits = "".join(ch for ch in query if ch.isdigit())
-        normalized_digits = "".join(ch for ch in normalized_query if ch.isdigit())
-        phone_query = (
-            normalized_digits[-10:]
-            if len(normalized_digits) >= 10
-            else raw_phone_digits[-10:]
+        queryset = _filter_telephony_calls(
+            request,
+            queryset,
+            organization,
+            can_view_all,
         )
-        phone_digits_expression = "phone_number"
-        for separator in ("+", " ", "-", "(", ")", "."):
-            phone_digits_expression = Replace(
-                phone_digits_expression,
-                Value(separator),
-                Value(""),
-            )
-        queryset = queryset.annotate(
-            phone_number_digits=phone_digits_expression
-        )
-        phone_filter = (
-            Q(phone_number__icontains=query)
-            | Q(phone_number__icontains=canonical_query)
-            | Q(contact_name__icontains=query)
-            | Q(client__name__icontains=query)
-        )
-        if phone_query:
-            phone_filter |= Q(phone_number_digits__icontains=phone_query)
-        queryset = queryset.filter(phone_filter)
-    employees = OrganizationAccess.objects.filter(organization=organization).select_related("user")
+    except ValueError as exc:
+        return HttpResponseBadRequest(str(exc))
+    employees = OrganizationAccess.objects.filter(
+        organization=organization
+    ).select_related("user")
+    clients = active_clients(
+        Client.objects.filter(organization=organization)
+    ).order_by("name", "id")
     calls = list(queryset[:500])
     unresolved_phone_values = [
         call.phone_number
@@ -398,6 +787,7 @@ def calls(request):
         "active_tab": "communications",
         "calls": calls,
         "employees": employees,
+        "clients": clients,
         "can_listen": conversation_capability(request.user, "can_listen_calls", organization),
         "can_view_all": can_view_all,
         "can_access_manual_recordings": _can_access_manual_recordings(request.user, organization),
@@ -421,31 +811,9 @@ def manual_recordings(request):
     ).defer("analysis__transcript")
 
     try:
-        date_from = date.fromisoformat(request.GET["date_from"]) if request.GET.get("date_from") else None
-        date_to = date.fromisoformat(request.GET["date_to"]) if request.GET.get("date_to") else None
-    except ValueError:
-        return HttpResponseBadRequest("Некорректный период.")
-    if date_from and date_to and date_from > date_to:
-        return HttpResponseBadRequest("Начало периода не может быть позже окончания.")
-    if date_from:
-        queryset = queryset.filter(started_at__date__gte=date_from)
-    if date_to:
-        queryset = queryset.filter(started_at__date__lte=date_to)
-
-    client_id = (request.GET.get("client") or "").strip()
-    if client_id:
-        if not client_id.isdigit():
-            return HttpResponseBadRequest("Некорректный клиент.")
-        queryset = queryset.filter(client_id=int(client_id))
-
-    query = (request.GET.get("q") or "").strip()
-    if query:
-        queryset = queryset.filter(
-            Q(client__name__icontains=query)
-            | Q(contact_name__icontains=query)
-            | Q(phone_number__icontains=query)
-            | Q(recording_file__icontains=query)
-        )
+        queryset = _filter_uploaded_audio(request, queryset, organization)
+    except ValueError as exc:
+        return HttpResponseBadRequest(str(exc))
 
     clients = active_clients(
         Client.objects.filter(organization=organization)
