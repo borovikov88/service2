@@ -29,6 +29,7 @@ from pool_service.mcp_oauth_shared import (
 )
 
 urlpatterns = [
+    path('', include('pool_service.call_processing_urls')),
     path('', include('pool_service.task_feedback_urls')),
     path('health/live/', health_live, name='health_live'),
     path('health/ready/', health_ready, name='health_ready'),

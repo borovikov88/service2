@@ -46,6 +46,7 @@ class PoolServiceConfig(AppConfig):
         import pool_service.onec_diagnostic_mcp_models  # noqa: F401
         import pool_service.communication_models  # noqa: F401
         import pool_service.operations_models  # noqa: F401
+        import pool_service.call_processing_models  # noqa: F401
 
     def ready(self):
         _wire_onec_diagnostic_mcp_environment()
