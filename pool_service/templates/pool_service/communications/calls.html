@@ -11,15 +11,30 @@
     max-width:520px;
   }
   .call-player__play,
-  .call-player__download{
+  .call-player__download,
+  .call-player__analysis{
     width:34px;
     height:34px;
     padding:0;
     display:inline-flex;
     align-items:center;
     justify-content:center;
+    flex:0 0 34px;
+  }
+  .call-player__play,
+  .call-player__download{
     border-radius:50%;
-    flex:0 0 auto;
+  }
+  .call-player__analysis{
+    border-radius:.5rem;
+  }
+  .call-player__analysis .spinner-border{
+    width:.95rem;
+    height:.95rem;
+    border-width:.15em;
+  }
+  .call-analysis-row[hidden]{
+    display:none;
   }
   .call-player__timeline{
     flex:1 1 180px;
@@ -383,6 +398,58 @@
                       <i class="bi bi-stars"></i>
                     </button>
                   </form>
+                {% elif call.analysis.status == 'pending' or call.analysis.status == 'processing' %}
+                  <form
+                    class="m-0 d-inline-flex"
+                    method="post"
+                    action="{% url 'communication_call_analysis_retry' call.pk %}"
+                  >
+                    {% csrf_token %}
+                    <button
+                      class="btn btn-outline-secondary btn-sm call-player__analysis"
+                      type="submit"
+                      data-call-analysis-status="{{ call.analysis.status }}"
+                      data-analysis-status-url="{% url 'communication_call_analysis_status' call.pk %}"
+                      aria-label="{% if call.analysis.status == 'pending' %}В очереди на расшифровку{% else %}Расшифровываем разговор{% endif %}"
+                      title="{% if call.analysis.status == 'pending' %}В очереди на расшифровку — нажмите для повторного запроса{% else %}Расшифровываем разговор — нажмите, если зависло{% endif %}"
+                    >
+                      <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+                      {% if call.analysis.status == 'processing' %}
+                        <span class="visually-hidden">Повторить, если зависло</span>
+                      {% else %}
+                        <span class="visually-hidden">Повторить запрос на расшифровку</span>
+                      {% endif %}
+                    </button>
+                  </form>
+                {% elif call.analysis.status == 'ready' %}
+                  <button
+                    class="btn btn-outline-success btn-sm call-player__analysis"
+                    type="button"
+                    data-call-analysis-toggle
+                    data-analysis-target="call-analysis-{{ call.pk }}"
+                    aria-expanded="false"
+                    aria-controls="call-analysis-{{ call.pk }}"
+                    aria-label="Показать расшифровку"
+                    title="Расшифровка готова — показать"
+                  >
+                    <i class="bi bi-file-earmark-text-fill"></i>
+                  </button>
+                {% elif call.analysis.status == 'failed' %}
+                  <form
+                    class="m-0 d-inline-flex"
+                    method="post"
+                    action="{% url 'communication_call_analysis_retry' call.pk %}"
+                  >
+                    {% csrf_token %}
+                    <button
+                      class="btn btn-outline-warning btn-sm call-player__analysis"
+                      type="submit"
+                      aria-label="Повторить расшифровку"
+                      title="{% if call.analysis.error == 'openai_credit_balance_exhausted' %}Закончились кредиты OpenAI API. Пополните баланс и повторите.{% else %}Расшифровка не удалась — повторить{% endif %}"
+                    >
+                      <i class="bi bi-exclamation-triangle-fill"></i>
+                    </button>
+                  </form>
                 {% endif %}
               </div>
             {% elif call.recording_ref %}
@@ -398,90 +465,63 @@
             {% endif %}
           </td>
         </tr>
-        {% if can_listen and call.recording_file and call.analysis %}
-          {% if call.analysis.status != 'pending' or call.analysis.requested_at %}
-          <tr>
+        {% if can_listen and call.recording_file and call.analysis and call.analysis.status == 'ready' %}
+          <tr
+            id="call-analysis-{{ call.pk }}"
+            class="call-analysis-row"
+            data-call-analysis-row
+            hidden
+          >
             <td colspan="{% if manual_archive %}4{% else %}7{% endif %}" class="p-0">
-              <div
-                class="call-analysis"
-                data-call-analysis-status="{{ call.analysis.status }}"
-                data-analysis-status-url="{% url 'communication_call_analysis_status' call.pk %}"
-              >
-                {% if call.analysis and call.analysis.status == 'ready' %}
-                  <div class="d-flex flex-wrap align-items-start justify-content-between gap-2">
-                    <div class="call-analysis__summary">
-                      <div class="fw-semibold mb-1">Итоги разговора</div>
-                      <div>{{ call.analysis.summary }}</div>
-                    </div>
-                    <form method="post" action="{% url 'communication_call_analysis_retry' call.pk %}">
-                      {% csrf_token %}
-                      <button class="btn btn-outline-secondary btn-sm" type="submit">
-                        <i class="bi bi-arrow-clockwise me-1"></i>Повторить анализ
-                      </button>
-                    </form>
+              <div class="call-analysis">
+                <div class="d-flex flex-wrap align-items-start justify-content-between gap-2">
+                  <div class="call-analysis__summary">
+                    <div class="fw-semibold mb-1">Итоги разговора</div>
+                    <div>{{ call.analysis.summary }}</div>
                   </div>
+                  <form method="post" action="{% url 'communication_call_analysis_retry' call.pk %}">
+                    {% csrf_token %}
+                    <button class="btn btn-outline-secondary btn-sm" type="submit">
+                      <i class="bi bi-arrow-clockwise me-1"></i>Повторить анализ
+                    </button>
+                  </form>
+                </div>
 
-                  <div class="call-analysis__facts">
-                    {% with facts=call.analysis.facts %}
-                      {% if facts.client_name %}<div class="call-analysis__fact"><span class="call-analysis__label">Клиент</span>{{ facts.client_name }}</div>{% endif %}
-                      {% if facts.company %}<div class="call-analysis__fact"><span class="call-analysis__label">Компания</span>{{ facts.company }}</div>{% endif %}
-                      {% if facts.phone %}<div class="call-analysis__fact"><span class="call-analysis__label">Телефон</span>{{ facts.phone }}</div>{% endif %}
-                      {% if facts.address %}<div class="call-analysis__fact"><span class="call-analysis__label">Адрес / объект</span>{{ facts.address }}</div>{% endif %}
-                      {% if facts.object_type %}<div class="call-analysis__fact"><span class="call-analysis__label">Тип объекта</span>{{ facts.object_type }}</div>{% endif %}
-                      {% if facts.request %}<div class="call-analysis__fact"><span class="call-analysis__label">Что требуется</span>{{ facts.request }}</div>{% endif %}
-                      {% if facts.dimensions %}<div class="call-analysis__fact"><span class="call-analysis__label">Размеры / характеристики</span>{{ facts.dimensions }}</div>{% endif %}
-                      {% if facts.technical_details %}<div class="call-analysis__fact"><span class="call-analysis__label">Технические нюансы</span>{{ facts.technical_details }}</div>{% endif %}
-                      {% if facts.timeline %}<div class="call-analysis__fact"><span class="call-analysis__label">Сроки</span>{{ facts.timeline }}</div>{% endif %}
-                      {% if facts.budget %}<div class="call-analysis__fact"><span class="call-analysis__label">Бюджет / цена</span>{{ facts.budget }}</div>{% endif %}
-                      {% if facts.existing_equipment %}<div class="call-analysis__fact"><span class="call-analysis__label">Что уже есть</span>{{ facts.existing_equipment }}</div>{% endif %}
-                      {% if facts.problems %}<div class="call-analysis__fact"><span class="call-analysis__label">Проблемы / пожелания</span>{{ facts.problems }}</div>{% endif %}
-                      {% if facts.agreements %}<div class="call-analysis__fact"><span class="call-analysis__label">Договорённости</span>{{ facts.agreements }}</div>{% endif %}
-                      {% if facts.send_to_client %}<div class="call-analysis__fact"><span class="call-analysis__label">Что отправить клиенту</span>{{ facts.send_to_client }}</div>{% endif %}
-                      {% if facts.next_step %}<div class="call-analysis__fact"><span class="call-analysis__label">Следующий шаг</span>{{ facts.next_step }}</div>{% endif %}
-                      {% if facts.next_contact_at %}<div class="call-analysis__fact"><span class="call-analysis__label">Следующий контакт</span>{{ facts.next_contact_at }}</div>{% endif %}
-                      {% if facts.responsible %}<div class="call-analysis__fact"><span class="call-analysis__label">Ответственный</span>{{ facts.responsible }}</div>{% endif %}
-                    {% endwith %}
-                  </div>
+                <div class="call-analysis__facts">
+                  {% with facts=call.analysis.facts %}
+                    {% if facts.client_name %}<div class="call-analysis__fact"><span class="call-analysis__label">Клиент</span>{{ facts.client_name }}</div>{% endif %}
+                    {% if facts.company %}<div class="call-analysis__fact"><span class="call-analysis__label">Компания</span>{{ facts.company }}</div>{% endif %}
+                    {% if facts.phone %}<div class="call-analysis__fact"><span class="call-analysis__label">Телефон</span>{{ facts.phone }}</div>{% endif %}
+                    {% if facts.address %}<div class="call-analysis__fact"><span class="call-analysis__label">Адрес / объект</span>{{ facts.address }}</div>{% endif %}
+                    {% if facts.object_type %}<div class="call-analysis__fact"><span class="call-analysis__label">Тип объекта</span>{{ facts.object_type }}</div>{% endif %}
+                    {% if facts.request %}<div class="call-analysis__fact"><span class="call-analysis__label">Что требуется</span>{{ facts.request }}</div>{% endif %}
+                    {% if facts.dimensions %}<div class="call-analysis__fact"><span class="call-analysis__label">Размеры / характеристики</span>{{ facts.dimensions }}</div>{% endif %}
+                    {% if facts.technical_details %}<div class="call-analysis__fact"><span class="call-analysis__label">Технические нюансы</span>{{ facts.technical_details }}</div>{% endif %}
+                    {% if facts.timeline %}<div class="call-analysis__fact"><span class="call-analysis__label">Сроки</span>{{ facts.timeline }}</div>{% endif %}
+                    {% if facts.budget %}<div class="call-analysis__fact"><span class="call-analysis__label">Бюджет / цена</span>{{ facts.budget }}</div>{% endif %}
+                    {% if facts.existing_equipment %}<div class="call-analysis__fact"><span class="call-analysis__label">Что уже есть</span>{{ facts.existing_equipment }}</div>{% endif %}
+                    {% if facts.problems %}<div class="call-analysis__fact"><span class="call-analysis__label">Проблемы / пожелания</span>{{ facts.problems }}</div>{% endif %}
+                    {% if facts.agreements %}<div class="call-analysis__fact"><span class="call-analysis__label">Договорённости</span>{{ facts.agreements }}</div>{% endif %}
+                    {% if facts.send_to_client %}<div class="call-analysis__fact"><span class="call-analysis__label">Что отправить клиенту</span>{{ facts.send_to_client }}</div>{% endif %}
+                    {% if facts.next_step %}<div class="call-analysis__fact"><span class="call-analysis__label">Следующий шаг</span>{{ facts.next_step }}</div>{% endif %}
+                    {% if facts.next_contact_at %}<div class="call-analysis__fact"><span class="call-analysis__label">Следующий контакт</span>{{ facts.next_contact_at }}</div>{% endif %}
+                    {% if facts.responsible %}<div class="call-analysis__fact"><span class="call-analysis__label">Ответственный</span>{{ facts.responsible }}</div>{% endif %}
+                  {% endwith %}
+                </div>
 
-                  <details
-                    class="mt-3"
-                    data-call-transcript
-                    data-transcript-url="{% url 'communication_call_analysis_transcript' call.pk %}"
-                  >
-                    <summary class="fw-semibold">Полная расшифровка</summary>
-                    <div class="call-analysis__transcript mt-2" data-call-transcript-body>
-                      Нажмите, чтобы загрузить расшифровку.
-                    </div>
-                  </details>
-                {% elif call.analysis and call.analysis.status == 'pending' and call.analysis.requested_at %}
-                  <span class="text-muted"><i class="bi bi-hourglass-split me-1"></i>Поставлено в очередь на расшифровку.</span>
-                {% elif call.analysis and call.analysis.status == 'processing' %}
-                  <div class="d-flex flex-wrap align-items-center gap-2">
-                    <span class="text-muted"><span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>Расшифровываем разговор…</span>
-                    <form method="post" action="{% url 'communication_call_analysis_retry' call.pk %}">
-                      {% csrf_token %}
-                      <button class="btn btn-outline-secondary btn-sm" type="submit">
-                        Повторить, если зависло
-                      </button>
-                    </form>
+                <details
+                  class="mt-3"
+                  data-call-transcript
+                  data-transcript-url="{% url 'communication_call_analysis_transcript' call.pk %}"
+                >
+                  <summary class="fw-semibold">Полная расшифровка</summary>
+                  <div class="call-analysis__transcript mt-2" data-call-transcript-body>
+                    Нажмите, чтобы загрузить расшифровку.
                   </div>
-                {% elif call.analysis and call.analysis.status == 'failed' %}
-                  <div class="d-flex flex-wrap align-items-center gap-2">
-                    {% if call.analysis.error == 'openai_credit_balance_exhausted' %}
-                      <span class="text-warning">Закончились кредиты OpenAI API. Пополните баланс и повторите.</span>
-                    {% else %}
-                      <span class="text-warning">Не удалось расшифровать разговор.</span>
-                    {% endif %}
-                    <form method="post" action="{% url 'communication_call_analysis_retry' call.pk %}">
-                      {% csrf_token %}
-                      <button class="btn btn-outline-secondary btn-sm" type="submit">Повторить</button>
-                    </form>
-                  </div>
-                {% endif %}
+                </details>
               </div>
             </td>
           </tr>
-          {% endif %}
         {% endif %}
       {% empty %}
         <tr>
@@ -560,6 +600,25 @@
       {once: true}
     );
   }
+
+  document.querySelectorAll("[data-call-analysis-toggle]").forEach((button) => {
+    const targetId = button.dataset.analysisTarget;
+    const row = targetId ? document.getElementById(targetId) : null;
+    if (!row) return;
+
+    button.addEventListener("click", () => {
+      const opening = row.hidden;
+      row.hidden = !opening;
+      button.setAttribute("aria-expanded", opening ? "true" : "false");
+      button.setAttribute(
+        "aria-label",
+        opening ? "Скрыть расшифровку" : "Показать расшифровку"
+      );
+      button.title = opening
+        ? "Скрыть расшифровку"
+        : "Расшифровка готова — показать";
+    });
+  });
 
   document.querySelectorAll("[data-call-transcript]").forEach((details) => {
     let loaded = false;

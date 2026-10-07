@@ -1810,6 +1810,109 @@ class CommunicationsTests(TestCase):
         self.assertNotContains(response, "Расшифровка запускается вручную.")
         self.assertNotContains(response, "Ожидает автоматической расшифровки.")
 
+    def test_ready_call_analysis_is_collapsed_behind_ready_button(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-ready-toggle",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="ready-toggle-call",
+            employee=self.owner,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=42,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        call.recording_file.save(
+            "ready-toggle.mp3",
+            ContentFile(b"ID3ready"),
+            save=True,
+        )
+        CallAnalysis.objects.create(
+            call=call,
+            status=CallAnalysis.STATUS_READY,
+            summary="Краткий итог разговора",
+            transcript="Полная готовая расшифровка",
+        )
+
+        self.client.login(username="owner", password="test")
+        response = self.client.get(reverse("communications_calls"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "btn-outline-success btn-sm call-player__analysis")
+        self.assertContains(response, 'data-call-analysis-toggle', html=False)
+        self.assertContains(
+            response,
+            f'data-analysis-target="call-analysis-{call.pk}"',
+            html=False,
+        )
+        self.assertContains(
+            response,
+            f'id="call-analysis-{call.pk}"',
+            html=False,
+        )
+        self.assertContains(response, "call-analysis-row", html=False)
+        self.assertContains(response, "hidden", html=False)
+        self.assertContains(response, "Краткий итог разговора")
+        self.assertNotContains(response, "Поставлено в очередь на расшифровку.")
+        self.assertNotContains(response, "Расшифровываем разговор…")
+
+    def test_processing_call_uses_inline_spinner_without_analysis_row(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон",
+            external_id="megafon-processing-inline",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="processing-inline-call",
+            employee=self.owner,
+            phone_number="+79001112234",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=55,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        call.recording_file.save(
+            "processing-inline.mp3",
+            ContentFile(b"ID3processing"),
+            save=True,
+        )
+        CallAnalysis.objects.create(
+            call=call,
+            status=CallAnalysis.STATUS_PROCESSING,
+            requested_at=timezone.now(),
+            processing_started_at=timezone.now(),
+            processing_token="processing-inline-token",
+        )
+
+        self.client.login(username="owner", password="test")
+        response = self.client.get(reverse("communications_calls"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            'data-call-analysis-status="processing"',
+            html=False,
+        )
+        self.assertContains(response, "spinner-border spinner-border-sm", html=False)
+        self.assertContains(response, 'aria-label="Расшифровываем разговор"', html=False)
+        self.assertNotContains(
+            response,
+            f'id="call-analysis-{call.pk}"',
+            html=False,
+        )
+        self.assertContains(
+            response,
+            '<span class="visually-hidden">Повторить, если зависло</span>',
+            html=False,
+        )
+
     def test_audio_files_page_is_owner_or_admin_only_and_separate_from_phone_history(self):
         telephony = TelephonyConnection.objects.create(
             organization=self.organization,
