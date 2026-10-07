@@ -554,8 +554,16 @@ def _transcript_export_records(queryset, organization):
 
         records.append({
             "date_time": started_at.strftime("%d.%m.%Y %H:%M"),
-            "client": client.name if client else (call.contact_name or ""),
-            "phone": format_phone(call.phone_number),
+            "client": (
+                ""
+                if call.direction == PhoneCall.DIRECTION_INTERNAL
+                else (client.name if client else (call.contact_name or ""))
+            ),
+            "phone": (
+                ""
+                if call.direction == PhoneCall.DIRECTION_INTERNAL
+                else format_phone(call.phone_number)
+            ),
             "employee": employee,
             "direction": call.get_direction_display(),
             "duration": call.duration_seconds,
