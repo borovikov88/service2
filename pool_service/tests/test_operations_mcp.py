@@ -11,6 +11,7 @@ from django.utils import timezone
 
 from pool_service.finance_mcp_auth import CHATGPT_CLIENT_ID_METADATA_URL
 from pool_service.models import (
+    Client,
     FinanceMcpAccessToken,
     FinanceMcpAuditEvent,
     FinanceMcpClient,
@@ -426,6 +427,69 @@ class OperationsMcpTests(TestCase):
             ).exists()
         )
 
+    def test_create_idempotency_key_reuse_with_different_arguments_is_rejected(self):
+        raw = self._token(raw="create-idempotency-command-token")
+        client = Client.objects.create(
+            organization=self.organization,
+            name="Idempotency client",
+        )
+        base_arguments = {
+            "idempotency_key": "same-key-different-command",
+            "title": "Original follow-up",
+            "description": "Original description",
+            "responsible_user_id": self.manager.id,
+            "due_date": "2026-10-07",
+            "due_time": "11:30",
+            "priority": ServiceTask.PRIORITY_NORMAL,
+        }
+
+        def call(arguments, request_id):
+            with self._settings():
+                return self._post({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "create_task",
+                        "arguments": arguments,
+                    },
+                }, token=raw)
+
+        first = call(dict(base_arguments), 301)
+        self.assertFalse(first.json()["result"]["isError"])
+
+        variants = [
+            {"title": "Different title"},
+            {"responsible_user_id": self.owner.id},
+            {"due_date": "2026-10-08"},
+            {"client_id": client.id},
+            {"priority": ServiceTask.PRIORITY_HIGH},
+        ]
+        for index, changes in enumerate(variants, start=302):
+            arguments = dict(base_arguments)
+            arguments.update(changes)
+            response = call(arguments, index)
+            with self.subTest(changes=changes):
+                self.assertTrue(response.json()["result"]["isError"])
+
+        self.assertEqual(
+            ServiceTask.objects.filter(
+                organization=self.organization,
+                payload_json__operations_mcp_idempotency_key="same-key-different-command",
+            ).count(),
+            1,
+        )
+        task = ServiceTask.objects.get(
+            payload_json__operations_mcp_idempotency_key="same-key-different-command"
+        )
+        self.assertTrue(
+            task.payload_json.get("operations_mcp_create_command_hash")
+        )
+        self.assertEqual(task.title, "Original follow-up")
+        self.assertEqual(task.primary_responsible_id, self.manager.id)
+        self.assertEqual(task.end_date.isoformat(), "2026-10-07")
+        self.assertIsNone(task.client_id)
+
     @patch("pool_service.operations_mcp_views._retry_assignment_push")
     def test_idempotent_create_requeues_pending_assignment_push(self, retry_push):
         raw = self._token(raw="assignment-retry-token")
@@ -522,6 +586,47 @@ class OperationsMcpTests(TestCase):
         self.assertEqual(second_delivery["push_delivery_result"], "sent")
         self.assertTrue(second_delivery["push_delivered_at"])
         self.assertEqual(send_push.call_count, 2)
+
+    def test_assignment_delivery_rechecks_stale_recipient_activity(self):
+        from pool_service.operations_mcp_views import _ensure_assignment_delivery
+
+        task = ServiceTask.objects.create(
+            organization=self.organization,
+            title="Stale recipient activity",
+            start_date=date(2026, 10, 7),
+            end_date=date(2026, 10, 7),
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            source_type=ServiceTask.SOURCE_MANAGER,
+            status=ServiceTask.STATUS_NEW,
+            visibility=ServiceTask.VISIBILITY_PRIVATE,
+            primary_responsible=self.manager,
+            created_by=self.owner,
+            payload_json={"source": "operations_mcp"},
+        )
+        task.responsibles.add(self.manager)
+        User.objects.filter(pk=self.manager.pk).update(is_active=False)
+        self.assertTrue(self.manager.is_active)
+
+        with self.captureOnCommitCallbacks(execute=False) as callbacks:
+            created = _ensure_assignment_delivery(
+                task,
+                self.manager,
+                self.owner,
+            )
+
+        self.assertFalse(created)
+        self.assertEqual(callbacks, [])
+        self.assertFalse(
+            Notification.objects.filter(
+                user_id=self.manager.pk,
+                dedupe_key=f"operations_mcp:task:{task.id}:assignment",
+            ).exists()
+        )
+        task.refresh_from_db()
+        self.assertEqual(
+            task.payload_json["operations_assignment_delivery"]["push_delivery_result"],
+            "blocked_not_authorized",
+        )
 
     def test_assignment_notification_is_durable_when_in_app_is_disabled(self):
         profile, _created = Profile.objects.get_or_create(user=self.manager)
