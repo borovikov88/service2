@@ -54,6 +54,7 @@ from pool_service.services.notifications import (
 )
 from pool_service.services.push_notifications import send_push_to_users
 from pool_service.services.task_archive import archive_task
+from pool_service.services.operations_push_queue import sync_queue
 
 
 OPERATIONAL_STAFF_ROLES = frozenset({"owner", "admin", "manager", "service", "installer"})
@@ -306,19 +307,18 @@ def _payload_has_pending_pushes(payload):
 
 
 def _save_push_payload(task, payload):
-    # Callers hold the task row lock (or have just created the task). Keep the
-    # selection flag atomic with delivery state; retain all idempotency history.
+    # Callers hold the task row lock (or have just created the task). Keep
+    # relational queue membership atomic with delivery/idempotency history.
     payload[PUSH_PENDING_PAYLOAD_KEY] = _payload_has_pending_pushes(payload)
     task.payload_json = payload
     task.save(update_fields=["payload_json", "updated_at"])
+    sync_queue(task, pending=payload[PUSH_PENDING_PAYLOAD_KEY])
 
 
 def _refresh_push_pending_flag(task_id):
-    # Re-read under lock: a concurrent new notification must not be removed from
-    # the queue using the consumer's older snapshot. Legacy terminal rows are
-    # retired in bounded batches, without changing their business timestamps.
+    # Repair one known task under lock; normal consumers never scan history.
     with transaction.atomic():
-        task = ServiceTask.objects.select_for_update().only("id", "payload_json").filter(pk=task_id).first()
+        task = ServiceTask.objects.select_for_update().filter(pk=task_id).first()
         if not task or not isinstance(task.payload_json, dict):
             return
         payload = dict(task.payload_json)
@@ -327,6 +327,7 @@ def _refresh_push_pending_flag(task_id):
             payload[PUSH_PENDING_PAYLOAD_KEY] = pending
             task.payload_json = payload
             task.save(update_fields=["payload_json"])
+        sync_queue(task, pending=pending)
 
 
 def _task_is_closed(task):
@@ -539,68 +540,10 @@ def _schedule_employee_notification_push(task_id, marker):
 
 
 def process_pending_operations_pushes(*, limit=PUSH_RETRY_BATCH_LIMIT):
-    """Bound both inspected task rows and delivery attempts, preserving progress."""
-    limit = max(1, min(int(limit), 500))
-    queryset = (
-        ServiceTask.objects.filter(
-            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
-            payload_json__isnull=False,
-        )
-        .filter(
-            Q(payload_json__has_key=ASSIGNMENT_DELIVERY_PAYLOAD_KEY)
-            | Q(payload_json__has_key=EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY)
-        )
-        .filter(
-            Q(payload_json__operations_push_pending=True)
-            | Q(payload_json__operations_push_pending__isnull=True)
-        )
-        .only("id", "payload_json", "primary_responsible_id", "updated_at")
-        .order_by("updated_at", "id")[:PUSH_RETRY_CANDIDATE_LIMIT]
-    )
+    """Retry only indexed due entries, not historical task JSON rows."""
+    from pool_service.services.operations_push_queue import process_queue
 
-    result = {
-        "checked": 0,
-        "assignment_attempts": 0,
-        "notification_attempts": 0,
-        "delivered": 0,
-    }
-
-    def attempts_used():
-        return result["assignment_attempts"] + result["notification_attempts"]
-
-    for task in queryset:
-        if attempts_used() >= limit:
-            break
-        result["checked"] += 1
-        payload = task.payload_json if isinstance(task.payload_json, dict) else {}
-        if not _payload_has_pending_pushes(payload):
-            _refresh_push_pending_flag(task.id)
-            continue
-        assignment = payload.get(ASSIGNMENT_DELIVERY_PAYLOAD_KEY)
-        deliveries = payload.get(EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY)
-
-        if _push_delivery_is_pending(assignment) and attempts_used() < limit:
-            responsible_id = (
-                assignment.get("responsible_user_id")
-                or task.primary_responsible_id
-            )
-            result["assignment_attempts"] += 1
-            result["delivered"] += int(
-                bool(_retry_assignment_push(task.id, responsible_id))
-            )
-
-        if isinstance(deliveries, dict):
-            for marker, delivery in deliveries.items():
-                if attempts_used() >= limit:
-                    break
-                if not _push_delivery_is_pending(delivery):
-                    continue
-                result["notification_attempts"] += 1
-                result["delivered"] += int(
-                    bool(_retry_employee_notification_push(task.id, marker))
-                )
-
-    return result
+    return process_queue(limit=limit, candidate_limit=PUSH_RETRY_CANDIDATE_LIMIT)
 
 
 def _ensure_assignment_delivery(task, responsible, actor):
@@ -698,7 +641,7 @@ def _list_control_tasks(organization, arguments):
         .order_by("end_date", "end_time", "id")
     )
     if arguments.get("responsible_user_id") is not None:
-        responsible_id = _as_int(arguments["responsible_user_id"], "responsible_user_id")
+        responsible_id = _as_int(arguments.get("responsible_user_id"), "responsible_user_id")
         queryset = queryset.filter(primary_responsible_id=responsible_id)
     status = arguments.get("status")
     if status is not None:
@@ -782,7 +725,7 @@ def _create_task(authenticated, organization, arguments):
 
     client = None
     if arguments.get("client_id") is not None:
-        client_id = _as_int(arguments["client_id"], "client_id")
+        client_id = _as_int(arguments.get("client_id"), "client_id")
         client = Client.objects.filter(pk=client_id, organization=organization).first()
         if not client:
             raise ValueError("client_id")

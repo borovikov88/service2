@@ -1,9 +1,11 @@
-"""Regression coverage for bounded Operations delivery and closed-task retries."""
+"""Regression coverage for indexed Operations delivery and closed-task retries."""
 
 from datetime import date, timedelta
+from importlib import import_module
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from django.apps import apps
 from django.contrib.auth.models import User
 from django.db import connection, transaction
 from django.test import TestCase
@@ -12,6 +14,8 @@ from django.utils import timezone
 
 from pool_service import operations_mcp_views as operations
 from pool_service.models import Notification, Organization, OrganizationAccess, Profile, ServiceTask
+from pool_service.operations_models import OperationsPushQueue
+from pool_service.services.operations_push_queue import due_candidates, sync_queue
 
 
 class OperationsPushRetryTests(TestCase):
@@ -67,11 +71,14 @@ class OperationsPushRetryTests(TestCase):
             }
         task = ServiceTask.objects.create(**self._task_values(payload))
         task.responsibles.add(self.employee)
+        # Use the production producer: queue membership and payload are atomic.
+        operations._save_push_payload(task, payload)
         return task
 
     def _assert_pending(self, task, expected):
         task.refresh_from_db()
         self.assertIs(task.payload_json[operations.PUSH_PENDING_PAYLOAD_KEY], expected)
+        self.assertEqual(OperationsPushQueue.objects.filter(task_id=task.pk).exists(), expected)
 
     @patch("pool_service.operations_mcp_views.send_push_to_users", return_value=1)
     def test_legacy_history_is_bounded_and_does_not_starve_later_pending(self, push):
@@ -93,14 +100,12 @@ class OperationsPushRetryTests(TestCase):
 
         with CaptureQueriesContext(connection) as queries:
             first = operations.process_pending_operations_pushes(limit=1)
-        self.assertEqual(first["checked"], cap)
-        self.assertEqual(first["assignment_attempts"], 0)
+        # Historical task JSON does not participate in candidate selection at all.
+        self.assertEqual(first["checked"], 1)
+        self.assertEqual(first["assignment_attempts"], 1)
+        self.assertEqual(first["delivered"], 1)
         self.assertTrue(any(f"LIMIT {cap}" in entry["sql"].upper() for entry in queries))
-        push.assert_not_called()
-
-        second = operations.process_pending_operations_pushes(limit=1)
-        self.assertEqual(second["checked"], 4)
-        self.assertEqual(second["delivered"], 1)
+        self.assertFalse(any("JSON_EXTRACT" in entry["sql"].upper() for entry in queries))
         self._assert_pending(pending, False)
         self.assertEqual(operations.process_pending_operations_pushes(limit=1)["checked"], 0)
         self.assertEqual(push.call_count, 1)
@@ -232,3 +237,107 @@ class OperationsPushRetryTests(TestCase):
         self._assert_pending(task, False)
         self.assertEqual(operations.process_pending_operations_pushes()["checked"], 0)
         push.assert_not_called()
+
+    def test_pending_selection_has_composite_index_and_no_task_json_scan(self):
+        query = due_candidates(timezone.now(), 500)
+        sql, _params = query.query.sql_with_params()
+        self.assertNotIn("payload_json", sql)
+        self.assertNotIn(ServiceTask._meta.db_table, sql)
+        self.assertIn("LIMIT 500", sql)
+        with connection.cursor() as cursor:
+            constraints = connection.introspection.get_constraints(cursor, OperationsPushQueue._meta.db_table)
+        self.assertEqual(constraints["ops_push_due_task_idx"]["columns"], ["next_attempt_at", "task_id"])
+        if connection.vendor == "sqlite":
+            plan = query.explain()
+            self.assertIn("ops_push_due_task_idx", plan)
+            self.assertNotIn("TEMP B-TREE", plan.upper())
+
+    @patch("pool_service.operations_mcp_views.send_push_to_users", side_effect=[0, 1])
+    def test_failing_assignment_does_not_starve_same_task_reminder(self, push):
+        task = self._task(notifications=True)
+        first = operations.process_pending_operations_pushes(limit=1)
+        self.assertEqual(first["assignment_attempts"], 1)
+        OperationsPushQueue.objects.filter(task_id=task.pk).update(next_attempt_at=timezone.now() - timedelta(seconds=1))
+        second = operations.process_pending_operations_pushes(limit=1)
+        self.assertEqual(second["notification_attempts"], 1)
+        self.assertEqual(second["delivered"], 1)
+        self.assertEqual(push.call_count, 2)
+        self._assert_pending(task, True)
+
+    @patch("pool_service.operations_mcp_views.send_push_to_users", side_effect=RuntimeError("temporary transport failure"))
+    def test_transport_exception_preserves_retry_and_does_not_spin(self, push):
+        task = self._task()
+        before = timezone.now()
+        with self.assertLogs("pool_service.services.operations_push_queue", level="WARNING"):
+            result = operations.process_pending_operations_pushes()
+        self.assertEqual(result["assignment_attempts"], 1)
+        self.assertEqual(result["delivered"], 0)
+        entry = OperationsPushQueue.objects.get(task_id=task.pk)
+        self.assertGreater(entry.next_attempt_at, before)
+        self.assertEqual(entry.last_marker, "a")
+        self.assertEqual(operations.process_pending_operations_pushes()["checked"], 0)
+        self.assertEqual(push.call_count, 1)
+        self._assert_pending(task, True)
+
+    def test_queue_membership_rolls_back_with_payload(self):
+        task = ServiceTask.objects.create(**self._task_values({}))
+        with self.assertRaises(RuntimeError):
+            with transaction.atomic():
+                task = ServiceTask.objects.select_for_update().get(pk=task.pk)
+                operations._save_push_payload(task, {
+                    operations.ASSIGNMENT_DELIVERY_PAYLOAD_KEY: self._assignment(),
+                })
+                raise RuntimeError("rollback")
+        task.refresh_from_db()
+        self.assertEqual(task.payload_json, {})
+        self.assertFalse(OperationsPushQueue.objects.filter(task_id=task.pk).exists())
+
+    def test_migration_backfills_pending_without_trusting_cached_flag(self):
+        tasks = []
+        for flag in (None, False):
+            payload = {operations.ASSIGNMENT_DELIVERY_PAYLOAD_KEY: self._assignment()}
+            if flag is not None:
+                payload[operations.PUSH_PENDING_PAYLOAD_KEY] = flag
+            tasks.append(ServiceTask.objects.create(**self._task_values(payload)))
+        terminal = ServiceTask.objects.create(**self._task_values({
+            operations.ASSIGNMENT_DELIVERY_PAYLOAD_KEY: self._assignment("sent"),
+        }))
+        migration = import_module("pool_service.migrations.0132_operations_push_queue")
+        migration.seed_existing_pending(apps, SimpleNamespace(connection=connection))
+        migration.seed_existing_pending(apps, SimpleNamespace(connection=connection))
+        self.assertEqual(set(OperationsPushQueue.objects.values_list("task_id", flat=True)), {task.pk for task in tasks})
+        self.assertFalse(OperationsPushQueue.objects.filter(task_id=terminal.pk).exists())
+
+    def test_replayed_producer_preserves_backoff_and_delivery_cursor(self):
+        task = self._task()
+        future = timezone.now() + timedelta(hours=1)
+        OperationsPushQueue.objects.filter(task_id=task.pk).update(next_attempt_at=future, last_marker="n:reminder")
+        with transaction.atomic():
+            task = ServiceTask.objects.select_for_update().get(pk=task.pk)
+            sync_queue(task, pending=True)
+        entry = OperationsPushQueue.objects.get(task_id=task.pk)
+        self.assertEqual(entry.next_attempt_at, future)
+        self.assertEqual(entry.last_marker, "n:reminder")
+
+    def test_stale_terminal_entry_is_removed_without_rewriting_history(self):
+        task = self._task()
+        payload = dict(task.payload_json)
+        payload[operations.ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = self._assignment("sent")
+        ServiceTask.objects.filter(pk=task.pk).update(payload_json=payload)
+        result = operations.process_pending_operations_pushes()
+        self.assertEqual(result["checked"], 1)
+        self.assertEqual(result["assignment_attempts"], 0)
+        self.assertFalse(OperationsPushQueue.objects.filter(task_id=task.pk).exists())
+        task.refresh_from_db()
+        self.assertEqual(task.payload_json, payload)
+
+    def test_candidate_limit_bounds_stale_queue_entries_too(self):
+        stale = []
+        for _ in range(5):
+            task = ServiceTask.objects.create(**self._task_values({}))
+            stale.append(OperationsPushQueue(task=task))
+        OperationsPushQueue.objects.bulk_create(stale)
+        with patch.object(operations, "PUSH_RETRY_CANDIDATE_LIMIT", 2):
+            result = operations.process_pending_operations_pushes()
+        self.assertEqual(result["checked"], 2)
+        self.assertEqual(OperationsPushQueue.objects.count(), 3)
