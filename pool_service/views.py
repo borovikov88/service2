@@ -7957,6 +7957,8 @@ def task_move(request):
         return JsonResponse({"ok": False, "error": "archived_task"}, status=400)
     if task.completed_at:
         return JsonResponse({"ok": False, "error": "completed_task"}, status=400)
+    if task.status == ServiceTask.STATUS_CANCELLED:
+        return JsonResponse({"ok": False, "error": "cancelled_task"}, status=400)
 
     old_start = task.start_date
     old_end = task.end_date or task.start_date
