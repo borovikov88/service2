@@ -225,6 +225,7 @@ def apply_feedback(*, task_id, user, action, comment, expected_version, request_
         changed_fields += finish_waiting_check(task, state)
         state["mode"] = "active"
         state["next_check_at"] = None
+        state.pop("appointment_unknown", None)
         task.status = ServiceTask.STATUS_NEW
         task.start_date = task.end_date = due_date
         task.start_time = task.end_time = due_time
@@ -235,6 +236,7 @@ def apply_feedback(*, task_id, user, action, comment, expected_version, request_
         changed_fields += finish_waiting_check(task, state)
         state["mode"] = action
         state["next_check_at"] = None
+        state["appointment_unknown"] = True
         task.status = ServiceTask.STATUS_CANCELLED if action == "cancel" else ServiceTask.STATUS_DONE
         changed_fields += ["status"]
 
