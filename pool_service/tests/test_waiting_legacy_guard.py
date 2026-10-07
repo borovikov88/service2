@@ -10,8 +10,9 @@ from django.urls import resolve, reverse
 from django.utils import timezone
 
 from pool_service.models import Organization, OrganizationAccess, ServiceTask
-from pool_service.services.task_feedback import apply_feedback, version_for
+from pool_service.services.task_feedback import apply_feedback, state_for, version_for
 from pool_service.task_waiting_guards import guarded_task_edit, guarded_task_move
+from pool_service.services.task_waiting_schedule import CONTROL_LABEL
 
 
 class WaitingLegacyGuardTests(TestCase):
@@ -93,3 +94,49 @@ class WaitingLegacyGuardTests(TestCase):
         client.force_login(self.user)
         response = client.post(reverse("task_edit", args=[self.task.pk]), {"title": "No csrf token"})
         self.assertEqual(response.status_code, 403)
+
+    def test_bulk_active_status_cannot_turn_internal_check_into_appointment(self):
+        self.wait()
+        response = self.client.post(reverse("crm_tasks_bulk_update"), {
+            "task_ids": [self.task.pk],
+            "bulk_action": "set_status",
+            "bulk_status": ServiceTask.STATUS_IN_PROGRESS,
+        })
+        self.assertEqual(response.status_code, 302)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, ServiceTask.STATUS_WAITING)
+        self.assertTrue(self.task.title.startswith(CONTROL_LABEL))
+        self.assertEqual(state_for(self.task)["mode"], "waiting")
+
+    def test_bulk_cancel_releases_waiting_metadata(self):
+        self.wait()
+        response = self.client.post(reverse("crm_tasks_bulk_update"), {
+            "task_ids": [self.task.pk],
+            "bulk_action": "set_status",
+            "bulk_status": ServiceTask.STATUS_CANCELLED,
+        })
+        self.assertEqual(response.status_code, 302)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, ServiceTask.STATUS_CANCELLED)
+        self.assertEqual(self.task.title, "Meeting")
+        self.assertEqual(state_for(self.task)["mode"], "cancel")
+        self.assertIsNone(state_for(self.task)["next_check_at"])
+
+    def test_bulk_archive_waiting_restores_only_as_cancelled_not_appointment(self):
+        self.wait()
+        response = self.client.post(reverse("crm_tasks_bulk_update"), {
+            "task_ids": [self.task.pk],
+            "bulk_action": "archive",
+        })
+        self.assertEqual(response.status_code, 302)
+        self.task.refresh_from_db()
+        self.assertTrue(self.task.is_archived)
+        self.assertEqual(self.task.status, ServiceTask.STATUS_CANCELLED)
+        self.assertEqual(self.task.title, "Meeting")
+        self.assertEqual(state_for(self.task)["mode"], "cancel")
+
+        response = self.client.post(reverse("archive_restore_task", args=[self.task.pk]))
+        self.assertEqual(response.status_code, 302)
+        self.task.refresh_from_db()
+        self.assertFalse(self.task.is_archived)
+        self.assertEqual(self.task.status, ServiceTask.STATUS_CANCELLED)
