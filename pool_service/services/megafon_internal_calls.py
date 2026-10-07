@@ -128,12 +128,18 @@ def _user_aliases(item):
 def _load_users(origin, api_key):
     query = urlencode({"limit": 500})
     data = _read_json(f"{origin}/crmapi/v1/users?{query}", api_key)
-    if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+    if isinstance(data, dict):
+        items = data.get("items")
+    elif isinstance(data, list):
+        items = data
+    else:
+        items = None
+    if not isinstance(items, list):
         raise MegafonInternalCallSyncError(
             "МегаФон вернул неожиданный список сотрудников."
         )
     aliases = {}
-    for item in data["items"]:
+    for item in items:
         if not isinstance(item, dict):
             continue
         login = item.get("login")
@@ -341,18 +347,13 @@ def _ingest_internal_row(telephony, users, origin, row):
         caller_info = _provider_user_info(users, from_value, from_name)
         if not (
             existing
-            and (
-                existing.employee_profile_id
-                or existing.employee_id
-                or existing.provider_user
-                or existing.provider_extension
-            )
+            and (existing.employee_profile_id or existing.employee_id)
         ):
             (
-                caller_profile,
-                caller_user,
-                caller_provider_user,
-                caller_extension,
+                resolved_profile,
+                resolved_user,
+                resolved_provider_user,
+                resolved_extension,
                 caller_info,
             ) = _resolve_participant(
                 telephony.organization,
@@ -361,6 +362,14 @@ def _ingest_internal_row(telephony, users, origin, row):
                 from_value,
                 from_name,
             )
+            caller_profile = resolved_profile
+            caller_user = resolved_user
+            caller_provider_user = (
+                resolved_provider_user
+                or caller_provider_user
+                or from_value
+            )
+            caller_extension = resolved_extension or caller_extension
 
         peer_profile = existing.peer_employee_profile if existing else None
         peer_user = existing.peer_employee if existing else None
@@ -369,18 +378,13 @@ def _ingest_internal_row(telephony, users, origin, row):
         peer_info = _provider_user_info(users, to_value, to_name)
         if not (
             existing
-            and (
-                existing.peer_employee_profile_id
-                or existing.peer_employee_id
-                or existing.peer_provider_user
-                or existing.peer_provider_extension
-            )
+            and (existing.peer_employee_profile_id or existing.peer_employee_id)
         ):
             (
-                peer_profile,
-                peer_user,
-                peer_provider_user,
-                peer_extension,
+                resolved_peer_profile,
+                resolved_peer_user,
+                resolved_peer_provider_user,
+                resolved_peer_extension,
                 peer_info,
             ) = _resolve_participant(
                 telephony.organization,
@@ -389,6 +393,14 @@ def _ingest_internal_row(telephony, users, origin, row):
                 to_value,
                 to_name,
             )
+            peer_profile = resolved_peer_profile
+            peer_user = resolved_peer_user
+            peer_provider_user = (
+                resolved_peer_provider_user
+                or peer_provider_user
+                or to_value
+            )
+            peer_extension = resolved_peer_extension or peer_extension
 
         peer_name = _participant_display(
             peer_profile,
