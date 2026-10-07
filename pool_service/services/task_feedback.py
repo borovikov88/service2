@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timezone as datetime_timezone
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -40,6 +40,11 @@ def state_for(task):
 
 
 def _iso(value):
+    # A newly saved task may retain a local offset while a database reload
+    # returns UTC. Hash the instant, not its timezone representation. Keep
+    # date-only/time-only values and microseconds unchanged.
+    if isinstance(value, datetime) and timezone.is_aware(value):
+        value = value.astimezone(datetime_timezone.utc)
     return value.isoformat() if value is not None else None
 
 
