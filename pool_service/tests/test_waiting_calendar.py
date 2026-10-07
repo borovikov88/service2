@@ -157,7 +157,68 @@ class WaitingCalendarTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(move.status_code, 400)
-        self.assertEqual(move.json()["error"], "cancelled_task")
+        self.assertEqual(move.json()["error"], "closed_task")
+
+    @patch("pool_service.views._redirect_if_access_blocked", return_value=None)
+    def test_restored_completed_waiting_task_stays_without_appointment_until_rescheduled(self, _blocked):
+        self.apply()
+        _complete_task(
+            self.authenticated,
+            self.org,
+            {"task_id": self.task.pk, "comment": "Done for now"},
+        )
+        self.task.refresh_from_db()
+        self.assertTrue(self.task.is_archived)
+        self.assertTrue(state_for(self.task)["appointment_unknown"])
+
+        response = self.client.post(
+            reverse("archive_restore_task", args=[self.task.pk])
+        )
+        self.assertEqual(response.status_code, 302)
+        self.task.refresh_from_db()
+        self.assertFalse(self.task.is_archived)
+        self.assertIsNone(self.task.completed_at)
+        self.assertEqual(self.task.status, ServiceTask.STATUS_WAITING)
+        restored_state = state_for(self.task)
+        self.assertEqual(restored_state["mode"], "waiting")
+        self.assertTrue(restored_state["appointment_unknown"])
+        self.assertIsNone(restored_state["next_check_at"])
+
+        metadata = waiting_schedule_metadata(self.task)
+        self.assertEqual(metadata["schedule_kind"], "no_appointment")
+        self.assertIsNone(metadata["start_date"])
+        self.assertIsNone(metadata["end_date"])
+
+        calendar_response = self.client.get(
+            reverse("readings_all"),
+            {"month": self.check_date.strftime("%Y-%m")},
+        )
+        self.assertEqual(calendar_response.status_code, 200)
+        self.assertNotIn(
+            self.task.pk,
+            [entry["id"] for entry in calendar_response.context["task_search_index"]],
+        )
+
+        move = self.client.post(
+            reverse("task_move"),
+            data=json.dumps({
+                "task_id": self.task.pk,
+                "target_date": (self.check_date + timedelta(days=1)).isoformat(),
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(move.status_code, 409)
+        self.assertEqual(move.json()["error"], "waiting_task_use_feedback")
+
+        new_date = self.check_date + timedelta(days=3)
+        self.apply("reschedule", due_date=new_date)
+        self.assertEqual(self.task.status, ServiceTask.STATUS_NEW)
+        self.assertEqual(self.task.end_date, new_date)
+        self.assertNotIn("appointment_unknown", state_for(self.task))
+        self.assertEqual(
+            waiting_schedule_metadata(self.task)["schedule_kind"],
+            "appointment",
+        )
 
     def test_human_reschedule_restores_agreement_and_actual_date(self):
         self.apply()
