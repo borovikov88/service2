@@ -24,6 +24,19 @@ class CallProcessingPolicyTests(unittest.TestCase):
             personal or {}, simulation=simulation,
         )
 
+    def internal(self, **changes):
+        call = replace(
+            self.call,
+            participants=(1, 2),
+            direction="internal",
+            counterpart_numbers=frozenset({"+12025550101", "+12025550102"}),
+            counterpart_numbers_by_participant=(
+                (1, frozenset({"+12025550102"})),
+                (2, frozenset({"+12025550101"})),
+            ),
+        )
+        return replace(call, **changes)
+
     def test_unknown_crm_client_is_allowed_on_employee_line(self):
         self.assertEqual(self.decision().action, "transcribe")
 
@@ -40,7 +53,7 @@ class CallProcessingPolicyTests(unittest.TestCase):
         self.assertEqual(self.decision(rules={1: replace(rule, work_numbers=frozenset())}).reason, "not_allowed")
 
     def test_owner_can_allow_internal_staff_without_external_numbers(self):
-        internal = replace(self.call, participants=(1, 2), direction="internal", counterpart_numbers=frozenset())
+        internal = self.internal(counterpart_numbers=frozenset())
         owner = replace(self.all, mode=ALLOWLIST, include_staff=True)
         self.assertTrue(self.decision(internal, rules={1: owner, 2: self.all}).selected)
         self.assertFalse(self.decision(internal, rules={1: replace(owner, include_staff=False), 2: self.all}).selected)
@@ -53,8 +66,11 @@ class CallProcessingPolicyTests(unittest.TestCase):
         self.assertEqual(self.decision(personal={3: self.call.counterpart_numbers}).action, "transcribe")
 
     def test_peer_owner_exclusion_cannot_be_bypassed_by_employee_rule(self):
-        internal = replace(self.call, participants=(2, 1), direction="internal")
-        self.assertEqual(self.decision(internal, personal={1: self.call.counterpart_numbers}).reason, "personal")
+        internal = self.internal(participants=(2, 1))
+        self.assertEqual(
+            self.decision(internal, personal={1: frozenset({"+12025550102"})}).reason,
+            "personal",
+        )
 
     def test_unverified_or_missing_internal_party_fails_closed(self):
         for call in (replace(self.call, verified=False), replace(self.call, participants=()),
@@ -63,7 +79,7 @@ class CallProcessingPolicyTests(unittest.TestCase):
                 self.assertEqual(self.decision(call).reason, "mapping_required")
 
     def test_manual_peer_is_not_overridden_by_the_other_participant(self):
-        internal = replace(self.call, participants=(1, 2), direction="internal")
+        internal = self.internal()
         self.assertEqual(self.decision(internal, rules={1: self.all, 2: Rule(mode=MANUAL)}).reason, "manual")
 
     def test_new_rules_do_not_process_the_old_archive(self):
@@ -104,8 +120,29 @@ class CallProcessingPolicyTests(unittest.TestCase):
 
     def test_unknown_phone_or_unresolved_private_internal_match_is_skipped(self):
         self.assertEqual(self.decision(replace(self.call, counterpart_numbers=frozenset())).reason, "number_unknown")
-        internal = replace(self.call, direction="internal", participants=(1, 2), counterpart_numbers=frozenset())
-        self.assertEqual(self.decision(internal, personal={1: self.call.counterpart_numbers}).reason, "privacy_mapping_required")
+        internal = replace(
+            self.call,
+            direction="internal",
+            participants=(1, 2),
+            counterpart_numbers=frozenset(),
+            counterpart_numbers_by_participant=(),
+        )
+        self.assertEqual(
+            self.decision(internal, personal={1: self.call.counterpart_numbers}).reason,
+            "privacy_mapping_required",
+        )
+
+    def test_internal_call_fails_closed_when_only_one_peer_is_privacy_checkable(self):
+        internal = self.internal(
+            counterpart_numbers_by_participant=(
+                (1, frozenset()),
+                (2, frozenset({"+12025550101"})),
+            )
+        )
+        self.assertEqual(
+            self.decision(internal, personal={2: frozenset()}).reason,
+            "privacy_mapping_required",
+        )
 
     def test_invalid_rule_fails_closed(self):
         self.assertEqual(self.decision(rules={1: Rule(mode="typo")}).reason, "invalid_rule")
