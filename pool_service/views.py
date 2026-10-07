@@ -177,7 +177,11 @@ from .services.crm_archive import archive_crm_item, restore_crm_item, sync_crm_a
 from .services.crm_locking import lock_crm_graph, locked_task_with_crm_graph
 from .services.task_generation import sync_crm_item_for_task, sync_task_with_crm_item
 from .services.task_feedback import waiting_control
-from .services.task_waiting_schedule import release_waiting_schedule
+from .services.task_waiting_schedule import (
+    release_waiting_schedule,
+    restore_completed_without_appointment,
+    waiting_schedule_metadata,
+)
 
 
 
@@ -5082,7 +5086,13 @@ def archive_restore_task(request, task_id):
     if task.archived_reason == ServiceTask.ARCHIVE_REASON_COMPLETED and task.completed_at:
         task.completed_at = None
         task.completed_by = None
-        task.save(update_fields=["completed_at", "completed_by", "updated_at"])
+        restore_fields = restore_completed_without_appointment(task)
+        task.save(update_fields=list(dict.fromkeys([
+            "completed_at",
+            "completed_by",
+            *restore_fields,
+            "updated_at",
+        ])))
     restore_task(task, request.user)
     messages.success(request, "Задача восстановлена из архива.")
     return redirect("archive_list")
@@ -7957,8 +7967,8 @@ def task_move(request):
         return JsonResponse({"ok": False, "error": "archived_task"}, status=400)
     if task.completed_at:
         return JsonResponse({"ok": False, "error": "completed_task"}, status=400)
-    if task.status == ServiceTask.STATUS_CANCELLED:
-        return JsonResponse({"ok": False, "error": "cancelled_task"}, status=400)
+    if task.status in {ServiceTask.STATUS_DONE, ServiceTask.STATUS_CANCELLED}:
+        return JsonResponse({"ok": False, "error": "closed_task"}, status=400)
 
     old_start = task.start_date
     old_end = task.end_date or task.start_date
@@ -8613,7 +8623,12 @@ def readings_all(request):
     if task_org:
         task_qs = ServiceTask.objects.filter(
             organization=task_org, is_archived=False
-        ).exclude(status=ServiceTask.STATUS_CANCELLED)
+        ).exclude(
+            status__in=[
+                ServiceTask.STATUS_DONE,
+                ServiceTask.STATUS_CANCELLED,
+            ]
+        )
         if not can_view_all_org_tasks:
             task_qs = task_qs.filter(responsibles=request.user)
         if responsible_filter_set:
