@@ -327,19 +327,22 @@ def client_detail(request, client_id):
         can_view_own_calls = bool(
             communication_access and communication_access.can_view_own_calls
         )
-        call_qs = (
-            PhoneCall.objects.filter(client=client)
-            .select_related("employee", "analysis")
-            .order_by("-started_at")
-        )
-        if can_view_all_calls:
+        if can_view_all_calls or can_view_own_calls:
+            # Resolve the current phone directory only within the caller's
+            # visible history; never assign old calls as a side effect of GET.
+            from .communication_crm import resolved_calls_for_client
+
+            call_qs = PhoneCall.objects.filter(organization_id=client.organization_id)
+            if not (request.user.is_superuser or is_org_admin):
+                # Uploaded audio is an owner/admin archive, not staff call history.
+                call_qs = call_qs.filter(source_kind=PhoneCall.SOURCE_TELEPHONY)
+            if not can_view_all_calls:
+                call_qs = call_qs.filter(employee=request.user)
+            call_qs = resolved_calls_for_client(call_qs, client).select_related(
+                "employee", "analysis",
+            ).order_by("-started_at", "-pk")
             calls_total = call_qs.count()
             calls = list(call_qs[:50])
-            can_view_calls = True
-        elif can_view_own_calls:
-            own_call_qs = call_qs.filter(employee=request.user)
-            calls_total = own_call_qs.count()
-            calls = list(own_call_qs[:50])
             can_view_calls = True
 
     for call in calls:
@@ -714,7 +717,7 @@ def client_merge_index(request):
     selected_pools = []
     if selected_source:
         selected_pools = list(
-            Pool.objects.filter(client=selected_source, is_deleted=False)
+            Pool.objects.filter(selected_source=selected_source, is_deleted=False)
             .order_by("address", "id")
         )
 
