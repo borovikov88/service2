@@ -717,7 +717,7 @@ def client_merge_index(request):
     selected_pools = []
     if selected_source:
         selected_pools = list(
-            Pool.objects.filter(selected_source=selected_source, is_deleted=False)
+            Pool.objects.filter(client=selected_source, is_deleted=False)
             .order_by("address", "id")
         )
 
