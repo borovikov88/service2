@@ -43,7 +43,6 @@ from .views import (
     pool_edit,
     pool_restore,
     client_create,
-    client_edit,
     client_delete,
     yandex_suggest,
     confirm_email,
@@ -82,6 +81,7 @@ from .views import (
 )
 from . import views
 from .client_crm_views import client_detail, client_merge_index, client_merge_search, client_onec_import
+from .client_crm_ui import client_edit
 from .security_views import (
     security_lock,
     security_pin_disable,

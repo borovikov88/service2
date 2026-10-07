@@ -23,6 +23,7 @@ from .client_crm_models import (
     ClientImportRun,
 )
 from .client_queries import active_clients
+from .client_crm_ui import card_tab, card_url, relationship_results
 from .phone_utils import format_phone
 from .client_merge import merge_clients, merge_suggestions
 from .communication_models import CommunicationAccess, PhoneCall
@@ -104,6 +105,11 @@ def client_detail(request, client_id):
         and not (org_roles & {"owner", "admin", "manager"})
     )
 
+    if request.method == "GET" and request.GET.get("lookup") == "relationships":
+        if not can_manage:
+            return HttpResponseForbidden()
+        return relationship_results(client, request.GET.get("q", ""))
+
     if request.method == "POST":
         if not can_manage:
             return HttpResponseForbidden()
@@ -157,7 +163,7 @@ def client_detail(request, client_id):
             ).first()
             if related is None:
                 messages.error(request, "Не удалось найти клиента для связи.")
-                return redirect("client_detail", client_id=client.id)
+                return redirect(card_url(client.id, "contacts"))
             company = client if client.client_type == "legal" else related
             person = related if client.client_type == "legal" else client
             is_primary = request.POST.get("is_primary") == "1"
@@ -180,7 +186,7 @@ def client_detail(request, client_id):
                     is_primary=False
                 )
             messages.success(request, "Связь добавлена.")
-            return redirect("client_detail", client_id=client.id)
+            return redirect(card_url(client.id, "contacts"))
 
         if action in {"update_company_link", "delete_company_link"}:
             try:
@@ -200,7 +206,7 @@ def client_detail(request, client_id):
                 else:
                     link.delete()
                     messages.success(request, "Связь удалена.")
-                return redirect("client_detail", client_id=client.id)
+                return redirect(card_url(client.id, "contacts"))
             link.position = (request.POST.get("position") or "").strip()[:160]
             link.is_primary = request.POST.get("is_primary") == "1"
             link.save(update_fields=["position", "is_primary", "updated_at"])
@@ -209,7 +215,7 @@ def client_detail(request, client_id):
                     is_primary=False
                 )
             messages.success(request, "Связь обновлена.")
-            return redirect("client_detail", client_id=client.id)
+            return redirect(card_url(client.id, "contacts"))
 
         return HttpResponseForbidden()
 
@@ -244,24 +250,6 @@ def client_detail(request, client_id):
     for link in relationship_links:
         related = link.person if relationship_mode == "people" else link.company
         related.phone_display = format_phone(related.phone)
-
-    relationship_options = []
-    if can_manage and client.organization_id:
-        expected_type = "private" if client.client_type == "legal" else "legal"
-        linked_ids = {
-            link.person_id if client.client_type == "legal" else link.company_id
-            for link in relationship_links
-        }
-        relationship_options = list(
-            active_clients(
-                Client.objects.filter(
-                    organization_id=client.organization_id,
-                    client_type=expected_type,
-                )
-            )
-            .exclude(pk__in=linked_ids)
-            .order_by("name", "id")[:2000]
-        )
 
     pools = list(
         Pool.objects.filter(client=client, is_deleted=False)
@@ -395,7 +383,7 @@ def client_detail(request, client_id):
             "emails": emails,
             "relationship_links": relationship_links,
             "relationship_mode": relationship_mode,
-            "relationship_options": relationship_options,
+            "card_tab": card_tab(request.GET.get("tab")),
             "pools": pools,
             "tasks": tasks,
             "crm_items": crm_items,

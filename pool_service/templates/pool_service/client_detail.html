@@ -1,4 +1,5 @@
 {% extends 'pool_service/base.html' %}
+{% load static %}
 {% block title %}{{ client.name }}{% endblock %}
 
 {% block content %}
@@ -35,7 +36,7 @@
           <i class="bi bi-check2-square me-1"></i>Новая задача
         </a>
         {% if can_manage %}
-          <a class="btn btn-outline-secondary btn-sm" href="{% url 'client_edit' client.id %}">
+          <a class="btn btn-outline-secondary btn-sm" href="{% url 'client_edit' client.id %}?tab={{ card_tab }}" data-client-edit-link>
             <i class="bi bi-pencil me-1"></i>Редактировать
           </a>
         {% endif %}
@@ -72,16 +73,16 @@
       </div>
     </div>
 
-    <ul class="nav nav-pills gap-2 mb-4" role="tablist">
-      <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#client-overview" type="button">Обзор</button></li>
-      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#client-contacts" type="button">Контакты</button></li>
-      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#client-objects" type="button">Объекты <span class="badge text-bg-secondary ms-1">{{ pools|length }}</span></button></li>
-      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#client-tasks" type="button">Задачи и CRM</button></li>
-      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#client-calls" type="button">Звонки</button></li>
+    <ul class="nav nav-pills gap-2 mb-4" role="tablist" data-client-card-tabs>
+      <li class="nav-item"><button class="nav-link{% if card_tab == 'overview' %} active{% endif %}" data-bs-toggle="tab" data-bs-target="#client-overview" type="button" role="tab" data-client-card-tab="overview" aria-selected="{% if card_tab == 'overview' %}true{% else %}false{% endif %}">Обзор</button></li>
+      <li class="nav-item"><button class="nav-link{% if card_tab == 'contacts' %} active{% endif %}" data-bs-toggle="tab" data-bs-target="#client-contacts" type="button" role="tab" data-client-card-tab="contacts" aria-selected="{% if card_tab == 'contacts' %}true{% else %}false{% endif %}">Контакты</button></li>
+      <li class="nav-item"><button class="nav-link{% if card_tab == 'objects' %} active{% endif %}" data-bs-toggle="tab" data-bs-target="#client-objects" type="button" role="tab" data-client-card-tab="objects" aria-selected="{% if card_tab == 'objects' %}true{% else %}false{% endif %}">Объекты <span class="badge text-bg-secondary ms-1">{{ pools|length }}</span></button></li>
+      <li class="nav-item"><button class="nav-link{% if card_tab == 'tasks' %} active{% endif %}" data-bs-toggle="tab" data-bs-target="#client-tasks" type="button" role="tab" data-client-card-tab="tasks" aria-selected="{% if card_tab == 'tasks' %}true{% else %}false{% endif %}">Задачи и CRM</button></li>
+      <li class="nav-item"><button class="nav-link{% if card_tab == 'calls' %} active{% endif %}" data-bs-toggle="tab" data-bs-target="#client-calls" type="button" role="tab" data-client-card-tab="calls" aria-selected="{% if card_tab == 'calls' %}true{% else %}false{% endif %}">Звонки</button></li>
     </ul>
 
     <div class="tab-content">
-      <div class="tab-pane fade show active" id="client-overview">
+      <div class="tab-pane fade{% if card_tab == 'overview' %} show active{% endif %}" id="client-overview" role="tabpanel">
         <div class="row g-4">
           <div class="col-12 col-xl-7">
             <div class="border rounded-3 p-4 h-100">
@@ -169,7 +170,7 @@
         </div>
       </div>
 
-      <div class="tab-pane fade" id="client-contacts">
+      <div class="tab-pane fade{% if card_tab == 'contacts' %} show active{% endif %}" id="client-contacts" role="tabpanel">
         <div class="row g-4">
           <div class="col-12 col-lg-6">
             <div class="border rounded-3 p-4 h-100">
@@ -279,14 +280,13 @@
                   {% csrf_token %}
                   <input type="hidden" name="action" value="add_company_link">
                   <div class="row g-2 align-items-end">
-                    <div class="col-12 col-lg-5">
-                      <label class="form-label small text-muted">{% if relationship_mode == "people" %}Физическое лицо{% else %}Компания{% endif %}</label>
-                      <select class="form-select" name="related_client" required>
-                        <option value="">Выберите...</option>
-                        {% for related in relationship_options %}
-                          <option value="{{ related.id }}">{{ related.name }}</option>
-                        {% endfor %}
-                      </select>
+                    <div class="col-12 col-lg-5" data-crm-lookup data-lookup-url="{% url 'client_detail' client.id %}?lookup=relationships">
+                      <label class="form-label small text-muted" for="related-client-search">{% if relationship_mode == "people" %}Физическое лицо{% else %}Компания{% endif %}</label>
+                      <input class="form-control" type="search" id="related-client-search" data-lookup-input maxlength="160" autocomplete="off" placeholder="Введите минимум 3 символа" role="combobox" aria-autocomplete="list" aria-controls="related-client-results" aria-expanded="false" aria-describedby="related-client-status" required>
+                      <input type="hidden" name="related_client" data-lookup-value>
+                      <div id="related-client-status" class="form-text" data-lookup-status role="status">Введите минимум 3 символа.</div>
+                      <div id="related-client-results" class="list-group mt-2 overflow-auto" style="max-height: 18rem;" role="listbox" aria-label="Результаты поиска" data-lookup-results hidden></div>
+                      <noscript><div class="text-danger small">Для поиска включите JavaScript в браузере.</div></noscript>
                     </div>
                     <div class="col-12 col-lg-4">
                       <label class="form-label small text-muted">Должность</label>
@@ -309,7 +309,7 @@
         </div>
       </div>
 
-      <div class="tab-pane fade" id="client-objects">
+      <div class="tab-pane fade{% if card_tab == 'objects' %} show active{% endif %}" id="client-objects" role="tabpanel">
         <div class="d-grid gap-2">
           {% for pool in pools %}
             <a class="text-decoration-none text-reset" href="{% url 'pool_detail' pool.uuid %}">
@@ -333,7 +333,7 @@
         </div>
       </div>
 
-      <div class="tab-pane fade" id="client-tasks">
+      <div class="tab-pane fade{% if card_tab == 'tasks' %} show active{% endif %}" id="client-tasks" role="tabpanel">
         <div class="row g-4">
           <div class="col-12 col-xl-6">
             <div class="d-flex justify-content-between align-items-center mb-2">
@@ -386,7 +386,7 @@
         </div>
       </div>
 
-      <div class="tab-pane fade" id="client-calls">
+      <div class="tab-pane fade{% if card_tab == 'calls' %} show active{% endif %}" id="client-calls" role="tabpanel">
         {% if can_view_calls %}
           <div class="table-responsive">
             <table class="table align-middle">
@@ -438,4 +438,22 @@
     </div>
   </div>
 </div>
+<script src="{% static 'assets/js/crm-client-picker.js' %}" defer></script>
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    document.querySelectorAll("[data-client-card-tab]").forEach((button) => {
+      button.addEventListener("shown.bs.tab", () => {
+        const tab = button.dataset.clientCardTab;
+        const url = new URL(window.location.href);
+        url.searchParams.set("tab", tab);
+        history.replaceState(null, "", url.pathname + url.search + url.hash);
+        document.querySelectorAll("[data-client-edit-link]").forEach((link) => {
+          const editUrl = new URL(link.href, window.location.href);
+          editUrl.searchParams.set("tab", tab);
+          link.href = editUrl.pathname + editUrl.search;
+        });
+      });
+    });
+  });
+</script>
 {% endblock %}
