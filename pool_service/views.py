@@ -5216,7 +5216,13 @@ def archive_bulk_update(request):
             if task.archived_reason == ServiceTask.ARCHIVE_REASON_COMPLETED and task.completed_at:
                 task.completed_at = None
                 task.completed_by = None
-                task.save(update_fields=["completed_at", "completed_by", "updated_at"])
+                restore_fields = restore_completed_without_appointment(task)
+                task.save(update_fields=list(dict.fromkeys([
+                    "completed_at",
+                    "completed_by",
+                    *restore_fields,
+                    "updated_at",
+                ])))
             restore_task(task, request.user)
             changed += 1
         for item in items:
@@ -8636,6 +8642,8 @@ def readings_all(request):
 
         task_qs = task_qs.select_related("created_by").prefetch_related("responsibles").distinct()
         for task in task_qs:
+            if waiting_schedule_metadata(task).get("schedule_kind") == "no_appointment":
+                continue
             task_start = task.start_date
             task_end = task.end_date or task.start_date
             if task_end < range_start or task_start > range_end:
