@@ -17,7 +17,7 @@ from .client_crm_models import ClientCompanyLink, ClientContact, ClientCRMProfil
 from .client_queries import active_clients
 from .models import Client
 from .phone_utils import canonical_phone_value, format_phone, normalize_phone
-from .services.permissions import is_org_access_blocked, organization_for_user
+from .services.permissions import is_org_access_blocked
 
 
 CARD_TABS = ("overview", "contacts", "objects", "tasks", "calls")
@@ -230,12 +230,8 @@ def client_edit(request, client_id):
         client = get_object_or_404(queryset, pk=client_id)
         if client.organization_id is None:
             return legacy_client_edit(request, client_id)
-        organization = organization_for_user(request.user)
-        if (
-            not request.user.is_active or not organization
-            or organization.pk != client.organization_id
-            or not _can_manage_import(request.user, client.organization_id)
-        ):
+        # Check the target tenant, not the user's first membership.
+        if not _can_manage_import(request.user, client.organization_id):
             return HttpResponseForbidden()
         if request.method == "POST" and is_org_access_blocked(request.user):
             return HttpResponseForbidden()
@@ -250,8 +246,13 @@ def client_edit(request, client_id):
         client_form = ClientEditorForm(instance=client)
         profile_form = CRMProfileEditorForm(instance=profile, client=client, prefix="profile")
         if request.method == "POST":
+            posted_data = request.POST.copy()
+            if client.client_type == "legal" and "name" not in posted_data and "company_name" in posted_data:
+                # Forms opened before deployment submitted company_name, not name.
+                # An explicitly blank legacy value must still fail validation.
+                posted_data["name"] = posted_data["company_name"]
             client_form = ClientEditorForm(
-                complete_form_data(request.POST, client_form), instance=client,
+                complete_form_data(posted_data, client_form), instance=client,
             )
             profile_form = CRMProfileEditorForm(
                 complete_form_data(request.POST, profile_form),
