@@ -997,6 +997,12 @@ def _send_employee_notification(authenticated, organization, arguments):
     marker = f"{employee.id}:{key}"
     existing = deliveries.get(marker)
     if isinstance(existing, dict):
+        if (
+            existing.get("employee_user_id") != employee.id
+            or str(existing.get("title") or "") != title
+            or str(existing.get("message") or "") != message
+        ):
+            raise ValueError("dedupe_key")
         if _push_delivery_is_pending(existing):
             _schedule_employee_notification_push(task.id, marker)
         return {"created_notifications": 0, "employee_user_id": employee.id}
