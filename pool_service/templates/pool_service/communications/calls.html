@@ -133,17 +133,15 @@
       <label class="form-label">По</label>
       <input class="form-control" type="date" name="date_to" value="{{ request.GET.date_to }}">
     </div>
-    {% if manual_archive %}
-      <div class="col-md">
-        <label class="form-label">Клиент</label>
-        <select class="form-select" name="client">
-          <option value="">Все</option>
-          {% for client in clients %}
-            <option value="{{ client.pk }}" {% if request.GET.client == client.pk|stringformat:'s' %}selected{% endif %}>{{ client.name }}</option>
-          {% endfor %}
-        </select>
-      </div>
-    {% endif %}
+    <div class="col-md">
+      <label class="form-label">Клиент</label>
+      <select class="form-select" name="client">
+        <option value="">Все</option>
+        {% for client in clients %}
+          <option value="{{ client.pk }}" {% if request.GET.client == client.pk|stringformat:'s' %}selected{% endif %}>{{ client.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
     {% if can_view_all and not manual_archive %}
       <div class="col-md">
         <label class="form-label">Сотрудник</label>
@@ -179,6 +177,47 @@
       </label>
       {% endif %}
       <button class="btn btn-primary">Найти</button>
+      {% if can_listen %}
+      <div class="dropdown">
+        <button
+          class="btn btn-outline-secondary dropdown-toggle"
+          type="button"
+          data-bs-toggle="dropdown"
+          aria-expanded="false"
+        >
+          <i class="bi bi-download me-1"></i>Выгрузить
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end">
+          <li>
+            <button
+              class="dropdown-item"
+              type="submit"
+              name="format"
+              value="txt"
+              formaction="{% if manual_archive %}{% url 'communication_audio_transcripts_export' %}{% else %}{% url 'communication_call_transcripts_export' %}{% endif %}"
+            >TXT</button>
+          </li>
+          <li>
+            <button
+              class="dropdown-item"
+              type="submit"
+              name="format"
+              value="csv"
+              formaction="{% if manual_archive %}{% url 'communication_audio_transcripts_export' %}{% else %}{% url 'communication_call_transcripts_export' %}{% endif %}"
+            >CSV</button>
+          </li>
+          <li>
+            <button
+              class="dropdown-item"
+              type="submit"
+              name="format"
+              value="docx"
+              formaction="{% if manual_archive %}{% url 'communication_audio_transcripts_export' %}{% else %}{% url 'communication_call_transcripts_export' %}{% endif %}"
+            >Word (.docx)</button>
+          </li>
+        </ul>
+      </div>
+      {% endif %}
     </div>
   </div>
 </form>
