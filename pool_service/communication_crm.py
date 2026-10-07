@@ -305,7 +305,11 @@ def call_client_create(request, call_id):
         return HttpResponseBadRequest("Ссылка возврата устарела. Откройте создание из списка звонков ещё раз.")
     if call.client_id and call.client.organization_id != call.organization_id:
         raise PermissionDenied
-    customer = Client(organization=call.organization, client_type=kind, phone=canonical_phone_value(call.phone_number))
+    # PhoneCall allows 40 characters, but Client.phone only allows 20. The
+    # normalized identity keeps international country codes without separators;
+    # Russian identities retain the agreed display format. Do not change the call.
+    phone = canonical_phone_value(normalize_phone(call.phone_number))
+    customer = Client(organization=call.organization, client_type=kind, phone=phone)
     profile = ClientCRMProfile(
         client=customer, source=ClientCRMProfile.SOURCE_MANUAL,
         legal_form=ClientCRMProfile.LEGAL_FORM_ENTITY if kind == "legal" else ClientCRMProfile.LEGAL_FORM_NONE,
