@@ -271,6 +271,71 @@ class CallProcessingSettingsTests(TestCase):
         self.assertEqual(row["action"], "exclude")
         self.assertEqual(result["selected_count"], 0)
 
+    def test_other_owners_private_rule_does_not_increment_viewer_private_count(self):
+        self.force_other_owner_into_org()
+        service.save_rule(
+            user=self.owner,
+            organization=self.org,
+            employee_id=self.owner.pk,
+            mode="all_except",
+            include_staff=True,
+            numbers_text="",
+            expected_revision=0,
+        )
+        service.save_rule(
+            user=self.other_owner,
+            organization=self.org,
+            employee_id=self.other_owner.pk,
+            mode="all_except",
+            include_staff=True,
+            numbers_text="",
+            expected_revision=0,
+        )
+        call = self.call(
+            employee=self.owner,
+            peer_employee=self.other_owner,
+            direction=PhoneCall.DIRECTION_INTERNAL,
+            provider_extension="201",
+            provider_user="+12025550111",
+            peer_provider_extension="202",
+            peer_provider_user="+12025550122",
+        )
+        CallPrivateNumber.objects.create(
+            organization=self.org,
+            owner=self.owner,
+            label="Viewer own number must not match",
+            phone_key="+12025550111",
+        )
+        CallPrivateNumber.objects.create(
+            organization=self.org,
+            owner=self.other_owner,
+            label="Peer hides viewer",
+            phone_key="+12025550111",
+        )
+        identities = [
+            dict(
+                connection_id=self.connection.pk,
+                extension="201",
+                external_user="+12025550111",
+                **{"employee__user_id": self.owner.pk},
+            ),
+            dict(
+                connection_id=self.connection.pk,
+                extension="202",
+                external_user="+12025550122",
+                **{"employee__user_id": self.other_owner.pk},
+            ),
+        ]
+        with patch.object(service, "_identity_rows", return_value=identities):
+            result = service.preview_rules(
+                user=self.owner,
+                organization=self.org,
+                now=self.now,
+            )
+        self.assertEqual(result["rows"], [])
+        self.assertEqual(result["own_private_count"], 0)
+        self.assertNotIn(call.phone_number, str(result))
+
     def test_preview_cap_reports_partial_sample(self):
         self.save()
         for index in range(4):
