@@ -157,7 +157,7 @@ class WaitingCalendarTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(move.status_code, 400)
-        self.assertEqual(move.json()["error"], "closed_task")
+        self.assertEqual(move.json()["error"], "cancelled_task")
 
     @patch("pool_service.views._redirect_if_access_blocked", return_value=None)
     def test_restored_completed_waiting_task_stays_without_appointment_until_rescheduled(self, _blocked):
