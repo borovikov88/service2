@@ -1,4 +1,10 @@
 import json
+import logging
+import os
+import shutil
+import subprocess
+import sys
+import threading
 from datetime import datetime, timedelta, timezone as datetime_timezone
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin, urlsplit, urlunsplit
@@ -10,6 +16,8 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from pool_service.communication_models import (
+    ChannelConnection,
+    CommunicationChannel,
     PhoneCall,
     TelephonyConnection,
 )
@@ -18,6 +26,9 @@ from pool_service.services.employee_identity_sync import (
     _megafon_api_credentials,
     resolve_call_employee,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 MAX_INTERNAL_HISTORY_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -29,6 +40,108 @@ INTERNAL_HISTORY_OVERLAP_MINUTES = 5
 
 class MegafonInternalCallSyncError(Exception):
     pass
+
+
+def internal_call_sync_due(organization, *, max_age_minutes=10):
+    """Return True when a configured MegaFon internal-history cursor is stale."""
+    telephony_ids = set(
+        TelephonyConnection.objects.filter(
+            organization=organization,
+            is_active=True,
+        ).values_list("external_id", flat=True)
+    )
+    if not telephony_ids:
+        return False
+
+    providers = ChannelConnection.objects.filter(
+        channel__organization=organization,
+        channel__kind=CommunicationChannel.KIND_MEGAFON,
+        channel__is_active=True,
+        is_active=True,
+        external_id__in=telephony_ids,
+    ).only("settings")
+    threshold = timezone.now() - timedelta(minutes=max_age_minutes)
+    configured = False
+
+    for provider in providers:
+        settings_data = provider.settings if isinstance(provider.settings, dict) else {}
+        if not (
+            str(settings_data.get("megafon_api_endpoint") or "").strip()
+            and str(settings_data.get("megafon_api_key_encrypted") or "").strip()
+        ):
+            continue
+        configured = True
+        raw = str(
+            settings_data.get("megafon_internal_history_synced_through") or ""
+        ).strip()
+        synced_through = parse_datetime(raw) if raw else None
+        if synced_through is None:
+            return True
+        if timezone.is_naive(synced_through):
+            synced_through = synced_through.replace(tzinfo=datetime_timezone.utc)
+        if synced_through < threshold:
+            return True
+
+    return False if configured else False
+
+
+def _sync_python_executable(base_dir):
+    production_python = os.path.join(
+        os.path.dirname(base_dir),
+        "venv",
+        "bin",
+        "python",
+    )
+    if os.path.isfile(production_python) and os.access(production_python, os.X_OK):
+        return production_python
+    return sys.executable
+
+
+def _reap_sync_worker(process):
+    try:
+        return_code = process.wait()
+        if return_code not in (0, None):
+            logger.warning(
+                "Call recording sync worker exited with status %s",
+                return_code,
+            )
+    except Exception:
+        logger.exception("Failed while reaping call recording sync worker")
+
+
+def start_call_recording_sync_worker(*, limit=100):
+    """Start one detached recording/internal-call sync; shell lock deduplicates it."""
+    base_dir = str(settings.BASE_DIR)
+    worker_script = os.path.join(base_dir, "scripts", "run_call_recording_sync.sh")
+    bash = shutil.which("bash")
+    if not bash or not os.path.isfile(worker_script):
+        logger.error("Call recording sync worker launcher is unavailable")
+        return False
+
+    env = os.environ.copy()
+    env["SERVICE2_PYTHON"] = _sync_python_executable(base_dir)
+    try:
+        process = subprocess.Popen(
+            [bash, worker_script, str(max(1, min(int(limit), 500)))],
+            cwd=base_dir,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except (OSError, TypeError, ValueError):
+        logger.exception("Failed to start call recording sync worker")
+        return False
+
+    threading.Thread(
+        target=_reap_sync_worker,
+        args=(process,),
+        daemon=True,
+        name="service2-call-recording-sync-reaper",
+    ).start()
+    return True
 
 
 class _NoRedirect(HTTPRedirectHandler):
