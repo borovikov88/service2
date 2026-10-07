@@ -95,7 +95,8 @@ class WaitingLegacyGuardTests(TestCase):
         response = client.post(reverse("task_edit", args=[self.task.pk]), {"title": "No csrf token"})
         self.assertEqual(response.status_code, 403)
 
-    def test_bulk_active_status_cannot_turn_internal_check_into_appointment(self):
+    @patch("pool_service.views._redirect_if_access_blocked", return_value=None)
+    def test_bulk_active_status_cannot_turn_internal_check_into_appointment(self, _blocked):
         self.wait()
         response = self.client.post(reverse("crm_tasks_bulk_update"), {
             "task_ids": [self.task.pk],
@@ -108,7 +109,8 @@ class WaitingLegacyGuardTests(TestCase):
         self.assertTrue(self.task.title.startswith(CONTROL_LABEL))
         self.assertEqual(state_for(self.task)["mode"], "waiting")
 
-    def test_bulk_cancel_releases_waiting_metadata(self):
+    @patch("pool_service.views._redirect_if_access_blocked", return_value=None)
+    def test_bulk_cancel_releases_waiting_metadata(self, _blocked):
         self.wait()
         response = self.client.post(reverse("crm_tasks_bulk_update"), {
             "task_ids": [self.task.pk],
@@ -122,7 +124,8 @@ class WaitingLegacyGuardTests(TestCase):
         self.assertEqual(state_for(self.task)["mode"], "cancel")
         self.assertIsNone(state_for(self.task)["next_check_at"])
 
-    def test_bulk_archive_waiting_restores_only_as_cancelled_not_appointment(self):
+    @patch("pool_service.views._redirect_if_access_blocked", return_value=None)
+    def test_bulk_archive_waiting_restores_only_as_cancelled_not_appointment(self, _blocked):
         self.wait()
         response = self.client.post(reverse("crm_tasks_bulk_update"), {
             "task_ids": [self.task.pk],
