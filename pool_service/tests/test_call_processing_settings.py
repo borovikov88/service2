@@ -55,6 +55,14 @@ class CallProcessingSettingsTests(TestCase):
         with patch.object(service, "_identity_rows", return_value=self.identity_rows()):
             return service.preview_rules(user=self.owner, organization=self.org, now=self.now)
 
+    def force_other_owner_into_org(self):
+        access = OrganizationAccess.objects.get(
+            organization=self.other_org, user=self.other_owner
+        )
+        OrganizationAccess.objects.filter(pk=access.pk).update(organization=self.org)
+        access.refresh_from_db()
+        return access
+
     @patch("pool_service.views._redirect_if_access_blocked", return_value=None)
     def test_owner_page_is_read_only_and_discloses_preparation_state(self, _blocked):
         self.client.force_login(self.owner)
@@ -69,9 +77,21 @@ class CallProcessingSettingsTests(TestCase):
     @patch("pool_service.views._redirect_if_access_blocked", return_value=None)
     def test_manager_and_admin_cannot_read_owner_preferences(self, _blocked):
         self.client.force_login(self.employee)
-        for role in ("manager", "admin", "accountant"):
-            OrganizationAccess.objects.filter(organization=self.org, user=self.employee).update(role=role)
-            self.assertEqual(self.client.get(reverse("call_processing_settings")).status_code, 403)
+        for role in ("manager", "admin"):
+            OrganizationAccess.objects.filter(
+                organization=self.org, user=self.employee
+            ).update(role=role)
+            self.assertEqual(
+                self.client.get(reverse("call_processing_settings")).status_code,
+                403,
+            )
+
+        OrganizationAccess.objects.filter(
+            organization=self.org, user=self.employee
+        ).update(role="accountant")
+        response = self.client.get(reverse("call_processing_settings"))
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse("finance_dashboard"))
 
     def test_anonymous_requires_login_and_post_requires_csrf(self):
         self.assertEqual(self.client.get(reverse("call_processing_settings")).status_code, 302)
@@ -102,7 +122,7 @@ class CallProcessingSettingsTests(TestCase):
         self.assertFalse(CallProcessingRule.objects.exists())
 
     def test_another_owner_cannot_read_or_write_private_allowlist(self):
-        OrganizationAccess.objects.create(organization=self.org, user=self.other_owner, role="owner")
+        self.force_other_owner_into_org()
         service.save_rule(user=self.other_owner, organization=self.org, employee_id=self.other_owner.pk,
                           mode="allowlist", include_staff=False, numbers_text="+12025550199", expected_revision=0)
         rows = _rule_rows(self.org, self.owner)
@@ -149,7 +169,7 @@ class CallProcessingSettingsTests(TestCase):
         self.assertNotIn("9990000001", str(audit.details))
 
     def test_cannot_remove_other_owners_private_number(self):
-        OrganizationAccess.objects.create(organization=self.org, user=self.other_owner, role="owner")
+        self.force_other_owner_into_org()
         number = CallPrivateNumber.objects.create(organization=self.org, owner=self.other_owner, label="Other private", phone_key="+12025550199")
         with self.assertRaises(PermissionDenied):
             service.remove_private_number(user=self.owner, organization=self.org, number_id=number.pk)
@@ -218,6 +238,38 @@ class CallProcessingSettingsTests(TestCase):
             with patch.object(service, "_identity_rows", return_value=identities):
                 result = service.preview_rules(user=self.owner, organization=self.org, now=self.now)
             self.assertEqual(result["selected_count"], 0)
+
+    def test_internal_call_with_one_unresolved_privacy_counterpart_fails_closed(self):
+        self.save()
+        service.save_rule(
+            user=self.owner, organization=self.org, employee_id=self.owner.pk,
+            mode="all_except", include_staff=True, numbers_text="", expected_revision=0,
+        )
+        call = self.call(
+            employee=self.owner,
+            peer_employee=self.employee,
+            direction=PhoneCall.DIRECTION_INTERNAL,
+            provider_extension="201",
+            provider_user="+12025550111",
+            peer_provider_extension="101",
+            peer_provider_user="employee-ref",
+        )
+        identities = self.identity_rows() + [
+            dict(
+                connection_id=self.connection.pk,
+                extension="201",
+                external_user="+12025550111",
+                **{"employee__user_id": self.owner.pk},
+            )
+        ]
+        with patch.object(service, "_identity_rows", return_value=identities):
+            result = service.preview_rules(
+                user=self.owner, organization=self.org, now=self.now
+            )
+        row = next(item for item in result["rows"] if item["id"] == call.pk)
+        self.assertFalse(row["selected"])
+        self.assertEqual(row["action"], "exclude")
+        self.assertEqual(result["selected_count"], 0)
 
     def test_preview_cap_reports_partial_sample(self):
         self.save()
