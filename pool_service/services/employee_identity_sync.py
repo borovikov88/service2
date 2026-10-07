@@ -557,42 +557,83 @@ def apply_telephony_identity_to_calls(
     if not identity.employee_id or identity.requires_manual_confirmation:
         return 0
     employee = identity.employee
-    matches = PhoneCall.objects.filter(
+    base = PhoneCall.objects.filter(
         organization=identity.organization,
         connection=identity.connection,
     )
-    selector = Q(provider_extension=identity.extension)
-    if identity.external_user:
-        external_user_is_unique = not TelephonyEmployeeIdentity.objects.filter(
+    external_user_is_unique = bool(identity.external_user) and not (
+        TelephonyEmployeeIdentity.objects.filter(
             connection=identity.connection,
             external_user=identity.external_user,
-        ).exclude(pk=identity.pk).exists()
-        if external_user_is_unique:
-            selector |= Q(
-                provider_extension="",
-                provider_user=identity.external_user,
-            )
-    matches = matches.filter(selector)
+        )
+        .exclude(pk=identity.pk)
+        .exists()
+    )
+
+    primary_selector = Q(provider_extension=identity.extension)
+    if external_user_is_unique:
+        primary_selector |= Q(
+            provider_extension="",
+            provider_user=identity.external_user,
+        )
+    primary_matches = base.filter(primary_selector)
 
     if previous_employee_id and previous_employee_id != employee.pk:
-        ownership_scope = Q(employee_profile__isnull=True) | Q(
-            employee_profile_id=previous_employee_id
+        primary_matches = primary_matches.filter(
+            Q(employee_profile__isnull=True)
+            | Q(employee_profile_id=previous_employee_id)
         )
-        matches = matches.filter(ownership_scope)
         if reassignment_boundary is not None:
-            reassignment_scope = Q(
+            primary_reassignment = Q(
                 started_at__gte=reassignment_boundary
             ) | Q(created_at__gte=reassignment_boundary)
             if identity.external_user:
-                reassignment_scope |= Q(provider_user=identity.external_user)
-            matches = matches.filter(reassignment_scope)
+                primary_reassignment |= Q(
+                    provider_user=identity.external_user
+                )
+            primary_matches = primary_matches.filter(primary_reassignment)
     else:
-        matches = matches.filter(employee_profile__isnull=True)
+        primary_matches = primary_matches.filter(
+            employee_profile__isnull=True
+        )
 
-    return matches.update(
+    updated = primary_matches.update(
         employee_profile_id=employee.pk,
         employee_id=employee.user_id,
     )
+
+    peer_selector = Q(peer_provider_extension=identity.extension)
+    if external_user_is_unique:
+        peer_selector |= Q(
+            peer_provider_extension="",
+            peer_provider_user=identity.external_user,
+        )
+    peer_matches = base.filter(peer_selector)
+
+    if previous_employee_id and previous_employee_id != employee.pk:
+        peer_matches = peer_matches.filter(
+            Q(peer_employee_profile__isnull=True)
+            | Q(peer_employee_profile_id=previous_employee_id)
+        )
+        if reassignment_boundary is not None:
+            peer_reassignment = Q(
+                started_at__gte=reassignment_boundary
+            ) | Q(created_at__gte=reassignment_boundary)
+            if identity.external_user:
+                peer_reassignment |= Q(
+                    peer_provider_user=identity.external_user
+                )
+            peer_matches = peer_matches.filter(peer_reassignment)
+    else:
+        peer_matches = peer_matches.filter(
+            peer_employee_profile__isnull=True
+        )
+
+    updated += peer_matches.update(
+        peer_employee_profile_id=employee.pk,
+        peer_employee_id=employee.user_id,
+    )
+    return updated
 
 
 def backfill_employee_calls(
@@ -618,6 +659,12 @@ def backfill_employee_calls(
         employee_profile=employee,
     ).exclude(employee_id=employee.user_id).update(
         employee_id=employee.user_id,
+    )
+    total += PhoneCall.objects.filter(
+        organization=employee.organization,
+        peer_employee_profile=employee,
+    ).exclude(peer_employee_id=employee.user_id).update(
+        peer_employee_id=employee.user_id,
     )
     identities = employee.telephony_identities.filter(
         is_active=True,

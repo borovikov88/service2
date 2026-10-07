@@ -208,6 +208,7 @@ class Conversation(models.Model):
 class ConversationMessage(models.Model):
     DIRECTION_IN = "in"
     DIRECTION_OUT = "out"
+    DIRECTION_INTERNAL = "internal"
     DELIVERY_RECEIVED = "received"
     DELIVERY_PENDING = "pending"
     DELIVERY_SENDING = "sending"
@@ -399,6 +400,7 @@ class PhoneCall(models.Model):
 
     DIRECTION_IN = "in"
     DIRECTION_OUT = "out"
+    DIRECTION_INTERNAL = "internal"
     RESULT_ANSWERED = "answered"
     RESULT_MISSED = "missed"
     RECORDING_NONE = "none"
@@ -436,6 +438,20 @@ class PhoneCall(models.Model):
         blank=True,
         related_name="phone_calls",
     )
+    peer_employee = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="peer_phone_calls",
+    )
+    peer_employee_profile = models.ForeignKey(
+        Employee,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="peer_phone_calls",
+    )
     client = models.ForeignKey(
         Client,
         on_delete=models.SET_NULL,
@@ -445,9 +461,18 @@ class PhoneCall(models.Model):
     )
     provider_user = models.CharField(max_length=255, blank=True)
     provider_extension = models.CharField(max_length=64, blank=True)
+    peer_provider_user = models.CharField(max_length=255, blank=True)
+    peer_provider_extension = models.CharField(max_length=64, blank=True)
     contact_name = models.CharField(max_length=255, blank=True)
     phone_number = models.CharField(max_length=40)
-    direction = models.CharField(max_length=3, choices=[(DIRECTION_IN, "Входящий"), (DIRECTION_OUT, "Исходящий")])
+    direction = models.CharField(
+        max_length=8,
+        choices=[
+            (DIRECTION_IN, "Входящий"),
+            (DIRECTION_OUT, "Исходящий"),
+            (DIRECTION_INTERNAL, "Внутренний"),
+        ],
+    )
     started_at = models.DateTimeField(db_index=True)
     duration_seconds = models.PositiveIntegerField(default=0)
     result = models.CharField(max_length=20, choices=[(RESULT_ANSWERED, "Отвечен"), (RESULT_MISSED, "Пропущен")])
@@ -490,6 +515,18 @@ class PhoneCall(models.Model):
             and self.employee_profile.organization_id != self.organization_id
         ):
             raise ValidationError("Call employee profile must belong to the organization.")
+        if (
+            self.peer_employee_id
+            and not self.peer_employee.organizationaccess_set.filter(
+                organization_id=self.organization_id
+            ).exists()
+        ):
+            raise ValidationError("Peer call employee must belong to the organization.")
+        if (
+            self.peer_employee_profile_id
+            and self.peer_employee_profile.organization_id != self.organization_id
+        ):
+            raise ValidationError("Peer call employee profile must belong to the organization.")
         if (
             self.client_id
             and self.client.organization_id != self.organization_id
