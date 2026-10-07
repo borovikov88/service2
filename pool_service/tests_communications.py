@@ -1907,7 +1907,11 @@ class CommunicationsTests(TestCase):
             f'id="call-analysis-{call.pk}"',
             html=False,
         )
-        self.assertNotContains(response, "Повторить, если зависло")
+        self.assertContains(
+            response,
+            '<span class="visually-hidden">Повторить, если зависло</span>',
+            html=False,
+        )
 
     def test_audio_files_page_is_owner_or_admin_only_and_separate_from_phone_history(self):
         telephony = TelephonyConnection.objects.create(
