@@ -1,0 +1,5 @@
+DirectoryIndex index.html
+Options -Indexes
+<Files ".aqualine-managed.json">
+  Require all denied
+</Files>
