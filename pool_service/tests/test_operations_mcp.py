@@ -939,6 +939,27 @@ class OperationsMcpTests(TestCase):
         self.assertIn(marker, deliveries)
         self.assertEqual(deliveries[marker]["employee_user_id"], self.manager.id)
 
+        changed_payload = json.loads(json.dumps(payload))
+        changed_payload["id"] = 501
+        changed_payload["params"]["arguments"]["message"] = "Исправленный текст."
+        with self._settings():
+            changed = self._post(changed_payload, token=raw)
+        self.assertTrue(changed.json()["result"]["isError"])
+
+        task.refresh_from_db()
+        delivery = task.payload_json[
+            "operations_employee_notification_deliveries"
+        ][marker]
+        self.assertEqual(delivery["title"], "Проверьте задачу")
+        self.assertEqual(delivery["message"], "Срок наступил.")
+        self.assertEqual(
+            Notification.objects.filter(
+                user=self.manager,
+                dedupe_key=f"operations_mcp:{task.id}:task-42-due",
+            ).count(),
+            1,
+        )
+
     @patch("pool_service.operations_mcp_views.send_push_to_users", side_effect=[0, 1])
     def test_pending_employee_notification_is_retried_by_scanner(self, send_push):
         from pool_service.operations_mcp_views import process_pending_operations_pushes
