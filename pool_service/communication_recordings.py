@@ -11,7 +11,15 @@ from django.core.files import File
 from django.db.models import F, Q
 from django.utils import timezone
 
-from pool_service.communication_models import PhoneCall
+from pool_service.communication_models import (
+    ChannelConnection,
+    CommunicationChannel,
+    PhoneCall,
+)
+from pool_service.communication_secrets import (
+    CommunicationSecretError,
+    decrypt_secret,
+)
 
 
 class RecordingDownloadError(Exception):
@@ -63,14 +71,43 @@ class _SafeRecordingRedirectHandler(HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+def _megafon_recording_api_key(call):
+    if not call.connection_id:
+        return ""
+    provider = (
+        ChannelConnection.objects.filter(
+            channel__organization_id=call.organization_id,
+            channel__kind=CommunicationChannel.KIND_MEGAFON,
+            external_id=call.connection.external_id,
+        )
+        .only("settings")
+        .first()
+    )
+    if provider is None:
+        return ""
+    encrypted = str(
+        (provider.settings or {}).get("megafon_api_key_encrypted") or ""
+    ).strip()
+    if not encrypted:
+        return ""
+    try:
+        return decrypt_secret(encrypted)
+    except CommunicationSecretError:
+        return ""
+
+
 def _open_recording(call, timeout):
     _validate_recording_url(call, call.recording_ref)
+    headers = {
+        "User-Agent": "Service2-Call-Recording/1.0",
+        "Accept": "audio/mpeg,audio/*;q=0.9,application/octet-stream;q=0.8",
+    }
+    api_key = _megafon_recording_api_key(call)
+    if api_key:
+        headers["X-API-KEY"] = api_key
     request = Request(
         call.recording_ref,
-        headers={
-            "User-Agent": "Service2-Call-Recording/1.0",
-            "Accept": "audio/mpeg,audio/*;q=0.9,application/octet-stream;q=0.8",
-        },
+        headers=headers,
         method="GET",
     )
     opener = build_opener(_SafeRecordingRedirectHandler(call))

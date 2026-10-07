@@ -72,8 +72,12 @@ def resolved_calls_for_client(queryset, client):
 
     Explicit assignments take priority. Unassigned calls enter a client's
     history only when its current phone has exactly one active CRM match.
-    Call rows are not updated by a GET request.
+    Call rows are not updated by a GET request. Internal calls remain employee
+    conversations, not CRM history, even if their number resembles a client.
     """
+    queryset = queryset.filter(organization_id=client.organization_id).exclude(
+        direction=PhoneCall.DIRECTION_INTERNAL,
+    )
     keys = {normalize_phone(client.phone)}
     keys.update(
         normalize_phone(value)
@@ -98,7 +102,7 @@ def resolved_calls_for_client(queryset, client):
         ]
         if matched_numbers:
             condition |= Q(client__isnull=True, phone_number__in=matched_numbers)
-    return queryset.filter(organization_id=client.organization_id).filter(condition)
+    return queryset.filter(condition)
 
 
 def _selected_client(request, organization):
@@ -118,7 +122,7 @@ def _selected_client(request, organization):
 def _filtered_calls(request, source_kind, organization, view_all):
     queryset = PhoneCall.objects.filter(organization=organization, source_kind=source_kind)
     if source_kind == PhoneCall.SOURCE_TELEPHONY and not view_all:
-        queryset = queryset.filter(employee=request.user)
+        queryset = queryset.filter(Q(employee=request.user) | Q(peer_employee=request.user))
     selected = _selected_client(request, organization)
     # Keep existing date, employee, direction, missed and text semantics, but
     # replace the former client suffix filter with the exact resolver above.
@@ -167,13 +171,18 @@ def _return_url(request, call, token):
 
 def _decorate_calls(rows, request, organization, source_kind):
     phone_matches = clients_by_phones(organization, [
-        call.phone_number for call in rows if not call.client_id
+        call.phone_number for call in rows
+        if not call.client_id and call.direction != PhoneCall.DIRECTION_INTERNAL
     ])
     create_allowed = _can_create(request.user, organization)
     token = _return_token(request, organization, source_kind) if create_allowed else ""
     for call in rows:
         call.phone_display = format_phone(call.phone_number)
         call.create_client_url = ""
+        if call.direction == PhoneCall.DIRECTION_INTERNAL:
+            call.resolved_client = None
+            call.ambiguous_clients = []
+            continue
         if call.client_id:
             # Do not expose a corrupt cross-organization assignment or replace it.
             call.resolved_client = call.client if call.client.organization_id == organization.pk else None
@@ -195,7 +204,7 @@ def _call_screen(request, source_kind):
     except ValueError as exc:
         return HttpResponseBadRequest(str(exc))
     rows = list(queryset.select_related(
-        "employee", "employee_profile", "client", "analysis",
+        "employee", "employee_profile", "peer_employee", "peer_employee_profile", "client", "analysis",
     ).defer("analysis__transcript")[:500])
     _decorate_calls(rows, request, organization, source_kind)
     manual = source_kind == PhoneCall.SOURCE_UPLOADED
@@ -281,7 +290,12 @@ def _visible_call(request, call_id, *, lock=False):
         queryset = queryset.select_for_update()
     call = get_object_or_404(queryset, pk=call_id)
     organization, view_all = _scope(request.user, call.source_kind, call.organization)
-    if call.source_kind == PhoneCall.SOURCE_TELEPHONY and not view_all and call.employee_id != request.user.pk:
+    if call.direction == PhoneCall.DIRECTION_INTERNAL:
+        raise PermissionDenied
+    if (
+        call.source_kind == PhoneCall.SOURCE_TELEPHONY and not view_all
+        and request.user.pk not in (call.employee_id, call.peer_employee_id)
+    ):
         raise PermissionDenied
     if not _can_create(request.user, organization):
         raise PermissionDenied

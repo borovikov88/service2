@@ -42,6 +42,7 @@ from pool_service.communication_services import conversation_capability
 from pool_service.services.employee_identity_sync import (
     EmployeeIdentitySyncError,
     _read_megafon_accounts,
+    apply_telephony_identity_to_calls,
     auto_link_service2_user,
     map_employee_service2_user,
     map_telephony_identity,
@@ -49,6 +50,10 @@ from pool_service.services.employee_identity_sync import (
     sync_all_employee_identities,
     sync_megafon_employee_identities,
     sync_onec_employee_identities,
+)
+from pool_service.services.megafon_internal_calls import (
+    MegafonInternalCallSyncError,
+    sync_megafon_internal_calls,
 )
 from pool_service.communication_api import _payload
 from pool_service.finance_imports.odata_profit import ODataConfig, ODataPreviewError
@@ -2400,6 +2405,70 @@ class CommunicationsTests(TestCase):
         with call.recording_file.open("rb") as stored:
             self.assertEqual(stored.read(), payload)
 
+    def test_megafon_recording_download_sends_saved_api_key(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон auth recording",
+            external_id="megafon-auth-recording",
+            recording_allowed_hosts=["records.megapbx.ru"],
+        )
+        channel = CommunicationChannel.objects.create(
+            organization=self.organization,
+            kind=CommunicationChannel.KIND_MEGAFON,
+            name="МегаФон auth recording",
+        )
+        ChannelConnection.objects.create(
+            channel=channel,
+            name="МегаФон auth recording",
+            external_id="megafon-auth-recording",
+            settings={
+                "megafon_api_key_encrypted": encrypt_secret("recording-api-key"),
+            },
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="inner:recording-auth",
+            phone_number="",
+            direction=PhoneCall.DIRECTION_INTERNAL,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_ref="https://records.megapbx.ru/inner-auth.mp3",
+            recording_status=PhoneCall.RECORDING_PENDING,
+        )
+
+        payload = b"ID3" + b"z" * 64
+
+        class FakeResponse(io.BytesIO):
+            def __init__(self, data):
+                super().__init__(data)
+                self.headers = {
+                    "Content-Type": "audio/mpeg",
+                    "Content-Length": str(len(data)),
+                }
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.close()
+                return False
+
+        opener = MagicMock()
+        opener.open.return_value = FakeResponse(payload)
+        with patch(
+            "pool_service.communication_recordings.build_opener",
+            return_value=opener,
+        ):
+            self.assertTrue(download_call_recording(call.pk))
+
+        request = opener.open.call_args.args[0]
+        headers = {
+            key.lower(): value
+            for key, value in request.header_items()
+        }
+        self.assertEqual(headers["x-api-key"], "recording-api-key")
+
     def test_recording_downloader_rejects_html_instead_of_storing_login_page(self):
         telephony = TelephonyConnection.objects.create(
             organization=self.organization,
@@ -3425,6 +3494,308 @@ class CommunicationsTests(TestCase):
                 external_id="call-long-ext",
             ).exists()
         )
+
+    @patch(
+        "pool_service.services.megafon_internal_calls._megafon_api_credentials"
+    )
+    @patch("pool_service.services.megafon_internal_calls._read_json")
+    def test_megafon_internal_history_creates_one_call_with_both_employees(
+        self,
+        read_json,
+        credentials,
+    ):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон внутренние",
+            external_id="megafon-inner",
+        )
+        channel = CommunicationChannel.objects.create(
+            organization=self.organization,
+            kind=CommunicationChannel.KIND_MEGAFON,
+            name="МегаФон внутренние",
+        )
+        provider = ChannelConnection.objects.create(
+            channel=channel,
+            name="МегаФон внутренние",
+            external_id="megafon-inner",
+        )
+        caller_profile = Employee.objects.create(
+            organization=self.organization,
+            display_name="Первый сотрудник",
+            is_active=True,
+            user=self.worker,
+        )
+        peer_profile = Employee.objects.create(
+            organization=self.organization,
+            display_name="Второй сотрудник",
+            is_active=True,
+            user=self.other,
+        )
+        TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=caller_profile,
+            raw_name="Первый сотрудник",
+            normalized_name="первый сотрудник",
+            extension="601",
+            external_user="worker",
+            is_active=True,
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+        TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=peer_profile,
+            raw_name="Второй сотрудник",
+            normalized_name="второй сотрудник",
+            extension="602",
+            external_user="other",
+            is_active=True,
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+        credentials.return_value = (
+            provider,
+            "https://aqualine22.megapbx.ru/sys/crm_api.wcgp",
+            "ats-secret",
+        )
+        started = timezone.now() - timedelta(minutes=5)
+        users_payload = {
+            "items": [
+                {"login": "worker", "name": "Первый сотрудник", "ext": "601"},
+                {"login": "other", "name": "Второй сотрудник", "ext": "602"},
+            ]
+        }
+        history_row = {
+            "uid": "inner-uid-1",
+            "status": "success",
+            "from": "worker",
+            "to": "other",
+            "from_name": "Первый сотрудник",
+            "to_name": "Второй сотрудник",
+            "start": started.strftime("%Y%m%dT%H%M%SZ"),
+            "wait": 2,
+            "duration": 73,
+            "record": "https://records.megapbx.ru/inner-uid-1.mp3",
+        }
+        read_json.side_effect = [users_payload, [history_row]]
+
+        result = sync_megafon_internal_calls(telephony, lookback_hours=1)
+        self.assertEqual(result["created"], 1)
+        self.assertEqual(result["updated"], 0)
+
+        call = PhoneCall.objects.get(
+            connection=telephony,
+            external_id="inner:inner-uid-1",
+        )
+        self.assertEqual(call.direction, PhoneCall.DIRECTION_INTERNAL)
+        self.assertEqual(call.employee, self.worker)
+        self.assertEqual(call.employee_profile, caller_profile)
+        self.assertEqual(call.peer_employee, self.other)
+        self.assertEqual(call.peer_employee_profile, peer_profile)
+        self.assertEqual(call.provider_extension, "601")
+        self.assertEqual(call.peer_provider_extension, "602")
+        self.assertIsNone(call.client)
+        self.assertEqual(call.phone_number, "")
+        self.assertEqual(call.contact_name, "Второй сотрудник")
+        self.assertEqual(call.duration_seconds, 73)
+        self.assertEqual(call.result, PhoneCall.RESULT_ANSWERED)
+        self.assertEqual(
+            call.recording_ref,
+            "https://records.megapbx.ru/inner-uid-1.mp3",
+        )
+        self.assertEqual(call.recording_status, PhoneCall.RECORDING_PENDING)
+        telephony.refresh_from_db()
+        self.assertIn("records.megapbx.ru", telephony.recording_allowed_hosts)
+
+        read_json.side_effect = [users_payload, [history_row]]
+        replay = sync_megafon_internal_calls(telephony, lookback_hours=1)
+        self.assertEqual(replay["created"], 0)
+        self.assertEqual(replay["updated"], 1)
+        self.assertEqual(
+            PhoneCall.objects.filter(
+                connection=telephony,
+                external_id="inner:inner-uid-1",
+            ).count(),
+            1,
+        )
+
+    def test_internal_call_is_visible_to_both_participants_and_filters(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон внутренние UI",
+            external_id="megafon-inner-ui",
+        )
+        caller_profile = Employee.objects.create(
+            organization=self.organization,
+            display_name="Первый сотрудник",
+            is_active=True,
+            user=self.worker,
+        )
+        peer_profile = Employee.objects.create(
+            organization=self.organization,
+            display_name="Второй сотрудник",
+            is_active=True,
+            user=self.other,
+        )
+        internal = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="inner:ui-1",
+            employee=self.worker,
+            employee_profile=caller_profile,
+            peer_employee=self.other,
+            peer_employee_profile=peer_profile,
+            provider_user="worker",
+            provider_extension="601",
+            peer_provider_user="other",
+            peer_provider_extension="602",
+            contact_name="Второй сотрудник",
+            phone_number="",
+            direction=PhoneCall.DIRECTION_INTERNAL,
+            started_at=timezone.now(),
+            duration_seconds=45,
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_status=PhoneCall.RECORDING_STORED,
+        )
+        internal.recording_file.save(
+            "inner-ui.mp3",
+            ContentFile(b"ID3inner"),
+            save=True,
+        )
+        external = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="external-ui-1",
+            employee=self.worker,
+            phone_number="+79001112233",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now() - timedelta(minutes=1),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        outsider = User.objects.create_user("internal-outsider", password="test")
+        OrganizationAccess.objects.create(
+            user=outsider,
+            organization=self.organization,
+            role="manager",
+        )
+
+        self.client.login(username="other", password="test")
+        peer_page = self.client.get(reverse("communications_calls"))
+        self.assertEqual(peer_page.status_code, 200)
+        self.assertContains(peer_page, "Внутренний звонок")
+        self.assertContains(peer_page, "Первый сотрудник")
+        self.assertContains(peer_page, "Второй сотрудник")
+        recording_url = reverse(
+            "communication_call_recording",
+            args=[internal.pk],
+        )
+        self.assertEqual(self.client.get(recording_url).status_code, 200)
+
+        self.client.logout()
+        self.client.login(username="internal-outsider", password="test")
+        outsider_page = self.client.get(reverse("communications_calls"))
+        self.assertNotContains(outsider_page, "Внутренний звонок")
+        self.assertEqual(self.client.get(recording_url).status_code, 403)
+
+        self.client.logout()
+        self.client.login(username="owner", password="test")
+        internal_only = self.client.get(
+            reverse("communications_calls"),
+            {"direction": "internal"},
+        )
+        self.assertContains(internal_only, "Внутренний звонок")
+        self.assertNotContains(internal_only, "+7 900 111 2233")
+
+        by_peer = self.client.get(
+            reverse("communications_calls"),
+            {"employee": str(self.other.pk)},
+        )
+        self.assertContains(by_peer, "Внутренний звонок")
+        self.assertNotContains(by_peer, "+7 900 111 2233")
+
+        self.assertTrue(
+            PhoneCall.objects.filter(pk=external.pk).exists()
+        )
+
+    @patch(
+        "pool_service.management.commands.sync_call_recordings.process_call_commitment_controls",
+        return_value={
+            "checked": 0,
+            "due_reminders": 0,
+            "escalations": 0,
+            "without_deadline": 0,
+        },
+    )
+    @patch(
+        "pool_service.management.commands.sync_call_recordings.sync_megafon_internal_calls"
+    )
+    def test_recording_sync_pulls_internal_history_first(
+        self,
+        sync_internal,
+        _commitment_control,
+    ):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон scheduled inner",
+            external_id="megafon-scheduled-inner",
+        )
+        sync_internal.return_value = {
+            "checked": 2,
+            "created": 2,
+            "updated": 0,
+            "synced_through": timezone.now(),
+        }
+
+        call_command("sync_call_recordings", "--limit", "10")
+
+        sync_internal.assert_called_once_with(telephony)
+
+    def test_telephony_identity_backfills_internal_peer_participant(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон peer backfill",
+            external_id="megafon-peer-backfill",
+        )
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Сотрудник для peer",
+            is_active=True,
+            user=self.other,
+        )
+        identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=employee,
+            raw_name="Сотрудник для peer",
+            normalized_name="сотрудник для peer",
+            extension="777",
+            external_user="peer-login",
+            is_active=True,
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="inner:peer-backfill",
+            provider_user="worker",
+            provider_extension="601",
+            peer_provider_user="peer-login",
+            peer_provider_extension="777",
+            phone_number="",
+            direction=PhoneCall.DIRECTION_INTERNAL,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+
+        updated = apply_telephony_identity_to_calls(identity)
+
+        self.assertEqual(updated, 1)
+        call.refresh_from_db()
+        self.assertEqual(call.peer_employee_profile, employee)
+        self.assertEqual(call.peer_employee, self.other)
 
     def test_megafon_history_replay_preserves_assigned_client(self):
         telephony = TelephonyConnection.objects.create(
