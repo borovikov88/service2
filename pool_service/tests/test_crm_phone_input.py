@@ -1,11 +1,15 @@
+from datetime import timedelta
 from html.parser import HTMLParser
+from pathlib import Path
 
 from django import forms
 from django.contrib.auth import get_user_model
+from django.contrib.staticfiles import finders
 from django.template import Context, Template
 from django.template.loader import get_template
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from pool_service.client_crm_models import ClientContact
 from pool_service.forms import ClientCreateForm, ClientInviteForm
@@ -74,11 +78,21 @@ class CRMPhoneWidgetTests(SimpleTestCase):
         self.assertNotIn(".phone-mask", source)
         self.assertIn("{% crm_phone_input form.phone %}", source)
 
+    def test_shared_mask_excludes_crm_marker_from_every_selector(self):
+        path = finders.find("assets/js/base-shell-post-a.js")
+        self.assertIsNotNone(path)
+        source = Path(path).read_text(encoding="utf-8")
+        self.assertIn("`${selector}:not([data-crm-phone])`", source)
+        self.assertIn('inp.hasAttribute("data-crm-phone")', source)
+
 
 class CRMPhoneBrowserFormTests(TestCase):
     @classmethod
     def setUpTestData(cls):
-        cls.organization = Organization.objects.create(name="CRM phone form tests")
+        cls.organization = Organization.objects.create(
+            name="CRM phone form tests",
+            paid_until=timezone.now() + timedelta(days=30),
+        )
         cls.owner = get_user_model().objects.create_user(username="phone-form-owner")
         OrganizationAccess.objects.create(
             user=cls.owner, organization=cls.organization, role="owner"
