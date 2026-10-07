@@ -400,6 +400,7 @@ class PhoneCall(models.Model):
 
     DIRECTION_IN = "in"
     DIRECTION_OUT = "out"
+    DIRECTION_INTERNAL = "internal"
     RESULT_ANSWERED = "answered"
     RESULT_MISSED = "missed"
     RECORDING_NONE = "none"
