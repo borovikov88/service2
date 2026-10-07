@@ -121,31 +121,102 @@
         }
       };
 
+      const initParticipantSearch = (root, list, trigger) => {
+        // Only task participants: other multi-selects keep their existing behavior.
+        if (!root.closest("[data-task-form]") || !root.closest("[data-responsibles-block]")) return null;
+        // Reuse the server-authorized options and original submitted checkboxes.
+        const entries = Array.from(list.querySelectorAll(".multi-select__option"))
+          .map(option => ({option, checkbox: option.querySelector("input[type='checkbox']")}))
+          .filter(({option, checkbox}) => checkbox && !option.hidden && !option.classList.contains("d-none"));
+        if (!entries.length) return null;
+        const normalize = value => String(value || "").normalize("NFKC").toLowerCase()
+          .replace(/\u0451/g, "\u0435").match(/[\p{L}\p{N}]+/gu) || [];
+        const indexed = entries.map(entry => ({...entry, words: normalize(entry.option.textContent).join(" ")}));
+        const input = document.createElement("input");
+        input.type = "search";
+        input.className = "form-control form-control-sm mb-2";
+        input.maxLength = 160;
+        input.autocomplete = "off";
+        input.placeholder = "\u041f\u043e\u0438\u0441\u043a \u0443\u0447\u0430\u0441\u0442\u043d\u0438\u043a\u043e\u0432";
+        input.setAttribute("aria-label", input.placeholder);
+        input.setAttribute("data-participant-search", "");
+        const status = document.createElement("div");
+        status.className = "small text-muted mb-2";
+        status.setAttribute("role", "status");
+        status.setAttribute("aria-live", "polite");
+        list.prepend(input, status);
+        trigger.setAttribute("aria-expanded", "false");
+        const refresh = () => {
+          const tokens = normalize(input.value);
+          const eligible = Array.from(tokens.join("")).length >= 3;
+          let matches = 0;
+          indexed.forEach(({option, checkbox, words}) => {
+            const match = eligible && tokens.every(token => words.includes(token));
+            // Selected (including locked) rows never disappear behind the filter.
+            if (match && !checkbox.checked) matches += 1;
+            const visible = checkbox.checked || (match && matches <= 20);
+            option.hidden = !visible;
+            option.classList.toggle("d-none", !visible);
+          });
+          status.textContent = !eligible
+            ? "\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u043c\u0438\u043d\u0438\u043c\u0443\u043c 3 \u0441\u0438\u043c\u0432\u043e\u043b\u0430. \u0412\u044b\u0431\u0440\u0430\u043d\u043d\u044b\u0435 \u0443\u0447\u0430\u0441\u0442\u043d\u0438\u043a\u0438 \u043e\u0441\u0442\u0430\u044e\u0442\u0441\u044f \u0432\u0438\u0434\u0438\u043c\u044b\u043c\u0438."
+            : matches > 20
+              ? "\u041f\u0435\u0440\u0432\u044b\u0435 20 \u0441\u043e\u0432\u043f\u0430\u0434\u0435\u043d\u0438\u0439. \u0423\u0442\u043e\u0447\u043d\u0438\u0442\u0435 \u0437\u0430\u043f\u0440\u043e\u0441."
+              : matches
+                ? "\u041d\u0430\u0439\u0434\u0435\u043d\u043e \u0434\u043b\u044f \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d\u0438\u044f: " + matches
+                : "\u041d\u043e\u0432\u044b\u0445 \u0441\u043e\u0432\u043f\u0430\u0434\u0435\u043d\u0438\u0439 \u043d\u0435\u0442. \u0412\u044b\u0431\u0440\u0430\u043d\u043d\u044b\u0435 \u0443\u0447\u0430\u0441\u0442\u043d\u0438\u043a\u0438 \u043d\u0435 \u0438\u0437\u043c\u0435\u043d\u0435\u043d\u044b.";
+          if (root.classList.contains("multi-select--open")) setDropdownPosition(root);
+        };
+        input.addEventListener("input", refresh);
+        input.addEventListener("keydown", event => {
+          if (event.key === "Enter") event.preventDefault();
+          if (event.key === "ArrowDown") {
+            const first = entries.find(({option, checkbox}) => !option.hidden && !checkbox.disabled);
+            if (first) {event.preventDefault(); first.checkbox.focus();}
+          }
+        });
+        root.addEventListener("keydown", event => {
+          if (event.key !== "Escape" || !root.classList.contains("multi-select--open")) return;
+          event.preventDefault();
+          event.stopPropagation();
+          root.classList.remove("multi-select--open", "multi-select--drop-up");
+          trigger.setAttribute("aria-expanded", "false");
+          trigger.focus();
+        });
+        refresh();
+        return {refresh, focus: () => input.focus()};
+      };
+
       const initMultiSelect = (root) => {
         if (!root || root.dataset.multiSelectReady === "1") return;
         const trigger = root.querySelector("[data-multi-select-trigger]");
         const list = root.querySelector("[data-multi-select-list]");
         if (!trigger || !list) return;
         root.dataset.multiSelectReady = "1";
+        const participantSearch = initParticipantSearch(root, list, trigger);
 
         trigger.addEventListener("click", (event) => {
           event.preventDefault();
           const willOpen = !root.classList.contains("multi-select--open");
           root.classList.toggle("multi-select--open", willOpen);
+          if (participantSearch) trigger.setAttribute("aria-expanded", String(willOpen));
           if (willOpen) {
             setDropdownPosition(root);
+            participantSearch?.focus();
           }
         });
 
         root.addEventListener("change", (event) => {
           if (!event.target.matches("input[type='checkbox']")) return;
           updateLabel(root);
+          participantSearch?.refresh();
         });
 
         document.addEventListener("click", (event) => {
           if (root.contains(event.target)) return;
           root.classList.remove("multi-select--open");
           root.classList.remove("multi-select--drop-up");
+          if (participantSearch) trigger.setAttribute("aria-expanded", "false");
         });
 
         updateLabel(root);
