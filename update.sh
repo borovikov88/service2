@@ -226,14 +226,18 @@ python manage.py collectstatic --noinput
 echo "===== Restarting Passenger ====="
 touch ../tmp/restart.txt
 
-# Deployment is complete. Release both locks before starting the detached
-# requested-call worker so it can safely use the freshly deployed checkout.
+# Deployment is complete. Release both locks before starting detached
+# background workers so they can safely use the freshly deployed checkout.
+flock -u 9 || true
+flock -u 8 || true
+exec 9>&-
+exec 8>&-
+
 if [[ -f scripts/run_call_ai_worker.sh ]]; then
-    flock -u 9 || true
-    flock -u 8 || true
-    exec 9>&-
-    exec 8>&-
     nohup /bin/bash scripts/run_call_ai_worker.sh </dev/null >/dev/null 2>&1 &
+fi
+if [[ -f scripts/run_call_recording_sync.sh ]]; then
+    nohup /bin/bash scripts/run_call_recording_sync.sh 100 </dev/null >/dev/null 2>&1 &
 fi
 
 echo "===== Deployed $EXPECTED_SHA ====="
