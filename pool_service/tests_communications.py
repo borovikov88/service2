@@ -42,6 +42,7 @@ from pool_service.communication_services import conversation_capability
 from pool_service.services.employee_identity_sync import (
     EmployeeIdentitySyncError,
     _read_megafon_accounts,
+    apply_telephony_identity_to_calls,
     auto_link_service2_user,
     map_employee_service2_user,
     map_telephony_identity,
@@ -2404,6 +2405,70 @@ class CommunicationsTests(TestCase):
         with call.recording_file.open("rb") as stored:
             self.assertEqual(stored.read(), payload)
 
+    def test_megafon_recording_download_sends_saved_api_key(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон auth recording",
+            external_id="megafon-auth-recording",
+            recording_allowed_hosts=["records.megapbx.ru"],
+        )
+        channel = CommunicationChannel.objects.create(
+            organization=self.organization,
+            kind=CommunicationChannel.KIND_MEGAFON,
+            name="МегаФон auth recording",
+        )
+        ChannelConnection.objects.create(
+            channel=channel,
+            name="МегаФон auth recording",
+            external_id="megafon-auth-recording",
+            settings={
+                "megafon_api_key_encrypted": encrypt_secret("recording-api-key"),
+            },
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="inner:recording-auth",
+            phone_number="",
+            direction=PhoneCall.DIRECTION_INTERNAL,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+            recording_ref="https://records.megapbx.ru/inner-auth.mp3",
+            recording_status=PhoneCall.RECORDING_PENDING,
+        )
+
+        payload = b"ID3" + b"z" * 64
+
+        class FakeResponse(io.BytesIO):
+            def __init__(self, data):
+                super().__init__(data)
+                self.headers = {
+                    "Content-Type": "audio/mpeg",
+                    "Content-Length": str(len(data)),
+                }
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.close()
+                return False
+
+        opener = MagicMock()
+        opener.open.return_value = FakeResponse(payload)
+        with patch(
+            "pool_service.communication_recordings.build_opener",
+            return_value=opener,
+        ):
+            self.assertTrue(download_call_recording(call.pk))
+
+        request = opener.open.call_args.args[0]
+        headers = {
+            key.lower(): value
+            for key, value in request.header_items()
+        }
+        self.assertEqual(headers["x-api-key"], "recording-api-key")
+
     def test_recording_downloader_rejects_html_instead_of_storing_login_page(self):
         telephony = TelephonyConnection.objects.create(
             organization=self.organization,
@@ -3653,6 +3718,84 @@ class CommunicationsTests(TestCase):
         self.assertTrue(
             PhoneCall.objects.filter(pk=external.pk).exists()
         )
+
+    @patch(
+        "pool_service.management.commands.sync_call_recordings.process_call_commitment_controls",
+        return_value={
+            "checked": 0,
+            "due_reminders": 0,
+            "escalations": 0,
+            "without_deadline": 0,
+        },
+    )
+    @patch(
+        "pool_service.management.commands.sync_call_recordings.sync_megafon_internal_calls"
+    )
+    def test_recording_sync_pulls_internal_history_first(
+        self,
+        sync_internal,
+        _commitment_control,
+    ):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон scheduled inner",
+            external_id="megafon-scheduled-inner",
+        )
+        sync_internal.return_value = {
+            "checked": 2,
+            "created": 2,
+            "updated": 0,
+            "synced_through": timezone.now(),
+        }
+
+        call_command("sync_call_recordings", "--limit", "10")
+
+        sync_internal.assert_called_once_with(telephony)
+
+    def test_telephony_identity_backfills_internal_peer_participant(self):
+        telephony = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="МегаФон peer backfill",
+            external_id="megafon-peer-backfill",
+        )
+        employee = Employee.objects.create(
+            organization=self.organization,
+            display_name="Сотрудник для peer",
+            is_active=True,
+            user=self.other,
+        )
+        identity = TelephonyEmployeeIdentity.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            employee=employee,
+            raw_name="Сотрудник для peer",
+            normalized_name="сотрудник для peer",
+            extension="777",
+            external_user="peer-login",
+            is_active=True,
+            status=TelephonyEmployeeIdentity.STATUS_MANUALLY_MATCHED,
+            match_method=TelephonyEmployeeIdentity.MATCH_MANUAL,
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=telephony,
+            external_id="inner:peer-backfill",
+            provider_user="worker",
+            provider_extension="601",
+            peer_provider_user="peer-login",
+            peer_provider_extension="777",
+            phone_number="",
+            direction=PhoneCall.DIRECTION_INTERNAL,
+            started_at=timezone.now(),
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+
+        updated = apply_telephony_identity_to_calls(identity)
+
+        self.assertEqual(updated, 1)
+        call.refresh_from_db()
+        self.assertEqual(call.peer_employee_profile, employee)
+        self.assertEqual(call.peer_employee, self.other)
 
     def test_megafon_history_replay_preserves_assigned_client(self):
         telephony = TelephonyConnection.objects.create(
