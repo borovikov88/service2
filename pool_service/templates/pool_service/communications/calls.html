@@ -177,6 +177,7 @@
         <option value="">Все</option>
         <option value="in" {% if request.GET.direction == 'in' %}selected{% endif %}>Входящие</option>
         <option value="out" {% if request.GET.direction == 'out' %}selected{% endif %}>Исходящие</option>
+        <option value="internal" {% if request.GET.direction == 'internal' %}selected{% endif %}>Внутренние</option>
       </select>
     </div>
     {% endif %}
@@ -296,8 +297,26 @@
               {% endif %}
             {% elif call.employee %}
               {{ call.employee.get_full_name|default:call.employee.username }}
+            {% elif call.provider_user or call.provider_extension %}
+              <span class="text-muted">{{ call.provider_user|default:call.provider_extension }}</span>
             {% else %}
               <span class="text-muted">Не сопоставлен</span>
+            {% endif %}
+            {% if call.direction == 'internal' %}
+              <br><small class="text-muted">
+                <i class="bi bi-arrow-right me-1"></i>
+                {% if call.peer_employee_profile %}
+                  {{ call.peer_employee_profile.display_name }}
+                {% elif call.peer_employee %}
+                  {{ call.peer_employee.get_full_name|default:call.peer_employee.username }}
+                {% elif call.contact_name %}
+                  {{ call.contact_name }}
+                {% elif call.peer_provider_user or call.peer_provider_extension %}
+                  {{ call.peer_provider_user|default:call.peer_provider_extension }}
+                {% else %}
+                  Не сопоставлен
+                {% endif %}
+              </small>
             {% endif %}
           </td>
           {% endif %}
@@ -314,18 +333,29 @@
                 <br><small class="text-muted">{{ call.recording_filename }}</small>
               {% endif %}
             {% else %}
-              {% if call.phone_number %}{{ call.phone_display }}{% else %}<span class="text-muted">—</span>{% endif %}
-              {% if call.resolved_client %}
-                <br><small><a class="text-decoration-none" href="{% url 'client_detail' call.resolved_client.id %}">{{ call.resolved_client.name }}</a></small>
-              {% elif call.ambiguous_clients %}
-                <div class="small mt-1">
-                  <span class="text-warning">Несколько клиентов:</span>
-                  {% for matched_client in call.ambiguous_clients %}
-                    <a class="text-decoration-none" href="{% url 'client_detail' matched_client.id %}">{{ matched_client.name }}</a>{% if not forloop.last %}, {% endif %}
-                  {% endfor %}
-                </div>
-              {% elif call.contact_name %}
-                <br><small class="text-muted">{{ call.contact_name }}</small>
+              {% if call.direction == 'internal' %}
+                <span>Внутренний звонок</span>
+                {% if call.provider_extension or call.peer_provider_extension %}
+                  <br><small class="text-muted">
+                    {{ call.provider_extension|default:call.provider_user }}
+                    <i class="bi bi-arrow-right mx-1"></i>
+                    {{ call.peer_provider_extension|default:call.peer_provider_user }}
+                  </small>
+                {% endif %}
+              {% else %}
+                {% if call.phone_number %}{{ call.phone_display }}{% else %}<span class="text-muted">—</span>{% endif %}
+                {% if call.resolved_client %}
+                  <br><small><a class="text-decoration-none" href="{% url 'client_detail' call.resolved_client.id %}">{{ call.resolved_client.name }}</a></small>
+                {% elif call.ambiguous_clients %}
+                  <div class="small mt-1">
+                    <span class="text-warning">Несколько клиентов:</span>
+                    {% for matched_client in call.ambiguous_clients %}
+                      <a class="text-decoration-none" href="{% url 'client_detail' matched_client.id %}">{{ matched_client.name }}</a>{% if not forloop.last %}, {% endif %}
+                    {% endfor %}
+                  </div>
+                {% elif call.contact_name %}
+                  <br><small class="text-muted">{{ call.contact_name }}</small>
+                {% endif %}
               {% endif %}
             {% endif %}
           </td>
