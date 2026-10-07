@@ -264,9 +264,17 @@ This simulates future rules against history; it does not request processing.
         )
         decision = decide_call(facts, rules, private, simulation=True)
         if decision.reason == "personal":
-            # Count only the viewing owner's exclusions; no row, ID, date,
-            # phone, label or other owner's private-call volume is returned.
-            if private.get(user.pk, frozenset()) & facts.counterpart_numbers and user.pk in participants:
+            # Count only exclusions that match the viewing owner's actual
+            # counterpart. Never use the aggregate internal-call number set:
+            # it can include the viewer's own number and leak that a peer's
+            # private rule hid the row.
+            viewer_counterparts = dict(
+                facts.counterpart_numbers_by_participant
+            ).get(user.pk, frozenset())
+            if (
+                user.pk in participants
+                and private.get(user.pk, frozenset()) & viewer_counterparts
+            ):
                 private_count += 1
             continue
         if decision.selected:
