@@ -1,0 +1,41 @@
+name: Verify Aqualine22 water calculator
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/aqualine22-calculator.yml
+      - .github/scripts/aqualine22_*.py
+      - .github/tests/test_aqualine22_publication.py
+      - tools/aqualine22-calculator/**
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/aqualine22-calculator.yml
+      - .github/scripts/aqualine22_*.py
+      - .github/tests/test_aqualine22_publication.py
+      - tools/aqualine22-calculator/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aqualine22-water-calculator
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify water calculator and publication boundaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify water selection scenarios
+        working-directory: tools/aqualine22-calculator
+        run: node --test tests/engine.test.mjs
+      - name: Verify website identity and safe file publication
+        run: python3 -m unittest discover -s .github/tests -p test_aqualine22_publication.py -v
