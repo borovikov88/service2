@@ -46,7 +46,7 @@ def seed_existing_pending(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-    dependencies = [("pool_service", "0132_clientownedobject")]
+    dependencies = [("pool_service", "0133_avito_api_throttle")]
 
     operations = [
         migrations.CreateModel(
