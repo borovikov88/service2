@@ -10,7 +10,9 @@ from datetime import timedelta
 from django.db import transaction
 from django.utils import timezone
 
-from pool_service.models import ServiceTask
+from django.contrib.auth.models import User
+
+from pool_service.models import Profile, ServiceTask
 from pool_service.operations_models import OperationsPushQueue
 from pool_service.services.call_privacy import task_source_is_private
 
@@ -114,6 +116,73 @@ def process_queue(*, limit=100, candidate_limit=500):
                 entry.delete()
                 continue
 
+            # Retire every delivery for a recipient who has explicitly turned
+            # push off. Doing this before round-robin selection prevents a
+            # second pending marker for the same user from keeping the task in
+            # the queue for another scheduler pass.
+            changed = False
+            recipient_states = {}
+            assignment = payload.get(operations.ASSIGNMENT_DELIVERY_PAYLOAD_KEY)
+            deliveries = payload.get(
+                operations.EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY
+            )
+            for marker, _counter, _retry, argument in pending:
+                if marker == "a":
+                    delivery = assignment if isinstance(assignment, dict) else {}
+                    recipient_id = delivery.get("responsible_user_id") or task.primary_responsible_id
+                else:
+                    delivery = deliveries.get(argument) if isinstance(deliveries, dict) else None
+                    recipient_id = delivery.get("employee_user_id") if isinstance(delivery, dict) else None
+                if not recipient_id:
+                    continue
+                if recipient_id not in recipient_states:
+                    recipient = (
+                        User.objects.select_for_update()
+                        .filter(pk=recipient_id, is_active=True)
+                        .first()
+                    )
+                    if recipient is None:
+                        recipient_states[recipient_id] = "blocked_not_authorized"
+                    else:
+                        profile = (
+                            Profile.objects.select_for_update()
+                            .filter(user_id=recipient_id)
+                            .only("push_notifications_enabled")
+                            .first()
+                        )
+                        recipient_states[recipient_id] = (
+                            None if profile is None or profile.push_notifications_enabled
+                            else "blocked_push_disabled"
+                        )
+                result_code = recipient_states[recipient_id]
+                if result_code is None:
+                    continue
+                terminal = dict(delivery)
+                terminal["push_delivery_result"] = result_code
+                if marker == "a":
+                    assignment = terminal
+                    payload[operations.ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = terminal
+                else:
+                    deliveries = dict(deliveries)
+                    deliveries[argument] = terminal
+                    payload[operations.EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY] = deliveries
+                changed = True
+            if changed:
+                operations._save_push_payload(task, payload)
+                if not operations._payload_has_pending_pushes(payload):
+                    continue
+
+            pending = [
+                item for item in pending
+                if operations._push_delivery_is_pending(
+                    assignment if item[0] == "a"
+                    else (deliveries or {}).get(item[3])
+                )
+            ]
+            if not pending:
+                entry.delete()
+                continue
+
             pending.sort(key=lambda item: item[0])
             ordered = [item for item in pending if item[0] > entry.last_marker]
             ordered.extend(item for item in pending if item[0] <= entry.last_marker)
@@ -150,4 +219,3 @@ def process_queue(*, limit=100, candidate_limit=500):
         )
 
     return result
-

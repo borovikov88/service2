@@ -3956,6 +3956,11 @@ def crm_tasks(request):
         ).distinct()
 
     visible_tasks = list(task_qs)
+    hidden_private_task_ids = private_source_task_ids(visible_tasks)
+    if hidden_private_task_ids:
+        visible_tasks = [
+            task for task in visible_tasks if task.pk not in hidden_private_task_ids
+        ]
     if q:
         q_lower = q.lower()
         filtered_tasks = []
@@ -7667,6 +7672,8 @@ def task_edit(request, task_id):
 
     task_queryset = ServiceTask.objects.select_for_update() if request.method == "POST" else ServiceTask.objects
     task = get_object_or_404(task_queryset, pk=task_id)
+    if task_source_is_private(task):
+        raise Http404
     if not _task_can_view(task, request.user):
         return HttpResponseForbidden()
     if task.is_archived:
