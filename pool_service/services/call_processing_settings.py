@@ -11,7 +11,12 @@ from django.utils import timezone
 
 from pool_service.models import Organization, OrganizationAccess
 from pool_service.communication_models import PhoneCall, TelephonyEmployeeIdentity
-from pool_service.call_processing_models import CallProcessingRule, CallPrivateNumber, CallProcessingRuleAudit
+from pool_service.call_processing_models import (
+    CallProcessingBudget,
+    CallProcessingRule,
+    CallPrivateNumber,
+    CallProcessingRuleAudit,
+)
 from pool_service.services.call_processing_policy import (
     MANUAL, MODES, MAX_NUMBERS, CallFacts, Rule, decide_call, parse_numbers, phone_key,
 )
@@ -109,6 +114,41 @@ def save_rule(*, user, organization, employee_id, mode, include_staff, numbers_t
         "include_staff": include_staff, "number_count": len(numbers),
     })
     return rule
+
+
+@transaction.atomic
+def save_budget(*, user, organization, monthly_limit_usd, expected_revision):
+    actor = _lock_owner(user, organization)
+    budget = CallProcessingBudget.objects.select_for_update().filter(
+        organization=organization,
+    ).first()
+    revision = budget.revision if budget else 0
+    if isinstance(expected_revision, bool) or expected_revision != revision:
+        raise ValidationError("Лимит уже изменён. Обновите страницу перед сохранением.")
+    if monthly_limit_usd is not None and monthly_limit_usd <= 0:
+        raise ValidationError("Лимит должен быть больше нуля или оставлен пустым.")
+    if budget is None:
+        budget = CallProcessingBudget(organization=organization)
+    budget.monthly_limit_usd = monthly_limit_usd
+    budget.revision = revision + 1
+    budget.changed_by = actor
+    budget.full_clean()
+    budget.save()
+    _audit(
+        organization,
+        actor,
+        actor.pk,
+        "budget_saved",
+        {
+            "revision": budget.revision,
+            "monthly_limit_usd": (
+                str(budget.monthly_limit_usd)
+                if budget.monthly_limit_usd is not None
+                else None
+            ),
+        },
+    )
+    return budget
 
 
 @transaction.atomic
