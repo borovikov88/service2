@@ -118,3 +118,20 @@ def visible_calls(calls):
     calls = list(calls)
     hidden = private_call_ids(calls)
     return [call for call in calls if call.pk not in hidden]
+
+
+def task_source_is_private(task):
+    """Return True when a task derives from an explicitly private call."""
+    payload = task.payload_json if isinstance(task.payload_json, dict) else {}
+    raw_call_id = payload.get("source_call_id")
+    try:
+        call_id = int(raw_call_id)
+    except (TypeError, ValueError):
+        return False
+    if call_id <= 0:
+        return False
+    call = PhoneCall.objects.filter(
+        pk=call_id,
+        organization_id=task.organization_id,
+    ).first()
+    return is_private_call(call) if call else False
