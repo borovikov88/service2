@@ -180,3 +180,37 @@ def private_source_task_ids(tasks):
         for task_id, (organization_id, call_id) in task_calls.items()
         if call_id in hidden_calls and call_orgs.get(call_id) == organization_id
     }
+
+
+def visible_calls_page(queryset, *, page_size=50, chunk_size=200, count_all=True):
+    """Return a bounded visible page and optional exact visible count.
+
+    The queryset is streamed in fixed chunks. Exact counters may scan the
+    matching history, but never materialize the whole archive in Python.
+    """
+    page_size = max(0, int(page_size))
+    chunk_size = max(1, min(int(chunk_size), 500))
+    page = []
+    visible_count = 0
+    buffer = []
+
+    def consume(items):
+        nonlocal visible_count
+        hidden = private_call_ids(items)
+        for call in items:
+            if call.pk in hidden:
+                continue
+            visible_count += 1
+            if len(page) < page_size:
+                page.append(call)
+
+    for call in queryset.iterator(chunk_size=chunk_size):
+        buffer.append(call)
+        if len(buffer) >= chunk_size:
+            consume(buffer)
+            buffer = []
+            if not count_all and len(page) >= page_size:
+                return page, None
+    if buffer:
+        consume(buffer)
+    return page, visible_count if count_all else None
