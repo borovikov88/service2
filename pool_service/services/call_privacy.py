@@ -39,6 +39,22 @@ def _counterpart_keys(call, usernames):
         values = frozenset({key}) if key else frozenset()
         return {uid: values for uid in participants}
 
+    if len(participants) == 1:
+        owner_id = participants[0]
+        if call.employee_id == owner_id:
+            values = {
+                _key(call.peer_provider_user),
+                _key(call.peer_provider_extension),
+            }
+        else:
+            values = {
+                _key(call.provider_user),
+                _key(call.provider_extension),
+            }
+        return {
+            owner_id: frozenset(value for value in values if value),
+        }
+
     if len(participants) != 2:
         return {uid: frozenset() for uid in participants}
 
