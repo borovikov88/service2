@@ -1,4 +1,4 @@
-"""Cron entrypoint. Only due, explicitly enabled owner subscriptions are read."""
+"""Cron entrypoint. Only due, explicitly enabled self-subscriptions are read."""
 import time
 from collections import Counter
 from django.core.management.base import BaseCommand, CommandError
@@ -49,4 +49,4 @@ class Command(BaseCommand):
             f"{key}={counts[key]}" for key in ("baseline", "success", "failed", "skipped", "notifications")
         ))
         if counts["failed"]:
-            raise CommandError("Avito status scan incomplete; inspect owner-only monitor state in Service2.")
+            raise CommandError("Avito status scan incomplete; inspect subscriber-only monitor state in Service2.")
