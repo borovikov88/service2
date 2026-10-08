@@ -1,5 +1,6 @@
 """Activated call rules dispatch only new, verified, audio-ready calls."""
 from datetime import timedelta
+from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
@@ -106,7 +107,7 @@ class CallAutoDispatchTests(TestCase):
         budget = save_budget(
             user=self.owner,
             organization=self.org,
-            monthly_limit_usd="10.00",
+            monthly_limit_usd=Decimal("10.00"),
             expected_revision=0,
         )
         self.assertEqual(str(budget.monthly_limit_usd), "10.00")
@@ -149,7 +150,7 @@ class CallAutoDispatchTests(TestCase):
         save_budget(
             user=self.owner,
             organization=self.org,
-            monthly_limit_usd="10.00",
+            monthly_limit_usd=Decimal("10.00"),
             expected_revision=0,
         )
         self.rule = activate_rule(
@@ -178,7 +179,7 @@ class CallAutoDispatchTests(TestCase):
         save_budget(
             user=self.owner,
             organization=self.org,
-            monthly_limit_usd="10.00",
+            monthly_limit_usd=Decimal("10.00"),
             expected_revision=0,
         )
         self.rule = activate_rule(
