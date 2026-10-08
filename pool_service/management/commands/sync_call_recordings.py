@@ -8,6 +8,7 @@ from django.utils import timezone
 from pool_service.communication_models import PhoneCall, TelephonyConnection
 from pool_service.communication_recordings import download_call_recording
 from pool_service.services.call_commitment_control import process_call_commitment_controls
+from pool_service.services.call_processing_dispatch import recover_auto_dispatch
 from pool_service.operations_mcp_views import process_pending_operations_pushes
 from pool_service.services.megafon_internal_calls import (
     MegafonInternalCallSyncError,
@@ -116,6 +117,7 @@ class Command(BaseCommand):
                 else:
                     failed += 1
 
+        auto_dispatch = recover_auto_dispatch(limit=100)
         control = process_call_commitment_controls()
         operations_push = process_pending_operations_pushes(limit=100)
 
@@ -136,6 +138,12 @@ class Command(BaseCommand):
             self.style.SUCCESS(
                 f"Call recording sync: checked={len(ids)} saved={saved} "
                 f"failed={failed} skipped={skipped}"
+            )
+        )
+        self.stdout.write(
+            self.style.SUCCESS(
+                "Call auto-dispatch recovery: "
+                f"checked={auto_dispatch['checked']} queued={auto_dispatch['queued']}"
             )
         )
         self.stdout.write(
