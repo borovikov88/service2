@@ -18,6 +18,7 @@
         <div class="avito-metric"><strong>{{ workspace.calls.data.totals.new|default_if_none:"—" }}</strong><span>Новых звонков</span></div>
         <div class="avito-metric"><strong>{{ workspace.calls.data.totals.new_answered|default_if_none:"—" }}</strong><span>Отвеченных новых звонков</span></div>
       </div>
+      {% if workspace.calls.data.incomplete %}<div class="avito-api-note mb-3">Авито не передал часть дат или счётчиков. Неизвестные значения и зависящие от них итоги показаны как «—».</div>{% endif %}
       <p class="small text-muted mb-3">Показатели — сумма полученных счётчиков, а не число уникальных людей. «—» означает, что Авито не передал данные для расчёта.</p>
       {% if workspace.calls.data.rows %}
         <div class="table-responsive avito-statistics-table"><table class="table avito-listings">

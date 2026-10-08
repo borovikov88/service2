@@ -34,7 +34,7 @@
             {% for metric in row.metrics|slice:":4" %}
               <div class="avito-metric">
                 {% if metric.value != None %}<strong>{{ metric.value }}{% if metric.unit %}<small> {{ metric.unit }}</small>{% endif %}</strong>{% else %}<strong class="avito-value-unavailable">Нет данных</strong>{% endif %}
-                <span>{{ metric.label }}</span>
+                <span>{{ metric.label }}</span>{% if metric.note %}<span class="small text-muted">{{ metric.note }}</span>{% endif %}
               </div>
             {% endfor %}
           </div>
@@ -45,7 +45,7 @@
                 {% for metric in row.metrics|slice:"4:" %}
                   <div class="avito-metric">
                     {% if metric.value != None %}<strong>{{ metric.value }}{% if metric.unit %}<small> {{ metric.unit }}</small>{% endif %}</strong>{% else %}<strong class="avito-value-unavailable">Нет данных</strong>{% endif %}
-                    <span>{{ metric.label }}</span>
+                    <span>{{ metric.label }}</span>{% if metric.note %}<span class="small text-muted">{{ metric.note }}</span>{% endif %}
                   </div>
                 {% endfor %}
               </div>
@@ -61,7 +61,7 @@
           </table>
         </div>
       {% endif %}
-      <div class="small text-muted mt-3">«Нет данных» означает, что Авито не передал показатель. Нулевые значения показаны отдельно. Показатели с единицей «₽» приведены в рублях, конверсии — в процентах. Для остальных значений единицы указаны отдельно.</div>
+      <div class="small text-muted mt-3">«Нет данных» означает отсутствующий показатель или неподтверждённую единицу API. Отношения «контакты / просмотры» и «просмотры / показы» рассчитаны Service2 из счётчиков одной группы и показаны в процентах. Это не оценка уникальных людей за весь период. Нулевой или отсутствующий знаменатель не даёт процента. Суммы с единицей «₽» приведены в рублях; прочие неподтверждённые конверсии и средние цены скрыты.</div>
     {% elif workspace.statistics.data or workspace.statistics.status == 'ok' %}
       <div class="avito-empty"><i class="bi bi-bar-chart" aria-hidden="true"></i><strong>За этот период строки статистики не получены</strong><p>Авито вернул пустой отчёт. Это не заменяет отсутствующие показатели нулями.</p></div>
     {% elif workspace.statistics.status %}

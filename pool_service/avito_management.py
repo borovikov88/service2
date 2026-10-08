@@ -55,6 +55,14 @@ SAFE_ERRORS = {
     "provider_cooldown": "Действует ограничение частоты запросов Авито.",
     "provider_item_unavailable": "Объявление не найдено или принадлежит другому аккаунту.",
     "provider_messages_invalid_response": "Авито вернул неожиданный формат ответа.",
+    "provider_calls_response_invalid": "Авито не вернул ожидаемый список статистики звонков.",
+    "provider_calls_item_invalid": "Авито вернул строку звонков без корректного ID объявления.",
+    "provider_calls_item_out_of_scope": "Авито вернул звонки по объявлению вне запрошенного списка.",
+    "provider_calls_days_invalid": "Авито вернул неверный формат списка дней в статистике звонков.",
+    "provider_calls_day_invalid": "Авито вернул неверный формат строки дня в статистике звонков.",
+    "provider_calls_date_invalid": "Авито вернул некорректную дату статистики звонков.",
+    "provider_calls_date_out_of_scope": "Авито вернул звонки за пределами запрошенного периода.",
+    "provider_calls_counter_invalid": "Авито вернул некорректный счётчик звонков.",
     "provider_data_invalid": "Авито вернул неожиданный формат данных.",
     "provider_account_mismatch": "ID аккаунта по ключам отличается от подключения. Проверьте настройки.",
     "provider_credentials_missing": "Ключи не сохранены.",
@@ -225,31 +233,9 @@ def avito_dashboard(request):
         AvitoCredential.objects.filter(connection_id__in=[item.pk for item in connections])
         .values_list("connection_id", flat=True)
     )
-    accounts = []
-    checked_count = 0
-    for connection in connections:
-        data = connection.settings if isinstance(connection.settings, dict) else {}
-        checked_at = data.get("avito_api_checked_at") or ""
-        if checked_at:
-            checked_count += 1
-        # Older/malformed metadata must not break the dashboard or become HTML.
-        results = data.get("avito_api_results", [])
-        if not isinstance(results, list):
-            results = []
-        accounts.append({
-            "connection": connection,
-            "has_credentials": connection.pk in configured_ids,
-            "checked_at": checked_at,
-            "results": [
-                row for row in results
-                if isinstance(row, dict) and row.get("key") in dict(CHECKS)
-            ][:len(CHECKS)],
-            "actual_id": data.get("avito_api_account_id", ""),
-            "webhook_status": data.get("avito_webhook_status", "not_connected"),
-            "webhook_received": data.get("avito_webhook_last_received_at", ""),
-            "webhook_error": data.get("avito_webhook_error", ""),
-            "pull_error": data.get("avito_pull_last_error", ""),
-        })
+    accounts = [avito_workspace.diagnostic_account(connection, has_credentials=connection.pk in configured_ids)
+                for connection in connections]
+    checked_count = sum(bool(account["checked_at"]) for account in accounts)
     requested_id = request.GET.get("account", "")
     selected = next((item for item in accounts if str(item["connection"].pk) == requested_id), None)
     if requested_id and selected is None:
@@ -263,11 +249,33 @@ def avito_dashboard(request):
         if isinstance(saved, dict) and saved.get("account_id") == str(connection.external_id):
             workspace = {key: value for key, value in saved.get("sections", {}).items()
                          if key in avito_workspace.SECTIONS and isinstance(value, dict)} if isinstance(saved.get("sections"), dict) else {}
+    for key, normalizer in (("item_detail", avito_workspace.item_detail_for_display), ("prices", avito_workspace.prices_for_display)):
+        if key in workspace:
+            workspace[key] = {**workspace[key], "data": normalizer(workspace[key].get("data"))}
+    if "statistics" in workspace:
+        workspace["statistics"] = {**workspace["statistics"], "data": avito_workspace.statistics_for_display(workspace["statistics"].get("data"))}
+    items_data = workspace.get("items", {}).get("data", {})
+    rows = items_data.get("rows", []) if isinstance(items_data, dict) else []
+    listed_ids = {avito_workspace._identifier(row.get("id")) for row in rows if isinstance(row, dict)} if isinstance(rows, list) else set()
+    known_ids = set(listed_ids)
+    fallback_item = ""
+    for key in ("item_detail", "prices"):
+        state = workspace.get(key, {})
+        data = state.get("data", {})
+        data_id = avito_workspace._identifier(data.get("item_id")) if isinstance(data, dict) else ""
+        requested_item = avito_workspace._identifier(state.get("requested_item_id"))
+        known_ids.update((data_id, requested_item))
+        fallback_item = fallback_item or requested_item or data_id
+    requested_item = avito_workspace._identifier(request.GET.get("item_id"))
+    expanded_item_id = requested_item if requested_item and requested_item in known_ids else fallback_item
+    detail_in_items = bool(expanded_item_id and expanded_item_id in listed_ids)
     local_analytics = _local_analytics(request, selected["connection"] if selected else None)
     return render(request, "pool_service/avito/dashboard.html", {
         "active_tab": "avito",
         "selected": selected,
         "workspace": workspace,
+        "expanded_item_id": expanded_item_id,
+        "detail_in_items": detail_in_items,
         "local_analytics": local_analytics,
         "stats_defaults": _statistics_defaults(),
         "accounts": accounts,
@@ -300,7 +308,7 @@ def avito_check_api(request, connection_id):
         locked.settings = data
         locked.save(update_fields=["settings"])
     messages.info(request, "Проверка API Авито завершена. Результаты приведены ниже.")
-    return redirect("avito_dashboard")
+    return redirect(reverse("communication_connection_edit", args=[connection.pk]) + "#avito-api-diagnostics")
 
 
 class WorkspaceRefreshForm(forms.Form):
@@ -425,6 +433,9 @@ def avito_refresh_data(request, connection_id):
     if section in {"item_detail", "prices"} and form.cleaned_data["item_id"] not in item_ids:
         messages.error(request, "Выберите объявление из текущей загруженной страницы аккаунта.")
         return redirect(destination)
+    if section in {"item_detail", "prices"}:
+        redirect_params["item_id"] = form.cleaned_data["item_id"]
+        destination = reverse("avito_dashboard") + "?" + urlencode(redirect_params) + f"#avito-item-{form.cleaned_data['item_id']}"
     if section == "calls" and not item_ids:
         messages.error(request, "Сначала загрузите страницу объявлений для статистики звонков.")
         return redirect(destination)
@@ -497,6 +508,8 @@ def avito_refresh_data(request, connection_id):
                     sections = saved.get("sections")
                     sections = dict(sections) if isinstance(sections, dict) else {}
                     for key, update in updates.items():
+                        if key in {"item_detail", "prices"}:
+                            update = {**update, "requested_item_id": form.cleaned_data["item_id"]}
                         previous = sections.get(key)
                         previous = previous if isinstance(previous, dict) else {}
                         if update.get("status") != "ok":

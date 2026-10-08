@@ -4,14 +4,14 @@
     <div>{{ state.detail|default:"Данные Авито сейчас недоступны. Повторите запрос позже." }}{% if state.code %} <span class="small">({{ state.code }})</span>{% endif %}</div>
   </div>
 {% endif %}
-{% if state.stale and state.success_at %}
+{% if state.stale and state.success_at and not hide_saved %}
   <div class="avito-section-notice avito-section-notice--stale" role="status">
     <i class="bi bi-clock-history me-1" aria-hidden="true"></i>Показаны сохранённые данные. Они могут быть устаревшими.
   </div>
 {% endif %}
-{% if state.success_at %}
-  <div class="avito-freshness">Данные получены: <time datetime="{{ state.success_at }}">{{ state.success_at }}</time></div>
+{% if state.success_at and not hide_saved %}
+  <div class="avito-freshness">Данные получены: <time datetime="{{ state.success_at }}" data-avito-time>{{ state.success_at }}</time></div>
 {% endif %}
 {% if state.status and state.status != 'ok' and state.checked_at %}
-  <div class="avito-freshness">Последняя попытка: <time datetime="{{ state.checked_at }}">{{ state.checked_at }}</time></div>
+  <div class="avito-freshness">Последняя попытка: <time datetime="{{ state.checked_at }}" data-avito-time>{{ state.checked_at }}</time></div>
 {% endif %}

@@ -20,6 +20,7 @@ from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequ
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_POST
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.debug import sensitive_post_parameters
@@ -1483,6 +1484,7 @@ def communication_connection_create(request, kind):
 
 @login_required
 @sensitive_post_parameters("client_id", "client_secret")
+@never_cache
 @transaction.atomic
 def communication_connection_edit(request, connection_id):
     organization = _context(request, "can_manage_channels")
@@ -1547,6 +1549,15 @@ def communication_connection_edit(request, connection_id):
             messages.success(request, "Настройки подключения сохранены.")
             return redirect("communications_channels")
 
+    avito_credentials_configured = (
+        kind == CommunicationChannel.KIND_AVITO
+        and AvitoCredential.objects.filter(connection=connection).exists()
+    )
+    avito_diagnostic_accounts = []
+    if kind == CommunicationChannel.KIND_AVITO:
+        from pool_service.avito_workspace import diagnostic_account
+        avito_diagnostic_accounts = [diagnostic_account(connection, has_credentials=avito_credentials_configured)]
+
     return render(
         request,
         "pool_service/communications/connection_form.html",
@@ -1557,10 +1568,9 @@ def communication_connection_edit(request, connection_id):
             "provider_name": connection.channel.get_kind_display(),
             "editing": True,
             "connection": connection,
-            "avito_credentials_configured": (
-                kind == CommunicationChannel.KIND_AVITO
-                and AvitoCredential.objects.filter(connection=connection).exists()
-            ),
+            "avito_credentials_configured": avito_credentials_configured,
+            "avito_diagnostic_accounts": avito_diagnostic_accounts,
+            "avito_timezone": getattr(settings, "COMMUNICATION_TIME_ZONE", "UTC"),
         },
     )
 

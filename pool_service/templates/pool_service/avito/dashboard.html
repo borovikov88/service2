@@ -2,8 +2,8 @@
 {% load static %}
 {% block title %}Авито — Управление{% endblock %}
 {% block extra_head %}
-<link rel="stylesheet" href="{% static 'assets/css/avito-dashboard.css' %}?v=2">
-<script src="{% static 'assets/js/avito-dashboard.js' %}?v=1" defer></script>
+<link rel="stylesheet" href="{% static 'assets/css/avito-dashboard.css' %}?v=3">
+<script src="{% static 'assets/js/avito-dashboard.js' %}?v=2" defer></script>
 {% endblock %}
 {% block content %}
 <div class="avito-admin" data-avito-dashboard data-avito-timezone="{{ local_analytics.timezone }}">
@@ -15,7 +15,7 @@
     </div>
     <div class="d-flex flex-wrap gap-2">
       {% if local_analytics.available %}<a class="btn btn-outline-secondary" href="{% url 'communications_conversations' %}"><i class="bi bi-chat-dots me-1" aria-hidden="true"></i>Все диалоги</a>{% endif %}
-      <a class="btn btn-outline-secondary" href="{% url 'communications_channels' %}"><i class="bi bi-gear me-1" aria-hidden="true"></i>Подключения</a>
+      {% if selected %}<a class="btn btn-outline-secondary" href="{% url 'communication_connection_edit' selected.connection.pk %}"><i class="bi bi-gear me-1" aria-hidden="true"></i>Настройки подключения</a>{% else %}<a class="btn btn-outline-secondary" href="{% url 'communications_channels' %}">Подключения</a>{% endif %}
     </div>
   </div>
   <div class="visually-hidden" role="status" aria-live="polite" data-avito-progress></div>
@@ -46,7 +46,7 @@
     </div>
     <div class="avito-readonly-note">
       <i class="bi bi-shield-check" aria-hidden="true"></i>
-      <span>Только чтение из Авито. Объявления и платные услуги здесь не изменяются. Открытие страницы не запускает запросы к API.</span>
+      <span>Только чтение из Авито. Объявления и платные услуги здесь не изменяются. Время: {{ local_analytics.timezone }}.</span>
     </div>
     {% if not selected.has_credentials %}
       <div class="alert alert-warning d-flex flex-wrap align-items-center justify-content-between gap-2" role="status">
@@ -55,7 +55,7 @@
       </div>
     {% endif %}
 
-    <div class="row g-3 mb-4">
+    <div class="row g-3 mb-3 avito-top-cards">
       <div class="col-md-6 col-xl-4">
         <section class="avito-panel" aria-labelledby="avito-profile-heading">
           <div class="avito-panel__header">
@@ -121,14 +121,16 @@
           <div class="avito-panel__body">
             {% include 'pool_service/avito/_section_state.html' with state=workspace.autoload %}
             {% if workspace.autoload.data %}
-              <p class="small text-muted mb-2">Последний полученный отчёт</p>
-              <dl class="avito-autoload-details">
+              <div class="small mb-1"><strong>{{ workspace.autoload.data.status|default:"Статус не указан" }}</strong>{% if workspace.autoload.data.id %} · Отчёт {{ workspace.autoload.data.id }}{% endif %}</div>
+              <details><summary class="avito-details-summary">Сроки и результаты загрузки</summary>
+              <dl class="avito-autoload-details mt-2">
                 <dt>ID отчёта</dt><dd>{{ workspace.autoload.data.id|default:"Не указан" }}</dd>
                 <dt>Статус</dt><dd>{{ workspace.autoload.data.status|default:"Не указан" }}</dd>
-                <dt>Начало</dt><dd>{{ workspace.autoload.data.started_at|default:"Не указано" }}</dd>
-                <dt>Завершение</dt><dd>{{ workspace.autoload.data.finished_at|default:"Не указано" }}</dd>
+                <dt>Начало</dt><dd>{% if workspace.autoload.data.started_at %}<time datetime="{{ workspace.autoload.data.started_at }}" data-avito-time>{{ workspace.autoload.data.started_at }}</time>{% else %}Не указано{% endif %}</dd>
+                <dt>Завершение</dt><dd>{% if workspace.autoload.data.finished_at %}<time datetime="{{ workspace.autoload.data.finished_at }}" data-avito-time>{{ workspace.autoload.data.finished_at }}</time>{% else %}Не указано{% endif %}</dd>
               </dl>
               {% if workspace.autoload.data.counters %}<div class="avito-counters">{% for counter in workspace.autoload.data.counters %}<span class="avito-counter">{{ counter.label }}: <strong>{{ counter.value|default_if_none:"—" }}</strong></span>{% endfor %}</div>{% endif %}
+              </details>
             {% elif workspace.autoload.status == 'ok' %}
               <p class="small text-muted mb-0">Отчёт автозагрузки не найден. Авито вернул пустой ответ.</p>
             {% elif not workspace.autoload.status %}
@@ -184,23 +186,28 @@
         <div class="table-responsive">
           <table class="table avito-listings">
             <caption class="visually-hidden">Объявления аккаунта {{ selected.connection.name }}, страница {{ workspace.items.data.page }}</caption>
-            <thead><tr><th scope="col">Объявление</th><th scope="col">Статус</th><th scope="col">Цена</th><th scope="col">Категория и адрес</th><th scope="col">Обновлено в Авито</th></tr></thead>
+            <thead><tr><th scope="col">Объявление</th><th scope="col">Статус</th><th scope="col">Цена</th><th scope="col">Категория и адрес</th><th scope="col">Обновлено в Авито</th><th scope="col"><span class="visually-hidden">Действия</span></th></tr></thead>
             <tbody>
               {% for item in workspace.items.data.rows %}
-                <tr data-avito-item="{{ item.title }} {{ item.id }} {{ item.status_label }} {{ item.category }} {{ item.address }}">
+                <tr data-avito-item-id="{{ item.id }}" data-avito-item="{{ item.title }} {{ item.id }} {{ item.status_label }} {{ item.category }} {{ item.address }}">
                   <td class="avito-listing-title">
                     {% if item.url %}<a href="{{ item.url }}" target="_blank" rel="noopener noreferrer">{{ item.title|default:"Без названия" }} <i class="bi bi-box-arrow-up-right small ms-1" aria-hidden="true"></i><span class="visually-hidden"> в новой вкладке</span></a>{% else %}<span class="fw-semibold">{{ item.title|default:"Без названия" }}</span>{% endif %}
                     <div class="avito-listing-meta">ID {{ item.id|default:"не указан" }}</div>
-                    <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" class="mt-2" data-avito-submit>
-                      {% include 'pool_service/avito/_refresh_fields.html' %}<input type="hidden" name="section" value="item_detail"><input type="hidden" name="item_id" value="{{ item.id }}">
-                      <button type="submit" class="btn btn-sm btn-outline-secondary" aria-label="Подробнее об объявлении {{ item.id }}" {% if not selected.has_credentials %}disabled{% endif %}>Подробнее</button>
-                    </form>
                   </td>
                   <td><span class="avito-state {{ item.status }}">{{ item.status_label|default:"Не указан" }}</span></td>
                   <td class="avito-listing-price">{{ item.price|default_if_none:"—" }}{% if item.price != None %} ₽{% endif %}</td>
                   <td><div>{{ item.category|default:"Категория не указана" }}</div><div class="avito-listing-meta">{{ item.address|default:"Адрес не указан" }}</div></td>
-                  <td class="small text-muted">{{ item.updated_at|default:"Не передано" }}</td>
+                  <td class="small text-muted">{% if item.updated_at %}<time datetime="{{ item.updated_at }}" data-avito-time>{{ item.updated_at }}</time>{% else %}Не передано{% endif %}</td>
+                  <td>
+                    <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" data-avito-submit>
+                      {% include 'pool_service/avito/_refresh_fields.html' %}<input type="hidden" name="section" value="item_detail"><input type="hidden" name="item_id" value="{{ item.id }}">
+                      <button type="submit" class="btn btn-sm btn-outline-secondary" aria-label="Подробнее об объявлении {{ item.id }}" {% if not selected.has_credentials %}disabled{% endif %}>Подробнее</button>
+                    </form>
+                  </td>
                 </tr>
+                {% if item.id == expanded_item_id %}
+                  <tr class="avito-detail-row" data-avito-detail-row="{{ item.id }}"><td colspan="6">{% include 'pool_service/avito/_item_detail.html' %}</td></tr>
+                {% endif %}
               {% endfor %}
             </tbody>
           </table>
@@ -231,7 +238,7 @@
       {% endif %}
     </section>
 
-    {% include 'pool_service/avito/_item_detail.html' %}
+    {% if expanded_item_id and not detail_in_items %}<div class="avito-panel mb-3"><p class="small text-muted px-3 pt-2 mb-0">Выбранное объявление не входит в текущую загруженную страницу.</p>{% include 'pool_service/avito/_item_detail.html' %}</div>{% endif %}
     {% include 'pool_service/avito/_statistics.html' %}
     {% include 'pool_service/avito/_calls.html' %}
 
@@ -267,11 +274,12 @@
     </section>
   {% endif %}
 
-  <div class="d-flex flex-wrap align-items-end justify-content-between gap-2 mt-4 mb-3">
-    <div><div class="avito-kicker mb-1">Подключения и доступ</div><h2 class="h5 mb-0">Диагностика API</h2></div>
-    <div class="avito-diagnostics-summary"><strong>{{ connected_count }}</strong> подключений · <strong>{{ configured_count }}</strong> с ключами · <strong>{{ checked_count }}</strong> с проверкой API</div>
-  </div>
-  <div class="avito-api-note mb-3">Проверки запускаются вручную и только читают данные. HTTP 402/403 означает отказ доступа: возможны ограничения прав или тарифа. Подтверждённый токен не гарантирует доступа к сообщениям. Сведения о подписке и датах продления тарифов пока не извлекаются.</div>
-  {% include 'pool_service/avito/_diagnostics.html' %}
+  {% if not accounts %}
+    <div class="card"><div class="card-body">
+      <h2 class="h5">Нет подключений Авито в Service2</h2>
+      <p class="text-muted">Добавьте аккаунт в настройках каналов связи, чтобы загрузить объявления.</p>
+      <a href="{% url 'communication_connection_create' 'avito' %}" class="btn btn-primary">Добавить подключение</a>
+    </div></div>
+  {% endif %}
 </div>
 {% endblock %}

@@ -28,7 +28,7 @@ class AvitoRemoteParsingTests(SimpleTestCase):
         self.assertEqual(metrics["contacts"]["value"], "0")
         self.assertEqual(metrics["spending"]["value"], "125.99")
         self.assertEqual(metrics["spending"]["unit"], "₽")
-        self.assertEqual(metrics["averageViewCost"]["value"], "12.34")
+        self.assertIsNone(metrics["averageViewCost"]["value"])
         self.assertNotEqual(metrics["averageViewCost"]["unit"], "₽")
 
     def test_v2_empty_differs_from_malformed(self):

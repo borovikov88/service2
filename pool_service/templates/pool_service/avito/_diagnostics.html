@@ -18,7 +18,7 @@
               Webhook: {{ account.webhook_status }}
             </span>
           </div>
-          {% if account.webhook_received %}<div class="small text-muted mt-2">Последнее событие: {{ account.webhook_received }}</div>{% endif %}
+          {% if account.webhook_received %}<div class="small text-muted mt-2">Последнее событие: <time datetime="{{ account.webhook_received }}" data-avito-time>{{ account.webhook_received }}</time></div>{% endif %}
           {% if account.webhook_error %}<div class="small text-danger mt-1">Подключение: {{ account.webhook_error }}</div>{% endif %}
           {% if account.pull_error %}<div class="small text-danger mt-1">Чтение сообщений: {{ account.pull_error }}</div>{% endif %}
         </div>
@@ -31,7 +31,7 @@
           {% else %}
             <a class="btn btn-outline-primary" href="{% url 'communication_connection_edit' account.connection.pk %}">Добавить ключи</a>
           {% endif %}
-          {% if account.checked_at %}<span class="text-muted small">Проверено: {{ account.checked_at }}</span>{% endif %}
+          {% if account.checked_at %}<span class="text-muted small">Проверено: <time datetime="{{ account.checked_at }}" data-avito-time>{{ account.checked_at }}</time></span>{% endif %}
         </div>
       </div>
       {% if account.results %}
