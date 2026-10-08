@@ -139,7 +139,7 @@ def _tool_definitions():
         ),
         _tool(
             "create_task",
-            "Create one private CRM follow-up task. For a call commitment, first present the proposal and obtain user confirmation, then pass source_call_id, commitment_index, commitment_proposal_id, confirmed_by_user=true and use proposal_id as idempotency_key.",
+            "Create one private CRM follow-up task. For a call commitment, first present the ready proposal and obtain explicit user confirmation, then pass source_call_id, commitment_index, commitment_proposal_id and use proposal_id as idempotency_key. Service2 validates proposal readiness but does not treat an MCP argument as proof of user confirmation.",
             {
                 "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 80},
                 "title": {"type": "string", "minLength": 1, "maxLength": 255},
@@ -152,7 +152,6 @@ def _tool_definitions():
                 "commitment_index": {"type": "integer", "minimum": 0},
                 "commitment_proposal_id": {"type": "string", "minLength": 1, "maxLength": 80},
                 "commitment_actor_user_id": {"type": "integer", "minimum": 1},
-                "confirmed_by_user": {"type": "boolean"},
                 "priority": {
                     "type": "string",
                     "enum": [
@@ -861,13 +860,8 @@ def _normalized_create_task_command(arguments):
                 arguments.get("commitment_actor_user_id"),
                 "commitment_actor_user_id",
             )
-        if arguments.get("confirmed_by_user") is not True:
-            raise ValueError("confirmed_by_user")
-        command["confirmed_by_user"] = True
     elif arguments.get("commitment_actor_user_id") is not None:
         raise ValueError("commitment_actor_user_id")
-    elif arguments.get("confirmed_by_user") is not None:
-        raise ValueError("confirmed_by_user")
     return command
 
 
@@ -903,8 +897,6 @@ def _task_as_legacy_create_command(task):
         })
         if payload.get("commitment_actor_user_id") is not None:
             command["commitment_actor_user_id"] = payload.get("commitment_actor_user_id")
-        if payload.get("confirmed_by_user"):
-            command["confirmed_by_user"] = True
     return command
 
 
@@ -937,7 +929,7 @@ def _validated_call_commitment(organization, command):
     if not commitment_is_ready_for_review(analysis.call, commitment):
         raise ValueError("commitment_proposal_id")
     actor = str(commitment.get("actor") or "").strip().lower()
-    if actor not in {ACTOR_EMPLOYEE, ACTOR_CLIENT} or not command.get("confirmed_by_user"):
+    if actor not in {ACTOR_EMPLOYEE, ACTOR_CLIENT}:
         raise ValueError("commitment_proposal_id")
     actor_user_id = command.get("commitment_actor_user_id")
     participants = {
@@ -986,7 +978,6 @@ def _create_task(authenticated, organization, arguments):
             "commitment_index",
             "commitment_proposal_id",
             "commitment_actor_user_id",
-            "confirmed_by_user",
         },
     )
     key = _as_text(
@@ -1149,7 +1140,6 @@ def _create_task(authenticated, organization, arguments):
                     "confidence": str(commitment.get("confidence") or "").strip().lower(),
                     "evidence": str(commitment.get("evidence") or "")[:2000],
                     "created_by_agent": "Rovik",
-                    "confirmed_by_user": True,
                     **(
                         {"commitment_actor_client_id": client.pk}
                         if str(commitment.get("actor") or "").strip().lower() == ACTOR_CLIENT

@@ -265,7 +265,7 @@ class OperationsMcpTests(TestCase):
         )
         self.assertIn("commitment_proposal_id", create_schema["properties"])
         self.assertIn("commitment_actor_user_id", create_schema["properties"])
-        self.assertIn("confirmed_by_user", create_schema["properties"])
+        self.assertNotIn("confirmed_by_user", create_schema["properties"])
 
     def test_finance_resource_token_is_rejected(self):
         raw = self._token(
@@ -525,7 +525,6 @@ class OperationsMcpTests(TestCase):
             "description": proposal["evidence"],
             "responsible_user_id": self.manager.pk,
             "commitment_actor_user_id": self.manager.pk,
-            "confirmed_by_user": True,
             "due_date": proposal["due_date"],
             "due_time": proposal["due_time"],
         }
@@ -550,7 +549,7 @@ class OperationsMcpTests(TestCase):
         self.assertEqual(task.source_type, ServiceTask.SOURCE_SYSTEM)
         self.assertEqual(task.created_by, self.owner)
         self.assertEqual(task.payload_json["commitment_actor_user_id"], self.manager.pk)
-        self.assertTrue(task.payload_json["confirmed_by_user"])
+        self.assertNotIn("confirmed_by_user", task.payload_json)
         self.assertEqual(task.payload_json["created_by_agent"], "Rovik")
         self.assertEqual(task.payload_json["commitment_proposal_id"], proposal["proposal_id"])
 
@@ -616,7 +615,6 @@ class OperationsMcpTests(TestCase):
                     "title": "Send original quote",
                     "responsible_user_id": self.manager.pk,
                     "commitment_actor_user_id": self.manager.pk,
-                    "confirmed_by_user": True,
                     "due_date": "2026-10-09",
                 }},
             }, token=raw)
@@ -668,7 +666,6 @@ class OperationsMcpTests(TestCase):
                     "title": unclear["action"],
                     "responsible_user_id": self.manager.pk,
                     "commitment_actor_user_id": self.manager.pk,
-                    "confirmed_by_user": True,
                     "due_date": unclear["due_date"],
                 }},
             }, token=raw)
@@ -718,7 +715,6 @@ class OperationsMcpTests(TestCase):
                     "commitment_index": 0,
                     "commitment_proposal_id": proposal_id,
                     "commitment_actor_user_id": self.manager.pk,
-                    "confirmed_by_user": True,
                     "title": commitment["action"],
                     "responsible_user_id": self.manager.pk,
                     "due_date": commitment["due_date"],
