@@ -21,6 +21,7 @@ from django.views.decorators.http import require_http_methods
 
 from pool_service import onec_diagnostic_mcp_views as transport
 from pool_service.communication_models import CallAnalysis
+from pool_service.services.call_privacy import is_private_call
 from pool_service.models import (
     Client,
     FinanceMcpAuditEvent,
@@ -690,6 +691,9 @@ def _get_call_analysis(organization, arguments):
     if not analysis:
         raise ValueError("call_id")
     call = analysis.call
+    if is_private_call(call):
+        # Deliberately indistinguishable from an unknown/non-ready call.
+        raise ValueError("call_id")
     return {
         "call_id": call.id,
         "started_at": call.started_at.isoformat(),
