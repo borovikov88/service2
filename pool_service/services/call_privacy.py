@@ -135,3 +135,32 @@ def task_source_is_private(task):
         organization_id=task.organization_id,
     ).first()
     return is_private_call(call) if call else False
+
+
+def private_source_task_ids(tasks):
+    """Batch-classify existing tasks whose source call is now explicitly private."""
+    tasks = list(tasks)
+    task_calls = {}
+    call_ids = set()
+    for task in tasks:
+        payload = task.payload_json if isinstance(task.payload_json, dict) else {}
+        raw_call_id = payload.get("source_call_id")
+        try:
+            call_id = int(raw_call_id)
+        except (TypeError, ValueError):
+            continue
+        if call_id <= 0:
+            continue
+        task_calls[task.pk] = (task.organization_id, call_id)
+        call_ids.add(call_id)
+    if not call_ids:
+        return set()
+
+    calls = list(PhoneCall.objects.filter(pk__in=call_ids))
+    hidden_calls = private_call_ids(calls)
+    call_orgs = {call.pk: call.organization_id for call in calls}
+    return {
+        task_id
+        for task_id, (organization_id, call_id) in task_calls.items()
+        if call_id in hidden_calls and call_orgs.get(call_id) == organization_id
+    }
