@@ -1,5 +1,9 @@
 {% extends "pool_service/base.html" %}
+{% load static %}
 {% block title %}{% if editing %}Настройки {{ provider_name }}{% else %}Подключить {{ provider_name }}{% endif %}{% endblock %}
+{% block extra_head %}
+{% if kind == 'avito' and editing %}<link rel="stylesheet" href="{% static 'assets/css/avito-dashboard.css' %}?v=3"><script src="{% static 'assets/js/avito-dashboard.js' %}?v=2" defer></script>{% endif %}
+{% endblock %}
 {% block content %}
 <div class="row justify-content-center">
   <div class="col-xl-8 col-lg-9">
@@ -71,6 +75,18 @@
         <a class="btn btn-outline-secondary" href="{% url 'communications_channels' %}">Отмена</a>
       </div>
     </form>
+
+    {% if editing and kind == 'avito' and avito_diagnostic_accounts %}
+      <section class="avito-admin mt-4" id="avito-api-diagnostics" data-avito-dashboard data-avito-timezone="{{ avito_timezone }}" aria-labelledby="avito-api-diagnostics-heading">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+          <h2 class="h5 mb-0" id="avito-api-diagnostics-heading">Диагностика API Авито</h2>
+          <a class="btn btn-sm btn-outline-secondary" href="{% url 'avito_dashboard' %}?account={{ connection.pk }}">К объявлениям</a>
+        </div>
+        <div class="avito-api-note mb-3">Проверка запускается вручную и только читает данные. HTTP 402/403 может указывать на ограничения прав или тарифа. Рабочий токен не гарантирует доступ к сообщениям. Сведения о подписке и датах продления тарифов пока не извлекаются.</div>
+        <div class="visually-hidden" role="status" aria-live="polite" data-avito-progress></div>
+        {% include 'pool_service/avito/_diagnostics.html' with accounts=avito_diagnostic_accounts %}
+      </section>
+    {% endif %}
 
     {% if editing and kind == 'website' %}
     <div class="card card-body mt-3">

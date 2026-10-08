@@ -240,6 +240,7 @@ from .communication_views import (
     communication_telephony_edit,
     communication_telephony_set_active,
 )
+from .avito_management import avito_dashboard, avito_check_api, avito_refresh_data
 from .communication_api import (
     avito_webhook,
     megafon_webhook,
@@ -251,6 +252,9 @@ from .communication_api import (
 )
 
 urlpatterns = [
+    path("avito/", avito_dashboard, name="avito_dashboard"),
+    path("avito/<int:connection_id>/refresh/", avito_refresh_data, name="avito_refresh_data"),
+    path("avito/<int:connection_id>/check-api/", avito_check_api, name="avito_check_api"),
     path("api/communications/avito/<uuid:public_id>/<str:webhook_token>/webhook/", avito_webhook, name="avito_webhook"),
     path("api/communications/megafon/<uuid:public_id>/webhook/", megafon_webhook, name="megafon_webhook"),
     path("api/communications/website/<uuid:public_id>/chat/messages/", website_chat_message, name="website_chat_message"),

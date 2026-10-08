@@ -1,0 +1,4 @@
+{% csrf_token %}
+<input type="hidden" name="q" value="{{ request.GET.q|default:'' }}" data-avito-query>
+<input type="hidden" name="date_from" value="{{ local_analytics.start }}">
+<input type="hidden" name="date_to" value="{{ local_analytics.end }}">

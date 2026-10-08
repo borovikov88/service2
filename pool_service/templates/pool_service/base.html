@@ -155,6 +155,12 @@
       </a>
       {% endif %}
 
+      {% if can_manage_communication_channels %}
+      <a href="{% url 'avito_dashboard' %}" class="desktop-sidebar__link {% if active_tab == 'avito' %}is-active{% endif %}">
+        <i class="bi bi-shop"></i><span>Авито</span>
+      </a>
+      {% endif %}
+
       {% if can_access_management_finance %}
       <details class="desktop-sidebar__group" {% if active_finance_area == 'management' %}open{% endif %}>
         <summary class="desktop-sidebar__link {% if active_finance_area == 'management' %}is-active{% endif %}">
@@ -241,6 +247,7 @@
                 {% elif active_tab == 'pools' %}Объекты
                 {% elif active_tab == 'clients' %}Клиенты
                 {% elif active_tab == 'communications' %}Коммуникации
+                {% elif active_tab == 'avito' %}Авито
                 {% elif active_tab == 'finance' %}Финансы
                 {% elif active_tab == 'users' %}Пользователи
                 {% elif active_tab == 'development' %}Разработка
@@ -342,6 +349,7 @@
                   <span>Клиенты</span>
                 </a>
                 {% if show_communications_menu %}<a href="{% url 'communications_conversations' %}" class="ui-dropdown__item {% if active_tab == 'communications' %}is-active{% endif %}"><i class="bi bi-chat-dots"></i><span>Коммуникации</span></a>{% endif %}
+                {% if can_manage_communication_channels %}<a href="{% url 'avito_dashboard' %}" class="ui-dropdown__item {% if active_tab == 'avito' %}is-active{% endif %}"><i class="bi bi-shop"></i><span>Авито</span></a>{% endif %}
                 {% endif %}
               </div>
             </div>
@@ -362,6 +370,7 @@
             <a class="text-decoration-none {% if active_tab == 'clients' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'clients_list' %}">&#1050;&#1083;&#1080;&#1077;&#1085;&#1090;&#1099;</a>
           {% endif %}
           {% if show_communications_menu %}<a class="text-decoration-none {% if active_tab == 'communications' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'communications_conversations' %}">Коммуникации</a>{% endif %}
+          {% if can_manage_communication_channels %}<a class="text-decoration-none {% if active_tab == 'avito' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'avito_dashboard' %}">Авито</a>{% endif %}
           {% if can_access_management_finance %}
             <div class="crm-nav">
               <a class="crm-nav__link text-decoration-none {% if active_finance_area == 'management' %}fw-semibold text-primary{% else %}text-muted{% endif %}" href="{% url 'finance_dashboard' %}">Управленческие финансы</a>
@@ -566,6 +575,11 @@
           {% if show_communications_menu %}
           <a href="{% url 'communications_conversations' %}" class="list-group-item list-group-item-action {% if active_tab == 'communications' %}active{% endif %}">
             <i class="bi bi-chat-dots me-2"></i>Коммуникации
+          </a>
+          {% endif %}
+          {% if can_manage_communication_channels %}
+          <a href="{% url 'avito_dashboard' %}" class="list-group-item list-group-item-action {% if active_tab == 'avito' %}active{% endif %}">
+            <i class="bi bi-shop me-2"></i>Авито
           </a>
           {% endif %}
           {% if can_access_management_finance %}

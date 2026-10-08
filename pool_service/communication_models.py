@@ -6,6 +6,7 @@ from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.utils import timezone
 from django.contrib.auth.hashers import check_password, make_password
 
 from pool_service.models import Client, Employee, Organization, OrganizationAccess
@@ -173,6 +174,13 @@ class AvitoCredential(models.Model):
     def clean(self):
         if self.connection_id and self.connection.channel.kind != CommunicationChannel.KIND_AVITO:
             raise ValidationError("Avito credentials require an Avito connection.")
+
+
+class AvitoApiThrottle(models.Model):
+    """Shared per-account/method provider budget, independent of org snapshots."""
+
+    key = models.CharField(max_length=64, unique=True)
+    next_allowed_at = models.DateTimeField(default=timezone.now)
 
 
 class Conversation(models.Model):

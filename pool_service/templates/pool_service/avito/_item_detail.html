@@ -1,0 +1,48 @@
+<section class="avito-panel avito-inline-detail" id="avito-item-{{ expanded_item_id }}" tabindex="-1" data-avito-selected-detail data-avito-detail-for="{{ expanded_item_id }}" aria-labelledby="avito-detail-heading">
+  <div class="avito-panel__header">
+    <h2 class="avito-panel__title" id="avito-detail-heading">Сведения об объявлении № {{ expanded_item_id }}</h2>
+    <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" data-avito-submit>
+      {% include 'pool_service/avito/_refresh_fields.html' %}<input type="hidden" name="section" value="item_detail"><input type="hidden" name="item_id" value="{{ expanded_item_id }}">
+      <button type="submit" class="btn btn-sm btn-outline-secondary" {% if not selected.has_credentials %}disabled{% endif %}>Обновить сведения</button>
+    </form>
+  </div>
+  <div class="avito-panel__body">
+    {% if workspace.item_detail.requested_item_id == expanded_item_id or workspace.item_detail.data.item_id == expanded_item_id %}
+      {% if workspace.item_detail.data.item_id == expanded_item_id %}{% include 'pool_service/avito/_section_state.html' with state=workspace.item_detail %}{% else %}{% include 'pool_service/avito/_section_state.html' with state=workspace.item_detail hide_saved=True %}{% endif %}
+    {% endif %}
+    {% if workspace.item_detail.data.item_id == expanded_item_id %}
+      <dl class="avito-item-properties">
+        <div><dt>Статус Авито</dt><dd>{% if workspace.item_detail.data.status_label and workspace.item_detail.data.status_label != workspace.item_detail.data.status %}{{ workspace.item_detail.data.status_label }}{% elif workspace.item_detail.data.status %}Статус API <span class="small text-muted">· код {{ workspace.item_detail.data.status }}</span>{% else %}Не передан{% endif %}</dd></div>
+        <div><dt>Размещение с</dt><dd>{% if workspace.item_detail.data.start_time %}<time datetime="{{ workspace.item_detail.data.start_time }}" data-avito-time>{{ workspace.item_detail.data.start_time }}</time>{% else %}Не передано{% endif %}</dd></div>
+        <div><dt>Размещение до</dt><dd>{% if workspace.item_detail.data.finish_time %}<time datetime="{{ workspace.item_detail.data.finish_time }}" data-avito-time>{{ workspace.item_detail.data.finish_time }}</time>{% else %}Не передано{% endif %}</dd></div>
+        <div><dt>ID в автозагрузке</dt><dd>{{ workspace.item_detail.data.autoload_item_id|default:"Не передан" }}</dd></div>
+      </dl>
+      <div class="d-flex flex-wrap align-items-start gap-3">
+        {% if workspace.item_detail.data.url %}<a class="small" href="{{ workspace.item_detail.data.url }}" target="_blank" rel="noopener noreferrer">Объявление в Авито <i class="bi bi-box-arrow-up-right ms-1" aria-hidden="true"></i><span class="visually-hidden"> в новой вкладке</span></a>{% endif %}
+        {% if workspace.item_detail.data.vas %}
+          <details><summary class="avito-details-summary">Подключённые услуги: {{ workspace.item_detail.data.vas|length }}</summary><div class="avito-service-list mt-2">{% for service in workspace.item_detail.data.vas %}<div class="avito-service-row"><div><strong>{{ service.label|default:"Услуга Авито" }}</strong><span class="small text-muted"> · код {{ service.id }}</span><div class="small text-muted">До: {% if service.finish_time %}<time datetime="{{ service.finish_time }}" data-avito-time>{{ service.finish_time }}</time>{% else %}не передано{% endif %}</div></div>{% if service.schedule %}<div class="small text-muted">Расписание:{% for moment in service.schedule %}<div><time datetime="{{ moment }}" data-avito-time>{{ moment }}</time></div>{% endfor %}</div>{% endif %}</div>{% endfor %}</div></details>
+        {% else %}<span class="small text-muted">Подключённые услуги в ответе Авито не указаны.</span>{% endif %}
+      </div>
+    {% else %}
+      <p class="small text-muted mb-0">Сведения об этом объявлении пока не получены. Нажмите «Обновить сведения», чтобы повторить запрос.</p>
+    {% endif %}
+    <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
+      <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" data-avito-submit>
+        {% include 'pool_service/avito/_refresh_fields.html' %}<input type="hidden" name="section" value="prices"><input type="hidden" name="item_id" value="{{ expanded_item_id }}">
+        <button type="submit" class="btn btn-sm btn-outline-primary" {% if not selected.has_credentials %}disabled{% endif %}>Цены платного продвижения в Авито</button>
+      </form>
+      <span class="small text-muted">Получение прайса для этого объявления. Покупка и списание денег не выполняются.</span>
+    </div>
+
+    {% if workspace.prices.requested_item_id == expanded_item_id or workspace.prices.data.item_id == expanded_item_id %}
+      <section class="avito-promotion-prices" aria-labelledby="avito-prices-heading">
+        <h3 class="avito-panel__title mb-2" id="avito-prices-heading">Платное продвижение в Авито · цены для объявления № {{ expanded_item_id }}</h3>
+        {% if workspace.prices.data.item_id == expanded_item_id %}{% include 'pool_service/avito/_section_state.html' with state=workspace.prices %}{% else %}{% include 'pool_service/avito/_section_state.html' with state=workspace.prices hide_saved=True %}{% endif %}
+        {% if workspace.prices.data.item_id == expanded_item_id %}
+          {% if workspace.prices.data.services %}<div class="avito-service-list">{% for service in workspace.prices.data.services %}<div class="avito-service-row"><span><strong>{{ service.label|default:"Услуга Авито" }}</strong><span class="small text-muted"> · код {{ service.slug }}</span></span><div class="avito-numeric">{% if service.show_old_price %}<span class="text-muted text-decoration-line-through me-2">{{ service.price_old }} ₽</span>{% endif %}{% if service.price != None %}<strong>{{ service.price }} ₽</strong>{% else %}<span class="text-muted">Цена не получена</span>{% endif %}</div></div>{% endfor %}</div>{% else %}<p class="small text-muted mb-0">Цены платного продвижения в ответе Авито отсутствуют.</p>{% endif %}
+          {% if workspace.prices.data.stickers %}<details class="mt-2"><summary class="avito-details-summary">Доступные стикеры: {{ workspace.prices.data.stickers|length }}</summary><div class="avito-service-list mt-2">{% for sticker in workspace.prices.data.stickers %}<div class="avito-service-row"><div><strong>{{ sticker.title|default:sticker.id }}</strong>{% if sticker.description %}<div class="small text-muted">{{ sticker.description }}</div>{% endif %}</div></div>{% endfor %}</div></details>{% endif %}
+        {% else %}<p class="small text-muted mb-0">Цены для этого объявления пока не получены. Сохранённые цены других объявлений здесь не показываются.</p>{% endif %}
+      </section>
+    {% endif %}
+  </div>
+</section>
