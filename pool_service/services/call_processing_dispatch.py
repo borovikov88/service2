@@ -1,11 +1,11 @@
 """Idempotent automatic call-analysis dispatch for activated new calls."""
 from __future__ import annotations
 
-from django.db import transaction
-from django.utils import timezone
-
-from pool_service.call_processing_models import CallProcessingBudget
-from pool_service.communication_models import CallAnalysis, PhoneCall
+from pool_service.call_processing_models import (
+    CallProcessingBudget,
+    CallProcessingRule,
+)
+from pool_service.communication_models import PhoneCall
 from pool_service.services.call_ai import (
     request_call_analysis,
     start_requested_call_analysis_worker,
@@ -60,10 +60,7 @@ def recover_auto_dispatch(*, limit=100):
     """
     limit = max(1, min(int(limit), 500))
     active_from = list(
-        __import__(
-            "pool_service.call_processing_models",
-            fromlist=["CallProcessingRule"],
-        ).CallProcessingRule.objects.filter(
+        CallProcessingRule.objects.filter(
             effective_from__isnull=False,
         ).values_list("organization_id", "effective_from")
     )
