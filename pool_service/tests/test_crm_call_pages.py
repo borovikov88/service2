@@ -85,10 +85,16 @@ class CRMCallPageIntegrationTests(TestCase):
             direction=PhoneCall.DIRECTION_IN, result=PhoneCall.RESULT_MISSED,
             started_at=missed_at,
         )
+        for index in range(51):
+            self.call(
+                phone=f"+1 200 {index:03d} 01234567",
+                direction=PhoneCall.DIRECTION_OUT, result=PhoneCall.RESULT_ANSWERED,
+                started_at=missed_at + timedelta(minutes=index + 1),
+            )
         self.call(
             phone="8 900 123 45 67", client=customer,
             direction=PhoneCall.DIRECTION_OUT, result=PhoneCall.RESULT_ANSWERED,
-            started_at=missed_at + timedelta(minutes=20),
+            started_at=missed_at + timedelta(minutes=55),
         )
         page = self.client.get(reverse("client_detail", args=[customer.pk]), {"tab": "calls"})
         self.assertEqual(page.status_code, 200)

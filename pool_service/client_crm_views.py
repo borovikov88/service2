@@ -406,7 +406,7 @@ def client_detail(request, client_id):
                     started_at__lte=call.started_at + timedelta(hours=1),
                 ).annotate(_phone_digits=phone_digits).filter(
                     _phone_digits__contains=digits[-7:],
-                ).order_by("started_at", "pk")[:50]
+                ).order_by("started_at", "pk").iterator(chunk_size=200)
                 for callback in candidates:
                     if normalize_phone(callback.phone_number) == phone_key:
                         call.callback_at = callback.started_at
