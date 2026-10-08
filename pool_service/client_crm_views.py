@@ -29,7 +29,7 @@ from .client_merge import merge_clients, merge_suggestions
 from .communication_models import CommunicationAccess, PhoneCall
 from .models import Client, CrmItem, OrganizationAccess, Pool, ServiceTask
 from .services.task_waiting_schedule import waiting_schedule_metadata
-from .services.call_privacy import private_source_task_ids
+from .services.call_privacy import private_source_task_ids, visible_calls_page
 
 
 IMPORT_ROLES = {"owner", "admin"}
@@ -352,10 +352,14 @@ def client_detail(request, client_id):
             if not can_view_all_calls:
                 call_qs = call_qs.filter(employee=request.user)
             call_qs = resolved_calls_for_client(call_qs, client).select_related(
-                "employee", "analysis",
+                "employee", "peer_employee", "analysis",
             ).order_by("-started_at", "-pk")
-            calls_total = call_qs.count()
-            calls = list(call_qs[:50])
+            calls, calls_total = visible_calls_page(
+                call_qs,
+                page_size=50,
+                chunk_size=200,
+                count_all=True,
+            )
             can_view_calls = True
 
     for call in calls:
