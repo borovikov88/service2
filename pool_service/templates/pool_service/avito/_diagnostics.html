@@ -1,0 +1,59 @@
+  {% for account in accounts %}
+    <section class="avito-account mb-3" aria-label="Подключение {{ account.connection.name }}">
+      <div class="avito-account__header">
+        <div>
+          <h2 class="h5 mb-1">{{ account.connection.name }}</h2>
+          <div class="small text-muted">ID в Service2: {{ account.connection.external_id }}</div>
+          {% if account.actual_id and account.actual_id != account.connection.external_id %}
+            <div class="small text-warning-emphasis mt-1">ID по API: {{ account.actual_id }} — отличается от сохранённого</div>
+          {% endif %}
+          <div class="d-flex flex-wrap gap-2 mt-2">
+            <span class="avito-state {% if account.has_credentials %}ok{% else %}warning{% endif %}">
+              {% if account.has_credentials %}Ключи сохранены{% else %}Нет ключей{% endif %}
+            </span>
+            <span class="avito-state {% if account.connection.is_active and account.connection.channel.is_active %}ok{% else %}warning{% endif %}">
+              {% if account.connection.is_active and account.connection.channel.is_active %}Канал включён{% else %}Канал выключен{% endif %}
+            </span>
+            <span class="avito-state {% if account.webhook_status == 'connected' %}ok{% elif account.webhook_status == 'error' %}error{% else %}warning{% endif %}">
+              Webhook: {{ account.webhook_status }}
+            </span>
+          </div>
+          {% if account.webhook_received %}<div class="small text-muted mt-2">Последнее событие: {{ account.webhook_received }}</div>{% endif %}
+          {% if account.webhook_error %}<div class="small text-danger mt-1">Подключение: {{ account.webhook_error }}</div>{% endif %}
+          {% if account.pull_error %}<div class="small text-danger mt-1">Чтение сообщений: {{ account.pull_error }}</div>{% endif %}
+        </div>
+        <div class="avito-account__actions">
+          {% if account.has_credentials %}
+            <form method="post" data-avito-submit action="{% url 'avito_check_api' account.connection.pk %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-primary"><i class="bi bi-arrow-repeat me-1"></i>Проверить API</button>
+            </form>
+          {% else %}
+            <a class="btn btn-outline-primary" href="{% url 'communication_connection_edit' account.connection.pk %}">Добавить ключи</a>
+          {% endif %}
+          {% if account.checked_at %}<span class="text-muted small">Проверено: {{ account.checked_at }}</span>{% endif %}
+        </div>
+      </div>
+      {% if account.results %}
+        <div class="border-top px-3 py-2 bg-body-tertiary small fw-semibold">Доступность функций</div>
+        {% for check in account.results %}
+          <div class="avito-check">
+            <div class="fw-semibold small">{{ check.label }}</div>
+            <span class="avito-state {{ check.status }}">
+              {% if check.status == 'ok' %}Доступно{% elif check.status == 'denied' %}Нет доступа{% elif check.status == 'warning' %}Внимание{% elif check.status == 'skipped' %}Не проверено{% else %}Ошибка{% endif %}
+            </span>
+            <div class="avito-check__detail">{{ check.detail }}{% if check.code %} <span class="text-muted">({{ check.code }})</span>{% endif %}</div>
+          </div>
+        {% endfor %}
+      {% else %}
+        <div class="border-top p-3 text-muted small">Диагностика ещё не запускалась. Нажмите «Проверить API», чтобы увидеть фактические ответы Авито.</div>
+      {% endif %}
+    </section>
+  {% empty %}
+    <div class="card"><div class="card-body">
+      <h2 class="h5">Нет подключений Авито в Service2</h2>
+      <p class="text-muted">Если ключи есть в личном кабинете Авито, сначала добавьте их в «Коммуникации → Каналы связи».</p>
+      <a href="{% url 'communication_connection_create' 'avito' %}" class="btn btn-primary">Добавить подключение</a>
+    </div></div>
+  {% endfor %}
+

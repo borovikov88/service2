@@ -1,4 +1,5 @@
 import json
+from http.client import HTTPException
 from dataclasses import dataclass
 from datetime import timedelta
 from urllib.error import HTTPError, URLError
@@ -107,7 +108,7 @@ def _json_request(url, *, method="GET", headers=None, data=None, timeout=15, amb
         if not ambiguous_transport and (exc.code == 429 or 500 <= exc.code <= 599):
             raise AvitoRetryableError(f"provider_http_{exc.code}") from exc
         raise AvitoError(f"provider_http_{exc.code}") from exc
-    except (URLError, TimeoutError) as exc:
+    except (URLError, TimeoutError, HTTPException, OSError) as exc:
         if ambiguous_transport:
             raise AvitoAmbiguousDeliveryError("provider_delivery_unknown") from exc
         raise AvitoRetryableError("provider_unavailable") from exc
@@ -131,7 +132,7 @@ def _json_list_request(url, *, method="GET", headers=None, data=None, timeout=15
         if exc.code == 429 or 500 <= exc.code <= 599:
             raise AvitoRetryableError(f"provider_http_{exc.code}") from exc
         raise AvitoError(f"provider_http_{exc.code}") from exc
-    except (URLError, TimeoutError) as exc:
+    except (URLError, TimeoutError, HTTPException, OSError) as exc:
         raise AvitoRetryableError("provider_unavailable") from exc
     if len(raw) > 1024 * 1024:
         raise AvitoError("provider_response_too_large")

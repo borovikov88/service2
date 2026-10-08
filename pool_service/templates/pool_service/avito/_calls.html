@@ -1,0 +1,32 @@
+<section class="avito-panel mb-4" aria-labelledby="avito-calls-heading">
+  <div class="avito-panel__header"><div><div class="avito-kicker mb-1">Источник: Авито</div><h2 class="avito-panel__title" id="avito-calls-heading">Звонки по загруженным объявлениям</h2><div class="small text-muted mt-1">Выборка ограничена текущей страницей объявлений</div></div></div>
+  <div class="avito-panel__body">
+    <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" class="avito-period avito-remote-period mb-3" data-avito-submit>
+      {% include 'pool_service/avito/_refresh_fields.html' %}<input type="hidden" name="section" value="calls">
+      <div><label for="avito-calls-from" class="small mb-1">Период с</label><input type="date" class="form-control form-control-sm" id="avito-calls-from" name="stats_date_from" value="{% firstof workspace.calls.data.date_from stats_defaults.date_from %}" min="{{ stats_defaults.min_date }}" max="{{ stats_defaults.max_date }}" required></div>
+      <div><label for="avito-calls-to" class="small mb-1">По</label><input type="date" class="form-control form-control-sm" id="avito-calls-to" name="stats_date_to" value="{% firstof workspace.calls.data.date_to stats_defaults.date_to %}" min="{{ stats_defaults.min_date }}" max="{{ stats_defaults.max_date }}" required></div>
+      <button type="submit" class="btn btn-sm btn-outline-primary" {% if not selected.has_credentials or not workspace.items.data.rows %}disabled{% endif %}>Загрузить звонки</button>
+    </form>
+    <p class="small text-muted mb-3">Сначала загрузите нужную страницу объявлений. Отчёт запрашивается для объявлений на этой странице; это не статистика всего аккаунта. Период и обновление звонков независимы от других отчётов.</p>
+    {% include 'pool_service/avito/_section_state.html' with state=workspace.calls %}
+    {% if workspace.calls.data %}
+      <div class="avito-api-note mb-3">Сохранённый отчёт: {{ workspace.calls.data.date_from }}–{{ workspace.calls.data.date_to }} · Объявлений в выборке: {{ workspace.calls.data.item_count }}. После переключения страницы обновите звонки для новой выборки.</div>
+      {% if workspace.calls.data.includes_unattributed %}<div class="avito-section-notice avito-section-notice--stale">Авито также вернул звонки без привязки к объявлению. Они включены в показатели ниже и отмечены отдельной строкой.</div>{% endif %}
+      <div class="avito-metrics mb-3">
+        <div class="avito-metric"><strong>{{ workspace.calls.data.totals.calls|default_if_none:"—" }}</strong><span>Звонков в ответе Авито</span></div>
+        <div class="avito-metric"><strong>{{ workspace.calls.data.totals.answered|default_if_none:"—" }}</strong><span>Отвеченных звонков</span></div>
+        <div class="avito-metric"><strong>{{ workspace.calls.data.totals.new|default_if_none:"—" }}</strong><span>Новых звонков</span></div>
+        <div class="avito-metric"><strong>{{ workspace.calls.data.totals.new_answered|default_if_none:"—" }}</strong><span>Отвеченных новых звонков</span></div>
+      </div>
+      <p class="small text-muted mb-3">Показатели — сумма полученных счётчиков, а не число уникальных людей. «—» означает, что Авито не передал данные для расчёта.</p>
+      {% if workspace.calls.data.rows %}
+        <div class="table-responsive avito-statistics-table"><table class="table avito-listings">
+          <caption class="visually-hidden">Звонки Авито по {{ workspace.calls.data.item_count }} объявлениям за период {{ workspace.calls.data.date_from }}–{{ workspace.calls.data.date_to }}</caption>
+          <thead><tr><th scope="col">Объявление</th><th scope="col">Дата / период</th><th scope="col">Звонки</th><th scope="col">Отвеченные</th><th scope="col">Новые</th><th scope="col">Новые отвеченные</th></tr></thead>
+          <tbody>{% for row in workspace.calls.data.rows %}<tr><th scope="row">{% if row.item_id == '0' %}Не связано с объявлением{% else %}{{ row.item_id }}{% endif %}</th><td>{{ row.date|default:"Не передана" }}</td><td class="avito-numeric">{{ row.calls|default_if_none:"—" }}</td><td class="avito-numeric">{{ row.answered|default_if_none:"—" }}</td><td class="avito-numeric">{{ row.new|default_if_none:"—" }}</td><td class="avito-numeric">{{ row.new_answered|default_if_none:"—" }}</td></tr>{% endfor %}</tbody>
+        </table></div>
+      {% else %}<p class="small text-muted mb-0">Авито не вернул строки звонков по выбранным объявлениям за этот период.</p>{% endif %}
+    {% elif workspace.calls.status %}<p class="small text-muted mb-0">Сохранённого отчёта о звонках нет. Проверьте сообщение об ошибке выше.</p>
+    {% else %}<div class="avito-empty"><i class="bi bi-telephone" aria-hidden="true"></i><strong>Звонки ещё не загружены</strong><p>Загрузите объявления, выберите период и запросите звонки вручную.</p></div>{% endif %}
+  </div>
+</section>

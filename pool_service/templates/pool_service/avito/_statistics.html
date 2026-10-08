@@ -1,0 +1,90 @@
+<section class="avito-panel mb-4" aria-labelledby="avito-statistics-heading">
+  <div class="avito-panel__header">
+    <div>
+      <div class="avito-kicker mb-1">Источник: Авито</div>
+      <h2 class="avito-panel__title" id="avito-statistics-heading">Статистика объявлений</h2>
+      <div class="small text-muted mt-1">Просмотры, контакты, избранное, конверсии и расходы</div>
+    </div>
+    <span class="avito-state">Обновление вручную</span>
+  </div>
+  <div class="avito-panel__body">
+    <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" class="avito-period avito-remote-period mb-3" data-avito-submit>
+      {% include 'pool_service/avito/_refresh_fields.html' %}
+      <input type="hidden" name="section" value="statistics"><input type="hidden" name="offset" value="0">
+      <div><label for="avito-stats-from" class="small mb-1">Период с</label><input type="date" class="form-control form-control-sm" id="avito-stats-from" name="stats_date_from" value="{% firstof workspace.statistics.data.date_from stats_defaults.date_from %}" min="{{ stats_defaults.min_date }}" max="{{ stats_defaults.max_date }}" required></div>
+      <div><label for="avito-stats-to" class="small mb-1">По</label><input type="date" class="form-control form-control-sm" id="avito-stats-to" name="stats_date_to" value="{% firstof workspace.statistics.data.date_to stats_defaults.date_to %}" min="{{ stats_defaults.min_date }}" max="{{ stats_defaults.max_date }}" required></div>
+      <div><label for="avito-stats-grouping" class="small mb-1">Группировка</label><select class="form-select form-select-sm" name="grouping" id="avito-stats-grouping">
+        <option value="totals" {% if not workspace.statistics.data.grouping or workspace.statistics.data.grouping == 'totals' %}selected{% endif %}>Итого за период</option>
+        <option value="item" {% if workspace.statistics.data.grouping == 'item' %}selected{% endif %}>По объявлениям</option>
+        <option value="day" {% if workspace.statistics.data.grouping == 'day' %}selected{% endif %}>По дням</option>
+        <option value="week" {% if workspace.statistics.data.grouping == 'week' %}selected{% endif %}>По неделям</option>
+        <option value="month" {% if workspace.statistics.data.grouping == 'month' %}selected{% endif %}>По месяцам</option>
+      </select></div>
+      <button type="submit" class="btn btn-sm btn-primary" {% if not selected.has_credentials %}disabled{% endif %}><i class="bi bi-arrow-clockwise me-1" aria-hidden="true"></i>Загрузить статистику</button>
+    </form>
+    <p class="small text-muted mb-3">У этого отчёта свой период. Кнопка «Обновить данные» выше его не обновляет. Запрос статистики доступен не чаще раза в минуту для аккаунта; автоматических повторов нет.</p>
+    {% include 'pool_service/avito/_section_state.html' with state=workspace.statistics %}
+    {% if workspace.statistics.data %}
+      <div class="small text-muted mb-3">Период отчёта: {{ workspace.statistics.data.date_from }}–{{ workspace.statistics.data.date_to }}{% if workspace.statistics.data.source_timestamp %} · Метка времени источника: {{ workspace.statistics.data.source_timestamp }}{% endif %}</div>
+    {% endif %}
+    {% if workspace.statistics.data.rows %}
+      {% if workspace.statistics.data.grouping == 'totals' %}
+        {% for row in workspace.statistics.data.rows %}
+          <div class="avito-metrics avito-api-metrics">
+            {% for metric in row.metrics|slice:":4" %}
+              <div class="avito-metric">
+                {% if metric.value != None %}<strong>{{ metric.value }}{% if metric.unit %}<small> {{ metric.unit }}</small>{% endif %}</strong>{% else %}<strong class="avito-value-unavailable">Нет данных</strong>{% endif %}
+                <span>{{ metric.label }}</span>
+              </div>
+            {% endfor %}
+          </div>
+          {% if row.metrics|length > 4 %}
+            <details class="avito-more-metrics mt-3">
+              <summary>Остальные показатели: контакты, конверсии, расходы и результаты</summary>
+              <div class="avito-metrics avito-api-metrics mt-3">
+                {% for metric in row.metrics|slice:"4:" %}
+                  <div class="avito-metric">
+                    {% if metric.value != None %}<strong>{{ metric.value }}{% if metric.unit %}<small> {{ metric.unit }}</small>{% endif %}</strong>{% else %}<strong class="avito-value-unavailable">Нет данных</strong>{% endif %}
+                    <span>{{ metric.label }}</span>
+                  </div>
+                {% endfor %}
+              </div>
+            </details>
+          {% endif %}
+        {% endfor %}
+      {% else %}
+        <div class="table-responsive avito-statistics-table">
+          <table class="table avito-listings">
+            <caption class="visually-hidden">Статистика Авито за {{ workspace.statistics.data.date_from }}–{{ workspace.statistics.data.date_to }}</caption>
+            <thead><tr><th scope="col">{% if workspace.statistics.data.grouping == 'item' %}Объявление{% else %}Группа периода{% endif %}</th>{% for metric in workspace.statistics.data.metric_labels %}<th scope="col">{{ metric.label }}{% if metric.unit %}, {{ metric.unit }}{% endif %}</th>{% endfor %}</tr></thead>
+            <tbody>{% for row in workspace.statistics.data.rows %}<tr><th scope="row">{{ row.label|default:row.id }}</th>{% for metric in row.metrics %}<td class="avito-numeric">{% if metric.value != None %}{{ metric.value }}{% else %}<span class="text-muted">Нет данных</span>{% endif %}</td>{% endfor %}</tr>{% endfor %}</tbody>
+          </table>
+        </div>
+      {% endif %}
+      <div class="small text-muted mt-3">«Нет данных» означает, что Авито не передал показатель. Нулевые значения показаны отдельно. Показатели с единицей «₽» приведены в рублях, конверсии — в процентах. Для остальных значений единицы указаны отдельно.</div>
+    {% elif workspace.statistics.data or workspace.statistics.status == 'ok' %}
+      <div class="avito-empty"><i class="bi bi-bar-chart" aria-hidden="true"></i><strong>За этот период строки статистики не получены</strong><p>Авито вернул пустой отчёт. Это не заменяет отсутствующие показатели нулями.</p></div>
+    {% elif workspace.statistics.status %}
+      <div class="avito-empty"><strong>Статистика пока недоступна</strong><p>Сохранённого отчёта нет. Проверьте сообщение об ошибке выше.</p></div>
+    {% else %}
+      <div class="avito-empty"><i class="bi bi-bar-chart" aria-hidden="true"></i><strong>Статистика ещё не загружена</strong><p>Выберите период и группировку, затем нажмите «Загрузить статистику».</p></div>
+    {% endif %}
+    <div class="avito-api-note mt-3">Детальная расшифровка расходов не загружается: единицы денежных сумм в её контракте не подтверждены. Необработанные суммы не показываются.</div>
+  </div>
+  {% if workspace.statistics.data and workspace.statistics.data.grouping != 'totals' %}
+    <div class="avito-pagination">
+      <span>Получено групп: {{ workspace.statistics.data.rows|length }} · {% if workspace.statistics.data.total != None %}Всего: {{ workspace.statistics.data.total }}{% else %}Всего: Авито не передал количество{% endif %}</span>
+      <div class="d-flex align-items-center gap-3">
+        <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" data-avito-submit>
+          {% include 'pool_service/avito/_refresh_fields.html' %}<input type="hidden" name="section" value="statistics"><input type="hidden" name="stats_date_from" value="{{ workspace.statistics.data.date_from }}"><input type="hidden" name="stats_date_to" value="{{ workspace.statistics.data.date_to }}"><input type="hidden" name="grouping" value="{{ workspace.statistics.data.grouping }}"><input type="hidden" name="offset" value="{{ workspace.statistics.data.offset|add:'-50' }}">
+          <button type="submit" class="btn btn-sm btn-outline-secondary" {% if not workspace.statistics.data.has_previous or not selected.has_credentials %}disabled{% endif %}><i class="bi bi-chevron-left" aria-hidden="true"></i><span class="visually-hidden">Предыдущие группы статистики</span></button>
+        </form>
+        <span>С позиции {{ workspace.statistics.data.offset|add:'1' }}</span>
+        <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" data-avito-submit>
+          {% include 'pool_service/avito/_refresh_fields.html' %}<input type="hidden" name="section" value="statistics"><input type="hidden" name="stats_date_from" value="{{ workspace.statistics.data.date_from }}"><input type="hidden" name="stats_date_to" value="{{ workspace.statistics.data.date_to }}"><input type="hidden" name="grouping" value="{{ workspace.statistics.data.grouping }}"><input type="hidden" name="offset" value="{{ workspace.statistics.data.offset|add:'50' }}">
+          <button type="submit" class="btn btn-sm btn-outline-secondary" {% if not workspace.statistics.data.has_next or not selected.has_credentials %}disabled{% endif %}><span class="visually-hidden">Следующие группы статистики</span><i class="bi bi-chevron-right" aria-hidden="true"></i></button>
+        </form>
+      </div>
+    </div>
+  {% endif %}
+</section>
