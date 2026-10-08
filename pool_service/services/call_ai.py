@@ -19,7 +19,7 @@ from openai import OpenAI
 import imageio_ffmpeg
 
 from pool_service.communication_models import CallAnalysis, PhoneCall
-from pool_service.services.call_privacy import is_private_call
+from pool_service.services.call_privacy import is_private_call, locked_call_for_privacy
 from pool_service.call_processing_models import CallProcessingUsage
 from pool_service.services.call_usage import (
     CallBudgetExceeded,
@@ -502,29 +502,34 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
             transcription_timeout = float(
                 _setting("OPENAI_CALL_TRANSCRIPTION_TIMEOUT_SECONDS", 300)
             )
-            transcription_client = _client(timeout_seconds=transcription_timeout)
-            result = _result_with_usage(
-                _transcribe(transcription_client, call),
-                2,
-            )
-            transcript, transcription_model, input_tokens, output_tokens = result
-            finish_stage(
-                active_usage_id,
-                succeeded=True,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-            )
+            with locked_call_for_privacy(call.id) as current_call:
+                if current_call is None or is_private_call(current_call):
+                    release_stage(active_usage_id, error_code="private_call")
+                    active_usage_id = None
+                    _pause_for_budget(analysis, token, "")
+                    return False
+                transcription_client = _client(timeout_seconds=transcription_timeout)
+                result = _result_with_usage(
+                    _transcribe(transcription_client, current_call),
+                    2,
+                )
+                transcript, transcription_model, input_tokens, output_tokens = result
+                finish_stage(
+                    active_usage_id,
+                    succeeded=True,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
+                checkpointed = CallAnalysis.objects.filter(
+                    pk=analysis.pk,
+                    status=CallAnalysis.STATUS_PROCESSING,
+                    processing_token=token,
+                ).update(
+                    transcript=transcript,
+                    transcription_model=transcription_model,
+                )
             active_usage_id = None
             active_stage = None
-
-            checkpointed = CallAnalysis.objects.filter(
-                pk=analysis.pk,
-                status=CallAnalysis.STATUS_PROCESSING,
-                processing_token=token,
-            ).update(
-                transcript=transcript,
-                transcription_model=transcription_model,
-            )
             if not checkpointed:
                 return False
 
@@ -557,22 +562,28 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
         active_usage_id = usage.pk
         active_stage = CallProcessingUsage.STAGE_ANALYSIS
 
-        analysis_client = _client()
-        result = _result_with_usage(
-            _analyze_transcript(
-                analysis_client,
-                call,
-                transcript,
-            ),
-            3,
-        )
-        summary, facts, analysis_model, input_tokens, output_tokens = result
-        finish_stage(
-            active_usage_id,
-            succeeded=True,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-        )
+        with locked_call_for_privacy(call.id) as current_call:
+            if current_call is None or is_private_call(current_call):
+                release_stage(active_usage_id, error_code="private_call")
+                active_usage_id = None
+                _pause_for_budget(analysis, token, "")
+                return False
+            analysis_client = _client()
+            result = _result_with_usage(
+                _analyze_transcript(
+                    analysis_client,
+                    current_call,
+                    transcript,
+                ),
+                3,
+            )
+            summary, facts, analysis_model, input_tokens, output_tokens = result
+            finish_stage(
+                active_usage_id,
+                succeeded=True,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
         active_usage_id = None
         active_stage = None
 

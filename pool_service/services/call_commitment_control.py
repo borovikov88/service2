@@ -8,7 +8,7 @@ from django.db.models import Q
 from django.urls import reverse
 from django.utils import timezone
 
-from pool_service.models import OrganizationAccess, ServiceTask
+from pool_service.models import Organization, OrganizationAccess, ServiceTask
 from pool_service.services.notifications import notify_users
 from pool_service.services.push_notifications import send_push_to_users
 from pool_service.services.task_feedback import state_for, waiting_control
@@ -211,9 +211,17 @@ def _deliver_control_push(task_id, expected_key, *, escalation=False):
     # A user may change the task between the transaction and its callback.
     # Re-read current state under the shared lock; never emit the old reminder.
     with transaction.atomic():
+        organization_id = ServiceTask.objects.filter(pk=task_id).values_list(
+            "organization_id", flat=True
+        ).first()
+        if not organization_id:
+            return
+        # Privacy-list mutations use this organization lock. Hold it through
+        # the push so a newly private source cannot leak its task title.
+        Organization.objects.select_for_update().get(pk=organization_id)
         task = _eligible_tasks().select_for_update().select_related(
             "organization", "client", "pool", "pool__client", "primary_responsible",
-        ).filter(pk=task_id).first()
+        ).filter(pk=task_id, organization_id=organization_id).first()
         if task is None:
             return
         if task_source_is_private(task):

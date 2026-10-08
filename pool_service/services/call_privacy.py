@@ -7,11 +7,14 @@ work surface must treat it as unavailable. Existing rows are not deleted.
 from __future__ import annotations
 
 from collections import defaultdict
+from contextlib import contextmanager
 
 from django.contrib.auth.models import User
+from django.db import transaction
 
 from pool_service.call_processing_models import CallPrivateNumber
 from pool_service.communication_models import PhoneCall
+from pool_service.models import Organization
 from pool_service.services.call_processing_policy import phone_key
 
 
@@ -128,6 +131,24 @@ def private_call_ids(calls):
 
 def is_private_call(call):
     return bool(call and call.pk and call.pk in private_call_ids([call]))
+
+
+@contextmanager
+def locked_call_for_privacy(call_id):
+    """Serialize a final privacy decision with organization privacy updates."""
+    with transaction.atomic():
+        organization_id = PhoneCall.objects.filter(pk=call_id).values_list(
+            "organization_id", flat=True
+        ).first()
+        if not organization_id:
+            yield None
+            return
+        # Privacy settings use the same organization -> call lock order.
+        Organization.objects.select_for_update().get(pk=organization_id)
+        call = PhoneCall.objects.select_for_update().filter(
+            pk=call_id, organization_id=organization_id
+        ).first()
+        yield call
 
 
 def visible_calls(calls):

@@ -8,6 +8,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from pool_service.call_processing_models import CallPrivateNumber
+from pool_service.call_processing_models import CallProcessingUsage
 from pool_service.communication_models import (
     CallAnalysis,
     CommunicationAccess,
@@ -19,7 +20,12 @@ from pool_service.operations_mcp_views import _get_call_analysis, _list_control_
 from pool_service.communication_recordings import download_call_recording
 from pool_service.services.call_ai import process_call_analysis, request_call_analysis
 from pool_service.services.call_commitments import materialize_call_commitments
-from pool_service.services.call_commitment_control import process_call_commitment_controls
+from pool_service.services.call_commitment_control import (
+    _control_key,
+    _deliver_control_push,
+    _effective_deadline,
+    process_call_commitment_controls,
+)
 from pool_service.services.call_privacy import is_private_call, private_call_ids
 
 
@@ -162,6 +168,45 @@ class PrivateCallEnforcementTests(TestCase):
         self.assertIsNone(analysis.requested_at)
         self.assertEqual(analysis.processing_token, "")
 
+    @patch("pool_service.services.call_ai._transcribe")
+    @patch("pool_service.services.call_ai._client")
+    def test_call_marked_private_after_budget_reservation_never_reaches_ai(
+        self, ai_client, transcribe
+    ):
+        from pool_service.services import call_ai
+
+        call = self.call(
+            phone="+7 999 000-00-99",
+            recording_file="communications/public.mp3",
+        )
+        analysis = CallAnalysis.objects.create(
+            call=call,
+            status=CallAnalysis.STATUS_PENDING,
+            requested_at=timezone.now(),
+        )
+        reserve = call_ai.reserve_stage
+
+        def reserve_then_mark_private(**kwargs):
+            usage = reserve(**kwargs)
+            CallPrivateNumber.objects.create(
+                organization=self.org,
+                owner=self.owner,
+                label="Private after reservation",
+                phone_key="9990000099",
+            )
+            return usage
+
+        with patch.object(call_ai, "reserve_stage", side_effect=reserve_then_mark_private):
+            self.assertFalse(process_call_analysis(call.pk))
+
+        ai_client.assert_not_called()
+        transcribe.assert_not_called()
+        analysis.refresh_from_db()
+        self.assertEqual(analysis.status, CallAnalysis.STATUS_PENDING)
+        self.assertEqual(analysis.processing_token, "")
+        usage = CallProcessingUsage.objects.get(call=call)
+        self.assertEqual(usage.status, CallProcessingUsage.STATUS_RELEASED)
+
     @patch("pool_service.communication_recordings._open_recording")
     def test_private_call_is_blocked_before_provider_recording_request(self, open_recording):
         call = self.call(
@@ -227,6 +272,29 @@ class PrivateCallEnforcementTests(TestCase):
         result = process_call_commitment_controls(now=timezone.now())
         self.assertEqual(result["checked"], 0)
         self.assertFalse(Notification.objects.exists())
+
+    @patch("pool_service.services.call_commitment_control.send_push_to_users")
+    def test_control_push_rechecks_private_source_under_organization_lock(self, send_push):
+        call = self.call()
+        task = ServiceTask.objects.create(
+            organization=self.org,
+            title="PRIVATE_CONTROL_PUSH_TITLE",
+            start_date=timezone.localdate() - timedelta(days=1),
+            end_date=timezone.localdate() - timedelta(days=1),
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            source_type=ServiceTask.SOURCE_SYSTEM,
+            status=ServiceTask.STATUS_NEW,
+            primary_responsible=self.owner,
+            auto_created=True,
+            payload_json={
+                "source": "call_analysis",
+                "source_call_id": call.pk,
+                "actor": "employee",
+            },
+        )
+        deadline = _effective_deadline(task, task.payload_json)
+        _deliver_control_push(task.pk, _control_key(task, deadline))
+        send_push.assert_not_called()
 
     @patch("pool_service.views._redirect_if_access_blocked", return_value=None)
     def test_private_source_task_is_hidden_from_calendar_data(self, _blocked):
