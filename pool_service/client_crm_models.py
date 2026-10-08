@@ -130,6 +130,35 @@ class ClientContact(models.Model):
         return f"{self.client}: {self.value}"
 
 
+class ClientOwnedObject(models.Model):
+    TYPE_POOL = "pool"
+    TYPE_IRRIGATION = "irrigation"
+    TYPE_HAMMAM = "hammam"
+    TYPE_WATER = "water"
+    TYPE_CHOICES = [
+        (TYPE_POOL, "Бассейн"),
+        (TYPE_IRRIGATION, "Автополив"),
+        (TYPE_HAMMAM, "Хамам"),
+        (TYPE_WATER, "Водоподготовка"),
+    ]
+    client = models.ForeignKey(
+        "pool_service.Client", on_delete=models.CASCADE, related_name="owned_objects",
+    )
+    object_type = models.CharField(max_length=16, choices=TYPE_CHOICES)
+    name = models.CharField(max_length=255, blank=True)
+    address = models.CharField(max_length=500, blank=True)
+    parameters = models.TextField(blank=True)
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["object_type", "name", "id"]
+
+    def __str__(self):
+        return self.name or self.get_object_type_display()
+
+
 class ClientCompanyLink(models.Model):
     SOURCE_MANUAL = "manual"
     SOURCE_ONEC_IP = "onec_ip"

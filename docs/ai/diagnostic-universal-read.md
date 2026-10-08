@@ -152,4 +152,4 @@ Run targeted Diagnostic tests, Django check, `makemigrations --check --dry-run`,
 
 ## Review/deployment
 
-This changes permissions and live 1C read policy, so independent Codex review of the exact final GitHub head is mandatory before merge. Deployment uses the existing exact-head review gate and production workflow.
+This changes permissions and live 1C read policy, so independent Codex review of the exact final GitHub head is mandatory before merge. Deployment uses the production workflow's CI, exact-SHA checks, and preflight; a separate GitHub APPROVED is not required.

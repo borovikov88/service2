@@ -1,10 +1,13 @@
 import logging
+from datetime import timedelta
 
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
-from django.db.models import Count, Q
+from django import forms
+from django.db.models import Count, Q, Value
+from django.db.models.functions import Replace
 from django.http import HttpResponseForbidden, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -21,10 +24,11 @@ from .client_crm_models import (
     ClientCRMProfile,
     ClientImportCandidate,
     ClientImportRun,
+    ClientOwnedObject,
 )
 from .client_queries import active_clients
 from .client_crm_ui import card_tab, card_url, relationship_results
-from .phone_utils import format_phone
+from .phone_utils import format_phone, normalize_phone
 from .client_merge import merge_clients, merge_suggestions
 from .communication_models import CommunicationAccess, PhoneCall
 from .models import Client, CrmItem, OrganizationAccess, Pool, ServiceTask
@@ -34,6 +38,20 @@ IMPORT_ROLES = {"owner", "admin"}
 CLIENT_CARD_ROLES = {"owner", "admin", "service", "installer", "manager"}
 SERVICE_ONLY_ROLES = {"service", "installer"}
 logger = logging.getLogger(__name__)
+
+
+class ClientOwnedObjectForm(forms.ModelForm):
+    class Meta:
+        model = ClientOwnedObject
+        fields = ("object_type", "name", "address", "parameters", "notes")
+        labels = {
+            "object_type": "Тип объекта", "name": "Название", "address": "Адрес",
+            "parameters": "Параметры", "notes": "Комментарий",
+        }
+        widgets = {
+            "parameters": forms.Textarea(attrs={"rows": 3}),
+            "notes": forms.Textarea(attrs={"rows": 3}),
+        }
 
 
 def _can_manage_import(user, organization_id):
@@ -148,6 +166,26 @@ def client_detail(request, client_id):
             messages.success(request, "Карточка клиента обновлена.")
             return redirect("client_detail", client_id=client.id)
 
+        if action == "add_owned_object":
+            form = ClientOwnedObjectForm(request.POST)
+            if form.is_valid():
+                item = form.save(commit=False)
+                item.client = client
+                item.save()
+                messages.success(request, "Объект клиента добавлен.")
+            else:
+                messages.error(request, "Проверьте тип и данные объекта клиента.")
+            return redirect(card_url(client.id, "objects"))
+
+        if action == "delete_owned_object":
+            try:
+                object_id = int(request.POST.get("object_id") or 0)
+            except (TypeError, ValueError):
+                object_id = 0
+            ClientOwnedObject.objects.filter(client=client, pk=object_id).delete()
+            messages.success(request, "Объект клиента удалён.")
+            return redirect(card_url(client.id, "objects"))
+
         if action == "add_company_link":
             try:
                 related_id = int(request.POST.get("related_client") or 0)
@@ -255,6 +293,7 @@ def client_detail(request, client_id):
         Pool.objects.filter(client=client, is_deleted=False)
         .order_by("address", "id")
     )
+    owned_objects = list(ClientOwnedObject.objects.filter(client=client))
 
     tasks_qs = (
         ServiceTask.objects.filter(
@@ -350,6 +389,29 @@ def client_detail(request, client_id):
         call.duration_display = f"{minutes}:{seconds:02d}"
         call.analysis_obj = getattr(call, "analysis", None)
         call.phone_display = format_phone(call.phone_number)
+        call.callback_at = None
+        call.missed_unreturned = call.result == PhoneCall.RESULT_MISSED
+        if call.missed_unreturned:
+            phone_key = normalize_phone(call.phone_number)
+            digits = "".join(char for char in phone_key if char.isdigit())
+            if len(digits) >= 7:
+                phone_digits = "phone_number"
+                for separator in ("+", " ", "-", "(", ")", "."):
+                    phone_digits = Replace(phone_digits, Value(separator), Value(""))
+                candidates = PhoneCall.objects.filter(
+                    organization_id=client.organization_id,
+                    direction=PhoneCall.DIRECTION_OUT,
+                    result=PhoneCall.RESULT_ANSWERED,
+                    started_at__gt=call.started_at,
+                    started_at__lte=call.started_at + timedelta(hours=1),
+                ).annotate(_phone_digits=phone_digits).filter(
+                    _phone_digits__contains=digits[-7:],
+                ).order_by("started_at", "pk").iterator(chunk_size=200)
+                for callback in candidates:
+                    if normalize_phone(callback.phone_number) == phone_key:
+                        call.callback_at = callback.started_at
+                        call.missed_unreturned = False
+                        break
 
     staff_options = []
     if can_manage and client.organization_id:
@@ -388,6 +450,9 @@ def client_detail(request, client_id):
             "relationship_mode": relationship_mode,
             "card_tab": card_tab(request.GET.get("tab")),
             "pools": pools,
+            "owned_objects": owned_objects,
+            "owned_object_form": ClientOwnedObjectForm(),
+            "client_object_count": len(pools) + len(owned_objects),
             "tasks": tasks,
             "crm_items": crm_items,
             "calls": calls,

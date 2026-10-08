@@ -7,7 +7,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from pool_service.client_crm_models import ClientCRMProfile
+from pool_service.client_crm_models import ClientContact, ClientCRMProfile
 from pool_service.models import Client, Organization, OrganizationAccess
 
 
@@ -101,3 +101,36 @@ class CRMEditorReviewRegressionTests(TestCase):
             response = self.client.post(self.url, {"name": "Denied", "profile-notes": "Do not save"})
         self.assertEqual(response.status_code, 403)
         self.assert_customer_unchanged()
+
+    def test_private_editor_hides_inn_and_supports_extra_phone(self):
+        person = Client.objects.create(
+            organization=self.second_org, client_type="private", name="Иванова Мария",
+            first_name="Мария", last_name="Иванова", inn="1234567890",
+        )
+        ClientCRMProfile.objects.create(client=person, middle_name="Петровна")
+        url = reverse("client_edit", args=[person.pk])
+        page = self.client.get(url)
+        self.assertNotContains(page, "ИНН")
+        self.assertNotIn("inn", page.context["client_form"].fields)
+        response = self.client.post(url, {
+            "action": "add_extra_phone", "phone": "+7 900 555-66-77", "label": "Рабочий",
+        })
+        self.assertRedirects(
+            response, reverse("client_detail", args=[person.pk]) + "?tab=contacts",
+            fetch_redirect_response=False,
+        )
+        self.assertTrue(ClientContact.objects.filter(
+            client=person, kind=ClientContact.KIND_PHONE, value="+7 900 555 6677",
+        ).exists())
+
+    def test_first_and_last_name_fill_editable_crm_name_without_patronymic(self):
+        person = Client.objects.create(
+            organization=self.second_org, client_type="private", name="Старая карточка",
+        )
+        ClientCRMProfile.objects.create(client=person)
+        response = self.client.post(reverse("client_edit", args=[person.pk]), {
+            "last_name": "Дыченко", "first_name": "Надежда", "profile-middle_name": "Николаевна",
+        })
+        self.assertEqual(response.status_code, 302)
+        person.refresh_from_db()
+        self.assertEqual(person.name, "Дыченко Надежда")

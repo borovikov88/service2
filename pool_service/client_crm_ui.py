@@ -114,7 +114,11 @@ class ClientEditorForm(forms.ModelForm):
             for name in ("last_name", "first_name", "contact_position"):
                 self.fields.pop(name)
         else:
-            self.fields["name"].help_text = "Название карточки, в том числе привычное имя или примечание."
+            self.fields.pop("inn")
+            self.fields["name"].help_text = "Имя в CRM можно изменить вручную; 1С не перезапишет его."
+            self.fields["name"].widget.attrs["data-crm-name"] = "1"
+            for name in ("last_name", "first_name"):
+                self.fields[name].widget.attrs["data-crm-name-part"] = "1"
         for field in self.fields.values():
             field.widget.attrs["class"] = "form-control"
         self.fields["phone"].widget.attrs.update({"inputmode": "tel", "autocomplete": "tel"})
@@ -257,6 +261,22 @@ def client_edit(request, client_id):
         tab = card_tab(request.POST.get("return_tab") if request.method == "POST" else request.GET.get("tab"))
         if profile.merged_into_id:
             return redirect(card_url(profile.merged_into_id, tab))
+        if request.method == "POST" and request.POST.get("action") == "add_extra_phone":
+            from .phone_utils import canonical_phone_value
+            raw_phone = (request.POST.get("phone") or "").strip()
+            normalized = normalize_phone(raw_phone)
+            if not normalized:
+                messages.error(request, "Укажите корректный номер телефона.")
+            elif normalized == normalize_phone(client.phone or ""):
+                messages.error(request, "Этот номер уже указан как основной.")
+            else:
+                value = canonical_phone_value(raw_phone)
+                ClientContact.objects.get_or_create(
+                    client=client, kind=ClientContact.KIND_PHONE, value=value,
+                    defaults={"match_value": normalized, "label": (request.POST.get("label") or "Дополнительный")[:120], "sources": ["manual"]},
+                )
+                messages.success(request, "Дополнительный телефон добавлен.")
+            return redirect(card_url(client.pk, "contacts"))
         previous_phone, previous_email = client.phone, client.email
         client_form = ClientEditorForm(instance=client)
         profile_form = CRMProfileEditorForm(instance=profile, client=client, prefix="profile")
@@ -281,12 +301,10 @@ def client_edit(request, client_id):
                     updated.company_name = updated.name
                 elif (
                     "name" not in request.POST
-                    and ({"first_name", "last_name"} & set(client_form.changed_data)
-                         or "middle_name" in profile_form.changed_data)
+                    and ({"first_name", "last_name"} & set(client_form.changed_data))
                 ):
                     name = " ".join(filter(None, (
                         updated.last_name, updated.first_name,
-                        profile_form.cleaned_data.get("middle_name", ""),
                     )))
                     if name:
                         if len(name) > Client._meta.get_field("name").max_length:

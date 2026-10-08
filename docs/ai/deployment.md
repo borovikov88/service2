@@ -15,23 +15,22 @@ Workflow `.github/workflows/ci-deploy.yml` запускает все Django-те
 на pull request в `main`. После merge GitHub повторяет те же проверки для
 точного commit в `main` и только после успеха запускает deployment в GitHub
 Environment `production`. Deployment по SSH вызывает `update.sh` с SHA
-проверенного commit. Workflow дополнительно проверяет через GitHub API, что SHA
-получен merge одного PR и актуальный head этого PR независимо одобрен не автором.
-Проверяются все страницы reviews, а для каждого проверяющего учитывается последнее
-решающее состояние (`APPROVED`, `CHANGES_REQUESTED` или `DISMISSED`);
-прямой push закрывается fail-closed. Проверенный `update.sh` передаётся на stdin
-SSH, поэтому запуск не зависит от старой копии скрипта на сервере. Скрипт сверяет
-SHA с `origin/main`, запрещает параллельный
-запуск и отказывается затирать настоящие местные изменения. Проверяемое
-исключение для результатов сборки статики описано ниже.
+проверенного commit. Скрипт сверяет SHA с `origin/main`, запрещает параллельный
+запуск и отказывается затирать настоящие местные изменения. Независимое
+содержательное ревью выполняется на точном финальном diff/head. Проверенный
+`update.sh` передаётся на stdin SSH, поэтому запуск не зависит от старой копии
+скрипта на сервере. Проверяемое исключение для результатов сборки статики
+описано ниже.
 
 Разработка и ревью переведены на выбранный владельцем тарифный путь Codex.
 Отдельный API review/publisher и API-backed development workflow выводятся
 из эксплуатации; серверный API-клиент development analysis/review блокируется.
-Старый poller не считается работающим через кредиты ChatGPT. Не запускать его
-для получения обходного approval. Подробности — в `codex-direct-flow.md`.
-Штатная интеграция Codex может оставлять комментарии или реакции; они не
-заменяют обязательный GitHub APPROVED. Автоматического преобразования нет.
+Старый poller не считается работающим через кредиты ChatGPT. Подробности — в
+`codex-direct-flow.md`. Отдельное GitHub APPROVED не является условием
+merge/deployment: владелец подтвердил, что `aqualine-review-bot` также
+контролируется им и потому не подтверждает независимость. Для допуска нужны
+содержательное независимое ревью, зелёный CI и действующие branch/environment/
+workflow guards.
 
 ## Постоянное разрешение владельца на штатную публикацию
 
@@ -43,7 +42,8 @@ protected production deployment без нового запроса на кажд
   штатные merge и production deployment; PR относится именно к ней и его
   область не стала неоднозначной;
 - CI полностью зелёный;
-- есть требуемый независимый GitHub `APPROVED` для актуального head PR;
+- есть независимое содержательное ревью актуального diff/head без
+  неразрешённых замечаний;
 - целевой commit точно сверён с текущим `main` и проходят действующие
   branch/environment/workflow guards;
 - нет неразрешённых предупреждений, замечаний ревью или ошибок preflight.
@@ -54,8 +54,8 @@ deployment preflight непосредственно перед изменяющ�
 заменяет эту проверку окружения.
 
 Это разрешение действует лишь для обычного защищённого пути GitHub Actions:
-никакие branch protection, Environment protection, review gate, exact-SHA
-проверки, preflight или health-check не обходятся и не ослабляются. Если CI,
+никакие branch protection, Environment protection, exact-SHA проверки,
+preflight или health-check не обходятся и не ослабляются. Если CI,
 review, deployment, preflight или health-check завершились ошибкой, работа
 останавливается и эскалируется владельцу.
 
@@ -65,12 +65,9 @@ review, deployment, preflight или health-check завершились оши�
 на любое действие вне согласованной задачи. Для них требуется отдельная задача
 и явное решение владельца; это правило не меняет ограничений `AGENTS.md`.
 
-Независимость дополнительно обеспечивает правило защищённой ветки, а не deploy-скрипт.
 Для `main` нужно включить protection/ruleset со следующими условиями:
 
 - изменения только через pull request;
-- минимум один approval пользователя, который не является автором;
-- dismiss stale approvals после новых commits;
 - обязательная проверка `Django checks and tests`;
 - запрет force push и удаления ветки;
 - запрет обхода правил, включая администратора, для обычной публикации.
@@ -142,7 +139,11 @@ HEAD с `main`, не полный deploy preflight, не финансовые о
 Этот workflow не вызывает `update.sh`, fetch/checkout на хостинге, миграции,
 импорт, collectstatic или Passenger restart. GitHub может отображать использование
 Environment как deployment activity; это не означает обновления приложения.
-Существующий review gate изменяющего workflow сохраняется без изменений.
+Изменяющий workflow повторяет CI для точного commit в `main`, затем выполняет
+deployment preflight и health-check; GitHub APPROVED отдельного аккаунта не
+требуется. Проверка branch protection через GitHub CLI на 8 октября 2026 года
+вернула `Branch not protected`; обязательные PR checks сейчас не обеспечиваются
+настройкой защиты `main`.
 
 ## Собранная статика в существующем checkout
 
@@ -184,15 +185,15 @@ Deployment не меняет production `.env`; тестовый MCP нельз�
 Если GitHub не создал push-run после уже проверенного merge в `main`,
 `workflow_dispatch` для `ci-deploy.yml` используется только как recovery-путь:
 в Actions выбирается именно `main`, а в обязательное поле вводится полный
-40-символьный SHA текущего `main`. После тестов workflow продолжает review gate
-и deployment только если ref — `refs/heads/main`, введённый SHA равен
+40-символьный SHA текущего `main`. После тестов workflow продолжает deployment
+только если ref — `refs/heads/main`, введённый SHA равен
 `github.sha`, GitHub API подтверждает, что текущий `main` всё ещё указывает на
-этот SHA, и проходит прежняя проверка merged PR с независимым актуальным
-`APPROVED`. Перед exact checkout и SSH эта проверка `main` через GitHub API
+этот SHA. Перед exact checkout и SSH проверка `main` через GitHub API
 повторяется. Любое несовпадение останавливает pipeline до exact checkout, SSH
 и фактического развёртывания; запуск с другой ветки не получает deployment.
-Этот recovery-путь не заменяет ревью, не допускает прямой push и не позволяет
-развернуть устаревший commit. Отдельный `hosting-connection-check.yml`
+Этот recovery-путь не выполняет push самостоятельно и не позволяет развернуть
+SHA, который уже не является текущим `main`; независимое содержательное ревью
+остаётся обязательным. Отдельный `hosting-connection-check.yml`
 выполняет описанную выше проверку подключения.
 
 Deployment не является атомарным и автоматический rollback после применённой

@@ -127,6 +127,35 @@ class ClientCRMAutoSyncTests(TestCase):
         self.assertEqual(result["refreshed"], 1)
         self.assertEqual(client.name, "New Name")
 
+    def test_refresh_preserves_crm_name_changed_manually(self):
+        ref = "42345678-1234-1234-1234-1234567890ab"
+        client = Client.objects.create(
+            organization=self.organization, client_type="private",
+            name="Дыченко Александр", first_name="Надежда", last_name="Дыченко",
+            phone="+7 999 123-45-67",
+        )
+        ClientCRMProfile.objects.create(
+            client=client, onec_ref=ref, onec_name="Дыченко Надежда Николаевна",
+            middle_name="Николаевна", source=ClientCRMProfile.SOURCE_ONEC,
+        )
+        ClientImportCandidate.objects.create(
+            organization=self.organization, source_ref=ref, source_code="C-203",
+            source_kind=ClientImportCandidate.KIND_PRIVATE,
+            name="Дыченко Надежда Николаевна", status=ClientImportCandidate.STATUS_IMPORTED,
+            matched_client=client, applied_at=timezone.now(),
+            phone="+7 999 123-45-67",
+        )
+        row = self._row(
+            Ref_Key=ref, Code="C-203", Description="Дыченко Надежда Николаевна",
+            ФИО="Дыченко Надежда Николаевна",
+            НомерТелефонаДляПоиска="+7 999 123-45-67",
+        )
+        self._sync([row])
+        client.refresh_from_db()
+        self.assertEqual(client.name, "Дыченко Александр")
+        self.assertEqual(client.first_name, "Надежда")
+        self.assertEqual(client.phone, "+7 999 123 4567")
+
     def test_ip_name_only_does_not_auto_merge(self):
         Client.objects.create(
             organization=self.organization,

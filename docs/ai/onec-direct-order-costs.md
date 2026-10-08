@@ -144,6 +144,5 @@ This changes a financial calculation/data path. Do not merge or deploy from the 
 Before merge, require:
 - green normal PR CI on the exact GitHub head;
 - independent substantive Codex review of the exact final diff/head;
-- formal independent `APPROVED` according to the repository review gate.
 
 No migration should be added unless the implementation can demonstrate why the existing `OneCMonthlyProfit` snapshot/model cannot safely represent direct cost-only rows.

@@ -5,5 +5,5 @@
   </div>
   <input type="hidden" name="{{ lookup_name|default:'client' }}" value="{{ lookup_selected.pk|default:'' }}" data-lookup-value>
   <div class="list-group position-absolute start-0 end-0 shadow-sm" id="{{ lookup_id }}-results" role="listbox" data-lookup-results hidden style="z-index:1050;max-height:18rem;overflow-y:auto;"></div>
-  <div class="form-text small" id="{{ lookup_id }}-status" aria-live="polite" data-lookup-status>Введите минимум 3 символа.</div>
+  <div class="form-text small" id="{{ lookup_id }}-status" aria-live="polite" data-lookup-status></div>
 </div>

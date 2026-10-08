@@ -1008,6 +1008,7 @@ def apply_candidate(candidate):
     )
     client = candidate.matched_client
     already_linked_to_same_onec = False
+    preserve_manual_name = False
     if client is None:
         client_type = "private" if kind == ClientImportCandidate.KIND_PRIVATE else "legal"
         last_name = first_name = middle_name = ""
@@ -1025,21 +1026,28 @@ def apply_candidate(candidate):
             inn=candidate.inn or None,
         )
     else:
-        already_linked_to_same_onec = ClientCRMProfile.objects.filter(
+        linked_profile = ClientCRMProfile.objects.filter(
             client=client,
             onec_ref=candidate.source_ref,
-        ).exists()
+        ).only("onec_name").first()
+        already_linked_to_same_onec = linked_profile is not None
+        preserve_manual_name = bool(
+            linked_profile and linked_profile.onec_name
+            and client.name.strip() != linked_profile.onec_name.strip()
+        )
         if already_linked_to_same_onec:
-            client.name = candidate.name or client.name
+            if not preserve_manual_name:
+                client.name = candidate.name or client.name
             client.client_type = (
                 "private"
                 if kind == ClientImportCandidate.KIND_PRIVATE
                 else "legal"
             )
             if kind == ClientImportCandidate.KIND_PRIVATE:
-                last_name, first_name, _middle_name = _split_person_name(candidate.name)
-                client.first_name = first_name or None
-                client.last_name = last_name or None
+                if not preserve_manual_name:
+                    last_name, first_name, _middle_name = _split_person_name(candidate.name)
+                    client.first_name = first_name or None
+                    client.last_name = last_name or None
                 client.company_name = None
             else:
                 client.first_name = None
@@ -1066,11 +1074,12 @@ def apply_candidate(candidate):
         else ClientCRMProfile.LEGAL_FORM_NONE
     )
     if already_linked_to_same_onec:
-        profile.middle_name = (
-            _split_person_name(candidate.name)[2]
-            if client.client_type == "private"
-            else ""
-        )
+        if not preserve_manual_name:
+            profile.middle_name = (
+                _split_person_name(candidate.name)[2]
+                if client.client_type == "private"
+                else ""
+            )
         profile.birth_date = candidate.birth_date
         profile.legal_name = candidate.legal_name
         profile.kpp = candidate.kpp
