@@ -28,6 +28,7 @@ from .phone_utils import format_phone
 from .client_merge import merge_clients, merge_suggestions
 from .communication_models import CommunicationAccess, PhoneCall
 from .models import Client, CrmItem, OrganizationAccess, Pool, ServiceTask
+from .services.task_waiting_schedule import waiting_schedule_metadata
 
 
 IMPORT_ROLES = {"owner", "admin"}
@@ -293,6 +294,13 @@ def client_detail(request, client_id):
         )
         task.status_label = task.get_status_display()
         task.type_label = task.get_task_type_display()
+        schedule = waiting_schedule_metadata(task)
+        if schedule.get("schedule_kind") == "no_appointment":
+            task.schedule_display = "Дата не согласована"
+        elif schedule.get("schedule_kind") == "internal_check":
+            task.schedule_display = f"Контроль: {task.start_date:%d.%m.%Y}"
+        else:
+            task.schedule_display = task.start_date.strftime("%d.%m.%Y")
 
     crm_item_qs = CrmItem.objects.filter(
         Q(client=client) | Q(pool__client=client)
