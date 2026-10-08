@@ -107,20 +107,7 @@ def resolved_calls_for_client(queryset, client):
         ]
         if matched_numbers:
             condition |= Q(client__isnull=True, phone_number__in=matched_numbers)
-    resolved = queryset.filter(condition)
-    if resolved.model is PhoneCall:
-        privacy_candidates = list(
-            resolved.filter(source_kind=PhoneCall.SOURCE_TELEPHONY).only(
-                "id", "organization_id", "source_kind", "direction",
-                "employee_id", "peer_employee_id", "phone_number",
-                "provider_user", "provider_extension",
-                "peer_provider_user", "peer_provider_extension",
-            )
-        )
-        hidden_ids = private_call_ids(privacy_candidates)
-        if hidden_ids:
-            resolved = resolved.exclude(pk__in=hidden_ids)
-    return resolved
+    return queryset.filter(condition)
 
 
 def _selected_client(request, organization):
