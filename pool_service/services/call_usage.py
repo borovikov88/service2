@@ -245,7 +245,9 @@ def usage_summary(organization, *, now=None):
         "usage_usd": Decimal("0"),
         "confirmed_usd": Decimal("0"),
         "confirmed_unknown": 0,
-        "audio_seconds": 0,
+        "processed_calls": 0,
+        "unique_audio_seconds": 0,
+        "attempt_audio_seconds": 0,
     }
     by_employee = defaultdict(lambda: {
         "attempts": 0, "audio_seconds": 0,
@@ -254,8 +256,23 @@ def usage_summary(organization, *, now=None):
     by_day = defaultdict(lambda: {
         "attempts": 0, "estimated_usd": Decimal("0"), "usage_usd": Decimal("0"),
     })
+    processed_call_ids = set()
+    unique_audio = {}
+    employee_audio_calls = defaultdict(dict)
     for row in rows:
-        totals["audio_seconds"] += int(row.duration_seconds or 0)
+        if row.status != CallProcessingUsage.STATUS_RELEASED:
+            processed_call_ids.add(row.call_id)
+        if (
+            row.stage == CallProcessingUsage.STAGE_TRANSCRIPTION
+            and row.status != CallProcessingUsage.STATUS_RELEASED
+            and row.duration_seconds is not None
+        ):
+            seconds = int(row.duration_seconds or 0)
+            totals["attempt_audio_seconds"] += seconds
+            unique_audio.setdefault(row.call_id, seconds)
+            employee_audio_calls[row.employee_id or 0].setdefault(
+                row.call_id, seconds
+            )
         if row.status == CallProcessingUsage.STATUS_RESERVED and row.reserved_cost_usd is not None:
             totals["reserved_usd"] += row.reserved_cost_usd
         if row.estimated_cost_usd is not None:
@@ -264,7 +281,7 @@ def usage_summary(organization, *, now=None):
             totals["usage_usd"] += row.usage_cost_usd
         if row.confirmed_cost_usd is not None:
             totals["confirmed_usd"] += row.confirmed_cost_usd
-        else:
+        elif row.status != CallProcessingUsage.STATUS_RELEASED:
             totals["confirmed_unknown"] += 1
 
         employee_key = row.employee_id or 0
@@ -275,7 +292,7 @@ def usage_summary(organization, *, now=None):
             else "Не определён"
         )
         item["attempts"] += 1
-        item["audio_seconds"] += int(row.duration_seconds or 0)
+        item["audio_seconds"] = sum(employee_audio_calls[employee_key].values())
         if row.estimated_cost_usd is not None:
             item["estimated_usd"] += row.estimated_cost_usd
         if row.usage_cost_usd is not None:
@@ -290,6 +307,8 @@ def usage_summary(organization, *, now=None):
         if row.usage_cost_usd is not None:
             daily["usage_usd"] += row.usage_cost_usd
 
+    totals["processed_calls"] = len(processed_call_ids)
+    totals["unique_audio_seconds"] = sum(unique_audio.values())
     for key in ("reserved_usd", "estimated_usd", "usage_usd", "confirmed_usd"):
         totals[key] = _money(totals[key])
     return {
