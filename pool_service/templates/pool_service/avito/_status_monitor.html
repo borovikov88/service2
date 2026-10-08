@@ -16,7 +16,7 @@
       </dl>
     {% endif %}
     {% if status_monitor_state.error %}<div class="alert alert-warning small" role="status">{{ status_monitor_state.error }} Ошибка API не создаёт уведомлений об отключении объявлений.</div>{% endif %}
-    <p class="small text-muted">Планировщик запускается каждые 15 минут; успешные проверки идут раз в час по сохранённому расписанию. При ошибках повтор через 15, 30, затем 60 минут. Возможны задержки GitHub Actions. Показано время Service2. Лимит обхода: 100 страниц по 50 объявлений и 7 минут. Неполный обход не обновляет статусы.</p>
+    <p class="small text-muted">Планировщик сервера запускается каждые 15 минут; успешные проверки идут раз в час по сохранённому расписанию. При ошибках повтор через 15, 30, затем 60 минут. Показано время Service2. Лимит обхода: 100 страниц по 50 объявлений и 7 минут. Неполный обход не обновляет статусы.</p>
     <form method="post" action="{% url 'avito_configure_monitor' connection.pk %}" class="d-flex flex-wrap gap-2">
       {% csrf_token %}
       {% if monitor.enabled %}

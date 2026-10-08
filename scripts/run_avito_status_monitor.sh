@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run only the deployed monitor. GitHub Actions supplies the schedule, while
+# Run only the deployed monitor. Hosting cron supplies the schedule, while
 # database due times keep successful checks hourly and failed checks bounded.
 set -Eeuo pipefail
 umask 077

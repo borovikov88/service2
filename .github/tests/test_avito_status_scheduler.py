@@ -168,7 +168,7 @@ raise SystemExit(int(os.environ.get("TEST_COMMAND_EXIT", "0")))
 
     def test_workflow_uses_main_production_and_existing_pinned_host_credentials(self):
         workflow = (ROOT / ".github/workflows/avito-status-monitor.yml").read_text()
-        self.assertIn('cron: "7,22,37,52 * * * *"', workflow)
+        self.assertNotIn("  schedule:", workflow)
         self.assertIn("workflow_dispatch:", workflow)
         self.assertIn("if: github.ref == 'refs/heads/main'", workflow)
         self.assertIn("environment: production", workflow)
@@ -180,14 +180,16 @@ raise SystemExit(int(os.environ.get("TEST_COMMAND_EXIT", "0")))
         self.assertNotIn("git checkout", workflow)
         self.assertNotIn("crontab", workflow)
 
-    def test_protected_deploy_verifies_readiness_without_running_a_scan(self):
+    def test_protected_deploy_preflights_before_mutation_then_installs_exact_release(self):
         workflow = (ROOT / ".github/workflows/ci-deploy.yml").read_text()
-        readiness = workflow.split("- name: Verify deployed Avito status monitor readiness", 1)[1]
-        readiness = readiness.split("- name:", 1)[0]
-        self.assertIn('test "$(git rev-parse HEAD)" = %q', readiness)
-        self.assertIn("scripts/run_avito_status_monitor.sh --status", readiness)
-        self.assertIn('"$DEPLOY_APP_PATH" "$GITHUB_SHA"', readiness)
-        self.assertNotIn("--limit", readiness)
+        preflight = workflow.index("- name: Verify hosting cron capability without modifying schedules")
+        deploy = workflow.index("- name: Deploy exact tested commit")
+        install = workflow.index("- name: Verify cron runtime and install the single hosting schedule")
+        self.assertLess(preflight, deploy)
+        self.assertLess(deploy, install)
+        self.assertIn('"$REMOTE_COMMAND" < scripts/avito_monitor_cron.py', workflow[preflight:deploy])
+        self.assertIn("python - preflight --app-dir %q", workflow[preflight:deploy])
+        self.assertIn("avito_monitor_cron.py install --app-dir %q --expected-sha %q", workflow[install:])
 
 
 if __name__ == "__main__":
