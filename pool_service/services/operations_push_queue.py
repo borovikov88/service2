@@ -12,6 +12,7 @@ from django.utils import timezone
 
 from pool_service.models import ServiceTask
 from pool_service.operations_models import OperationsPushQueue
+from pool_service.services.call_privacy import task_source_is_private
 
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,10 @@ def process_queue(*, limit=100, candidate_limit=500):
             if entry is None:
                 continue
             result["checked"] += 1
-            if task.task_type != ServiceTask.TYPE_CRM_FOLLOWUP:
+            if (
+                task.task_type != ServiceTask.TYPE_CRM_FOLLOWUP
+                or task_source_is_private(task)
+            ):
                 entry.delete()
                 continue
 
