@@ -264,20 +264,42 @@ class OperationsPushRetryTests(TestCase):
         self.assertEqual(push.call_count, 2)
         self._assert_pending(task, True)
 
-    @patch("pool_service.operations_mcp_views.send_push_to_users", side_effect=RuntimeError("temporary transport failure"))
-    def test_transport_exception_preserves_retry_and_does_not_spin(self, push):
+    @patch("pool_service.operations_mcp_views.send_push_to_users", side_effect=RuntimeError("ambiguous transport failure"))
+    def test_transport_exception_is_terminal_unknown_not_automatic_duplicate(self, push):
         task = self._task()
-        before = timezone.now()
         with self.assertLogs("pool_service.services.operations_push_queue", level="WARNING"):
             result = operations.process_pending_operations_pushes()
         self.assertEqual(result["assignment_attempts"], 1)
         self.assertEqual(result["delivered"], 0)
-        entry = OperationsPushQueue.objects.get(task_id=task.pk)
-        self.assertGreater(entry.next_attempt_at, before)
-        self.assertEqual(entry.last_marker, "a")
         self.assertEqual(operations.process_pending_operations_pushes()["checked"], 0)
         self.assertEqual(push.call_count, 1)
-        self._assert_pending(task, True)
+        task.refresh_from_db()
+        delivery = task.payload_json[operations.ASSIGNMENT_DELIVERY_PAYLOAD_KEY]
+        self.assertEqual(delivery["push_delivery_result"], "attempt_committed")
+        self.assertFalse(OperationsPushQueue.objects.filter(task_id=task.pk).exists())
+
+    @patch("pool_service.operations_mcp_views.send_push_to_users", return_value=1)
+    def test_post_send_database_failure_cannot_reopen_duplicate_delivery(self, push):
+        task = self._task()
+        original = operations._save_push_payload
+        saves = {"count": 0}
+
+        def fail_after_external_send(locked_task, payload):
+            saves["count"] += 1
+            if saves["count"] == 2:
+                raise RuntimeError("database write failed after provider accepted")
+            return original(locked_task, payload)
+
+        with patch.object(operations, "_save_push_payload", side_effect=fail_after_external_send):
+            with self.assertRaises(RuntimeError):
+                operations._retry_assignment_push(task.id, self.employee.id)
+
+        task.refresh_from_db()
+        delivery = task.payload_json[operations.ASSIGNMENT_DELIVERY_PAYLOAD_KEY]
+        self.assertEqual(delivery["push_delivery_result"], "attempt_committed")
+        self.assertFalse(OperationsPushQueue.objects.filter(task_id=task.pk).exists())
+        self.assertEqual(operations._retry_assignment_push(task.id, self.employee.id), 0)
+        self.assertEqual(push.call_count, 1)
 
     def test_queue_membership_rolls_back_with_payload(self):
         task = ServiceTask.objects.create(**self._task_values({}))
