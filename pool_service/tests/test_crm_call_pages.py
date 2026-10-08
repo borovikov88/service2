@@ -113,7 +113,7 @@ class CRMCallPageIntegrationTests(TestCase):
         page = self.client.get(reverse("client_detail", args=[customer.pk]), {"tab": "calls"})
         row = next(call for call in page.context["calls"] if call.pk == missed.pk)
         self.assertTrue(row.missed_unreturned)
-        self.assertContains(page, "table-danger")
+        self.assertContains(page, "text-danger")
 
     def test_unknown_number_plus_creates_person_returns_to_filters_and_labels_history(self):
         call = self.call()
