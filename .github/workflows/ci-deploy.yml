@@ -78,7 +78,9 @@ jobs:
             .github/workflows/direct-pr-review.yml .github/workflows/ci-deploy.yml \
             .github/workflows/development-codex.yml .github/workflows/codex-plan-connection.yml \
             .github/workflows/production-health.yml .github/workflows/call-recordings-sync.yml \
-            .github/workflows/employee-identity-sync.yml
+            .github/workflows/employee-identity-sync.yml .github/workflows/avito-status-monitor.yml
+      - name: Verify Avito monitor scheduling and deployment locks
+        run: python -m unittest discover -s .github/tests -p test_avito_status_scheduler.py -v
       - name: Verify water calculator and publication boundaries
         run: |
           node --test tools/aqualine22-calculator/tests/engine.test.mjs
@@ -197,6 +199,22 @@ jobs:
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
             "$REMOTE_COMMAND" < update.sh
+      - name: Verify deployed Avito status monitor readiness
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          printf -v REMOTE_COMMAND \
+            'set -Eeuo pipefail; cd %q; test "$(git rev-parse HEAD)" = %q; exec /bin/bash scripts/run_avito_status_monitor.sh --status' \
+            "$DEPLOY_APP_PATH" "$GITHUB_SHA"
+          ssh -i ~/.ssh/service2_deploy \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
       - name: Activate 1C Diagnostic MCP once
         id: activate_diag
         env:
