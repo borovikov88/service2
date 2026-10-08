@@ -1,0 +1,17 @@
+{% if state.status and state.status != 'ok' %}
+  <div class="avito-section-notice avito-section-notice--error" role="status">
+    <div class="fw-semibold"><i class="bi bi-exclamation-circle me-1" aria-hidden="true"></i>{% if state.status == 'denied' %}Нет доступа к данным{% elif state.status == 'warning' %}Требуется проверка{% else %}Не удалось обновить{% endif %}</div>
+    <div>{{ state.detail|default:"Данные Авито сейчас недоступны. Повторите запрос позже." }}{% if state.code %} <span class="small">({{ state.code }})</span>{% endif %}</div>
+  </div>
+{% endif %}
+{% if state.stale and state.success_at %}
+  <div class="avito-section-notice avito-section-notice--stale" role="status">
+    <i class="bi bi-clock-history me-1" aria-hidden="true"></i>Показаны сохранённые данные. Они могут быть устаревшими.
+  </div>
+{% endif %}
+{% if state.success_at %}
+  <div class="avito-freshness">Данные получены: <time datetime="{{ state.success_at }}">{{ state.success_at }}</time></div>
+{% endif %}
+{% if state.status and state.status != 'ok' and state.checked_at %}
+  <div class="avito-freshness">Последняя попытка: <time datetime="{{ state.checked_at }}">{{ state.checked_at }}</time></div>
+{% endif %}

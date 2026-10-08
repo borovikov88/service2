@@ -1,0 +1,84 @@
+.avito-admin {
+  --avito-border: var(--bs-border-color, #dce3ee);
+  --avito-muted: var(--bs-secondary-color, #64748b);
+  --avito-surface: var(--bs-body-bg, #fff);
+  --avito-soft: var(--bs-tertiary-bg, #f4f7fb);
+}
+.avito-admin .avito-kicker { color: var(--avito-muted); font-size: .75rem; letter-spacing: .07em; text-transform: uppercase; font-weight: 650; }
+.avito-admin .avito-heading { font-size: clamp(1.75rem, 3vw, 2.25rem); letter-spacing: -.035em; font-weight: 750; }
+.avito-admin .avito-account-bar { display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 1rem; padding: 1.15rem 1.25rem; border: 1px solid var(--avito-border); border-radius: 1rem; background: var(--avito-surface); }
+.avito-admin .avito-account-picker { min-width: min(100%, 320px); }
+.avito-admin .avito-account-picker select { min-width: 210px; }
+.avito-admin .avito-readonly-note { display: flex; align-items: flex-start; gap: .6rem; padding: .9rem 0; color: var(--avito-muted); font-size: .8rem; }
+.avito-admin .avito-panel, .avito-admin .avito-account { border: 1px solid var(--avito-border); border-radius: 1rem; background: var(--avito-surface); overflow: hidden; }
+.avito-admin .avito-panel { height: 100%; }
+.avito-admin .avito-panel__body { padding: 1.25rem; }
+.avito-admin .avito-panel__header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .8rem; padding: 1.2rem 1.25rem 0; }
+.avito-admin .avito-panel__title { font-size: 1rem; font-weight: 700; margin: 0; }
+.avito-admin .avito-panel__icon { color: var(--bs-primary); margin-right: .4rem; }
+.avito-admin .avito-profile-name { font-size: 1.2rem; font-weight: 650; overflow-wrap: anywhere; }
+.avito-admin .avito-money { display: flex; align-items: baseline; gap: .3rem; flex-wrap: wrap; font-size: clamp(1.7rem, 3vw, 2.1rem); font-weight: 750; line-height: 1.25; letter-spacing: -.025em; font-variant-numeric: tabular-nums; }
+.avito-admin .avito-money small { font-size: .9rem; font-weight: 500; color: var(--avito-muted); letter-spacing: 0; }
+.avito-admin .avito-balance-bonus { border-top: 1px solid var(--avito-border); margin-top: 1rem; padding-top: .8rem; display: flex; justify-content: space-between; flex-wrap: wrap; gap: .5rem; font-size: .85rem; }
+.avito-admin .avito-empty { text-align: center; padding: 2.3rem 1.25rem; color: var(--avito-muted); }
+.avito-admin .avito-empty > i { display: block; font-size: 1.7rem; margin-bottom: .55rem; opacity: .75; }
+.avito-admin .avito-empty p { margin: .35rem 0 0; font-size: .85rem; }
+.avito-admin .avito-section-notice { border-radius: .6rem; padding: .6rem .75rem; margin-bottom: .65rem; font-size: .78rem; overflow-wrap: anywhere; }
+.avito-admin .avito-section-notice--error { background: var(--bs-danger-bg-subtle, #fff0f0); color: var(--bs-danger-text-emphasis, #982c33); }
+.avito-admin .avito-section-notice--stale { background: var(--bs-warning-bg-subtle, #fff8e5); color: var(--bs-warning-text-emphasis, #805e0d); }
+.avito-admin .avito-freshness { color: var(--avito-muted); font-size: .72rem; margin-bottom: .6rem; overflow-wrap: anywhere; }
+.avito-admin .avito-freshness time { font-variant-numeric: tabular-nums; }
+.avito-admin .avito-state { display: inline-block; border-radius: 999px; padding: .25rem .6rem; font-weight: 600; font-size: .73rem; background: var(--avito-soft); color: var(--avito-muted); white-space: nowrap; }
+.avito-admin .avito-state.ok, .avito-admin .avito-state.active { color: var(--bs-success-text-emphasis, #176345); background: var(--bs-success-bg-subtle, #e5f5ed); }
+.avito-admin .avito-state.denied, .avito-admin .avito-state.error, .avito-admin .avito-state.blocked, .avito-admin .avito-state.rejected { color: var(--bs-danger-text-emphasis, #982c33); background: var(--bs-danger-bg-subtle, #fff0f0); }
+.avito-admin .avito-state.warning, .avito-admin .avito-state.old { color: var(--bs-warning-text-emphasis, #805e0d); background: var(--bs-warning-bg-subtle, #fff8e5); }
+.avito-admin .avito-filter-bar { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 1rem; padding: 1rem 1.25rem; border-top: 1px solid var(--avito-border); background: var(--avito-soft); }
+.avito-admin .avito-search { flex: 1 1 260px; max-width: 520px; }
+.avito-admin .avito-search-control { position: relative; }
+.avito-admin .avito-search-control > i { position: absolute; top: 50%; left: .85rem; transform: translateY(-50%); color: var(--avito-muted); pointer-events: none; }
+.avito-admin .avito-search-control input { padding-left: 2.3rem; padding-right: 2.5rem; }
+.avito-admin .avito-search-clear { position: absolute; top: 50%; right: .3rem; transform: translateY(-50%); padding: .2rem .5rem; background: transparent; border: 0; color: var(--avito-muted); }
+.avito-admin .avito-listings { margin: 0; font-size: .84rem; }
+.avito-admin .avito-listings th { color: var(--avito-muted); font-size: .71rem; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; padding: .85rem 1.25rem; background: var(--avito-soft); border-top: 1px solid var(--avito-border); }
+.avito-admin .avito-listings td { padding: 1rem 1.25rem; vertical-align: middle; border-color: var(--avito-border); }
+.avito-admin .avito-listings tbody tr:last-child td { border-bottom: 0; }
+.avito-admin .avito-listing-title { min-width: 210px; max-width: 380px; }
+.avito-admin .avito-listing-title a { color: var(--bs-body-color); font-weight: 600; text-decoration: none; overflow-wrap: anywhere; }
+.avito-admin .avito-listing-title a:hover { color: var(--bs-primary); text-decoration: underline; }
+.avito-admin .avito-listing-meta { color: var(--avito-muted); font-size: .75rem; margin-top: .25rem; overflow-wrap: anywhere; }
+.avito-admin .avito-listing-price { white-space: nowrap; font-weight: 650; font-variant-numeric: tabular-nums; }
+.avito-admin .avito-pagination { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .75rem; border-top: 1px solid var(--avito-border); padding: .9rem 1.25rem; font-size: .8rem; color: var(--avito-muted); }
+.avito-admin .avito-pagination .btn { white-space: nowrap; }
+.avito-admin .avito-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .75rem; }
+.avito-admin .avito-metric { padding: 1rem; background: var(--avito-soft); border-radius: .75rem; }
+.avito-admin .avito-metric strong { display: block; font-size: 1.8rem; font-weight: 700; line-height: 1.2; margin-bottom: .35rem; font-variant-numeric: tabular-nums; }
+.avito-admin .avito-metric span { color: var(--avito-muted); font-size: .77rem; }
+.avito-admin .avito-period { display: flex; flex-wrap: wrap; gap: .6rem; align-items: flex-end; }
+.avito-admin .avito-period input { max-width: 160px; }
+.avito-admin .avito-autoload-details { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: .65rem 1rem; margin: 0; font-size: .8rem; }
+.avito-admin .avito-autoload-details dt { color: var(--avito-muted); font-weight: 400; }
+.avito-admin .avito-autoload-details dd { margin-bottom: 0; overflow-wrap: anywhere; }
+.avito-admin .avito-counters { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
+.avito-admin .avito-counter { padding: .4rem .65rem; border-radius: .5rem; background: var(--avito-soft); font-size: .78rem; }
+.avito-admin .avito-account__header { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 1rem; padding: 1.1rem 1.25rem; }
+.avito-admin .avito-account__actions { display: flex; flex-direction: column; align-items: flex-end; gap: .5rem; }
+.avito-admin .avito-check { display: grid; grid-template-columns: minmax(140px,1fr) auto minmax(180px,2fr); align-items: center; gap: 1rem; padding: .7rem 1.25rem; border-top: 1px solid var(--avito-border); }
+.avito-admin .avito-check__detail { color: var(--avito-muted); overflow-wrap: anywhere; font-size: .8rem; }
+.avito-admin .avito-diagnostics-summary { font-size: .8rem; color: var(--avito-muted); }
+.avito-admin .avito-diagnostics-summary strong { color: var(--bs-body-color); }
+.avito-admin .avito-api-note { padding: .85rem 1rem; border: 1px dashed var(--avito-border); border-radius: .7rem; color: var(--avito-muted); font-size: .8rem; }
+.avito-admin .avito-submit-spinner { margin-right: .4rem; }
+.avito-admin [hidden] { display: none !important; }
+@media (max-width: 767px) {
+  .avito-admin .avito-account-bar { align-items: stretch; }
+  .avito-admin .avito-account-picker { width: 100%; }
+  .avito-admin .avito-account-picker select { min-width: 0; }
+  .avito-admin .avito-panel__body, .avito-admin .avito-panel__header, .avito-admin .avito-filter-bar { padding-left: 1rem; padding-right: 1rem; }
+  .avito-admin .avito-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .avito-admin .avito-check { grid-template-columns: 1fr auto; gap: .4rem; }
+  .avito-admin .avito-check__detail { grid-column: 1 / -1; }
+  .avito-admin .avito-account__actions { align-items: flex-start; }
+  .avito-admin .avito-period { width: 100%; }
+  .avito-admin .avito-period input { max-width: 100%; }
+  .avito-admin .avito-period > div { flex: 1 1 130px; }
+}
