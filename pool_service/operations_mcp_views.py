@@ -44,6 +44,7 @@ from pool_service.operations_mcp_auth import (
     operations_mcp_origin_is_allowed,
     protected_resource_metadata,
     protected_resource_metadata_url,
+    revalidate_authenticated_request,
     scoped_organizations,
     target_organization,
     validate_authorization_request,
@@ -1065,6 +1066,10 @@ def _send_employee_notification(authenticated, organization, arguments):
 
 def _tool_dispatch(authenticated, name, arguments):
     organization = target_organization()
+    authenticated = revalidate_authenticated_request(authenticated)
+    # Hold current actor/access rows for the entire tool transaction. This also
+    # closes the revoke-after-auth race for read-only tools.
+    _authorized_actor(authenticated, organization)
     if name == "list_control_tasks":
         return _list_control_tasks(organization, arguments)
     if name == "get_call_analysis":
