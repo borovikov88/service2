@@ -176,6 +176,7 @@ from .services.task_archive import archive_task, restore_task
 from .services.crm_archive import archive_crm_item, restore_crm_item, sync_crm_archive_state
 from .services.crm_locking import lock_crm_graph, locked_task_with_crm_graph
 from .services.task_generation import sync_crm_item_for_task, sync_task_with_crm_item
+from .services.call_privacy import private_source_task_ids, task_source_is_private
 from .services.task_feedback import waiting_control
 from .services.task_waiting_schedule import (
     release_waiting_schedule,
