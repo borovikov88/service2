@@ -1,4 +1,5 @@
 import io
+import itertools
 import uuid
 from datetime import timedelta
 from unittest.mock import patch
@@ -58,6 +59,29 @@ class AvitoMonitorTests(AvitoMonitorFixture, TestCase):
         self.state.refresh_from_db()
         self.assertIsNotNone(self.state.baseline_at)
         self.assertGreater(self.state.next_due_at, timezone.now() + timedelta(minutes=59))
+
+    def test_hourly_anchor_does_not_drift_to_75_minutes_after_scan_work(self):
+        start = timezone.now().replace(minute=7, second=0, microsecond=0)
+        AvitoStatusMonitor.objects.filter(pk=self.state.pk).update(next_due_at=start)
+        with patch.object(monitor, "full_scan", return_value=({"1": listing()}, 1)), \
+             patch.object(monitor.timezone, "now", side_effect=itertools.chain([start, start], itertools.repeat(start + timedelta(seconds=5)))):
+            self.assertEqual(monitor.scan_monitor(self.state.pk), ("baseline", 0))
+        self.state.refresh_from_db()
+        self.assertEqual(self.state.next_due_at, start + timedelta(hours=1))
+        next_tick = start + timedelta(hours=1)
+        with patch.object(monitor, "full_scan", return_value=({"1": listing()}, 1)), \
+             patch.object(monitor.timezone, "now", return_value=next_tick):
+            self.assertEqual(monitor.scan_monitor(self.state.pk), ("success", 0))
+        self.state.refresh_from_db()
+        self.assertEqual(self.state.next_due_at, start + timedelta(hours=2))
+
+    def test_delayed_tick_skips_missed_periods_without_catchup_flood(self):
+        due = timezone.now() - timedelta(hours=3, minutes=5)
+        AvitoStatusMonitor.objects.filter(pk=self.state.pk).update(next_due_at=due)
+        with patch.object(monitor, "full_scan", return_value=({"1": listing()}, 1)):
+            self.assertEqual(monitor.scan_monitor(self.state.pk), ("baseline", 0))
+        self.state.refresh_from_db()
+        self.assertEqual(self.state.next_due_at, due + timedelta(hours=4))
 
     def test_repeated_scans_deduplicate_but_later_recurrence_is_new_event(self):
         self.run_scan([listing()])

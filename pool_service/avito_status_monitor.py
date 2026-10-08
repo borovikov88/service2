@@ -260,7 +260,10 @@ def scan_monitor(monitor_id):
             monitor.failure_count = 0
             monitor.last_item_count = len(items)
             monitor.last_page_count = page_count
-            monitor.next_due_at = now + INTERVAL
+            # Advance the scheduled due-time anchor, not completion time. A
+            # few seconds of work must not miss the next hourly scheduler tick.
+            periods = max(0, (now - monitor.next_due_at) // INTERVAL) + 1
+            monitor.next_due_at += periods * INTERVAL
             monitor.lease_token = None
             monitor.lease_until = None
             monitor.save()
