@@ -1,56 +1,17 @@
 from datetime import date, datetime
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+import hashlib
+import json
 
-from django.conf import settings
 from django.db import transaction
-from django.utils import timezone
 
 from pool_service.communication_models import CallAnalysis
-from pool_service.models import Organization, OrganizationAccess, ServiceTask, ServiceTaskChange
-from pool_service.services.notifications import notify_task_assignment
-from pool_service.services.call_privacy import is_private_call, task_source_is_private
+from pool_service.models import Organization, ServiceTask
+from pool_service.services.call_privacy import is_private_call
 
 
-MATERIALIZED_CONFIDENCE = "high"
+PROPOSAL_CONFIDENCE = "high"
 ACTOR_EMPLOYEE = "employee"
 ACTOR_CLIENT = "client"
-
-
-def _communication_zone():
-    zone_name = getattr(settings, "COMMUNICATION_TIME_ZONE", "Asia/Barnaul")
-    try:
-        return ZoneInfo(zone_name)
-    except (ZoneInfoNotFoundError, ValueError):
-        return ZoneInfo("UTC")
-
-
-def _local_call_date(call):
-    started_at = call.started_at
-    if timezone.is_aware(started_at):
-        return started_at.astimezone(_communication_zone()).date()
-    return started_at.date()
-
-
-def _valid_org_user(user, organization_id):
-    if not user or not user.is_active:
-        return False
-    return OrganizationAccess.objects.filter(
-        organization_id=organization_id,
-        user_id=user.id,
-    ).exists()
-
-
-def _resolve_responsible(call):
-    if _valid_org_user(call.employee, call.organization_id):
-        return call.employee
-
-    client = call.client
-    crm_profile = getattr(client, "crm_profile", None) if client else None
-    if crm_profile:
-        for candidate in (crm_profile.responsible, crm_profile.manager):
-            if _valid_org_user(candidate, call.organization_id):
-                return candidate
-    return None
 
 
 def _parse_due_date(value):
@@ -71,38 +32,6 @@ def _parse_due_time(value):
         return None
 
 
-def _due_at(due_date, due_time):
-    if not due_date or not due_time:
-        return None
-    return datetime.combine(due_date, due_time).replace(tzinfo=_communication_zone())
-
-
-def _task_description(call, commitment):
-    actor = commitment.get("actor")
-    lines = [
-        "Автоматически выделено из расшифровки телефонного разговора.",
-        (
-            "Ожидаем действие клиента."
-            if actor == ACTOR_CLIENT
-            else "Обязательство сотрудника перед клиентом."
-        ),
-    ]
-    evidence = str(commitment.get("evidence") or "").strip()
-    if evidence:
-        lines.append(f"Основание: {evidence}")
-    if not commitment.get("due_date"):
-        lines.append("Срок в разговоре явно не определён.")
-    lines.append(f"Источник: звонок #{call.id}.")
-    return "\n".join(lines)
-
-
-def _task_title(commitment):
-    action = str(commitment.get("action") or "").strip()
-    if commitment.get("actor") == ACTOR_CLIENT:
-        action = f"Ждём клиента: {action}"
-    return action[:255]
-
-
 def _existing_task(call, commitment_index):
     return ServiceTask.objects.filter(
         organization_id=call.organization_id,
@@ -112,9 +41,56 @@ def _existing_task(call, commitment_index):
     ).first()
 
 
+def commitment_proposal_id(call_id, commitment_index, commitment):
+    """Stable identity for one analysis proposal, including its exact version."""
+    canonical = json.dumps(
+        commitment,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+    return f"call-{int(call_id)}-commitment-{int(commitment_index)}-{digest}"
+
+
+def _proposal(call, index, commitment):
+    actor = str(commitment.get("actor") or "").strip().lower()
+    confidence = str(commitment.get("confidence") or "").strip().lower()
+    action = str(commitment.get("action") or "").strip()
+    due_date = _parse_due_date(commitment.get("due_date"))
+    due_time = _parse_due_time(commitment.get("due_time"))
+    existing = _existing_task(call, index)
+    can_create = bool(
+        actor in {ACTOR_EMPLOYEE, ACTOR_CLIENT}
+        and confidence == PROPOSAL_CONFIDENCE
+        and action
+        and (actor != ACTOR_CLIENT or call.client_id)
+    )
+    if existing:
+        status = "already_created"
+    elif can_create and due_date:
+        status = "ready_for_review"
+    else:
+        status = "needs_clarification"
+    return {
+        "proposal_id": commitment_proposal_id(call.pk, index, commitment),
+        "call_id": call.pk,
+        "commitment_index": index,
+        "actor": actor or None,
+        "action": action[:255],
+        "kind": str(commitment.get("kind") or "other")[:80],
+        "confidence": confidence or None,
+        "due_date": due_date.isoformat() if due_date else None,
+        "due_time": due_time.strftime("%H:%M") if due_time else None,
+        "evidence": str(commitment.get("evidence") or "")[:2000],
+        "status": status,
+        "needs_clarification": status == "needs_clarification",
+        "task_id": existing.pk if existing else None,
+    }
+
+
 def materialize_call_commitments(call_id):
-    """Create CRM follow-up tasks for high-confidence commitments from a ready call analysis."""
-    created_tasks = []
+    """Prepare reviewable proposals; ServiceTask creation belongs to Operations MCP."""
 
     with transaction.atomic():
         organization_id = (
@@ -128,17 +104,13 @@ def materialize_call_commitments(call_id):
         if not organization_id:
             return []
         # Personal-number mutations take the same organization lock first.
-        # Whichever transaction wins determines whether materialization is
+        # Whichever transaction wins determines whether proposal access is
         # allowed; there is no check-then-create privacy window.
         Organization.objects.select_for_update().get(pk=organization_id)
         analysis = (
             CallAnalysis.objects.select_for_update()
             .select_related(
                 "call",
-                "call__employee",
-                "call__client",
-                "call__client__crm_profile__responsible",
-                "call__client__crm_profile__manager",
             )
             .filter(call_id=call_id, status=CallAnalysis.STATUS_READY)
             .first()
@@ -154,88 +126,8 @@ def materialize_call_commitments(call_id):
         call = analysis.call
         if is_private_call(call):
             return []
-        responsible = _resolve_responsible(call)
-        if not responsible:
-            return []
-
-        for index, commitment in enumerate(commitments):
-            if not isinstance(commitment, dict):
-                continue
-
-            actor = str(commitment.get("actor") or "").strip().lower()
-            confidence = str(commitment.get("confidence") or "").strip().lower()
-            action = str(commitment.get("action") or "").strip()
-
-            if actor not in {ACTOR_EMPLOYEE, ACTOR_CLIENT}:
-                continue
-            if confidence != MATERIALIZED_CONFIDENCE:
-                continue
-            if not action:
-                continue
-            if _existing_task(call, index):
-                continue
-
-            due_date = _parse_due_date(commitment.get("due_date"))
-            due_time = _parse_due_time(commitment.get("due_time"))
-            task_date = due_date or _local_call_date(call)
-            status = (
-                ServiceTask.STATUS_WAITING
-                if actor == ACTOR_CLIENT
-                else ServiceTask.STATUS_NEW
-            )
-
-            task = ServiceTask.objects.create(
-                organization=call.organization,
-                title=_task_title(commitment),
-                description=_task_description(call, commitment),
-                start_date=task_date,
-                end_date=due_date,
-                start_time=due_time,
-                end_time=due_time,
-                task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
-                source_type=ServiceTask.SOURCE_SYSTEM,
-                status=status,
-                visibility=ServiceTask.VISIBILITY_PRIVATE,
-                priority=ServiceTask.PRIORITY_NORMAL,
-                client=call.client,
-                created_by=None,
-                primary_responsible=responsible,
-                auto_created=True,
-                is_editable=True,
-                due_at=_due_at(due_date, due_time),
-                payload_json={
-                    "source": "call_analysis",
-                    "source_call_id": call.id,
-                    "commitment_index": index,
-                    "actor": actor,
-                    "kind": commitment.get("kind") or "other",
-                    "confidence": confidence,
-                    "evidence": commitment.get("evidence") or "",
-                    "needs_due_date": due_date is None,
-                },
-            )
-            task.responsibles.add(responsible)
-            ServiceTaskChange.objects.create(
-                task=task,
-                changed_by=None,
-                action=ServiceTaskChange.ACTION_CREATED,
-                new_value=task.title,
-            )
-            created_tasks.append(task)
-
-    for task in created_tasks:
-        payload = task.payload_json if isinstance(task.payload_json, dict) else {}
-        if payload.get("actor") != ACTOR_EMPLOYEE:
-            continue
-        with transaction.atomic():
-            Organization.objects.select_for_update().get(pk=task.organization_id)
-            current = ServiceTask.objects.select_for_update().filter(pk=task.pk).first()
-            if current is None or task_source_is_private(current):
-                continue
-            notify_task_assignment(
-                current,
-                [current.primary_responsible],
-                added_by=None,
-            )
-
-    return created_tasks
+        return [
+            _proposal(call, index, commitment)
+            for index, commitment in enumerate(commitments[:100])
+            if isinstance(commitment, dict)
+        ]

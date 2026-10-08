@@ -601,16 +601,8 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
             processed_at=timezone.now(),
             requested_at=None,
         )
-        if completed:
-            try:
-                from pool_service.services.call_commitments import materialize_call_commitments
-
-                materialize_call_commitments(call.id)
-            except Exception:
-                logger.exception(
-                    "Failed to materialize call commitments for call_id=%s",
-                    call.id,
-                )
+        # Commitments are exposed as reviewable Operations MCP proposals.
+        # Task creation is a separate, explicitly linked idempotent request.
         return bool(completed)
     except Exception as exc:
         connections.close_all()

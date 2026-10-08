@@ -21,7 +21,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from pool_service import onec_diagnostic_mcp_views as transport
-from pool_service.communication_models import CallAnalysis
+from pool_service.communication_models import CallAnalysis, PhoneCall
 from pool_service.services.call_privacy import is_private_call, task_source_is_private
 from pool_service.models import (
     Client,
@@ -52,6 +52,12 @@ from pool_service.operations_mcp_auth import (
 )
 from pool_service.operations_mcp_policy import ALLOWED_ROLES, locked_operations_actor
 from pool_service.services.crm_locking import locked_task_for_completion
+from pool_service.services.call_commitments import (
+    ACTOR_CLIENT,
+    ACTOR_EMPLOYEE,
+    commitment_proposal_id,
+    materialize_call_commitments,
+)
 from pool_service.services.notifications import (
     notify_users,
     task_assignment_notification_content,
@@ -124,7 +130,7 @@ def _tool_definitions():
         ),
         _tool(
             "get_call_analysis",
-            "Read one completed call transcript/summary/facts from the authorized organization.",
+            "Read one completed call transcript and reviewable commitment proposals from the authorized organization.",
             {"call_id": {"type": "integer", "minimum": 1}},
             required=("call_id",),
             read_only=True,
@@ -132,7 +138,7 @@ def _tool_definitions():
         ),
         _tool(
             "create_task",
-            "Create one private CRM follow-up task for an active Service2 employee.",
+            "Create one private CRM follow-up task. For a call commitment, first present the proposal and obtain user confirmation, then pass source_call_id, commitment_index, commitment_proposal_id, confirmed_by_user=true and use proposal_id as idempotency_key.",
             {
                 "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 80},
                 "title": {"type": "string", "minLength": 1, "maxLength": 255},
@@ -141,6 +147,11 @@ def _tool_definitions():
                 "due_date": {"type": "string", "format": "date"},
                 "due_time": {"type": "string", "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"},
                 "client_id": {"type": "integer", "minimum": 1},
+                "source_call_id": {"type": "integer", "minimum": 1},
+                "commitment_index": {"type": "integer", "minimum": 0},
+                "commitment_proposal_id": {"type": "string", "minLength": 1, "maxLength": 80},
+                "commitment_actor_user_id": {"type": "integer", "minimum": 1},
+                "confirmed_by_user": {"type": "boolean"},
                 "priority": {
                     "type": "string",
                     "enum": [
@@ -761,11 +772,15 @@ def _list_control_tasks(organization, arguments):
     return {"tasks": tasks}
 
 
+@transaction.atomic
 def _get_call_analysis(organization, arguments):
     _reject_unknown(arguments, {"call_id"})
     call_id = _as_int(arguments.get("call_id"), "call_id")
+    Organization.objects.select_for_update().get(pk=organization.pk)
     analysis = (
-        CallAnalysis.objects.select_related("call", "call__employee", "call__client")
+        CallAnalysis.objects.select_for_update().select_related(
+            "call", "call__employee", "call__client"
+        )
         .filter(call_id=call_id, call__organization=organization, status=CallAnalysis.STATUS_READY)
         .first()
     )
@@ -779,10 +794,19 @@ def _get_call_analysis(organization, arguments):
         "call_id": call.id,
         "started_at": call.started_at.isoformat(),
         "employee_user_id": call.employee_id,
+        "peer_employee_user_id": call.peer_employee_id,
+        "confirmed_participant_user_ids": list(
+            OrganizationAccess.objects.filter(
+                organization=organization,
+                user_id__in=[call.employee_id, call.peer_employee_id],
+                user__is_active=True,
+            ).order_by("user_id").values_list("user_id", flat=True)
+        ),
         "client_id": call.client_id,
         "summary": analysis.summary,
         "transcript": analysis.transcript,
         "facts": analysis.facts if isinstance(analysis.facts, dict) else {},
+        "commitment_proposals": materialize_call_commitments(call.id),
     }
 
 
@@ -805,7 +829,7 @@ def _normalized_create_task_command(arguments):
     client_id = None
     if arguments.get("client_id") is not None:
         client_id = _as_int(arguments.get("client_id"), "client_id")
-    return {
+    command = {
         "title": title,
         "description": description,
         "responsible_user_id": responsible_id,
@@ -814,6 +838,36 @@ def _normalized_create_task_command(arguments):
         "client_id": client_id,
         "priority": priority,
     }
+    linkage_values = (
+        arguments.get("source_call_id"),
+        arguments.get("commitment_index"),
+        arguments.get("commitment_proposal_id"),
+    )
+    if any(value is not None for value in linkage_values):
+        if any(value is None for value in linkage_values):
+            raise ValueError("commitment_proposal_id")
+        command.update({
+            "source_call_id": _as_int(linkage_values[0], "source_call_id"),
+            "commitment_index": _as_int(
+                linkage_values[1], "commitment_index", minimum=0
+            ),
+            "commitment_proposal_id": _as_text(
+                linkage_values[2], "commitment_proposal_id", required=True, maximum=80
+            ),
+        })
+        if arguments.get("commitment_actor_user_id") is not None:
+            command["commitment_actor_user_id"] = _as_int(
+                arguments.get("commitment_actor_user_id"),
+                "commitment_actor_user_id",
+            )
+        if arguments.get("confirmed_by_user") is not True:
+            raise ValueError("confirmed_by_user")
+        command["confirmed_by_user"] = True
+    elif arguments.get("commitment_actor_user_id") is not None:
+        raise ValueError("commitment_actor_user_id")
+    elif arguments.get("confirmed_by_user") is not None:
+        raise ValueError("confirmed_by_user")
+    return command
 
 
 def _create_task_command_hash(command):
@@ -830,7 +884,7 @@ def _create_task_command_hash(command):
 def _task_as_legacy_create_command(task):
     due_date = task.end_date or task.start_date
     due_time = task.end_time or task.start_time
-    return {
+    command = {
         "title": str(task.title or "").strip(),
         "description": str(task.description or "").strip(),
         "responsible_user_id": task.primary_responsible_id,
@@ -839,6 +893,77 @@ def _task_as_legacy_create_command(task):
         "client_id": task.client_id,
         "priority": task.priority or ServiceTask.PRIORITY_NORMAL,
     }
+    payload = task.payload_json if isinstance(task.payload_json, dict) else {}
+    if payload.get("source_call_id") is not None:
+        command.update({
+            "source_call_id": payload.get("source_call_id"),
+            "commitment_index": payload.get("commitment_index"),
+            "commitment_proposal_id": payload.get("commitment_proposal_id"),
+        })
+        if payload.get("commitment_actor_user_id") is not None:
+            command["commitment_actor_user_id"] = payload.get("commitment_actor_user_id")
+        if payload.get("confirmed_by_user"):
+            command["confirmed_by_user"] = True
+    return command
+
+
+def _validated_call_commitment(organization, command):
+    call_id = command.get("source_call_id")
+    if call_id is None:
+        return None
+    analysis = (
+        CallAnalysis.objects.select_for_update()
+        .select_related("call")
+        .filter(
+            call_id=call_id,
+            call__organization=organization,
+            status=CallAnalysis.STATUS_READY,
+        )
+        .first()
+    )
+    if not analysis or is_private_call(analysis.call):
+        raise ValueError("commitment_proposal_id")
+    facts = analysis.facts if isinstance(analysis.facts, dict) else {}
+    commitments = facts.get("commitments")
+    index = command["commitment_index"]
+    if not isinstance(commitments, list) or index >= len(commitments):
+        raise ValueError("commitment_proposal_id")
+    commitment = commitments[index]
+    if not isinstance(commitment, dict):
+        raise ValueError("commitment_proposal_id")
+    if commitment_proposal_id(call_id, index, commitment) != command["commitment_proposal_id"]:
+        raise ValueError("commitment_proposal_id")
+    actor = str(commitment.get("actor") or "").strip().lower()
+    if actor not in {ACTOR_EMPLOYEE, ACTOR_CLIENT} or not command.get("confirmed_by_user"):
+        raise ValueError("commitment_proposal_id")
+    actor_user_id = command.get("commitment_actor_user_id")
+    participants = {
+        user_id for user_id in (analysis.call.employee_id, analysis.call.peer_employee_id)
+        if user_id
+    }
+    if analysis.call.direction == PhoneCall.DIRECTION_INTERNAL:
+        active_participants = set(
+            OrganizationAccess.objects.filter(
+                organization=organization,
+                user_id__in=participants,
+                user__is_active=True,
+            ).values_list("user_id", flat=True)
+        )
+        if len(participants) != 2 or active_participants != participants:
+            raise ValueError("commitment_proposal_id")
+        if actor != ACTOR_EMPLOYEE or actor_user_id not in participants:
+            raise ValueError("commitment_actor_user_id")
+    elif actor == ACTOR_EMPLOYEE:
+        if actor_user_id != analysis.call.employee_id or not OrganizationAccess.objects.filter(
+            organization=organization,
+            user_id=actor_user_id,
+            user__is_active=True,
+        ).exists():
+            raise ValueError("commitment_actor_user_id")
+    elif actor == ACTOR_CLIENT:
+        if actor_user_id is not None:
+            raise ValueError("commitment_actor_user_id")
+    return analysis.call, commitment
 
 
 @transaction.atomic
@@ -854,6 +979,11 @@ def _create_task(authenticated, organization, arguments):
             "due_time",
             "client_id",
             "priority",
+            "source_call_id",
+            "commitment_index",
+            "commitment_proposal_id",
+            "commitment_actor_user_id",
+            "confirmed_by_user",
         },
     )
     key = _as_text(
@@ -868,6 +998,18 @@ def _create_task(authenticated, organization, arguments):
     # Serialize create requests per organization so concurrent MCP retries
     # cannot both pass the JSON idempotency lookup before either insert commits.
     organization = Organization.objects.select_for_update().get(pk=organization.pk)
+    if command.get("source_call_id") is not None:
+        source_call_gate = PhoneCall.objects.select_for_update().filter(
+            pk=command["source_call_id"],
+            organization=organization,
+        ).first()
+        if not source_call_gate or is_private_call(source_call_gate):
+            raise ValueError("commitment_proposal_id")
+    if (
+        command.get("source_call_id") is not None
+        and key != command["commitment_proposal_id"]
+    ):
+        raise ValueError("idempotency_key")
     existing = (
         ServiceTask.objects.select_for_update()
         .select_related("primary_responsible", "created_by")
@@ -906,6 +1048,22 @@ def _create_task(authenticated, organization, arguments):
             )
         return {"created": False, "task": _task_data(existing)}
 
+    linked_commitment = None
+    if command.get("source_call_id") is not None:
+        already_created = (
+            ServiceTask.objects.select_for_update()
+            .filter(
+                organization=organization,
+                task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+                payload_json__source_call_id=command["source_call_id"],
+                payload_json__commitment_index=command["commitment_index"],
+            )
+            .first()
+        )
+        if already_created:
+            return {"created": False, "task": _task_data(already_created)}
+        linked_commitment = _validated_call_commitment(organization, command)
+
     responsible = _locked_staff_user(
         organization,
         command["responsible_user_id"],
@@ -920,6 +1078,15 @@ def _create_task(authenticated, organization, arguments):
             organization=organization,
         ).first()
         if not client:
+            raise ValueError("client_id")
+    source_call = linked_commitment[0] if linked_commitment else None
+    commitment = linked_commitment[1] if linked_commitment else None
+    if source_call:
+        if client and source_call.client_id and client.pk != source_call.client_id:
+            raise ValueError("client_id")
+        if client is None and source_call.client_id:
+            client = source_call.client
+        if commitment and str(commitment.get("actor") or "").strip().lower() == ACTOR_CLIENT and client is None:
             raise ValueError("client_id")
 
     due_date = date.fromisoformat(command["due_date"])
@@ -943,8 +1110,14 @@ def _create_task(authenticated, organization, arguments):
         start_time=due_time,
         end_time=due_time,
         task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
-        source_type=ServiceTask.SOURCE_MANAGER,
-        status=ServiceTask.STATUS_NEW,
+        source_type=(
+            ServiceTask.SOURCE_SYSTEM if source_call else ServiceTask.SOURCE_MANAGER
+        ),
+        status=(
+            ServiceTask.STATUS_WAITING
+            if commitment and str(commitment.get("actor") or "").lower() == ACTOR_CLIENT
+            else ServiceTask.STATUS_NEW
+        ),
         visibility=ServiceTask.VISIBILITY_PRIVATE,
         priority=command["priority"],
         client=client,
@@ -954,10 +1127,36 @@ def _create_task(authenticated, organization, arguments):
         is_editable=True,
         due_at=due_at,
         payload_json={
-            "source": "operations_mcp",
+            "source": "call_analysis" if source_call else "operations_mcp",
             "operations_mcp_idempotency_key": key,
             CREATE_COMMAND_HASH_PAYLOAD_KEY: command_hash,
             "operations_mcp_grant_id": authenticated.grant.id,
+            **(
+                {
+                    "source_call_id": source_call.pk,
+                    "commitment_index": command["commitment_index"],
+                    "commitment_proposal_id": command["commitment_proposal_id"],
+                    **(
+                        {"commitment_actor_user_id": command["commitment_actor_user_id"]}
+                        if command.get("commitment_actor_user_id") is not None
+                        else {}
+                    ),
+                    "actor": str(commitment.get("actor") or "").strip().lower(),
+                    "kind": str(commitment.get("kind") or "other")[:80],
+                    "confidence": str(commitment.get("confidence") or "").strip().lower(),
+                    "evidence": str(commitment.get("evidence") or "")[:2000],
+                    "created_by_agent": "Rovik",
+                    "confirmed_by_user": True,
+                    **(
+                        {"commitment_actor_client_id": client.pk}
+                        if str(commitment.get("actor") or "").strip().lower() == ACTOR_CLIENT
+                        and client
+                        else {}
+                    ),
+                }
+                if source_call and commitment
+                else {}
+            ),
         },
     )
     task.responsibles.add(responsible)

@@ -45,8 +45,7 @@ class CallCommitmentMaterializationTests(TestCase):
             result=PhoneCall.RESULT_ANSWERED,
         )
 
-    @patch("pool_service.services.call_commitments.notify_task_assignment")
-    def test_high_confidence_employee_commitment_creates_crm_task(self, notify_task_assignment):
+    def test_high_confidence_employee_commitment_becomes_reviewable_proposal(self):
         call = self._call("employee-promise")
         CallAnalysis.objects.create(
             call=call,
@@ -71,22 +70,15 @@ class CallCommitmentMaterializationTests(TestCase):
         tasks = materialize_call_commitments(call.id)
 
         self.assertEqual(len(tasks), 1)
-        task = tasks[0]
-        self.assertEqual(task.task_type, ServiceTask.TYPE_CRM_FOLLOWUP)
-        self.assertEqual(task.status, ServiceTask.STATUS_NEW)
-        self.assertEqual(task.primary_responsible, self.manager)
-        self.assertEqual(task.client, self.client_entity)
-        self.assertEqual(task.start_date.isoformat(), "2026-10-06")
-        self.assertEqual(task.end_date.isoformat(), "2026-10-06")
-        self.assertEqual(task.start_time.strftime("%H:%M"), "10:00")
-        self.assertEqual(task.payload_json["source_call_id"], call.id)
-        self.assertEqual(task.payload_json["actor"], "employee")
-        self.assertTrue(task.auto_created)
-        self.assertIn(self.manager, task.responsibles.all())
-        notify_task_assignment.assert_called_once()
+        proposal = tasks[0]
+        self.assertEqual(proposal["call_id"], call.id)
+        self.assertEqual(proposal["commitment_index"], 0)
+        self.assertEqual(proposal["status"], "ready_for_review")
+        self.assertEqual(proposal["due_date"], "2026-10-06")
+        self.assertTrue(proposal["proposal_id"].startswith(f"call-{call.id}-commitment-0-"))
+        self.assertFalse(ServiceTask.objects.exists())
 
-    @patch("pool_service.services.call_commitments.notify_task_assignment")
-    def test_client_commitment_waits_for_client_and_is_idempotent(self, notify_task_assignment):
+    def test_client_commitment_is_a_proposal_and_does_not_create_a_task(self):
         call = self._call("client-promise")
         CallAnalysis.objects.create(
             call=call,
@@ -112,18 +104,12 @@ class CallCommitmentMaterializationTests(TestCase):
         second = materialize_call_commitments(call.id)
 
         self.assertEqual(len(first), 1)
-        self.assertEqual(second, [])
-        task = ServiceTask.objects.get(
-            payload_json__source_call_id=call.id,
-            payload_json__commitment_index=0,
-        )
-        self.assertEqual(task.status, ServiceTask.STATUS_WAITING)
-        self.assertEqual(task.title, "Ждём клиента: Оплатить счёт")
-        self.assertEqual(
-            ServiceTask.objects.filter(payload_json__source_call_id=call.id).count(),
-            1,
-        )
-        notify_task_assignment.assert_not_called()
+        self.assertEqual(first, second)
+        self.assertEqual(first[0]["status"], "ready_for_review")
+        self.assertEqual(first[0]["actor"], "client")
+        self.assertFalse(ServiceTask.objects.filter(
+            payload_json__source_call_id=call.id
+        ).exists())
 
     def test_uncertain_commitment_is_not_materialized(self):
         call = self._call("uncertain-promise")
@@ -147,7 +133,10 @@ class CallCommitmentMaterializationTests(TestCase):
             },
         )
 
-        self.assertEqual(materialize_call_commitments(call.id), [])
+        proposals = materialize_call_commitments(call.id)
+        self.assertEqual(len(proposals), 1)
+        self.assertEqual(proposals[0]["status"], "needs_clarification")
+        self.assertTrue(proposals[0]["needs_clarification"])
         self.assertFalse(
             ServiceTask.objects.filter(payload_json__source_call_id=call.id).exists()
         )

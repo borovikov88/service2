@@ -9,6 +9,8 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
+from pool_service.communication_models import CallAnalysis, PhoneCall, TelephonyConnection
+from pool_service.call_processing_models import CallPrivateNumber
 from pool_service.finance_mcp_auth import CHATGPT_CLIENT_ID_METADATA_URL
 from pool_service.models import (
     Client,
@@ -256,6 +258,14 @@ class OperationsMcpTests(TestCase):
                 "send_employee_notification",
             },
         )
+        create_schema = next(
+            item["inputSchema"]
+            for item in response.json()["result"]["tools"]
+            if item["name"] == "create_task"
+        )
+        self.assertIn("commitment_proposal_id", create_schema["properties"])
+        self.assertIn("commitment_actor_user_id", create_schema["properties"])
+        self.assertIn("confirmed_by_user", create_schema["properties"])
 
     def test_finance_resource_token_is_rejected(self):
         raw = self._token(
@@ -456,8 +466,216 @@ class OperationsMcpTests(TestCase):
                 grant__resource=RESOURCE,
                 tool_name="operations.create_task",
                 result="success",
-            ).exists()
+        ).exists()
         )
+
+    def test_call_commitment_proposal_uses_one_idempotent_task_path(self):
+        raw = self._token(raw="call-commitment-token")
+        connection = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="Commitment test line",
+            external_id="operations-call-commitment",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=connection,
+            external_id="operations-call-commitment-1",
+            employee=self.manager,
+            phone_number="+7 900 000-00-11",
+            direction=PhoneCall.DIRECTION_OUT,
+            started_at=timezone.now(),
+            duration_seconds=45,
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        analysis = CallAnalysis.objects.create(
+            call=call,
+            status=CallAnalysis.STATUS_READY,
+            transcript="Завтра отправлю расчёт.",
+            summary="Сотрудник обещал отправить расчёт.",
+            facts={"commitments": [{
+                "actor": "employee",
+                "confidence": "high",
+                "action": "Отправить расчёт клиенту",
+                "kind": "proposal",
+                "due_date": "2026-10-09",
+                "due_time": "12:00",
+                "evidence": "Завтра отправлю расчёт.",
+            }]},
+        )
+
+        with self._settings():
+            proposal_response = self._post({
+                "jsonrpc": "2.0", "id": 401, "method": "tools/call",
+                "params": {"name": "get_call_analysis", "arguments": {"call_id": call.pk}},
+            }, token=raw)
+        proposal_result = proposal_response.json()["result"]
+        self.assertFalse(proposal_result["isError"])
+        proposal = proposal_result["structuredContent"]["commitment_proposals"][0]
+        self.assertEqual(proposal["status"], "ready_for_review")
+        self.assertFalse(ServiceTask.objects.filter(
+            payload_json__source_call_id=call.pk
+        ).exists())
+
+        arguments = {
+            "idempotency_key": proposal["proposal_id"],
+            "source_call_id": call.pk,
+            "commitment_index": proposal["commitment_index"],
+            "commitment_proposal_id": proposal["proposal_id"],
+            "title": proposal["action"],
+            "description": proposal["evidence"],
+            "responsible_user_id": self.manager.pk,
+            "commitment_actor_user_id": self.manager.pk,
+            "confirmed_by_user": True,
+            "due_date": proposal["due_date"],
+            "due_time": proposal["due_time"],
+        }
+        create_payload = {
+            "jsonrpc": "2.0", "method": "tools/call",
+            "params": {"name": "create_task", "arguments": arguments},
+        }
+        with self._settings():
+            first = self._post({**create_payload, "id": 402}, token=raw)
+            second = self._post({**create_payload, "id": 403}, token=raw)
+        self.assertFalse(first.json()["result"]["isError"])
+        self.assertFalse(second.json()["result"]["isError"])
+        self.assertTrue(first.json()["result"]["structuredContent"]["created"])
+        self.assertFalse(second.json()["result"]["structuredContent"]["created"])
+        tasks = ServiceTask.objects.filter(
+            organization=self.organization,
+            payload_json__source_call_id=call.pk,
+            payload_json__commitment_index=0,
+        )
+        self.assertEqual(tasks.count(), 1)
+        task = tasks.get()
+        self.assertEqual(task.source_type, ServiceTask.SOURCE_SYSTEM)
+        self.assertEqual(task.created_by, self.owner)
+        self.assertEqual(task.payload_json["commitment_actor_user_id"], self.manager.pk)
+        self.assertTrue(task.payload_json["confirmed_by_user"])
+        self.assertEqual(task.payload_json["created_by_agent"], "Rovik")
+        self.assertEqual(task.payload_json["commitment_proposal_id"], proposal["proposal_id"])
+
+        task.status = ServiceTask.STATUS_CANCELLED
+        task.save(update_fields=["status", "updated_at"])
+        with self._settings():
+            replay = self._post({**create_payload, "id": 404}, token=raw)
+        self.assertFalse(replay.json()["result"]["isError"])
+        task.refresh_from_db()
+        self.assertEqual(task.status, ServiceTask.STATUS_CANCELLED)
+        self.assertEqual(tasks.count(), 1)
+        CallPrivateNumber.objects.create(
+            organization=self.organization,
+            owner=self.manager,
+            label="Private test number",
+            phone_key="9000000011",
+        )
+        with self._settings():
+            private_replay = self._post({**create_payload, "id": 407}, token=raw)
+        self.assertTrue(private_replay.json()["result"]["isError"])
+        task.refresh_from_db()
+        self.assertEqual(task.status, ServiceTask.STATUS_CANCELLED)
+
+    def test_stale_call_commitment_proposal_cannot_create_a_task(self):
+        raw = self._token(raw="stale-call-commitment-token")
+        connection = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="Stale proposal test line",
+            external_id="stale-call-commitment",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=connection,
+            external_id="stale-call-commitment-1",
+            employee=self.manager,
+            phone_number="+7 900 000-00-12",
+            direction=PhoneCall.DIRECTION_OUT,
+            started_at=timezone.now(),
+            duration_seconds=45,
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        original = {
+            "actor": "employee", "confidence": "high",
+            "action": "Send original quote", "due_date": "2026-10-09",
+        }
+        analysis = CallAnalysis.objects.create(
+            call=call, status=CallAnalysis.STATUS_READY,
+            facts={"commitments": [original]},
+        )
+        from pool_service.services.call_commitments import commitment_proposal_id
+
+        stale_id = commitment_proposal_id(call.pk, 0, original)
+        analysis.facts = {"commitments": [{**original, "action": "Cancelled quote"}]}
+        analysis.save(update_fields=["facts", "updated_at"])
+        with self._settings():
+            response = self._post({
+                "jsonrpc": "2.0", "id": 405, "method": "tools/call",
+                "params": {"name": "create_task", "arguments": {
+                    "idempotency_key": stale_id,
+                    "source_call_id": call.pk,
+                    "commitment_index": 0,
+                    "commitment_proposal_id": stale_id,
+                    "title": "Send original quote",
+                    "responsible_user_id": self.manager.pk,
+                    "commitment_actor_user_id": self.manager.pk,
+                    "confirmed_by_user": True,
+                    "due_date": "2026-10-09",
+                }},
+            }, token=raw)
+        self.assertTrue(response.json()["result"]["isError"])
+        self.assertFalse(ServiceTask.objects.filter(
+            payload_json__source_call_id=call.pk
+        ).exists())
+
+    def test_internal_call_proposal_with_unresolved_participant_cannot_create_task(self):
+        raw = self._token(raw="unresolved-internal-commitment-token")
+        connection = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="Internal test line",
+            external_id="unresolved-internal-commitment",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=connection,
+            external_id="unresolved-internal-commitment-1",
+            employee=self.manager,
+            provider_user=self.manager.username,
+            peer_provider_user="unmapped-peer",
+            phone_number="",
+            direction=PhoneCall.DIRECTION_INTERNAL,
+            started_at=timezone.now(),
+            duration_seconds=45,
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        commitment = {
+            "actor": "employee", "confidence": "high",
+            "action": "Send the internal handoff", "due_date": "2026-10-09",
+        }
+        CallAnalysis.objects.create(
+            call=call,
+            status=CallAnalysis.STATUS_READY,
+            facts={"commitments": [commitment]},
+        )
+        from pool_service.services.call_commitments import commitment_proposal_id
+
+        proposal_id = commitment_proposal_id(call.pk, 0, commitment)
+        with self._settings():
+            response = self._post({
+                "jsonrpc": "2.0", "id": 406, "method": "tools/call",
+                "params": {"name": "create_task", "arguments": {
+                    "idempotency_key": proposal_id,
+                    "source_call_id": call.pk,
+                    "commitment_index": 0,
+                    "commitment_proposal_id": proposal_id,
+                    "commitment_actor_user_id": self.manager.pk,
+                    "confirmed_by_user": True,
+                    "title": commitment["action"],
+                    "responsible_user_id": self.manager.pk,
+                    "due_date": commitment["due_date"],
+                }},
+            }, token=raw)
+        self.assertTrue(response.json()["result"]["isError"])
+        self.assertFalse(ServiceTask.objects.filter(
+            payload_json__source_call_id=call.pk
+        ).exists())
 
     def test_create_idempotency_key_reuse_with_different_arguments_is_rejected(self):
         raw = self._token(raw="create-idempotency-command-token")
