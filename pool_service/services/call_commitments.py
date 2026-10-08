@@ -8,6 +8,7 @@ from django.utils import timezone
 from pool_service.communication_models import CallAnalysis
 from pool_service.models import OrganizationAccess, ServiceTask, ServiceTaskChange
 from pool_service.services.notifications import notify_task_assignment
+from pool_service.services.call_privacy import is_private_call
 
 
 MATERIALIZED_CONFIDENCE = "high"
@@ -137,6 +138,8 @@ def materialize_call_commitments(call_id):
             return []
 
         call = analysis.call
+        if is_private_call(call):
+            return []
         responsible = _resolve_responsible(call)
         if not responsible:
             return []
