@@ -183,6 +183,42 @@ class AvitoApiThrottle(models.Model):
     next_allowed_at = models.DateTimeField(default=timezone.now)
 
 
+class AvitoStatusMonitor(models.Model):
+    """Explicit owner subscription and durable worker lease, disabled by default."""
+
+    connection = models.OneToOneField(ChannelConnection, on_delete=models.CASCADE, related_name="status_monitor")
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE)
+    recipient = models.ForeignKey(User, on_delete=models.CASCADE)
+    account_id = models.CharField(max_length=255)
+    enabled = models.BooleanField(default=False)
+    generation = models.UUIDField(default=uuid.uuid4)
+    baseline_at = models.DateTimeField(null=True, blank=True)
+    last_started_at = models.DateTimeField(null=True, blank=True)
+    last_success_at = models.DateTimeField(null=True, blank=True)
+    last_failure_at = models.DateTimeField(null=True, blank=True)
+    last_error_code = models.CharField(max_length=80, blank=True)
+    failure_count = models.PositiveIntegerField(default=0)
+    last_item_count = models.PositiveIntegerField(default=0)
+    last_page_count = models.PositiveIntegerField(default=0)
+    next_due_at = models.DateTimeField(default=timezone.now)
+    lease_token = models.UUIDField(null=True, blank=True)
+    lease_until = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["enabled", "next_due_at"], name="avito_monitor_due_idx")]
+
+
+class AvitoListingStatus(models.Model):
+    monitor = models.ForeignKey(AvitoStatusMonitor, on_delete=models.CASCADE, related_name="listings")
+    item_id = models.CharField(max_length=32)
+    status = models.CharField(max_length=16)
+    sequence = models.PositiveIntegerField(default=0)
+    last_seen_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["monitor", "item_id"], name="avito_monitor_item_uniq")]
+
+
 class Conversation(models.Model):
     STATUS_NEW = "new"
     STATUS_ACTIVE = "active"

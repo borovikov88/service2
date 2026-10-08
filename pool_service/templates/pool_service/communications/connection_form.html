@@ -76,6 +76,8 @@
       </div>
     </form>
 
+    {% if editing and kind == 'avito' %}{% include 'pool_service/avito/_status_monitor.html' %}{% endif %}
+
     {% if editing and kind == 'avito' and avito_diagnostic_accounts %}
       <section class="avito-admin mt-4" id="avito-api-diagnostics" data-avito-dashboard data-avito-timezone="{{ avito_timezone }}" aria-labelledby="avito-api-diagnostics-heading">
         <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">

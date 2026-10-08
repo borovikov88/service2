@@ -1,0 +1,30 @@
+{% if status_monitor_state.allowed %}
+<section class="card card-body mt-4" id="avito-status-monitor" aria-labelledby="avito-status-monitor-title">
+  <h2 class="h5" id="avito-status-monitor-title">Почасовой контроль объявлений</h2>
+  <p class="small text-muted">Service2 проверяет все страницы объявлений этого подключения. Первое успешное чтение создаёт начальный снимок без старых уведомлений. Новые переходы в «Снято», «Истекло / архив», «Заблокировано» и «Отклонено» видит только включивший контроль владелец внутри Service2. Новые неизвестные объявления и исчезнувшие записи сами по себе не считаются изменением статуса.</p>
+  {% with monitor=status_monitor_state.monitor %}
+    <div class="mb-2"><strong>{% if monitor.enabled %}Включён{% else %}Отключён{% endif %}</strong>{% if status_monitor_state.running %} · Проверка выполняется{% endif %}</div>
+    {% if monitor %}
+      <dl class="row small mb-2">
+        <dt class="col-sm-5">Получатель</dt><dd class="col-sm-7">{{ monitor.recipient.get_full_name|default:monitor.recipient.username }} · только внутри Service2</dd>
+        <dt class="col-sm-5">Начальный снимок</dt><dd class="col-sm-7">{{ monitor.baseline_at|date:"d.m.Y H:i:s"|default:"Ожидается полная проверка" }}</dd>
+        <dt class="col-sm-5">Последняя попытка</dt><dd class="col-sm-7">{{ monitor.last_started_at|date:"d.m.Y H:i:s"|default:"Ещё не запускалась" }}</dd>
+        <dt class="col-sm-5">Последняя полная проверка</dt><dd class="col-sm-7">{{ monitor.last_success_at|date:"d.m.Y H:i:s"|default:"Ещё нет" }}{% if monitor.last_success_at %} · {{ monitor.last_item_count }} объявлений / {{ monitor.last_page_count }} страниц{% endif %}</dd>
+        <dt class="col-sm-5">Последняя ошибка</dt><dd class="col-sm-7">{{ monitor.last_failure_at|date:"d.m.Y H:i:s"|default:"Не было" }}</dd>
+        {% if monitor.enabled %}<dt class="col-sm-5">Следующая проверка, не ранее</dt><dd class="col-sm-7">{{ monitor.next_due_at|date:"d.m.Y H:i:s" }}</dd>{% endif %}
+      </dl>
+    {% endif %}
+    {% if status_monitor_state.error %}<div class="alert alert-warning small" role="status">{{ status_monitor_state.error }} Ошибка API не создаёт уведомлений об отключении объявлений.</div>{% endif %}
+    <p class="small text-muted">Планировщик запускается каждые 15 минут; успешные проверки идут с интервалом не менее часа. При ошибках повтор через 15, 30, затем 60 минут. Возможны задержки GitHub Actions. Показано время Service2. Лимит обхода: 100 страниц по 50 объявлений и 7 минут. Неполный обход не обновляет статусы.</p>
+    <form method="post" action="{% url 'avito_configure_monitor' connection.pk %}" class="d-flex flex-wrap gap-2">
+      {% csrf_token %}
+      {% if monitor.enabled %}
+        <button class="btn btn-outline-primary" type="submit" name="action" value="retry">Запросить проверку</button>
+        <button class="btn btn-outline-secondary" type="submit" name="action" value="disable">Отключить контроль</button>
+      {% else %}
+        <button class="btn btn-primary" type="submit" name="action" value="enable">Включить контроль для меня</button>
+      {% endif %}
+    </form>
+  {% endwith %}
+</section>
+{% endif %}
