@@ -67,7 +67,33 @@
 </div>
 <div class="card card-soft p-3 p-md-4">
   <h2 class="h5">Расходы и лимиты</h2>
-  <p class="mb-0">Учёт фактических попыток и резервирование бюджета ещё не подключены. Денежные суммы здесь не рассчитываются; отсутствие данных не означает нулевые расходы. Автоматический платный запуск с этого экрана недоступен.</p>
+  <p class="small text-muted">Валюта учёта — USD. Рубли не пересчитываются без отдельного источника курса. Тарифная версия: {{ usage.tariff_version }}. Сумма по usage API рассчитывается из реально возвращённых токенов и тарифа, но не является подтверждённым счётом OpenAI.</p>
+  <form method="post" class="row g-2 align-items-end mb-3">
+    {% csrf_token %}<input type="hidden" name="action" value="save_budget">
+    {{ budget_form.expected_revision }}
+    <div class="col-md-5">{{ budget_form.monthly_limit_usd.label_tag }}{{ budget_form.monthly_limit_usd }}<div class="form-text">{{ budget_form.monthly_limit_usd.help_text }}</div></div>
+    <div class="col-auto"><button class="btn btn-outline-primary" type="submit">Сохранить лимит</button></div>
+  </form>
+  <div class="row g-2 mb-3">
+    <div class="col-6 col-md-3"><div class="border rounded p-2"><div class="small text-muted">Попыток</div><strong>{{ usage.totals.attempts }}</strong></div></div>
+    <div class="col-6 col-md-3"><div class="border rounded p-2"><div class="small text-muted">Ошибок</div><strong>{{ usage.totals.errors }}</strong></div></div>
+    <div class="col-6 col-md-3"><div class="border rounded p-2"><div class="small text-muted">Расчётно, USD</div><strong>{{ usage.totals.estimated_usd }}</strong></div></div>
+    <div class="col-6 col-md-3"><div class="border rounded p-2"><div class="small text-muted">По usage API, USD</div><strong>{{ usage.totals.usage_usd }}</strong></div></div>
+  </div>
+  <p class="small mb-2">В резерве: {{ usage.totals.reserved_usd }} USD. Подтверждённая сумма списания: {% if usage.totals.confirmed_unknown %}неизвестна для {{ usage.totals.confirmed_unknown }} попыток{% else %}{{ usage.totals.confirmed_usd }} USD{% endif %}. Аудио в учёте: {{ usage.totals.audio_seconds }} сек.</p>
+  {% if usage.by_employee %}
+  <div class="table-responsive mb-3"><table class="table table-sm align-middle">
+    <thead><tr><th>Сотрудник</th><th>Попыток</th><th>Аудио, сек.</th><th>Расчётно, USD</th><th>По usage API, USD</th></tr></thead>
+    <tbody>{% for row in usage.by_employee %}<tr><td>{{ row.employee }}</td><td>{{ row.attempts }}</td><td>{{ row.audio_seconds }}</td><td>{{ row.estimated_usd }}</td><td>{{ row.usage_usd }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% endif %}
+  {% if usage.by_day %}
+  <details><summary>По дням</summary><div class="table-responsive mt-2"><table class="table table-sm">
+    <thead><tr><th>Дата</th><th>Попыток</th><th>Расчётно, USD</th><th>По usage API, USD</th></tr></thead>
+    <tbody>{% for row in usage.by_day %}<tr><td>{{ row.date|date:"d.m.Y" }}</td><td>{{ row.attempts }}</td><td>{{ row.estimated_usd }}</td><td>{{ row.usage_usd }}</td></tr>{% endfor %}</tbody>
+  </table></div></details>
+  {% endif %}
+  <p class="small text-muted mb-0 mt-2">Автоматический платный запуск пока выключен. Лимит уже хранится и будет проверяться атомарно перед внешним запросом после подключения запуска.</p>
 </div>
 <script>
 (() => {
