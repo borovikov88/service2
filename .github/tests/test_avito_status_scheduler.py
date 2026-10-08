@@ -194,16 +194,18 @@ raise SystemExit(int(os.environ.get("TEST_COMMAND_EXIT", "0")))
         self.assertNotIn("git checkout", workflow)
         self.assertNotIn("crontab", workflow)
 
-    def test_protected_deploy_preflights_before_mutation_then_installs_exact_release(self):
+    def test_normal_deploy_checks_runtime_without_installing_or_requiring_cron(self):
         workflow = (ROOT / ".github/workflows/ci-deploy.yml").read_text()
-        preflight = workflow.index("- name: Verify hosting cron capability without modifying schedules")
+        preflight = workflow.index("- name: Verify hosting compatibility without modifying checkout")
         deploy = workflow.index("- name: Deploy exact tested commit")
-        install = workflow.index("- name: Verify cron runtime and install the single hosting schedule")
+        readiness = workflow.index("- name: Verify deployed Avito status monitor runtime")
         self.assertLess(preflight, deploy)
-        self.assertLess(deploy, install)
-        self.assertIn('"$REMOTE_COMMAND" < scripts/avito_monitor_cron.py', workflow[preflight:deploy])
-        self.assertIn("python - preflight --app-dir %q", workflow[preflight:deploy])
-        self.assertIn("avito_monitor_cron.py install --app-dir %q --expected-sha %q", workflow[install:])
+        self.assertLess(deploy, readiness)
+        self.assertIn('test "$(git rev-parse HEAD)" = %q', workflow[readiness:])
+        self.assertIn("scripts/run_avito_status_monitor.sh --status", workflow[readiness:])
+        self.assertNotIn("python - preflight --app-dir", workflow)
+        self.assertNotIn("avito_monitor_cron.py install", workflow)
+        self.assertNotIn("scheduler_state", workflow)
 
 
 if __name__ == "__main__":

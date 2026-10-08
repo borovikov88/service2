@@ -26,6 +26,9 @@ def listing(identifier=1, status="active"):
 
 class AvitoMonitorFixture:
     def setUp(self):
+        schedule = patch.object(monitor, "scheduler_state", return_value={"ready": True, "code": "ready", "detail": "Test scheduler ready"})
+        schedule.start()
+        self.addCleanup(schedule.stop)
         self.org = Organization.objects.create(name="Monitor test")
         self.owner = User.objects.create_user("monitor-owner", password="test")
         self.admin = User.objects.create_user("monitor-admin", password="test")
@@ -217,6 +220,27 @@ class AvitoMonitorTests(AvitoMonitorFixture, TestCase):
                 monitor.configure(self.connection, user, "enable")
             self.client.force_login(user)
             self.assertEqual(self.client.post(self.url, {"action": "enable"}).status_code, 403)
+
+    def test_unverified_scheduler_blocks_new_activation_without_creating_subscription(self):
+        own = ChannelConnection.objects.create(channel=self.channel, external_id="456", name="Services")
+        with patch.object(monitor, "scheduler_state", return_value={"ready": False, "code": "unverified", "detail": "Not verified"}):
+            with self.assertRaises(ValueError):
+                monitor.configure(own, self.admin, "enable")
+            self.client.force_login(self.admin)
+            self.assertContains(self.client.get(reverse("communication_connection_edit", args=[own.pk])), 'disabled>Включить контроль для меня')
+        self.assertFalse(AvitoStatusMonitor.objects.filter(connection=own).exists())
+
+    def test_stale_scheduler_preserves_active_subscription_and_its_safe_controls(self):
+        with patch.object(monitor, "scheduler_state", return_value={"ready": False, "code": "stale", "detail": "No fresh tick"}):
+            monitor.configure(self.connection, self.owner, "enable")
+            monitor.configure(self.connection, self.owner, "retry")
+            self.client.force_login(self.owner)
+            self.assertContains(self.client.get(reverse("communication_connection_edit", args=[self.connection.pk])), "Подписка сохранена")
+            self.state.refresh_from_db()
+            self.assertTrue(self.state.enabled)
+            monitor.configure(self.connection, self.owner, "disable")
+            with self.assertRaises(ValueError):
+                monitor.configure(self.connection, self.owner, "enable")
 
     def test_current_org_admin_can_self_subscribe_using_existing_channel_rights(self):
         own = ChannelConnection.objects.create(channel=self.channel, external_id="456", name="Services")

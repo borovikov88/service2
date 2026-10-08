@@ -3,6 +3,19 @@
   <h2 class="h5" id="avito-status-monitor-title">Почасовой контроль объявлений</h2>
   <p class="small fw-semibold">Уведомления только вам. Другой администратор не может изменить получателя этой подписки.</p>
   <p class="small text-muted">Service2 проверяет все страницы объявлений этого подключения. Первое успешное чтение создаёт начальный снимок без старых уведомлений. Новые переходы в «Снято», «Истекло / архив», «Заблокировано» и «Отклонено» видите только вы внутри Service2. Новые неизвестные объявления и исчезнувшие записи сами по себе не считаются изменением статуса.</p>
+  <div class="alert {% if status_monitor_state.scheduler.ready %}alert-light border{% else %}alert-warning{% endif %} small" role="status">
+    {{ status_monitor_state.scheduler.detail }}
+    {% if status_monitor_state.scheduler.success_at %}{{ status_monitor_state.scheduler.success_at|date:"d.m.Y H:i:s" }}.{% endif %}
+    {% if status_monitor_state.monitor.enabled and not status_monitor_state.scheduler.ready %}Подписка сохранена. Проверки могут задерживаться; предыдущие данные не считаются свежими.{% endif %}
+  </div>
+  {% if status_monitor_state.panel_command %}
+  <details class="small mb-3">
+    <summary>Команда для CronTab в панели хостинга</summary>
+    <p class="mt-2 mb-1">Одно задание, минуты 7, 22, 37 и 52 каждого часа. Используйте существующий аккаунт хостинга. Другие задания и настройки менять не нужно.</p>
+    <pre class="text-wrap small border rounded p-2">{{ status_monitor_state.panel_command }}</pre>
+    <p>После добавления включите задание и проверьте его запуск. Эта страница не устанавливает расписание. Открытие страницы и deployment не создают подтверждение успешного запуска.</p>
+  </details>
+  {% endif %}
   {% with monitor=status_monitor_state.monitor %}
     <div class="mb-2"><strong>{% if monitor.enabled %}Включён{% else %}Отключён{% endif %}</strong>{% if status_monitor_state.running %} · Проверка выполняется{% endif %}</div>
     {% if monitor %}
@@ -16,14 +29,14 @@
       </dl>
     {% endif %}
     {% if status_monitor_state.error %}<div class="alert alert-warning small" role="status">{{ status_monitor_state.error }} Ошибка API не создаёт уведомлений об отключении объявлений.</div>{% endif %}
-    <p class="small text-muted">Планировщик сервера запускается каждые 15 минут; успешные проверки идут раз в час по сохранённому расписанию. При ошибках повтор через 15, 30, затем 60 минут. Показано время Service2. Лимит обхода: 100 страниц по 50 объявлений и 7 минут. Неполный обход не обновляет статусы.</p>
+    <p class="small text-muted">Настроенное расписание должно запускать обработчик каждые 15 минут; успешные проверки идут раз в час по сохранённому расписанию. При ошибках повтор через 15, 30, затем 60 минут. Показано время Service2. Лимит обхода: 100 страниц по 50 объявлений и 7 минут. Неполный обход не обновляет статусы.</p>
     <form method="post" action="{% url 'avito_configure_monitor' connection.pk %}" class="d-flex flex-wrap gap-2">
       {% csrf_token %}
       {% if monitor.enabled %}
         <button class="btn btn-outline-primary" type="submit" name="action" value="retry">Запросить проверку</button>
         <button class="btn btn-outline-secondary" type="submit" name="action" value="disable">Отключить контроль</button>
       {% else %}
-        <button class="btn btn-primary" type="submit" name="action" value="enable">Включить контроль для меня</button>
+        <button class="btn btn-primary" type="submit" name="action" value="enable" {% if not status_monitor_state.scheduler.ready %}disabled{% endif %}>Включить контроль для меня</button>
       {% endif %}
     </form>
   {% endwith %}
