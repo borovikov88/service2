@@ -17,8 +17,8 @@ from pool_service.call_processing_models import (
 from pool_service.services.permissions import organization_for_user
 from pool_service.services.call_usage import usage_summary
 from pool_service.services.call_processing_settings import (
-    STAFF_ROLES, settings_allowed, save_rule, save_budget, add_private_numbers,
-    remove_private_number, preview_rules,
+    STAFF_ROLES, activate_rule, pause_rule, settings_allowed, save_rule,
+    save_budget, add_private_numbers, remove_private_number, preview_rules,
 )
 
 
@@ -86,6 +86,9 @@ def _rule_rows(organization, actor, bound_form=None):
             "id": employee.pk, "name": employee.get_full_name() or employee.username,
             "editable": editable, "is_self": employee.pk == actor.pk,
             "saved": rule is not None, "form": form,
+            "revision": rule.revision if rule else 0,
+            "effective_from": rule.effective_from if rule else None,
+            "mode": rule.mode if rule else "manual",
         })
     return result
 
@@ -122,6 +125,32 @@ def call_processing_settings(request):
                     messages.success(request, "Правило сохранено для предпросмотра. Авторасшифровка не запущена.")
                     return redirect("call_processing_settings")
                 status = 400
+            elif action in {"activate_rule", "pause_rule"}:
+                try:
+                    employee_id = int(request.POST.get("employee_id", ""))
+                    expected_revision = int(request.POST.get("expected_revision", ""))
+                except (TypeError, ValueError):
+                    raise ValidationError("Некорректная версия правила.")
+                if action == "activate_rule":
+                    activate_rule(
+                        user=request.user,
+                        organization=organization,
+                        employee_id=employee_id,
+                        expected_revision=expected_revision,
+                    )
+                    messages.success(
+                        request,
+                        "Автообработка включена только для новых звонков после текущего момента.",
+                    )
+                else:
+                    pause_rule(
+                        user=request.user,
+                        organization=organization,
+                        employee_id=employee_id,
+                        expected_revision=expected_revision,
+                    )
+                    messages.success(request, "Автообработка сотрудника приостановлена.")
+                return redirect("call_processing_settings")
             elif action == "save_budget":
                 budget_form = BudgetForm(request.POST)
                 if budget_form.is_valid():
