@@ -4,6 +4,7 @@ import hashlib
 import json
 from datetime import date, datetime
 from time import monotonic
+from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
@@ -320,7 +321,7 @@ PUSH_RETRY_BATCH_LIMIT = 100
 PUSH_RETRY_CANDIDATE_LIMIT = 500
 _TERMINAL_PUSH_RESULTS = frozenset({
     "sent", "skipped_self", "blocked_not_authorized",
-    "blocked_push_disabled", "blocked_task_closed",
+    "blocked_push_disabled", "blocked_task_closed", "attempt_committed",
 })
 
 
@@ -404,6 +405,30 @@ def _schedule_assignment_push(task_id, responsible_user_id):
 
 
 def _retry_assignment_push(task_id, responsible_user_id):
+    attempt_id = str(uuid4())
+    # Phase 1: commit the delivery attempt before any external side effect.
+    # If the process dies after this commit, automatic retry stops rather than
+    # risking a duplicate private notification.
+    with transaction.atomic():
+        task = (
+            ServiceTask.objects.select_for_update()
+            .filter(pk=task_id)
+            .first()
+        )
+        if not task:
+            return 0
+        payload, delivery = _assignment_delivery(task)
+        if not _push_delivery_is_pending(delivery):
+            return 0
+        delivery["push_last_attempt_at"] = timezone.now().isoformat()
+        delivery["push_attempt_id"] = attempt_id
+        delivery["push_delivery_result"] = "attempt_committed"
+        payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
+        _save_push_payload(task, payload)
+
+    # Phase 2 keeps current task/recipient authority locked while sending. A
+    # rollback here cannot restore the pre-attempt pending state because phase
+    # 1 is already durable.
     with transaction.atomic():
         task = (
             ServiceTask.objects.select_for_update()
@@ -413,12 +438,13 @@ def _retry_assignment_push(task_id, responsible_user_id):
         )
         if not task:
             return 0
-
         payload, delivery = _assignment_delivery(task)
-        if not _push_delivery_is_pending(delivery):
+        if (
+            delivery.get("push_delivery_result") != "attempt_committed"
+            or delivery.get("push_attempt_id") != attempt_id
+        ):
             return 0
         if _task_is_closed(task):
-            delivery["push_last_attempt_at"] = timezone.now().isoformat()
             delivery["push_delivery_result"] = "blocked_task_closed"
             payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
             _save_push_payload(task, payload)
@@ -426,14 +452,11 @@ def _retry_assignment_push(task_id, responsible_user_id):
 
         responsible = _locked_task_recipient(task, responsible_user_id)
         if not responsible:
-            delivery["push_last_attempt_at"] = timezone.now().isoformat()
             delivery["push_delivery_result"] = "blocked_not_authorized"
             payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
             _save_push_payload(task, payload)
             return 0
-
         if not _profile_allows_push(responsible):
-            delivery["push_last_attempt_at"] = timezone.now().isoformat()
             delivery["push_delivery_result"] = "blocked_push_disabled"
             payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
             _save_push_payload(task, payload)
@@ -448,7 +471,10 @@ def _retry_assignment_push(task_id, responsible_user_id):
             return 0
 
         title, message, action_url = task_assignment_notification_content(task)
-        dedupe_key = delivery.get("notification_dedupe_key") or _assignment_notification_key(task.id)
+        dedupe_key = (
+            delivery.get("notification_dedupe_key")
+            or _assignment_notification_key(task.id)
+        )
         notification = Notification.objects.filter(
             user=responsible,
             dedupe_key=dedupe_key,
@@ -460,7 +486,6 @@ def _retry_assignment_push(task_id, responsible_user_id):
             action_url=action_url,
             notification=notification,
         )
-        delivery["push_last_attempt_at"] = timezone.now().isoformat()
         delivery["push_last_sent_count"] = int(sent or 0)
         if sent:
             delivery["push_delivered_at"] = timezone.now().isoformat()
@@ -470,7 +495,6 @@ def _retry_assignment_push(task_id, responsible_user_id):
         payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
         _save_push_payload(task, payload)
         return int(sent or 0)
-
 
 
 def _profile_allows_push(user):
@@ -487,6 +511,26 @@ def _notification_deliveries(task):
 
 
 def _retry_employee_notification_push(task_id, marker):
+    attempt_id = str(uuid4())
+    with transaction.atomic():
+        task = ServiceTask.objects.select_for_update().filter(
+            pk=task_id,
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+        ).first()
+        if not task:
+            return 0
+        payload, deliveries = _notification_deliveries(task)
+        delivery = deliveries.get(marker)
+        if not _push_delivery_is_pending(delivery):
+            return 0
+        delivery = dict(delivery)
+        delivery["push_last_attempt_at"] = timezone.now().isoformat()
+        delivery["push_attempt_id"] = attempt_id
+        delivery["push_delivery_result"] = "attempt_committed"
+        deliveries[marker] = delivery
+        payload[EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY] = deliveries
+        _save_push_payload(task, payload)
+
     with transaction.atomic():
         task = (
             ServiceTask.objects.select_for_update()
@@ -497,14 +541,17 @@ def _retry_employee_notification_push(task_id, marker):
         )
         if not task:
             return 0
-
         payload, deliveries = _notification_deliveries(task)
         delivery = deliveries.get(marker)
-        if not _push_delivery_is_pending(delivery):
+        if not isinstance(delivery, dict):
             return 0
         delivery = dict(delivery)
+        if (
+            delivery.get("push_delivery_result") != "attempt_committed"
+            or delivery.get("push_attempt_id") != attempt_id
+        ):
+            return 0
         if _task_is_closed(task):
-            delivery["push_last_attempt_at"] = timezone.now().isoformat()
             delivery["push_delivery_result"] = "blocked_task_closed"
             deliveries[marker] = delivery
             payload[EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY] = deliveries
@@ -514,15 +561,12 @@ def _retry_employee_notification_push(task_id, marker):
         employee_id = delivery.get("employee_user_id")
         employee = _locked_task_recipient(task, employee_id)
         if not employee:
-            delivery["push_last_attempt_at"] = timezone.now().isoformat()
             delivery["push_delivery_result"] = "blocked_not_authorized"
             deliveries[marker] = delivery
             payload[EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY] = deliveries
             _save_push_payload(task, payload)
             return 0
-
         if not _profile_allows_push(employee):
-            delivery["push_last_attempt_at"] = timezone.now().isoformat()
             delivery["push_delivery_result"] = "blocked_push_disabled"
             deliveries[marker] = delivery
             payload[EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY] = deliveries
@@ -544,7 +588,6 @@ def _retry_employee_notification_push(task_id, marker):
             action_url=str(delivery.get("action_url") or ""),
             notification=notification,
         )
-        delivery["push_last_attempt_at"] = timezone.now().isoformat()
         delivery["push_last_sent_count"] = int(sent or 0)
         if sent:
             delivery["push_delivered_at"] = timezone.now().isoformat()
