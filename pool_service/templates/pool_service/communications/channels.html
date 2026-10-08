@@ -7,7 +7,10 @@
     <h1 class="h3 mb-1">Каналы связи</h1>
     <div class="text-muted">Подключайте источники обращений и управляйте их состоянием из Service2.</div>
   </div>
-  <a href="{% url 'communications_conversations' %}" class="btn btn-outline-secondary">К диалогам</a>
+  <div class="d-flex flex-wrap gap-2">
+    <a href="{% url 'avito_dashboard' %}" class="btn btn-outline-primary">Обзор Авито</a>
+      <a href="{% url 'communications_conversations' %}" class="btn btn-outline-secondary">К диалогам</a>
+  </div>
 </div>
 
 <div class="row g-4">

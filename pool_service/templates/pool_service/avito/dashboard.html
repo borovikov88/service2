@@ -1,0 +1,106 @@
+{% extends "pool_service/base.html" %}
+{% block title %}Авито — Управление{% endblock %}
+{% block content %}
+<style>
+  .avito-admin .avito-stat{border:1px solid var(--bs-border-color);border-radius:1rem;padding:1rem;background:var(--bs-body-bg);height:100%}
+  .avito-admin .avito-stat strong{display:block;font-size:clamp(1.6rem,3vw,2rem);line-height:1.2}
+  .avito-admin .avito-account{border:1px solid var(--bs-border-color);border-radius:1rem;background:var(--bs-body-bg);overflow:hidden}
+  .avito-admin .avito-account__header{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:1rem;padding:1.1rem}
+  .avito-admin .avito-check{display:grid;grid-template-columns:minmax(140px,1fr) auto minmax(180px,2fr);align-items:center;gap:1rem;padding:.7rem 1rem;border-top:1px solid var(--bs-border-color)}
+  .avito-admin .avito-check__detail{color:var(--bs-secondary-color);overflow-wrap:anywhere;font-size:.85rem}
+  .avito-admin .avito-state{display:inline-block;border-radius:999px;padding:.2rem .55rem;font-weight:600;font-size:.74rem;background:var(--bs-tertiary-bg);color:var(--bs-secondary-color)}
+  .avito-admin .avito-state.ok{color:var(--bs-success-text-emphasis);background:var(--bs-success-bg-subtle)}
+  .avito-admin .avito-state.denied,.avito-admin .avito-state.error{color:var(--bs-danger-text-emphasis);background:var(--bs-danger-bg-subtle)}
+  .avito-admin .avito-state.warning{color:var(--bs-warning-text-emphasis);background:var(--bs-warning-bg-subtle)}
+  @media(max-width:767px){.avito-admin .avito-check{grid-template-columns:1fr auto;gap:.3rem}.avito-admin .avito-check__detail{grid-column:1/-1}}
+</style>
+<div class="avito-admin">
+  <div class="d-flex flex-wrap align-items-start justify-content-between gap-3 mb-4">
+    <div>
+      <div class="small text-muted mb-1">Маркетинг · Каналы продаж</div>
+      <h1 class="h3 mb-1">Авито</h1>
+      <p class="text-muted mb-0">Контроль подключений и доступных функций API для товаров и услуг.</p>
+    </div>
+    <a class="btn btn-outline-secondary" href="{% url 'communications_channels' %}">
+      <i class="bi bi-gear me-1"></i>Подключения
+    </a>
+  </div>
+
+  <div class="row g-3 mb-4">
+    <div class="col-6 col-lg-4"><div class="avito-stat"><strong>{{ connected_count }}</strong><span class="text-muted small">Подключений Авито</span></div></div>
+    <div class="col-6 col-lg-4"><div class="avito-stat"><strong>{{ configured_count }}</strong><span class="text-muted small">С сохранёнными ключами</span></div></div>
+    <div class="col-12 col-lg-4"><div class="avito-stat"><strong>{{ checked_count }}</strong><span class="text-muted small">С выполненной проверкой API</span></div></div>
+  </div>
+
+  <div class="alert alert-secondary border mb-4" role="note">
+    <i class="bi bi-info-circle me-1" aria-hidden="true"></i>
+    Проверки запускаются вручную и только читают данные. HTTP 402/403 означает отказ доступа
+    (возможны ограничения прав или тарифа). Подтверждённый токен не гарантирует доступа к сообщениям.
+    Сведения о подписке и датах продления тарифов пока не извлекаются.
+  </div>
+
+  {% for account in accounts %}
+    <section class="avito-account mb-3" aria-label="Подключение {{ account.connection.name }}">
+      <div class="avito-account__header">
+        <div>
+          <h2 class="h5 mb-1">{{ account.connection.name }}</h2>
+          <div class="small text-muted">ID в Service2: {{ account.connection.external_id }}</div>
+          {% if account.actual_id and account.actual_id != account.connection.external_id %}
+            <div class="small text-warning-emphasis mt-1">ID по API: {{ account.actual_id }} — отличается от сохранённого</div>
+          {% endif %}
+          <div class="d-flex flex-wrap gap-2 mt-2">
+            <span class="avito-state {% if account.has_credentials %}ok{% else %}warning{% endif %}">
+              {% if account.has_credentials %}Ключи сохранены{% else %}Нет ключей{% endif %}
+            </span>
+            <span class="avito-state {% if account.connection.is_active and account.connection.channel.is_active %}ok{% else %}warning{% endif %}">
+              {% if account.connection.is_active and account.connection.channel.is_active %}Канал включён{% else %}Канал выключен{% endif %}
+            </span>
+            <span class="avito-state {% if account.webhook_status == 'connected' %}ok{% elif account.webhook_status == 'error' %}error{% else %}warning{% endif %}">
+              Webhook: {{ account.webhook_status }}
+            </span>
+          </div>
+          {% if account.webhook_received %}<div class="small text-muted mt-2">Последнее событие: {{ account.webhook_received }}</div>{% endif %}
+          {% if account.webhook_error %}<div class="small text-danger mt-1">Подключение: {{ account.webhook_error }}</div>{% endif %}
+          {% if account.pull_error %}<div class="small text-danger mt-1">Чтение сообщений: {{ account.pull_error }}</div>{% endif %}
+        </div>
+        <div class="d-flex flex-column align-items-end gap-2">
+          {% if account.has_credentials %}
+            <form method="post" action="{% url 'avito_check_api' account.connection.pk %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-primary"><i class="bi bi-arrow-repeat me-1"></i>Проверить API</button>
+            </form>
+          {% else %}
+            <a class="btn btn-outline-primary" href="{% url 'communication_connection_edit' account.connection.pk %}">Добавить ключи</a>
+          {% endif %}
+          {% if account.checked_at %}<span class="text-muted small">Проверено: {{ account.checked_at }}</span>{% endif %}
+        </div>
+      </div>
+      {% if account.results %}
+        <div class="border-top px-3 py-2 bg-body-tertiary small fw-semibold">Доступность функций</div>
+        {% for check in account.results %}
+          <div class="avito-check">
+            <div class="fw-semibold small">{{ check.label }}</div>
+            <span class="avito-state {{ check.status }}">
+              {% if check.status == 'ok' %}Доступно{% elif check.status == 'denied' %}Нет доступа{% elif check.status == 'warning' %}Внимание{% elif check.status == 'skipped' %}Не проверено{% else %}Ошибка{% endif %}
+            </span>
+            <div class="avito-check__detail">{{ check.detail }}{% if check.code %} <span class="text-muted">({{ check.code }})</span>{% endif %}</div>
+          </div>
+        {% endfor %}
+      {% else %}
+        <div class="border-top p-3 text-muted small">Диагностика ещё не запускалась. Нажмите «Проверить API», чтобы увидеть фактические ответы Авито.</div>
+      {% endif %}
+    </section>
+  {% empty %}
+    <div class="card"><div class="card-body">
+      <h2 class="h5">Нет подключений Авито в Service2</h2>
+      <p class="text-muted">Если ключи есть в личном кабинете Авито, сначала добавьте их в «Коммуникации → Каналы связи».</p>
+      <a href="{% url 'communication_connection_create' 'avito' %}" class="btn btn-primary">Добавить подключение</a>
+    </div></div>
+  {% endfor %}
+
+  <p class="small text-muted mt-4 mb-0">
+    Сейчас это диагностическая панель. Мониторинг отключений объявлений, статистика продаж и напоминания
+    о продлении тарифов будут реализованы после проверки доступности API по каждому профилю.
+  </p>
+</div>
+{% endblock %}
