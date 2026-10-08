@@ -68,7 +68,7 @@
       close();
       const query = input.value.trim();
       if (!searchable(query)) {
-        status.textContent = "Введите минимум 3 символа.";
+        status.textContent = "";
         return;
       }
       status.textContent = "Поиск…";
@@ -144,7 +144,7 @@
       selected.value = "";
       close();
       validity();
-      status.textContent = "Введите минимум 3 символа.";
+      status.textContent = "";
       emitChange();
       input.focus();
     });
@@ -161,7 +161,7 @@
       }
     });
     validity();
-    status.textContent = selected.value ? "" : "Введите минимум 3 символа.";
+    status.textContent = "";
   }
 
   if (typeof module !== "undefined" && module.exports) module.exports = {searchable, initPicker};
