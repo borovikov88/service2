@@ -110,6 +110,52 @@ class WaitingLegacyGuardTests(TestCase):
         self.assertEqual(state_for(self.task)["mode"], "waiting")
 
     @patch("pool_service.views._redirect_if_access_blocked", return_value=None)
+    def test_bulk_reopen_completed_waiting_requires_safe_wait_state(self, _blocked):
+        self.wait()
+        apply_feedback(
+            task_id=self.task.pk,
+            user=self.user,
+            action="complete",
+            comment="Completed while no appointment was agreed",
+            expected_version=version_for(self.task),
+            request_id=uuid4(),
+        )
+        self.task.refresh_from_db()
+        self.assertTrue(self.task.is_completed_archive)
+        self.assertTrue(self.task.completed_at)
+        self.assertEqual(state_for(self.task)["mode"], "complete")
+        self.assertTrue(state_for(self.task)["appointment_unknown"])
+
+        # A stale bulk POST cannot reopen the retained control date as an
+        # active appointment.
+        response = self.client.post(reverse("crm_tasks_bulk_update"), {
+            "task_ids": [self.task.pk],
+            "bulk_action": "set_status",
+            "bulk_status": ServiceTask.STATUS_IN_PROGRESS,
+        })
+        self.assertEqual(response.status_code, 302)
+        self.task.refresh_from_db()
+        self.assertTrue(self.task.is_completed_archive)
+        self.assertEqual(self.task.status, ServiceTask.STATUS_DONE)
+        self.assertTrue(self.task.completed_at)
+        self.assertEqual(state_for(self.task)["mode"], "complete")
+
+        # Explicitly restoring to waiting is safe: no client date is invented.
+        response = self.client.post(reverse("crm_tasks_bulk_update"), {
+            "task_ids": [self.task.pk],
+            "bulk_action": "set_status",
+            "bulk_status": ServiceTask.STATUS_WAITING,
+        })
+        self.assertEqual(response.status_code, 302)
+        self.task.refresh_from_db()
+        self.assertFalse(self.task.is_archived)
+        self.assertIsNone(self.task.completed_at)
+        self.assertEqual(self.task.status, ServiceTask.STATUS_WAITING)
+        self.assertEqual(state_for(self.task)["mode"], "waiting")
+        self.assertTrue(state_for(self.task)["appointment_unknown"])
+        self.assertIsNone(state_for(self.task)["next_check_at"])
+
+    @patch("pool_service.views._redirect_if_access_blocked", return_value=None)
     def test_bulk_cancel_releases_waiting_metadata(self, _blocked):
         self.wait()
         response = self.client.post(reverse("crm_tasks_bulk_update"), {
