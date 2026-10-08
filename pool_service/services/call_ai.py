@@ -19,6 +19,7 @@ from openai import OpenAI
 import imageio_ffmpeg
 
 from pool_service.communication_models import CallAnalysis, PhoneCall
+from pool_service.services.call_privacy import is_private_call
 
 
 logger = logging.getLogger(__name__)
@@ -415,6 +416,23 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
     )
     call = analysis.call
 
+    # Re-check privacy after the queue claim and immediately before any
+    # external AI request. A number may have been marked personal after the
+    # job was queued.
+    if is_private_call(call):
+        CallAnalysis.objects.filter(
+            pk=analysis.pk,
+            status=CallAnalysis.STATUS_PROCESSING,
+            processing_token=token,
+        ).update(
+            status=CallAnalysis.STATUS_PENDING,
+            error="",
+            processing_started_at=None,
+            processing_token="",
+            requested_at=None,
+        )
+        return False
+
     # Do not keep a MySQL connection open while waiting on external AI calls.
     # Production MySQL may expire an idle connection before OpenAI returns,
     # which previously left the analysis stuck in PROCESSING when the error
@@ -585,6 +603,8 @@ def request_call_analysis(call_id, *, allow_reanalysis=True):
             .first()
         )
         if call is None:
+            return False
+        if is_private_call(call):
             return False
 
         analysis, _ = CallAnalysis.objects.select_for_update().get_or_create(call=call)
