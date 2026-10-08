@@ -103,7 +103,7 @@ def call_processing_settings(request):
                 private_form = PrivateForm(request.POST)
                 if private_form.is_valid():
                     add_private_numbers(user=request.user, organization=organization, **private_form.cleaned_data)
-                    messages.success(request, "Личные номера сохранены для предпросмотра. Действующий журнал звонков пока не изменён.")
+                    messages.success(request, "Личный номер сохранён. Совпадающие ваши звонки скрываются из рабочих разделов сразу; авторасшифровка по общим правилам всё ещё выключена.")
                     return redirect("call_processing_settings")
                 status = 400
             elif action == "remove_private":
