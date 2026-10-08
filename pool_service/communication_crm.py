@@ -36,6 +36,7 @@ from .services.megafon_internal_calls import (
     start_call_recording_sync_worker,
 )
 from .services.permissions import company_has_access
+from .services.call_privacy import is_private_call, private_call_ids, visible_calls
 
 
 RETURN_SALT = "service2.call-client-return.v1"
@@ -106,7 +107,20 @@ def resolved_calls_for_client(queryset, client):
         ]
         if matched_numbers:
             condition |= Q(client__isnull=True, phone_number__in=matched_numbers)
-    return queryset.filter(condition)
+    resolved = queryset.filter(condition)
+    if resolved.model is PhoneCall:
+        privacy_candidates = list(
+            resolved.filter(source_kind=PhoneCall.SOURCE_TELEPHONY).only(
+                "id", "organization_id", "source_kind", "direction",
+                "employee_id", "peer_employee_id", "phone_number",
+                "provider_user", "provider_extension",
+                "peer_provider_user", "peer_provider_extension",
+            )
+        )
+        hidden_ids = private_call_ids(privacy_candidates)
+        if hidden_ids:
+            resolved = resolved.exclude(pk__in=hidden_ids)
+    return resolved
 
 
 def _selected_client(request, organization):
@@ -209,9 +223,9 @@ def _call_screen(request, source_kind):
         queryset, selected = _filtered_calls(request, source_kind, organization, view_all)
     except ValueError as exc:
         return HttpResponseBadRequest(str(exc))
-    rows = list(queryset.select_related(
+    rows = visible_calls(list(queryset.select_related(
         "employee", "employee_profile", "peer_employee", "peer_employee_profile", "client", "analysis",
-    ).defer("analysis__transcript")[:500])
+    ).defer("analysis__transcript")[:1000]))[:500]
     _decorate_calls(rows, request, organization, source_kind)
     manual = source_kind == PhoneCall.SOURCE_UPLOADED
     return render(request, "pool_service/communications/calls.html", {
@@ -296,6 +310,8 @@ def _visible_call(request, call_id, *, lock=False):
         queryset = queryset.select_for_update()
     call = get_object_or_404(queryset, pk=call_id)
     organization, view_all = _scope(request.user, call.source_kind, call.organization)
+    if is_private_call(call):
+        raise Http404
     if call.direction == PhoneCall.DIRECTION_INTERNAL:
         raise PermissionDenied
     if (
