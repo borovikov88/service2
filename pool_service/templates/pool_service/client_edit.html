@@ -29,13 +29,47 @@
             <h6 class="fw-bold mb-3">Основные сведения и контакты</h6>
             <div class="row g-3">
               {% for field in client_form %}
-                <div class="{% if field.name == 'name' %}col-12{% else %}col-12 col-md-6{% endif %}">
+                {% if field.name != 'name' and field.name != 'last_name' and field.name != 'first_name' %}
+                <div class="{% if field.name == 'phone' or field.name == 'email' %}col-12 col-md-6{% else %}col-12{% endif %}">
                   <label class="form-label small text-muted" for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %} *{% endif %}</label>
                   {% if field.name == "phone" %}{% crm_phone_input field %}{% else %}{{ field }}{% endif %}
                   {% for error in field.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
                   {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
                 </div>
+                {% endif %}
               {% endfor %}
+              {% if client.client_type == 'legal' and client_form.name %}
+                <div class="col-12">
+                  <label class="form-label small text-muted" for="{{ client_form.name.id_for_label }}">{{ client_form.name.label }} *</label>
+                  {{ client_form.name }}{% for error in client_form.name.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+                </div>
+              {% endif %}
+              {% if client.client_type != 'legal' %}
+                <div class="col-12"><h6 class="fw-semibold mb-0 mt-2">ФИО</h6></div>
+                {% for field in client_form %}
+                  {% if field.name == 'last_name' or field.name == 'first_name' %}
+                    <div class="col-12 col-md-6">
+                      <label class="form-label small text-muted" for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}
+                      {% for error in field.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+                    </div>
+                  {% endif %}
+                {% endfor %}
+                {% if profile_form.middle_name %}
+                  <div class="col-12 col-md-6">
+                    <label class="form-label small text-muted" for="{{ profile_form.middle_name.id_for_label }}">Отчество</label>
+                    {{ profile_form.middle_name }}
+                    {% for error in profile_form.middle_name.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+                  </div>
+                {% endif %}
+                {% if client_form.name %}
+                  <div class="col-12">
+                    <label class="form-label small text-muted" for="{{ client_form.name.id_for_label }}">{{ client_form.name.label }}</label>
+                    {{ client_form.name }}
+                    {% for error in client_form.name.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+                    {% if client_form.name.help_text %}<div class="form-text">{{ client_form.name.help_text }}</div>{% endif %}
+                  </div>
+                {% endif %}
+              {% endif %}
             </div>
             <p class="text-muted small mt-3 mb-0">Иностранный телефон указывайте с кодом страны. Остальные номера и адреса не удаляются при изменении основного контакта.</p>
           </section>
@@ -45,11 +79,13 @@
             <h6 class="fw-bold mb-3">{% if client.client_type == "legal" %}Реквизиты и работа с компанией{% else %}Личные данные и работа с клиентом{% endif %}</h6>
             <div class="row g-3">
               {% for field in profile_form %}
+                {% if field.name != 'middle_name' or client.client_type == 'legal' %}
                 <div class="{% if field.name == 'notes' or field.name == 'legal_name' %}col-12{% else %}col-12 col-md-6{% endif %}">
                   <label class="form-label small text-muted" for="{{ field.id_for_label }}">{{ field.label }}</label>
                   {{ field }}
                   {% for error in field.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
                 </div>
+                {% endif %}
               {% endfor %}
             </div>
           </section>
@@ -68,6 +104,12 @@
                 </div>
               {% empty %}<div class="text-muted small">Дополнительные контакты не добавлены.</div>{% endfor %}
             </div>
+            <form method="post" class="row g-2 mt-2 align-items-end">
+              {% csrf_token %}<input type="hidden" name="action" value="add_extra_phone">
+              <div class="col-12 col-md-5"><label class="form-label small text-muted">Добавить телефон</label><input class="form-control" name="phone" inputmode="tel" autocomplete="tel" required></div>
+              <div class="col-12 col-md-4"><label class="form-label small text-muted">Подпись</label><input class="form-control" name="label" maxlength="120" placeholder="Например, рабочий"></div>
+              <div class="col-auto"><button class="btn btn-outline-primary" type="submit">Добавить</button></div>
+            </form>
             <div class="text-muted small mt-3">Изменения сохраняются в Service2. Связь с 1С и автоматические связи ИП не меняются; данные обратно в 1С не отправляются.</div>
           </section>
         </div>
@@ -79,4 +121,18 @@
     </form>
   </div>
 </div>
+{% if client.client_type != 'legal' %}
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    const crmName = document.querySelector("[data-crm-name]");
+    const nameParts = Array.from(document.querySelectorAll("[data-crm-name-part]"));
+    if (!crmName || !nameParts.length) return;
+    let manuallyEdited = false;
+    crmName.addEventListener("input", function () { manuallyEdited = true; });
+    nameParts.forEach((input) => input.addEventListener("input", function () {
+      if (!manuallyEdited) crmName.value = nameParts.map((part) => part.value.trim()).filter(Boolean).join(" ");
+    }));
+  });
+</script>
+{% endif %}
 {% endblock %}

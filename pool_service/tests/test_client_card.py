@@ -5,7 +5,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from pool_service.client_crm_models import ClientCRMProfile
+from pool_service.client_crm_models import ClientCRMProfile, ClientOwnedObject
 from pool_service.models import (
     Client,
     CrmItem,
@@ -154,6 +154,26 @@ class ClientCardTests(TestCase):
         self.assertEqual(profile.manager_id, employee.pk)
         self.assertEqual(profile.responsible_id, employee.pk)
         self.assertEqual(profile.notes, "Позвонить после поставки.")
+
+    def test_client_owned_object_stays_out_of_serviced_pool_registry(self):
+        response = self.client.post(
+            reverse("client_detail", args=[self.crm_client.pk]),
+            {
+                "action": "add_owned_object", "object_type": ClientOwnedObject.TYPE_HAMMAM,
+                "name": "Хамам на даче", "address": "Участок 2",
+                "parameters": "Парогенератор 9 кВт", "notes": "Отделка мрамор",
+            },
+        )
+        self.assertRedirects(
+            response, reverse("client_detail", args=[self.crm_client.pk]) + "?tab=objects",
+            fetch_redirect_response=False,
+        )
+        owned = ClientOwnedObject.objects.get(client=self.crm_client)
+        self.assertEqual(owned.object_type, ClientOwnedObject.TYPE_HAMMAM)
+        self.assertEqual(Pool.objects.filter(client=self.crm_client).count(), 0)
+        page = self.client.get(reverse("client_detail", args=[self.crm_client.pk]), {"tab": "objects"})
+        self.assertContains(page, "Хамам на даче")
+        self.assertContains(page, "Парогенератор 9 кВт")
 
 
     def test_task_create_links_client_from_card(self):

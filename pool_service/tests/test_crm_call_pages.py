@@ -47,12 +47,15 @@ class CRMCallPageIntegrationTests(TestCase):
 
     def call(self, phone="+7 900 123 4567", **kwargs):
         source = kwargs.pop("source_kind", PhoneCall.SOURCE_TELEPHONY)
+        direction = kwargs.pop("direction", PhoneCall.DIRECTION_IN)
+        result = kwargs.pop("result", PhoneCall.RESULT_ANSWERED)
+        started_at = kwargs.pop("started_at", timezone.now() - timedelta(days=7))
         return PhoneCall.objects.create(
             organization=kwargs.pop("organization", self.org),
             connection=self.connection if source == PhoneCall.SOURCE_TELEPHONY else None,
             source_kind=source, external_id=str(PhoneCall.objects.count()),
-            phone_number=phone, direction="in", result="answered",
-            started_at=timezone.now() - timedelta(days=7), **kwargs,
+            phone_number=phone, direction=direction, result=result,
+            started_at=started_at, **kwargs,
         )
 
     def page_ids(self, url, data=None):
@@ -73,6 +76,38 @@ class CRMCallPageIntegrationTests(TestCase):
         self.assertEqual(
             resolve(reverse("communication_client_lookup", args=["telephony"])).func.__name__, "client_lookup",
         )
+
+    def test_client_card_marks_missed_call_and_successful_callback_within_hour(self):
+        customer = self.customer(phone="+7 900 123 4567")
+        missed_at = timezone.now() - timedelta(minutes=30)
+        missed = self.call(
+            phone="+7 900 123 4567", client=customer,
+            direction=PhoneCall.DIRECTION_IN, result=PhoneCall.RESULT_MISSED,
+            started_at=missed_at,
+        )
+        self.call(
+            phone="8 900 123 45 67", client=customer,
+            direction=PhoneCall.DIRECTION_OUT, result=PhoneCall.RESULT_ANSWERED,
+            started_at=missed_at + timedelta(minutes=20),
+        )
+        page = self.client.get(reverse("client_detail", args=[customer.pk]), {"tab": "calls"})
+        self.assertEqual(page.status_code, 200)
+        row = next(call for call in page.context["calls"] if call.pk == missed.pk)
+        self.assertIsNotNone(row.callback_at)
+        self.assertFalse(row.missed_unreturned)
+        self.assertContains(page, "Перезвонили")
+
+    def test_unreturned_missed_call_is_marked_red(self):
+        customer = self.customer(phone="+7 900 123 4567")
+        missed = self.call(
+            phone="+7 900 123 4567", client=customer,
+            direction=PhoneCall.DIRECTION_IN, result=PhoneCall.RESULT_MISSED,
+            started_at=timezone.now() - timedelta(minutes=30),
+        )
+        page = self.client.get(reverse("client_detail", args=[customer.pk]), {"tab": "calls"})
+        row = next(call for call in page.context["calls"] if call.pk == missed.pk)
+        self.assertTrue(row.missed_unreturned)
+        self.assertContains(page, "table-danger")
 
     def test_unknown_number_plus_creates_person_returns_to_filters_and_labels_history(self):
         call = self.call()

@@ -16,7 +16,7 @@
           {% endif %}
         </div>
         <div class="text-muted small">
-          {% if client.inn %}ИНН {{ client.inn }}{% endif %}
+          {% if client.client_type == "legal" and client.inn %}ИНН {{ client.inn }}{% endif %}
           {% if profile and profile.kpp %}{% if client.inn %} · {% endif %}КПП {{ profile.kpp }}{% endif %}
           {% if profile and profile.onec_code %} · код 1С {{ profile.onec_code }}{% endif %}
         </div>
@@ -76,7 +76,7 @@
     <ul class="nav nav-pills gap-2 mb-4" role="tablist" data-client-card-tabs>
       <li class="nav-item"><button class="nav-link{% if card_tab == 'overview' %} active{% endif %}" data-bs-toggle="tab" data-bs-target="#client-overview" type="button" role="tab" data-client-card-tab="overview" aria-selected="{% if card_tab == 'overview' %}true{% else %}false{% endif %}">Обзор</button></li>
       <li class="nav-item"><button class="nav-link{% if card_tab == 'contacts' %} active{% endif %}" data-bs-toggle="tab" data-bs-target="#client-contacts" type="button" role="tab" data-client-card-tab="contacts" aria-selected="{% if card_tab == 'contacts' %}true{% else %}false{% endif %}">Контакты</button></li>
-      <li class="nav-item"><button class="nav-link{% if card_tab == 'objects' %} active{% endif %}" data-bs-toggle="tab" data-bs-target="#client-objects" type="button" role="tab" data-client-card-tab="objects" aria-selected="{% if card_tab == 'objects' %}true{% else %}false{% endif %}">Объекты <span class="badge text-bg-secondary ms-1">{{ pools|length }}</span></button></li>
+      <li class="nav-item"><button class="nav-link{% if card_tab == 'objects' %} active{% endif %}" data-bs-toggle="tab" data-bs-target="#client-objects" type="button" role="tab" data-client-card-tab="objects" aria-selected="{% if card_tab == 'objects' %}true{% else %}false{% endif %}">Объекты <span class="badge text-bg-secondary ms-1">{{ client_object_count }}</span></button></li>
       <li class="nav-item"><button class="nav-link{% if card_tab == 'tasks' %} active{% endif %}" data-bs-toggle="tab" data-bs-target="#client-tasks" type="button" role="tab" data-client-card-tab="tasks" aria-selected="{% if card_tab == 'tasks' %}true{% else %}false{% endif %}">Задачи и CRM</button></li>
       <li class="nav-item"><button class="nav-link{% if card_tab == 'calls' %} active{% endif %}" data-bs-toggle="tab" data-bs-target="#client-calls" type="button" role="tab" data-client-card-tab="calls" aria-selected="{% if card_tab == 'calls' %}true{% else %}false{% endif %}">Звонки</button></li>
     </ul>
@@ -94,8 +94,8 @@
                 <dd class="col-sm-8">{{ client.phone_display|default:"—" }}</dd>
                 <dt class="col-sm-4 text-muted fw-normal">Email</dt>
                 <dd class="col-sm-8">{{ client.email|default:"—" }}</dd>
-                <dt class="col-sm-4 text-muted fw-normal">ИНН</dt>
-                <dd class="col-sm-8">{{ client.inn|default:"—" }}</dd>
+                {% if client.client_type == "legal" %}<dt class="col-sm-4 text-muted fw-normal">ИНН</dt>
+                <dd class="col-sm-8">{{ client.inn|default:"—" }}</dd>{% endif %}
                 {% if profile %}
                   <dt class="col-sm-4 text-muted fw-normal">Полное наименование</dt>
                   <dd class="col-sm-8">{{ profile.legal_name|default:"—" }}</dd>
@@ -284,7 +284,7 @@
                       <label class="form-label small text-muted" for="related-client-search">{% if relationship_mode == "people" %}Физическое лицо{% else %}Компания{% endif %}</label>
                       <input class="form-control" type="search" id="related-client-search" data-lookup-input maxlength="160" autocomplete="off" placeholder="Введите минимум 3 символа" role="combobox" aria-autocomplete="list" aria-controls="related-client-results" aria-expanded="false" aria-describedby="related-client-status" required>
                       <input type="hidden" name="related_client" data-lookup-value>
-                      <div id="related-client-status" class="form-text" data-lookup-status role="status">Введите минимум 3 символа.</div>
+                      <div id="related-client-status" class="form-text" data-lookup-status role="status" aria-live="polite"></div>
                       <div id="related-client-results" class="list-group mt-2 overflow-auto" style="max-height: 18rem;" role="listbox" aria-label="Результаты поиска" data-lookup-results hidden></div>
                       <noscript><div class="text-danger small">Для поиска включите JavaScript в браузере.</div></noscript>
                     </div>
@@ -310,6 +310,13 @@
       </div>
 
       <div class="tab-pane fade{% if card_tab == 'objects' %} show active{% endif %}" id="client-objects" role="tabpanel">
+        {% if can_manage %}<form method="post" class="border rounded-3 p-3 mb-3">
+          {% csrf_token %}<input type="hidden" name="action" value="add_owned_object"><h6 class="fw-bold">Добавить объект клиента</h6>
+          <div class="row g-2">{% for field in owned_object_form %}<div class="{% if field.name == 'parameters' or field.name == 'notes' %}col-12 col-md-6{% else %}col-12 col-md-4{% endif %}">
+            <label class="form-label small text-muted">{{ field.label }}</label>{{ field }}{% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+          </div>{% endfor %}<div class="col-12"><button class="btn btn-primary btn-sm" type="submit">Сохранить объект клиента</button></div></div>
+        </form>{% endif %}
+        <h6 class="fw-bold">Обслуживаемые объекты</h6>
         <div class="d-grid gap-2">
           {% for pool in pools %}
             <a class="text-decoration-none text-reset" href="{% url 'pool_detail' pool.uuid %}">
@@ -328,9 +335,16 @@
               </div>
             </a>
           {% empty %}
-            <div class="text-muted py-4 text-center">У клиента нет объектов.</div>
+            <div class="text-muted py-4 text-center">Обслуживаемых объектов нет.</div>
           {% endfor %}
         </div>
+        <h6 class="fw-bold mt-4">Другие объекты клиента</h6>
+        <div class="d-grid gap-2">{% for item in owned_objects %}<div class="border rounded-3 p-3">
+          <div class="d-flex justify-content-between gap-2"><div class="fw-semibold">{{ item.get_object_type_display }}{% if item.name %} · {{ item.name }}{% endif %}</div>
+            {% if can_manage %}<form method="post">{% csrf_token %}<input type="hidden" name="action" value="delete_owned_object"><input type="hidden" name="object_id" value="{{ item.id }}"><button class="btn btn-outline-danger btn-sm" type="submit">Удалить</button></form>{% endif %}
+          </div>{% if item.address %}<div class="small text-muted">{{ item.address }}</div>{% endif %}
+          {% if item.parameters %}<div class="mt-2" style="white-space:pre-wrap">{{ item.parameters }}</div>{% endif %}{% if item.notes %}<div class="small mt-2" style="white-space:pre-wrap">{{ item.notes }}</div>{% endif %}
+        </div>{% empty %}<div class="text-muted">Дополнительные объекты не добавлены.</div>{% endfor %}</div>
       </div>
 
       <div class="tab-pane fade{% if card_tab == 'tasks' %} show active{% endif %}" id="client-tasks" role="tabpanel">
@@ -403,13 +417,13 @@
               </thead>
               <tbody>
                 {% for call in calls %}
-                  <tr>
+                  <tr class="{% if call.callback_at %}table-success{% elif call.missed_unreturned %}table-danger{% endif %}" {% if call.callback_at %}title="Перезвонили {{ call.callback_at|date:'d.m.Y H:i' }} — в течение часа"{% elif call.missed_unreturned %}title="Пропущенный вызов — обратного звонка в течение часа нет"{% endif %}>
                     <td>{{ call.started_at|date:"d.m.Y H:i" }}</td>
                     <td>{{ call.get_direction_display }}</td>
                     <td>{{ call.phone_display }}</td>
                     <td>{% if call.employee %}{{ call.employee.get_full_name|default:call.employee.username }}{% else %}—{% endif %}</td>
                     <td>{{ call.duration_display }}</td>
-                    <td>{{ call.get_result_display }}</td>
+                    <td>{{ call.get_result_display }}{% if call.callback_at %}<div class="small text-success">Перезвонили {{ call.callback_at|date:"d.m.Y H:i" }}</div>{% endif %}</td>
                     <td class="text-end">
                       <div class="d-inline-flex gap-1">
                         {% if call.recording_file %}
