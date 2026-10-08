@@ -23,7 +23,24 @@
         {% csrf_token %}<input type="hidden" name="action" value="save_rule">
         {{ row.form.as_p }}
         <button class="btn btn-primary" type="submit">Сохранить правило</button>
+        {% if row.effective_from %}<div class="form-text">Изменение сохранённого правила приостановит автообработку до повторного включения.</div>{% endif %}
       </form>
+      {% if row.saved and row.mode != "manual" %}
+      <form method="post" class="mt-2">
+        {% csrf_token %}
+        <input type="hidden" name="employee_id" value="{{ row.id }}">
+        <input type="hidden" name="expected_revision" value="{{ row.revision }}">
+        {% if row.effective_from %}
+          <input type="hidden" name="action" value="pause_rule">
+          <div class="small text-success mb-1">Включено для звонков с {{ row.effective_from|date:"d.m.Y H:i" }}.</div>
+          <button class="btn btn-sm btn-outline-secondary" type="submit">Приостановить</button>
+        {% else %}
+          <input type="hidden" name="action" value="activate_rule">
+          <button class="btn btn-sm btn-outline-success" type="submit">Включить для новых звонков</button>
+          <div class="form-text">Нужен сохранённый месячный лимит расходов. Архив до момента включения не обрабатывается.</div>
+        {% endif %}
+      </form>
+      {% endif %}
       {% else %}<p class="small text-muted mt-3 mb-0">Другой владелец управляет своими правилами сам. Его списки номеров здесь не отображаются.</p>{% endif %}
     </details>
   {% empty %}<p>Нет доступных действующих сотрудников.</p>{% endfor %}
