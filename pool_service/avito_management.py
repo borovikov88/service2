@@ -52,6 +52,9 @@ CHECKS = (
 )
 
 SAFE_ERRORS = {
+    "provider_cooldown": "Действует ограничение частоты запросов Авито.",
+    "provider_item_unavailable": "Объявление не найдено или принадлежит другому аккаунту.",
+    "provider_messages_invalid_response": "Авито вернул неожиданный формат ответа.",
     "provider_data_invalid": "Авито вернул неожиданный формат данных.",
     "provider_account_mismatch": "ID аккаунта по ключам отличается от подключения. Проверьте настройки.",
     "provider_credentials_missing": "Ключи не сохранены.",
@@ -125,7 +128,8 @@ def _last_successful_upload(token):
     return "Метод автозагрузки v4 доступен."
 
 
-def _items_access(token):
+def _items_access(token, account_id):
+    avito_workspace.enforce_rate(account_id, "items", seconds=3)
     response = _json_request(
         f"{_provider_root()}/core/v1/items?per_page=1&page=1",
         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
@@ -201,7 +205,7 @@ def diagnose(connection, request):
     except AvitoError as exc:
         results.append(_failure("webhook", exc))
 
-    results.append(_probe("items", lambda: _items_access(token)))
+    results.append(_probe("items", lambda: _items_access(token, actual_id)))
     results.append(_probe("balance", lambda: _balance_access(token, actual_id)))
     results.append(_probe("autoload", lambda: _last_successful_upload(token)))
     return {"account_id": actual_id, "results": results}
@@ -265,6 +269,7 @@ def avito_dashboard(request):
         "selected": selected,
         "workspace": workspace,
         "local_analytics": local_analytics,
+        "stats_defaults": _statistics_defaults(),
         "accounts": accounts,
         "connected_count": len(accounts),
         "configured_count": len(configured_ids),
@@ -302,6 +307,30 @@ class WorkspaceRefreshForm(forms.Form):
     section = forms.ChoiceField(choices=[(x, x) for x in ("all", *avito_workspace.SECTIONS)])
     page = forms.IntegerField(min_value=1, max_value=10000, required=False, initial=1)
     status = forms.ChoiceField(choices=[("", "Все"), *avito_workspace.ITEM_STATUSES.items()], required=False)
+    stats_date_from = forms.DateField(required=False)
+    stats_date_to = forms.DateField(required=False)
+    grouping = forms.ChoiceField(choices=[(x, x) for x in ("totals", "item", "day", "week", "month")], required=False)
+    offset = forms.IntegerField(min_value=0, max_value=1000000, required=False)
+    item_id = forms.RegexField(regex=r"^[0-9]{1,32}$", required=False)
+
+    def clean(self):
+        data = super().clean()
+        if data.get("section") in {"statistics", "calls"}:
+            defaults = _statistics_defaults()
+            start = data.get("stats_date_from") or datetime.fromisoformat(defaults["date_from"]).date()
+            end = data.get("stats_date_to") or datetime.fromisoformat(defaults["date_to"]).date()
+            if not defaults["min_date"] <= start.isoformat() <= end.isoformat() <= defaults["max_date"]:
+                raise forms.ValidationError("Статистика доступна за последние 270 дней.")
+            data["stats_date_from"], data["stats_date_to"] = start.isoformat(), end.isoformat()
+        if data.get("section") in {"item_detail", "prices"} and not data.get("item_id"):
+            raise forms.ValidationError("Выберите объявление из загруженного списка.")
+        return data
+
+
+def _statistics_defaults():
+    today = timezone.localdate(timezone=ZoneInfo(getattr(settings, "COMMUNICATION_TIME_ZONE", "UTC")))
+    return {"date_from": (today - timedelta(days=29)).isoformat(), "date_to": today.isoformat(),
+            "min_date": (today - timedelta(days=269)).isoformat(), "max_date": today.isoformat()}
 
 
 class AnalyticsPeriodForm(forms.Form):
@@ -351,9 +380,13 @@ def _local_analytics(request, connection):
 
 
 def _workspace_failure(section, exc):
-    check_key = "account" if section == "profile" else section
+    check_key = section if section in {"items", "balance", "autoload"} else "account"
     failure = _failure(check_key, exc)
-    return {key: failure[key] for key in ("status", "detail", "code")}
+    result = {key: failure[key] for key in ("status", "detail", "code")}
+    if isinstance(exc, avito_workspace.AvitoCooldownError):
+        seconds = max(1, int((exc.retry_at - timezone.now()).total_seconds()) + 1)
+        result.update(status="warning", detail=f"Ограничение частоты Авито. Повторите запрос через {seconds} сек.")
+    return result
 
 
 @login_required
@@ -376,9 +409,25 @@ def avito_refresh_data(request, connection_id):
         messages.error(request, "Некорректные параметры обновления Авито.")
         return redirect(destination)
     section = form.cleaned_data["section"]
-    targets = avito_workspace.SECTIONS if section == "all" else (section,)
+    targets = avito_workspace.BASIC_SECTIONS if section == "all" else (section,)
     page = form.cleaned_data["page"] or 1
     status = form.cleaned_data["status"]
+    metadata = connection.settings if isinstance(connection.settings, dict) else {}
+    saved = metadata.get("avito_workspace", {})
+    saved = saved if isinstance(saved, dict) and saved.get("account_id") == str(connection.external_id) else {}
+    existing_sections = saved.get("sections", {})
+    existing_sections = existing_sections if isinstance(existing_sections, dict) else {}
+    item_section = existing_sections.get("items", {})
+    item_data = item_section.get("data", {}) if isinstance(item_section, dict) else {}
+    item_rows = item_data.get("rows", []) if isinstance(item_data, dict) else []
+    item_ids = [avito_workspace._identifier(row.get("id")) for row in item_rows[:avito_workspace.PAGE_SIZE]
+                if isinstance(row, dict) and avito_workspace._identifier(row.get("id"))] if isinstance(item_rows, list) else []
+    if section in {"item_detail", "prices"} and form.cleaned_data["item_id"] not in item_ids:
+        messages.error(request, "Выберите объявление из текущей загруженной страницы аккаунта.")
+        return redirect(destination)
+    if section == "calls" and not item_ids:
+        messages.error(request, "Сначала загрузите страницу объявлений для статистики звонков.")
+        return redirect(destination)
     now = timezone.now()
     lease = uuid.uuid4().hex
     with transaction.atomic():
@@ -411,7 +460,19 @@ def avito_refresh_data(request, connection_id):
         for key in targets:
             checked_at = timezone.now().isoformat()
             try:
-                data = avito_workspace.fetch_section(key, token, actual_id, page=page, status=status, profile=profile)
+                if key == "statistics":
+                    data = avito_workspace.fetch_statistics(token, actual_id,
+                        start=form.cleaned_data["stats_date_from"], end=form.cleaned_data["stats_date_to"],
+                        grouping=form.cleaned_data["grouping"] or "totals", offset=form.cleaned_data["offset"] or 0)
+                elif key == "item_detail":
+                    data = avito_workspace.fetch_item_detail(token, actual_id, form.cleaned_data["item_id"])
+                elif key == "prices":
+                    data = avito_workspace.fetch_prices(token, actual_id, form.cleaned_data["item_id"])
+                elif key == "calls":
+                    data = avito_workspace.fetch_calls(token, actual_id,
+                        start=form.cleaned_data["stats_date_from"], end=form.cleaned_data["stats_date_to"], item_ids=item_ids)
+                else:
+                    data = avito_workspace.fetch_section(key, token, actual_id, page=page, status=status, profile=profile)
                 updates[key] = {"status": "ok", "detail": "", "code": "", "data": data,
                                 "checked_at": checked_at, "success_at": checked_at, "stale": False}
             except AvitoError as exc:

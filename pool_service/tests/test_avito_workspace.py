@@ -64,8 +64,9 @@ class AvitoWorkspaceParsingTests(SimpleTestCase):
         for url in ("https://avito.ru.evil.test/x", "https://user:pass@avito.ru/x", "http://avito.ru/x", "https://avito.ru:444/x"):
             self.assertEqual(avito_workspace._avito_url(url), "")
 
+    @patch("pool_service.avito_workspace.enforce_rate")
     @patch("pool_service.avito_workspace._json_request", return_value={"resources": []})
-    def test_item_request_is_get_with_bounded_page_size(self, fetch):
+    def test_item_request_is_get_with_bounded_page_size(self, fetch, _rate):
         avito_workspace.fetch_section("items", "opaque", "123", page=2, status="active")
         args, kwargs = fetch.call_args
         self.assertIn("per_page=50&page=2&status=active", args[0])
@@ -74,7 +75,11 @@ class AvitoWorkspaceParsingTests(SimpleTestCase):
 
 
 class AvitoWorkspaceViewTests(TestCase):
-    setUp = AvitoManagementTests.setUp
+    def setUp(self):
+        AvitoManagementTests.setUp(self)
+        limiter = patch("pool_service.avito_workspace.enforce_rate")
+        limiter.start()
+        self.addCleanup(limiter.stop)
 
     def refresh_url(self, connection=None):
         return reverse("avito_refresh_data", args=[(connection or self.connection).pk])

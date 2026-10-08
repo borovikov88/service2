@@ -2,7 +2,7 @@
 {% load static %}
 {% block title %}Авито — Управление{% endblock %}
 {% block extra_head %}
-<link rel="stylesheet" href="{% static 'assets/css/avito-dashboard.css' %}?v=1">
+<link rel="stylesheet" href="{% static 'assets/css/avito-dashboard.css' %}?v=2">
 <script src="{% static 'assets/js/avito-dashboard.js' %}?v=1" defer></script>
 {% endblock %}
 {% block content %}
@@ -191,6 +191,10 @@
                   <td class="avito-listing-title">
                     {% if item.url %}<a href="{{ item.url }}" target="_blank" rel="noopener noreferrer">{{ item.title|default:"Без названия" }} <i class="bi bi-box-arrow-up-right small ms-1" aria-hidden="true"></i><span class="visually-hidden"> в новой вкладке</span></a>{% else %}<span class="fw-semibold">{{ item.title|default:"Без названия" }}</span>{% endif %}
                     <div class="avito-listing-meta">ID {{ item.id|default:"не указан" }}</div>
+                    <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" class="mt-2" data-avito-submit>
+                      {% include 'pool_service/avito/_refresh_fields.html' %}<input type="hidden" name="section" value="item_detail"><input type="hidden" name="item_id" value="{{ item.id }}">
+                      <button type="submit" class="btn btn-sm btn-outline-secondary" aria-label="Подробнее об объявлении {{ item.id }}" {% if not selected.has_credentials %}disabled{% endif %}>Подробнее</button>
+                    </form>
                   </td>
                   <td><span class="avito-state {{ item.status }}">{{ item.status_label|default:"Не указан" }}</span></td>
                   <td class="avito-listing-price">{{ item.price|default_if_none:"—" }}{% if item.price != None %} ₽{% endif %}</td>
@@ -203,7 +207,7 @@
         </div>
         <div class="avito-empty" data-avito-search-empty hidden><i class="bi bi-search" aria-hidden="true"></i><strong>На этой странице совпадений нет</strong><p>Измените запрос или очистите поиск.</p></div>
       {% elif workspace.items.data or workspace.items.status == 'ok' %}
-        <div class="avito-empty"><i class="bi bi-inbox" aria-hidden="true"></i><strong>Объявлений на этой странице нет</strong><p>Авито вернул пустой список. Проверьте выбранный статус или вернитесь на предыдущую страницу.</p></div>
+        <div class="avito-empty"><i class="bi bi-inbox" aria-hidden="true"></i><strong>Объявлений на этой странице нет</strong><p>Авито вернул пустой список. Проверьте статус или предыдущую страницу. Для ключей сотрудника API может не вернуть объявления компании.</p></div>
       {% elif workspace.items.status %}
         <div class="avito-empty"><i class="bi bi-exclamation-circle" aria-hidden="true"></i><strong>Объявления недоступны</strong><p>Не удалось получить список из Авито. Это не означает, что объявлений нет.</p></div>
       {% else %}
@@ -226,6 +230,10 @@
         </div>
       {% endif %}
     </section>
+
+    {% include 'pool_service/avito/_item_detail.html' %}
+    {% include 'pool_service/avito/_statistics.html' %}
+    {% include 'pool_service/avito/_calls.html' %}
 
     <section class="avito-panel mb-4" aria-labelledby="avito-analytics-heading">
       <div class="avito-panel__header">
@@ -254,7 +262,6 @@
         {% else %}
           <p class="small text-muted">Для просмотра локальной статистики нужен доступ к диалогам Service2.</p>
         {% endif %}
-        <div class="avito-api-note"><i class="bi bi-info-circle me-1" aria-hidden="true"></i>Статистика Авито не подключена: требуется подтверждённый контракт API. Просмотры, избранное и контакты из Авито здесь не загружаются.</div>
         {% if local_analytics.available %}<a class="small d-inline-block mt-3" href="{% url 'communications_conversations' %}">Открыть все диалоги Service2 <i class="bi bi-arrow-right ms-1" aria-hidden="true"></i></a>{% endif %}
       </div>
     </section>

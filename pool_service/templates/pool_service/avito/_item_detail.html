@@ -1,0 +1,44 @@
+<section class="avito-panel mb-4" aria-labelledby="avito-detail-heading">
+  <div class="avito-panel__header">
+    <div><h2 class="avito-panel__title" id="avito-detail-heading">Карточка объявления{% if workspace.item_detail.data.item_id %} № {{ workspace.item_detail.data.item_id }}{% endif %}</h2><div class="small text-muted mt-1">Срок размещения, автозагрузка и подключённые услуги</div></div>
+    {% if workspace.item_detail.data.item_id %}<form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" data-avito-submit>
+      {% include 'pool_service/avito/_refresh_fields.html' %}<input type="hidden" name="section" value="item_detail"><input type="hidden" name="item_id" value="{{ workspace.item_detail.data.item_id }}">
+      <button type="submit" class="btn btn-sm btn-outline-secondary" {% if not selected.has_credentials %}disabled{% endif %}>Обновить карточку</button>
+    </form>{% endif %}
+  </div>
+  <div class="avito-panel__body">
+    {% include 'pool_service/avito/_section_state.html' with state=workspace.item_detail %}
+    {% if workspace.item_detail.data %}
+      <dl class="avito-item-properties">
+        <div><dt>Статус Авито</dt><dd>{{ workspace.item_detail.data.status|default:"Не передан" }}</dd></div>
+        <div><dt>Начало размещения</dt><dd>{{ workspace.item_detail.data.start_time|default:"Не передано" }}</dd></div>
+        <div><dt>Окончание размещения</dt><dd>{{ workspace.item_detail.data.finish_time|default:"Не передано" }}</dd></div>
+        <div><dt>ID в автозагрузке</dt><dd>{{ workspace.item_detail.data.autoload_item_id|default:"Не передан" }}</dd></div>
+      </dl>
+      {% if workspace.item_detail.data.url %}<a class="small d-inline-block mb-3" href="{{ workspace.item_detail.data.url }}" target="_blank" rel="noopener noreferrer">Объявление в Авито <i class="bi bi-box-arrow-up-right ms-1" aria-hidden="true"></i><span class="visually-hidden"> в новой вкладке</span></a>{% endif %}
+      <h3 class="h6">Подключённые услуги</h3>
+      {% if workspace.item_detail.data.vas %}<div class="avito-service-list">{% for service in workspace.item_detail.data.vas %}<div class="avito-service-row"><div><strong>{{ service.id }}</strong><div class="small text-muted mt-1">Окончание: {{ service.finish_time|default:"не передано" }}</div></div>{% if service.schedule %}<div class="small text-muted">Расписание:{% for moment in service.schedule %}<div>{{ moment }}</div>{% endfor %}</div>{% endif %}</div>{% endfor %}</div>{% else %}<p class="small text-muted">Авито не передал подключённые услуги для этого объявления.</p>{% endif %}
+      <div class="d-flex flex-wrap align-items-center gap-3 mt-3">
+        <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" data-avito-submit>
+          {% include 'pool_service/avito/_refresh_fields.html' %}<input type="hidden" name="section" value="prices"><input type="hidden" name="item_id" value="{{ workspace.item_detail.data.item_id }}">
+          <button type="submit" class="btn btn-sm btn-outline-primary" {% if not selected.has_credentials %}disabled{% endif %}>Узнать цены услуг</button>
+        </form>
+        <span class="small text-muted">Только получение цен. Услуги не покупаются и не применяются.</span>
+      </div>
+    {% elif workspace.item_detail.status %}<p class="small text-muted mb-0">Карточка не получена. Повторите запрос через кнопку «Подробнее» у объявления.</p>
+    {% else %}<p class="small text-muted mb-0">Нажмите «Подробнее» в списке объявлений, чтобы загрузить карточку из Авито.</p>{% endif %}
+  </div>
+</section>
+{% if workspace.prices %}
+  <section class="avito-panel mb-4" aria-labelledby="avito-prices-heading">
+    <div class="avito-panel__header"><div><h2 class="avito-panel__title" id="avito-prices-heading">Цены услуг{% if workspace.prices.data.item_id %} · объявление № {{ workspace.prices.data.item_id }}{% endif %}</h2><div class="small text-muted mt-1">Справочная информация из Авито, без покупки</div></div></div>
+    <div class="avito-panel__body">
+      {% include 'pool_service/avito/_section_state.html' with state=workspace.prices %}
+      {% if workspace.prices.data %}
+        {% if workspace.prices.data.item_id != workspace.item_detail.data.item_id %}<div class="avito-section-notice avito-section-notice--stale">Этот прайс относится к объявлению № {{ workspace.prices.data.item_id }}, а не к текущей карточке.</div>{% endif %}
+        {% if workspace.prices.data.services %}<div class="avito-service-list">{% for service in workspace.prices.data.services %}<div class="avito-service-row"><strong>{{ service.slug }}</strong><div class="avito-numeric">{% if service.price_old != None %}<span class="text-muted text-decoration-line-through me-2">{{ service.price_old }} ₽</span>{% endif %}{% if service.price != None %}<strong>{{ service.price }} ₽</strong>{% else %}<span class="text-muted">Цена не получена</span>{% endif %}</div></div>{% endfor %}</div>{% else %}<p class="small text-muted">Цены услуг в ответе Авито отсутствуют.</p>{% endif %}
+        {% if workspace.prices.data.stickers %}<h3 class="h6 mt-3">Доступные стикеры</h3><div class="avito-service-list">{% for sticker in workspace.prices.data.stickers %}<div class="avito-service-row"><div><strong>{{ sticker.title|default:sticker.id }}</strong>{% if sticker.description %}<div class="small text-muted mt-1">{{ sticker.description }}</div>{% endif %}</div></div>{% endfor %}</div>{% endif %}
+      {% else %}<p class="small text-muted mb-0">Сохранённого прайса нет. Услуги не покупались.</p>{% endif %}
+    </div>
+  </section>
+{% endif %}

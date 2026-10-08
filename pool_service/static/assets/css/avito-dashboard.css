@@ -82,3 +82,25 @@
   .avito-admin .avito-period input { max-width: 100%; }
   .avito-admin .avito-period > div { flex: 1 1 130px; }
 }
+
+.avito-admin .avito-remote-period { gap: .75rem; }
+.avito-admin .avito-api-metrics { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.avito-admin .avito-api-metrics .avito-metric strong { font-size: 1.5rem; overflow-wrap: anywhere; }
+.avito-admin .avito-api-metrics .avito-metric strong small { font-size: .85rem; font-weight: 500; }
+.avito-admin .avito-api-metrics .avito-value-unavailable { color: var(--avito-muted); font-size: .95rem; line-height: 1.9; font-weight: 500; }
+.avito-admin .avito-statistics-table { border: 1px solid var(--avito-border); border-radius: .65rem; }
+.avito-admin .avito-statistics-table tbody th { background: transparent; text-transform: none; letter-spacing: 0; font-size: .8rem; font-weight: 600; vertical-align: middle; border-top: 0; }
+.avito-admin .avito-statistics-table tbody tr:last-child th { border-bottom: 0; }
+.avito-admin .avito-numeric { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.avito-admin .avito-item-properties { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin: 0 0 1rem; }
+.avito-admin .avito-item-properties dt { font-weight: 400; color: var(--avito-muted); font-size: .75rem; margin-bottom: .3rem; }
+.avito-admin .avito-item-properties dd { font-size: .85rem; margin-bottom: 0; overflow-wrap: anywhere; }
+.avito-admin .avito-service-list { border: 1px solid var(--avito-border); border-radius: .65rem; overflow: hidden; }
+.avito-admin .avito-service-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .75rem; padding: .85rem 1rem; font-size: .85rem; overflow-wrap: anywhere; }
+.avito-admin .avito-service-row + .avito-service-row { border-top: 1px solid var(--avito-border); }
+@media (max-width: 400px) {
+  .avito-admin .avito-api-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .avito-admin .avito-api-metrics .avito-metric { padding: .75rem; }
+}
+
+.avito-admin .avito-more-metrics summary { cursor: pointer; color: var(--bs-primary); font-size: .85rem; font-weight: 600; }
