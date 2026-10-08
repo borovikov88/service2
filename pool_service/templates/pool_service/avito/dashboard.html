@@ -21,6 +21,14 @@
   <div class="visually-hidden" role="status" aria-live="polite" data-avito-progress></div>
 
   {% if selected %}
+    {% if status_monitor_state.allowed %}
+      <div class="small text-muted mb-3">
+        Контроль статусов: {% if status_monitor_state.monitor.enabled %}включён, раз в час{% else %}не включён{% endif %}.
+        {% if status_monitor_state.monitor.last_success_at %}Последняя полная проверка: {{ status_monitor_state.monitor.last_success_at|date:"d.m.Y H:i" }}.{% endif %}
+        {% if status_monitor_state.error %}<span class="text-warning">{{ status_monitor_state.error }}</span>{% endif %}
+        <a href="{% url 'communication_connection_edit' selected.connection.pk %}#avito-status-monitor">Состояние и настройки</a>
+      </div>
+    {% endif %}
     <div class="avito-account-bar">
       <form method="get" action="{% url 'avito_dashboard' %}" class="avito-account-picker" data-avito-submit>
         <label for="avito-account" class="small fw-semibold mb-2">Аккаунт Авито</label>

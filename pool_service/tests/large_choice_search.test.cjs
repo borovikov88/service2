@@ -16,12 +16,24 @@ test("search-first native and large multiselect browser regressions", {
   timeout: 45000,
 }, async t => {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "service2-choice-browser-"));
+  const isolatedGroup = process.platform !== "win32";
   // Some CI runners export a malformed session bus address. The isolated
   // headless browser does not need the caller's desktop session bus.
   const browserEnv = {...process.env};
   delete browserEnv.DBUS_SESSION_BUS_ADDRESS;
   const child = spawn(chrome, ["--headless", "--no-sandbox", "--disable-dev-shm-usage", "--disable-background-networking",
-    "--no-first-run", "--remote-debugging-port=0", "--user-data-dir=" + profile, "about:blank"], {env: browserEnv, stdio: ["ignore", "ignore", "pipe"]});
+    "--no-first-run", "--remote-debugging-port=0", "--user-data-dir=" + profile, "about:blank"], {env: browserEnv, stdio: ["ignore", "ignore", "pipe"], detached: isolatedGroup});
+  const closed = new Promise(resolve => child.once("close", resolve));
+  function stopBrowser(signal) {
+    try {
+      // Chromium has profile-writing subprocesses. Stop only this test's
+      // isolated process group, including children left after the parent exits.
+      if (isolatedGroup && child.pid) process.kill(-child.pid, signal);
+      else child.kill(signal);
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+    }
+  }
   let stderr = "", socket;
   child.stderr.on("data", chunk => {stderr = (stderr + chunk).slice(-20000);});
   const pending = new Map();
@@ -83,9 +95,12 @@ test("search-first native and large multiselect browser regressions", {
   } finally {
     for (const call of pending.values()) clearTimeout(call.timer);
     socket?.close();
-    child.kill("SIGTERM");
-    for (let i = 0; child.exitCode === null && i < 20; i++) await pause(50);
-    if (child.exitCode === null) child.kill("SIGKILL");
-    fs.rmSync(profile, {recursive: true, force: true, maxRetries: 5, retryDelay: 100});
+    stopBrowser("SIGTERM");
+    await Promise.race([closed, pause(2000)]);
+    stopBrowser("SIGKILL");
+    await Promise.race([closed, pause(2000)]);
+    // Async retries let process-close events finish before removing the profile.
+    // Cleanup errors still fail the test; none of the UI assertions are skipped.
+    await fs.promises.rm(profile, {recursive: true, force: true, maxRetries: 10, retryDelay: 100});
   }
 });

@@ -1501,6 +1501,7 @@ def communication_connection_create(request, kind):
 @never_cache
 @transaction.atomic
 def communication_connection_edit(request, connection_id):
+    from pool_service.avito_status_monitor import display_state
     organization = _context(request, "can_manage_channels")
     connection = get_object_or_404(
         ChannelConnection.objects.select_for_update().select_related("channel"),
@@ -1585,6 +1586,7 @@ def communication_connection_edit(request, connection_id):
             "avito_credentials_configured": avito_credentials_configured,
             "avito_diagnostic_accounts": avito_diagnostic_accounts,
             "avito_timezone": getattr(settings, "COMMUNICATION_TIME_ZONE", "UTC"),
+            "status_monitor_state": display_state(connection, request.user) if kind == CommunicationChannel.KIND_AVITO else {},
         },
     )
 

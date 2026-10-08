@@ -1,0 +1,68 @@
+name: Monitor Avito listing statuses
+
+on:
+  schedule:
+    # Offset from the busiest minute. The database enforces hourly success
+    # intervals; these ticks also service bounded failure retries.
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: service2-avito-status-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    name: Check due Avito connections
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/service2_deploy
+          chmod 600 ~/.ssh/service2_deploy
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          ssh-keygen -y -f ~/.ssh/service2_deploy >/dev/null
+          PORT="${DEPLOY_PORT:-22}"
+          [[ "$PORT" =~ ^[0-9]+$ ]]
+          HOST_LOOKUP="$DEPLOY_HOST"
+          if [[ "$PORT" != "22" ]]; then HOST_LOOKUP="[$DEPLOY_HOST]:$PORT"; fi
+          ssh-keygen -F "$HOST_LOOKUP" -f ~/.ssh/known_hosts >/dev/null
+
+      - name: Run the deployed bounded status monitor
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          test -n "$DEPLOY_APP_PATH"
+          PORT="${DEPLOY_PORT:-22}"
+          [[ "$PORT" =~ ^[0-9]+$ ]]
+          printf -v REMOTE_COMMAND \
+            'set -Eeuo pipefail; cd %q; if [[ ! -f scripts/run_avito_status_monitor.sh ]]; then echo "AVITO_MONITOR status=not_deployed" >&2; exit 69; fi; exec /bin/bash scripts/run_avito_status_monitor.sh' \
+            "$DEPLOY_APP_PATH"
+          ssh -i ~/.ssh/service2_deploy \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
+
+      - name: Remove temporary SSH credentials
+        if: always()
+        run: rm -f -- ~/.ssh/service2_deploy ~/.ssh/known_hosts

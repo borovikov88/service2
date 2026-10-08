@@ -36,7 +36,7 @@ from pool_service.communication_avito import (
 from pool_service.communication_models import (
     AvitoCredential, ChannelConnection, CommunicationChannel, Conversation, ConversationMessage,
 )
-from pool_service import avito_workspace
+from pool_service import avito_workspace, avito_status_monitor
 from pool_service.communication_services import conversation_capability, organization_access
 from pool_service.communication_views import _avito_subscription_token
 
@@ -272,6 +272,7 @@ def avito_dashboard(request):
     local_analytics = _local_analytics(request, selected["connection"] if selected else None)
     return render(request, "pool_service/avito/dashboard.html", {
         "active_tab": "avito",
+        "status_monitor_state": avito_status_monitor.display_state(selected["connection"] if selected else None, request.user),
         "selected": selected,
         "workspace": workspace,
         "expanded_item_id": expanded_item_id,
@@ -535,3 +536,26 @@ def avito_refresh_data(request, connection_id):
     else:
         messages.warning(request, "Обновление не удалось. Последние успешные данные сохранены, если они были.")
     return redirect(destination)
+
+
+@login_required
+@require_POST
+@never_cache
+def avito_configure_monitor(request, connection_id):
+    organization = _scope(request)
+    connection = get_object_or_404(
+        ChannelConnection.objects.select_related("channel"), pk=connection_id,
+        channel__organization=organization, channel__kind=CommunicationChannel.KIND_AVITO,
+    )
+    action = request.POST.get("action", "")
+    try:
+        avito_status_monitor.configure(connection, request.user, action)
+    except ValueError as exc:
+        messages.error(request, str(exc))
+    else:
+        messages.success(request, {
+            "enable": "Почасовой контроль включён. Первая полная проверка создаст начальный снимок без старых уведомлений.",
+            "disable": "Почасовой контроль отключён.",
+            "retry": "Повторная проверка запрошена. Её выполнит серверный планировщик.",
+        }[action])
+    return redirect(reverse("communication_connection_edit", args=[connection.pk]) + "#avito-status-monitor")
