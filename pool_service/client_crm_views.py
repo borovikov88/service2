@@ -29,6 +29,7 @@ from .client_merge import merge_clients, merge_suggestions
 from .communication_models import CommunicationAccess, PhoneCall
 from .models import Client, CrmItem, OrganizationAccess, Pool, ServiceTask
 from .services.task_waiting_schedule import waiting_schedule_metadata
+from .services.call_privacy import private_source_task_ids
 
 
 IMPORT_ROLES = {"owner", "admin"}
@@ -277,17 +278,21 @@ def client_detail(request, client_id):
             | Q(primary_responsible=request.user)
             | Q(responsibles=request.user)
         ).distinct()
-    active_tasks_count = (
-        tasks_qs.filter(is_archived=False)
-        .exclude(
-            status__in=[
-                ServiceTask.STATUS_DONE,
-                ServiceTask.STATUS_CANCELLED,
-            ]
-        )
-        .count()
+    task_candidates = list(tasks_qs)
+    hidden_private_task_ids = private_source_task_ids(task_candidates)
+    visible_task_candidates = [
+        task for task in task_candidates
+        if task.pk not in hidden_private_task_ids
+    ]
+    active_tasks_count = sum(
+        not task.is_archived
+        and task.status not in {
+            ServiceTask.STATUS_DONE,
+            ServiceTask.STATUS_CANCELLED,
+        }
+        for task in visible_task_candidates
     )
-    tasks = list(tasks_qs[:50])
+    tasks = visible_task_candidates[:50]
     for task in tasks:
         task.responsible_label = _user_label(task.primary_responsible) or ", ".join(
             filter(None, (_user_label(user) for user in task.responsibles.all()))
