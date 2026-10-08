@@ -298,6 +298,38 @@ class OperationsMcpTests(TestCase):
             )
         self.assertEqual(response.status_code, 401)
 
+    def test_read_tool_revalidates_token_after_initial_authentication(self):
+        raw = self._token(raw="read-race-revoked-token")
+        from pool_service import operations_mcp_views
+
+        real_authenticate = operations_mcp_views.authenticate_bearer_header
+
+        def authenticate_then_revoke(header):
+            authenticated = real_authenticate(header)
+            type(authenticated.token).objects.filter(
+                pk=authenticated.token.pk
+            ).update(revoked_at=timezone.now())
+            return authenticated
+
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 2201,
+            "method": "tools/call",
+            "params": {
+                "name": "list_control_tasks",
+                "arguments": {},
+            },
+        }
+        with self._settings(), patch.object(
+            operations_mcp_views,
+            "authenticate_bearer_header",
+            side_effect=authenticate_then_revoke,
+        ):
+            response = self._post(payload, token=raw)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["result"]["isError"])
+        self.assertNotIn("structuredContent", response.json()["result"])
+
     def test_token_is_bound_to_consented_organization(self):
         raw = self._token(raw="organization-bound-token")
         OrganizationAccess.objects.create(
