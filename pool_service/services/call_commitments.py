@@ -60,15 +60,10 @@ def _proposal(call, index, commitment):
     due_date = _parse_due_date(commitment.get("due_date"))
     due_time = _parse_due_time(commitment.get("due_time"))
     existing = _existing_task(call, index)
-    can_create = bool(
-        actor in {ACTOR_EMPLOYEE, ACTOR_CLIENT}
-        and confidence == PROPOSAL_CONFIDENCE
-        and action
-        and (actor != ACTOR_CLIENT or call.client_id)
-    )
+    can_create = commitment_is_ready_for_review(call, commitment)
     if existing:
         status = "already_created"
-    elif can_create and due_date:
+    elif can_create:
         status = "ready_for_review"
     else:
         status = "needs_clarification"
@@ -87,6 +82,23 @@ def _proposal(call, index, commitment):
         "needs_clarification": status == "needs_clarification",
         "task_id": existing.pk if existing else None,
     }
+
+
+def commitment_is_ready_for_review(call, commitment):
+    """Return whether a proposal has enough validated data for task creation."""
+    if not isinstance(commitment, dict):
+        return False
+    actor = str(commitment.get("actor") or "").strip().lower()
+    confidence = str(commitment.get("confidence") or "").strip().lower()
+    action = str(commitment.get("action") or "").strip()
+    due_date = _parse_due_date(commitment.get("due_date"))
+    return bool(
+        actor in {ACTOR_EMPLOYEE, ACTOR_CLIENT}
+        and confidence == PROPOSAL_CONFIDENCE
+        and action
+        and (actor != ACTOR_CLIENT or call.client_id)
+        and due_date
+    )
 
 
 def materialize_call_commitments(call_id):

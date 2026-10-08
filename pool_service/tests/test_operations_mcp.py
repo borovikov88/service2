@@ -625,6 +625,58 @@ class OperationsMcpTests(TestCase):
             payload_json__source_call_id=call.pk
         ).exists())
 
+    def test_call_commitment_needing_clarification_cannot_create_a_task(self):
+        raw = self._token(raw="unclear-call-commitment-token")
+        connection = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="Unclear commitment test line",
+            external_id="unclear-call-commitment",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=connection,
+            external_id="unclear-call-commitment-1",
+            employee=self.manager,
+            phone_number="+7 900 000-00-14",
+            direction=PhoneCall.DIRECTION_OUT,
+            started_at=timezone.now(),
+            duration_seconds=45,
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        unclear = {
+            "actor": "employee",
+            "confidence": "medium",
+            "action": "Send the requested quote",
+            "due_date": "2026-10-09",
+        }
+        CallAnalysis.objects.create(
+            call=call,
+            status=CallAnalysis.STATUS_READY,
+            facts={"commitments": [unclear]},
+        )
+        from pool_service.services.call_commitments import commitment_proposal_id
+
+        proposal_id = commitment_proposal_id(call.pk, 0, unclear)
+        with self._settings():
+            response = self._post({
+                "jsonrpc": "2.0", "id": 408, "method": "tools/call",
+                "params": {"name": "create_task", "arguments": {
+                    "idempotency_key": proposal_id,
+                    "source_call_id": call.pk,
+                    "commitment_index": 0,
+                    "commitment_proposal_id": proposal_id,
+                    "title": unclear["action"],
+                    "responsible_user_id": self.manager.pk,
+                    "commitment_actor_user_id": self.manager.pk,
+                    "confirmed_by_user": True,
+                    "due_date": unclear["due_date"],
+                }},
+            }, token=raw)
+        self.assertTrue(response.json()["result"]["isError"])
+        self.assertFalse(ServiceTask.objects.filter(
+            payload_json__source_call_id=call.pk
+        ).exists())
+
     def test_internal_call_proposal_with_unresolved_participant_cannot_create_task(self):
         raw = self._token(raw="unresolved-internal-commitment-token")
         connection = TelephonyConnection.objects.create(

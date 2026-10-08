@@ -55,6 +55,7 @@ from pool_service.services.crm_locking import locked_task_for_completion
 from pool_service.services.call_commitments import (
     ACTOR_CLIENT,
     ACTOR_EMPLOYEE,
+    commitment_is_ready_for_review,
     commitment_proposal_id,
     materialize_call_commitments,
 )
@@ -932,6 +933,8 @@ def _validated_call_commitment(organization, command):
     if not isinstance(commitment, dict):
         raise ValueError("commitment_proposal_id")
     if commitment_proposal_id(call_id, index, commitment) != command["commitment_proposal_id"]:
+        raise ValueError("commitment_proposal_id")
+    if not commitment_is_ready_for_review(analysis.call, commitment):
         raise ValueError("commitment_proposal_id")
     actor = str(commitment.get("actor") or "").strip().lower()
     if actor not in {ACTOR_EMPLOYEE, ACTOR_CLIENT} or not command.get("confirmed_by_user"):
