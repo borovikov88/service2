@@ -11,7 +11,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from pool_service.models import Organization, OrganizationAccess, ServiceTask, ServiceTaskChange
+from pool_service.models import Client, Organization, OrganizationAccess, ServiceTask, ServiceTaskChange
 from pool_service.operations_mcp_views import _task_data, _reschedule_task, _complete_task
 from pool_service.services.call_commitment_control import _effective_deadline, process_call_commitment_controls
 from pool_service.services.task_feedback import apply_feedback, state_for, version_for, waiting_control
@@ -209,6 +209,29 @@ class WaitingCalendarTests(TestCase):
         )
         self.assertEqual(move.status_code, 409)
         self.assertEqual(move.json()["error"], "waiting_task_use_feedback")
+
+        crm_tasks = self.client.get(reverse("crm_tasks"))
+        self.assertEqual(crm_tasks.status_code, 200)
+        listed = next(
+            task for task in crm_tasks.context["tasks"]
+            if task.pk == self.task.pk
+        )
+        self.assertEqual(listed.start_display, "Дата не согласована")
+
+        client = Client.objects.create(
+            organization=self.org,
+            name="Waiting display client",
+        )
+        ServiceTask.objects.filter(pk=self.task.pk).update(client=client)
+        client_card = self.client.get(
+            reverse("client_detail", args=[client.pk])
+        )
+        self.assertEqual(client_card.status_code, 200)
+        card_task = next(
+            task for task in client_card.context["tasks"]
+            if task.pk == self.task.pk
+        )
+        self.assertEqual(card_task.schedule_display, "Дата не согласована")
 
         new_date = self.check_date + timedelta(days=3)
         self.apply("reschedule", due_date=new_date)
