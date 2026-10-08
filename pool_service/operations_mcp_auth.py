@@ -641,6 +641,48 @@ def authenticate_bearer_header(value):
     )
 
 
+def revalidate_authenticated_request(authenticated):
+    """Lock/re-read mutable token and grant state inside a tool transaction."""
+    now = timezone.now()
+    token_id = getattr(getattr(authenticated, "token", None), "pk", None)
+    grant_id = getattr(getattr(authenticated, "grant", None), "pk", None)
+    if not token_id or not grant_id:
+        raise PermissionError("operations_authorization_revoked")
+
+    token = FinanceMcpAccessToken.objects.select_for_update().filter(
+        pk=token_id,
+    ).first()
+    grant = (
+        FinanceMcpGrant.objects.select_for_update()
+        .select_related("client__principal", "principal", "authorized_by")
+        .filter(pk=grant_id)
+        .first()
+    )
+    if (
+        token is None
+        or grant is None
+        or token.grant_id != grant.id
+        or token.expires_at <= now
+        or token.revoked_at is not None
+        or token.audience != resource_url()
+        or OPERATIONS_SCOPE not in token.scopes
+        or OPERATIONS_SCOPE not in grant.scopes
+        or not _grant_is_valid(
+            grant,
+            now=now,
+            client=grant.client,
+            resource=token.audience,
+        )
+    ):
+        raise PermissionError("operations_authorization_revoked")
+
+    return AuthenticatedOperationsMcpRequest(
+        token=token,
+        grant=grant,
+        principal=grant.principal,
+    )
+
+
 def authorization_redirect_uri(redirect_uri, *, code=None, state=None, error=None, error_description=None):
     parts = urlsplit(redirect_uri)
     query = dict(parse_qsl(parts.query, keep_blank_values=True)) if parts.query else {}
@@ -694,6 +736,7 @@ __all__ = [
     "issue_authorization_code",
     "protected_resource_metadata",
     "protected_resource_metadata_url",
+    "revalidate_authenticated_request",
     "resource_url",
     "scoped_organizations",
     "validate_authorization_request",
