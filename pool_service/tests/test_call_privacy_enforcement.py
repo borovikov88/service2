@@ -34,16 +34,18 @@ class PrivateCallEnforcementTests(TestCase):
         OrganizationAccess.objects.create(
             organization=self.org, user=self.employee, role="manager"
         )
-        CommunicationAccess.objects.create(
+        CommunicationAccess.objects.filter(
             organization=self.org,
             user=self.owner,
+        ).update(
             can_view_all_calls=True,
             can_view_own_calls=True,
             can_listen_calls=True,
         )
-        CommunicationAccess.objects.create(
+        CommunicationAccess.objects.filter(
             organization=self.org,
             user=self.employee,
+        ).update(
             can_view_own_calls=True,
             can_listen_calls=True,
         )
