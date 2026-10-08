@@ -20,6 +20,7 @@ from pool_service.communication_secrets import (
     CommunicationSecretError,
     decrypt_secret,
 )
+from pool_service.services.call_privacy import is_private_call
 
 
 class RecordingDownloadError(Exception):
