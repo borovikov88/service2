@@ -27,6 +27,7 @@ class AvitoManagementTests(TestCase):
         )
         self.url = reverse("avito_dashboard")
         self.check_url = reverse("avito_check_api", args=[self.connection.pk])
+        self.settings_url = reverse("communication_connection_edit", args=[self.connection.pk])
 
     def test_page_is_scoped_to_channel_managers_and_does_not_call_api_on_get(self):
         self.client.force_login(self.manager)
@@ -37,7 +38,8 @@ class AvitoManagementTests(TestCase):
             response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Товары")
-        self.assertContains(response, "Проверить API")
+        self.assertNotContains(response, "Проверить API")
+        self.assertContains(self.client.get(self.settings_url), "Проверить API")
         get_token.assert_not_called()
         self.assertEqual(self.client.get(self.check_url).status_code, 405)
         self.assertIn("no-store", response.get("Cache-Control", ""))
@@ -52,7 +54,7 @@ class AvitoManagementTests(TestCase):
     ):
         self.client.force_login(self.owner)
         response = self.client.post(self.check_url)
-        self.assertRedirects(response, self.url)
+        self.assertRedirects(response, self.settings_url + "#avito-api-diagnostics")
         self.assertEqual(api_request.call_count, 3)
         self.connection.refresh_from_db()
         saved = self.connection.settings
@@ -62,7 +64,7 @@ class AvitoManagementTests(TestCase):
         self.assertEqual(saved["avito_api_results"][2]["status"], "ok")
         self.assertEqual(saved["avito_api_results"][3]["status"], "warning")
         self.assertNotIn("opaque-access-token", str(saved))
-        self.assertContains(self.client.get(self.url), "отличается от сохранённого")
+        self.assertContains(self.client.get(self.settings_url), "отличается от сохранённого")
 
     @patch("pool_service.avito_management.webhook_subscriptions", return_value=[])
     @patch("pool_service.avito_management._json_request", return_value={})

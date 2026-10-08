@@ -7,7 +7,7 @@ contracts follow the user-supplied OpenAPI specification, October 2026.
 import hashlib
 import json
 from datetime import date, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from django.db import transaction
 from django.utils import timezone
@@ -23,6 +23,27 @@ ITEM_STATUSES = {
 }
 BASIC_SECTIONS = ("profile", "balance", "items", "autoload")
 SECTIONS = (*BASIC_SECTIONS, "statistics", "item_detail", "prices", "calls")
+
+
+DIAGNOSTIC_KEYS = {"token", "account", "messenger", "webhook", "items", "balance", "autoload"}
+
+
+def diagnostic_account(connection, *, has_credentials=False):
+    """Saved, non-secret diagnostics for a caller that already checked scope."""
+    data = connection.settings if isinstance(connection.settings, dict) else {}
+    rows = data.get("avito_api_results", [])
+    if not isinstance(rows, list):
+        rows = []
+    return {
+        "connection": connection, "has_credentials": has_credentials,
+        "checked_at": data.get("avito_api_checked_at") or "",
+        "results": [row for row in rows if isinstance(row, dict) and isinstance(row.get("key"), str) and row.get("key") in DIAGNOSTIC_KEYS][:7],
+        "actual_id": data.get("avito_api_account_id", ""),
+        "webhook_status": data.get("avito_webhook_status", "not_connected"),
+        "webhook_received": data.get("avito_webhook_last_received_at", ""),
+        "webhook_error": data.get("avito_webhook_error", ""),
+        "pull_error": data.get("avito_pull_last_error", ""),
+    }
 
 
 def _text(value, limit=200):
@@ -224,6 +245,50 @@ METRICS = (
 )
 
 
+DERIVED_RATIOS = {
+    "viewsToContactsConversion": ("contacts", "views", "Контакты / просмотры × 100"),
+    "impressionsToViewsConversion": ("views", "impressions", "Просмотры / показы × 100"),
+}
+UNVERIFIED_UNITS = {"viewsToOrderedItemsConversion", "averageViewCost", "averageContactCost", "spendingBonus"}
+
+
+def statistics_for_display(data):
+    """Normalize new AND already-saved snapshots without any provider request.
+
+    Avito's live percentage scale differs from its schema's prose. Never label
+    the raw value as percent. Only two directly matching count ratios are derived;
+    orders are not unique users, so that conversion and ambiguous costs stay unknown.
+    """
+    if not isinstance(data, dict):
+        return {}
+    result = dict(data)
+    rows = []
+    for original in data.get("rows", []) if isinstance(data.get("rows"), list) else []:
+        if not isinstance(original, dict) or not isinstance(original.get("metrics"), list):
+            continue
+        metrics = [dict(x) for x in original["metrics"] if isinstance(x, dict) and isinstance(x.get("slug"), str)]
+        values = {x["slug"]: x.get("value") for x in metrics}
+        for metric in metrics:
+            slug = metric["slug"]
+            if slug in DERIVED_RATIOS:
+                numerator, denominator, formula = DERIVED_RATIOS[slug]
+                top, bottom = _number(values.get(numerator)), _number(values.get(denominator))
+                value = None
+                if top is not None and bottom is not None and Decimal(top) >= 0 and Decimal(bottom) > 0:
+                    value = format((Decimal(top) / Decimal(bottom) * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), ".2f")
+                metric.update(value=value, unit="%", source="calculated", note=f"Расчёт Service2: {formula}")
+            elif slug in UNVERIFIED_UNITS:
+                metric.update(value=None, unit="", source="unavailable", note="Единица показателя API не подтверждена")
+        rows.append({**original, "metrics": metrics})
+    result["rows"] = rows
+    result["metric_labels"] = [
+        {**x, "unit": "" if x.get("slug") in UNVERIFIED_UNITS else x.get("unit", "")}
+        for x in data.get("metric_labels", []) if isinstance(x, dict) and isinstance(x.get("slug"), str)
+    ] if isinstance(data.get("metric_labels"), list) else []
+    result["normalization_version"] = 2
+    return result
+
+
 def statistics_data(response, *, start, end, grouping, offset):
     result = response.get("result")
     groups = result.get("groupings") if isinstance(result, dict) else None
@@ -265,11 +330,11 @@ def statistics_data(response, *, start, end, grouping, offset):
         label = "Итого за период" if grouping == "totals" else f"Объявление {group['id']}" if grouping == "item" else f"ID группы {group['id']}"
         rows.append({"id": group["id"], "label": label, "metrics": metrics})
     total = _count(result.get("dataTotalCount"))
-    return {"rows": rows, "metric_labels": labels, "date_from": start, "date_to": end,
+    return statistics_for_display({"rows": rows, "metric_labels": labels, "date_from": start, "date_to": end,
             "grouping": grouping, "offset": offset, "limit": PAGE_SIZE, "total": total,
             "has_previous": offset > 0,
             "has_next": offset + PAGE_SIZE < total if total is not None else len(rows) == PAGE_SIZE,
-            "source_timestamp": _text(result.get("timestamp"), 80)}
+            "source_timestamp": _text(result.get("timestamp"), 80)})
 
 
 def fetch_statistics(token, account_id, *, start, end, grouping, offset=0):
@@ -279,6 +344,41 @@ def fetch_statistics(token, account_id, *, start, end, grouping, offset=0):
         "grouping": grouping, "limit": PAGE_SIZE, "offset": offset,
     })
     return statistics_data(response, start=start, end=end, grouping=grouping, offset=offset)
+
+
+PROMOTION_LABELS = {
+    "highlight": "Выделение объявления", "xl": "XL-объявление",
+    "stickerpack_x1": "1 значок на XL-объявлении",
+    "stickerpack_x2": "2 значка на XL-объявлении",
+    "stickerpack_x3": "3 значка на XL-объявлении",
+    **{f"x{multiple}_{days}": f"До {multiple} раз больше просмотров · {days} {'день' if days == 1 else 'дней'}"
+       for multiple in (2, 5, 10, 15, 20) for days in (1, 7)},
+}
+
+
+def item_detail_for_display(data):
+    if not isinstance(data, dict):
+        return {}
+    status = _text(data.get("status"), 32)
+    services = data.get("vas", [])
+    return {**data, "status_label": ITEM_STATUSES.get(status, status or "Не указан"),
+            "vas": [{**row, "label": PROMOTION_LABELS.get(_text(row.get("id"), 100), "Услуга Авито")}
+                    for row in services if isinstance(row, dict)] if isinstance(services, list) else []}
+
+
+def prices_for_display(data):
+    if not isinstance(data, dict):
+        return {}
+    services = []
+    for row in data.get("services", []) if isinstance(data.get("services"), list) else []:
+        if not isinstance(row, dict):
+            continue
+        price, old = _number(row.get("price")), _number(row.get("price_old"))
+        slug = _text(row.get("slug"), 100)
+        services.append({**row, "price": price, "price_old": old,
+                         "show_old_price": price is not None and old is not None and price != old,
+                         "label": PROMOTION_LABELS.get(slug, "Услуга Авито")})
+    return {**data, "services": services}
 
 
 def fetch_item_detail(token, account_id, item_id):
@@ -327,35 +427,54 @@ def fetch_calls(token, account_id, *, start, end, item_ids):
     result = response.get("result")
     items = result.get("items") if isinstance(result, dict) else None
     if not isinstance(items, list) or len(items) > 1000:
-        raise AvitoError("provider_data_invalid")
-    aggregated = {}
-    names = ("calls", "answered", "new", "newAnswered")
-    for item in items:
-        if not isinstance(item, dict) or _identifier(item.get("itemId")) not in {*item_ids, "0"} or not isinstance(item.get("days"), list):
-            raise AvitoError("provider_data_invalid")
-        for day in item["days"]:
-            if not isinstance(day, dict):
-                raise AvitoError("provider_data_invalid")
-            try:
-                when = date.fromisoformat(day.get("date", "")).isoformat()
-            except (ValueError, TypeError):
-                raise AvitoError("provider_data_invalid")
-            if not start <= when <= end or any(_count(day.get(x)) is None for x in names):
-                raise AvitoError("provider_data_invalid")
-            key = (_identifier(item["itemId"]), when)
-            counters = aggregated.setdefault(key, {name: 0 for name in names})
-            for name in names:
-                counters[name] += day[name]
-    rows = [{"item_id": key[0], "date": key[1], "calls": value["calls"], "answered": value["answered"],
-             "new": value["new"], "new_answered": value["newAnswered"]} for key, value in sorted(aggregated.items())]
-    # A narrow 50-item, 270-day request has at most 13,500 daily rows. Retain only
-    # per-item aggregates rather than a raw response or employee breakdown.
+        raise AvitoError("provider_calls_response_invalid")
+    names = {"calls": "calls", "answered": "answered", "new": "new", "newAnswered": "new_answered"}
     by_item = {}
-    for row in rows:
-        target = by_item.setdefault(row["item_id"], {"item_id": row["item_id"], "date": f"{start} — {end}", **{x: 0 for x in ("calls", "answered", "new", "new_answered")}})
-        for key in ("calls", "answered", "new", "new_answered"):
-            target[key] += row[key]
+    allowed_ids = {*item_ids, "0"}
+    incomplete = False
+    for item in items:
+        if not isinstance(item, dict) or not _identifier(item.get("itemId")):
+            raise AvitoError("provider_calls_item_invalid")
+        item_id = _identifier(item["itemId"])
+        if item_id not in allowed_ids:
+            raise AvitoError("provider_calls_item_out_of_scope")
+        target = by_item.setdefault(item_id, {"item_id": item_id, "date": f"{start} — {end}",
+                                             **{name: 0 for name in names.values()}})
+        days = item.get("days")
+        if days is not None and not isinstance(days, list):
+            raise AvitoError("provider_calls_days_invalid")
+        # days and every CallsStatsDay property are optional in the supplied
+        # schema. Missing data is unknown, never an invented zero or HTTP 500.
+        if not days:
+            incomplete = True
+            target.update({name: None for name in names.values()})
+            continue
+        for day in days:
+            if not isinstance(day, dict):
+                raise AvitoError("provider_calls_day_invalid")
+            when = day.get("date")
+            if when is None:
+                incomplete = True
+                target.update({name: None for name in names.values()})
+                continue
+            try:
+                when = date.fromisoformat(when).isoformat()
+            except (ValueError, TypeError):
+                raise AvitoError("provider_calls_date_invalid")
+            if not start <= when <= end:
+                raise AvitoError("provider_calls_date_out_of_scope")
+            for source, field in names.items():
+                value = day.get(source)
+                if value is None:
+                    incomplete = True
+                    target[field] = None
+                elif _count(value) is None:
+                    raise AvitoError("provider_calls_counter_invalid")
+                elif target[field] is not None:
+                    target[field] += value
     rows = list(by_item.values())
+    totals = {}
+    for name in names.values():
+        totals[name] = sum(row[name] for row in rows) if rows and all(row[name] is not None for row in rows) else None
     return {"date_from": start, "date_to": end, "item_count": len(item_ids), "rows": rows,
-            "includes_unattributed": "0" in by_item,
-            "totals": {name: sum(row[name] for row in rows) if rows else None for name in ("calls", "answered", "new", "new_answered")}}
+            "includes_unattributed": "0" in by_item, "incomplete": incomplete, "totals": totals}
