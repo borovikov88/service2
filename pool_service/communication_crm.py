@@ -309,9 +309,9 @@ def _visible_call(request, call_id, *, lock=False):
     if lock:
         queryset = queryset.select_for_update()
     call = get_object_or_404(queryset, pk=call_id)
-    organization, view_all = _scope(request.user, call.source_kind, call.organization)
     if is_private_call(call):
         raise Http404
+    organization, view_all = _scope(request.user, call.source_kind, call.organization)
     if call.direction == PhoneCall.DIRECTION_INTERNAL:
         raise PermissionDenied
     if (
