@@ -9,10 +9,15 @@ from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_http_methods
 
 from pool_service.models import OrganizationAccess
-from pool_service.call_processing_models import CallProcessingRule, CallPrivateNumber
+from pool_service.call_processing_models import (
+    CallProcessingBudget,
+    CallProcessingRule,
+    CallPrivateNumber,
+)
 from pool_service.services.permissions import organization_for_user
+from pool_service.services.call_usage import usage_summary
 from pool_service.services.call_processing_settings import (
-    STAFF_ROLES, settings_allowed, save_rule, add_private_numbers,
+    STAFF_ROLES, settings_allowed, save_rule, save_budget, add_private_numbers,
     remove_private_number, preview_rules,
 )
 
@@ -30,6 +35,19 @@ class RuleForm(forms.Form):
         label="Разрешённые рабочие номера", required=False, max_length=20000,
         help_text="Каждый номер с новой строки. Применяется в режиме «Только по правилам». Для иностранных номеров укажите + и код страны.",
         widget=forms.Textarea(attrs={"class": "form-control", "rows": 3}),
+    )
+
+
+class BudgetForm(forms.Form):
+    expected_revision = forms.IntegerField(min_value=0, widget=forms.HiddenInput)
+    monthly_limit_usd = forms.DecimalField(
+        label="Месячный лимит, USD",
+        required=False,
+        min_value=0.0001,
+        max_digits=12,
+        decimal_places=4,
+        help_text="Пустое поле означает, что денежный лимит не задан. Автообработка всё равно остаётся выключенной, пока не завершён запускной контур.",
+        widget=forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
     )
 
 
@@ -87,6 +105,11 @@ def call_processing_settings(request):
         raise PermissionDenied
     bound_rule = None
     private_form = PrivateForm()
+    budget = CallProcessingBudget.objects.filter(organization=organization).first()
+    budget_form = BudgetForm(initial={
+        "expected_revision": budget.revision if budget else 0,
+        "monthly_limit_usd": budget.monthly_limit_usd if budget else None,
+    })
     errors = []
     status = 200
     if request.method == "POST":
@@ -97,6 +120,17 @@ def call_processing_settings(request):
                 if bound_rule.is_valid():
                     save_rule(user=request.user, organization=organization, **bound_rule.cleaned_data)
                     messages.success(request, "Правило сохранено для предпросмотра. Авторасшифровка не запущена.")
+                    return redirect("call_processing_settings")
+                status = 400
+            elif action == "save_budget":
+                budget_form = BudgetForm(request.POST)
+                if budget_form.is_valid():
+                    save_budget(
+                        user=request.user,
+                        organization=organization,
+                        **budget_form.cleaned_data,
+                    )
+                    messages.success(request, "Месячный лимит расходов сохранён. Автоматический запуск не включён.")
                     return redirect("call_processing_settings")
                 status = 400
             elif action == "add_private":
@@ -124,6 +158,8 @@ def call_processing_settings(request):
         "page_title": "Автообработка звонков", "active_tab": "communications",
         "can_manage_communication_channels": True,
         "rule_rows": _rule_rows(organization, request.user, bound_rule),
-        "private_form": private_form, "errors": errors, "preview": preview,
+        "private_form": private_form, "budget_form": budget_form,
+        "usage": usage_summary(organization),
+        "errors": errors, "preview": preview,
         "private_numbers": CallPrivateNumber.objects.filter(organization=organization, owner=request.user).order_by("label", "phone_key"),
     }, status=status)
