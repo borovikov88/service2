@@ -4007,7 +4007,15 @@ def crm_tasks(request):
             or getattr(task.pool, "address", "")
             or "-"
         )
-        task.start_display = formats.date_format(task.start_date, "d.m.Y")
+        schedule = waiting_schedule_metadata(task)
+        if schedule.get("schedule_kind") == "no_appointment":
+            task.start_display = "Дата не согласована"
+        elif schedule.get("schedule_kind") == "internal_check":
+            task.start_display = (
+                f"Контроль: {formats.date_format(task.start_date, 'd.m.Y')}"
+            )
+        else:
+            task.start_display = formats.date_format(task.start_date, "d.m.Y")
         if task.completed_at:
             completed_at = timezone.localtime(task.completed_at) if timezone.is_aware(task.completed_at) else task.completed_at
             task.completed_display = formats.date_format(completed_at, "d.m.Y H:i")
@@ -4126,18 +4134,48 @@ def crm_tasks_bulk_update(request):
         skipped_waiting = 0
         for task in tasks:
             waiting, _next_check = waiting_control(task)
-            if waiting and status in {
-                ServiceTask.STATUS_NEW,
-                ServiceTask.STATUS_IN_PROGRESS,
-            }:
-                # A bulk status toggle has no new agreed deadline. Refuse to
-                # reinterpret the internal check day as an appointment.
+            schedule_kind = waiting_schedule_metadata(task).get("schedule_kind")
+            completed_unknown_appointment = bool(
+                task.is_completed_archive and schedule_kind == "no_appointment"
+            )
+
+            if (
+                (waiting or completed_unknown_appointment)
+                and status in {
+                    ServiceTask.STATUS_NEW,
+                    ServiceTask.STATUS_IN_PROGRESS,
+                }
+            ):
+                # Neither a waiting task nor a completed task restored from
+                # waiting has a client-agreed date. A bulk status toggle must
+                # not reinterpret the retained internal-check key as one.
                 skipped_waiting += 1
                 continue
+
             if task.status == status and not (
                 status == ServiceTask.STATUS_DONE and not task.is_completed_archive
             ):
                 continue
+
+            if task.is_completed_archive and status != ServiceTask.STATUS_DONE:
+                task.completed_at = None
+                task.completed_by = None
+                restore_fields = restore_completed_without_appointment(task)
+                task.save(update_fields=list(dict.fromkeys([
+                    "completed_at",
+                    "completed_by",
+                    *restore_fields,
+                    "updated_at",
+                ])))
+                restore_task(task, request.user)
+                waiting, _next_check = waiting_control(task)
+
+                if completed_unknown_appointment and status == ServiceTask.STATUS_WAITING:
+                    # The restore helper already established the only safe
+                    # no-date state. Do not touch the legacy calendar key.
+                    sync_crm_item_for_task(task)
+                    changed += 1
+                    continue
 
             waiting_fields = []
             if waiting and status in {
@@ -4157,8 +4195,6 @@ def crm_tasks_bulk_update(request):
                     ])))
                 archive_task(task, ServiceTask.ARCHIVE_REASON_COMPLETED, request.user)
             else:
-                if task.is_completed_archive:
-                    restore_task(task, request.user)
                 task.save(update_fields=list(dict.fromkeys([
                     *waiting_fields, "status", "updated_at",
                 ])))
