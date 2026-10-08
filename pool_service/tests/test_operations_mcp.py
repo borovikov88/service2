@@ -1215,7 +1215,8 @@ class OperationsMcpTests(TestCase):
         first = process_pending_operations_pushes(limit=100)
         second = process_pending_operations_pushes(limit=100)
 
-        self.assertEqual(first["assignment_attempts"], 1)
+        self.assertEqual(first["checked"], 1)
+        self.assertEqual(first["assignment_attempts"], 0)
         self.assertEqual(second["assignment_attempts"], 0)
         self.assertEqual(second["checked"], 0)
         self.assertFalse(OperationsPushQueue.objects.filter(task=task).exists())
