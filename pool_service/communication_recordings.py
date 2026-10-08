@@ -1,3 +1,4 @@
+import logging
 from datetime import timedelta
 import re
 import socket
@@ -21,6 +22,9 @@ from pool_service.communication_secrets import (
     decrypt_secret,
 )
 from pool_service.services.call_privacy import is_private_call
+
+
+logger = logging.getLogger(__name__)
 
 
 class RecordingDownloadError(Exception):
@@ -225,6 +229,16 @@ def download_call_recording(call_id, *, force=False):
                 recording_status=PhoneCall.RECORDING_STORED,
                 recording_error="",
             )
+        try:
+            from pool_service.services.call_processing_dispatch import (
+                dispatch_call_if_ready,
+            )
+            dispatch_call_if_ready(call.pk)
+        except Exception:
+            logger.exception(
+                "Automatic call dispatch recovery failed call_id=%s",
+                call.pk,
+            )
         return True
     if not call.recording_ref:
         PhoneCall.objects.filter(pk=call.pk).update(
@@ -292,6 +306,18 @@ def download_call_recording(call_id, *, force=False):
                         "recording_downloaded_at",
                     ]
                 )
+        try:
+            from pool_service.services.call_processing_dispatch import (
+                dispatch_call_if_ready,
+            )
+            dispatch_call_if_ready(call.pk)
+        except Exception:
+            # Recording storage succeeds independently; scheduled sync is the
+            # durable recovery path for dispatch failures.
+            logger.exception(
+                "Automatic call dispatch failed after recording save call_id=%s",
+                call.pk,
+            )
         return True
     except HTTPError as exc:
         _mark_failed(call.pk, f"provider_http_{exc.code}")
