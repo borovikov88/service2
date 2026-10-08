@@ -1,7 +1,7 @@
 """Owner-only draft settings and free metadata preview; no dispatch side effects."""
 from collections import defaultdict
 from datetime import timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.contrib.auth.models import User
 from django.core.exceptions import PermissionDenied, ValidationError
@@ -321,8 +321,15 @@ def save_budget(*, user, organization, monthly_limit_usd, expected_revision):
     revision = budget.revision if budget else 0
     if isinstance(expected_revision, bool) or expected_revision != revision:
         raise ValidationError("Лимит уже изменён. Обновите страницу перед сохранением.")
-    if monthly_limit_usd is not None and monthly_limit_usd <= 0:
-        raise ValidationError("Лимит должен быть больше нуля или оставлен пустым.")
+    if monthly_limit_usd is not None:
+        if isinstance(monthly_limit_usd, bool):
+            raise ValidationError("Некорректный лимит расходов.")
+        try:
+            monthly_limit_usd = Decimal(str(monthly_limit_usd))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValidationError("Некорректный лимит расходов.") from exc
+        if monthly_limit_usd <= 0:
+            raise ValidationError("Лимит должен быть больше нуля или оставлен пустым.")
     if budget is None:
         budget = CallProcessingBudget(organization=organization)
     budget.monthly_limit_usd = monthly_limit_usd
