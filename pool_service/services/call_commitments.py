@@ -6,9 +6,9 @@ from django.db import transaction
 from django.utils import timezone
 
 from pool_service.communication_models import CallAnalysis
-from pool_service.models import OrganizationAccess, ServiceTask, ServiceTaskChange
+from pool_service.models import Organization, OrganizationAccess, ServiceTask, ServiceTaskChange
 from pool_service.services.notifications import notify_task_assignment
-from pool_service.services.call_privacy import is_private_call
+from pool_service.services.call_privacy import is_private_call, task_source_is_private
 
 
 MATERIALIZED_CONFIDENCE = "high"
@@ -117,6 +117,20 @@ def materialize_call_commitments(call_id):
     created_tasks = []
 
     with transaction.atomic():
+        organization_id = (
+            CallAnalysis.objects.filter(
+                call_id=call_id,
+                status=CallAnalysis.STATUS_READY,
+            )
+            .values_list("call__organization_id", flat=True)
+            .first()
+        )
+        if not organization_id:
+            return []
+        # Personal-number mutations take the same organization lock first.
+        # Whichever transaction wins determines whether materialization is
+        # allowed; there is no check-then-create privacy window.
+        Organization.objects.select_for_update().get(pk=organization_id)
         analysis = (
             CallAnalysis.objects.select_for_update()
             .select_related(
@@ -129,7 +143,7 @@ def materialize_call_commitments(call_id):
             .filter(call_id=call_id, status=CallAnalysis.STATUS_READY)
             .first()
         )
-        if not analysis:
+        if not analysis or analysis.call.organization_id != organization_id:
             return []
 
         facts = analysis.facts if isinstance(analysis.facts, dict) else {}
@@ -211,7 +225,17 @@ def materialize_call_commitments(call_id):
 
     for task in created_tasks:
         payload = task.payload_json if isinstance(task.payload_json, dict) else {}
-        if payload.get("actor") == ACTOR_EMPLOYEE:
-            notify_task_assignment(task, [task.primary_responsible], added_by=None)
+        if payload.get("actor") != ACTOR_EMPLOYEE:
+            continue
+        with transaction.atomic():
+            Organization.objects.select_for_update().get(pk=task.organization_id)
+            current = ServiceTask.objects.select_for_update().filter(pk=task.pk).first()
+            if current is None or task_source_is_private(current):
+                continue
+            notify_task_assignment(
+                current,
+                [current.primary_responsible],
+                added_by=None,
+            )
 
     return created_tasks
