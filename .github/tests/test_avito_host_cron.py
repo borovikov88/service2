@@ -276,7 +276,7 @@ Path("workers.json").write_text(json.dumps({
     def process_is_running(pid):
         try:
             value = Path(f"/proc/{pid}/stat").read_text()
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             return False
         # Killed descendants can briefly await reaping by the host's init.
         return value.rsplit(")", 1)[1].split()[0] != "Z"

@@ -35,6 +35,8 @@ if [[ "$MODE" == "run" ]]; then
         status=$?
         if [[ "$status" == "1" ]]; then
             echo "AVITO_MONITOR status=skipped reason=worker_busy"
+            # A supervised skip must not become successful worker-tick evidence.
+            if [[ "${SERVICE2_AVITO_CRON_SUPERVISED:-}" == "1" ]]; then exit 75; fi
             exit 0
         fi
         echo "AVITO_MONITOR status=lock_failed exit_code=$status" >&2
@@ -52,7 +54,7 @@ else
     if [[ "$status" == "1" ]]; then
         echo "AVITO_MONITOR status=skipped reason=deployment_busy"
         # A scheduled tick may retry later; deployment readiness must be proven.
-        if [[ "$MODE" == "--status" ]]; then exit 75; fi
+        if [[ "$MODE" == "--status" || "${SERVICE2_AVITO_CRON_SUPERVISED:-}" == "1" ]]; then exit 75; fi
         exit 0
     fi
     echo "AVITO_MONITOR status=lock_failed exit_code=$status" >&2

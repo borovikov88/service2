@@ -17,6 +17,7 @@ from pool_service.communication_models import (
 )
 from pool_service.communication_services import conversation_capability
 from pool_service.models import OrganizationAccess
+from pool_service.avito_scheduler import panel_command, scheduler_state
 from pool_service.services.notifications import notify_users
 
 MAX_PAGES = 100
@@ -48,6 +49,13 @@ def configure(connection, user, action):
         if connection.channel.kind != CommunicationChannel.KIND_AVITO or not subscriber_allowed(user, connection.channel.organization):
             raise PermissionDenied
         monitor = AvitoStatusMonitor.objects.select_for_update().filter(connection=connection).first()
+        if monitor and monitor.recipient_id != user.pk:
+            raise PermissionDenied
+        needs_activation = (monitor is None or not monitor.enabled
+                            or monitor.organization_id != connection.channel.organization_id
+                            or monitor.account_id != connection.external_id)
+        if action == "enable" and needs_activation and not scheduler_state()["ready"]:
+            raise ValueError("Сначала подтвердите успешный запуск серверного расписания в панели хостинга.")
         if monitor is None:
             if action != "enable":
                 raise ValueError("Контроль ещё не включён.")
@@ -293,6 +301,7 @@ def display_state(connection, user):
     monitor = AvitoStatusMonitor.objects.filter(connection=connection).first()
     if monitor and monitor.recipient_id != user.pk:
         return {}
-    return {"allowed": True, "monitor": monitor,
+    return {"allowed": True, "monitor": monitor, "scheduler": scheduler_state(),
+            "panel_command": panel_command(),
             "error": error_detail(monitor.last_error_code) if monitor else "",
             "running": bool(monitor and monitor.lease_until and monitor.lease_until > timezone.now())}
