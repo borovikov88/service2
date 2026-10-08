@@ -191,7 +191,7 @@ class AvitoMonitorTests(AvitoMonitorFixture, TestCase):
         self.run_scan([listing()])
         self.due()
         def scan(_connection):
-            OrganizationAccess.objects.filter(user=self.owner).update(role="admin")
+            OrganizationAccess.objects.filter(user=self.owner).update(role="manager")
             return {"1": listing(status="old")}, 1
         with patch.object(monitor, "full_scan", side_effect=scan):
             self.assertEqual(monitor.scan_monitor(self.state.pk), ("failed", 0))
@@ -211,12 +211,89 @@ class AvitoMonitorTests(AvitoMonitorFixture, TestCase):
         with self.assertRaises(IntegrityError), transaction.atomic():
             AvitoListingStatus.objects.create(monitor=self.state, item_id="1", status="old")
 
-    def test_admin_manager_and_unscoped_superuser_cannot_enable_or_retarget(self):
+    def test_other_admin_cannot_retarget_and_manager_or_unscoped_superuser_cannot_enable(self):
         for user in (self.admin, self.manager, User.objects.create_superuser("unscoped", "", "test")):
             with self.assertRaises(PermissionDenied):
                 monitor.configure(self.connection, user, "enable")
             self.client.force_login(user)
             self.assertEqual(self.client.post(self.url, {"action": "enable"}).status_code, 403)
+
+    def test_current_org_admin_can_self_subscribe_using_existing_channel_rights(self):
+        own = ChannelConnection.objects.create(channel=self.channel, external_id="456", name="Services")
+        self.client.force_login(self.admin)
+        self.assertContains(self.client.get(reverse("communication_connection_edit", args=[own.pk])), "Включить контроль для меня")
+        response = self.client.post(reverse("avito_configure_monitor", args=[own.pk]),
+                                    {"action": "enable", "recipient": self.owner.pk})
+        self.assertEqual(response.status_code, 302)
+        subscription = AvitoStatusMonitor.objects.get(connection=own)
+        self.assertEqual(subscription.recipient_id, self.admin.pk)
+        self.assertTrue(subscription.enabled)
+        with patch.object(monitor, "full_scan", return_value=({"1": listing()}, 1)):
+            self.assertEqual(monitor.scan_monitor(subscription.pk), ("baseline", 0))
+        AvitoStatusMonitor.objects.filter(pk=subscription.pk).update(next_due_at=timezone.now())
+        with patch.object(monitor, "full_scan", return_value=({"1": listing(status="blocked")}, 1)):
+            self.assertEqual(monitor.scan_monitor(subscription.pk), ("success", 1))
+        self.assertEqual(list(Notification.objects.values_list("user_id", flat=True)), [self.admin.pk])
+
+    def test_colleague_cannot_disable_retry_take_over_or_view_subscription(self):
+        for action in ("enable", "disable", "retry"):
+            with self.subTest(action=action), self.assertRaises(PermissionDenied):
+                monitor.configure(self.connection, self.admin, action)
+        monitor.configure(self.connection, self.owner, "disable")
+        with self.assertRaises(PermissionDenied):
+            monitor.configure(self.connection, self.admin, "enable")
+        self.assertEqual(monitor.display_state(self.connection, self.admin), {})
+        self.state.refresh_from_db()
+        self.assertEqual(self.state.recipient_id, self.owner.pk)
+
+    def test_existing_owner_cannot_take_over_an_admin_self_subscription(self):
+        own = ChannelConnection.objects.create(channel=self.channel, external_id="456", name="Services")
+        subscription = monitor.configure(own, self.admin, "enable")
+        with self.assertRaises(PermissionDenied):
+            monitor.configure(own, self.owner, "enable")
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.recipient_id, self.admin.pk)
+
+    def test_admin_needs_existing_channel_capability_and_current_org_membership(self):
+        own = ChannelConnection.objects.create(channel=self.channel, external_id="456", name="Services")
+        subscription = monitor.configure(own, self.admin, "enable")
+        self.admin.communication_accesses.filter(organization=self.org).update(can_manage_channels=False)
+        with self.assertRaises(PermissionDenied):
+            monitor.configure(own, self.admin, "retry")
+        with patch.object(monitor, "full_scan") as fetch:
+            self.assertEqual(monitor.scan_monitor(subscription.pk), ("failed", 0))
+        fetch.assert_not_called()
+        subscription.refresh_from_db()
+        self.assertFalse(subscription.enabled)
+        self.admin.communication_accesses.filter(organization=self.org).update(can_manage_channels=True)
+        monitor.configure(own, self.admin, "enable")
+        OrganizationAccess.objects.filter(user=self.admin, organization=self.org).delete()
+        with patch.object(monitor, "full_scan") as fetch:
+            self.assertEqual(monitor.scan_monitor(subscription.pk), ("failed", 0))
+        fetch.assert_not_called()
+
+    def test_manager_with_channel_capability_cannot_self_subscribe(self):
+        self.manager.communication_accesses.filter(organization=self.org).update(can_manage_channels=True)
+        own = ChannelConnection.objects.create(channel=self.channel, external_id="456", name="Services")
+        self.client.force_login(self.manager)
+        self.assertEqual(self.client.post(reverse("avito_configure_monitor", args=[own.pk]),
+                                         {"action": "enable"}).status_code, 403)
+        self.assertFalse(AvitoStatusMonitor.objects.filter(connection=own).exists())
+
+    def test_other_org_admin_cannot_self_subscribe_here(self):
+        other_org = Organization.objects.create(name="Other admin scope")
+        outsider = User.objects.create_user("outsider-admin")
+        OrganizationAccess.objects.create(user=outsider, organization=other_org, role="admin")
+        self.client.force_login(outsider)
+        self.assertEqual(self.client.post(self.url, {"action": "enable"}).status_code, 404)
+        with self.assertRaises(PermissionDenied):
+            monitor.configure(self.connection, outsider, "enable")
+
+    def test_disable_unconfigured_connection_does_not_pin_a_new_recipient(self):
+        own = ChannelConnection.objects.create(channel=self.channel, external_id="456", name="Services")
+        with self.assertRaises(ValueError):
+            monitor.configure(own, self.admin, "disable")
+        self.assertFalse(AvitoStatusMonitor.objects.filter(connection=own).exists())
 
     def test_owner_post_binds_self_ignores_submitted_recipient_and_requires_csrf(self):
         self.client.force_login(self.owner)

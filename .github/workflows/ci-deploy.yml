@@ -80,7 +80,7 @@ jobs:
             .github/workflows/production-health.yml .github/workflows/call-recordings-sync.yml \
             .github/workflows/employee-identity-sync.yml .github/workflows/avito-status-monitor.yml
       - name: Verify Avito monitor scheduling and deployment locks
-        run: python -m unittest discover -s .github/tests -p test_avito_status_scheduler.py -v
+        run: python -m unittest discover -s .github/tests -p 'test_avito*py' -v
       - name: Verify water calculator and publication boundaries
         run: |
           node --test tools/aqualine22-calculator/tests/engine.test.mjs
@@ -185,6 +185,22 @@ jobs:
             -p "$PORT" \
             "$DEPLOY_USER@$DEPLOY_HOST" \
             "$REMOTE_COMMAND" < update.sh
+      - name: Verify hosting cron capability without modifying schedules
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          printf -v REMOTE_COMMAND \
+            'set -Eeuo pipefail; cd %q; exec ../venv/bin/python - preflight --app-dir %q' \
+            "$DEPLOY_APP_PATH" "$DEPLOY_APP_PATH"
+          ssh -i ~/.ssh/service2_deploy \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND" < scripts/avito_monitor_cron.py
       - name: Deploy exact tested commit
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
@@ -199,7 +215,7 @@ jobs:
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
             "$REMOTE_COMMAND" < update.sh
-      - name: Verify deployed Avito status monitor readiness
+      - name: Verify cron runtime and install the single hosting schedule
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
@@ -209,8 +225,8 @@ jobs:
           set -Eeuo pipefail
           PORT="${DEPLOY_PORT:-22}"
           printf -v REMOTE_COMMAND \
-            'set -Eeuo pipefail; cd %q; test "$(git rev-parse HEAD)" = %q; exec /bin/bash scripts/run_avito_status_monitor.sh --status' \
-            "$DEPLOY_APP_PATH" "$GITHUB_SHA"
+            'set -Eeuo pipefail; cd %q; exec ../venv/bin/python scripts/avito_monitor_cron.py install --app-dir %q --expected-sha %q' \
+            "$DEPLOY_APP_PATH" "$DEPLOY_APP_PATH" "$GITHUB_SHA"
           ssh -i ~/.ssh/service2_deploy \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \

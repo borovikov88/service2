@@ -1,10 +1,8 @@
 name: Monitor Avito listing statuses
 
 on:
-  schedule:
-    # Offset from the busiest minute. The database enforces hourly success
-    # intervals; these ticks also service bounded failure retries.
-    - cron: "7,22,37,52 * * * *"
+  # Native hosting cron is the only recurring scheduler. This remains an
+  # explicitly requested recovery/diagnostic run of the deployed command.
   workflow_dispatch:
 
 permissions:
