@@ -5,7 +5,7 @@ import django.db.models.deletion
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("pool_service", "0133_call_processing_preferences"),
+        ("pool_service", "0134_call_processing_preferences"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 

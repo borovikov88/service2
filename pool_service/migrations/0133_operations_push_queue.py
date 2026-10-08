@@ -46,7 +46,7 @@ def seed_existing_pending(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-    dependencies = [("pool_service", "0131_phonecall_internal_participants")]
+    dependencies = [("pool_service", "0132_clientownedobject")]
 
     operations = [
         migrations.CreateModel(

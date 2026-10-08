@@ -370,7 +370,7 @@ class OperationsPushRetryTests(TestCase):
         terminal = ServiceTask.objects.create(**self._task_values({
             operations.ASSIGNMENT_DELIVERY_PAYLOAD_KEY: self._assignment("sent"),
         }))
-        migration = import_module("pool_service.migrations.0132_operations_push_queue")
+        migration = import_module("pool_service.migrations.0133_operations_push_queue")
         migration.seed_existing_pending(apps, SimpleNamespace(connection=connection))
         migration.seed_existing_pending(apps, SimpleNamespace(connection=connection))
         self.assertEqual(set(OperationsPushQueue.objects.values_list("task_id", flat=True)), {task.pk for task in tasks})
