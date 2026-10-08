@@ -297,11 +297,10 @@ def client_edit(request, client_id):
             profile_valid = profile_form.is_valid()
             if client_valid and profile_valid:
                 updated = client_form.save(commit=False)
-                name_was_edited = "name" in client_form.changed_data
                 if updated.client_type == "legal":
                     updated.company_name = updated.name
                 elif (
-                    not name_was_edited
+                    "name" not in request.POST
                     and ({"first_name", "last_name"} & set(client_form.changed_data))
                 ):
                     name = " ".join(filter(None, (
