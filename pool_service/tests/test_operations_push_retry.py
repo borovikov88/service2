@@ -13,6 +13,8 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from pool_service import operations_mcp_views as operations
+from pool_service.call_processing_models import CallPrivateNumber
+from pool_service.communication_models import PhoneCall, TelephonyConnection
 from pool_service.models import Notification, Organization, OrganizationAccess, Profile, ServiceTask
 from pool_service.operations_models import OperationsPushQueue
 from pool_service.services.operations_push_queue import due_candidates, sync_queue
@@ -236,6 +238,50 @@ class OperationsPushRetryTests(TestCase):
         operations.process_pending_operations_pushes()
         self._assert_pending(task, False)
         self.assertEqual(operations.process_pending_operations_pushes()["checked"], 0)
+        push.assert_not_called()
+
+    @patch("pool_service.operations_mcp_views.send_push_to_users")
+    def test_retries_recheck_call_privacy_under_organization_lock(self, push):
+        connection = TelephonyConnection.objects.create(
+            organization=self.organization,
+            external_id="private-retry-test",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            source_kind=PhoneCall.SOURCE_TELEPHONY,
+            connection=connection,
+            external_id="private-retry-call",
+            employee=self.employee,
+            provider_user=self.employee.username,
+            phone_number="+7 999 000-00-01",
+            direction=PhoneCall.DIRECTION_IN,
+            started_at=timezone.now(),
+            duration_seconds=90,
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        CallPrivateNumber.objects.create(
+            organization=self.organization,
+            owner=self.employee,
+            label="Private",
+            phone_key="9990000001",
+        )
+        task = self._task(notifications=True)
+        task.payload_json["source_call_id"] = call.pk
+        task.save(update_fields=["payload_json"])
+
+        self.assertEqual(operations._retry_assignment_push(task.pk, self.employee.pk), 0)
+        self.assertEqual(operations._retry_employee_notification_push(task.pk, "reminder"), 0)
+
+        task.refresh_from_db()
+        self.assertEqual(
+            task.payload_json[operations.ASSIGNMENT_DELIVERY_PAYLOAD_KEY]["push_delivery_result"],
+            "blocked_private_source",
+        )
+        self.assertEqual(
+            task.payload_json[operations.EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY]["reminder"]["push_delivery_result"],
+            "blocked_private_source",
+        )
+        self.assertFalse(OperationsPushQueue.objects.filter(task_id=task.pk).exists())
         push.assert_not_called()
 
     def test_pending_selection_has_composite_index_and_no_task_json_scan(self):

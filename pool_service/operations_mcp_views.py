@@ -321,7 +321,8 @@ PUSH_RETRY_BATCH_LIMIT = 100
 PUSH_RETRY_CANDIDATE_LIMIT = 500
 _TERMINAL_PUSH_RESULTS = frozenset({
     "sent", "skipped_self", "blocked_not_authorized",
-    "blocked_push_disabled", "blocked_task_closed", "attempt_committed",
+    "blocked_push_disabled", "blocked_task_closed", "blocked_private_source",
+    "attempt_committed",
 })
 
 
@@ -430,19 +431,32 @@ def _retry_assignment_push(task_id, responsible_user_id):
     # rollback here cannot restore the pre-attempt pending state because phase
     # 1 is already durable.
     with transaction.atomic():
+        organization_id = ServiceTask.objects.filter(pk=task_id).values_list(
+            "organization_id", flat=True,
+        ).first()
+        organization = Organization.objects.select_for_update().filter(
+            pk=organization_id,
+        ).first() if organization_id else None
+        if organization is None:
+            return 0
         task = (
             ServiceTask.objects.select_for_update()
             .select_related("organization", "client", "pool", "water_reading")
             .filter(pk=task_id)
             .first()
         )
-        if not task:
+        if not task or task.organization_id != organization.pk:
             return 0
         payload, delivery = _assignment_delivery(task)
         if (
             delivery.get("push_delivery_result") != "attempt_committed"
             or delivery.get("push_attempt_id") != attempt_id
         ):
+            return 0
+        if task_source_is_private(task):
+            delivery["push_delivery_result"] = "blocked_private_source"
+            payload[ASSIGNMENT_DELIVERY_PAYLOAD_KEY] = delivery
+            _save_push_payload(task, payload)
             return 0
         if _task_is_closed(task):
             delivery["push_delivery_result"] = "blocked_task_closed"
@@ -532,6 +546,14 @@ def _retry_employee_notification_push(task_id, marker):
         _save_push_payload(task, payload)
 
     with transaction.atomic():
+        organization_id = ServiceTask.objects.filter(
+            pk=task_id, task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+        ).values_list("organization_id", flat=True).first()
+        organization = Organization.objects.select_for_update().filter(
+            pk=organization_id,
+        ).first() if organization_id else None
+        if organization is None:
+            return 0
         task = (
             ServiceTask.objects.select_for_update()
             .select_related("organization", "primary_responsible")
@@ -539,7 +561,7 @@ def _retry_employee_notification_push(task_id, marker):
             .filter(pk=task_id, task_type=ServiceTask.TYPE_CRM_FOLLOWUP)
             .first()
         )
-        if not task:
+        if not task or task.organization_id != organization.pk:
             return 0
         payload, deliveries = _notification_deliveries(task)
         delivery = deliveries.get(marker)
@@ -550,6 +572,12 @@ def _retry_employee_notification_push(task_id, marker):
             delivery.get("push_delivery_result") != "attempt_committed"
             or delivery.get("push_attempt_id") != attempt_id
         ):
+            return 0
+        if task_source_is_private(task):
+            delivery["push_delivery_result"] = "blocked_private_source"
+            deliveries[marker] = delivery
+            payload[EMPLOYEE_NOTIFICATION_DELIVERIES_PAYLOAD_KEY] = deliveries
+            _save_push_payload(task, payload)
             return 0
         if _task_is_closed(task):
             delivery["push_delivery_result"] = "blocked_task_closed"

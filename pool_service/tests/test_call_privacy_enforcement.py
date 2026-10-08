@@ -229,6 +229,40 @@ class PrivateCallEnforcementTests(TestCase):
         self.assertFalse(Notification.objects.exists())
 
     @patch("pool_service.views._redirect_if_access_blocked", return_value=None)
+    def test_private_source_task_is_hidden_from_calendar_data(self, _blocked):
+        call = self.call()
+        task = ServiceTask.objects.create(
+            organization=self.org,
+            title="PRIVATE_CALENDAR_TASK_TITLE",
+            description="PRIVATE_CALENDAR_EVIDENCE",
+            start_date=timezone.localdate(),
+            end_date=timezone.localdate(),
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            source_type=ServiceTask.SOURCE_SYSTEM,
+            status=ServiceTask.STATUS_NEW,
+            primary_responsible=self.owner,
+            created_by=self.owner,
+            payload_json={
+                "source": "call_analysis",
+                "source_call_id": call.pk,
+                "actor": "employee",
+            },
+        )
+        task.responsibles.add(self.owner)
+
+        response = self.client.get(reverse("readings_all"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn(task.pk, [row["id"] for row in response.context["task_search_index"]])
+        calendar_entries = [
+            entry
+            for day in response.context["calendar_days"]
+            for entry in day["items"]
+        ]
+        self.assertNotIn(task.pk, [entry.get("task_id") for entry in calendar_entries])
+        self.assertNotContains(response, "PRIVATE_CALENDAR_TASK_TITLE")
+
+    @patch("pool_service.views._redirect_if_access_blocked", return_value=None)
     def test_private_source_task_is_hidden_from_crm_client_card_and_direct_view(self, _blocked):
         call = self.call()
         client = Client.objects.create(

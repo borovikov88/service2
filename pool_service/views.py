@@ -8685,7 +8685,11 @@ def readings_all(request):
         )
 
         task_qs = task_qs.select_related("created_by").prefetch_related("responsibles").distinct()
-        for task in task_qs:
+        calendar_tasks = list(task_qs)
+        hidden_private_task_ids = private_source_task_ids(calendar_tasks)
+        for task in calendar_tasks:
+            if task.pk in hidden_private_task_ids:
+                continue
             if waiting_schedule_metadata(task).get("schedule_kind") == "no_appointment":
                 continue
             task_start = task.start_date
