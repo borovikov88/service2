@@ -16,6 +16,7 @@ from pool_service.services.task_feedback import (
     ACTION_LABELS, FeedbackConflict, apply_feedback, has_access,
     history_for, state_for, version_for, waiting_control,
 )
+from pool_service.services.call_privacy import task_source_is_private
 
 
 class TaskFeedbackForm(forms.Form):
@@ -60,6 +61,8 @@ def task_feedback(request, task_id):
     if blocked:
         return blocked
     task = get_object_or_404(ServiceTask.objects.select_related("organization"), pk=task_id)
+    if task_source_is_private(task):
+        raise PermissionDenied
     if task.task_type != ServiceTask.TYPE_CRM_FOLLOWUP or not has_access(task, request.user):
         raise PermissionDenied
     can_write = has_access(task, request.user, write=True)
