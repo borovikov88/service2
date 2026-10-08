@@ -12,6 +12,7 @@ from pool_service.models import OrganizationAccess, ServiceTask
 from pool_service.services.notifications import notify_users
 from pool_service.services.push_notifications import send_push_to_users
 from pool_service.services.task_feedback import state_for, waiting_control
+from pool_service.services.call_privacy import task_source_is_private
 
 
 CONTROL_SOURCE = "call_analysis"
@@ -241,6 +242,8 @@ def process_call_commitment_controls(*, now=None):
                 "organization", "client", "pool", "pool__client", "primary_responsible",
             ).prefetch_related("responsibles").filter(pk=task_id).first()
             if task is None:
+                continue
+            if task_source_is_private(task):
                 continue
             payload = _payload(task)
             actor = _actor(task, payload)
