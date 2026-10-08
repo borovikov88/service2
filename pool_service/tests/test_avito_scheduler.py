@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 import shlex
 import tempfile
+import subprocess
+import sys
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -43,7 +45,7 @@ class AvitoSchedulerEvidenceTests(SimpleTestCase):
         state = scheduler_state()
         self.assertTrue(state["ready"])
         self.assertIsNotNone(state["success_at"])
-        for changes in ({"state": "running"}, {"exit_code": 1}, {"exit_code": False},
+        for changes in ({"state": "running"}, {"exit_code": 1}, {"exit_code": 75}, {"exit_code": False},
                         {"finished_at": None}, {"finished_at": "PRIVATE SECRET"},
                         {"finished_at": (self.now + timedelta(hours=1)).isoformat()}):
             with self.subTest(changes=changes):
@@ -76,6 +78,18 @@ class AvitoSchedulerEvidenceTests(SimpleTestCase):
         self.file.write_bytes(b"x" * 1025)
         self.file.chmod(0o600)
         self.assertFalse(scheduler_state()["ready"])
+
+    def test_fifo_evidence_fails_closed_without_blocking_page_reader(self):
+        os.mkfifo(self.file, 0o600)
+        code = (
+            "from django.conf import settings; "
+            f"settings.configure(BASE_DIR={str(self.app)!r}, USE_TZ=True); "
+            "from pool_service.avito_scheduler import scheduler_state; "
+            "assert scheduler_state()['code'] == 'unverified'"
+        )
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                                cwd=Path(__file__).resolve().parents[2], timeout=3, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_timestamp_requires_timezone_and_never_displays_unvalidated_data(self):
         for value in (None, 123, "2026-01-01T00:00:00", "invalid"):

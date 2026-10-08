@@ -129,6 +129,15 @@ raise SystemExit(int(os.environ.get("TEST_COMMAND_EXIT", "0")))
         self.assertIn("reason=deployment_busy", result.stdout)
         self.assertFalse((self.app / "invocation.json").exists())
 
+    def test_supervised_lock_skips_cannot_masquerade_as_successful_worker_ticks(self):
+        self.env["SERVICE2_AVITO_CRON_SUPERVISED"] = "1"
+        for name in ("service2-avito-status-monitor.lock", "service2-deploy.lock"):
+            with self.subTest(name=name), self.lock(name):
+                result = self.invoke()
+            self.assertEqual(result.returncode, 75)
+            self.assertIn("status=skipped", result.stdout)
+            self.assertFalse((self.app / "invocation.json").exists())
+
     def test_other_background_readers_can_share_deployment_guard(self):
         with self.lock("service2-deploy.lock", shared=True):
             result = self.invoke()
