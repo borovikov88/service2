@@ -57,11 +57,14 @@ def response_usage_tokens(response):
     def value(*names):
         for name in names:
             raw = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+            if isinstance(raw, bool):
+                return None
+            if isinstance(raw, int):
+                return max(0, raw)
+            if isinstance(raw, str) and raw.isdigit():
+                return int(raw)
             if raw is not None:
-                try:
-                    return max(0, int(raw))
-                except (TypeError, ValueError):
-                    return None
+                return None
         return None
 
     return value("input_tokens", "prompt_tokens"), value(
