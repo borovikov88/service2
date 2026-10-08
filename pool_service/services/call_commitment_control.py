@@ -64,28 +64,76 @@ def _control_key(task, deadline):
     return f"{key}:r{generation}" if generation else key
 
 
+def _locked_users_with_access(task, user_ids, *, roles=None):
+    """Re-read mutable recipient authority under row locks before delivery."""
+    ordered_ids = list(dict.fromkeys(int(user_id) for user_id in user_ids if user_id))
+    if not ordered_ids:
+        return []
+
+    locked_users = {
+        user.id: user
+        for user in User.objects.select_for_update()
+        .filter(pk__in=ordered_ids, is_active=True)
+        .order_by("id")
+    }
+    if not locked_users:
+        return []
+
+    access_qs = OrganizationAccess.objects.select_for_update().filter(
+        organization_id=task.organization_id,
+        user_id__in=locked_users,
+    )
+    if roles is not None:
+        access_qs = access_qs.filter(role__in=roles)
+    allowed = set(access_qs.values_list("user_id", flat=True))
+    return [
+        locked_users[user_id]
+        for user_id in ordered_ids
+        if user_id in locked_users and user_id in allowed
+    ]
+
+
 def _task_recipients(task):
-    if task.primary_responsible and task.primary_responsible.is_active:
-        candidates = [task.primary_responsible]
-    else:
-        candidates = list(task.responsibles.filter(is_active=True).order_by("id"))
-    allowed = set(OrganizationAccess.objects.filter(
-        organization_id=task.organization_id, user_id__in=[user.id for user in candidates],
-    ).values_list("user_id", flat=True))
-    return [user for user in candidates if user.id in allowed]
+    primary_id = task.primary_responsible_id
+    if primary_id:
+        # Preserve existing semantics: an active primary responsible is the
+        # only recipient. If their org access was revoked, do not silently
+        # reroute a private task to somebody else.
+        primary = (
+            User.objects.select_for_update()
+            .filter(pk=primary_id)
+            .first()
+        )
+        if primary and primary.is_active:
+            allowed = OrganizationAccess.objects.select_for_update().filter(
+                organization_id=task.organization_id,
+                user_id=primary.id,
+            ).exists()
+            return [primary] if allowed else []
+
+    participant_ids = list(
+        task.responsibles.order_by("id").values_list("id", flat=True)
+    )
+    return _locked_users_with_access(task, participant_ids)
+
+
+def _role_recipients(task, role):
+    candidate_ids = list(
+        OrganizationAccess.objects.filter(
+            organization_id=task.organization_id,
+            role=role,
+        )
+        .order_by("user_id")
+        .values_list("user_id", flat=True)
+    )
+    return _locked_users_with_access(task, candidate_ids, roles={role})
 
 
 def _owner_recipients(task):
-    owners = list(User.objects.filter(
-        is_active=True, organizationaccess__organization=task.organization,
-        organizationaccess__role="owner",
-    ).distinct().order_by("id"))
+    owners = _role_recipients(task, "owner")
     if owners:
         return owners
-    return list(User.objects.filter(
-        is_active=True, organizationaccess__organization=task.organization,
-        organizationaccess__role="admin",
-    ).distinct().order_by("id"))
+    return _role_recipients(task, "admin")
 
 
 def _object_label(task):
