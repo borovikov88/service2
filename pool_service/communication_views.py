@@ -28,7 +28,6 @@ from docx import Document
 from pool_service.client_crm_models import ClientContact
 from pool_service.client_queries import active_clients
 from pool_service.client_phone_matching import clients_by_phones
-from pool_service.call_markers import annotate_missed_call_callbacks
 from pool_service.phone_utils import canonical_phone_value, format_phone, normalize_phone
 from pool_service.communication_avito import (
     AvitoError,
@@ -812,7 +811,6 @@ def calls(request):
         Client.objects.filter(organization=organization)
     ).order_by("name", "id")
     calls = list(queryset[:500])
-    annotate_missed_call_callbacks(calls, organization.id)
     unresolved_phone_values = [
         call.phone_number
         for call in calls
