@@ -21,7 +21,7 @@ from django.views.decorators.http import require_http_methods
 
 from pool_service import onec_diagnostic_mcp_views as transport
 from pool_service.communication_models import CallAnalysis
-from pool_service.services.call_privacy import is_private_call
+from pool_service.services.call_privacy import is_private_call, task_source_is_private
 from pool_service.models import (
     Client,
     FinanceMcpAuditEvent,
@@ -677,7 +677,16 @@ def _list_control_tasks(organization, arguments):
         if status not in allowed:
             raise ValueError("status")
         queryset = queryset.filter(status=status)
-    return {"tasks": [_task_data(task) for task in queryset[:limit]]}
+    tasks = []
+    # Fetch a bounded cushion so hidden private-source tasks do not disclose
+    # themselves through the returned list or crowd out visible work.
+    for task in queryset[: min(limit * 5, 500)]:
+        if task_source_is_private(task):
+            continue
+        tasks.append(_task_data(task))
+        if len(tasks) >= limit:
+            break
+    return {"tasks": tasks}
 
 
 def _get_call_analysis(organization, arguments):
@@ -900,6 +909,7 @@ def _reschedule_task(authenticated, organization, arguments):
     task = _task_for_org(organization, task_id, for_update=True)
     if (
         not task
+        or task_source_is_private(task)
         or task.task_type != ServiceTask.TYPE_CRM_FOLLOWUP
         or task.is_archived
         or task.completed_at
@@ -942,7 +952,11 @@ def _complete_task(authenticated, organization, arguments):
     task_id = _as_int(arguments.get("task_id"), "task_id")
     comment = _as_text(arguments.get("comment"), "comment", maximum=1000)
     task = locked_task_for_completion(organization=organization, task_id=task_id)
-    if not task or task.task_type != ServiceTask.TYPE_CRM_FOLLOWUP:
+    if (
+        not task
+        or task_source_is_private(task)
+        or task.task_type != ServiceTask.TYPE_CRM_FOLLOWUP
+    ):
         raise ValueError("task_id")
     actor = _authorized_actor(authenticated, organization)
     if task.is_completed_archive or task.completed_at or task.status == ServiceTask.STATUS_DONE:
@@ -981,6 +995,7 @@ def _send_employee_notification(authenticated, organization, arguments):
     )
     if (
         not task
+        or task_source_is_private(task)
         or task.is_archived
         or task.completed_at
         or task.status in {ServiceTask.STATUS_DONE, ServiceTask.STATUS_CANCELLED}
