@@ -260,7 +260,7 @@
     </thead>
     <tbody>
       {% for call in calls %}
-        <tr>
+        <tr class="{% if call.callback_at %}text-success{% elif call.missed_unreturned %}text-danger{% endif %}">
           {% if manual_archive %}
             <td>
               {% if call.recording_file %}
@@ -352,7 +352,7 @@
           {% if not manual_archive %}
           <td>{{ call.get_direction_display }}</td>
           <td>{{ call.duration_seconds }} сек.</td>
-          <td>{{ call.get_result_display }}</td>
+          <td><span{% if call.is_missed %} class="text-danger fw-semibold"{% endif %}{% if call.missed_unreturned %} title="Пропущенный вызов — обратного звонка в течение часа нет"{% endif %}>{{ call.get_result_display }}</span>{% if call.callback_at %}<div class="small text-success" title="Обратный звонок в течение часа">Перезвонили {{ call.callback_at|date:"d.m.Y H:i" }}</div>{% endif %}</td>
           {% endif %}
           <td>
             {% if can_listen and call.recording_file %}

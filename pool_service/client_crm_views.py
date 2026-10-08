@@ -1,13 +1,10 @@
 import logging
-from datetime import timedelta
-
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django import forms
-from django.db.models import Count, Q, Value
-from django.db.models.functions import Replace
+from django.db.models import Count, Q
 from django.http import HttpResponseForbidden, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -28,9 +25,10 @@ from .client_crm_models import (
 )
 from .client_queries import active_clients
 from .client_crm_ui import card_tab, card_url, relationship_results
-from .phone_utils import format_phone, normalize_phone
+from .phone_utils import format_phone
 from .client_merge import merge_clients, merge_suggestions
 from .communication_models import CommunicationAccess, PhoneCall
+from .call_markers import annotate_missed_call_callbacks
 from .models import Client, CrmItem, OrganizationAccess, Pool, ServiceTask
 
 
@@ -384,35 +382,12 @@ def client_detail(request, client_id):
             calls = list(call_qs[:50])
             can_view_calls = True
 
+    annotate_missed_call_callbacks(calls, client.organization_id)
     for call in calls:
         minutes, seconds = divmod(call.duration_seconds or 0, 60)
         call.duration_display = f"{minutes}:{seconds:02d}"
         call.analysis_obj = getattr(call, "analysis", None)
         call.phone_display = format_phone(call.phone_number)
-        call.callback_at = None
-        call.missed_unreturned = call.result == PhoneCall.RESULT_MISSED
-        if call.missed_unreturned:
-            phone_key = normalize_phone(call.phone_number)
-            digits = "".join(char for char in phone_key if char.isdigit())
-            if len(digits) >= 7:
-                phone_digits = "phone_number"
-                for separator in ("+", " ", "-", "(", ")", "."):
-                    phone_digits = Replace(phone_digits, Value(separator), Value(""))
-                candidates = PhoneCall.objects.filter(
-                    organization_id=client.organization_id,
-                    direction=PhoneCall.DIRECTION_OUT,
-                    result=PhoneCall.RESULT_ANSWERED,
-                    started_at__gt=call.started_at,
-                    started_at__lte=call.started_at + timedelta(hours=1),
-                ).annotate(_phone_digits=phone_digits).filter(
-                    _phone_digits__contains=digits[-7:],
-                ).order_by("started_at", "pk").iterator(chunk_size=200)
-                for callback in candidates:
-                    if normalize_phone(callback.phone_number) == phone_key:
-                        call.callback_at = callback.started_at
-                        call.missed_unreturned = False
-                        break
-
     staff_options = []
     if can_manage and client.organization_id:
         staff_options = list(

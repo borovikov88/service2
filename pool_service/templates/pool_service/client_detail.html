@@ -417,13 +417,13 @@
               </thead>
               <tbody>
                 {% for call in calls %}
-                  <tr class="{% if call.callback_at %}table-success{% elif call.missed_unreturned %}table-danger{% endif %}" {% if call.callback_at %}title="Перезвонили {{ call.callback_at|date:'d.m.Y H:i' }} — в течение часа"{% elif call.missed_unreturned %}title="Пропущенный вызов — обратного звонка в течение часа нет"{% endif %}>
+                  <tr class="{% if call.callback_at %}text-success{% elif call.missed_unreturned %}text-danger{% endif %}">
                     <td>{{ call.started_at|date:"d.m.Y H:i" }}</td>
                     <td>{{ call.get_direction_display }}</td>
                     <td>{{ call.phone_display }}</td>
                     <td>{% if call.employee %}{{ call.employee.get_full_name|default:call.employee.username }}{% else %}—{% endif %}</td>
                     <td>{{ call.duration_display }}</td>
-                    <td>{{ call.get_result_display }}{% if call.callback_at %}<div class="small text-success">Перезвонили {{ call.callback_at|date:"d.m.Y H:i" }}</div>{% endif %}</td>
+                    <td><span{% if call.is_missed %} class="text-danger fw-semibold"{% endif %}{% if call.missed_unreturned %} title="Пропущенный вызов — обратного звонка в течение часа нет"{% endif %}>{{ call.get_result_display }}</span>{% if call.callback_at %}<div class="small text-success" title="Обратный звонок в течение часа">Перезвонили {{ call.callback_at|date:"d.m.Y H:i" }}</div>{% endif %}</td>
                     <td class="text-end">
                       <div class="d-inline-flex gap-1">
                         {% if call.recording_file %}
