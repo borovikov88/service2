@@ -105,12 +105,14 @@ class CronManager:
             raise CronError("unsupported_crontab_format")
         return table
 
-    def block(self):
+    def command(self):
         command = ["/usr/bin/env", "-i", "HOME=" + str(self.home), "PATH=" + CRON_PATH,
                    "TZ=UTC", "LC_ALL=C", str(self.python), str(self.script),
                    "tick", "--app-dir", str(self.app)]
-        line = SCHEDULE + " " + shlex.join(command) + " >/dev/null 2>&1\n"
-        return BEGIN + line.encode() + END
+        return shlex.join(command) + " >/dev/null 2>&1"
+
+    def block(self):
+        return BEGIN + (SCHEDULE + " " + self.command() + "\n").encode() + END
 
     def without_block(self, table):
         if BEGIN in table or END in table:
