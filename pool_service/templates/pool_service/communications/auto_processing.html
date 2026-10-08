@@ -80,10 +80,10 @@
     <div class="col-6 col-md-3"><div class="border rounded p-2"><div class="small text-muted">Расчётно, USD</div><strong>{{ usage.totals.estimated_usd }}</strong></div></div>
     <div class="col-6 col-md-3"><div class="border rounded p-2"><div class="small text-muted">По usage API, USD</div><strong>{{ usage.totals.usage_usd }}</strong></div></div>
   </div>
-  <p class="small mb-2">В резерве: {{ usage.totals.reserved_usd }} USD. Подтверждённая сумма списания: {% if usage.totals.confirmed_unknown %}неизвестна для {{ usage.totals.confirmed_unknown }} попыток{% else %}{{ usage.totals.confirmed_usd }} USD{% endif %}. Аудио в учёте: {{ usage.totals.audio_seconds }} сек.</p>
+  <p class="small mb-2">В резерве: {{ usage.totals.reserved_usd }} USD. Подтверждённая сумма списания: {% if usage.totals.confirmed_unknown %}неизвестна для {{ usage.totals.confirmed_unknown }} попыток{% else %}{{ usage.totals.confirmed_usd }} USD{% endif %}. Обработано звонков: {{ usage.totals.processed_calls }}. Уникальное аудио: {{ usage.totals.unique_audio_seconds }} сек.; аудио по всем попыткам: {{ usage.totals.attempt_audio_seconds }} сек.</p>
   {% if usage.by_employee %}
   <div class="table-responsive mb-3"><table class="table table-sm align-middle">
-    <thead><tr><th>Сотрудник</th><th>Попыток</th><th>Аудио, сек.</th><th>Расчётно, USD</th><th>По usage API, USD</th></tr></thead>
+    <thead><tr><th>Сотрудник</th><th>Попыток</th><th>Уникальное аудио, сек.</th><th>Расчётно, USD</th><th>По usage API, USD</th></tr></thead>
     <tbody>{% for row in usage.by_employee %}<tr><td>{{ row.employee }}</td><td>{{ row.attempts }}</td><td>{{ row.audio_seconds }}</td><td>{{ row.estimated_usd }}</td><td>{{ row.usage_usd }}</td></tr>{% endfor %}</tbody>
   </table></div>
   {% endif %}
