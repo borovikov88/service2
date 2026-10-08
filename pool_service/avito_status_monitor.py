@@ -28,30 +28,37 @@ ERRORS = {
     "monitor_scan_limit": "Полный обход не завершён в пределах лимита; прежние статусы сохранены.",
     "monitor_pagination_invalid": "Неполная или противоречивая пагинация Авито; прежние статусы сохранены.",
     "monitor_status_invalid": "Авито вернул неизвестный статус объявления; прежние статусы сохранены.",
-    "monitor_owner_unavailable": "Владелец или его доступ изменился. Требуется повторное включение владельцем.",
-    "monitor_connection_changed": "Подключение изменилось или отключено. Требуется повторное включение владельцем.",
+    "monitor_owner_unavailable": "Получатель или его доступ изменился. Требуется повторное включение тем же пользователем.",
+    "monitor_connection_changed": "Подключение изменилось или отключено. Требуется повторное включение получателем.",
     "monitor_interrupted": "Предыдущая проверка прервалась; выполняется повторная попытка.",
     "monitor_error": "Проверка не завершена; прежние статусы сохранены.",
 }
 
 
-def is_owner(user, organization):
+def subscriber_allowed(user, organization):
     return bool(user.is_authenticated and user.is_active and OrganizationAccess.objects.filter(
-        user=user, organization=organization, role="owner",
+        user=user, organization=organization, role__in=("owner", "admin"),
     ).exists() and conversation_capability(user, "can_manage_channels", organization))
 
 
 def configure(connection, user, action):
-    """Bind only the authenticated owner; never accept a recipient from the form."""
+    """Self-subscribe with existing org admin rights; never accept a recipient field."""
     with transaction.atomic():
         connection = ChannelConnection.objects.select_for_update().select_related("channel").get(pk=connection.pk)
-        if connection.channel.kind != CommunicationChannel.KIND_AVITO or not is_owner(user, connection.channel.organization):
+        if connection.channel.kind != CommunicationChannel.KIND_AVITO or not subscriber_allowed(user, connection.channel.organization):
             raise PermissionDenied
-        monitor, _ = AvitoStatusMonitor.objects.get_or_create(connection=connection, defaults={
-            "recipient": user, "organization_id": connection.channel.organization_id,
-            "account_id": connection.external_id,
-        })
-        monitor = AvitoStatusMonitor.objects.select_for_update().get(pk=monitor.pk)
+        monitor = AvitoStatusMonitor.objects.select_for_update().filter(connection=connection).first()
+        if monitor is None:
+            if action != "enable":
+                raise ValueError("Контроль ещё не включён.")
+            monitor = AvitoStatusMonitor.objects.create(
+                connection=connection, recipient=user,
+                organization_id=connection.channel.organization_id, account_id=connection.external_id,
+            )
+        if monitor.recipient_id != user.pk:
+            # Even another owner/admin cannot change or take over this person's
+            # subscription, including while it is disabled or needs reactivation.
+            raise PermissionDenied
         now = timezone.now()
         if action == "disable":
             monitor.enabled = False
@@ -92,7 +99,7 @@ def _scope_error(monitor, connection):
             or connection.channel.organization_id != monitor.organization_id
             or connection.external_id != monitor.account_id):
         return "monitor_connection_changed"
-    if not is_owner(monitor.recipient, monitor.organization):
+    if not subscriber_allowed(monitor.recipient, monitor.organization):
         return "monitor_owner_unavailable"
     return ""
 
@@ -281,9 +288,11 @@ def scan_monitor(monitor_id):
 
 
 def display_state(connection, user):
-    if connection is None or not is_owner(user, connection.channel.organization):
+    if connection is None or not subscriber_allowed(user, connection.channel.organization):
         return {}
     monitor = AvitoStatusMonitor.objects.filter(connection=connection).first()
+    if monitor and monitor.recipient_id != user.pk:
+        return {}
     return {"allowed": True, "monitor": monitor,
             "error": error_detail(monitor.last_error_code) if monitor else "",
             "running": bool(monitor and monitor.lease_until and monitor.lease_until > timezone.now())}
