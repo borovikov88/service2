@@ -214,6 +214,10 @@ def download_call_recording(call_id, *, force=False):
     call = PhoneCall.objects.select_related("connection").filter(pk=call_id).first()
     if call is None:
         return False
+    # Privacy is checked before any provider/network read. Existing files are
+    # retained but become inaccessible through work surfaces.
+    if is_private_call(call):
+        return False
     if call.recording_file and not force:
         if call.recording_status != PhoneCall.RECORDING_STORED:
             PhoneCall.objects.filter(pk=call.pk).update(
