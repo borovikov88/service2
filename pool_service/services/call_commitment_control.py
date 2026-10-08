@@ -216,6 +216,8 @@ def _deliver_control_push(task_id, expected_key, *, escalation=False):
         ).filter(pk=task_id).first()
         if task is None:
             return
+        if task_source_is_private(task):
+            return
         payload = _payload(task)
         deadline = _effective_deadline(task, payload)
         actor = _actor(task, payload)
