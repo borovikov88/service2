@@ -19,6 +19,17 @@ from openai import OpenAI
 import imageio_ffmpeg
 
 from pool_service.communication_models import CallAnalysis, PhoneCall
+from pool_service.services.call_privacy import is_private_call, locked_call_for_privacy
+from pool_service.call_processing_models import CallProcessingUsage
+from pool_service.services.call_usage import (
+    CallBudgetExceeded,
+    analysis_reserve_estimate,
+    finish_stage,
+    release_stage,
+    reserve_stage,
+    response_usage_tokens,
+    transcription_reserve_estimate,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -249,7 +260,8 @@ def _transcribe(client, call):
     transcript = _speaker_transcript(result)
     if not transcript:
         raise CallAnalysisError("empty_transcript")
-    return transcript, model
+    input_tokens, output_tokens = response_usage_tokens(result)
+    return transcript, model, input_tokens, output_tokens
 
 
 def _strip_json_fence(value):
@@ -378,7 +390,8 @@ def _analyze_transcript(client, call, transcript):
     facts = _normalize_facts(payload.get("facts"))
     if not summary:
         raise CallAnalysisError("analysis_empty_summary")
-    return summary, facts, model
+    input_tokens, output_tokens = response_usage_tokens(response)
+    return summary, facts, model, input_tokens, output_tokens
 
 
 def _is_openai_credit_balance_exhausted(exc):
@@ -399,6 +412,29 @@ def _is_openai_credit_balance_exhausted(exc):
     return "credit_balance_exhausted" in str(exc)
 
 
+def _pause_for_budget(analysis, token, code):
+    CallAnalysis.objects.filter(
+        pk=analysis.pk,
+        status=CallAnalysis.STATUS_PROCESSING,
+        processing_token=token,
+    ).update(
+        status=CallAnalysis.STATUS_PENDING,
+        error=str(code)[:500],
+        processing_started_at=None,
+        processing_token="",
+        requested_at=None,
+    )
+
+
+def _result_with_usage(value, expected):
+    """Accept legacy patched helper tuples while collecting usage when present."""
+    if not isinstance(value, tuple) or len(value) not in {expected, expected + 2}:
+        raise CallAnalysisError("invalid_ai_result")
+    if len(value) == expected:
+        return (*value, None, None)
+    return value
+
+
 def process_call_analysis(call_id, *, force=False, reset_existing=False):
     claim = _claim(call_id, force=force, reset_existing=reset_existing)
     if not claim:
@@ -415,42 +451,142 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
     )
     call = analysis.call
 
-    # Do not keep a MySQL connection open while waiting on external AI calls.
-    # Production MySQL may expire an idle connection before OpenAI returns,
-    # which previously left the analysis stuck in PROCESSING when the error
-    # handler then tried to reuse the dead connection.
+    # Re-check privacy after the queue claim and immediately before any
+    # external AI request. A number may have been marked personal after the
+    # job was queued.
+    if is_private_call(call):
+        CallAnalysis.objects.filter(
+            pk=analysis.pk,
+            status=CallAnalysis.STATUS_PROCESSING,
+            processing_token=token,
+        ).update(
+            status=CallAnalysis.STATUS_PENDING,
+            error="",
+            processing_started_at=None,
+            processing_token="",
+            requested_at=None,
+        )
+        return False
+
     connections.close_all()
+    active_usage_id = None
+    active_stage = None
 
     try:
         transcript = (analysis.transcript or "").strip()
         transcription_model = analysis.transcription_model
 
         if not transcript:
+            transcription_model = _setting(
+                "OPENAI_CALL_TRANSCRIPTION_MODEL",
+                DEFAULT_TRANSCRIPTION_MODEL,
+            )
+            try:
+                usage = reserve_stage(
+                    call=call,
+                    attempt_key=token,
+                    stage=CallProcessingUsage.STAGE_TRANSCRIPTION,
+                    model=transcription_model,
+                    estimated_cost_usd=transcription_reserve_estimate(
+                        transcription_model,
+                        call.duration_seconds,
+                    ),
+                    duration_seconds=call.duration_seconds,
+                )
+            except CallBudgetExceeded as exc:
+                _pause_for_budget(analysis, token, f"call_budget_{exc}")
+                return False
+            active_usage_id = usage.pk
+            active_stage = CallProcessingUsage.STAGE_TRANSCRIPTION
+
             transcription_timeout = float(
                 _setting("OPENAI_CALL_TRANSCRIPTION_TIMEOUT_SECONDS", 300)
             )
-            transcription_client = _client(timeout_seconds=transcription_timeout)
-            transcript, transcription_model = _transcribe(transcription_client, call)
-            checkpointed = CallAnalysis.objects.filter(
-                pk=analysis.pk,
-                status=CallAnalysis.STATUS_PROCESSING,
-                processing_token=token,
-            ).update(
-                transcript=transcript,
-                transcription_model=transcription_model,
-            )
+            with locked_call_for_privacy(call.id) as current_call:
+                if current_call is None or is_private_call(current_call):
+                    release_stage(active_usage_id, error_code="private_call")
+                    active_usage_id = None
+                    _pause_for_budget(analysis, token, "")
+                    return False
+                transcription_client = _client(timeout_seconds=transcription_timeout)
+                result = _result_with_usage(
+                    _transcribe(transcription_client, current_call),
+                    2,
+                )
+                transcript, transcription_model, input_tokens, output_tokens = result
+                finish_stage(
+                    active_usage_id,
+                    succeeded=True,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
+                checkpointed = CallAnalysis.objects.filter(
+                    pk=analysis.pk,
+                    status=CallAnalysis.STATUS_PROCESSING,
+                    processing_token=token,
+                ).update(
+                    transcript=transcript,
+                    transcription_model=transcription_model,
+                )
+            active_usage_id = None
+            active_stage = None
             if not checkpointed:
                 return False
 
-        # The checkpoint query opens a new connection. Release it before the
-        # second potentially long OpenAI request for summary/facts.
+        # Recheck privacy after transcription too: an owner can add a personal
+        # number while the first external request is in flight.
+        if is_private_call(call):
+            _pause_for_budget(analysis, token, "")
+            return False
+
         connections.close_all()
-        analysis_client = _client()
-        summary, facts, analysis_model = _analyze_transcript(
-            analysis_client,
-            call,
-            transcript,
+        analysis_model = _setting(
+            "OPENAI_CALL_ANALYSIS_MODEL",
+            DEFAULT_ANALYSIS_MODEL,
         )
+        try:
+            usage = reserve_stage(
+                call=call,
+                attempt_key=token,
+                stage=CallProcessingUsage.STAGE_ANALYSIS,
+                model=analysis_model,
+                estimated_cost_usd=analysis_reserve_estimate(
+                    analysis_model,
+                    transcript,
+                    2500,
+                ),
+            )
+        except CallBudgetExceeded as exc:
+            _pause_for_budget(analysis, token, f"call_budget_{exc}")
+            return False
+        active_usage_id = usage.pk
+        active_stage = CallProcessingUsage.STAGE_ANALYSIS
+
+        with locked_call_for_privacy(call.id) as current_call:
+            if current_call is None or is_private_call(current_call):
+                release_stage(active_usage_id, error_code="private_call")
+                active_usage_id = None
+                _pause_for_budget(analysis, token, "")
+                return False
+            analysis_client = _client()
+            result = _result_with_usage(
+                _analyze_transcript(
+                    analysis_client,
+                    current_call,
+                    transcript,
+                ),
+                3,
+            )
+            summary, facts, analysis_model, input_tokens, output_tokens = result
+            finish_stage(
+                active_usage_id,
+                succeeded=True,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
+        active_usage_id = None
+        active_stage = None
+
         completed = CallAnalysis.objects.filter(
             pk=analysis.pk,
             status=CallAnalysis.STATUS_PROCESSING,
@@ -465,23 +601,33 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
             processed_at=timezone.now(),
             requested_at=None,
         )
-        if completed:
-            try:
-                from pool_service.services.call_commitments import materialize_call_commitments
-
-                materialize_call_commitments(call.id)
-            except Exception:
-                logger.exception(
-                    "Failed to materialize call commitments for call_id=%s",
-                    call.id,
-                )
+        # Commitments are exposed as reviewable Operations MCP proposals.
+        # Task creation is a separate, explicitly linked idempotent request.
         return bool(completed)
     except Exception as exc:
-        # If the exception happened after a long external request or during a
-        # stale DB write, force the status update through a fresh connection.
         connections.close_all()
-        quota_exhausted = _is_openai_credit_balance_exhausted(exc)
         code = str(exc)
+        if active_usage_id is not None:
+            # File/compression failures happen before the transcription provider
+            # request and therefore release the reservation. Other failures may
+            # already have consumed provider work and remain visible as failed
+            # estimated attempts.
+            local_recording_failure = (
+                active_stage == CallProcessingUsage.STAGE_TRANSCRIPTION
+                and isinstance(exc, CallAnalysisError)
+                and code.startswith("recording_")
+            )
+            if local_recording_failure:
+                release_stage(active_usage_id, error_code=code)
+            else:
+                finish_stage(
+                    active_usage_id,
+                    succeeded=False,
+                    error_code=code or "openai_processing_failed",
+                )
+            active_usage_id = None
+
+        quota_exhausted = _is_openai_credit_balance_exhausted(exc)
         if quota_exhausted:
             logger.warning("OpenAI API credits exhausted for call_id=%s", call_id)
             code = "openai_credit_balance_exhausted"
@@ -513,7 +659,6 @@ def process_call_analysis(call_id, *, force=False, reset_existing=False):
             requested_at=(analysis.requested_at if retryable else None),
         )
         return False
-
 
 def _reap_call_analysis_worker(process):
     try:
@@ -585,6 +730,8 @@ def request_call_analysis(call_id, *, allow_reanalysis=True):
             .first()
         )
         if call is None:
+            return False
+        if is_private_call(call):
             return False
 
         analysis, _ = CallAnalysis.objects.select_for_update().get_or_create(call=call)

@@ -17,8 +17,13 @@ test("search-first native and large multiselect browser regressions", {
 }, async t => {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "service2-choice-browser-"));
   const isolatedGroup = process.platform !== "win32";
+  // Some CI runners export malformed desktop bus addresses. Give the isolated
+  // headless browser a valid local socket address; no desktop session is used.
+  const browserEnv = {...process.env};
+  browserEnv.DBUS_SESSION_BUS_ADDRESS = "unix:path=/run/dbus/system_bus_socket";
+  browserEnv.DBUS_SYSTEM_BUS_ADDRESS = "unix:path=/run/dbus/system_bus_socket";
   const child = spawn(chrome, ["--headless", "--no-sandbox", "--disable-dev-shm-usage", "--disable-background-networking",
-    "--no-first-run", "--remote-debugging-port=0", "--user-data-dir=" + profile, "about:blank"], {stdio: ["ignore", "ignore", "pipe"], detached: isolatedGroup});
+    "--no-first-run", "--remote-debugging-port=0", "--user-data-dir=" + profile, "about:blank"], {env: browserEnv, stdio: ["ignore", "ignore", "pipe"], detached: isolatedGroup});
   const closed = new Promise(resolve => child.once("close", resolve));
   function stopBrowser(signal) {
     try {

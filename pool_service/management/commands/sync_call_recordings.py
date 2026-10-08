@@ -8,6 +8,8 @@ from django.utils import timezone
 from pool_service.communication_models import PhoneCall, TelephonyConnection
 from pool_service.communication_recordings import download_call_recording
 from pool_service.services.call_commitment_control import process_call_commitment_controls
+from pool_service.services.call_processing_dispatch import recover_auto_dispatch
+from pool_service.operations_mcp_views import process_pending_operations_pushes
 from pool_service.services.megafon_internal_calls import (
     MegafonInternalCallSyncError,
     sync_megafon_internal_calls,
@@ -59,7 +61,6 @@ class Command(BaseCommand):
             )
             retryable_failures = (
                 Q(recording_error="provider_unavailable")
-                | Q(recording_error="recording_storage_error")
                 | Q(recording_error__in=[
                     "provider_http_404",
                     "provider_http_408",
@@ -67,6 +68,7 @@ class Command(BaseCommand):
                     "provider_http_425",
                     "provider_http_429",
                 ])
+                | Q(recording_error="recording_storage_error")
                 | Q(recording_error__startswith="provider_http_5")
             )
             queryset = queryset.filter(
@@ -115,7 +117,9 @@ class Command(BaseCommand):
                 else:
                     failed += 1
 
+        auto_dispatch = recover_auto_dispatch(limit=100)
         control = process_call_commitment_controls()
+        operations_push = process_pending_operations_pushes(limit=100)
 
         self.stdout.write(
             self.style.SUCCESS(
@@ -138,10 +142,25 @@ class Command(BaseCommand):
         )
         self.stdout.write(
             self.style.SUCCESS(
+                "Call auto-dispatch recovery: "
+                f"checked={auto_dispatch['checked']} queued={auto_dispatch['queued']}"
+            )
+        )
+        self.stdout.write(
+            self.style.SUCCESS(
                 "Call commitment control: "
                 f"checked={control['checked']} "
                 f"due_reminders={control['due_reminders']} "
                 f"escalations={control['escalations']} "
                 f"without_deadline={control['without_deadline']}"
+            )
+        )
+        self.stdout.write(
+            self.style.SUCCESS(
+                "Operations push retry: "
+                f"checked={operations_push['checked']} "
+                f"assignment_attempts={operations_push['assignment_attempts']} "
+                f"notification_attempts={operations_push['notification_attempts']} "
+                f"delivered={operations_push['delivered']}"
             )
         )

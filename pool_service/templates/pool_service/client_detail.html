@@ -363,7 +363,7 @@
                       <span class="badge text-bg-secondary">{{ task.status_label }}</span>
                     </div>
                     <div class="small text-muted mt-1">
-                      {{ task.type_label }} · {{ task.start_date|date:"d.m.Y" }}
+                      {{ task.type_label }} · {{ task.schedule_display }}
                       {% if task.responsible_label %} · {{ task.responsible_label }}{% endif %}
                     </div>
                     {% if task.pool %}<div class="small mt-1">{{ task.pool.address }}</div>{% endif %}

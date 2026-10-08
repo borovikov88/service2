@@ -1,0 +1,129 @@
+{% extends "pool_service/base.html" %}
+{% block title %}Автообработка звонков{% endblock %}
+{% block content %}
+{% include "pool_service/communications/_section_nav.html" %}
+<div class="card card-soft p-3 p-md-4 mb-3">
+  <h2 class="h4">Автообработка звонков</h2>
+  <div class="alert alert-warning mb-3" role="status">
+    <strong>Подготовка правил. Автоматический запуск ещё выключен.</strong>
+    <div>Здесь можно сохранить правила автообработки и проверить их на метаданных звонков за неделю. Сохранение правил не запускает распознавание.</div>
+    <div>Личные исключения уже действуют как защита рабочих разделов: совпавшие ваши звонки скрываются из журнала, выгрузок, аудио/расшифровки и Operations MCP, а новые платные запросы по ним блокируются. Лимиты расходов и автоматический запуск ещё не включены.</div>
+  </div>
+  <p class="mb-2">Для рабочих линий сотрудников выбирайте «Все звонки» — наличие клиента в CRM не требуется. Для своего номера начните с сотрудников и разрешённых рабочих номеров. В дальнейшем можно выбрать «Все, кроме личных».</p>
+  <p class="small text-muted">Новые и несопоставленные линии не получают автоматического разрешения. Любое личное исключение сильнее разрешения другого участника. Старый архив этим экраном не обрабатывается.</p>
+  {% for error in errors %}<div class="alert alert-danger" role="alert">{{ error }}</div>{% endfor %}
+  <label class="form-label" for="rule-filter">Найти сотрудника</label>
+  <input id="rule-filter" class="form-control mb-3" type="search" autocomplete="off" placeholder="Начните вводить имя">
+  <div id="rule-list">
+  {% for row in rule_rows %}
+    <details class="border rounded p-3 mb-2" data-rule-row data-name="{{ row.name|lower }}" {% if row.form.is_bound %}open{% endif %}>
+      <summary><strong>{{ row.name }}</strong>{% if row.is_self %} — вы{% endif %} <span class="small text-muted">{% if row.saved %}Настройки сохранены, не активированы{% else %}Автоматическое разрешение не задано{% endif %}</span></summary>
+      {% if row.editable %}
+      <form method="post" class="mt-3">
+        {% csrf_token %}<input type="hidden" name="action" value="save_rule">
+        {{ row.form.as_p }}
+        <button class="btn btn-primary" type="submit">Сохранить правило</button>
+        {% if row.effective_from %}<div class="form-text">Изменение сохранённого правила приостановит автообработку до повторного включения.</div>{% endif %}
+      </form>
+      {% if row.saved and row.mode != "manual" %}
+      <form method="post" class="mt-2">
+        {% csrf_token %}
+        <input type="hidden" name="employee_id" value="{{ row.id }}">
+        <input type="hidden" name="expected_revision" value="{{ row.revision }}">
+        {% if row.effective_from %}
+          <input type="hidden" name="action" value="pause_rule">
+          <div class="small text-success mb-1">Включено для звонков с {{ row.effective_from|date:"d.m.Y H:i" }}.</div>
+          <button class="btn btn-sm btn-outline-secondary" type="submit">Приостановить</button>
+        {% else %}
+          <input type="hidden" name="action" value="activate_rule">
+          <button class="btn btn-sm btn-outline-success" type="submit">Включить для новых звонков</button>
+          <div class="form-text">Нужен сохранённый месячный лимит расходов. Архив до момента включения не обрабатывается.</div>
+        {% endif %}
+      </form>
+      {% endif %}
+      {% else %}<p class="small text-muted mt-3 mb-0">Другой владелец управляет своими правилами сам. Его списки номеров здесь не отображаются.</p>{% endif %}
+    </details>
+  {% empty %}<p>Нет доступных действующих сотрудников.</p>{% endfor %}
+  </div>
+</div>
+<div class="card card-soft p-3 p-md-4 mb-3" id="personal">
+  <h2 class="h5">Ваши личные исключения</h2>
+  <p>Список доступен только вам и относится к разговорам с вашим участием. Если тот же человек отдельно позвонит менеджеру как клиент, ваш список не исключит его рабочий звонок.</p>
+  <p class="small text-muted">Исключение действует сразу для рабочих поверхностей Service2 и будущей обработки. Существующие аудио, расшифровки и задачи автоматически не удаляются; новые задачи/уведомления из такого звонка не создаются. Записи у оператора связи не изменяются.</p>
+  <form method="post" class="mb-3">
+    {% csrf_token %}<input type="hidden" name="action" value="add_private">
+    {{ private_form.as_p }}
+    <button class="btn btn-outline-primary" type="submit">Добавить в личный список</button>
+  </form>
+  <div class="table-responsive">
+    <table class="table align-middle"><thead><tr><th>Контакт</th><th>Номер</th><th><span class="visually-hidden">Действие</span></th></tr></thead><tbody>
+    {% for number in private_numbers %}<tr>
+      <td>{{ number.label }}</td><td>{{ number.phone_key }}</td><td>
+        <form method="post">{% csrf_token %}<input type="hidden" name="action" value="remove_private"><input type="hidden" name="number_id" value="{{ number.pk }}"><button class="btn btn-sm btn-outline-secondary" type="submit">Убрать исключение</button></form>
+      </td>
+    </tr>{% empty %}<tr><td colspan="3" class="text-muted">Личный список пока пуст.</td></tr>{% endfor %}
+    </tbody></table>
+  </div>
+</div>
+<div class="card card-soft p-3 p-md-4 mb-3" id="preview">
+  <h2 class="h5">Предпросмотр за последние 7 дней</h2>
+  <p>Проверяются только номера, участники, длительность и состояние записи. Аудио и текст разговоров не загружаются, обращения к платному распознаванию нет.</p>
+  <a class="btn btn-outline-primary" href="{% url 'call_processing_settings' %}?preview=1#preview">Проверить сохранённые правила</a>
+  {% if preview %}
+    <p class="mt-3 mb-1"><strong>Подходящих записей: {{ preview.selected_count }}.</strong> Их суммарная длительность: {{ preview.selected_minutes }} мин. Это объём предпросмотра, не фактические платные минуты.</p>
+    <p class="small text-muted">Ваших личных записей исключено из предпросмотра: {{ preview.own_private_count }}. Повторная обработка готовых расшифровок не предлагается.</p>
+    {% if preview.limited %}<div class="alert alert-warning">Показана неполная выборка: последние {{ preview.limit }} записей за неделю. Более ранние звонки в этот расчёт не вошли.</div>{% endif %}
+    <div class="table-responsive"><table class="table table-sm align-middle">
+      <thead><tr><th>Дата</th><th>Сотрудник</th><th>Собеседник</th><th>Секунды</th><th>Результат проверки</th></tr></thead><tbody>
+      {% for call in preview.rows %}<tr>
+        <td class="text-nowrap">{{ call.started_at|date:"d.m.Y H:i" }}</td><td>{{ call.employees }}</td><td>{{ call.phone|default:"Не определён" }}</td><td>{{ call.duration_seconds }}</td>
+        <td>{% if call.selected %}<strong>{{ call.reason }}</strong>{% else %}{{ call.reason }}{% endif %}</td>
+      </tr>{% empty %}<tr><td colspan="5">Нет доступных записей в выборке.</td></tr>{% endfor %}
+      </tbody></table></div>
+  {% endif %}
+</div>
+<div class="card card-soft p-3 p-md-4">
+  <h2 class="h5">Расходы и лимиты</h2>
+  <p class="small text-muted">Валюта учёта — USD. Рубли не пересчитываются без отдельного источника курса. Тарифная версия: {{ usage.tariff_version }}. Сумма по usage API рассчитывается из реально возвращённых токенов и тарифа, но не является подтверждённым счётом OpenAI.</p>
+  <form method="post" class="row g-2 align-items-end mb-3">
+    {% csrf_token %}<input type="hidden" name="action" value="save_budget">
+    {{ budget_form.expected_revision }}
+    <div class="col-md-5">{{ budget_form.monthly_limit_usd.label_tag }}{{ budget_form.monthly_limit_usd }}<div class="form-text">{{ budget_form.monthly_limit_usd.help_text }}</div></div>
+    <div class="col-auto"><button class="btn btn-outline-primary" type="submit">Сохранить лимит</button></div>
+  </form>
+  <div class="row g-2 mb-3">
+    <div class="col-6 col-md-3"><div class="border rounded p-2"><div class="small text-muted">Попыток</div><strong>{{ usage.totals.attempts }}</strong></div></div>
+    <div class="col-6 col-md-3"><div class="border rounded p-2"><div class="small text-muted">Ошибок</div><strong>{{ usage.totals.errors }}</strong></div></div>
+    <div class="col-6 col-md-3"><div class="border rounded p-2"><div class="small text-muted">Расчётно, USD</div><strong>{{ usage.totals.estimated_usd }}</strong></div></div>
+    <div class="col-6 col-md-3"><div class="border rounded p-2"><div class="small text-muted">По usage API, USD</div><strong>{{ usage.totals.usage_usd }}</strong></div></div>
+  </div>
+  <p class="small mb-2">В резерве: {{ usage.totals.reserved_usd }} USD. Подтверждённая сумма списания: {% if usage.totals.confirmed_unknown %}неизвестна для {{ usage.totals.confirmed_unknown }} попыток{% else %}{{ usage.totals.confirmed_usd }} USD{% endif %}. Обработано звонков: {{ usage.totals.processed_calls }}. Уникальное аудио: {{ usage.totals.unique_audio_seconds }} сек.; аудио по всем попыткам: {{ usage.totals.attempt_audio_seconds }} сек.</p>
+  {% if usage.by_employee %}
+  <div class="table-responsive mb-3"><table class="table table-sm align-middle">
+    <thead><tr><th>Сотрудник</th><th>Попыток</th><th>Уникальное аудио, сек.</th><th>Расчётно, USD</th><th>По usage API, USD</th></tr></thead>
+    <tbody>{% for row in usage.by_employee %}<tr><td>{{ row.employee }}</td><td>{{ row.attempts }}</td><td>{{ row.audio_seconds }}</td><td>{{ row.estimated_usd }}</td><td>{{ row.usage_usd }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% endif %}
+  {% if usage.by_day %}
+  <details><summary>По дням</summary><div class="table-responsive mt-2"><table class="table table-sm">
+    <thead><tr><th>Дата</th><th>Попыток</th><th>Расчётно, USD</th><th>По usage API, USD</th></tr></thead>
+    <tbody>{% for row in usage.by_day %}<tr><td>{{ row.date|date:"d.m.Y" }}</td><td>{{ row.attempts }}</td><td>{{ row.estimated_usd }}</td><td>{{ row.usage_usd }}</td></tr>{% endfor %}</tbody>
+  </table></div></details>
+  {% endif %}
+  <p class="small text-muted mb-0 mt-2">Автоматический платный запуск пока выключен. Лимит уже хранится и будет проверяться атомарно перед внешним запросом после подключения запуска.</p>
+</div>
+<script>
+(() => {
+  const input = document.getElementById('rule-filter');
+  const rows = Array.from(document.querySelectorAll('[data-rule-row]'));
+  let timer;
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      const term = input.value.trim().toLocaleLowerCase('ru');
+      rows.forEach(row => { row.hidden = !row.dataset.name.toLocaleLowerCase('ru').includes(term); });
+    }, 250);
+  });
+})();
+</script>
+{% endblock %}

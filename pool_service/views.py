@@ -34,11 +34,11 @@ from django.views.decorators.http import require_POST
 
 from django.urls import reverse, reverse_lazy
 
-from django.db import connection
+from django.db import connection, transaction
 
 from django.db.models import Count, Q, Max, Case, When, Value, IntegerField
 
-from django.http import FileResponse, HttpResponse, HttpResponseForbidden, HttpResponseNotFound, JsonResponse
+from django.http import FileResponse, Http404, HttpResponse, HttpResponseForbidden, HttpResponseNotFound, JsonResponse
 
 from django.utils import timezone, formats
 
@@ -174,7 +174,15 @@ from .client_crm_models import ClientCompanyLink, ClientContact, ClientCRMProfil
 from .phone_utils import format_phone, normalize_account_phone, normalize_phone as normalize_crm_phone
 from .services.task_archive import archive_task, restore_task
 from .services.crm_archive import archive_crm_item, restore_crm_item, sync_crm_archive_state
+from .services.crm_locking import lock_crm_graph, locked_task_with_crm_graph
 from .services.task_generation import sync_crm_item_for_task, sync_task_with_crm_item
+from .services.call_privacy import private_source_task_ids, task_source_is_private
+from .services.task_feedback import waiting_control
+from .services.task_waiting_schedule import (
+    release_waiting_schedule,
+    restore_completed_without_appointment,
+    waiting_schedule_metadata,
+)
 
 
 
@@ -3948,6 +3956,11 @@ def crm_tasks(request):
         ).distinct()
 
     visible_tasks = list(task_qs)
+    hidden_private_task_ids = private_source_task_ids(visible_tasks)
+    if hidden_private_task_ids:
+        visible_tasks = [
+            task for task in visible_tasks if task.pk not in hidden_private_task_ids
+        ]
     if q:
         q_lower = q.lower()
         filtered_tasks = []
@@ -4000,7 +4013,15 @@ def crm_tasks(request):
             or getattr(task.pool, "address", "")
             or "-"
         )
-        task.start_display = formats.date_format(task.start_date, "d.m.Y")
+        schedule = waiting_schedule_metadata(task)
+        if schedule.get("schedule_kind") == "no_appointment":
+            task.start_display = "Дата не согласована"
+        elif schedule.get("schedule_kind") == "internal_check":
+            task.start_display = (
+                f"Контроль: {formats.date_format(task.start_date, 'd.m.Y')}"
+            )
+        else:
+            task.start_display = formats.date_format(task.start_date, "d.m.Y")
         if task.completed_at:
             completed_at = timezone.localtime(task.completed_at) if timezone.is_aware(task.completed_at) else task.completed_at
             task.completed_display = formats.date_format(completed_at, "d.m.Y H:i")
@@ -4044,6 +4065,7 @@ def crm_tasks(request):
 
 
 @login_required
+@transaction.atomic
 def crm_tasks_bulk_update(request):
     if request.method != "POST":
         return redirect("crm_tasks")
@@ -4077,7 +4099,30 @@ def crm_tasks_bulk_update(request):
             Q(created_by=request.user) | Q(primary_responsible=request.user) | Q(responsibles=request.user)
         ).distinct()
 
-    tasks = list(tasks_qs.select_related("primary_responsible", "crm_item"))
+    candidate_rows = list(
+        tasks_qs.order_by("id").values("id", "crm_item_id")
+    )
+    candidate_ids = {row["id"] for row in candidate_rows}
+    crm_item_ids = [
+        row["crm_item_id"] for row in candidate_rows if row["crm_item_id"]
+    ]
+    locked_tasks, _locked_items = lock_crm_graph(
+        crm_item_ids,
+        extra_task_ids=candidate_ids,
+    )
+    is_admin_or_owner = _is_org_admin_or_owner(request.user, org)
+    tasks = [
+        task
+        for task in locked_tasks
+        if task.id in candidate_ids
+        and task.organization_id == (org.id if org else None)
+        and (
+            is_admin_or_owner
+            or task.created_by_id == request.user.id
+            or task.primary_responsible_id == request.user.id
+            or task.responsibles.filter(id=request.user.id).exists()
+        )
+    ]
     if not tasks:
         messages.warning(request, "Подходящие задачи не найдены.")
         return redirect(reverse("crm_tasks"))
@@ -4092,19 +4137,82 @@ def crm_tasks_bulk_update(request):
             messages.error(request, "Выберите корректный статус.")
             return redirect(reverse("crm_tasks"))
 
+        skipped_waiting = 0
         for task in tasks:
-            if task.status == status and not (status == ServiceTask.STATUS_DONE and not task.is_completed_archive):
+            waiting, _next_check = waiting_control(task)
+            schedule_kind = waiting_schedule_metadata(task).get("schedule_kind")
+            completed_unknown_appointment = bool(
+                task.is_completed_archive and schedule_kind == "no_appointment"
+            )
+
+            if (
+                (waiting or completed_unknown_appointment)
+                and status in {
+                    ServiceTask.STATUS_NEW,
+                    ServiceTask.STATUS_IN_PROGRESS,
+                }
+            ):
+                # Neither a waiting task nor a completed task restored from
+                # waiting has a client-agreed date. A bulk status toggle must
+                # not reinterpret the retained internal-check key as one.
+                skipped_waiting += 1
                 continue
+
+            if task.status == status and not (
+                status == ServiceTask.STATUS_DONE and not task.is_completed_archive
+            ):
+                continue
+
+            if task.is_completed_archive and status != ServiceTask.STATUS_DONE:
+                task.completed_at = None
+                task.completed_by = None
+                restore_fields = restore_completed_without_appointment(task)
+                task.save(update_fields=list(dict.fromkeys([
+                    "completed_at",
+                    "completed_by",
+                    *restore_fields,
+                    "updated_at",
+                ])))
+                restore_task(task, request.user)
+                waiting, _next_check = waiting_control(task)
+
+                if completed_unknown_appointment and status == ServiceTask.STATUS_WAITING:
+                    # The restore helper already established the only safe
+                    # no-date state. Do not touch the legacy calendar key.
+                    sync_crm_item_for_task(task)
+                    changed += 1
+                    continue
+
+            waiting_fields = []
+            if waiting and status in {
+                ServiceTask.STATUS_CANCELLED,
+                ServiceTask.STATUS_DONE,
+            }:
+                waiting_fields = release_waiting_schedule(
+                    task,
+                    mode=("cancel" if status == ServiceTask.STATUS_CANCELLED else "complete"),
+                    status=status,
+                )
             task.status = status
             if status == ServiceTask.STATUS_DONE:
+                if waiting_fields:
+                    task.save(update_fields=list(dict.fromkeys([
+                        *waiting_fields, "status", "updated_at",
+                    ])))
                 archive_task(task, ServiceTask.ARCHIVE_REASON_COMPLETED, request.user)
             else:
-                if task.is_completed_archive:
-                    restore_task(task, request.user)
-                task.save(update_fields=["status", "updated_at"])
+                task.save(update_fields=list(dict.fromkeys([
+                    *waiting_fields, "status", "updated_at",
+                ])))
                 sync_crm_item_for_task(task)
             changed += 1
         messages.success(request, f"Статус обновлён у задач: {changed}.")
+        if skipped_waiting:
+            messages.warning(
+                request,
+                "Задачи в ожидании без новой даты не переведены в активный статус. "
+                "Сначала укажите новую дату через «Обсуждение и изменения».",
+            )
         return redirect(reverse("crm_tasks"))
 
     if action == "set_responsible":
@@ -4142,6 +4250,16 @@ def crm_tasks_bulk_update(request):
         for task in tasks:
             if task.is_deleted_archive:
                 continue
+            waiting, _next_check = waiting_control(task)
+            if waiting:
+                waiting_fields = release_waiting_schedule(
+                    task,
+                    mode="cancel",
+                    status=ServiceTask.STATUS_CANCELLED,
+                )
+                task.save(update_fields=list(dict.fromkeys([
+                    *waiting_fields, "status", "updated_at",
+                ])))
             archive_task(task, ServiceTask.ARCHIVE_REASON_DELETED, request.user)
             changed += 1
         messages.success(request, f"В архив отправлено задач: {changed}.")
@@ -4506,6 +4624,7 @@ def crm_list(request, direction):
 
 
 @login_required
+@transaction.atomic
 def crm_bulk_update(request, direction):
     if request.method != "POST":
         return redirect("crm_list", direction=direction)
@@ -4537,11 +4656,20 @@ def crm_bulk_update(request, direction):
         messages.warning(request, "Не выбраны записи CRM.")
         return redirect(_crm_bulk_redirect_url(request, direction))
 
-    items = CrmItem.objects.filter(id__in=selected_ids, direction=direction, is_archived=False)
+    items_qs = CrmItem.objects.filter(id__in=selected_ids, direction=direction, is_archived=False)
     if org:
-        items = items.filter(organization=org)
+        items_qs = items_qs.filter(organization=org)
 
-    items = list(items.select_related("responsible"))
+    candidate_ids = list(items_qs.order_by("id").values_list("id", flat=True))
+    _locked_tasks, locked_items = lock_crm_graph(candidate_ids)
+    items = [
+        item
+        for item in locked_items
+        if item.id in set(candidate_ids)
+        and item.direction == direction
+        and not item.is_archived
+        and (not org or item.organization_id == org.id)
+    ]
     if not items:
         messages.warning(request, "Подходящие записи CRM не найдены.")
         return redirect(_crm_bulk_redirect_url(request, direction))
@@ -4792,7 +4920,7 @@ def crm_create(request, direction):
 
 
 @login_required
-
+@transaction.atomic
 def crm_edit(request, direction, item_id):
 
     readonly = _deny_superuser_write(request)
@@ -4838,6 +4966,15 @@ def crm_edit(request, direction, item_id):
     return_context = _crm_edit_return_context(request, direction, item)
 
     if request.method == "POST":
+        _locked_tasks, locked_items = lock_crm_graph([item.id])
+        item = next((locked for locked in locked_items if locked.id == item.id), None)
+        if (
+            not item
+            or item.direction != direction
+            or item.is_archived
+            or (org and item.organization_id != org.id)
+        ):
+            return HttpResponseNotFound("CRM item changed while editing.")
 
         form = CrmItemForm(request.POST, instance=item, direction=direction, organization=org)
 
@@ -4972,6 +5109,7 @@ def archive_list(request):
 
 @login_required
 @require_POST
+@transaction.atomic
 def archive_restore_task(request, task_id):
     readonly = _deny_superuser_write(request)
     if readonly:
@@ -4980,14 +5118,23 @@ def archive_restore_task(request, task_id):
     if blocked:
         return blocked
 
-    task = get_object_or_404(ServiceTask, pk=task_id, is_archived=True)
+    seed = get_object_or_404(ServiceTask, pk=task_id, is_archived=True)
+    task = locked_task_with_crm_graph(organization=seed.organization, task_id=seed.id)
+    if not task or not task.is_archived:
+        return HttpResponseNotFound("Task archive state changed.")
     if not _task_can_view(task, request.user):
         return HttpResponseForbidden()
 
     if task.archived_reason == ServiceTask.ARCHIVE_REASON_COMPLETED and task.completed_at:
         task.completed_at = None
         task.completed_by = None
-        task.save(update_fields=["completed_at", "completed_by", "updated_at"])
+        restore_fields = restore_completed_without_appointment(task)
+        task.save(update_fields=list(dict.fromkeys([
+            "completed_at",
+            "completed_by",
+            *restore_fields,
+            "updated_at",
+        ])))
     restore_task(task, request.user)
     messages.success(request, "Задача восстановлена из архива.")
     return redirect("archive_list")
@@ -4995,6 +5142,7 @@ def archive_restore_task(request, task_id):
 
 @login_required
 @require_POST
+@transaction.atomic
 def archive_restore_crm_item(request, item_id):
     readonly = _deny_superuser_write(request)
     if readonly:
@@ -5005,7 +5153,11 @@ def archive_restore_crm_item(request, item_id):
     if not _can_access_crm(request.user):
         return HttpResponseForbidden()
 
-    item = get_object_or_404(CrmItem, pk=item_id, is_archived=True)
+    seed = get_object_or_404(CrmItem, pk=item_id, is_archived=True)
+    _locked_tasks, locked_items = lock_crm_graph([seed.id])
+    item = next((locked for locked in locked_items if locked.id == seed.id), None)
+    if not item or not item.is_archived:
+        return HttpResponseNotFound("CRM archive state changed.")
     if not request.user.is_superuser:
         org = organization_for_user(request.user)
         if not org or item.organization_id != org.id:
@@ -5018,6 +5170,7 @@ def archive_restore_crm_item(request, item_id):
 
 @login_required
 @require_POST
+@transaction.atomic
 def archive_bulk_update(request):
     readonly = _deny_superuser_write(request)
     if readonly:
@@ -5056,18 +5209,43 @@ def archive_bulk_update(request):
         except (TypeError, ValueError):
             continue
 
-    tasks = ServiceTask.objects.filter(id__in=task_ids, is_archived=True)
-    items = CrmItem.objects.filter(id__in=item_ids, is_archived=True)
+    tasks_qs = ServiceTask.objects.filter(id__in=task_ids, is_archived=True)
+    items_qs = CrmItem.objects.filter(id__in=item_ids, is_archived=True)
     pools = Pool.objects.filter(uuid__in=pool_uuids, is_deleted=True)
     readings = WaterReading.objects.filter(uuid__in=reading_uuids, is_deleted=True).select_related("pool")
     if org:
-        tasks = tasks.filter(organization=org)
-        items = items.filter(organization=org)
+        tasks_qs = tasks_qs.filter(organization=org)
+        items_qs = items_qs.filter(organization=org)
         pools = pools.filter(Q(organization=org) | Q(client__organization=org)).distinct()
         readings = readings.filter(Q(pool__organization=org) | Q(pool__client__organization=org)).distinct()
 
-    tasks = list(tasks)
-    items = list(items)
+    task_candidates = list(
+        tasks_qs.order_by("id").values("id", "crm_item_id")
+    )
+    item_candidate_ids = list(
+        items_qs.order_by("id").values_list("id", flat=True)
+    )
+    graph_item_ids = item_candidate_ids + [
+        row["crm_item_id"] for row in task_candidates if row["crm_item_id"]
+    ]
+    locked_tasks, locked_items = lock_crm_graph(
+        graph_item_ids,
+        extra_task_ids=[row["id"] for row in task_candidates],
+    )
+    selected_task_ids = {row["id"] for row in task_candidates}
+    selected_item_ids = set(item_candidate_ids)
+    tasks = [
+        task for task in locked_tasks
+        if task.id in selected_task_ids
+        and task.is_archived
+        and (not org or task.organization_id == org.id)
+    ]
+    items = [
+        item for item in locked_items
+        if item.id in selected_item_ids
+        and item.is_archived
+        and (not org or item.organization_id == org.id)
+    ]
     pools = list(pools)
     readings = list(readings)
     if not tasks and not items and not pools and not readings:
@@ -5080,7 +5258,13 @@ def archive_bulk_update(request):
             if task.archived_reason == ServiceTask.ARCHIVE_REASON_COMPLETED and task.completed_at:
                 task.completed_at = None
                 task.completed_by = None
-                task.save(update_fields=["completed_at", "completed_by", "updated_at"])
+                restore_fields = restore_completed_without_appointment(task)
+                task.save(update_fields=list(dict.fromkeys([
+                    "completed_at",
+                    "completed_by",
+                    *restore_fields,
+                    "updated_at",
+                ])))
             restore_task(task, request.user)
             changed += 1
         for item in items:
@@ -7474,6 +7658,7 @@ def task_create(request):
 
 
 @login_required
+@transaction.atomic
 def task_edit(request, task_id):
     readonly = _deny_superuser_write(request)
     if readonly:
@@ -7485,7 +7670,10 @@ def task_edit(request, task_id):
     is_modal = _is_modal_request(request)
     is_edit_mode = request.method == "POST" or request.GET.get("edit") == "1"
 
-    task = get_object_or_404(ServiceTask, pk=task_id)
+    task_queryset = ServiceTask.objects.select_for_update() if request.method == "POST" else ServiceTask.objects
+    task = get_object_or_404(task_queryset, pk=task_id)
+    if task_source_is_private(task):
+        raise Http404
     if not _task_can_view(task, request.user):
         return HttpResponseForbidden()
     if task.is_archived:
@@ -7764,6 +7952,7 @@ def task_edit(request, task_id):
 
 
 @login_required
+@transaction.atomic
 def task_delete(request, task_id):
     if request.method != "POST":
         return redirect("task_edit", task_id=task_id)
@@ -7775,7 +7964,7 @@ def task_delete(request, task_id):
     if blocked:
         return blocked
 
-    task = get_object_or_404(ServiceTask, pk=task_id)
+    task = get_object_or_404(ServiceTask.objects.select_for_update(), pk=task_id)
     if not _task_can_edit(task, request.user):
         return HttpResponseForbidden()
 
@@ -7796,6 +7985,7 @@ def task_delete(request, task_id):
 
 @csrf_protect
 @login_required
+@transaction.atomic
 def task_move(request):
     if request.method != "POST":
         return JsonResponse({"ok": False, "error": "method_not_allowed"}, status=405)
@@ -7820,13 +8010,15 @@ def task_move(request):
     except ValueError:
         return JsonResponse({"ok": False, "error": "invalid_date"}, status=400)
 
-    task = get_object_or_404(ServiceTask, pk=task_id)
+    task = get_object_or_404(ServiceTask.objects.select_for_update(), pk=task_id)
     if not _task_can_edit(task, request.user):
         return JsonResponse({"ok": False, "error": "forbidden"}, status=403)
     if task.is_archived:
         return JsonResponse({"ok": False, "error": "archived_task"}, status=400)
     if task.completed_at:
         return JsonResponse({"ok": False, "error": "completed_task"}, status=400)
+    if task.status == ServiceTask.STATUS_CANCELLED:
+        return JsonResponse({"ok": False, "error": "cancelled_task"}, status=400)
 
     old_start = task.start_date
     old_end = task.end_date or task.start_date
@@ -8479,7 +8671,9 @@ def readings_all(request):
     task_search_index = []
 
     if task_org:
-        task_qs = ServiceTask.objects.filter(organization=task_org, is_archived=False)
+        task_qs = ServiceTask.objects.filter(
+            organization=task_org, is_archived=False
+        ).exclude(status=ServiceTask.STATUS_CANCELLED)
         if not can_view_all_org_tasks:
             task_qs = task_qs.filter(responsibles=request.user)
         if responsible_filter_set:
@@ -8491,7 +8685,13 @@ def readings_all(request):
         )
 
         task_qs = task_qs.select_related("created_by").prefetch_related("responsibles").distinct()
-        for task in task_qs:
+        calendar_tasks = list(task_qs)
+        hidden_private_task_ids = private_source_task_ids(calendar_tasks)
+        for task in calendar_tasks:
+            if task.pk in hidden_private_task_ids:
+                continue
+            if waiting_schedule_metadata(task).get("schedule_kind") == "no_appointment":
+                continue
             task_start = task.start_date
             task_end = task.end_date or task.start_date
             if task_end < range_start or task_start > range_end:

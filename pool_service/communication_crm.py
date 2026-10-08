@@ -37,6 +37,7 @@ from .services.megafon_internal_calls import (
     start_call_recording_sync_worker,
 )
 from .services.permissions import company_has_access
+from .services.call_privacy import is_private_call, private_call_ids, visible_calls
 
 
 RETURN_SALT = "service2.call-client-return.v1"
@@ -210,9 +211,9 @@ def _call_screen(request, source_kind):
         queryset, selected = _filtered_calls(request, source_kind, organization, view_all)
     except ValueError as exc:
         return HttpResponseBadRequest(str(exc))
-    rows = list(queryset.select_related(
+    rows = visible_calls(list(queryset.select_related(
         "employee", "employee_profile", "peer_employee", "peer_employee_profile", "client", "analysis",
-    ).defer("analysis__transcript")[:500])
+    ).defer("analysis__transcript")[:1000]))[:500]
     if source_kind == PhoneCall.SOURCE_TELEPHONY:
         annotate_missed_call_callbacks(rows, organization.pk)
     _decorate_calls(rows, request, organization, source_kind)
@@ -298,6 +299,8 @@ def _visible_call(request, call_id, *, lock=False):
     if lock:
         queryset = queryset.select_for_update()
     call = get_object_or_404(queryset, pk=call_id)
+    if is_private_call(call):
+        raise Http404
     organization, view_all = _scope(request.user, call.source_kind, call.organization)
     if call.direction == PhoneCall.DIRECTION_INTERNAL:
         raise PermissionDenied

@@ -1,3 +1,5 @@
+{% load call_processing_tags %}
+{% call_processing_settings_allowed as can_configure_call_processing %}
 <style>
   .communications-toolbar{
     display:flex;
@@ -93,6 +95,13 @@
         {% if request.resolver_match.url_name == 'communication_manual_recordings' %}aria-current="page"{% endif %}
       >
         <i class="bi bi-file-earmark-music"></i><span>Аудиофайлы</span>
+      </a>
+      {% endif %}
+      {% if can_configure_call_processing %}
+      <a class="communications-tab {% if request.resolver_match.url_name == 'call_processing_settings' %}is-active{% endif %}"
+         href="{% url 'call_processing_settings' %}"
+         {% if request.resolver_match.url_name == 'call_processing_settings' %}aria-current="page"{% endif %}>
+        <i class="bi bi-sliders"></i><span>Автообработка</span>
       </a>
       {% endif %}
     </nav>

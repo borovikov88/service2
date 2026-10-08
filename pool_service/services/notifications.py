@@ -332,7 +332,7 @@ def notify_reading_out_of_range(reading):
     return created
 
 
-def notify_task_assignment(task, users, *, added_by=None, send_push=True):
+def task_assignment_notification_content(task):
     is_supply_request = task.task_type == getattr(task, "TYPE_SUPPLY_REQUEST", "supply_request")
     title = "\u041d\u043e\u0432\u0430\u044f \u0437\u0430\u044f\u0432\u043a\u0430" if is_supply_request else "\u041d\u043e\u0432\u0430\u044f \u0437\u0430\u0434\u0430\u0447\u0430"
     date_label = ""
@@ -368,6 +368,18 @@ def notify_task_assignment(task, users, *, added_by=None, send_push=True):
             message = f"{message} ({details})"
 
     action_url = reverse("task_edit", kwargs={"task_id": task.id})
+    return title, message, action_url
+
+
+def notify_task_assignment(
+    task,
+    users,
+    *,
+    added_by=None,
+    send_push=True,
+    dedupe_key="",
+):
+    title, message, action_url = task_assignment_notification_content(task)
     recipients = []
     for user in users:
         if not user or not user.is_active:
@@ -385,5 +397,6 @@ def notify_task_assignment(task, users, *, added_by=None, send_push=True):
         level="info",
         action_url=action_url,
         organization=task.organization,
+        dedupe_key=dedupe_key,
         send_push=send_push,
     )

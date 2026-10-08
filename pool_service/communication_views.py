@@ -49,6 +49,7 @@ from pool_service.communication_recordings import looks_like_audio_file
 from pool_service.communication_secrets import encrypt_secret
 from pool_service.communication_services import conversation_capability, optimize_message_image, organization_access
 from pool_service.services.call_ai import PROCESSING_STALE_MINUTES, request_call_analysis, start_requested_call_analysis_worker
+from pool_service.services.call_privacy import is_private_call, private_call_ids, visible_calls
 from pool_service.models import Client, Notification, OrganizationAccess
 
 
@@ -85,6 +86,8 @@ def _authorize_call_access(request, call):
     access = organization_access(request.user, call.organization)
     if not access:
         raise PermissionDenied
+    if is_private_call(call):
+        raise Http404
     if _is_manual_recording_call(call):
         if not (
             access.role in {"owner", "admin"}
@@ -505,11 +508,22 @@ def _resolve_export_clients(calls, organization):
 
 
 def _transcript_export_records(queryset, organization):
-    calls = list(
-        queryset.filter(
-            analysis__status=CallAnalysis.STATUS_READY,
+    ready_queryset = queryset.filter(
+        analysis__status=CallAnalysis.STATUS_READY,
+    ).exclude(analysis__transcript="")
+
+    privacy_candidates = list(
+        ready_queryset.select_related("employee", "peer_employee").only(
+            "id", "organization_id", "source_kind", "direction",
+            "employee_id", "peer_employee_id", "phone_number",
+            "provider_user", "provider_extension",
+            "peer_provider_user", "peer_provider_extension",
+            "employee__username", "peer_employee__username",
         )
-        .exclude(analysis__transcript="")
+    )
+    hidden_ids = private_call_ids(privacy_candidates)
+    calls = list(
+        ready_queryset.exclude(pk__in=hidden_ids)
         .select_related(
             "analysis",
             "client",
@@ -811,7 +825,7 @@ def calls(request):
     clients = active_clients(
         Client.objects.filter(organization=organization)
     ).order_by("name", "id")
-    calls = list(queryset[:500])
+    calls = visible_calls(list(queryset[:1000]))[:500]
     unresolved_phone_values = [
         call.phone_number
         for call in calls

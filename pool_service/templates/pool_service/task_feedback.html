@@ -1,0 +1,71 @@
+{% extends "pool_service/base.html" %}
+{% load tz %}
+{% block title %}Обсуждение задачи{% endblock %}
+{% block content %}
+{% timezone communication_zone %}
+<div class="card card-soft p-3 p-md-4" style="max-width:960px;margin:auto">
+  <div class="d-flex flex-wrap justify-content-between gap-2 align-items-start mb-3">
+    <div><h1 class="h4">{{ task.title }}</h1><div>Задача №{{ task.id }} · {{ task.get_status_display }}</div></div>
+    <a class="btn btn-outline-secondary" href="{% url 'task_edit' task.id %}">К карточке задачи</a>
+  </div>
+  {% if waiting_without_date %}
+  <div class="alert alert-info">
+    <strong>Ожидаем согласования. Дата выполнения не назначена.</strong><br>
+    Следующая внутренняя проверка: {{ next_check_at|date:"d.m.Y H:i"|default:"не указана" }} ({{ communication_zone }}).<br>
+    {{ feedback_state.reason }}
+  </div>
+  {% endif %}
+  <p>Комментарий сохраняет информацию, но сам не меняет статус. Чтобы отменить старые напоминания или изменить срок, выберите соответствующее действие.</p>
+  {% if can_write %}
+  <form method="post" action="{% url 'task_feedback' task.id %}" id="task-feedback-form">
+    {% csrf_token %}{{ form.expected_version }}{{ form.request_id }}
+    {% for error in form.non_field_errors %}<div class="alert alert-danger">{{ error }}</div>{% endfor %}
+    <div class="mb-3"><label for="{{ form.action.id_for_label }}">{{ form.action.label }}</label><br>{{ form.action }}{{ form.action.errors }}</div>
+    <div class="mb-3"><label for="{{ form.comment.id_for_label }}">{{ form.comment.label }}</label><br>{{ form.comment }}{{ form.comment.errors }}</div>
+    <fieldset class="mb-3" data-feedback-action="reschedule">
+      <legend class="h6">Новый согласованный срок выполнения</legend>
+      <div class="d-flex flex-wrap gap-3"><div>{{ form.due_date.label_tag }}<br>{{ form.due_date }}{{ form.due_date.errors }}</div><div>{{ form.due_time.label_tag }}<br>{{ form.due_time }}{{ form.due_time.errors }}</div></div>
+    </fieldset>
+    <fieldset class="mb-3" data-feedback-action="wait">
+      <legend class="h6">Когда вернуться к вопросу</legend>
+      <p>Это дата проверки, а не новая дата встречи. Прежний срок встречи будет снят.</p>
+      <div class="d-flex flex-wrap gap-3"><div>{{ form.check_date.label_tag }}<br>{{ form.check_date }}{{ form.check_date.errors }}</div><div>{{ form.check_time.label_tag }}<br>{{ form.check_time }}{{ form.check_time.errors }}</div></div>
+    </fieldset>
+    <p class="small">Время: {{ communication_zone }}. Отмена не отмечается как выполнение. У связанных задач сроки автоматически не меняются.</p>
+    <button type="submit" class="btn btn-primary">Сохранить изменение</button>
+  </form>
+  {% else %}<div class="alert alert-secondary">Задача закрыта или у вас нет прав на изменение. История доступна ниже.</div>{% endif %}
+  <hr>
+  <h2 class="h5">Обсуждение и изменения</h2>
+  <p class="small">Здесь сохраняются ваши изменения. Эта страница не утверждает, что Ровик уже получил или прочитал их: подключение обработки событий внедряется отдельно.</p>
+  {% for item in history %}
+  <article class="border rounded p-3 mb-3">
+    <div><strong>{{ item.action }}</strong> · {{ item.author }} · {{ item.created_at|date:"d.m.Y H:i" }}</div>
+    <div class="mt-2" style="white-space:pre-wrap;overflow-wrap:anywhere">{{ item.comment }}</div>
+    {% if item.due_date %}<div class="small mt-2">Новый срок: {{ item.due_date }} {{ item.due_time|default:"" }}</div>{% endif %}
+    {% if item.next_check_at %}<div class="small mt-2">Следующая проверка: {{ item.next_check_at }}</div>{% endif %}
+  </article>
+  {% empty %}<p>Изменений через эту форму ещё нет. Первоначальная договорённость и прежняя история остаются в карточке задачи.</p>{% endfor %}
+</div>
+<style>
+#task-feedback-form input:not([type=hidden]), #task-feedback-form select, #task-feedback-form textarea {max-width:100%;padding:.6rem;border:1px solid var(--bs-border-color,#64748b);border-radius:.5rem;background:var(--bs-body-bg,transparent);color:inherit}
+#task-feedback-form textarea {width:100%}
+html[data-theme="dark"] #task-feedback-form input, html[data-theme="dark"] #task-feedback-form textarea, html[data-theme="dark"] #task-feedback-form select {background:#172333;color:#e7edf5;border-color:#44546a}
+</style>
+<script>
+(function () {
+  const form = document.getElementById('task-feedback-form');
+  if (!form) return;
+  const select = form.querySelector('[name="action"]');
+  const toggle = () => form.querySelectorAll('[data-feedback-action]').forEach(block => {
+    block.hidden = block.dataset.feedbackAction !== select.value;
+  });
+  select.addEventListener('change', toggle); toggle();
+  form.addEventListener('submit', () => {
+    const button = form.querySelector('button[type="submit"]');
+    button.disabled = true; button.textContent = 'Сохраняется…';
+  });
+})();
+</script>
+{% endtimezone %}
+{% endblock %}

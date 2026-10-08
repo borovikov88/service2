@@ -1,0 +1,10 @@
+{% extends "pool_service/base.html" %}
+{% block title %}{{ page_title }}{% endblock %}
+{% block content %}
+<section class="card card-soft p-4">
+  <h1 class="h4">{{ page_title }}</h1>
+  <p>{{ conflict_message }}</p>
+  <p class="text-muted">Старая форма не изменила задачу и не восстановила прежнюю встречу.</p>
+  <div><a class="btn btn-primary" href="{{ feedback_url }}">Открыть обсуждение и изменения</a></div>
+</section>
+{% endblock %}

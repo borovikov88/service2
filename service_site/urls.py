@@ -17,6 +17,10 @@ from pool_service.finance_mcp_views import (
     finance_protected_resource_metadata,
 )
 from pool_service.onec_diagnostic_mcp_chatgpt import onec_diagnostic_mcp
+from pool_service.operations_mcp_views import (
+    operations_mcp,
+    operations_protected_resource_metadata,
+)
 from pool_service.mcp_oauth_shared import (
     diagnostic_protected_resource_metadata,
     shared_authorization_server_metadata,
@@ -25,6 +29,8 @@ from pool_service.mcp_oauth_shared import (
 )
 
 urlpatterns = [
+    path('', include('pool_service.call_processing_urls')),
+    path('', include('pool_service.task_feedback_urls')),
     path('health/live/', health_live, name='health_live'),
     path('health/ready/', health_ready, name='health_ready'),
     # Keep transport URLs byte-for-byte identical to their OAuth resource
@@ -44,6 +50,12 @@ urlpatterns = [
     path('oauth/finance/authorize', shared_oauth_authorize, name='finance_mcp_authorize'),
     path('oauth/finance/token', shared_oauth_token, name='finance_mcp_token'),
     path('mcp/1c', onec_diagnostic_mcp, name='onec_diagnostic_mcp'),
+    path('mcp/operations', operations_mcp, name='operations_mcp'),
+    path(
+        '.well-known/oauth-protected-resource/mcp/operations',
+        operations_protected_resource_metadata,
+        name='operations_mcp_protected_resource_metadata',
+    ),
     path(
         '.well-known/oauth-protected-resource/mcp/1c',
         diagnostic_protected_resource_metadata,
@@ -59,6 +71,13 @@ urlpatterns = [
     ),
     path('oauth/1c/authorize', shared_oauth_authorize, name='onec_diagnostic_mcp_authorize'),
     path('oauth/1c/token', shared_oauth_token, name='onec_diagnostic_mcp_token'),
+    path(
+        '.well-known/oauth-authorization-server/operations',
+        shared_authorization_server_metadata,
+        name='operations_mcp_authorization_server_metadata',
+    ),
+    path('oauth/operations/authorize', shared_oauth_authorize, name='operations_mcp_authorize'),
+    path('oauth/operations/token', shared_oauth_token, name='operations_mcp_token'),
     path('mcp/test/', mcp_test, name='mcp_test'),
     path('admin/', admin.site.urls),
     path('', include('pool_service.urls')),
