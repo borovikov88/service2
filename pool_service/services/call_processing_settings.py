@@ -117,6 +117,202 @@ def save_rule(*, user, organization, employee_id, mode, include_staff, numbers_t
 
 
 @transaction.atomic
+def activate_rule(*, user, organization, employee_id, expected_revision):
+    actor = _lock_owner(user, organization)
+    budget = CallProcessingBudget.objects.select_for_update().filter(
+        organization=organization,
+    ).first()
+    if budget is None or budget.monthly_limit_usd is None:
+        raise ValidationError(
+            "Перед включением задайте месячный лимит расходов в USD."
+        )
+    rule = CallProcessingRule.objects.select_for_update().filter(
+        organization=organization,
+        employee_id=employee_id,
+    ).first()
+    if rule is None or rule.mode == MANUAL:
+        raise ValidationError("Сначала сохраните автоматическое правило сотрудника.")
+    if rule.employee_id != actor.pk and OrganizationAccess.objects.filter(
+        organization=organization,
+        user_id=rule.employee_id,
+        role="owner",
+    ).exists():
+        raise PermissionDenied
+    if isinstance(expected_revision, bool) or expected_revision != rule.revision:
+        raise ValidationError("Правило уже изменено. Обновите страницу.")
+    rule.effective_from = timezone.now()
+    rule.revision += 1
+    rule.changed_by = actor
+    rule.save(update_fields=[
+        "effective_from", "revision", "changed_by", "updated_at",
+    ])
+    _audit(
+        organization,
+        actor,
+        rule.employee_id,
+        "rule_activated",
+        {"revision": rule.revision},
+    )
+    return rule
+
+
+@transaction.atomic
+def pause_rule(*, user, organization, employee_id, expected_revision):
+    actor = _lock_owner(user, organization)
+    rule = CallProcessingRule.objects.select_for_update().filter(
+        organization=organization,
+        employee_id=employee_id,
+    ).first()
+    if rule is None:
+        raise ValidationError("Правило не найдено.")
+    if rule.employee_id != actor.pk and OrganizationAccess.objects.filter(
+        organization=organization,
+        user_id=rule.employee_id,
+        role="owner",
+    ).exists():
+        raise PermissionDenied
+    if isinstance(expected_revision, bool) or expected_revision != rule.revision:
+        raise ValidationError("Правило уже изменено. Обновите страницу.")
+    rule.effective_from = None
+    rule.revision += 1
+    rule.changed_by = actor
+    rule.save(update_fields=[
+        "effective_from", "revision", "changed_by", "updated_at",
+    ])
+    _audit(
+        organization,
+        actor,
+        rule.employee_id,
+        "rule_paused",
+        {"revision": rule.revision},
+    )
+    return rule
+
+
+def runtime_decision_for_call(call):
+    """Evaluate one persisted call against current activated rules, fail closed."""
+    participants = tuple(
+        dict.fromkeys(
+            uid for uid in (call.employee_id, call.peer_employee_id) if uid
+        )
+    )
+    active_users = {
+        user.pk: user
+        for user in User.objects.filter(
+            pk__in=participants,
+            is_active=True,
+            organizationaccess__organization_id=call.organization_id,
+            organizationaccess__role__in=STAFF_ROLES,
+        ).distinct()
+    }
+    rules = {
+        row.employee_id: Rule(
+            mode=row.mode,
+            include_staff=row.include_staff,
+            work_numbers=frozenset(
+                row.work_numbers if isinstance(row.work_numbers, list) else []
+            ),
+            effective_from=row.effective_from,
+        )
+        for row in CallProcessingRule.objects.filter(
+            organization_id=call.organization_id,
+            employee_id__in=participants,
+        )
+    }
+    private = defaultdict(set)
+    for owner_id, key in CallPrivateNumber.objects.filter(
+        organization_id=call.organization_id,
+        owner_id__in=participants,
+    ).values_list("owner_id", "phone_key"):
+        private[owner_id].add(key)
+    private = {uid: frozenset(keys) for uid, keys in private.items()}
+
+    identities = _identity_rows(call.organization, participants)
+    references = defaultdict(set)
+    user_numbers = defaultdict(set)
+    for item in identities:
+        uid = item["employee__user_id"]
+        for kind, value in (
+            ("extension", item["extension"]),
+            ("user", item["external_user"]),
+        ):
+            if value:
+                references[(item["connection_id"], kind, value)].add(uid)
+                key = phone_key(value)
+                if key:
+                    user_numbers[uid].add(key)
+    for uid, account in active_users.items():
+        key = phone_key(account.username)
+        if key:
+            user_numbers[uid].add(key)
+
+    def verified(uid, provider_extension, provider_user):
+        if uid not in active_users:
+            return False
+        matches = set()
+        for kind, value in (
+            ("extension", provider_extension),
+            ("user", provider_user),
+        ):
+            if value:
+                matches.update(
+                    references.get((call.connection_id, kind, value), set())
+                )
+        return matches == {uid}
+
+    all_verified = bool(participants) and verified(
+        call.employee_id,
+        call.provider_extension,
+        call.provider_user,
+    )
+    if call.direction == PhoneCall.DIRECTION_INTERNAL:
+        all_verified = all_verified and verified(
+            call.peer_employee_id,
+            call.peer_provider_extension,
+            call.peer_provider_user,
+        )
+
+    external_key = phone_key(call.phone_number)
+    keys = {external_key} if external_key else set()
+    counterpart_pairs = []
+    if call.direction == PhoneCall.DIRECTION_INTERNAL:
+        keys = set()
+        for uid in participants:
+            peer_keys = set()
+            for peer_uid in participants:
+                if peer_uid != uid:
+                    peer_keys.update(user_numbers.get(peer_uid, set()))
+            counterpart_pairs.append((uid, frozenset(peer_keys)))
+            keys.update(peer_keys)
+    else:
+        counterpart_pairs = [
+            (uid, frozenset(keys)) for uid in participants
+        ]
+
+    analysis = getattr(call, "analysis", None)
+    facts = CallFacts(
+        participants=participants,
+        counterpart_numbers=frozenset(keys),
+        counterpart_numbers_by_participant=tuple(counterpart_pairs),
+        started_at=call.started_at,
+        verified=all_verified,
+        source=call.source_kind,
+        direction=call.direction,
+        answered=call.result == PhoneCall.RESULT_ANSWERED,
+        duration_seconds=call.duration_seconds,
+        audio_ready=(
+            call.recording_status == PhoneCall.RECORDING_STORED
+            and bool(call.recording_file)
+        ),
+        analysis_status=(analysis.status if analysis else ""),
+        saved_transcript=bool(
+            analysis and (analysis.transcript or "").strip()
+        ),
+    )
+    return decide_call(facts, rules, private, simulation=False)
+
+
+@transaction.atomic
 def save_budget(*, user, organization, monthly_limit_usd, expected_revision):
     actor = _lock_owner(user, organization)
     budget = CallProcessingBudget.objects.select_for_update().filter(
