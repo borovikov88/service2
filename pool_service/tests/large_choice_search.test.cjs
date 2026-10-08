@@ -16,8 +16,12 @@ test("search-first native and large multiselect browser regressions", {
   timeout: 45000,
 }, async t => {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "service2-choice-browser-"));
+  // Some CI runners export a malformed session bus address. The isolated
+  // headless browser does not need the caller's desktop session bus.
+  const browserEnv = {...process.env};
+  delete browserEnv.DBUS_SESSION_BUS_ADDRESS;
   const child = spawn(chrome, ["--headless", "--no-sandbox", "--disable-dev-shm-usage", "--disable-background-networking",
-    "--no-first-run", "--remote-debugging-port=0", "--user-data-dir=" + profile, "about:blank"], {stdio: ["ignore", "ignore", "pipe"]});
+    "--no-first-run", "--remote-debugging-port=0", "--user-data-dir=" + profile, "about:blank"], {env: browserEnv, stdio: ["ignore", "ignore", "pipe"]});
   let stderr = "", socket;
   child.stderr.on("data", chunk => {stderr = (stderr + chunk).slice(-20000);});
   const pending = new Map();
