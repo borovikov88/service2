@@ -53,6 +53,7 @@ raise SystemExit(int(os.environ.get("TEST_COMMAND_EXIT", "0")))
 ''')
         self.env = dict(os.environ)
         self.env.pop("SERVICE2_PYTHON", None)
+        self.env.pop("SERVICE2_AVITO_CRON_SUPERVISED", None)
 
     def invoke(self, *args):
         return subprocess.run(
@@ -107,6 +108,19 @@ raise SystemExit(int(os.environ.get("TEST_COMMAND_EXIT", "0")))
         self.assertEqual(result.returncode, 0)
         self.assertIn("reason=worker_busy", result.stdout)
         self.assertFalse((self.app / "invocation.json").exists())
+
+    def test_only_explicit_supervisor_uses_timeout_foreground_mode(self):
+        record = self.root / "timeout-args"
+        self.env["TIMEOUT_RECORD"] = str(record)
+        self.tool("timeout", 'printf "%s\\n" "$@" > "$TIMEOUT_RECORD"\nexit 0\n')
+        for mode in ((), ("--status",)):
+            for flag, expected in ((None, False), ("0", False), ("1", True)):
+                with self.subTest(mode=mode, flag=flag):
+                    self.env.pop("SERVICE2_AVITO_CRON_SUPERVISED", None)
+                    if flag is not None:
+                        self.env["SERVICE2_AVITO_CRON_SUPERVISED"] = flag
+                    self.assertEqual(self.invoke(*mode).returncode, 0)
+                    self.assertEqual("--foreground" in record.read_text().splitlines(), expected)
 
     def test_deployment_skips_without_running_application(self):
         with self.lock("service2-deploy.lock"):

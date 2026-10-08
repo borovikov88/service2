@@ -59,15 +59,23 @@ else
     exit "$status"
 fi
 
+# The cron manager owns a process-group watchdog. Keep GNU timeout in that
+# group so the outer watchdog can kill the worker and its descendants. Manual
+# calls retain timeout's independent process-group supervision.
+TIMEOUT_SUPERVISION=()
+if [[ "${SERVICE2_AVITO_CRON_SUPERVISED:-}" == "1" ]]; then
+    TIMEOUT_SUPERVISION=(--foreground)
+fi
+
 if [[ "$MODE" == "--status" ]]; then
-    exec timeout --signal=TERM --kill-after=10s 60s \
+    exec timeout "${TIMEOUT_SUPERVISION[@]}" --signal=TERM --kill-after=10s 60s \
         "$PYTHON_BIN" manage.py monitor_avito_statuses --status
 fi
 
 # The command has a 25-minute graceful budget and bounded individual scans.
 # The independent host timeout also protects against a lost SSH session or a
 # hung dependency. It expires before the 35-minute GitHub job limit.
-if timeout --signal=TERM --kill-after=30s 30m \
+if timeout "${TIMEOUT_SUPERVISION[@]}" --signal=TERM --kill-after=30s 30m \
     "$PYTHON_BIN" manage.py monitor_avito_statuses --limit 10 --budget-seconds 1500; then
     exit 0
 else

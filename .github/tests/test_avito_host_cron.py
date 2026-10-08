@@ -7,9 +7,12 @@ import os
 from pathlib import Path
 import pwd
 import shlex
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -212,6 +215,8 @@ else:
             self.manager.readiness()
         self.assertNotIn("SERVICE2_PYTHON", self.manager.env)
         self.assertNotIn("UNRELATED_SECRET", self.manager.env)
+        self.assertNotIn("SERVICE2_AVITO_CRON_SUPERVISED", self.manager.env)
+        self.assertEqual(self.manager.supervised_env()["SERVICE2_AVITO_CRON_SUPERVISED"], "1")
 
     def test_release_mismatch_or_remaining_github_schedule_blocks_install(self):
         with patch.object(cron, "bounded", return_value=subprocess.CompletedProcess([], 0, b"b" * 40, b"")):
@@ -248,6 +253,77 @@ else:
         with self.manager.lock(self.manager.private / "tick.lock"):
             self.assertEqual(self.manager.tick(), 0)
         self.assertFalse((self.manager.private / "last-tick.json").exists())
+
+    def real_worker_fixture(self, *, exit_worker=False):
+        shutil.copyfile(ROOT / "scripts/run_avito_status_monitor.sh", self.wrapper)
+        command = self.app / "pool_service/management/commands/monitor_avito_statuses.py"
+        command.parent.mkdir(parents=True, exist_ok=True)
+        command.touch()
+        (self.app / "manage.py").write_text('''
+import json, os, signal, subprocess, sys, time
+from pathlib import Path
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+descendant = subprocess.Popen([
+    sys.executable, "-c",
+    "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)",
+], close_fds=False)
+Path("workers.json").write_text(json.dumps({
+    "worker": os.getpid(), "descendant": descendant.pid, "group": os.getpgrp(),
+}))
+''' + ("raise SystemExit(0)\n" if exit_worker else "time.sleep(60)\n"))
+
+    @staticmethod
+    def process_is_running(pid):
+        try:
+            value = Path(f"/proc/{pid}/stat").read_text()
+        except FileNotFoundError:
+            return False
+        # Killed descendants can briefly await reaping by the host's init.
+        return value.rsplit(")", 1)[1].split()[0] != "Z"
+
+    def assert_workers_stopped(self):
+        workers = json.loads((self.app / "workers.json").read_text())
+        pids = (workers["worker"], workers["descendant"])
+        try:
+            deadline = time.monotonic() + 2
+            while any(self.process_is_running(pid) for pid in pids) and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertFalse(any(self.process_is_running(pid) for pid in pids))
+        finally:
+            # A regression must fail without leaking its test subprocesses.
+            if workers["group"] != os.getpgrp():
+                try:
+                    os.killpg(workers["group"], signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            for pid in pids:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    @unittest.skipUnless(Path("/proc").exists(), "Linux process-state regression")
+    def test_real_outer_watchdog_stops_worker_and_descendant_in_both_modes(self):
+        self.real_worker_fixture()
+        original = cron.bounded
+        def short_watchdog(command, **kwargs):
+            kwargs["timeout"] = 1
+            return original(command, **kwargs)
+        for mode in ("tick", "readiness"):
+            with self.subTest(mode=mode):
+                with patch.object(cron, "bounded", side_effect=short_watchdog):
+                    if mode == "tick":
+                        self.assertEqual(self.manager.tick(), 124)
+                    else:
+                        with self.assertRaisesRegex(cron.CronError, "process_timeout"):
+                            self.manager.readiness()
+                self.assert_workers_stopped()
+
+    @unittest.skipUnless(Path("/proc").exists(), "Linux process-state regression")
+    def test_supervisor_stops_descendant_when_worker_exits_before_outer_deadline(self):
+        self.real_worker_fixture(exit_worker=True)
+        self.assertEqual(self.manager.tick(), 0)
+        self.assert_workers_stopped()
 
     def test_symlink_private_directory_cannot_redirect_backups(self):
         elsewhere = self.root / "elsewhere"

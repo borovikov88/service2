@@ -45,6 +45,7 @@ def checked_path(value):
 
 def bounded(command, *, timeout=20, **kwargs):
     """Kill the whole child group on a hard deadline, not just its shell."""
+    supervised = kwargs.get("env", {}).get("SERVICE2_AVITO_CRON_SUPERVISED") == "1"
     with subprocess.Popen(command, start_new_session=True, **kwargs) as child:
         try:
             stdout, stderr = child.communicate(timeout=timeout)
@@ -52,6 +53,15 @@ def bounded(command, *, timeout=20, **kwargs):
             os.killpg(child.pid, signal.SIGKILL)
             child.wait()
             raise CronError("process_timeout") from None
+        finally:
+            if supervised:
+                # --foreground keeps the inner timeout and Django in this
+                # group. Stop any remaining descendants even when the inner
+                # timeout/worker exits before our own deadline.
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
         return subprocess.CompletedProcess(command, child.returncode, stdout, stderr)
 
 
@@ -158,9 +168,13 @@ class CronManager:
 
     def readiness(self):
         result = bounded(["/bin/bash", str(self.wrapper), "--status"], timeout=80,
-                         cwd=self.home, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                         cwd=self.home, env=self.supervised_env(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if result.returncode or not READY.fullmatch(result.stdout.decode(errors="replace").strip()):
             raise CronError("cron_environment_readiness_failed")
+
+    def supervised_env(self):
+        # Never inherited by cron-table/git commands or manual Actions runs.
+        return {**self.env, "SERVICE2_AVITO_CRON_SUPERVISED": "1"}
 
     def backup(self, table):
         target = self.private / ("before-" + hashlib.sha256(table).hexdigest() + ".crontab")
@@ -223,7 +237,7 @@ class CronManager:
                 self.state({"started_at": started, "state": "running"})
                 try:
                     result = bounded(["/bin/bash", str(self.wrapper)], timeout=1870,
-                                     cwd=self.home, env=self.env,
+                                     cwd=self.home, env=self.supervised_env(),
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     code = result.returncode
                 except CronError:
