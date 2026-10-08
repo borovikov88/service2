@@ -38,7 +38,7 @@ from django.db import connection, transaction
 
 from django.db.models import Count, Q, Max, Case, When, Value, IntegerField
 
-from django.http import FileResponse, HttpResponse, HttpResponseForbidden, HttpResponseNotFound, JsonResponse
+from django.http import FileResponse, Http404, HttpResponse, HttpResponseForbidden, HttpResponseNotFound, JsonResponse
 
 from django.utils import timezone, formats
 
