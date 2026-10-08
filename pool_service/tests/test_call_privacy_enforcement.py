@@ -14,7 +14,7 @@ from pool_service.communication_models import (
     PhoneCall,
     TelephonyConnection,
 )
-from pool_service.models import Notification, Organization, OrganizationAccess, ServiceTask
+from pool_service.models import Client, Notification, Organization, OrganizationAccess, ServiceTask
 from pool_service.operations_mcp_views import _get_call_analysis, _list_control_tasks
 from pool_service.communication_recordings import download_call_recording
 from pool_service.services.call_ai import process_call_analysis, request_call_analysis
@@ -86,6 +86,16 @@ class PrivateCallEnforcementTests(TestCase):
         self.assertTrue(is_private_call(private))
         self.assertFalse(is_private_call(employee_call))
         self.assertEqual(private_call_ids([private, employee_call]), {private.pk})
+
+    def test_internal_private_match_works_with_unresolved_peer_employee(self):
+        call = self.call(
+            direction=PhoneCall.DIRECTION_INTERNAL,
+            phone="",
+            peer_employee=None,
+            peer_provider_user="+7 999 000-00-01",
+            peer_provider_extension="9990000001",
+        )
+        self.assertTrue(is_private_call(call))
 
     @patch("pool_service.communication_crm.internal_call_sync_due", return_value=False)
     def test_private_call_is_absent_from_work_call_list(self, _sync_due):
@@ -217,3 +227,47 @@ class PrivateCallEnforcementTests(TestCase):
         result = process_call_commitment_controls(now=timezone.now())
         self.assertEqual(result["checked"], 0)
         self.assertFalse(Notification.objects.exists())
+
+    @patch("pool_service.views._redirect_if_access_blocked", return_value=None)
+    def test_private_source_task_is_hidden_from_crm_client_card_and_direct_view(self, _blocked):
+        call = self.call()
+        client = Client.objects.create(
+            organization=self.org,
+            client_type="private",
+            name="Private client",
+        )
+        task = ServiceTask.objects.create(
+            organization=self.org,
+            client=client,
+            title="Transcript-derived private task",
+            description="PRIVATE_EVIDENCE",
+            start_date=timezone.localdate(),
+            end_date=timezone.localdate(),
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            source_type=ServiceTask.SOURCE_SYSTEM,
+            status=ServiceTask.STATUS_NEW,
+            primary_responsible=self.owner,
+            created_by=self.owner,
+            auto_created=True,
+            payload_json={
+                "source": "call_analysis",
+                "source_call_id": call.pk,
+                "actor": "employee",
+            },
+        )
+        task.responsibles.add(self.owner)
+
+        tasks_response = self.client.get(
+            reverse("crm_tasks"),
+            {"responsible": "__all__"},
+        )
+        self.assertEqual(tasks_response.status_code, 200)
+        self.assertNotIn(task.pk, [item.pk for item in tasks_response.context["tasks"]])
+
+        client_response = self.client.get(reverse("client_detail", args=[client.pk]))
+        self.assertEqual(client_response.status_code, 200)
+        self.assertNotIn(task.pk, [item.pk for item in client_response.context["tasks"]])
+        self.assertEqual(client_response.context["active_tasks_count"], 0)
+
+        direct = self.client.get(reverse("task_edit", args=[task.pk]))
+        self.assertEqual(direct.status_code, 404)
