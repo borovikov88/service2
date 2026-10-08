@@ -27,6 +27,7 @@ from .client_crm_ui import (
 from .client_crm_views import _can_manage_import
 from .client_phone_matching import clients_by_phone, clients_by_phones
 from .client_queries import active_clients
+from .call_markers import annotate_missed_call_callbacks
 from .communication_models import PhoneCall
 from .communication_services import conversation_capability, organization_access
 from .models import Client, Organization, OrganizationAccess
@@ -212,6 +213,8 @@ def _call_screen(request, source_kind):
     rows = list(queryset.select_related(
         "employee", "employee_profile", "peer_employee", "peer_employee_profile", "client", "analysis",
     ).defer("analysis__transcript")[:500])
+    if source_kind == PhoneCall.SOURCE_TELEPHONY:
+        annotate_missed_call_callbacks(rows, organization.pk)
     _decorate_calls(rows, request, organization, source_kind)
     manual = source_kind == PhoneCall.SOURCE_UPLOADED
     return render(request, "pool_service/communications/calls.html", {
