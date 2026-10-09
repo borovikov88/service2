@@ -183,6 +183,17 @@ class AvitoApiThrottle(models.Model):
     next_allowed_at = models.DateTimeField(default=timezone.now)
 
 
+class AvitoSchedulerHeartbeat(models.Model):
+    """Global supervisor evidence shared across isolated hosting identities."""
+
+    key = models.CharField(max_length=32, primary_key=True)
+    run_id = models.UUIDField()
+    state = models.CharField(max_length=16)
+    started_at = models.DateTimeField()
+    finished_at = models.DateTimeField(null=True)
+    exit_code = models.IntegerField(null=True)
+
+
 class AvitoStatusMonitor(models.Model):
     """Explicit owner subscription and durable worker lease, disabled by default."""
 
