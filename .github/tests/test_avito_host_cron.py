@@ -85,6 +85,9 @@ else:
         self.release = patch.object(self.manager, "verify_release")
         self.release.start()
         self.addCleanup(self.release.stop)
+        self.heartbeat_patch = patch.object(self.manager, "heartbeat")
+        self.heartbeat = self.heartbeat_patch.start()
+        self.addCleanup(self.heartbeat_patch.stop)
 
     def test_preflight_is_read_only_and_preserves_foreign_table_privately(self):
         before = self.table.read_bytes()
@@ -253,6 +256,58 @@ else:
         with self.manager.lock(self.manager.private / "tick.lock"):
             self.assertEqual(self.manager.tick(), 0)
         self.assertFalse((self.manager.private / "last-tick.json").exists())
+
+    def test_tick_db_evidence_wraps_actual_worker_and_matches_run_id(self):
+        self.wrapper.write_text("#!/bin/bash\nexit 0\n")
+        self.assertEqual(self.manager.tick(), 0)
+        begin, finish = self.heartbeat.call_args_list
+        self.assertEqual(begin.args[0], "begin")
+        self.assertEqual(finish.args, ("finish", begin.args[1]))
+        self.assertEqual(finish.kwargs, {"exit_code": 0})
+
+    def test_db_helpers_keep_deployment_locked_and_launch_failure_is_not_success(self):
+        def assert_locked(*args, **kwargs):
+            with self.assertRaisesRegex(cron.CronError, "lock_busy"):
+                with self.manager.lock(self.manager.tmp / "service2-deploy.lock"):
+                    pass
+        self.heartbeat.side_effect = assert_locked
+        with patch.object(cron, "bounded", side_effect=OSError("PRIVATE")):
+            self.assertEqual(self.manager.tick(), 1)
+        self.assertEqual(self.heartbeat.call_args.kwargs, {"exit_code": 1})
+
+    def test_tick_and_deployment_lock_skips_never_write_db_evidence(self):
+        self.manager.private_directory()
+        for lock in (self.manager.private / "tick.lock", self.manager.tmp / "service2-deploy.lock"):
+            with self.manager.lock(lock):
+                self.assertEqual(self.manager.tick(), 0)
+        self.heartbeat.assert_not_called()
+
+    def test_heartbeat_write_failure_never_returns_success(self):
+        self.heartbeat.side_effect = cron.CronError("heartbeat_storage_failed")
+        with patch.object(cron, "bounded") as worker:
+            with self.assertRaisesRegex(cron.CronError, "heartbeat_storage_failed"):
+                self.manager.tick()
+        worker.assert_not_called()
+        self.heartbeat.side_effect = [None, cron.CronError("heartbeat_storage_failed")]
+        self.wrapper.write_text("#!/bin/bash\nexit 0\n")
+        with self.assertRaisesRegex(cron.CronError, "heartbeat_storage_failed"):
+            self.manager.tick()
+
+    def test_heartbeat_helper_is_bounded_clean_and_suppressed(self):
+        self.heartbeat_patch.stop()
+        with patch.object(cron, "bounded", return_value=subprocess.CompletedProcess([], 0)) as process:
+            self.manager.heartbeat("finish", "test-run", exit_code=124)
+        command = process.call_args.args[0]
+        self.assertEqual(command[:4], [str(self.manager.python), str(self.app / "manage.py"),
+                                       "avito_scheduler_heartbeat", "finish"])
+        self.assertEqual(command[-2:], ["--exit-code", "124"])
+        self.assertEqual(process.call_args.kwargs["timeout"], 30)
+        self.assertEqual(process.call_args.kwargs["stdout"], subprocess.DEVNULL)
+        self.assertEqual(process.call_args.kwargs["stderr"], subprocess.DEVNULL)
+        self.assertEqual(process.call_args.kwargs["env"], self.manager.supervised_env())
+        with patch.object(cron, "bounded", return_value=subprocess.CompletedProcess([], 1)):
+            with self.assertRaisesRegex(cron.CronError, "heartbeat_storage_failed"):
+                self.manager.heartbeat("begin", "test-run")
 
     def real_worker_fixture(self, *, exit_worker=False):
         shutil.copyfile(ROOT / "scripts/run_avito_status_monitor.sh", self.wrapper)
