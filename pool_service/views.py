@@ -7695,6 +7695,12 @@ def task_edit(request, task_id):
         source_call_id = 0
     if source_call_id > 0:
         with locked_call_for_privacy(source_call_id) as locked_source_call:
+            if (
+                locked_source_call
+                and locked_source_call.organization_id == task.organization_id
+                and is_private_call(locked_source_call)
+            ):
+                raise Http404
             source_call = (
                 PhoneCall.objects.filter(
                     pk=source_call_id,

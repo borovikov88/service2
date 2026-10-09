@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import reverse
@@ -404,6 +406,48 @@ class SupplyTaskGenerationTests(TestCase):
         )
         self.assertEqual(manual_call_response.status_code, 200)
         self.assertContains(manual_call_response, f'id="call-{call.pk}"')
+
+    @patch("pool_service.views.is_private_call", return_value=True)
+    @patch("pool_service.views.task_source_is_private", return_value=False)
+    def test_task_source_privacy_is_rechecked_under_call_lock(
+        self, _initial_privacy_check, _locked_privacy_check
+    ):
+        connection = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="Privacy race source line",
+            external_id="privacy-race-source-line",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=connection,
+            external_id="privacy-race-source-call",
+            employee=self.manager,
+            client=self.pool_client,
+            phone_number=self.pool_client.phone,
+            direction=PhoneCall.DIRECTION_OUT,
+            started_at=timezone.now(),
+            duration_seconds=30,
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        task = ServiceTask.objects.create(
+            organization=self.organization,
+            title="ЛИЧНЫЙ ТЕКСТ ЗАДАЧИ",
+            description="ЛИЧНОЕ ОПИСАНИЕ ИЗ ЗВОНКА",
+            created_by=self.service_user,
+            source_type=ServiceTask.SOURCE_SYSTEM,
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            payload_json={"source_call_id": call.pk},
+            start_date=timezone.localdate(),
+            end_date=timezone.localdate(),
+        )
+        task.responsibles.add(self.manager)
+
+        self.client.force_login(self.manager)
+        response = self.client.get(reverse("task_edit", kwargs={"task_id": task.pk}))
+
+        self.assertEqual(response.status_code, 404)
+        self.assertNotContains(response, "ЛИЧНЫЙ ТЕКСТ ЗАДАЧИ", status_code=404)
+        self.assertNotContains(response, "ЛИЧНОЕ ОПИСАНИЕ ИЗ ЗВОНКА", status_code=404)
 
     def test_deleted_task_is_archived_and_disappears_from_pool_history(self):
         reading = WaterReading.objects.create(
