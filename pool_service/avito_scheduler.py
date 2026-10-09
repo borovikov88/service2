@@ -1,13 +1,13 @@
 """Read-only evidence of a successful bounded worker tick, never a cron installer."""
-import json
-import os
 from pathlib import Path
-import stat
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from django.conf import settings
+from django.db import DatabaseError
 from django.utils import timezone
+from pool_service.communication_models import AvitoSchedulerHeartbeat
 
+HEARTBEAT_KEY = "avito-status-monitor"
 MAX_AGE = timedelta(minutes=45)
 MESSAGES = {
     "unverified": "Расписание сервера ещё не подтверждено. Настройте задачу в панели хостинга и проверьте её выполнение.",
@@ -18,45 +18,27 @@ MESSAGES = {
 }
 
 
-def _moment(value):
-    if not isinstance(value, str) or len(value) > 64:
-        raise ValueError
-    result = datetime.fromisoformat(value)
-    if timezone.is_naive(result):
-        raise ValueError
-    return result
-
-
 def scheduler_state():
+    # Cron and Passenger may have different UIDs/private filesystem views.
+    # Only the supervisor writes this shared row; page reads never create it.
     state, finished = "unverified", None
-    path = Path(settings.BASE_DIR).parent / "tmp/service2-avito-cron/last-tick.json"
     try:
-        directory = path.parent.lstat()
-        if not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.getuid() or directory.st_mode & 0o077:
-            raise ValueError
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(fd, "rb") as stream:
-            info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        record = AvitoSchedulerHeartbeat.objects.filter(pk=HEARTBEAT_KEY).first()
+        if record is not None:
+            started, now = record.started_at, timezone.now()
+            if timezone.is_naive(started):
                 raise ValueError
-            raw = stream.read(1025)
-        if len(raw) > 1024:
-            raise ValueError
-        data = json.loads(raw)
-        if not isinstance(data, dict):
-            raise ValueError
-        started = _moment(data.get("started_at"))
-        now = timezone.now()
-        if started > now or now - started > MAX_AGE:
-            state = "stale"
-        elif data.get("state") == "running":
-            state = "running"
-        elif data.get("state") == "finished" and type(data.get("exit_code")) is int:
-            finished = _moment(data.get("finished_at"))
-            if not started <= finished <= now:
-                raise ValueError
-            state = "ready" if data["exit_code"] == 0 and now - finished <= MAX_AGE else "failed"
-    except (OSError, ValueError, TypeError):
+            if started > now or now - started > MAX_AGE:
+                state = "stale"
+            elif record.state == "running":
+                state = "running"
+            elif record.state == "finished" and type(record.exit_code) is int:
+                finished = record.finished_at
+                if finished is None or timezone.is_naive(finished) or not started <= finished <= now:
+                    raise ValueError
+                state = "ready" if record.exit_code == 0 and now - finished <= MAX_AGE else "failed"
+    except (DatabaseError, ValueError, TypeError):
+        # Missing migrations / DB failure must not grant activation or leak SQL.
         state, finished = "unverified", None
     return {"ready": state == "ready", "code": state, "detail": MESSAGES[state],
             "success_at": finished if state == "ready" else None}

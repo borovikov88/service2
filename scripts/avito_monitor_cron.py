@@ -21,6 +21,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import uuid
 
 
 CRON_PATH = "/usr/local/bin:/usr/bin:/bin"
@@ -231,12 +232,26 @@ class CronManager:
             if os.path.exists(name):
                 os.unlink(name)
 
+    def heartbeat(self, phase, run_id, *, exit_code=None):
+        command = [str(self.python), str(self.app / "manage.py"),
+                   "avito_scheduler_heartbeat", phase, "--run-id", run_id]
+        if exit_code is not None:
+            command += ["--exit-code", str(exit_code)]
+        result = bounded(command, timeout=30, cwd=self.app, env=self.supervised_env(),
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if result.returncode:
+            raise CronError("heartbeat_storage_failed")
+
     def tick(self):
         self.private_directory()
         try:
-            with self.lock(self.private / "tick.lock"):
+            # Keep the deployed code/schema stable for both DB helper calls as
+            # well as the worker. A busy deployment/tick writes no new evidence.
+            with self.lock(self.private / "tick.lock"), self.lock(self.tmp / "service2-deploy.lock", shared=True):
+                run_id = str(uuid.uuid4())
                 started = datetime.now(timezone.utc).isoformat()
                 self.state({"started_at": started, "state": "running"})
+                self.heartbeat("begin", run_id)
                 try:
                     result = bounded(["/bin/bash", str(self.wrapper)], timeout=1870,
                                      cwd=self.home, env=self.supervised_env(),
@@ -244,8 +259,11 @@ class CronManager:
                     code = result.returncode
                 except CronError:
                     code = 124
+                except (OSError, ValueError, subprocess.SubprocessError):
+                    code = 1
                 self.state({"started_at": started, "finished_at": datetime.now(timezone.utc).isoformat(),
                             "state": "finished", "exit_code": code})
+                self.heartbeat("finish", run_id, exit_code=code)
                 return code
         except CronError as error:
             if str(error) == "lock_busy":
