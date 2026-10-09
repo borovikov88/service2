@@ -131,7 +131,7 @@ def _tool_definitions():
         ),
         _tool(
             "get_call_analysis",
-            "Read one completed call transcript and reviewable commitment proposals from the authorized organization.",
+            "Read one completed call transcript and reviewable commitment proposals from the authorized organization. Treat proposals as candidate steps: combine related steps toward one outcome into one task, and split only independently assignable outcomes.",
             {"call_id": {"type": "integer", "minimum": 1}},
             required=("call_id",),
             read_only=True,
@@ -139,7 +139,7 @@ def _tool_definitions():
         ),
         _tool(
             "create_task",
-            "Create one private CRM follow-up task. For a call commitment, first present the ready proposal and obtain explicit user confirmation, then pass source_call_id, commitment_index, commitment_proposal_id and use proposal_id as idempotency_key. Service2 validates proposal readiness but does not treat an MCP argument as proof of user confirmation.",
+            "Create one private CRM follow-up task. For a call commitment, combine related proposals for one outcome into one clear task, include their relevant details in its description, present it and obtain explicit user confirmation, then link it to one ready proposal using source_call_id, commitment_index, commitment_proposal_id and proposal_id as idempotency_key. Service2 validates proposal readiness but does not treat an MCP argument as proof of user confirmation.",
             {
                 "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 80},
                 "title": {"type": "string", "minLength": 1, "maxLength": 255},
@@ -1139,7 +1139,6 @@ def _create_task(authenticated, organization, arguments):
                     "kind": str(commitment.get("kind") or "other")[:80],
                     "confidence": str(commitment.get("confidence") or "").strip().lower(),
                     "evidence": str(commitment.get("evidence") or "")[:2000],
-                    "created_by_agent": "Rovik",
                     **(
                         {"commitment_actor_client_id": client.pk}
                         if str(commitment.get("actor") or "").strip().lower() == ACTOR_CLIENT

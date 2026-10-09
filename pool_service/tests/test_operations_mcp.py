@@ -550,7 +550,12 @@ class OperationsMcpTests(TestCase):
         self.assertEqual(task.created_by, self.owner)
         self.assertEqual(task.payload_json["commitment_actor_user_id"], self.manager.pk)
         self.assertNotIn("confirmed_by_user", task.payload_json)
-        self.assertEqual(task.payload_json["created_by_agent"], "Rovik")
+        self.assertNotIn("created_by_agent", task.payload_json)
+        self.assertTrue(
+            FinanceMcpGrant.objects.filter(
+                pk=task.payload_json["operations_mcp_grant_id"]
+            ).exists()
+        )
         self.assertEqual(task.payload_json["commitment_proposal_id"], proposal["proposal_id"])
 
         task.status = ServiceTask.STATUS_CANCELLED

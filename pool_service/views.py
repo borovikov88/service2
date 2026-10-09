@@ -171,12 +171,19 @@ from .services.phone_verification import (
 
 from .services.notifications import notify_reading_out_of_range, notify_superusers, notify_task_assignment
 from .client_crm_models import ClientCompanyLink, ClientContact, ClientCRMProfile
+from .communication_models import PhoneCall
+from .communication_services import conversation_capability
 from .phone_utils import format_phone, normalize_account_phone, normalize_phone as normalize_crm_phone
 from .services.task_archive import archive_task, restore_task
 from .services.crm_archive import archive_crm_item, restore_crm_item, sync_crm_archive_state
 from .services.crm_locking import lock_crm_graph, locked_task_with_crm_graph
 from .services.task_generation import sync_crm_item_for_task, sync_task_with_crm_item
-from .services.call_privacy import private_source_task_ids, task_source_is_private
+from .services.call_privacy import (
+    is_private_call,
+    locked_call_for_privacy,
+    private_source_task_ids,
+    task_source_is_private,
+)
 from .services.task_feedback import waiting_control
 from .services.task_waiting_schedule import (
     release_waiting_schedule,
@@ -7679,6 +7686,129 @@ def task_edit(request, task_id):
     if task.is_archived:
         is_edit_mode = False
 
+    task_call_context = None
+    task_payload = task.payload_json if isinstance(task.payload_json, dict) else {}
+    raw_source_call_id = task_payload.get("source_call_id")
+    try:
+        source_call_id = int(raw_source_call_id)
+    except (TypeError, ValueError):
+        source_call_id = 0
+    if source_call_id > 0:
+        with locked_call_for_privacy(source_call_id) as locked_source_call:
+            source_call = (
+                PhoneCall.objects.filter(
+                    pk=source_call_id,
+                    organization_id=task.organization_id,
+                ).select_related(
+                    "employee",
+                    "employee_profile",
+                    "peer_employee",
+                    "peer_employee_profile",
+                    "client",
+                ).first()
+                if locked_source_call
+                and locked_source_call.organization_id == task.organization_id
+                else None
+            )
+            if source_call and not is_private_call(source_call):
+                is_call_participant = request.user.id in {
+                    source_call.employee_id,
+                    source_call.peer_employee_id,
+                }
+                if source_call.source_kind == PhoneCall.SOURCE_UPLOADED:
+                    can_view_source_call = (
+                        request.user.is_superuser
+                        or OrganizationAccess.objects.filter(
+                            organization=task.organization,
+                            user=request.user,
+                            role__in=("owner", "admin"),
+                        ).exists()
+                    )
+                    call_url_name = "communication_manual_recordings"
+                else:
+                    can_view_source_call = (
+                        conversation_capability(
+                            request.user,
+                            "can_view_all_calls",
+                            task.organization,
+                        )
+                        or (
+                            is_call_participant
+                            and conversation_capability(
+                                request.user,
+                                "can_view_own_calls",
+                                task.organization,
+                            )
+                        )
+                    )
+                    call_url_name = "communications_calls"
+            else:
+                can_view_source_call = False
+                call_url_name = "communications_calls"
+            if can_view_source_call:
+                def _call_person(profile, user, fallback=""):
+                    if profile and profile.display_name:
+                        return profile.display_name
+                    if user:
+                        return user.get_full_name() or user.username
+                    return fallback or "Не определён"
+
+                employee_name = _call_person(
+                    source_call.employee_profile,
+                    source_call.employee,
+                    source_call.provider_user or source_call.provider_extension,
+                )
+                if source_call.direction == PhoneCall.DIRECTION_INTERNAL:
+                    other_name = _call_person(
+                        source_call.peer_employee_profile,
+                        source_call.peer_employee,
+                        source_call.peer_provider_user or source_call.peer_provider_extension,
+                    )
+                    caller_name = employee_name
+                    recipient_name = other_name
+                else:
+                    client_name = (
+                        source_call.client.name
+                        if source_call.client_id and source_call.client
+                        else task.client.name
+                        if task.client_id and task.client
+                        else source_call.contact_name
+                        or format_phone(source_call.phone_number)
+                        or "Клиент не определён"
+                    )
+                    if source_call.direction == PhoneCall.DIRECTION_IN:
+                        caller_name, recipient_name = client_name, employee_name
+                    else:
+                        caller_name, recipient_name = employee_name, client_name
+                call_started_at = (
+                    timezone.localtime(source_call.started_at)
+                    if timezone.is_aware(source_call.started_at)
+                    else source_call.started_at
+                )
+                task_call_context = {
+                    "id": source_call.pk,
+                    "started_at": call_started_at,
+                    "direction": source_call.get_direction_display(),
+                    "caller": caller_name,
+                    "recipient": recipient_name,
+                    "client": (
+                        source_call.client.name
+                        if source_call.client_id and source_call.client
+                        else task.client.name
+                        if task.client_id and task.client
+                        else "Клиент не сопоставлен"
+                    ),
+                    "task_creator": (
+                        task.created_by.get_full_name() or task.created_by.username
+                        if task.created_by_id and task.created_by
+                        else "Не указан"
+                    ),
+                    "url": (
+                        f"{reverse(call_url_name)}?"
+                        f"{urlencode({'call_id': source_call.pk})}#call-{source_call.pk}"
+                    ),
+                }
+
     next_url = request.GET.get("next") or request.POST.get("next") or ""
     allowed_responsible_ids = set(
         User.objects.filter(
@@ -7922,6 +8052,7 @@ def task_edit(request, task_id):
             "task_reading_title": reading_title,
             "task_creator_text": creator_text,
             "task_primary_responsible_text": primary_responsible_text,
+            "task_call_context": task_call_context,
         }
         template_name = "pool_service/task_view_modal.html" if is_modal else "pool_service/task_view.html"
         return render(request, template_name, context)

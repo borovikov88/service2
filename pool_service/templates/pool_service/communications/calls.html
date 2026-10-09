@@ -260,7 +260,7 @@
     </thead>
     <tbody>
       {% for call in calls %}
-        <tr class="{% if call.callback_at %}text-success{% elif call.missed_unreturned %}text-danger{% endif %}">
+        <tr id="call-{{ call.pk }}" class="{% if call.callback_at %}text-success{% elif call.missed_unreturned %}text-danger{% endif %}">
           {% if manual_archive %}
             <td>
               {% if call.recording_file %}

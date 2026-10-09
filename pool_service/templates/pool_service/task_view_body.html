@@ -385,6 +385,37 @@
     </section>
   </div>
 
+  {% if task_call_context %}
+    <section class="task-view__card">
+      <h3 class="task-view__card-title">Источник задачи — звонок №{{ task_call_context.id }}</h3>
+      <div class="task-view__meta">
+        <div class="task-view__meta-item">
+          <div class="task-view__label">Дата и тип</div>
+          <div class="task-view__value">{{ task_call_context.started_at|date:"d.m.Y H:i" }} · {{ task_call_context.direction }}</div>
+        </div>
+        <div class="task-view__meta-item">
+          <div class="task-view__label">Кто звонил</div>
+          <div class="task-view__value">{{ task_call_context.caller }}</div>
+        </div>
+        <div class="task-view__meta-item">
+          <div class="task-view__label">Кому</div>
+          <div class="task-view__value">{{ task_call_context.recipient }}</div>
+        </div>
+        <div class="task-view__meta-item">
+          <div class="task-view__label">Клиент</div>
+          <div class="task-view__value">{{ task_call_context.client }}</div>
+        </div>
+        <div class="task-view__meta-item">
+          <div class="task-view__label">Создатель задачи</div>
+          <div class="task-view__value">{{ task_call_context.task_creator }}</div>
+        </div>
+        <div class="task-view__meta-item">
+          <a href="{{ task_call_context.url }}">Открыть звонок</a>
+        </div>
+      </div>
+    </section>
+  {% endif %}
+
   <section class="task-view__card">
     <h3 class="task-view__card-title">Участники</h3>
     <div class="task-view__participants">

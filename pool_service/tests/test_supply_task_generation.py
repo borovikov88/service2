@@ -3,6 +3,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
+from pool_service.communication_models import CommunicationAccess, PhoneCall, TelephonyConnection
 from pool_service.models import Client, CrmItem, Notification, Organization, OrganizationAccess, Pool, ServiceTask, WaterReading
 from pool_service.services.notifications import notify_task_assignment
 from pool_service.services.task_archive import archive_task, restore_task
@@ -263,6 +264,146 @@ class SupplyTaskGenerationTests(TestCase):
         edit_response = self.client.get(f'{reverse("task_edit", kwargs={"task_id": task.id})}?edit=1')
         self.assertEqual(edit_response.status_code, 200)
         self.assertTemplateUsed(edit_response, "pool_service/task_form.html")
+
+    def test_call_source_task_shows_authorized_call_context_and_link(self):
+        connection = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="Task source line",
+            external_id="task-source-line",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=connection,
+            external_id="task-source-call-1",
+            employee=self.manager,
+            client=self.pool_client,
+            phone_number=self.pool_client.phone,
+            direction=PhoneCall.DIRECTION_OUT,
+            started_at=timezone.now(),
+            duration_seconds=60,
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        task = ServiceTask.objects.create(
+            organization=self.organization,
+            title="Договориться о встрече",
+            description="Согласовать выезд к клиенту.",
+            created_by=self.service_user,
+            source_type=ServiceTask.SOURCE_SYSTEM,
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            payload_json={"source_call_id": call.pk},
+            start_date=timezone.localdate(),
+            end_date=timezone.localdate(),
+        )
+        task.responsibles.add(self.manager)
+
+        self.client.force_login(self.manager)
+        response = self.client.get(reverse("task_edit", kwargs={"task_id": task.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, f"Источник задачи — звонок №{call.pk}")
+        self.assertContains(response, "Кто звонил")
+        self.assertContains(response, "Кому")
+        self.assertContains(response, self.pool_client.name)
+        self.assertContains(response, "Создатель задачи")
+        self.assertContains(response, self.service_user.username)
+        self.assertNotContains(response, "Operations MCP")
+        self.assertContains(
+            response,
+            f'{reverse("communications_calls")}?call_id={call.pk}#call-{call.pk}',
+        )
+
+        call_response = self.client.get(
+            reverse("communications_calls"), {"call_id": call.pk}
+        )
+        self.assertEqual(call_response.status_code, 200)
+        self.assertContains(call_response, f'id="call-{call.pk}"')
+        self.assertEqual(len(call_response.context["calls"]), 1)
+
+    def test_call_source_details_are_hidden_without_call_access(self):
+        connection = TelephonyConnection.objects.create(
+            organization=self.organization,
+            name="Restricted task source line",
+            external_id="restricted-task-source-line",
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            connection=connection,
+            external_id="restricted-task-source-call-1",
+            employee=self.manager,
+            client=self.pool_client,
+            phone_number=self.pool_client.phone,
+            direction=PhoneCall.DIRECTION_OUT,
+            started_at=timezone.now(),
+            duration_seconds=60,
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        task = ServiceTask.objects.create(
+            organization=self.organization,
+            title="Follow up with client",
+            created_by=self.service_user,
+            source_type=ServiceTask.SOURCE_SYSTEM,
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            payload_json={"source_call_id": call.pk},
+            start_date=timezone.localdate(),
+            end_date=timezone.localdate(),
+        )
+
+        self.client.force_login(self.service_user)
+        response = self.client.get(reverse("task_edit", kwargs={"task_id": task.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, f"Источник задачи — звонок №{call.pk}")
+        self.assertNotContains(response, "Открыть звонок")
+
+    def test_uploaded_call_context_is_hidden_from_manager_participant(self):
+        CommunicationAccess.objects.update_or_create(
+            organization=self.organization,
+            user=self.manager,
+            defaults={"can_view_own_calls": True},
+        )
+        call = PhoneCall.objects.create(
+            organization=self.organization,
+            external_id="uploaded-task-source-call-1",
+            source_kind=PhoneCall.SOURCE_UPLOADED,
+            employee=self.manager,
+            client=self.pool_client,
+            phone_number=self.pool_client.phone,
+            direction=PhoneCall.DIRECTION_OUT,
+            started_at=timezone.now(),
+            duration_seconds=60,
+            result=PhoneCall.RESULT_ANSWERED,
+        )
+        task = ServiceTask.objects.create(
+            organization=self.organization,
+            title="Согласовать встречу",
+            created_by=self.service_user,
+            source_type=ServiceTask.SOURCE_SYSTEM,
+            task_type=ServiceTask.TYPE_CRM_FOLLOWUP,
+            payload_json={"source_call_id": call.pk},
+            start_date=timezone.localdate(),
+            end_date=timezone.localdate(),
+        )
+        task.responsibles.add(self.manager)
+
+        self.client.force_login(self.manager)
+        response = self.client.get(reverse("task_edit", kwargs={"task_id": task.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, f"Источник задачи — звонок №{call.pk}")
+        self.assertNotContains(response, self.pool_client.name)
+        self.assertNotContains(response, "Открыть звонок")
+
+        self.client.force_login(self.admin)
+        admin_response = self.client.get(
+            reverse("task_edit", kwargs={"task_id": task.pk})
+        )
+        self.assertEqual(admin_response.status_code, 200)
+        self.assertContains(admin_response, f"Источник задачи — звонок №{call.pk}")
+        manual_call_response = self.client.get(
+            reverse("communication_manual_recordings"), {"call_id": call.pk}
+        )
+        self.assertEqual(manual_call_response.status_code, 200)
+        self.assertContains(manual_call_response, f'id="call-{call.pk}"')
 
     def test_deleted_task_is_archived_and_disappears_from_pool_history(self):
         reading = WaterReading.objects.create(

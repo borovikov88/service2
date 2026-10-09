@@ -810,6 +810,11 @@ def calls(request):
         queryset = queryset.filter(
             Q(employee=request.user) | Q(peer_employee=request.user)
         )
+    requested_call_id = (request.GET.get("call_id") or "").strip()
+    if requested_call_id:
+        if not requested_call_id.isdigit() or int(requested_call_id) <= 0:
+            raise Http404
+        queryset = queryset.filter(pk=int(requested_call_id))
     try:
         queryset = _filter_telephony_calls(
             request,
@@ -826,6 +831,8 @@ def calls(request):
         Client.objects.filter(organization=organization)
     ).order_by("name", "id")
     calls = visible_calls(list(queryset[:1000]))[:500]
+    if requested_call_id and not calls:
+        raise Http404
     unresolved_phone_values = [
         call.phone_number
         for call in calls
@@ -872,17 +879,27 @@ def manual_recordings(request):
         "analysis",
     ).defer("analysis__transcript")
 
+    requested_call_id = (request.GET.get("call_id") or "").strip()
+    if requested_call_id:
+        if not requested_call_id.isdigit() or int(requested_call_id) <= 0:
+            raise Http404
+        queryset = queryset.filter(pk=int(requested_call_id))
+
     try:
         queryset = _filter_uploaded_audio(request, queryset, organization)
     except ValueError as exc:
         return HttpResponseBadRequest(str(exc))
+
+    calls = list(queryset[:500])
+    if requested_call_id and not calls:
+        raise Http404
 
     clients = active_clients(
         Client.objects.filter(organization=organization)
     ).order_by("name", "id")
     return render(request, "pool_service/communications/calls.html", {
         "active_tab": "communications",
-        "calls": queryset[:500],
+        "calls": calls,
         "clients": clients,
         "can_listen": True,
         "can_view_all": True,
