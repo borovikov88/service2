@@ -3,6 +3,23 @@
 <html lang="ru" data-theme-preference="{{ theme_preference|default:'auto' }}">
 <head>
   <meta charset="utf-8" />
+  <style>
+    .notification-preview {
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      overflow: hidden;
+      overflow-wrap: anywhere;
+      line-height: 1.35;
+      max-height: 2.7em;
+    }
+    .notification-content { min-width: 0; flex: 1; }
+    .notification-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .toast-container .toast-body { padding: .5rem .75rem; }
+    #communication-alerts { max-height: 75vh; overflow-y: auto; }
+    #communication-alerts > .card { padding: .5rem .75rem; }
+    [data-close-visible-notifications] { align-self: flex-end; }
+  </style>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}{{ brand_name }}{% endblock %}</title>
   <meta name="theme-color" content="#f7f9fc" />
@@ -661,15 +678,18 @@
     {% endif %}
 
   <div class="toast-container position-fixed bottom-0 end-0 p-3">
+    <button type="button" class="btn btn-sm btn-secondary mb-2" data-close-visible-notifications hidden>Закрыть все</button>
   {% if messages %}
     {% for message in messages %}
       <div class="toast align-items-center text-bg-light border-0 shadow-sm mb-2 show" role="alert">
         <div class="d-flex">
             <div class="toast-body">
+              <div class="notification-preview">
               {% if message.tags %}
                 <span class="badge bg-light text-dark border me-2 text-uppercase">{{ message.tags }}</span>
               {% endif %}
               {{ message }}
+              </div>
             </div>
             <button type="button" class="btn-close me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
           </div>
@@ -679,7 +699,9 @@
   </div>
   <div id="offline-toast" class="offline-toast"></div>
   {% if user.is_authenticated and can_access_communications %}
-  <div id="communication-alerts" class="position-fixed bottom-0 end-0 p-3 d-flex flex-column gap-2" style="z-index:1095;max-width:min(420px,100vw);"></div>
+  <div id="communication-alerts" class="position-fixed bottom-0 end-0 p-3 d-flex flex-column gap-2" style="z-index:1095;max-width:min(420px,100vw);">
+    <button type="button" class="btn btn-sm btn-secondary" data-close-visible-notifications hidden>Закрыть все</button>
+  </div>
   {% endif %}
   {% if security_show_quick_setup_prompt and not hide_header %}
   <div class="modal fade" id="quickSecuritySetupModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
@@ -856,6 +878,21 @@
         toast.show();
       });
 
+      document.querySelectorAll("[data-close-visible-notifications]").forEach((button) => {
+        const container = button.parentElement;
+        const updateButton = () => {
+          button.hidden = !container.querySelector(".toast.show, [data-notification-id]");
+        };
+        button.addEventListener("click", () => {
+          // Snapshot only currently displayed cards; preserve each existing close handler.
+          const cards = Array.from(container.querySelectorAll(".toast.show, [data-notification-id]"));
+          cards.forEach((card) => card.querySelector(".btn-close:not(:disabled)")?.click());
+        });
+        container.addEventListener("hidden.bs.toast", updateButton);
+        new MutationObserver(updateButton).observe(container, {childList: true, subtree: true, attributes: true, attributeFilter: ["class"]});
+        updateButton();
+      });
+
       const communicationAlerts = document.getElementById("communication-alerts");
       if (communicationAlerts) {
         const feedUrl = "{% url 'communication_notification_feed' %}";
@@ -876,19 +913,20 @@
           const alert = document.createElement("div");
           alert.id = `communication-alert-${notification.id}`;
           alert.dataset.notificationId = notification.id;
-          alert.className = "card border-primary shadow p-3";
+          alert.className = "card border-primary shadow-sm";
           alert.setAttribute("role", "alert");
           const header = document.createElement("div");
-          header.className = "d-flex justify-content-between align-items-start gap-3";
+          header.className = "d-flex justify-content-between align-items-start gap-2";
           const content = document.createElement("div");
+          content.className = "notification-content";
           const title = document.createElement("div");
-          title.className = "fw-semibold";
+          title.className = "fw-semibold small notification-title";
           title.textContent = notification.title;
           const message = document.createElement("div");
-          message.className = "small mt-1";
+          message.className = "small mt-1 notification-preview";
           message.textContent = notification.message;
           const open = document.createElement("a");
-          open.className = "btn btn-sm btn-primary mt-2";
+          open.className = "btn btn-sm btn-primary mt-1 py-0";
           open.href = notification.action_url;
           open.textContent = "Открыть диалог";
           open.addEventListener("click", () => resolveNotification(notification.id).catch(() => {}));
