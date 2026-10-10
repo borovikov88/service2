@@ -19,7 +19,7 @@ from pool_service.communication_models import AvitoCredential, ChannelConnection
 KEY = "avito_autoload_auto"
 INTERVAL = timedelta(hours=1)
 RETRY = timedelta(minutes=15)
-SCAN_RESERVE_SECONDS = 85
+SCAN_RESERVE_SECONDS = 100
 BINDING_ERROR = "autoload_auto_binding_changed"
 
 

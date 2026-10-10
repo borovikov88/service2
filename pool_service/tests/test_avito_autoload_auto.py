@@ -219,3 +219,19 @@ class AutoloadAutoTests(TestCase):
             with self.assertRaises(CommandError):
                 call_command("monitor_avito_statuses", stdout=io.StringIO())
         scan.assert_called_once_with(subscription.pk)
+
+    def test_status_scan_survives_full_report_request_cost_with_short_shared_budget(self):
+        subscription = AvitoStatusMonitor.objects.create(connection=self.connection, organization=self.org,
+            recipient=self.owner, account_id="123", enabled=True)
+        for budget, expected_fetches in ((525, 0), (550, 1)):
+            with self.subTest(budget=budget):
+                self.due()
+                clock = [100.0]
+                def slow_report(*args, **kwargs):
+                    # token15 + profile8 + report55 + finalHTTP8, all accounted here.
+                    clock[0] += 86
+                    return report()
+                with patch("pool_service.management.commands.monitor_avito_statuses.time.monotonic", side_effect=lambda: clock[0]), patch("pool_service.management.commands.monitor_avito_statuses.scan_monitor", return_value=("baseline", 0)) as scan, patch.object(avito_autoload_report, "fetch_report", side_effect=slow_report) as fetch:
+                    call_command("monitor_avito_statuses", budget_seconds=budget, stdout=io.StringIO())
+                self.assertEqual(fetch.call_count, expected_fetches)
+                scan.assert_called_once_with(subscription.pk)
