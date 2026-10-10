@@ -5,6 +5,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 from pool_service.avito_status_monitor import SCAN_SECONDS, scan_monitor
 from pool_service.communication_models import AvitoStatusMonitor
+from pool_service import avito_autoload_auto
 
 
 class Command(BaseCommand):
@@ -34,6 +35,9 @@ class Command(BaseCommand):
         ids = list(AvitoStatusMonitor.objects.filter(enabled=True, next_due_at__lte=timezone.now())
                    .order_by("next_due_at", "pk").values_list("pk", flat=True)[:limit])
         counts = Counter()
+        # Reserve one full status scan before spending the shared budget on reports.
+        report_deadline = deadline - (SCAN_SECONDS + 20 if ids else 0)
+        reports = avito_autoload_auto.scan_due(deadline=report_deadline, limit=2)
         for monitor_id in ids:
             if deadline - time.monotonic() < SCAN_SECONDS + 20:
                 break
@@ -48,5 +52,7 @@ class Command(BaseCommand):
         self.stdout.write("AVITO_STATUS_MONITOR " + " ".join(
             f"{key}={counts[key]}" for key in ("baseline", "success", "failed", "skipped", "notifications")
         ))
-        if counts["failed"]:
-            raise CommandError("Avito status scan incomplete; inspect subscriber-only monitor state in Service2.")
+        self.stdout.write("AVITO_AUTOLOAD_REPORT " + " ".join(
+            f"{key}={reports[key]}" for key in ("success", "failed", "skipped")))
+        if counts["failed"] or reports["failed"]:
+            raise CommandError("Avito checks incomplete; inspect scoped state in Service2.")
