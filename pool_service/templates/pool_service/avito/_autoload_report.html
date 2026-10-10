@@ -18,6 +18,27 @@
   </div>
   <div class="avito-panel__body">
     {% include 'pool_service/avito/_section_state.html' with state=workspace.autoload_report %}
+    {% if autoload_auto_state.allowed %}
+      <div class="border rounded p-2 mb-3">
+        <p class="small mb-2"><strong>Почасовое чтение отчётов:</strong> {% if autoload_auto_state.enabled %}включено{% else %}выключено{% endif %}.
+          Обработчик читает последнюю обработанную загрузку сохранёнными ключами.
+          Первая проверка подтверждается временем успешного отчёта.</p>
+        {% if autoload_auto_state.last_success_at %}<p class="small mb-2">Последний успешный сбор: <time datetime="{{ autoload_auto_state.last_success_at|date:'c' }}" data-avito-time>{{ autoload_auto_state.last_success_at|date:'c' }}</time>.</p>{% else %}<p class="small mb-2">Успешный автоматический сбор ещё не подтверждён.</p>{% endif %}
+        {% if autoload_auto_state.last_error_detail %}<p class="small text-warning">{{ autoload_auto_state.last_error_detail }}</p>{% endif %}
+        {% if autoload_auto_state.needs_reactivation %}<p class="small text-warning">Настройки или права изменились. Включите сбор повторно.</p>{% endif %}
+        <p class="small text-muted mb-2">{{ autoload_auto_state.scheduler.detail }}</p>
+        <div class="d-flex flex-wrap gap-2">
+          {% if autoload_auto_state.enabled and not autoload_auto_state.needs_reactivation %}
+            <form method="post" action="{% url 'avito_configure_autoload_auto' selected.connection.pk %}" data-avito-submit>{% csrf_token %}<input type="hidden" name="action" value="retry"><button class="btn btn-sm btn-outline-secondary" type="submit">Проверить в следующем запуске</button></form>
+          {% else %}
+            <form method="post" action="{% url 'avito_configure_autoload_auto' selected.connection.pk %}" data-avito-submit>{% csrf_token %}<input type="hidden" name="action" value="enable"><button class="btn btn-sm btn-outline-primary" type="submit" {% if not selected.has_credentials or not autoload_auto_state.scheduler.ready %}disabled{% endif %}>Включить почасовую проверку</button></form>
+          {% endif %}
+          {% if autoload_auto_state.enabled %}
+            <form method="post" action="{% url 'avito_configure_autoload_auto' selected.connection.pk %}" data-avito-submit>{% csrf_token %}<input type="hidden" name="action" value="disable"><button class="btn btn-sm btn-outline-secondary" type="submit">Отключить</button></form>
+          {% endif %}
+        </div>
+      </div>
+    {% endif %}
     <p class="small text-muted">Отчёт читается через API Авито с сохранёнными ключами. «Последняя обработанная» может содержать ошибки отдельных объявлений. Исправления товаров, категорий и публикации не запускаются.</p>
     {% if workspace.autoload_report.data.complete %}
       {% with report=workspace.autoload_report.data %}

@@ -240,7 +240,7 @@ from .communication_views import (
     communication_telephony_edit,
     communication_telephony_set_active,
 )
-from .avito_management import avito_dashboard, avito_check_api, avito_refresh_data, avito_configure_monitor, avito_download_report
+from .avito_management import avito_dashboard, avito_check_api, avito_refresh_data, avito_configure_monitor, avito_download_report, avito_configure_autoload_auto
 from .communication_api import (
     avito_webhook,
     megafon_webhook,
@@ -253,6 +253,7 @@ from .communication_api import (
 
 urlpatterns = [
     path("avito/", avito_dashboard, name="avito_dashboard"),
+    path("avito/<int:connection_id>/autoload-auto/", avito_configure_autoload_auto, name="avito_configure_autoload_auto"),
     path("avito/<int:connection_id>/autoload-report.csv", avito_download_report, name="avito_download_report"),
     path("avito/<int:connection_id>/monitor/", avito_configure_monitor, name="avito_configure_monitor"),
     path("avito/<int:connection_id>/refresh/", avito_refresh_data, name="avito_refresh_data"),

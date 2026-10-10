@@ -36,7 +36,7 @@ from pool_service.communication_avito import (
 from pool_service.communication_models import (
     AvitoCredential, ChannelConnection, CommunicationChannel, Conversation, ConversationMessage,
 )
-from pool_service import avito_workspace, avito_status_monitor, avito_audit, avito_source_audit, avito_autoload_report
+from pool_service import avito_workspace, avito_status_monitor, avito_audit, avito_source_audit, avito_autoload_report, avito_autoload_auto
 from pool_service.communication_services import conversation_capability, organization_access
 from pool_service.communication_views import _avito_subscription_token
 
@@ -273,6 +273,7 @@ def avito_dashboard(request):
     return render(request, "pool_service/avito/dashboard.html", {
         "active_tab": "avito",
         "status_monitor_state": avito_status_monitor.display_state(selected["connection"] if selected else None, request.user),
+        "autoload_auto_state": avito_autoload_auto.display_state(selected["connection"] if selected else None, request.user),
         "selected": selected,
         "workspace": workspace,
         "expanded_item_id": expanded_item_id,
@@ -606,3 +607,26 @@ def avito_download_report(request, connection_id):
     response["Content-Disposition"] = f'attachment; filename="avito-autoload-{data["upload_id"]}.csv"'
     response["X-Content-Type-Options"] = "nosniff"
     return response
+
+
+@login_required
+@require_POST
+@never_cache
+def avito_configure_autoload_auto(request, connection_id):
+    organization = _scope(request)
+    connection = get_object_or_404(
+        ChannelConnection.objects.select_related("channel"), pk=connection_id,
+        channel__organization=organization, channel__kind=CommunicationChannel.KIND_AVITO,
+    )
+    action = request.POST.get("action", "")
+    try:
+        avito_autoload_auto.configure(connection, request.user, action)
+    except ValueError as exc:
+        messages.error(request, str(exc))
+    else:
+        messages.success(request, {
+            "enable": "Почасовое чтение отчётов включено. Результат появится после запуска серверного обработчика.",
+            "disable": "Почасовое чтение отчётов отключено.",
+            "retry": "Чтение отчёта запрошено для следующего запуска обработчика.",
+        }[action])
+    return redirect(reverse("avito_dashboard") + "?" + urlencode({"account": connection.pk}) + "#avito-autoload-report-heading")
