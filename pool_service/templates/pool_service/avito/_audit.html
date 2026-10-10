@@ -1,0 +1,46 @@
+<section class="avito-panel mb-3" aria-labelledby="avito-audit-heading">
+  <div class="avito-panel__header">
+    <h2 class="avito-panel__title" id="avito-audit-heading">Подготовка к аудиту объявлений</h2>
+    <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" data-avito-submit>
+      {% include 'pool_service/avito/_refresh_fields.html' %}
+      <input type="hidden" name="section" value="audit">
+      <button type="submit" class="btn btn-sm btn-outline-primary" {% if not selected.has_credentials %}disabled{% endif %}>Проверить весь список</button>
+    </form>
+  </div>
+  <div class="avito-panel__body">
+    <p class="small text-muted">Проверка всех страниц и пяти доступных статусов Item API выбранного аккаунта. Неопубликованные объявления и архив в личном кабинете Авито могут иметь другой состав. Публикацию выполняет XML сайта; этот отчёт ничего не меняет в Авито.</p>
+    {% include 'pool_service/avito/_section_state.html' with state=workspace.audit %}
+    {% if workspace.audit.data.complete %}
+      <p class="mb-2">Полный обход доступного через API списка: <strong>{{ workspace.audit.data.total }}</strong> объявлений, страниц: {{ workspace.audit.data.pages }}.</p>
+      <div class="d-flex flex-wrap gap-3 mb-3">
+        {% for row in workspace.audit.data.counts %}<span>{{ row.label }}: <strong>{{ row.count }}</strong></span>{% endfor %}
+      </div>
+      <p class="small mb-2">Возможные дубли среди активных: {{ workspace.audit.data.duplicate_candidate_count }} объявлений в {{ workspace.audit.data.duplicate_group_count }} группах с одинаковым названием. Это повод для сверки товара, варианта и XML ID; совпадение названия не подтверждает дубль.</p>
+      {% if workspace.audit.data.duplicate_groups %}
+        <div class="table-responsive">
+          <table class="table table-sm align-middle">
+            <caption class="visually-hidden">Активные объявления с одинаковыми названиями для ручной сверки</caption>
+            <thead><tr><th scope="col">Название</th><th scope="col">Количество</th><th scope="col">ID Авито</th></tr></thead>
+            <tbody>{% for group in workspace.audit.data.duplicate_groups %}<tr><td>{{ group.title }}</td><td>{{ group.count }}</td><td>{{ group.ids|join:", " }}{% if group.omitted %} — ещё {{ group.omitted }}{% endif %}</td></tr>{% endfor %}</tbody>
+          </table>
+        </div>
+        {% if workspace.audit.data.duplicate_groups_omitted %}<p class="small text-muted">Показаны первые 25 групп; ещё {{ workspace.audit.data.duplicate_groups_omitted }} групп учтены в итогах.</p>{% endif %}
+      {% endif %}
+    {% else %}
+      <p class="mb-3">Полный список ещё не проверен. Количество и отсутствие дублей не подтверждены.</p>
+    {% endif %}
+    <div class="table-responsive">
+      <table class="table table-sm mb-0">
+        <caption class="small text-muted">Готовность данных для дальнейшего аудита</caption>
+        <thead><tr><th scope="col">Проверка</th><th scope="col">Состояние</th></tr></thead>
+        <tbody>
+          <tr><td>Статусы всех объявлений, доступных через Item API</td><td>{% if workspace.audit.status == 'ok' and workspace.audit.data.complete %}Проверены на время снимка{% elif workspace.audit.data.complete %}Есть предыдущий снимок; текущая проверка не завершена{% else %}Не проверены{% endif %}</td></tr>
+          <tr><td>Сопоставление с XML сайта и тремя правилами выгрузки</td><td>Не проверено — нужен XML и настройки правил</td></tr>
+          <tr><td>Фактические остатки, включая нулевое наличие</td><td>Не проверены — нужен источник остатков и связь с товаром</td></tr>
+          <tr><td>ТН ВЭД и причины ошибок автозагрузки по объявлениям</td><td>Не проверены — нужен подробный отчёт автозагрузки</td></tr>
+          <tr><td>Причины снятия и истечения объявлений</td><td>Не проверены — статус сам по себе не объясняет причину</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>

@@ -422,6 +422,20 @@ class AvitoFullScanTests(AvitoMonitorFixture, TestCase):
             monitor.full_scan(self.connection)
         page.assert_not_called()
 
+    def test_manual_budget_can_be_shortened_without_changing_scheduled_budget(self):
+        with patch.object(monitor.time, "monotonic", return_value=100), patch.object(monitor, "_page", return_value={"resources": []}) as page:
+            monitor.full_scan(self.connection, scan_seconds=60)
+            self.assertEqual(page.call_args.args[3], 160)
+            monitor.full_scan(self.connection)
+            self.assertEqual(page.call_args.args[3], 100 + monitor.SCAN_SECONDS)
+            monitor.full_scan(self.connection, scan_seconds=9999)
+            self.assertEqual(page.call_args.args[3], 100 + monitor.SCAN_SECONDS)
+
+    def test_expired_manual_budget_fails_instead_of_returning_complete(self):
+        with patch.object(monitor.time, "monotonic", side_effect=[100, 161]), patch.object(monitor, "_page", return_value={"resources": []}):
+            with self.assertRaisesMessage(AvitoError, "monitor_scan_limit"):
+                monitor.full_scan(self.connection, scan_seconds=60)
+
     def test_page_bound_is_failure_not_truncated_success(self):
         with patch.object(monitor, "MAX_PAGES", 1), self.assertRaisesMessage(AvitoError, "monitor_scan_limit"):
             self.scan_pages([{"resources": [listing(x) for x in range(50)]}])
