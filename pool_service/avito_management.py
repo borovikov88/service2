@@ -16,13 +16,13 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.db.models import Count, Q
-from django.http import Http404
+from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils.dateparse import parse_datetime
 from django.utils import timezone
 from django.views.decorators.cache import never_cache
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_POST, require_GET
 
 from pool_service.communication_avito import (
     AvitoError,
@@ -36,7 +36,7 @@ from pool_service.communication_avito import (
 from pool_service.communication_models import (
     AvitoCredential, ChannelConnection, CommunicationChannel, Conversation, ConversationMessage,
 )
-from pool_service import avito_workspace, avito_status_monitor, avito_audit, avito_source_audit
+from pool_service import avito_workspace, avito_status_monitor, avito_audit, avito_source_audit, avito_autoload_report
 from pool_service.communication_services import conversation_capability, organization_access
 from pool_service.communication_views import _avito_subscription_token
 
@@ -313,6 +313,7 @@ def avito_check_api(request, connection_id):
 
 
 class WorkspaceRefreshForm(forms.Form):
+    autoload_kind = forms.ChoiceField(choices=[(x, x) for x in avito_autoload_report.KINDS], required=False)
     section = forms.ChoiceField(choices=[(x, x) for x in ("all", *avito_workspace.SECTIONS)])
     page = forms.IntegerField(min_value=1, max_value=10000, required=False, initial=1)
     status = forms.ChoiceField(choices=[("", "Все"), *avito_workspace.ITEM_STATUSES.items()], required=False)
@@ -389,6 +390,8 @@ def _local_analytics(request, connection):
 
 
 def _workspace_failure(section, exc):
+    if section == "autoload_report" and str(exc) in avito_autoload_report.ERRORS:
+        return {"status": "warning", "detail": avito_autoload_report.ERRORS[str(exc)], "code": str(exc)}
     if section == "source_audit":
         code = str(exc) if str(exc) in avito_source_audit.ERRORS else "source_unavailable"
         return {"status": "warning", "detail": avito_source_audit.failure_detail(code), "code": code}
@@ -479,7 +482,10 @@ def avito_refresh_data(request, connection_id):
         for key in targets:
             checked_at = timezone.now().isoformat()
             try:
-                if key == "source_audit":
+                if key == "autoload_report":
+                    data = avito_autoload_report.fetch_report(token, actual_id, kind=form.cleaned_data["autoload_kind"] or "last_successful")
+                    checked_at = timezone.now().isoformat()
+                elif key == "source_audit":
                     data = avito_source_audit.fetch_report()
                     checked_at = timezone.now().isoformat()
                 elif key == "audit":
@@ -572,3 +578,31 @@ def avito_configure_monitor(request, connection_id):
             "retry": "Повторная проверка запрошена. Её выполнит серверный планировщик.",
         }[action])
     return redirect(reverse("communication_connection_edit", args=[connection.pk]) + "#avito-status-monitor")
+
+
+@login_required
+@require_GET
+@never_cache
+def avito_download_report(request, connection_id):
+    organization = _scope(request)
+    connection = get_object_or_404(
+        ChannelConnection.objects.select_related("channel"), pk=connection_id,
+        channel__organization=organization, channel__kind=CommunicationChannel.KIND_AVITO,
+    )
+    settings_data = connection.settings if isinstance(connection.settings, dict) else {}
+    workspace = settings_data.get("avito_workspace")
+    if not isinstance(workspace, dict) or workspace.get("account_id") != str(connection.external_id):
+        raise Http404
+    sections = workspace.get("sections")
+    state = sections.get("autoload_report") if isinstance(sections, dict) else None
+    if not isinstance(state, dict):
+        raise Http404
+    data = state.get("data")
+    try:
+        content = avito_autoload_report.csv_text(data, state.get("success_at", ""))
+    except AvitoError:
+        raise Http404 from None
+    response = HttpResponse(content, content_type="text/csv; charset=utf-8")
+    response["Content-Disposition"] = f'attachment; filename="avito-autoload-{data["upload_id"]}.csv"'
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
