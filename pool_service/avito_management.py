@@ -36,7 +36,7 @@ from pool_service.communication_avito import (
 from pool_service.communication_models import (
     AvitoCredential, ChannelConnection, CommunicationChannel, Conversation, ConversationMessage,
 )
-from pool_service import avito_workspace, avito_status_monitor, avito_audit
+from pool_service import avito_workspace, avito_status_monitor, avito_audit, avito_source_audit
 from pool_service.communication_services import conversation_capability, organization_access
 from pool_service.communication_views import _avito_subscription_token
 
@@ -389,6 +389,9 @@ def _local_analytics(request, connection):
 
 
 def _workspace_failure(section, exc):
+    if section == "source_audit":
+        code = str(exc) if str(exc) in avito_source_audit.ERRORS else "source_unavailable"
+        return {"status": "warning", "detail": avito_source_audit.failure_detail(code), "code": code}
     if section == "audit" and avito_audit.failure_detail(str(exc)):
         return {"status": "warning", "detail": avito_audit.failure_detail(str(exc)), "code": str(exc)}
     check_key = section if section in {"items", "balance", "autoload"} else "account"
@@ -466,15 +469,20 @@ def avito_refresh_data(request, connection_id):
     persisted = False
     actual_id = ""
     try:
-        token = access_token(connection)
-        profile = avito_workspace._get(token, "/core/v1/accounts/self")
-        actual_id = avito_workspace.profile_data(profile)["id"]
-        if actual_id != str(connection.external_id):
-            raise AvitoError("provider_account_mismatch")
+        token, profile = None, None
+        if section != "source_audit":
+            token = access_token(connection)
+            profile = avito_workspace._get(token, "/core/v1/accounts/self")
+            actual_id = avito_workspace.profile_data(profile)["id"]
+            if actual_id != str(connection.external_id):
+                raise AvitoError("provider_account_mismatch")
         for key in targets:
             checked_at = timezone.now().isoformat()
             try:
-                if key == "audit":
+                if key == "source_audit":
+                    data = avito_source_audit.fetch_report()
+                    checked_at = timezone.now().isoformat()
+                elif key == "audit":
                     data = avito_audit.fetch_report(connection)
                     checked_at = timezone.now().isoformat()
                 elif key == "statistics":

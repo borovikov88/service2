@@ -22,7 +22,7 @@ ITEM_STATUSES = {
     "blocked": "Заблокировано", "rejected": "Отклонено",
 }
 BASIC_SECTIONS = ("profile", "balance", "items", "autoload")
-SECTIONS = (*BASIC_SECTIONS, "statistics", "item_detail", "prices", "calls", "audit")
+SECTIONS = (*BASIC_SECTIONS, "statistics", "item_detail", "prices", "calls", "audit", "source_audit")
 
 
 DIAGNOSTIC_KEYS = {"token", "account", "messenger", "webhook", "items", "balance", "autoload"}

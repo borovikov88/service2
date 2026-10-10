@@ -29,14 +29,63 @@
     {% else %}
       <p class="mb-3">Полный список ещё не проверен. Количество и отсутствие дублей не подтверждены.</p>
     {% endif %}
+    <hr>
+    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+      <h3 class="h6 mb-0">XML магазина shop.aqualine22.ru</h3>
+      <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" data-avito-submit>
+        {% include 'pool_service/avito/_refresh_fields.html' %}
+        <input type="hidden" name="section" value="source_audit">
+        <button type="submit" class="btn btn-sm btn-outline-primary">Проверить XML магазина</button>
+      </form>
+    </div>
+    <p class="small text-muted">Читаются существующий файл /avito/avitofeed.xml и отдельная выгрузка остатков плагина. Настройки трёх правил, товары и объявления не изменяются. Связь XML с выбранным аккаунтом Авито ещё не подтверждена.</p>
+    {% include 'pool_service/avito/_section_state.html' with state=workspace.source_audit %}
+    {% if workspace.source_audit.data.complete %}
+      {% with source=workspace.source_audit.data %}
+        <p>Объявлений в XML: <strong>{{ source.total }}</strong>. Повторяющихся XML ID: <strong>{{ source.duplicate_id_count }}</strong>; лишних строк с этими ID: {{ source.duplicate_rows }}.</p>
+        <div class="table-responsive">
+          <table class="table table-sm">
+            <caption class="small text-muted">Проверка заполнения полей XML. Это не оценка позиции в поиске Авито.</caption>
+            <thead><tr><th scope="col">Поле отсутствует или пусто</th><th scope="col">Объявлений</th></tr></thead>
+            <tbody>
+              <tr><td>Корректный XML ID</td><td>{{ source.missing_id }}</td></tr>
+              <tr><td>Название</td><td>{{ source.missing_title }}</td></tr>
+              <tr><td>Описание</td><td>{{ source.missing_description }}</td></tr>
+              <tr><td>Фото</td><td>{{ source.missing_images }}</td></tr>
+              <tr><td>TNVEDCode</td><td>{{ source.missing_tnved }}</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="small text-muted">Отсутствие TNVEDCode посчитано по XML; обязательность поля для категории и причины предупреждений Авито требуют подробного отчёта автозагрузки. Код ТН ВЭД автоматически не подбирается.</p>
+        {% if source.samples %}
+          <details class="small mb-3"><summary>XML ID для проверки заполнения полей (до 25 строк)</summary>
+            <table class="table table-sm mt-2"><thead><tr><th scope="col">XML ID</th><th scope="col">Пустые или некорректные поля</th></tr></thead><tbody>
+              {% for row in source.samples %}<tr><td>{{ row.xml_id|default:"Отсутствует или некорректен" }}</td><td>{% for issue in row.issues %}{% if issue == 'missing_id' %}XML ID{% elif issue == 'missing_title' %}Название{% elif issue == 'missing_description' %}Описание{% elif issue == 'missing_images' %}Фото{% elif issue == 'missing_tnved' %}TNVEDCode{% endif %}{% if not forloop.last %}, {% endif %}{% endfor %}</td></tr>{% endfor %}
+            </tbody></table>
+          </details>
+        {% endif %}
+        {% if source.duplicate_ids %}
+          <p class="small">Повторяющиеся XML ID: {% for row in source.duplicate_ids %}{{ row.xml_id }} ({{ row.count }}){% if not forloop.last %}, {% endif %}{% endfor %}.{% if source.duplicate_ids_omitted %} Ещё {{ source.duplicate_ids_omitted }} ID учтены в итогах.{% endif %}</p>
+        {% endif %}
+        {% if source.stock.complete %}
+          <p>Остатки плагина сопоставлены по XML ID для {{ source.stock.matched }} товаров и вариантов. Нулевое или отрицательное наличие: <strong>{{ source.stock.nonpositive_count }}</strong>. Наличие неизвестно для {{ source.stock.unknown }} уникальных XML ID; строк остатков с ошибками: {{ source.stock.invalid_rows }}.</p>
+          {% if source.stock.nonpositive_ids %}<p class="small">XML ID без положительного остатка: {{ source.stock.nonpositive_ids|join:", " }}.{% if source.stock.nonpositive_omitted %} Ещё {{ source.stock.nonpositive_omitted }} ID учтены в итогах.{% endif %}</p>{% endif %}
+          <p class="small text-muted">Это количество из карточек магазина на время запроса. Физический склад и активность этих объявлений в Авито отдельно не подтверждены; результаты не запускают снятие объявлений.</p>
+        {% else %}
+          <p class="small text-warning">Наличие не проверено. {{ source.stock.detail }}</p>
+        {% endif %}
+      {% endwith %}
+    {% else %}
+      <p class="small">XML магазина ещё не проверен. Ошибки выгрузки и остатки не подтверждены.</p>
+    {% endif %}
     <div class="table-responsive">
       <table class="table table-sm mb-0">
         <caption class="small text-muted">Готовность данных для дальнейшего аудита</caption>
         <thead><tr><th scope="col">Проверка</th><th scope="col">Состояние</th></tr></thead>
         <tbody>
           <tr><td>Статусы всех объявлений, доступных через Item API</td><td>{% if workspace.audit.status == 'ok' and workspace.audit.data.complete %}Проверены на время снимка{% elif workspace.audit.data.complete %}Есть предыдущий снимок; текущая проверка не завершена{% else %}Не проверены{% endif %}</td></tr>
-          <tr><td>Сопоставление с XML сайта и тремя правилами выгрузки</td><td>Не проверено — нужен XML и настройки правил</td></tr>
-          <tr><td>Фактические остатки, включая нулевое наличие</td><td>Не проверены — нужен источник остатков и связь с товаром</td></tr>
+          <tr><td>Сопоставление с XML сайта и тремя правилами выгрузки</td><td>{% if workspace.source_audit.data.complete %}XML проверен; настройки правил и связь с аккаунтом не проверены{% else %}XML ещё не проверен; настройки правил не прочитаны{% endif %}</td></tr>
+          <tr><td>Фактические остатки, включая нулевое наличие</td><td>{% if workspace.source_audit.status == 'ok' and workspace.source_audit.data.stock.complete %}Есть снимок остатков магазина по XML ID; склад и активность в Авито не подтверждены{% else %}Не проверены — нужен источник остатков и связь с товаром{% endif %}</td></tr>
           <tr><td>ТН ВЭД и причины ошибок автозагрузки по объявлениям</td><td>Не проверены — нужен подробный отчёт автозагрузки</td></tr>
           <tr><td>Причины снятия и истечения объявлений</td><td>Не проверены — статус сам по себе не объясняет причину</td></tr>
         </tbody>
