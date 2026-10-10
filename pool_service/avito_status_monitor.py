@@ -144,8 +144,8 @@ def _page(token, account_id, page, deadline):
     }))
 
 
-def full_scan(connection):
-    deadline = time.monotonic() + SCAN_SECONDS
+def full_scan(connection, *, scan_seconds=SCAN_SECONDS):
+    deadline = time.monotonic() + min(scan_seconds, SCAN_SECONDS)
     token = access_token(connection)
     profile = api.profile_data(api._get(token, "/core/v1/accounts/self"))
     account_id = profile["id"]

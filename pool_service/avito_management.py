@@ -36,7 +36,7 @@ from pool_service.communication_avito import (
 from pool_service.communication_models import (
     AvitoCredential, ChannelConnection, CommunicationChannel, Conversation, ConversationMessage,
 )
-from pool_service import avito_workspace, avito_status_monitor
+from pool_service import avito_workspace, avito_status_monitor, avito_audit
 from pool_service.communication_services import conversation_capability, organization_access
 from pool_service.communication_views import _avito_subscription_token
 
@@ -389,6 +389,8 @@ def _local_analytics(request, connection):
 
 
 def _workspace_failure(section, exc):
+    if section == "audit" and avito_audit.failure_detail(str(exc)):
+        return {"status": "warning", "detail": avito_audit.failure_detail(str(exc)), "code": str(exc)}
     check_key = section if section in {"items", "balance", "autoload"} else "account"
     failure = _failure(check_key, exc)
     result = {key: failure[key] for key in ("status", "detail", "code")}
@@ -472,7 +474,10 @@ def avito_refresh_data(request, connection_id):
         for key in targets:
             checked_at = timezone.now().isoformat()
             try:
-                if key == "statistics":
+                if key == "audit":
+                    data = avito_audit.fetch_report(connection)
+                    checked_at = timezone.now().isoformat()
+                elif key == "statistics":
                     data = avito_workspace.fetch_statistics(token, actual_id,
                         start=form.cleaned_data["stats_date_from"], end=form.cleaned_data["stats_date_to"],
                         grouping=form.cleaned_data["grouping"] or "totals", offset=form.cleaned_data["offset"] or 0)
