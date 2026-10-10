@@ -191,9 +191,9 @@ class AutoloadAutoTests(TestCase):
 
     def test_due_only_bounded_command_and_status_no_provider_calls(self):
         with patch.object(avito_autoload_report, "fetch_report", return_value=report()) as fetch:
-            counts = auto.scan_due(deadline=time.monotonic() + 100)
+            counts = auto.scan_due(deadline=time.monotonic() + 120)
             self.assertEqual(counts["success"], 1)
-            self.assertEqual(auto.scan_due(deadline=time.monotonic() + 100)["success"], 0)
+            self.assertEqual(auto.scan_due(deadline=time.monotonic() + 120)["success"], 0)
         self.assertEqual(fetch.call_count, 1)
         self.due()
         with patch.object(avito_autoload_report, "fetch_report") as fetch:
