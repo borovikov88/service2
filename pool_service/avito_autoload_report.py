@@ -39,6 +39,10 @@ def _text(value, limit=200):
         _invalid()
     text = " ".join(value.split())
     text = "".join(char for char in text if char >= " " and char != "\x7f")
+    # Provider messages can echo quoted JSON credentials, including spaced values.
+    # Discard the whole marked text rather than guessing the value's delimiter.
+    if re.search(r"(?i)\b(access_token|client_secret|refresh_token|password)\b", text):
+        return "[текст с учётными данными скрыт]"
     # Descriptions can echo rejected contact fields or signed URLs.
     text = re.sub(r"https?://\S+", "[ссылка скрыта]", text, flags=re.I)
     text = re.sub(r"[\w.+%-]+@[\w.-]+\.[A-Za-z]{2,}", "[email скрыт]", text)

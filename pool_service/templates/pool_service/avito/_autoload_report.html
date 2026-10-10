@@ -1,12 +1,20 @@
 <section class="avito-panel mb-3" aria-labelledby="avito-autoload-report-heading">
   <div class="avito-panel__header">
     <h2 class="avito-panel__title" id="avito-autoload-report-heading">Ошибки автозагрузки по объявлениям</h2>
-    <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" data-avito-submit class="d-flex flex-wrap gap-2">
-      {% include 'pool_service/avito/_refresh_fields.html' %}
-      <input type="hidden" name="section" value="autoload_report">
-      <button type="submit" class="btn btn-sm btn-outline-primary" name="autoload_kind" value="current" {% if not selected.has_credentials %}disabled{% endif %}>Текущая загрузка</button>
-      <button type="submit" class="btn btn-sm btn-outline-primary" name="autoload_kind" value="last_successful" {% if not selected.has_credentials %}disabled{% endif %}>Последняя обработанная</button>
-    </form>
+    <div class="d-flex flex-wrap gap-2">
+      <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" data-avito-submit>
+        {% include 'pool_service/avito/_refresh_fields.html' %}
+        <input type="hidden" name="section" value="autoload_report">
+        <input type="hidden" name="autoload_kind" value="current">
+        <button type="submit" class="btn btn-sm btn-outline-primary" {% if not selected.has_credentials %}disabled{% endif %}>Текущая загрузка</button>
+      </form>
+      <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" data-avito-submit>
+        {% include 'pool_service/avito/_refresh_fields.html' %}
+        <input type="hidden" name="section" value="autoload_report">
+        <input type="hidden" name="autoload_kind" value="last_successful">
+        <button type="submit" class="btn btn-sm btn-outline-primary" {% if not selected.has_credentials %}disabled{% endif %}>Последняя обработанная</button>
+      </form>
+    </div>
   </div>
   <div class="avito-panel__body">
     {% include 'pool_service/avito/_section_state.html' with state=workspace.autoload_report %}

@@ -1,5 +1,6 @@
 import csv
 import io
+from html.parser import HTMLParser
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
@@ -109,6 +110,23 @@ class AutoloadReportTests(SimpleTestCase):
         for secret in ("a@example.com", "79991234567", "secret=1", "private-token", "private-key"):
             self.assertNotIn(secret, message["description"])
 
+    def test_quoted_credentials_in_messages_and_global_events_are_not_saved(self):
+        secrets = [
+            '{"client_secret": "private key with spaces", "access_token":"private-token"}',
+            "'refresh_token' = 'private token'",
+            'password: "private password with spaces"',
+        ]
+        for text in secrets:
+            with self.subTest(text=text):
+                row = item()
+                row["messages"][0]["description"] = text
+                summary = upload()
+                summary["events"] = [{"code": 7, "type": "error", "description": text}]
+                with patch.object(avito_workspace, "_get", side_effect=[summary, page([row]), summary]), patch.object(avito_workspace, "enforce_rate"):
+                    data = report_api.fetch_report("token", "123")
+                self.assertNotIn("private", str(data))
+                self.assertNotIn("private", report_api.csv_text(data, "2026-10-10T11:00:00Z"))
+
     def test_csv_uses_cached_full_rows_with_formula_guard_and_global_events(self):
         data = saved_report()
         data["rows"][0]["ad_id"] = "=1+1"
@@ -171,6 +189,36 @@ class AutoloadReportViewTests(TestCase):
         self.assertIn("attachment", csv_response["Content-Disposition"])
         self.assertIn("no-store", csv_response["Cache-Control"])
         self.assertFalse(Notification.objects.exists())
+
+    def test_kind_is_sent_even_when_submit_handler_disables_buttons(self):
+        class Forms(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.forms, self.current = [], None
+
+            def handle_starttag(self, tag, attrs):
+                attrs = dict(attrs)
+                if tag == "form":
+                    self.current = {"action": attrs.get("action"), "fields": {}}
+                elif tag == "input" and self.current is not None and attrs.get("name") and "disabled" not in attrs:
+                    self.current["fields"][attrs["name"]] = attrs.get("value", "")
+                # Buttons disabled by avito-dashboard.js are not successful controls.
+
+            def handle_endtag(self, tag):
+                if tag == "form" and self.current is not None:
+                    self.forms.append(self.current)
+                    self.current = None
+
+        response = self.client.get(reverse("avito_dashboard"))
+        parser = Forms()
+        parser.feed(response.content.decode())
+        forms = [form for form in parser.forms if form["action"] == self.refresh
+                 and form["fields"].get("section") == "autoload_report"]
+        self.assertEqual([form["fields"].get("autoload_kind") for form in forms], ["current", "last_successful"])
+        for form in forms:
+            with patch.object(report_api, "fetch_report", return_value=self.sample()) as fetch:
+                self.client.post(form["action"], form["fields"])
+                fetch.assert_called_once_with("test-token", "123", kind=form["fields"]["autoload_kind"])
 
     def test_failed_refresh_keeps_previous_data_and_success_time(self):
         with patch.object(report_api, "fetch_report", return_value=self.sample()):
