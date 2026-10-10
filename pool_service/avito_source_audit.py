@@ -82,6 +82,10 @@ def _read_xml(path):
                 raise AvitoError("source_limit")
             chunks, size = [], 0
             while True:
+                # read1 may close fp (and the last socket owner) on the final
+                # Content-Length bytes. Never touch that closed transport.
+                if response.isclosed():
+                    break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise AvitoError("source_limit")
@@ -144,7 +148,10 @@ class _Description(HTMLParser):
 
 def _has_description(value):
     parser = _Description()
-    parser.feed(value)
+    try:
+        parser.feed(value)
+    except AssertionError:
+        raise AvitoError("source_xml_invalid") from None
     return bool("".join(parser.parts).strip())
 
 
@@ -193,11 +200,20 @@ def stock_report(payload, feed_ids):
     invalid_ids = set()
     invalid_rows = 0
     for item in root:
-        identifier = _identifier(_text(item, "id"))
-        raw = _text(item, "stock")
-        if not identifier:
+        id_nodes, stock_nodes = item.findall("id"), item.findall("stock")
+        identifiers = {
+            value for node in id_nodes
+            if (value := _identifier("".join(node.itertext()).strip()))
+        }
+        if (len(id_nodes) != 1 or len(stock_nodes) != 1 or len(identifiers) != 1
+                or len(id_nodes[0]) or len(stock_nodes[0])):
             invalid_rows += 1
+            invalid_ids.update(identifiers)
+            for identifier in identifiers:
+                values.pop(identifier, None)
             continue
+        identifier = next(iter(identifiers))
+        raw = (stock_nodes[0].text or "").strip()
         if identifier in values or identifier in invalid_ids or not re.fullmatch(r"-?[0-9]{1,9}", raw):
             invalid_ids.add(identifier)
             values.pop(identifier, None)

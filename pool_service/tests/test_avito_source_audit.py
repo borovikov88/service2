@@ -1,8 +1,12 @@
+from datetime import timedelta
+import http.client
+import socket
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth.models import User
 from django.test import Client, SimpleTestCase, TestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from pool_service import avito_source_audit as source
 from pool_service.communication_avito import AvitoError
@@ -55,6 +59,21 @@ class AvitoSourceReportTests(SimpleTestCase):
         self.assertEqual(report["nonpositive_ids"], ["2_3"])
         self.assertEqual(report["invalid_rows"], 1)
 
+    def test_conflicting_child_fields_in_stock_do_not_confirm_zero(self):
+        for row in (
+            '<item><id>1</id><stock>0</stock><stock>5</stock></item>',
+            '<item><id>1</id><id>2</id><stock>0</stock></item>',
+            '<item><id>1</id><stock><nested>0</nested></stock></item>',
+        ):
+            payload = ('<items><item><id>2</id><stock>8</stock></item>' + row + '</items>').encode()
+            with self.subTest(row=row):
+                report = source.stock_report(payload, {"1", "2"})
+                self.assertEqual(report["nonpositive_count"], 0)
+                self.assertGreaterEqual(report["unknown"], 1)
+                self.assertEqual(report["invalid_rows"], 1)
+                if "<id>2</id>" in row:
+                    self.assertEqual(report["matched"], 0)
+
     def test_stock_failure_keeps_complete_feed_but_no_fabricated_stock_totals(self):
         with patch.object(source, "_read_xml", side_effect=[feed(ad()), AvitoError("secret-payload")]) as read:
             report = source.fetch_report()
@@ -74,6 +93,7 @@ class AvitoSourceTransportTests(SimpleTestCase):
         headers = headers or {}
         response.getheader.side_effect = lambda name, default=None: headers.get(name, default)
         response.read1.side_effect = chunks or [feed(""), b""]
+        response.isclosed.return_value = False
         connection = MagicMock()
         connection.getresponse.return_value = response
         return connection, response
@@ -112,6 +132,35 @@ class AvitoSourceTransportTests(SimpleTestCase):
         connection, _ = self.response()
         with patch.object(source.time, "monotonic", side_effect=[0, 0, 0, 21]), patch.object(source.socket, "getaddrinfo", return_value=self.public_dns()), patch.object(source, "_PinnedHTTPS", return_value=connection), self.assertRaises(AvitoError):
             source._read_xml(source.FEED_PATH)
+
+    def test_real_http_response_content_length_and_chunked_connection_close(self):
+        payload = feed(ad())
+        bodies = [
+            b"Content-Length: " + str(len(payload)).encode() + b"\r\n\r\n" + payload,
+            b"Transfer-Encoding: chunked\r\n\r\n" + format(len(payload), "x").encode() + b"\r\n" + payload + b"\r\n0\r\n\r\n",
+        ]
+        for body in bodies:
+            with self.subTest(body=body[:35]):
+                client_socket, server_socket = socket.socketpair()
+                server_socket.sendall(b"HTTP/1.1 200 OK\r\nConnection: close\r\n" + body)
+                server_socket.close()
+                response = http.client.HTTPResponse(client_socket)
+                connection = MagicMock(sock=client_socket)
+                def getresponse():
+                    response.begin()
+                    # Match HTTPConnection.getresponse for will_close: fp now
+                    # owns the transport until read1 consumes the final bytes.
+                    client_socket.close()
+                    connection.sock = None
+                    return response
+                connection.getresponse.side_effect = getresponse
+                connection.close.side_effect = response.close
+                try:
+                    with patch.object(source.socket, "getaddrinfo", return_value=self.public_dns()), patch.object(source, "_PinnedHTTPS", return_value=connection):
+                        self.assertEqual(source._read_xml(source.FEED_PATH), payload)
+                finally:
+                    response.close()
+                    client_socket.close()
 
     def test_tls_checks_original_host_and_socket_is_closed_on_tls_error(self):
         transport = MagicMock()
@@ -194,6 +243,16 @@ class AvitoSourceViewTests(TestCase):
         self.connection.refresh_from_db()
         self.assertNotIn("source_audit", self.connection.settings.get("avito_workspace", {}).get("sections", {}))
         self.assertNotIn("avito_workspace_refresh_lease", self.connection.settings)
+
+    def test_active_lease_blocks_source_read(self):
+        self.connection.settings = {
+            "avito_workspace_refresh_until": (timezone.now() + timedelta(minutes=2)).isoformat(),
+            "avito_workspace_refresh_lease": "existing-test-lease",
+        }
+        self.connection.save(update_fields=["settings"])
+        with patch.object(source, "fetch_report") as read:
+            self.client.post(self.refresh, {"section": "source_audit"})
+        read.assert_not_called()
 
     def test_general_refresh_does_not_fetch_source(self):
         with patch.object(source, "fetch_report") as read, patch("pool_service.avito_management.access_token", return_value="test"), patch("pool_service.avito_workspace._get", return_value={"id": 123}), patch("pool_service.avito_workspace.fetch_section", return_value={}):
