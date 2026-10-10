@@ -22,7 +22,7 @@ ITEM_STATUSES = {
     "blocked": "Заблокировано", "rejected": "Отклонено",
 }
 BASIC_SECTIONS = ("profile", "balance", "items", "autoload")
-SECTIONS = (*BASIC_SECTIONS, "statistics", "item_detail", "prices", "calls", "audit", "source_audit")
+SECTIONS = (*BASIC_SECTIONS, "statistics", "item_detail", "prices", "calls", "audit", "source_audit", "autoload_report")
 
 
 DIAGNOSTIC_KEYS = {"token", "account", "messenger", "webhook", "items", "balance", "autoload"}
@@ -145,6 +145,9 @@ def items_data(response, *, page, status):
 
 
 def autoload_data(response):
+    if "upload_id" in response and isinstance(response.get("stats"), dict) and "sections" in response["stats"]:
+        from pool_service.avito_autoload_report import summary_for_workspace
+        return summary_for_workspace(response)
     # v4 contracts vary by API entitlement. Accept only known display fields;
     # unfamiliar successful payloads must not masquerade as an empty report.
     raw = response

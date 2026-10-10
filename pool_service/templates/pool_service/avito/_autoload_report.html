@@ -1,0 +1,49 @@
+<section class="avito-panel mb-3" aria-labelledby="avito-autoload-report-heading">
+  <div class="avito-panel__header">
+    <h2 class="avito-panel__title" id="avito-autoload-report-heading">Ошибки автозагрузки по объявлениям</h2>
+    <div class="d-flex flex-wrap gap-2">
+      <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" data-avito-submit>
+        {% include 'pool_service/avito/_refresh_fields.html' %}
+        <input type="hidden" name="section" value="autoload_report">
+        <input type="hidden" name="autoload_kind" value="current">
+        <button type="submit" class="btn btn-sm btn-outline-primary" {% if not selected.has_credentials %}disabled{% endif %}>Текущая загрузка</button>
+      </form>
+      <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" data-avito-submit>
+        {% include 'pool_service/avito/_refresh_fields.html' %}
+        <input type="hidden" name="section" value="autoload_report">
+        <input type="hidden" name="autoload_kind" value="last_successful">
+        <button type="submit" class="btn btn-sm btn-outline-primary" {% if not selected.has_credentials %}disabled{% endif %}>Последняя обработанная</button>
+      </form>
+    </div>
+  </div>
+  <div class="avito-panel__body">
+    {% include 'pool_service/avito/_section_state.html' with state=workspace.autoload_report %}
+    <p class="small text-muted">Отчёт читается через API Авито с сохранёнными ключами. «Последняя обработанная» может содержать ошибки отдельных объявлений. Исправления товаров, категорий и публикации не запускаются.</p>
+    {% if workspace.autoload_report.data.complete %}
+      {% with report=workspace.autoload_report.data %}
+        <p>Загрузка <strong>{{ report.upload_id }}</strong> · {% if report.kind == 'current' %}Текущая{% else %}Последняя обработанная{% endif %} · Статус Авито: {{ report.upload_status|default:"Не передан" }}.</p>
+        {% if not report.upload_finished %}<p class="small text-warning">Загрузка ещё не подтверждена завершённой. Это предварительный снимок; её результаты могут измениться.</p>{% endif %}
+        <p>Весь доступный список загрузки: {{ report.total }} строк, {{ report.pages }} страниц. Критические сообщения: {{ report.counts.error|default:0 }} объявлений; предупреждения: {{ report.counts.warning|default:0 }}; alarm: {{ report.counts.alarm|default:0 }}. Одно объявление может входить в несколько счётчиков.</p>
+        <a class="btn btn-sm btn-outline-secondary mb-3" href="{% url 'avito_download_report' selected.connection.pk %}">Скачать отчёт CSV</a>
+        <p class="small text-muted">CSV содержит все строки сохранённого снимка. На экране показаны первые 200 строк, включая сообщения. Длинные сообщения усечены с отметкой; контакты и ссылки скрыты.</p>
+        {% for event in report.events %}<p class="small">{{ event.type }} · {{ event.code }}: {{ event.description }}</p>{% endfor %}
+        <div class="table-responsive">
+          <table class="table table-sm align-top">
+            <thead><tr><th scope="col">XML ID / ID Авито</th><th scope="col">Статус / раздел</th><th scope="col">Причины и предупреждения</th></tr></thead>
+            <tbody>{% for row in report.rows|slice:":200" %}<tr>
+              <td>{{ row.ad_id }}{% if row.feed_name %}<div class="small text-muted">Файл: {{ row.feed_name }}</div>{% endif %}<div class="small text-muted">{{ row.avito_id|default_if_none:"ID Авито не передан" }}</div></td>
+              <td>{{ row.status_label }}{% if row.avito_date_end %}<div class="small text-muted">Оплачено до: <time datetime="{{ row.avito_date_end }}" data-avito-time>{{ row.avito_date_end }}</time></div>{% endif %}<div class="small text-muted">{{ row.section.title }}</div></td>
+              <td>{% for message in row.messages %}
+                <details class="small mb-2"><summary>{% if message.type == 'error' %}Критическая ошибка{% elif message.type == 'warning' %}Предупреждение{% elif message.type == 'alarm' %}Сигнал{% else %}Информация{% endif %} · {{ message.code }} · {{ message.title }}</summary>
+                  <p class="mb-1">{{ message.description }}</p>
+                  <div class="text-muted">Актуально: <time datetime="{{ message.updated_at }}" data-avito-time>{{ message.updated_at }}</time>{% if message.truncated %} · Текст усечён{% endif %}</div>
+                </details>
+              {% empty %}<span class="small text-muted">Сообщений в этой строке нет</span>{% endfor %}</td>
+            </tr>{% empty %}<tr><td colspan="3">Авито вернул завершённый пустой список в рамках этой загрузки.</td></tr>{% endfor %}</tbody>
+          </table>
+        </div>
+        <p class="small text-muted">«В архиве» и «Удалено навсегда» — разные статусы API автозагрузки. Причина удаления определяется сообщением Авито; один статус не указывает, кто и почему удалил объявление.</p>
+      {% endwith %}
+    {% else %}<p class="small">Подробный отчёт ещё не получен. Количество ошибок и причины не подтверждены.</p>{% endif %}
+  </div>
+</section>
