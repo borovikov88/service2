@@ -123,6 +123,23 @@ class ReadonlyAvitoOperatorTests(TestCase):
         result = self.collect_connection(upload=changed)
         self.assertEqual(result, {"connection_id": self.connection.pk, "error": "provider_account_mismatch"})
 
+    def test_changes_during_final_self_read_discard_every_result(self):
+        for mutation in ("keys", "capability"):
+            with self.subTest(mutation=mutation):
+                CommunicationAccess.objects.filter(organization=self.org).update(can_manage_channels=True)
+                AvitoCredential.objects.filter(connection=self.connection).update(client_secret_encrypted="synthetic-secret")
+                calls = [0]
+                def final_self(_connection):
+                    calls[0] += 1
+                    if calls[0] == 2:
+                        if mutation == "keys":
+                            AvitoCredential.objects.filter(connection=self.connection).update(client_secret_encrypted="rotated-secret")
+                        else:
+                            CommunicationAccess.objects.filter(organization=self.org).update(can_manage_channels=False)
+                    return "123"
+                result = self.collect_connection(account=final_self)
+                self.assertEqual(result, {"connection_id": self.connection.pk, "error": "provider_account_mismatch"})
+
     def test_provider_denial_is_not_fabricated_no_link_or_successful_zero_report(self):
         result = self.collect_connection(detail=[AvitoError("provider_http_403"), {"status": "old", "autoload_item_id": ""}],
                                          upload=[AvitoError("provider_http_403")])

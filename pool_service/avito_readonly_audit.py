@@ -151,8 +151,9 @@ def collect_connection(connection, item_ids, index):
                                               if str(row["avito_id"]) == item["item_id"]][:10]
         except Exception as error:
             summary = {"error": safe_error(error)}
+        final_account_id = authorized_account_id(connection)
         after = binding(connection)
-        if before != after or authorized_account_id(connection) != account_id:
+        if before != after or final_account_id != account_id:
             raise AvitoError("provider_account_mismatch")
         return identity | {"account_id": account_id, "items": items, "autoload_report": summary}
     except Exception as error:
