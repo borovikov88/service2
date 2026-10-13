@@ -46,7 +46,7 @@ def safe_text(value, limit):
 def price(value):
     if value is None:
         return None
-    require(isinstance(value, str) and len(value) <= 24)
+    require(isinstance(value, str) and re.fullmatch(r"[0-9]{1,13}(?:\.[0-9]{1,6})?", value))
     try:
         number = Decimal(value)
     except InvalidOperation:

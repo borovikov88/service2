@@ -50,6 +50,9 @@ class ReadonlyReceiptTests(SimpleTestCase):
         self.assertIsNone(index["PRIVATE CONTACT"][0]["xml_id"])
         self.assertIsNone(index["PRIVATE CONTACT"][0]["price"])
         self.assertNotIn("PRIVATE CONTACT", str(source))
+        for amount in ("0E+999999999", "1e-999999", "NaN", "Infinity", "-1"):
+            with self.assertRaises(ValueError):
+                receipt.price(amount)
 
     def test_provider_error_and_message_projection_withhold_credentials(self):
         self.assertEqual(audit.safe_error(RuntimeError("PRIVATE PASSWORD")), "audit_read_failed")
