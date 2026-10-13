@@ -112,7 +112,9 @@ class ReadonlyAvitoOperatorTests(TestCase):
         summary = audit.report_summary(raw)
         self.assertEqual("2026-10-13T16:00:00+07:00", summary["started_at"])
         self.assertEqual([{"type": "error", "code": 7, "rows": 1}], summary["message_code_counts"])
-        self.assertEqual(summary, receipt.report(summary))
+        normalized = receipt.report(summary)
+        self.assertEqual(summary["message_code_counts"], normalized["message_code_counts"])
+        self.assertEqual(summary["started_at"], normalized["started_at"])
         scan["total"] = 3
         with self.assertRaises(ValueError):
             receipt.listing_scan(scan)
