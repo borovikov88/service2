@@ -309,6 +309,34 @@ jobs:
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
 
+      - name: Read explicitly requested Avito links and last upload report
+        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[avito-audit]')
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_PATH: ${{ secrets.DEPLOY_APP_PATH }}
+          AUDIT_ITEM_IDS: "7234733937,3842842492"
+        run: |
+          set -Eeuo pipefail
+          audit_temp="$(mktemp -d "$RUNNER_TEMP/avito-audit.XXXXXX")"
+          chmod 700 "$audit_temp"
+          trap 'rm -rf -- "$audit_temp"' EXIT
+          PORT="${DEPLOY_PORT:-22}"
+          printf -v REMOTE_COMMAND \
+            'set -Eeuo pipefail; cd %q; test ! -L ../tmp/service2-deploy.lock; exec 9>../tmp/service2-deploy.lock; flock -n 9; test "$(git rev-parse HEAD)" = %q; git diff --quiet HEAD -- pool_service service_site manage.py scripts; exec timeout 360 ../venv/bin/python manage.py audit_avito_readonly --item-ids %q' \
+            "$DEPLOY_APP_PATH" "$GITHUB_SHA" "$AUDIT_ITEM_IDS"
+          audit_exit=0
+          ssh -i ~/.ssh/service2_deploy \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+            -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND" \
+            >"$audit_temp/stdout" 2>"$audit_temp/stderr" || audit_exit=$?
+          python scripts/avito_readonly_receipt.py "$audit_temp/stdout"
+          if [[ "$audit_exit" != 0 ]]; then
+            echo "AVITO_READONLY_AUDIT_UNAVAILABLE transport_or_command_failed (deployment health checked separately)"
+          fi
+
   calculator:
     name: Publish calculator to the verified informational website
     if: >-
