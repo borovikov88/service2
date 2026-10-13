@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 FRAME = "AVITO_READONLY_AUDIT_RECEIPT "
 MAX_BYTES = 262144
 STATES = {"active", "removed", "old", "blocked", "rejected"}
-CODE_PATTERN = re.compile(r"(?:provider_http_[1-5][0-9]{2}|audit_[a-z_]{1,60}|autoload_report_[a-z_]{1,60}|source_[a-z_]{1,60}|provider_[a-z_]{1,60})\Z")
+CODE_PATTERN = re.compile(r"(?:monitor_(?:scan_limit|pagination_invalid|status_invalid)|provider_http_[1-5][0-9]{2}|audit_[a-z_]{1,60}|autoload_report_[a-z_]{1,60}|source_[a-z_]{1,60}|provider_[a-z_]{1,60})\Z")
 
 def require(value):
     if not value:
@@ -96,7 +96,46 @@ def report(value):
     result["critical_samples"] = sequence(value.get("critical_samples"), lambda row: {
         "xml_id": xml_id(row.get("xml_id")), "avito_id": identifier(row["avito_id"]) if row.get("avito_id") is not None else None,
         "messages": sequence(row.get("messages"), issue, 3)}, 25)
+    started_at = value.get("started_at")
+    if started_at is not None:
+        require(isinstance(started_at, str) and len(started_at) <= 40)
+        require(datetime.fromisoformat(started_at).utcoffset() == timedelta(hours=7))
+    result["started_at"] = started_at
+    if "message_code_counts" in value:
+        def message_count(row):
+            require(isinstance(row, dict) and row.get("type") in ("error", "warning", "alarm", "info"))
+            count = integer(row.get("rows"), 5000)
+            require(0 < count <= result["counts"][row["type"]])
+            return {"type": row["type"], "code": integer(row.get("code"), 10**12), "rows": count}
+        groups = sequence(value["message_code_counts"], message_count, 200)
+        require(len({(row["type"], row["code"]) for row in groups}) == len(groups))
+        result["message_code_counts"] = groups
     return result
+
+def listing_scan(value):
+    require(isinstance(value, dict))
+    if "error" in value:
+        return {"error": code(value["error"])}
+    require(value.get("complete") is True)
+    total = integer(value.get("total"), 5000)
+    pages = integer(value.get("pages"), 100)
+    require(pages > 0)
+    counts = {status: integer(value.get("counts", {}).get(status), 5000) for status in sorted(STATES)}
+    require(sum(counts.values()) == total)
+    def duplicate(row):
+        require(isinstance(row, dict))
+        digest = row.get("title_sha256")
+        require(isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest))
+        active_count = integer(row.get("active_count"), 5000)
+        ids = sequence(row.get("item_ids"), identifier, 10)
+        require(2 <= active_count <= counts["active"] and len(ids) == min(active_count, 10) and len(set(ids)) == len(ids))
+        return {"title_sha256": digest, "active_count": active_count, "item_ids": ids}
+    candidates = sequence(value.get("duplicate_candidates"), duplicate, 25)
+    group_count = integer(value.get("duplicate_title_group_count"), 2500)
+    require(len(candidates) == min(group_count, 25) and group_count * 2 <= counts["active"])
+    require(len({row["title_sha256"] for row in candidates}) == len(candidates))
+    return {"complete": True, "total": total, "pages": pages, "counts": counts,
+            "duplicate_title_group_count": group_count, "duplicate_candidates": candidates}
 
 def connection(value):
     require(isinstance(value, dict))
@@ -104,7 +143,8 @@ def connection(value):
     if "error" in value:
         return result | {"error": code(value["error"])}
     result.update(account_id=identifier(value.get("account_id")),
-                  items=sequence(value.get("items"), item, 10), autoload_report=report(value.get("autoload_report")))
+                  items=sequence(value.get("items"), item, 10), autoload_report=report(value.get("autoload_report")),
+                  listing_scan=listing_scan(value.get("listing_scan", {"error": "audit_listing_scan_not_requested"})))
     return result
 
 def normalize(value):
@@ -126,7 +166,9 @@ def normalize(value):
         result["source"] = {"sha256": digest, "xml_rows": integer(source.get("xml_rows"), 5000),
                             "laguna_candidates": sequence(source.get("laguna_candidates"), feed_item, 25)}
     result["connections"] = sequence(value.get("connections"), connection, 2)
-    result["full_account_listing_scan_verified"] = False
+    result["full_account_listing_scan_verified"] = bool(result["connections"]) and all(
+        "error" not in row and row["listing_scan"].get("complete") is True for row in result["connections"])
+    result["listing_stock_reconciliation_verified"] = False
     result["account_feed_url_verified"] = False
     require(len(json.dumps(result, ensure_ascii=False).encode()) <= MAX_BYTES)
     return result

@@ -36,3 +36,18 @@ unverified. This is not a full inventory of all account listings.
 Reports may be incomplete/denied; their absence never becomes a successful zero.
 Critical messages are bounded and contact/credential text is redacted again.
 No deletion, deactivation, promotion or shop database/profile edit is performed.
+
+Full listing scans now use the existing strict full_scan helper (60-second
+budget per connection, shared throttling, up to 100 pages/5,000 listings).
+Only complete scans return status counts; failures carry a safe error and never
+fabricated zero counts. Duplicate-title groups are candidates, with numeric IDs
+and a title SHA-256; raw titles are withheld. Snapshot count does not prove stock
+or the historical reason for expiry. listing_stock_reconciliation_verified
+remains false. Account/key/role binding is rechecked after all reads.
+
+Autoload report aggregates count distinct affected rows by message type/code
+across the full report, not only the bounded sample. Code groups are capped at
+200; incomplete/invalid aggregates fail closed. Error rows take priority over
+alarm-only rows in samples. started_at is the provider upload start converted
+to Asia/Barnaul, separately from checked_at. No collection activation, database
+business-data writes, listing changes, ID recreation or paid services result.

@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 from django.utils import timezone
 
-from pool_service import avito_autoload_report, avito_source_audit, avito_workspace
+from pool_service import avito_autoload_report, avito_source_audit, avito_workspace, avito_status_monitor
 from pool_service.communication_avito import AvitoError, access_token, authorized_account_id, _provider_root
 from pool_service.communication_models import ChannelConnection, CommunicationAccess
 from pool_service.models import OrganizationAccess
@@ -17,7 +17,8 @@ from scripts.avito_readonly_receipt import normalize, safe_text, xml_id, price
 MAX_CONNECTIONS = 2
 SAFE_ERRORS = {
     "provider_credentials_missing", "provider_credentials_invalid", "provider_token_missing",
-    "audit_provider_root_invalid", "audit_provider_cooldown",
+    "audit_provider_root_invalid", "audit_provider_cooldown", "audit_report_code_limit",
+    "monitor_scan_limit", "monitor_pagination_invalid", "monitor_status_invalid",
     "provider_account_id_missing", "provider_account_id_invalid", "provider_item_unavailable",
     "provider_account_mismatch", "provider_data_invalid", "provider_unavailable",
     "provider_response_too_large", "provider_invalid_json", "provider_invalid_response",
@@ -85,7 +86,13 @@ def binding(connection):
 
 def report_summary(report):
     samples = []
-    for row in report["rows"]:
+    rows = sorted(report["rows"], key=lambda row: not any(m["type"] == "error" for m in row["messages"]))
+    groups = defaultdict(int)
+    for row in rows:
+        for key in {(m["type"], m["code"]) for m in row["messages"]}:
+            groups[key] += 1
+        if len(groups) > 200:
+            raise AvitoError("audit_report_code_limit")
         critical = [message for message in row["messages"] if message["type"] in ("error", "alarm")]
         if critical and len(samples) < 25:
             samples.append({"xml_id": public_xml_id(row["ad_id"]),
@@ -94,7 +101,30 @@ def report_summary(report):
                                           "description": safe_text(m["description"], 700)} for m in critical[:3]]})
     return {"upload_id": report["upload_id"], "upload_status": report["upload_status"],
             "complete": report["complete"], "finished": report["upload_finished"], "total": report["total"],
-            "counts": report["counts"], "critical_samples": samples}
+            "counts": report["counts"], "critical_samples": samples,
+            "started_at": datetime.fromisoformat(report["started_at"]).astimezone(ZoneInfo("Asia/Barnaul")).isoformat() if report.get("started_at") else None,
+            "message_code_counts": [{"type": kind, "code": code, "rows": count}
+                                    for (kind, code), count in sorted(groups.items())]}
+
+def listing_summary(items, pages):
+    # full_scan validates complete pagination and account identity. Titles are
+    # used only locally; candidates expose a fingerprint and numeric IDs.
+    counts = {status: 0 for status in avito_workspace.ITEM_STATUSES}
+    by_title = defaultdict(list)
+    for item_id, item in items.items():
+        if (not isinstance(item_id, str) or not re.fullmatch(r"[0-9]{1,32}", item_id)
+                or item["status"] not in counts or not isinstance(item["title"], str)):
+            raise AvitoError("monitor_status_invalid")
+        counts[item["status"]] += 1
+        title = " ".join(item["title"].split()).casefold()
+        if item["status"] == "active" and title:
+            by_title[title].append(item_id)
+    duplicates = [ids for ids in by_title.values() if len(ids) > 1]
+    candidates = [{"title_sha256": hashlib.sha256(title.encode()).hexdigest(),
+                   "active_count": len(ids), "item_ids": sorted(ids)[:10]}
+                  for title, ids in by_title.items() if len(ids) > 1][:25]
+    return {"complete": True, "total": len(items), "pages": pages, "counts": counts,
+            "duplicate_title_group_count": len(duplicates), "duplicate_candidates": candidates}
 
 def item_link(item_id, detail, index):
     source_id = detail["autoload_item_id"]
@@ -151,11 +181,16 @@ def collect_connection(connection, item_ids, index):
                                               if str(row["avito_id"]) == item["item_id"]][:10]
         except Exception as error:
             summary = {"error": safe_error(error)}
+        try:
+            all_items, pages = avito_status_monitor.full_scan(connection, scan_seconds=60)
+            listing_scan = listing_summary(all_items, pages)
+        except Exception as error:
+            listing_scan = {"error": safe_error(error)}
         final_account_id = authorized_account_id(connection)
         after = binding(connection)
         if before != after or final_account_id != account_id:
             raise AvitoError("provider_account_mismatch")
-        return identity | {"account_id": account_id, "items": items, "autoload_report": summary}
+        return identity | {"account_id": account_id, "items": items, "autoload_report": summary, "listing_scan": listing_scan}
     except Exception as error:
         return identity | {"error": safe_error(error)}
 
@@ -176,7 +211,7 @@ def collect(item_ids):
         index, source = None, {"error": safe_error(error)}
     results = [collect_connection(connection, item_ids, index) for connection in connections]
     complete = "error" not in source and all(
-        "error" not in row and "error" not in row["autoload_report"] and all("error" not in item for item in row["items"])
+        "error" not in row and "error" not in row["autoload_report"] and "error" not in row["listing_scan"] and all("error" not in item for item in row["items"])
         for row in results
     )
     return normalize({"schema_version": 1, "status": "read" if complete else "partial",

@@ -94,8 +94,38 @@ class ReadonlyAvitoOperatorTests(TestCase):
              patch.object(audit, "fetch_detail", side_effect=detail or [
                  {"status": "active", "autoload_item_id": "1_2_3"},
                  {"status": "old", "autoload_item_id": "1_9_3"}]), \
-             patch.object(audit.avito_autoload_report, "fetch_report", side_effect=upload or [report()]):
+             patch.object(audit.avito_autoload_report, "fetch_report", side_effect=upload or [report()]), \
+             patch.object(audit.avito_status_monitor, "full_scan", return_value=({"101": {"status": "active", "title": "Synthetic pool"}, "102": {"status": "active", "title": "synthetic   pool"}}, 1)):
+
             return audit.collect_connection(self.connection, ["101", "102"], self.index)
+
+    def test_full_scan_and_report_codes_are_complete_sanitized_aggregates(self):
+        result = self.collect_connection()
+        scan = result["listing_scan"]
+        self.assertTrue(scan["complete"])
+        self.assertEqual(2, scan["counts"]["active"])
+        self.assertEqual(["101", "102"], scan["duplicate_candidates"][0]["item_ids"])
+        self.assertNotIn("Synthetic pool", json.dumps(scan))
+        raw = report()
+        raw["started_at"] = "2026-10-13T09:00:00+00:00"
+        raw["rows"][0]["messages"] *= 2
+        summary = audit.report_summary(raw)
+        self.assertEqual("2026-10-13T16:00:00+07:00", summary["started_at"])
+        self.assertEqual([{"type": "error", "code": 7, "rows": 1}], summary["message_code_counts"])
+        normalized = receipt.report(summary)
+        self.assertEqual(summary["message_code_counts"], normalized["message_code_counts"])
+        self.assertEqual(summary["started_at"], normalized["started_at"])
+        scan["total"] = 3
+        with self.assertRaises(ValueError):
+            receipt.listing_scan(scan)
+
+    def test_incomplete_listing_scan_remains_unknown_and_does_not_hide_report(self):
+        with patch.object(audit, "listing_summary", side_effect=AvitoError("monitor_scan_limit")):
+            result = self.collect_connection()
+        self.assertEqual({"error": "monitor_scan_limit"}, result["listing_scan"])
+        self.assertEqual(2, result["autoload_report"]["total"])
+        self.assertNotIn("counts", result["listing_scan"])
+        self.assertFalse(Notification.objects.exists())
 
     def test_real_scope_exact_ids_report_and_local_user_state_preserved(self):
         settings_before = self.connection.settings.copy()
@@ -162,3 +192,33 @@ class ReadonlyAvitoOperatorTests(TestCase):
         self.assertEqual(result["reason"], "audit_connection_limit")
         source.assert_not_called()
         account.assert_not_called()
+
+class FullListingProjectionTests(SimpleTestCase):
+    def test_full_scan_flags_are_per_scope_and_stock_audit_is_separate(self):
+        scan = audit.listing_summary({"101": {"status": "active", "title": "client_secret PRIVATE"}}, 1)
+        value = {"schema_version": 1, "status": "partial", "checked_at": "2026-10-13T12:00:00+07:00",
+                 "source": {"error": "source_unavailable"},
+                 "connections": [{"connection_id": 1, "account_id": "123", "items": [],
+                                  "autoload_report": {"error": "provider_http_401"}, "listing_scan": scan}]}
+        normalized = receipt.normalize(value)
+        self.assertTrue(normalized["full_account_listing_scan_verified"])
+        self.assertFalse(normalized["listing_stock_reconciliation_verified"])
+        self.assertNotIn("PRIVATE", json.dumps(normalized))
+        value["connections"].append({"connection_id": 2, "error": "provider_http_401"})
+        self.assertFalse(receipt.normalize(value)["full_account_listing_scan_verified"])
+
+    def test_error_samples_prioritize_errors_after_first_page_and_codes_count_all_rows(self):
+        raw = report()
+        alarm = {"type": "alarm", "code": 1134, "title": "ТН ВЭД", "description": "Документы"}
+        raw["rows"] = [{"ad_id": f"1_{i}_3", "avito_id": 200 + i, "messages": [alarm]} for i in range(30)]
+        raw["rows"].append({"ad_id": "1_99_3", "avito_id": 999,
+                            "messages": [{"type": "error", "code": 1150, "title": "Удалено", "description": "Причина"}]})
+        raw["counts"] = {"error": 1, "alarm": 30}
+        raw["total"] = 31
+        projected = receipt.report(audit.report_summary(raw))
+        self.assertEqual("1_99_3", projected["critical_samples"][0]["xml_id"])
+        self.assertEqual([{"type": "alarm", "code": 1134, "rows": 30},
+                          {"type": "error", "code": 1150, "rows": 1}], projected["message_code_counts"])
+        projected["message_code_counts"][0]["rows"] = 31
+        with self.assertRaises(ValueError):
+            receipt.report(projected)
