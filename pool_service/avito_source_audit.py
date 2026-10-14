@@ -194,7 +194,7 @@ def build_report(feed_payload):
     }, set(ids)
 
 
-def stock_report(payload, feed_ids):
+def stock_values(payload):
     root = _root(payload, "items")
     values = {}
     invalid_ids = set()
@@ -220,10 +220,15 @@ def stock_report(payload, feed_ids):
             invalid_rows += 1
             continue
         values[identifier] = int(raw)
+    return values, len(root), invalid_rows
+
+
+def stock_report(payload, feed_ids):
+    values, total, invalid_rows = stock_values(payload)
     matched = feed_ids & values.keys()
     nonpositive = sorted(identifier for identifier in matched if values[identifier] <= 0)
     return {
-        "complete": True, "total": len(root), "matched": len(matched),
+        "complete": True, "total": total, "matched": len(matched),
         "unknown": len(feed_ids - matched),
         "invalid_rows": invalid_rows,
         "nonpositive_count": len(nonpositive),

@@ -15,6 +15,30 @@
       <div class="d-flex flex-wrap gap-3 mb-3">
         {% for row in workspace.audit.data.counts %}<span>{{ row.label }}: <strong>{{ row.count }}</strong></span>{% endfor %}
       </div>
+
+      {% with inventory=workspace.audit.data.active_source_audit %}
+      <h3 class="h6 mt-3">Активные объявления и остатки магазина</h3>
+      {% if inventory.complete %}
+        <p>Активных объявлений проверено: <strong>{{ inventory.total }}</strong>.
+          Сопоставлено по ID отчёта и XML: <strong>{{ inventory.counts.report_xml_match }}</strong>.
+          Остаток магазина известен для {{ inventory.quantity_verified_rows }}.</p>
+        <p class="small text-muted">«Под заказ» сохраняется в выгрузке. Количество из карточки магазина не подтверждает физический склад или текущие остатки 1С.
+          Отсутствие объявления в отчёте или XML не означает нулевое наличие; автоматическое снятие не выполняется.</p>
+        <p>XML сообщает «В наличии» при неположительном остатке магазина: <strong>{{ inventory.in_stock_nonpositive_rows }}</strong>.
+          Под заказ в XML: {{ inventory.preorder_rows }}.</p>
+        <details class="mb-3"><summary>Сопоставление всех активных объявлений</summary>
+          <div class="table-responsive mt-2"><table class="table table-sm">
+            <thead><tr><th>ID Авито</th><th>Связь с выгрузкой</th><th>XML ID</th><th>Наличие в XML</th><th>Остаток магазина</th></tr></thead>
+            <tbody>{% for row in inventory.rows %}<tr>
+              <td>{{ row.item_id }}</td><td>{{ row.link_label }}</td><td>{{ row.xml_id|default_if_none:"Неизвестно" }}</td>
+              <td>{{ row.availability|default_if_none:"Неизвестно" }}</td><td>{{ row.shop_quantity|default_if_none:"Неизвестно" }}</td>
+            </tr>{% endfor %}</tbody>
+          </table></div>
+        </details>
+      {% else %}
+        <p class="small text-warning">Связь активных объявлений с остатками не проверена. Требуется доступный полный отчёт автозагрузки и XML магазина; неизвестные остатки не считаются нулевыми.</p>
+      {% endif %}
+      {% endwith %}
       <p class="small mb-2">Возможные дубли среди активных: {{ workspace.audit.data.duplicate_candidate_count }} объявлений в {{ workspace.audit.data.duplicate_group_count }} группах с одинаковым названием. Это повод для сверки товара, варианта и XML ID; совпадение названия не подтверждает дубль.</p>
       {% if workspace.audit.data.duplicate_groups %}
         <div class="table-responsive">

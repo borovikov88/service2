@@ -5,6 +5,7 @@ import json
 import re
 import time
 from collections import Counter
+from urllib.parse import urlsplit
 
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -85,6 +86,29 @@ def _tree(node, depth=0):
     return result
 
 
+def shop_feed_source(feeds):
+    # Only publish a fixed source kind. Never retain names, URLs or tokens.
+    if not isinstance(feeds, list) or not 1 <= len(feeds) <= 50:
+        return "other_or_unknown"
+    kinds = []
+    for feed in feeds:
+        value = feed.get("url") if isinstance(feed, dict) else None
+        if not isinstance(value, str) or len(value) > 2000:
+            return "other_or_unknown"
+        try:
+            part = urlsplit(value)
+            if (part.scheme not in ("http", "https") or part.hostname != "shop.aqualine22.ru"
+                    or part.username is not None or part.password is not None
+                    or part.port not in (None, 80 if part.scheme == "http" else 443)
+                    or part.query or part.fragment):
+                return "other_or_unknown"
+        except ValueError:
+            return "other_or_unknown"
+        kinds.append({"/avito/avitofeed.xml": "shop_aggregate_file",
+                      "/avito/avitofeed_43.xml": "shop_profile_43_file"}.get(part.path, "other_or_unknown"))
+    return kinds[0] if len(set(kinds)) == 1 else "other_or_unknown"
+
+
 def summary_data(raw):
     if not isinstance(raw, dict):
         _invalid()
@@ -102,7 +126,8 @@ def summary_data(raw):
         normalized_events.append({"code": event["code"], "type": _text(event.get("type"), 50),
                                   "description": _text(event.get("description"), 3000)})
     return {"id": str(identifier), "status": status or "", "started_at": _date(raw.get("started_at"), nullable=True),
-            "stats": _tree(raw.get("stats")), "events": normalized_events}
+            "stats": _tree(raw.get("stats")), "events": normalized_events,
+            "shop_feed_source": shop_feed_source(raw["feed_urls"])}
 
 
 def summary_for_workspace(raw):
@@ -212,6 +237,7 @@ def fetch_report(token, account_id, *, kind="last_successful"):
     result = {"version": 1, "complete": True, "kind": kind, "upload_id": before["id"],
               "upload_status": before["status"], "upload_finished": before["status"] in {"success", "success_warning", "error"},
               "started_at": before["started_at"], "stats": before["stats"], "events": before["events"],
+              "shop_feed_source": before["shop_feed_source"],
               "total": len(rows), "pages": page, "counts": dict(counts), "rows": rows}
     if len(json.dumps(result, ensure_ascii=False).encode()) > MAX_BYTES:
         raise AvitoError("autoload_report_limit")
