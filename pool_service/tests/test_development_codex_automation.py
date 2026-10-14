@@ -1244,6 +1244,7 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         }
         allowed_automatic_workflows = {
             "avito-status-monitor.yml",
+            "avito-readonly-audit.yml",
             "call-recordings-sync.yml",
             "client-sync.yml",
             "employee-identity-sync.yml",
@@ -1266,7 +1267,17 @@ class DevelopmentCodexAutomationTests(CodexTestMixin, TestCase):
         for workflow in workflows:
             with self.subTest(workflow=workflow.name):
                 text = workflow.read_text(encoding="utf-8")
-                if workflow.name == "avito-status-monitor.yml":
+                if workflow.name == "avito-readonly-audit.yml":
+                    expected_triggers = ["schedule", "workflow_run", "workflow_dispatch"]
+                    self.assertIn("contents: read", text)
+                    self.assertIn("actions: read", text)
+                    self.assertIn("preflight", text)
+                    for forbidden in ("openai/codex-action", "codex exec", "OPENAI_API_KEY",
+                                      "CHATGPT_AUTH_JSON", "GITHUB_DEVELOPMENT_TOKEN",
+                                      "contents: write", "pull-requests: write", "actions: write",
+                                      "manage.py migrate", "collectstatic", "restart.txt"):
+                        self.assertNotIn(forbidden, text)
+                elif workflow.name == "avito-status-monitor.yml":
                     expected_triggers = ["workflow_dispatch"]
                 elif workflow.name in {"call-recordings-sync.yml", "client-sync.yml", "employee-identity-sync.yml"}:
                     expected_triggers = ["schedule", "workflow_dispatch"]
