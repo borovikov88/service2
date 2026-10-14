@@ -133,8 +133,9 @@ class AdvanceMonitorTests(TestCase):
 
     def test_other_admin_cannot_take_over_subscription_and_preferences_are_respected(self):
         self.enable()
-        other = User.objects.create_user("synthetic-other-owner")
-        OrganizationAccess.objects.create(user=other, organization=self.org, role="owner")
+        other = User.objects.create_user("synthetic-other-admin")
+        OrganizationAccess.objects.create(user=other, organization=self.org, role="admin")
+        self.assertTrue(advance.subscriber_allowed(other, self.org))
         for action in ("enable", "disable", "retry"):
             with self.assertRaises(PermissionDenied):
                 advance.configure(self.connection, other, action)
