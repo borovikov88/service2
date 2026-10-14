@@ -29,7 +29,8 @@ class Command(BaseCommand):
                 f"failed={monitors.filter(enabled=True).exclude(last_error_code='').count()}",
             )))
             scheduler = scheduler_state()
-            self.stdout.write(f"AVITO_SCHEDULER code={scheduler['code']} completed_worker={str(scheduler['worker_ready']).lower()}")
+            # Keep stdout exactly compatible with the cron readiness parser.
+            self.stderr.write(f"AVITO_SCHEDULER code={scheduler['code']} completed_worker={str(scheduler['worker_ready']).lower()}")
             return
         limit, budget = options["limit"], options["budget_seconds"]
         if not 1 <= limit <= 10 or not SCAN_SECONDS + 30 <= budget <= 1500:

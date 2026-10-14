@@ -159,10 +159,11 @@ class AvitoSchedulerEvidenceTests(TestCase):
 
     def test_status_is_read_only_and_zero_due_worker_does_not_self_certify(self):
         for options in ({"status": True}, {}):
-            output = io.StringIO()
-            call_command("monitor_avito_statuses", stdout=output, **options)
+            output, diagnostic = io.StringIO(), io.StringIO()
+            call_command("monitor_avito_statuses", stdout=output, stderr=diagnostic, **options)
             if options:
-                self.assertIn("AVITO_SCHEDULER code=unverified completed_worker=false", output.getvalue())
+                self.assertRegex(output.getvalue(), r"\AAVITO_STATUS_MONITOR_READY configured=\d+ enabled=\d+ baselined=\d+ due=\d+ running=\d+ failed=\d+\n\Z")
+                self.assertIn("AVITO_SCHEDULER code=unverified completed_worker=false", diagnostic.getvalue())
             self.assertFalse(AvitoSchedulerHeartbeat.objects.exists())
 
     def test_command_uses_exact_runtime_paths_and_never_mutates(self):
