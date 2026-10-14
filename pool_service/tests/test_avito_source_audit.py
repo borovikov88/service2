@@ -117,8 +117,7 @@ class AvitoSourceTransportTests(SimpleTestCase):
             https.assert_not_called()
 
     def test_stock_http_status_is_precise_and_redirect_location_is_withheld(self):
-        response = self.response(status=301, headers={"Location": "https://example.invalid/?token=PRIVATE"})
-        connection = self.connection(response)
+        connection, response = self.response(status=301, headers={"Location": "https://example.invalid/?token=PRIVATE"})
         with patch.object(source.socket, "getaddrinfo", return_value=self.public_dns()), patch.object(
                 source, "_PinnedHTTPS", return_value=connection), self.assertRaises(AvitoError) as raised:
             source._read_xml(source.STOCK_PATH)
