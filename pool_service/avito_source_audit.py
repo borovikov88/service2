@@ -13,7 +13,7 @@ from pool_service.communication_avito import AvitoError
 
 HOST = "shop.aqualine22.ru"
 FEED_PATH = "/avito/avitofeed.xml"
-STOCK_PATH = "/index.php?route=extension/module/avitofeed&stock"
+STOCK_PATH = "/index.php?route=extension/module/avitofeed&stock=1"
 FEED_URL = f"https://{HOST}{FEED_PATH}"
 MAX_BYTES = 2 * 1024 * 1024
 MAX_ITEMS = 5000
@@ -28,6 +28,8 @@ ERRORS = {
     "source_limit": "XML превышает ограничение размера, количества элементов или времени. Полнота проверки не подтверждена.",
     "source_xml_invalid": "Источник вернул некорректный XML или неподдерживаемую структуру. Полнота проверки не подтверждена.",
 }
+ERRORS.update({f"source_http_{status}": f"Источник сайта вернул HTTP {status}. Перенаправления не выполняются."
+               for status in range(100, 600)})
 
 
 def failure_detail(code):
@@ -75,7 +77,9 @@ def _read_xml(path):
             transport = connection.sock
             transport.settimeout(max(0.01, deadline - time.monotonic()))
             response = connection.getresponse()
-            if response.status != 200 or response.getheader("Content-Encoding", "identity") != "identity":
+            if response.status != 200:
+                raise AvitoError(f"source_http_{response.status}" if type(response.status) is int and 100 <= response.status < 600 else "source_http_invalid")
+            if response.getheader("Content-Encoding", "identity") != "identity":
                 raise AvitoError("source_http_invalid")
             declared = response.getheader("Content-Length")
             if declared is not None and (not declared.isdecimal() or int(declared) > MAX_BYTES):

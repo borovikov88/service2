@@ -109,6 +109,34 @@ def shop_feed_source(feeds):
     return kinds[0] if len(set(kinds)) == 1 else "other_or_unknown"
 
 
+def feed_source_diagnostics(feeds):
+    """Fixed structural facts only; URLs, names and parameter values stay private."""
+    if not isinstance(feeds, list) or len(feeds) > 50:
+        _invalid()
+    result = []
+    for feed in feeds:
+        value = feed.get("url") if isinstance(feed, dict) else feed if isinstance(feed, str) else None
+        shape = "object_url" if isinstance(feed, dict) and isinstance(value, str) else "string" if isinstance(feed, str) else "unsupported"
+        row = {"shape": shape, "scheme": "unknown", "host_kind": "unknown",
+               "path_kind": "unknown", "query_present": False,
+               "fragment_present": False, "credentials_present": False}
+        if isinstance(value, str) and len(value) <= 2000:
+            try:
+                part = urlsplit(value)
+                row.update(scheme=part.scheme if part.scheme in ("http", "https") else "unknown",
+                           host_kind={"shop.aqualine22.ru": "shop", "www.shop.aqualine22.ru": "shop_www",
+                                      "shop.borovidz.beget.tech": "shop_legacy"}.get(part.hostname, "other"),
+                           path_kind={"/avito/avitofeed.xml": "aggregate_file",
+                                      "/avito/avitofeed_43.xml": "profile_43_file",
+                                      "/index.php": "index_route", "/": "root"}.get(part.path, "other"),
+                           query_present=bool(part.query), fragment_present=bool(part.fragment),
+                           credentials_present=part.username is not None or part.password is not None)
+            except ValueError:
+                pass
+        result.append(row)
+    return result
+
+
 def summary_data(raw):
     if not isinstance(raw, dict):
         _invalid()
@@ -127,7 +155,8 @@ def summary_data(raw):
                                   "description": _text(event.get("description"), 3000)})
     return {"id": str(identifier), "status": status or "", "started_at": _date(raw.get("started_at"), nullable=True),
             "stats": _tree(raw.get("stats")), "events": normalized_events,
-            "shop_feed_source": shop_feed_source(raw["feed_urls"])}
+            "shop_feed_source": shop_feed_source(raw["feed_urls"]),
+            "shop_feed_diagnostics": feed_source_diagnostics(raw["feed_urls"])}
 
 
 def summary_for_workspace(raw):
@@ -238,6 +267,7 @@ def fetch_report(token, account_id, *, kind="last_successful"):
               "upload_status": before["status"], "upload_finished": before["status"] in {"success", "success_warning", "error"},
               "started_at": before["started_at"], "stats": before["stats"], "events": before["events"],
               "shop_feed_source": before["shop_feed_source"],
+              "shop_feed_diagnostics": before["shop_feed_diagnostics"],
               "total": len(rows), "pages": page, "counts": dict(counts), "rows": rows}
     if len(json.dumps(result, ensure_ascii=False).encode()) > MAX_BYTES:
         raise AvitoError("autoload_report_limit")
