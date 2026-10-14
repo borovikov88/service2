@@ -352,3 +352,71 @@ class FeedSourceDiagnosticsTests(SimpleTestCase):
         value["shop_feed_diagnostics"][0]["host_kind"] = "PRIVATE_URL"
         with self.assertRaises(ValueError):
             report(value)
+
+
+class DuplicateReportDiagnosticTests(SimpleTestCase):
+    def fetch_duplicate(self, pages):
+        with patch.object(avito_workspace, "_get", side_effect=[upload(), *pages, upload()]), \
+             patch.object(avito_workspace, "enforce_rate"):
+            try:
+                report_api.fetch_report("token", "123")
+            except report_api.ReportDuplicateRows as error:
+                return error.diagnostics
+        self.fail("Duplicate report must remain blocked")
+
+    def test_within_page_equal_and_changed_rows_are_distinguished(self):
+        first = item("PRIVATE_XML")
+        changed = item("PRIVATE_XML", messages=[])
+        first["avito_id"] = changed["avito_id"] = 987654321
+        first["feed_name"] = changed["feed_name"] = "PRIVATE_FEED"
+        diagnostic = self.fetch_duplicate([page([first, first, changed])])
+        self.assertEqual((3, 1, 2), (diagnostic["read_rows"], diagnostic["unique_identity_pairs"],
+                                   diagnostic["duplicate_extra_rows"]))
+        self.assertEqual((2, 0), (diagnostic["same_page_duplicate_rows"], diagnostic["cross_page_duplicate_rows"]))
+        self.assertEqual((1, 1), (diagnostic["identical_duplicate_rows"], diagnostic["different_duplicate_rows"]))
+        self.assertEqual([True, False], [row["identical_payload"] for row in diagnostic["samples"]])
+        self.assertFalse(diagnostic["complete"])
+        def all_keys(value):
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    yield key
+                    yield from all_keys(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from all_keys(child)
+        keys = set(all_keys(diagnostic))
+        for private in ("messages", "ad_id", "avito_id", "feed_name", "feed_urls", "counts", "rows"):
+            self.assertNotIn(private, keys)
+        self.assertNotIn("PRIVATE", str(diagnostic))
+        self.assertNotIn("987654321", str(diagnostic))
+
+    def test_page_overlap_has_exact_positions_and_bounded_samples(self):
+        rows = [item(str(index)) for index in range(50)]
+        diagnostic = self.fetch_duplicate([
+            page(rows, total=57), page(rows[:7], 2, 57)
+        ])
+        self.assertEqual((57, 50, 7, 2), (diagnostic["read_rows"], diagnostic["unique_identity_pairs"],
+                                       diagnostic["duplicate_extra_rows"], diagnostic["pages"]))
+        self.assertEqual((0, 7), (diagnostic["same_page_duplicate_rows"], diagnostic["cross_page_duplicate_rows"]))
+        self.assertEqual(5, len(diagnostic["samples"]))
+        self.assertEqual({"first_row": 1, "repeated_row": 51, "first_page": 1,
+                          "repeated_page": 2, "identical_payload": True}, diagnostic["samples"][0])
+
+    def test_null_identity_still_blocks_and_alias_drift_has_no_duplicate_receipt(self):
+        first = item()
+        first["avito_id"] = None
+        self.assertEqual(1, self.fetch_duplicate([page([first, first])])["duplicate_extra_rows"])
+        with patch.object(avito_workspace, "_get", side_effect=[
+            upload(), page([first, first]), upload(identifier=124)
+        ]), patch.object(avito_workspace, "enforce_rate"):
+            with self.assertRaisesMessage(AvitoError, "autoload_report_changed") as caught:
+                report_api.fetch_report("token", "123")
+        self.assertNotIsInstance(caught.exception, report_api.ReportDuplicateRows)
+        self.assertFalse(hasattr(caught.exception, "diagnostics"))
+
+    def test_repeated_identity_twice_on_new_page_has_one_cross_and_one_same_page_repeat(self):
+        rows = [item(str(index)) for index in range(50)]
+        diagnostic = self.fetch_duplicate([page(rows, total=52), page([rows[0], rows[0]], 2, 52)])
+        self.assertEqual((1, 1), (diagnostic["cross_page_duplicate_rows"],
+                               diagnostic["same_page_duplicate_rows"]))
+        self.assertEqual([51, 52], [sample["repeated_row"] for sample in diagnostic["samples"]])

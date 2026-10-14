@@ -191,6 +191,13 @@ def collect_connection(connection, item_ids, index, stocks=None, stock_error=Non
                                               if str(row["avito_id"]) == item["item_id"]][:10]
         except Exception as error:
             summary = {"error": safe_error(error)}
+            if isinstance(error, avito_autoload_report.ReportDuplicateRows):
+                diagnostics = error.diagnostics.copy()
+                if diagnostics.get("started_at"):
+                    diagnostics["started_at"] = datetime.fromisoformat(
+                        diagnostics["started_at"]
+                    ).astimezone(ZoneInfo("Asia/Barnaul")).isoformat()
+                summary["duplicate_diagnostics"] = diagnostics
         try:
             all_items, pages = avito_status_monitor.full_scan(connection, scan_seconds=60)
             listing_scan = listing_summary(all_items, pages)

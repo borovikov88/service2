@@ -251,6 +251,44 @@ def require_unique_rows(rows):
         seen.add(identity)
 
 
+class ReportDuplicateRows(AvitoError):
+    """Validated report metadata only; rows remain unusable for reconciliation."""
+    def __init__(self, diagnostics):
+        super().__init__("autoload_report_duplicate_rows")
+        self.diagnostics = diagnostics
+
+
+def duplicate_row_diagnostics(rows, upload, pages):
+    # Called only after all pages and both alias summaries were validated.
+    # Compare normalized rows locally; never expose identities, messages or feeds.
+    seen, samples = {}, []
+    same_page = cross_page = identical = different = 0
+    for offset, row in enumerate(rows):
+        position, page = offset + 1, offset // PAGE_SIZE + 1
+        identity = (row["ad_id"], row["avito_id"])
+        if identity not in seen:
+            seen[identity] = (row, position, {page})
+            continue
+        first, first_position, seen_pages = seen[identity]
+        same_page += page in seen_pages
+        cross_page += page not in seen_pages
+        equal = row == first
+        identical += equal
+        different += not equal
+        if len(samples) < 5:
+            samples.append({"first_row": first_position, "repeated_row": position,
+                            "first_page": (first_position - 1) // PAGE_SIZE + 1,
+                            "repeated_page": page, "identical_payload": equal})
+        seen_pages.add(page)
+    return {"complete": False, "upload_id": upload["id"], "upload_status": upload["status"],
+            "started_at": upload["started_at"] or None, "read_rows": len(rows),
+            "pages": pages, "unique_identity_pairs": len(seen),
+            "duplicate_extra_rows": len(rows) - len(seen),
+            "same_page_duplicate_rows": same_page, "cross_page_duplicate_rows": cross_page,
+            "identical_duplicate_rows": identical, "different_duplicate_rows": different,
+            "samples": samples}
+
+
 def fetch_report(token, account_id, *, kind="last_successful"):
     from pool_service import avito_workspace
     if kind not in KINDS:
@@ -285,7 +323,12 @@ def fetch_report(token, account_id, *, kind="last_successful"):
     after = summary_data(get(base))
     if before != after:
         raise AvitoError("autoload_report_changed")
-    require_unique_rows(rows)
+    try:
+        require_unique_rows(rows)
+    except AvitoError as error:
+        if str(error) != "autoload_report_duplicate_rows":
+            raise
+        raise ReportDuplicateRows(duplicate_row_diagnostics(rows, before, page)) from None
     counts = Counter()
     for row in rows:
         for message_type in MESSAGE_TYPES:
