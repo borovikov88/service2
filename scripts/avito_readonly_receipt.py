@@ -101,6 +101,9 @@ def report(value):
         require(isinstance(started_at, str) and len(started_at) <= 40)
         require(datetime.fromisoformat(started_at).utcoffset() == timedelta(hours=7))
     result["started_at"] = started_at
+    source_kind = value.get("shop_feed_source", "other_or_unknown")
+    require(source_kind in ("shop_aggregate_file", "shop_profile_43_file", "other_or_unknown"))
+    result["shop_feed_source"] = source_kind
     if "message_code_counts" in value:
         def message_count(row):
             require(isinstance(row, dict) and row.get("type") in ("error", "warning", "alarm", "info"))

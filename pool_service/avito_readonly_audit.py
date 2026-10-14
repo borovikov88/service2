@@ -102,6 +102,7 @@ def report_summary(report):
     return {"upload_id": report["upload_id"], "upload_status": report["upload_status"],
             "complete": report["complete"], "finished": report["upload_finished"], "total": report["total"],
             "counts": report["counts"], "critical_samples": samples,
+            "shop_feed_source": report.get("shop_feed_source", "other_or_unknown"),
             "started_at": datetime.fromisoformat(report["started_at"]).astimezone(ZoneInfo("Asia/Barnaul")).isoformat() if report.get("started_at") else None,
             "message_code_counts": [{"type": kind, "code": code, "rows": count}
                                     for (kind, code), count in sorted(groups.items())]}
