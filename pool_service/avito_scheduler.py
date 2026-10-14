@@ -13,6 +13,7 @@ MESSAGES = {
     "unverified": "Расписание сервера ещё не подтверждено. Настройте задачу в панели хостинга и проверьте её выполнение.",
     "running": "Серверный обработчик выполняется; успешный результат ещё не подтверждён.",
     "failed": "Последний запуск обработчика завершился ошибкой. Проверьте состояние подключения и расписание.",
+    "partial": "Обработчик работает; часть проверок завершилась с ошибкой. Подробности доступны в соответствующих разделах.",
     "stale": "Нет свежего успешного запуска обработчика. Проверьте расписание на хостинге.",
     "ready": "Успешный запуск серверного обработчика подтверждён.",
 }
@@ -36,11 +37,12 @@ def scheduler_state():
                 finished = record.finished_at
                 if finished is None or timezone.is_naive(finished) or not started <= finished <= now:
                     raise ValueError
-                state = "ready" if record.exit_code == 0 and now - finished <= MAX_AGE else "failed"
+                state = {0: "ready", 2: "partial"}.get(record.exit_code, "failed")
     except (DatabaseError, ValueError, TypeError):
         # Missing migrations / DB failure must not grant activation or leak SQL.
         state, finished = "unverified", None
-    return {"ready": state == "ready", "code": state, "detail": MESSAGES[state],
+    return {"ready": state == "ready", "worker_ready": state in {"ready", "partial"},
+            "code": state, "detail": MESSAGES[state],
             "success_at": finished if state == "ready" else None}
 
 

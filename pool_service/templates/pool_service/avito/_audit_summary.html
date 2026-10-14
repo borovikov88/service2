@@ -1,0 +1,25 @@
+<div class="col-md-12 col-xl-4">
+  <section class="avito-panel" aria-labelledby="avito-audit-summary-heading">
+    <div class="avito-panel__header">
+      <h2 class="avito-panel__title" id="avito-audit-summary-heading">Состояние объявлений</h2>
+      <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" data-avito-submit>
+        {% include 'pool_service/avito/_refresh_fields.html' %}<input type="hidden" name="section" value="audit">
+        <button type="submit" class="btn btn-sm btn-outline-primary" {% if not selected.has_credentials %}disabled{% endif %}>Проверить</button>
+      </form>
+    </div>
+    <div class="avito-panel__body">
+      {% include 'pool_service/avito/_section_state.html' with state=workspace.audit %}
+      {% if workspace.audit.data.complete %}
+        <div class="avito-counters mt-0">{% for row in workspace.audit.data.counts %}<span class="avito-counter">{{ row.label }}: <strong>{{ row.count }}</strong></span>{% endfor %}</div>
+        <p class="small mt-2 mb-1">Всего проверено: {{ workspace.audit.data.total }} · Возможные дубли: {{ workspace.audit.data.duplicate_candidate_count }}</p>
+        {% with inventory=workspace.audit.data.active_source_audit %}
+          {% if inventory.complete %}<p class="small {% if inventory.in_stock_nonpositive_rows %}text-warning{% else %}text-muted{% endif %} mb-1">«В наличии» при неположительном остатке магазина: {{ inventory.in_stock_nonpositive_rows }}. Под заказ: {{ inventory.preorder_rows }}.</p>
+          {% else %}<p class="small text-warning mb-1">Сверка активных объявлений с остатками ещё не завершена.</p>{% endif %}
+        {% endwith %}
+      {% else %}<p class="small mb-1">Полный список ещё не проверен. Количество и отсутствие дублей не подтверждены.</p>{% endif %}
+      {% if workspace.source_audit.stale or workspace.source_audit.status == 'error' or workspace.source_audit.status == 'denied' or workspace.source_audit.status == 'warning' %}{% include 'pool_service/avito/_section_state.html' with state=workspace.source_audit %}{% endif %}
+      {% if status_monitor_state.error %}<p class="small text-warning mb-1">{{ status_monitor_state.error }}</p>{% endif %}
+      <a class="small" href="#avito-audit-details">Дубли, остатки и XML <i class="bi bi-chevron-down" aria-hidden="true"></i></a>
+    </div>
+  </section>
+</div>

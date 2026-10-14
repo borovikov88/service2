@@ -11,29 +11,28 @@
       {% include 'pool_service/avito/_section_state.html' with state=workspace.advance %}
       {% if workspace.advance.data %}
         <div class="avito-money {% if workspace.advance.data.kopeks <= 0 %}text-danger{% elif workspace.advance.data.kopeks <= 10000 %}text-warning{% endif %}">{{ workspace.advance.data.amount }}<small>₽</small></div>
-      {% else %}
-        <div class="avito-money">—</div><p class="small text-muted mb-0">Остаток аванса ещё не получен</p>
-      {% endif %}
-      <p class="small text-muted mt-2">Баланс тарифа с оплатой за целевые действия. Кошелёк и бонусы показаны отдельно.</p>
+      {% else %}<div class="avito-money">—</div><p class="small text-muted">Остаток ещё не получен</p>{% endif %}
       {% if advance_monitor_state.allowed %}
-        <div class="small mb-2">
-          {% if advance_monitor_state.enabled %}Уведомления для вас включены.{% else %}Уведомления для вас не включены.{% endif %}
-          Порог: 100 ₽; отдельное предупреждение при нуле или отрицательном остатке.
-        </div>
-        {% if advance_monitor_state.last_success_at %}<div class="small text-muted mb-2">Последняя автоматическая проверка: {{ advance_monitor_state.last_success_at|date:"d.m.Y H:i:s" }}.</div>{% endif %}
-        {% if advance_monitor_state.last_error_detail %}<div class="small text-warning mb-2">{{ advance_monitor_state.last_error_detail }}</div>{% endif %}
-        {% if not advance_monitor_state.scheduler.ready %}<div class="small text-warning mb-2">{{ advance_monitor_state.scheduler.detail }}{% if advance_monitor_state.enabled %} Подписка сохранена; свежая проверка не подтверждена.{% endif %}</div>{% endif %}
+        <p class="small mt-2 mb-2">{% if advance_monitor_state.needs_reactivation %}Нужно повторное включение{% elif advance_monitor_state.enabled %}Уведомления включены{% else %}Уведомления выключены{% endif %} · 100 ₽ и 0 ₽</p>
+        {% if advance_monitor_state.needs_reactivation %}<p class="small text-warning mb-2">Настройки или права изменились. Включите уведомления повторно.</p>{% endif %}
+        {% if advance_monitor_state.last_error_detail %}<div class="small text-warning mb-2" role="status">{{ advance_monitor_state.last_error_detail }}</div>{% endif %}
+        {% if not advance_monitor_state.scheduler.ready %}<div class="small text-warning mb-2" role="status">{{ advance_monitor_state.scheduler.detail }}{% if advance_monitor_state.enabled %} Подписка сохранена; свежая проверка не подтверждена.{% endif %}</div>{% endif %}
         <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" class="d-flex flex-wrap gap-2" data-avito-submit>
           {% include 'pool_service/avito/_refresh_fields.html' %}
           {% if advance_monitor_state.enabled and not advance_monitor_state.needs_reactivation %}
-            <button class="btn btn-sm btn-outline-primary" name="section" value="advance_retry">Запросить проверку</button>
-            <button class="btn btn-sm btn-outline-secondary" name="section" value="advance_disable">Отключить уведомления</button>
+            <button class="btn btn-sm btn-outline-primary" name="section" value="advance_retry">Проверить снова</button>
+            <button class="btn btn-sm btn-outline-secondary" name="section" value="advance_disable">Отключить</button>
           {% else %}
             <button class="btn btn-sm btn-primary" name="section" value="advance_enable" {% if not selected.has_credentials or not advance_monitor_state.scheduler.ready %}disabled{% endif %}>Уведомлять меня</button>
           {% endif %}
         </form>
-        <p class="small text-muted mt-2 mb-0">Проверка раз в 15 минут и при ручном обновлении. Повторы одной ситуации не отправляются. Ошибка API не означает нулевой остаток. Уведомления приходят внутри Service2 с учётом ваших настроек.</p>
       {% endif %}
+      <details class="avito-help mt-2"><summary>Как работает контроль аванса</summary>
+        <p class="small text-muted mt-2 mb-1">Остаток тарифа с оплатой за целевые действия. Кошелёк и бонусы учитываются отдельно.</p>
+        <p class="small text-muted mb-1">Проверка раз в 15 минут и при ручном обновлении. Уведомления внутри Service2: при положительном остатке до 100 ₽ включительно и отдельно при нуле или отрицательном остатке. Повторы не отправляются; после пополнения предупреждения снова действуют. Ошибка API не означает нулевой остаток. Учитываются ваши настройки уведомлений.</p>
+        {% if advance_monitor_state.last_success_at %}<p class="small text-muted mb-1">Автоматическая проверка: {{ advance_monitor_state.last_success_at|date:"d.m.Y H:i:s" }}.</p>{% endif %}
+        {% if advance_monitor_state.scheduler.ready %}<p class="small text-muted mb-0">{{ advance_monitor_state.scheduler.detail }}</p>{% endif %}
+      </details>
     </div>
   </section>
 </div>

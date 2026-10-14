@@ -1,4 +1,5 @@
 from datetime import timedelta
+from html.parser import HTMLParser
 from unittest.mock import patch
 
 from django.test import Client, SimpleTestCase, TestCase
@@ -278,3 +279,57 @@ class AvitoWorkspaceViewTests(TestCase):
         self.client.post(self.refresh_url(), {"section": "profile"})
         self.connection.refresh_from_db()
         self.assertNotIn("avito_workspace", self.connection.settings)
+
+
+class AvitoCompactDashboardTests(TestCase):
+    def setUp(self):
+        AvitoWorkspaceViewTests.setUp(self)
+
+    def test_critical_rows_visible_and_secondary_data_collapsed_without_api_reads(self):
+        report = {"complete": True, "upload_id": "synthetic-upload", "kind": "last_successful",
+                  "upload_status": "success_warning", "upload_finished": True,
+                  "counts": {"error": 1, "warning": 1, "alarm": 0}, "total": 2, "pages": 1,
+                  "rows": [
+                      {"ad_id": "synthetic-critical", "avito_id": 123, "status_label": "Отклонено",
+                       "section": {}, "messages": [{"type": "error", "title": "SYNTHETIC_CRITICAL", "code": "synthetic"}]},
+                      {"ad_id": "synthetic-warning", "avito_id": 124, "status_label": "Опубликовано",
+                       "section": {}, "messages": [{"type": "warning", "title": "SYNTHETIC_WARNING", "code": "synthetic"}]}]}
+        self.connection.settings = {"avito_workspace": {"account_id": "123", "sections": {
+            "autoload_report": {"status": "ok", "data": report}}}}
+        self.connection.save(update_fields=["settings"])
+        self.client.force_login(self.owner)
+        with patch("pool_service.avito_management.access_token") as token, \
+             patch("pool_service.avito_workspace._get") as read:
+            response = self.client.get(self.url)
+        token.assert_not_called()
+        read.assert_not_called()
+        self.assertEqual(response.context["autoload_priority_rows"], report["rows"][:1])
+        self.assertEqual(response.context["autoload_other_rows"], report["rows"][1:])
+
+        class Disclosures(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.stack, self.groups, self.sections = [], {}, {}
+            def handle_starttag(self, tag, attrs):
+                attrs = dict(attrs)
+                if tag == "details":
+                    self.stack.append("open" not in attrs)
+                    if attrs.get("id"):
+                        self.sections[attrs["id"]] = "open" in attrs
+                if attrs.get("data-avito-report-group"):
+                    self.groups[attrs["data-avito-report-group"]] = any(self.stack)
+            def handle_endtag(self, tag):
+                if tag == "details":
+                    self.stack.pop()
+
+        html = response.content.decode()
+        parsed = Disclosures()
+        parsed.feed(html)
+        self.assertFalse(parsed.groups["priority"])
+        self.assertTrue(parsed.groups["other"])
+        for identifier in ("avito-audit-details", "avito-analytics-details", "avito-technical-details"):
+            self.assertFalse(parsed.sections[identifier])
+        self.assertIn("SYNTHETIC_CRITICAL", html)
+        self.assertIn("SYNTHETIC_WARNING", html)
+        self.assertLess(html.index('id="avito-advance"'), html.index('id="avito-items-heading"'))
+        self.assertLess(html.index('id="avito-items-heading"'), html.index('id="avito-technical-details"'))

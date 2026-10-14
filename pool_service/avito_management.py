@@ -270,6 +270,16 @@ def avito_dashboard(request):
             workspace[key] = {**workspace[key], "data": normalizer(workspace[key].get("data"))}
     if "statistics" in workspace:
         workspace["statistics"] = {**workspace["statistics"], "data": avito_workspace.statistics_for_display(workspace["statistics"].get("data"))}
+    report = workspace.get("autoload_report", {}).get("data", {})
+    report_rows = report.get("rows", []) if isinstance(report, dict) else []
+    priority_rows, other_rows = [], []
+    for row in report_rows if isinstance(report_rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        messages = row.get("messages", [])
+        has_priority = any(isinstance(message, dict) and message.get("type") in {"error", "alarm"}
+                           for message in (messages if isinstance(messages, list) else []))
+        (priority_rows if has_priority else other_rows).append(row)
     items_data = workspace.get("items", {}).get("data", {})
     rows = items_data.get("rows", []) if isinstance(items_data, dict) else []
     listed_ids = {avito_workspace._identifier(row.get("id")) for row in rows if isinstance(row, dict)} if isinstance(rows, list) else set()
@@ -293,6 +303,8 @@ def avito_dashboard(request):
         "advance_monitor_state": avito_advance.display_state(selected["connection"] if selected else None, request.user),
         "selected": selected,
         "workspace": workspace,
+        "autoload_priority_rows": priority_rows,
+        "autoload_other_rows": other_rows,
         "expanded_item_id": expanded_item_id,
         "detail_in_items": detail_in_items,
         "local_analytics": local_analytics,

@@ -58,4 +58,6 @@ class Command(BaseCommand):
         self.stdout.write("AVITO_ADVANCE_MONITOR " + " ".join(
             f"{key}={advances[key]}" for key in ("success", "failed", "skipped")))
         if counts["failed"] or reports["failed"] or advances["failed"]:
-            raise CommandError("Avito checks incomplete; inspect scoped state in Service2.")
+            # Distinguish a completed tick with scoped failures from a crash, timeout
+            # or skipped/locked tick. Only the supervisor records the actual code.
+            raise CommandError("Avito checks incomplete; inspect scoped state in Service2.", returncode=2)

@@ -127,6 +127,13 @@ def _allowed(connection, state):
         and subscriber_allowed(actor, connection.channel.organization))
 
 
+def _scheduler_state():
+    # Subscription needs a proven completed worker, not success of unrelated
+    # listing/report checks. Crashes, timeouts, skips and stale proof fail closed.
+    state = scheduler_state()
+    return {**state, "ready": state.get("worker_ready", state["ready"])}
+
+
 def configure(connection, user, action):
     """Self-subscribe only; never accept another recipient or change their alerts."""
     if action not in ("enable", "disable", "retry"):
@@ -150,7 +157,7 @@ def configure(connection, user, action):
                 raise ValueError("Нужно активное подключение Авито с корректным ID и сохранёнными ключами.")
             # Re-enabling does not bypass scheduler readiness or change any Avito state.
             if state.get("enabled") is not True or not _allowed(connection, state):
-                if not scheduler_state()["ready"]:
+                if not _scheduler_state()["ready"]:
                     raise ValueError("Сначала подтвердите запуск существующего серверного расписания.")
                 state = {"enabled": True, "generation": uuid.uuid4().hex, "actor_id": user.pk,
                          "organization_id": connection.channel.organization_id, "channel_id": connection.channel_id,
@@ -173,7 +180,7 @@ def display_state(connection, user):
             "next_due_at": _date(state.get("next_due_at")),
             "last_success_at": _date(state.get("last_success_at")),
             "last_error_detail": state.get("last_error_detail", ""),
-            "scheduler": scheduler_state()}
+            "scheduler": _scheduler_state()}
 
 
 def _failure(exc):

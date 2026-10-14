@@ -11,7 +11,8 @@
 .avito-admin .avito-account-picker select { min-width: 210px; }
 .avito-admin .avito-readonly-note { display: flex; align-items: flex-start; gap: .6rem; padding: .45rem 0; color: var(--avito-muted); font-size: .8rem; }
 .avito-admin .avito-panel, .avito-admin .avito-account { border: 1px solid var(--avito-border); border-radius: .7rem; background: var(--avito-surface); overflow: hidden; }
-.avito-admin .avito-panel { height: 100%; }
+.avito-admin .avito-panel { height: auto; }
+.avito-admin .avito-top-cards .avito-panel { height: 100%; }
 .avito-admin .avito-panel__body { padding: .7rem .85rem; }
 .avito-admin .avito-panel__header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .6rem; padding: .7rem .85rem 0; }
 .avito-admin .avito-panel__title { font-size: .9rem; font-weight: 700; margin: 0; }
@@ -133,3 +134,11 @@ html[data-theme="dark"] .avito-admin .avito-section-notice--stale,
 html[data-theme="dark"] .avito-admin .avito-state.warning,
 html[data-theme="dark"] .avito-admin .avito-state.old,
 html[data-theme="dark"] .avito-admin .alert-warning { background: var(--avito-warning-bg); color: var(--avito-warning-text); border-color: #625431; }
+
+/* Keep the working overview compact; supplemental sections are native disclosures. */
+.avito-admin .avito-disclosure { border: 1px solid var(--avito-border); border-radius: .7rem; background: var(--avito-surface); padding: .7rem .85rem; }
+.avito-admin .avito-disclosure > summary { cursor: pointer; font-size: .9rem; font-weight: 650; }
+.avito-admin .avito-disclosure__body { margin-top: .75rem; }
+.avito-admin .avito-help > summary { cursor: pointer; font-size: .78rem; color: var(--avito-muted); }
+.avito-admin summary:focus-visible { outline: 2px solid var(--bs-primary); outline-offset: 4px; border-radius: .2rem; }
+.avito-admin .avito-top-cards .avito-counter { padding: .25rem .45rem; }

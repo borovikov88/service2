@@ -88,6 +88,21 @@
     restoreSearch();
   }
 
+  function revealHashTarget() {
+    let id;
+    try { id = decodeURIComponent(window.location.hash.slice(1)); } catch (_) { return; }
+    const target = id ? document.getElementById(id) : null;
+    if (!target || !root.contains(target)) return;
+    if (target.tagName === 'DETAILS') target.open = true;
+    let parent = target.parentElement;
+    while (parent) {
+      if (parent.tagName === 'DETAILS') parent.open = true;
+      parent = parent.parentElement;
+    }
+  }
+  window.addEventListener('hashchange', revealHashTarget);
+  revealHashTarget();
+
   function revealSelectedDetail() {
     const detail = root.querySelector('[data-avito-selected-detail]');
     if (!detail || window.location.hash !== '#' + detail.id) return;
