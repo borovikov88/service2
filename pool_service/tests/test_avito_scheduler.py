@@ -49,7 +49,42 @@ class AvitoSchedulerEvidenceTests(TestCase):
                 self.write(**changes)
                 state = scheduler_state()
                 self.assertFalse(state["ready"])
+                self.assertFalse(state["worker_ready"])
                 self.assertIsNone(state["success_at"])
+
+    def test_completed_partial_tick_is_worker_evidence_but_not_legacy_success(self):
+        self.write(exit_code=2)
+        state = scheduler_state()
+        self.assertEqual(state["code"], "partial")
+        self.assertTrue(state["worker_ready"])
+        self.assertFalse(state["ready"])
+        self.assertIsNone(state["success_at"])
+        for changes in ({"state": "running", "exit_code": 2},
+                        {"exit_code": 2, "finished_at": self.now + timedelta(minutes=1)},
+                        {"exit_code": 2, "started_at": self.now - timedelta(hours=2),
+                         "finished_at": self.now - timedelta(hours=1)}):
+            with self.subTest(changes=changes):
+                self.write(**changes)
+                self.assertFalse(scheduler_state()["worker_ready"])
+
+    def test_only_completed_scoped_failures_use_partial_exit_code(self):
+        for component in ("advance", "report", "status"):
+            with self.subTest(component=component), \
+                 patch("pool_service.management.commands.monitor_avito_statuses.AvitoStatusMonitor.objects.filter") as query, \
+                 patch("pool_service.management.commands.monitor_avito_statuses.scan_monitor", return_value=("failed", 0)), \
+                 patch("pool_service.avito_advance.scan_due", return_value={
+                     "success": 0, "failed": int(component == "advance"), "skipped": 0}) as advances, \
+                 patch("pool_service.avito_autoload_auto.scan_due", return_value={
+                     "success": 0, "failed": int(component == "report"), "skipped": 0}) as reports:
+                query.return_value.order_by.return_value.values_list.return_value = [123] if component == "status" else []
+                with self.assertRaises(CommandError) as raised:
+                    call_command("monitor_avito_statuses", stdout=io.StringIO())
+                self.assertEqual(raised.exception.returncode, 2)
+                advances.assert_called_once()
+                reports.assert_called_once()
+        with patch("pool_service.avito_advance.scan_due", side_effect=RuntimeError("synthetic abort")):
+            with self.assertRaises(RuntimeError):
+                call_command("monitor_avito_statuses", stdout=io.StringIO())
 
     def test_old_success_and_future_clock_are_not_fresh_proof(self):
         self.write(started_at=self.now - timedelta(hours=2), finished_at=self.now - timedelta(hours=1))
@@ -124,7 +159,11 @@ class AvitoSchedulerEvidenceTests(TestCase):
 
     def test_status_is_read_only_and_zero_due_worker_does_not_self_certify(self):
         for options in ({"status": True}, {}):
-            call_command("monitor_avito_statuses", stdout=io.StringIO(), **options)
+            output, diagnostic = io.StringIO(), io.StringIO()
+            call_command("monitor_avito_statuses", stdout=output, stderr=diagnostic, **options)
+            if options:
+                self.assertRegex(output.getvalue(), r"\AAVITO_STATUS_MONITOR_READY configured=\d+ enabled=\d+ baselined=\d+ due=\d+ running=\d+ failed=\d+\n\Z")
+                self.assertIn("AVITO_SCHEDULER code=unverified completed_worker=false", diagnostic.getvalue())
             self.assertFalse(AvitoSchedulerHeartbeat.objects.exists())
 
     def test_command_uses_exact_runtime_paths_and_never_mutates(self):

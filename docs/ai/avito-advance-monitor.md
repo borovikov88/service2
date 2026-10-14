@@ -13,8 +13,15 @@ Dashboard GET does not contact Avito.
 
 Owner/admin channel managers self-subscribe through CSRF-protected POST on the
 Avito page. The server uses request.user, never a submitted recipient. Another
-admin cannot change this person's subscription. Existing scheduler-readiness
-activation and user notification preferences remain. Keys, account, organization,
+admin cannot change this person's subscription. User notification preferences remain.
+Advance activation requires a fresh completed supervised worker tick: exit 0
+(all checks successful) or exit 2 (completed checks with scoped failures). Only
+the command's final known-failure result produces exit 2; crashes, timeouts,
+locked/skipped runs, missing/running/stale or malformed heartbeats cannot activate.
+Legacy scheduler readiness still requires exit 0. An unrelated report/listing
+failure therefore cannot prevent monitoring an otherwise readable advance.
+Own advance failures remain visible and stale; completed-worker evidence does
+not claim a successful balance read. Keys, account, organization,
 channel, recipient access and active state are checked before/after worker reads;
 account self is checked before/after the balance request. A revoked binding
 disables the subscription and does not send a financial alert.
@@ -42,3 +49,9 @@ Release: exact-head CI, independent financial/security review, protected normal
 deploy and health; then verify endpoint availability separately from subscription
 activation and delivery. A manual self-subscription is needed to bind the recipient
 to their authenticated Service2 user. Do not choose a production user by guessing.
+
+The dashboard keeps advance, wallet, listing summary, critical report rows and
+listing actions visible. Explanations, profile, raw upload metadata, warning-only
+rows, detailed audit and analytics use native disclosures. Critical/stale errors
+remain visible, all existing actions and server permissions are preserved, and
+hash links open their disclosure ancestors. GET stays cache-only.

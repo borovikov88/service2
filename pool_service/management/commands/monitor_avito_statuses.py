@@ -6,6 +6,7 @@ from django.utils import timezone
 from pool_service.avito_status_monitor import SCAN_SECONDS, scan_monitor
 from pool_service.communication_models import AvitoStatusMonitor
 from pool_service import avito_autoload_auto, avito_advance
+from pool_service.avito_scheduler import scheduler_state
 
 
 class Command(BaseCommand):
@@ -27,6 +28,9 @@ class Command(BaseCommand):
                 f"running={monitors.filter(enabled=True, lease_until__gt=now).count()}",
                 f"failed={monitors.filter(enabled=True).exclude(last_error_code='').count()}",
             )))
+            scheduler = scheduler_state()
+            # Keep stdout exactly compatible with the cron readiness parser.
+            self.stderr.write(f"AVITO_SCHEDULER code={scheduler['code']} completed_worker={str(scheduler['worker_ready']).lower()}")
             return
         limit, budget = options["limit"], options["budget_seconds"]
         if not 1 <= limit <= 10 or not SCAN_SECONDS + 30 <= budget <= 1500:
@@ -58,4 +62,6 @@ class Command(BaseCommand):
         self.stdout.write("AVITO_ADVANCE_MONITOR " + " ".join(
             f"{key}={advances[key]}" for key in ("success", "failed", "skipped")))
         if counts["failed"] or reports["failed"] or advances["failed"]:
-            raise CommandError("Avito checks incomplete; inspect scoped state in Service2.")
+            # Distinguish a completed tick with scoped failures from a crash, timeout
+            # or skipped/locked tick. Only the supervisor records the actual code.
+            raise CommandError("Avito checks incomplete; inspect scoped state in Service2.", returncode=2)

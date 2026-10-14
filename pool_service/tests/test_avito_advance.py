@@ -1,4 +1,6 @@
 from datetime import timedelta
+import re
+import uuid
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
@@ -9,7 +11,8 @@ from django.utils import timezone
 
 from pool_service import avito_advance as advance
 from pool_service.communication_avito import AvitoError
-from pool_service.communication_models import AvitoCredential, CommunicationAccess
+from pool_service.communication_models import AvitoCredential, CommunicationAccess, AvitoSchedulerHeartbeat
+from pool_service.avito_scheduler import HEARTBEAT_KEY, scheduler_state as observed_scheduler
 from pool_service.models import Notification, OrganizationAccess, Profile
 from pool_service.tests.test_avito_management import AvitoManagementTests
 
@@ -144,6 +147,29 @@ class AdvanceMonitorTests(TestCase):
             self.poll(0)
         self.assertFalse(Notification.objects.exists())
         push.assert_not_called()
+
+    def test_subscription_uses_real_completed_worker_evidence_not_report_success(self):
+        now = timezone.now()
+        heartbeat = AvitoSchedulerHeartbeat.objects.create(
+            key=HEARTBEAT_KEY, run_id=uuid.uuid4(), state="finished", exit_code=2,
+            started_at=now - timedelta(minutes=2), finished_at=now - timedelta(minutes=1))
+        self.client.force_login(self.owner)
+        with patch.object(advance, "scheduler_state", side_effect=observed_scheduler):
+            response = self.client.get(reverse("avito_dashboard"))
+            button = re.search(r'<button[^>]*value="advance_enable"[^>]*>', response.content.decode()).group()
+            self.assertNotIn("disabled", button)
+            self.assertFalse(observed_scheduler()["ready"])
+            self.enable()
+            self.connection.refresh_from_db()
+            self.assertTrue(self.connection.settings[advance.KEY]["enabled"])
+            advance.configure(self.connection, self.owner, "disable")
+            heartbeat.exit_code = 124
+            heartbeat.save(update_fields=["exit_code"])
+            with self.assertRaises(ValueError):
+                self.enable()
+            response = self.client.get(reverse("avito_dashboard"))
+            button = re.search(r'<button[^>]*value="advance_enable"[^>]*>', response.content.decode()).group()
+            self.assertIn("disabled", button)
 
     def test_shared_lease_and_worker_budget_protect_other_reads(self):
         self.enable()

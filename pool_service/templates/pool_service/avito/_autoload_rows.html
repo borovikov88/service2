@@ -1,0 +1,15 @@
+        <div class="table-responsive" data-avito-report-group="{{ group }}">
+          <table class="table table-sm align-top">
+            <thead><tr><th scope="col">XML ID / ID Авито</th><th scope="col">Статус / раздел</th><th scope="col">Причины и предупреждения</th></tr></thead>
+            <tbody>{% for row in rows|slice:":200" %}<tr>
+              <td>{{ row.ad_id }}{% if row.feed_name %}<div class="small text-muted">Файл: {{ row.feed_name }}</div>{% endif %}<div class="small text-muted">{{ row.avito_id|default_if_none:"ID Авито не передан" }}</div></td>
+              <td>{{ row.status_label }}{% if row.avito_date_end %}<div class="small text-muted">Оплачено до: <time datetime="{{ row.avito_date_end }}" data-avito-time>{{ row.avito_date_end }}</time></div>{% endif %}<div class="small text-muted">{{ row.section.title }}</div></td>
+              <td>{% for message in row.messages %}
+                <details class="small mb-2"><summary>{% if message.type == 'error' %}Критическая ошибка{% elif message.type == 'warning' %}Предупреждение{% elif message.type == 'alarm' %}Сигнал{% else %}Информация{% endif %} · {{ message.code }} · {{ message.title }}</summary>
+                  <p class="mb-1">{{ message.description }}</p>
+                  <div class="text-muted">Актуально: <time datetime="{{ message.updated_at }}" data-avito-time>{{ message.updated_at }}</time>{% if message.truncated %} · Текст усечён{% endif %}</div>
+                </details>
+              {% empty %}<span class="small text-muted">Сообщений в этой строке нет</span>{% endfor %}</td>
+            </tr>{% empty %}<tr><td colspan="3">Авито вернул завершённый пустой список в рамках этой загрузки.</td></tr>{% endfor %}</tbody>
+          </table>
+        </div>
