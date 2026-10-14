@@ -438,10 +438,13 @@ class ShopXmlIdReportTests(SimpleTestCase):
         value["feed_urls"] = [{"url": "https://shop.aqualine22.ru/avito/avitofeed.xml"}]
         return value
 
-    def fetch(self, responses, payloads=None, kind="last_successful"):
-        from pool_service import avito_source_audit
+    def fetch(self, responses, payloads=None, kind="last_successful", profiles=None):
+        from pool_service import avito_source_audit, avito_profile_source
+        proof = avito_profile_source.profile_data({"autoload_enabled": True, "feeds_data": [
+            {"feed_url": "https://shop.aqualine22.ru/avito/avitofeed.xml"}]})
         with patch.object(avito_workspace, "_get", side_effect=responses) as get, \
              patch.object(avito_workspace, "enforce_rate"), \
+             patch.object(avito_profile_source, "fetch_profile_source", side_effect=profiles or [proof, proof]), \
              patch.object(avito_source_audit, "_read_xml", side_effect=payloads or [self.xml(), self.xml()]) as source:
             result = report_api.fetch_report("token", "123", kind=kind)
         return result, get, source
@@ -521,3 +524,75 @@ class ShopXmlIdReportTests(SimpleTestCase):
         self.assertEqual("provider_pages", result["read_strategy"])
         with patch.object(report_api, "MAX_BYTES", 1), self.assertRaisesMessage(AvitoError, "autoload_report_limit"):
             self.fetch([self.shop_upload(), page(rows[:50], total=55), page(rows[:50])])
+
+    def test_processed_copy_uses_current_profile_and_profile_drift_or_denial_stays_closed(self):
+        from pool_service import avito_profile_source
+        rows = self.rows()
+        header = self.shop_upload()
+        header["feed_urls"] = [{"url": "https://autoload.avito.ru/processed.xml?token=PRIVATE"}]
+        queries = [header, page(rows[:50], total=55), page(rows[:50]), page(rows[50:]), header]
+        result, _, _ = self.fetch(queries)
+        self.assertEqual("shop_xml_id_queries", result["read_strategy"])
+        self.assertEqual("other_or_unknown", result["shop_feed_source"])
+        self.assertNotIn("PRIVATE", str(result))
+        proof = avito_profile_source.profile_data({"autoload_enabled": True, "feeds_data": [
+            {"feed_url": "https://shop.aqualine22.ru/avito/avitofeed.xml"}]})
+        with self.assertRaisesMessage(AvitoError, "autoload_report_changed"):
+            self.fetch(queries, profiles=[proof, (proof[0], "different-private-fingerprint")])
+        legacy = [header, page(rows[:50], total=55), page(rows[50:], 2, 55), header]
+        variants = [AvitoError("provider_http_403"),
+                    avito_profile_source.profile_data({"autoload_enabled": False, "feeds_data": []}),
+                    avito_profile_source.profile_data({"autoload_enabled": True, "feeds_data": [
+                        {"feed_url": "https://shop.aqualine22.ru/avito/avitofeed.xml"},
+                        {"feed_url": "https://other.invalid/private"}]})]
+        for profile in variants:
+            with self.subTest(profile_type=type(profile).__name__):
+                data, _, source = self.fetch(legacy, profiles=[profile])
+                self.assertEqual("provider_pages", data["read_strategy"])
+                source.assert_not_called()
+
+    def test_late_last_query_does_not_start_second_source_read(self):
+        from pool_service import avito_source_audit
+        clock = [54.0]
+        row = item("1_0_3")
+        def late_query(_path):
+            clock[0] = 56.0
+            return page([row])
+        with patch.object(report_api.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(avito_source_audit, "_read_xml") as source, \
+             self.assertRaisesMessage(AvitoError, "autoload_report_limit"):
+            report_api._query_shop_rows(late_query, "/autoload/v4/uploads/last_successful",
+                                       (["1_0_3"], "synthetic-digest"), [report_api._item(row)], 1, 55.0)
+        source.assert_not_called()
+
+
+class SharedAvitoReadDeadlineTests(SimpleTestCase):
+    def test_expired_source_or_profile_deadline_blocks_before_network(self):
+        from pool_service import avito_source_audit, avito_profile_source
+        with patch.object(report_api.time, "monotonic", return_value=100.0), \
+             patch.object(avito_source_audit.socket, "getaddrinfo") as dns, \
+             patch.object(avito_workspace, "_get") as get, \
+             patch.object(avito_workspace, "enforce_rate") as rate:
+            with self.assertRaisesMessage(AvitoError, "source_limit"):
+                avito_source_audit._read_xml(avito_source_audit.FEED_PATH, deadline=99.0)
+            with self.assertRaisesMessage(AvitoError, "audit_provider_cooldown"):
+                avito_profile_source.fetch_profile_source("token", "123", deadline=99.0)
+        dns.assert_not_called()
+        get.assert_not_called()
+        rate.assert_not_called()
+
+    def test_source_transport_timeout_uses_shared_remaining_budget(self):
+        from unittest.mock import MagicMock
+        from pool_service import avito_source_audit
+        connection = MagicMock()
+        response = connection.getresponse.return_value
+        response.status = 200
+        response.getheader.side_effect = lambda name, default=None: {
+            "Content-Encoding": "identity", "Content-Length": "0"}.get(name, default)
+        response.isclosed.return_value = True
+        with patch.object(report_api.time, "monotonic", return_value=100.0), \
+             patch.object(avito_source_audit.socket, "getaddrinfo",
+                          return_value=[(2, 1, 6, "", ("93.184.216.34", 443))]), \
+             patch.object(avito_source_audit, "_PinnedHTTPS", return_value=connection) as transport:
+            self.assertEqual(b"", avito_source_audit._read_xml(avito_source_audit.FEED_PATH, deadline=101.0))
+        transport.assert_called_once_with("93.184.216.34", timeout=1.0)

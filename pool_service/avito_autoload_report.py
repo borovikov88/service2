@@ -290,10 +290,12 @@ def duplicate_row_diagnostics(rows, upload, pages):
             "samples": samples}
 
 
-def _shop_snapshot():
+def _shop_snapshot(deadline):
     from pool_service import avito_source_audit
     from scripts.avito_readonly_receipt import xml_id
-    payload = avito_source_audit._read_xml(avito_source_audit.FEED_PATH)
+    if time.monotonic() >= deadline:
+        raise AvitoError("autoload_report_limit")
+    payload = avito_source_audit._read_xml(avito_source_audit.FEED_PATH, deadline=deadline)
     root = avito_source_audit._root(payload, "Ads")
     identifiers = []
     for ad in root:
@@ -311,7 +313,7 @@ def _shop_snapshot():
     return identifiers, hashlib.sha256(payload).hexdigest()
 
 
-def _query_shop_rows(get, base, snapshot, probe_rows, total):
+def _query_shop_rows(get, base, snapshot, probe_rows, total, deadline):
     # Replace pagination only when every current shop ID can be proved present.
     # Filter results are never deduplicated or combined with the unfiltered probe.
     identifiers, digest = snapshot
@@ -333,7 +335,7 @@ def _query_shop_rows(get, base, snapshot, probe_rows, total):
     by_identity = {(row["ad_id"], row["avito_id"]): row for row in rows}
     if any(by_identity.get((row["ad_id"], row["avito_id"])) != row for row in probe_rows):
         raise AvitoError("autoload_report_changed")
-    after = _shop_snapshot()
+    after = _shop_snapshot(deadline)
     if after is None or after[1] != digest:
         raise AvitoError("autoload_report_changed")
     return rows
@@ -366,14 +368,24 @@ def fetch_report(token, account_id, *, kind="last_successful"):
         batch, expected = _page(get(f"{base}/items?perPage={PAGE_SIZE}&page={page}"), page, expected)
         if (page == 1 and kind == "last_successful"
                 and before["status"] in {"success", "success_warning", "error"}
-                and before["shop_feed_source"] == "shop_aggregate_file"
-                and all(row["scheme"] == "https" for row in before["shop_feed_diagnostics"])):
+                and before["shop_feed_diagnostics"]
+                and all(row["host_kind"] in {"shop", "avito", "unknown"}
+                        for row in before["shop_feed_diagnostics"])):
+            from pool_service.avito_profile_source import fetch_profile_source
             try:
-                snapshot = _shop_snapshot()
+                profile, fingerprint = fetch_profile_source(token, account_id, deadline=deadline)
+                verified = (profile.get("complete") is True and profile.get("autoload_enabled") is True
+                            and profile.get("shop_feed_source") == "shop_aggregate_file"
+                            and profile.get("shop_feed_diagnostics")
+                            and all(row["scheme"] == "https" for row in profile["shop_feed_diagnostics"]))
+                snapshot = _shop_snapshot(deadline) if verified else None
             except AvitoError:
                 snapshot = None
             if snapshot is not None and len(snapshot[0]) == expected[0]:
-                rows = _query_shop_rows(get, base, snapshot, batch, expected[0])
+                rows = _query_shop_rows(get, base, snapshot, batch, expected[0], deadline)
+                after_profile, after_fingerprint = fetch_profile_source(token, account_id, deadline=deadline)
+                if after_profile != profile or after_fingerprint != fingerprint:
+                    raise AvitoError("autoload_report_changed")
                 read_strategy = "shop_xml_id_queries"
                 page = max(1, expected[1])
                 break

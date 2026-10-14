@@ -1,6 +1,7 @@
 """Read current Autoload configuration; never persist private URLs or email."""
 import hashlib
 import json
+import math
 import time
 
 from django.utils import timezone
@@ -27,9 +28,14 @@ def profile_data(raw):
             "shop_feed_source": avito_autoload_report.shop_feed_source(feeds),
             "shop_feed_diagnostics": avito_autoload_report.feed_source_diagnostics(feeds)}, fingerprint
 
-def fetch_profile_source(token, account_id):
-    deadline = time.monotonic() + 10
+def fetch_profile_source(token, account_id, *, deadline=None):
+    started = time.monotonic()
+    if deadline is not None and (type(deadline) not in (int, float) or not math.isfinite(deadline)):
+        raise AvitoError("audit_profile_source_invalid")
+    deadline = min(started + 10, deadline) if deadline is not None else started + 10
     while True:
+        if time.monotonic() >= deadline:
+            raise AvitoError("audit_provider_cooldown")
         try:
             avito_workspace.enforce_rate(account_id, "autoload", seconds=3)
             break
@@ -38,5 +44,7 @@ def fetch_profile_source(token, account_id):
             if time.monotonic() + wait >= deadline:
                 raise AvitoError("audit_provider_cooldown") from None
             time.sleep(min(wait, 3))
+    if time.monotonic() >= deadline:
+        raise AvitoError("audit_provider_cooldown")
     # Official provider root is verified by the existing operator before calls.
     return profile_data(avito_workspace._get(token, "/autoload/v2/profile"))
