@@ -365,8 +365,9 @@ class DuplicateReportDiagnosticTests(SimpleTestCase):
         self.fail("Duplicate report must remain blocked")
 
     def test_within_page_equal_and_changed_rows_are_distinguished(self):
-        first = item()
-        changed = item(messages=[])
+        first = item("PRIVATE_XML")
+        changed = item("PRIVATE_XML", messages=[])
+        first["avito_id"] = changed["avito_id"] = 987654321
         first["feed_name"] = changed["feed_name"] = "PRIVATE_FEED"
         diagnostic = self.fetch_duplicate([page([first, first, changed])])
         self.assertEqual((3, 1, 2), (diagnostic["read_rows"], diagnostic["unique_identity_pairs"],
@@ -375,8 +376,19 @@ class DuplicateReportDiagnosticTests(SimpleTestCase):
         self.assertEqual((1, 1), (diagnostic["identical_duplicate_rows"], diagnostic["different_duplicate_rows"]))
         self.assertEqual([True, False], [row["identical_payload"] for row in diagnostic["samples"]])
         self.assertFalse(diagnostic["complete"])
-        for private in ("PRIVATE_FEED", "messages", "ad_id", "avito_id", "counts", "rows"):
-            self.assertNotIn(private, diagnostic if private in ("counts", "rows") else str(diagnostic))
+        def all_keys(value):
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    yield key
+                    yield from all_keys(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from all_keys(child)
+        keys = set(all_keys(diagnostic))
+        for private in ("messages", "ad_id", "avito_id", "feed_name", "feed_urls", "counts", "rows"):
+            self.assertNotIn(private, keys)
+        self.assertNotIn("PRIVATE", str(diagnostic))
+        self.assertNotIn("987654321", str(diagnostic))
 
     def test_page_overlap_has_exact_positions_and_bounded_samples(self):
         rows = [item(str(index)) for index in range(50)]
