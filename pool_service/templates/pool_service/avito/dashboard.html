@@ -42,7 +42,7 @@
         </div>
       </form>
       <div class="d-flex flex-wrap align-items-center gap-3">
-        <div class="small text-muted">Данные обновляются вручную</div>
+        <div class="small text-muted">Основные данные обновляются вручную; контроль аванса — по личной подписке</div>
         <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" data-avito-submit>
           {% include 'pool_service/avito/_refresh_fields.html' %}
           <input type="hidden" name="section" value="all">
@@ -67,6 +67,7 @@
     {% include 'pool_service/avito/_autoload_report.html' %}
 
     <div class="row g-3 mb-3 avito-top-cards">
+      {% include 'pool_service/avito/_advance.html' %}
       <div class="col-md-6 col-xl-4">
         <section class="avito-panel" aria-labelledby="avito-profile-heading">
           <div class="avito-panel__header">
@@ -96,7 +97,7 @@
       <div class="col-md-6 col-xl-4">
         <section class="avito-panel" aria-labelledby="avito-balance-heading">
           <div class="avito-panel__header">
-            <h2 class="avito-panel__title" id="avito-balance-heading"><i class="bi bi-wallet2 avito-panel__icon" aria-hidden="true"></i>Баланс Авито</h2>
+            <h2 class="avito-panel__title" id="avito-balance-heading"><i class="bi bi-wallet2 avito-panel__icon" aria-hidden="true"></i>Кошелёк Авито</h2>
             <form method="post" action="{% url 'avito_refresh_data' selected.connection.pk %}" data-avito-submit>
               {% include 'pool_service/avito/_refresh_fields.html' %}<input type="hidden" name="section" value="balance">
               <button type="submit" class="btn btn-sm btn-outline-secondary" aria-label="Обновить баланс" {% if not selected.has_credentials %}disabled{% endif %}><i class="bi bi-arrow-clockwise" aria-hidden="true"></i></button>

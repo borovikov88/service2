@@ -86,6 +86,9 @@ class ReadonlyAvitoOperatorTests(TestCase):
         self.connection = ChannelConnection.objects.create(channel=channel, external_id="123", name="Synthetic")
         AvitoCredential.objects.create(connection=self.connection, client_id_encrypted="synthetic-id", client_secret_encrypted="synthetic-secret")
         self.index, _ = audit.feed_index(feed())
+        advance = patch.object(audit.avito_advance, "fetch", return_value={"kopeks": 1000, "amount": "10.00", "currency": "RUB", "source": "cpa_v3"})
+        advance.start()
+        self.addCleanup(advance.stop)
 
     def collect_connection(self, detail=None, upload=None, account=None):
         with patch.object(audit, "authorized_account_id", side_effect=account or ["123", "123"]), \
@@ -340,3 +343,17 @@ class ReportReadStrategyProjectionTests(SimpleTestCase):
         raw["read_strategy"] = "PRIVATE_URL"
         with self.assertRaises(ValueError):
             receipt.report(audit.report_summary(raw))
+
+
+class AdvanceAccessPrivacyTests(SimpleTestCase):
+    def test_availability_receipt_never_publishes_financial_amounts(self):
+        raw = {"available": True, "source": "cpa_v3", "amount_logged": False,
+               "kopeks": 123456789, "amount": "1234567.89", "client_secret": "PRIVATE"}
+        self.assertEqual({"available": True, "source": "cpa_v3", "amount_logged": False},
+                         receipt.advance_access(raw))
+        self.assertNotIn("PRIVATE", str(receipt.advance_access(raw)))
+        self.assertNotIn("123456", str(receipt.advance_access(raw)))
+        for value in ({"available": True, "source": "PRIVATE", "amount_logged": False},
+                      {"available": True, "source": "cpa_v3", "amount_logged": True}):
+            with self.assertRaises(ValueError):
+                receipt.advance_access(value)

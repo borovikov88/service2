@@ -80,6 +80,9 @@ class AvitoWorkspaceViewTests(TestCase):
         limiter = patch("pool_service.avito_workspace.enforce_rate")
         limiter.start()
         self.addCleanup(limiter.stop)
+        advance = patch("pool_service.avito_advance.fetch", return_value={"kopeks": 12500, "amount": "125.00", "currency": "RUB", "source": "cpa_v3"})
+        advance.start()
+        self.addCleanup(advance.stop)
 
     def refresh_url(self, connection=None):
         return reverse("avito_refresh_data", args=[(connection or self.connection).pk])
@@ -106,7 +109,7 @@ class AvitoWorkspaceViewTests(TestCase):
         self.client.force_login(self.owner)
         response = self.client.post(self.refresh_url(), {"section": "all"})
         self.assertRedirects(response, self.url + f"?account={self.connection.pk}")
-        self.assertEqual(fetch.call_count, 4)
+        self.assertEqual(fetch.call_count, 5)
         report = self.report()
         self.assertEqual(report["balance"]["data"]["real"], "125.00")
         self.assertEqual(report["items"]["data"]["rows"][0]["title"], "Synthetic item")
