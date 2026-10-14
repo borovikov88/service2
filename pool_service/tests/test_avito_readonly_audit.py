@@ -91,6 +91,9 @@ class ReadonlyAvitoOperatorTests(TestCase):
         with patch.object(audit, "authorized_account_id", side_effect=account or ["123", "123"]), \
              patch.object(audit, "access_token", return_value="synthetic-token"), \
              patch.object(audit, "_provider_root", return_value="https://api.avito.ru"), \
+             patch.object(audit, "fetch_profile_source", return_value=(
+                 {"complete": True, "autoload_enabled": True, "shop_feed_source": "other_or_unknown",
+                  "shop_feed_diagnostics": []}, "synthetic-fingerprint")), \
              patch.object(audit, "fetch_detail", side_effect=detail or [
                  {"status": "active", "autoload_item_id": "1_2_3"},
                  {"status": "old", "autoload_item_id": "1_9_3"}]), \
@@ -182,6 +185,25 @@ class ReadonlyAvitoOperatorTests(TestCase):
         self.assertEqual(result["error"], "audit_provider_root_invalid")
         token.assert_not_called()
         account.assert_not_called()
+
+    def test_profile_source_drift_is_unknown_and_does_not_rebind_inventory(self):
+        # Override the helper's normal synthetic fixture inside its own call.
+        count = 0
+        def side_effect(*args):
+            nonlocal count
+            count += 1
+            return ({"complete": True, "autoload_enabled": True,
+                     "shop_feed_source": "shop_aggregate_file", "shop_feed_diagnostics": []}, str(count))
+        with patch.object(audit, "authorized_account_id", side_effect=["123", "123"]), \
+             patch.object(audit, "access_token", return_value="synthetic-token"), \
+             patch.object(audit, "_provider_root", return_value="https://api.avito.ru"), \
+             patch.object(audit, "fetch_profile_source", side_effect=side_effect), \
+             patch.object(audit, "fetch_detail", return_value={"status": "active", "autoload_item_id": "1_2_3"}), \
+             patch.object(audit.avito_autoload_report, "fetch_report", return_value=report()), \
+             patch.object(audit.avito_status_monitor, "full_scan", return_value=({"101": {"status": "active", "title": "Synthetic"}}, 1)):
+            value = audit.collect_connection(self.connection, ["101"], self.index)
+        self.assertEqual({"error": "audit_profile_source_changed"}, value["configured_feed_source"])
+        self.assertTrue(value["listing_scan"]["complete"])
 
     def test_collect_fails_closed_on_more_than_two_connections_without_network(self):
         for index in range(2):

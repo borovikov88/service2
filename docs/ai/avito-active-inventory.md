@@ -21,3 +21,6 @@ The account's configured feed URL, atomicity of account/site snapshots, physical
 stock and historical expiry cause remain unverified. The same ID in the report
 and shop XML is a candidate binding. No deletion, ID recreation, price/stock edit
 or paid action follows from this report.
+
+
+Current configured source is read with GET /autoload/v2/profile (feeds_data[].feed_url). Report feed_urls can point to a processed copy and never establish the current account configuration. The operator reads current configuration twice under the existing account/credential binding checks, compares private source fingerprints in-process, and projects only enabled status, a strict fixed source kind and structural enum/boolean diagnostics. URLs, feed names, report email and fingerprints are not logged or stored. Unsupported, mixed, signed, unavailable or changing configuration remains unverified. No profile settings or provider state are written.
