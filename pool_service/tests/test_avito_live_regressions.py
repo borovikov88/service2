@@ -1,4 +1,5 @@
 from copy import deepcopy
+from django.utils import timezone
 from unittest.mock import patch
 
 from django.test import SimpleTestCase, TestCase
@@ -222,12 +223,17 @@ class AvitoCompactUiScopeTests(TestCase):
         from django.urls import reverse
         self.seed_items()
         self.client.force_login(self.owner)
-        response = self.client.post(reverse("avito_refresh_data", args=[self.connection.pk]), {"section": "item_detail", "item_id": "12"})
+        self.assertContains(self.client.get(self.url + "?item_id=11"), "40.00 ₽")
+        # The old unscoped substring assertion also matched an ordinary timestamp.
+        fixed_now = timezone.now().replace(second=40, microsecond=934)
+        with patch("pool_service.avito_management.timezone.now", return_value=fixed_now):
+            response = self.client.post(reverse("avito_refresh_data", args=[self.connection.pk]), {"section": "item_detail", "item_id": "12"})
         page = self.client.get(response["Location"])
         self.assertContains(page, 'id="avito-item-12"')
         self.assertContains(page, "provider_http_403")
+        self.assertContains(page, fixed_now.isoformat())
         self.assertNotContains(page, "OLD-OTHER-ITEM")
-        self.assertNotContains(page, "40.00")
+        self.assertNotContains(page, "40.00 ₽")
         self.connection.refresh_from_db()
         detail = self.connection.settings["avito_workspace"]["sections"]["item_detail"]
         self.assertEqual(detail["requested_item_id"], "12")
