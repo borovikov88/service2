@@ -265,3 +265,16 @@ class AutoloadReportViewTests(TestCase):
         with patch.object(report_api, "fetch_report") as fetch, patch.object(avito_workspace, "fetch_section", return_value={}):
             self.client.post(self.refresh, {"section": "all"})
         fetch.assert_not_called()
+
+class ShopFeedSourceTests(SimpleTestCase):
+    def test_only_known_source_kind_is_saved_without_url_or_tokens(self):
+        self.assertEqual("shop_aggregate_file", report_api.shop_feed_source(
+            [{"name": "PRIVATE", "url": "https://shop.aqualine22.ru/avito/avitofeed.xml"}]))
+        self.assertEqual("shop_profile_43_file", report_api.shop_feed_source(
+            [{"url": "https://shop.aqualine22.ru/avito/avitofeed_43.xml"}]))
+        for value in ("https://shop.aqualine22.ru/avito/avitofeed.xml?token=PRIVATE",
+                      "https://other.example/avito/avitofeed.xml", "https://user:PRIVATE@shop.aqualine22.ru/avito/avitofeed.xml"):
+            self.assertEqual("other_or_unknown", report_api.shop_feed_source([{"url": value}]))
+        self.assertEqual("other_or_unknown", report_api.shop_feed_source([
+            {"url": "https://shop.aqualine22.ru/avito/avitofeed.xml"},
+            {"url": "https://shop.aqualine22.ru/avito/avitofeed_43.xml"}]))

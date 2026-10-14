@@ -101,6 +101,9 @@ def report(value):
         require(isinstance(started_at, str) and len(started_at) <= 40)
         require(datetime.fromisoformat(started_at).utcoffset() == timedelta(hours=7))
     result["started_at"] = started_at
+    source_kind = value.get("shop_feed_source", "other_or_unknown")
+    require(source_kind in ("shop_aggregate_file", "shop_profile_43_file", "other_or_unknown"))
+    result["shop_feed_source"] = source_kind
     if "message_code_counts" in value:
         def message_count(row):
             require(isinstance(row, dict) and row.get("type") in ("error", "warning", "alarm", "info"))
@@ -137,6 +140,55 @@ def listing_scan(value):
     return {"complete": True, "total": total, "pages": pages, "counts": counts,
             "duplicate_title_group_count": group_count, "duplicate_candidates": candidates}
 
+INVENTORY_LABELS = {
+    "report_xml_match": "Сопоставлено с XML",
+    "not_in_last_report": "Нет в последнем отчёте",
+    "not_in_xml": "Нет в текущем XML",
+    "ambiguous": "Неоднозначное сопоставление",
+    "invalid_xml_id": "Некорректный XML ID",
+}
+
+def inventory(value):
+    require(isinstance(value, dict))
+    if "error" in value:
+        return {"error": code(value["error"])}
+    require(value.get("complete") is True)
+    total = integer(value.get("total"), 500)
+    def row(raw):
+        require(isinstance(raw, dict) and raw.get("link_state") in INVENTORY_LABELS)
+        amount = raw.get("shop_quantity")
+        require(amount is None or (type(amount) is int and -10**9 <= amount <= 10**9))
+        availability = raw.get("availability")
+        require(availability in (None, "В наличии", "Под заказ"))
+        state = raw["link_state"]
+        linked = xml_id(raw.get("xml_id"))
+        require(state != "report_xml_match" or linked is not None)
+        require(state == "report_xml_match" or (amount is None and availability is None))
+        return {"item_id": identifier(raw.get("item_id")), "link_state": state,
+                "link_label": INVENTORY_LABELS[state], "xml_id": linked,
+                "availability": availability, "shop_quantity": amount}
+    rows = sequence(value.get("rows"), row, 500)
+    require(len(rows) == total and len({row["item_id"] for row in rows}) == total)
+    counts = {key: sum(row["link_state"] == key for row in rows) for key in INVENTORY_LABELS}
+    require(value.get("counts") == counts)
+    known = sum(row["shop_quantity"] is not None for row in rows)
+    nonpositive = sum(row["shop_quantity"] is not None and row["shop_quantity"] <= 0 for row in rows)
+    contradiction = sum(row["shop_quantity"] is not None and row["shop_quantity"] <= 0
+                        and row["availability"] == "В наличии" for row in rows)
+    preorder = sum(row["availability"] == "Под заказ" for row in rows)
+    for key, expected in (("quantity_verified_rows", known), ("nonpositive_shop_quantity_rows", nonpositive),
+                          ("in_stock_nonpositive_rows", contradiction), ("preorder_rows", preorder)):
+        require(type(value.get(key)) is int and value[key] == expected)
+    result = {"complete": True, "total": total, "rows": rows, "counts": counts,
+              "quantity_verified_rows": known, "nonpositive_shop_quantity_rows": nonpositive,
+              "in_stock_nonpositive_rows": contradiction, "preorder_rows": preorder,
+              "saved_shop_stock_comparison_complete": known == total}
+    if "stock_error" in value:
+        result["stock_error"] = code(value["stock_error"])
+    result["physical_stock_verified"] = False
+    result["account_feed_url_verified"] = False
+    return result
+
 def connection(value):
     require(isinstance(value, dict))
     result = {"connection_id": integer(value.get("connection_id"))}
@@ -144,7 +196,8 @@ def connection(value):
         return result | {"error": code(value["error"])}
     result.update(account_id=identifier(value.get("account_id")),
                   items=sequence(value.get("items"), item, 10), autoload_report=report(value.get("autoload_report")),
-                  listing_scan=listing_scan(value.get("listing_scan", {"error": "audit_listing_scan_not_requested"})))
+                  listing_scan=listing_scan(value.get("listing_scan", {"error": "audit_listing_scan_not_requested"})),
+                  active_source_audit=inventory(value.get("active_source_audit", {"error": "audit_inventory_not_requested"})))
     return result
 
 def normalize(value):

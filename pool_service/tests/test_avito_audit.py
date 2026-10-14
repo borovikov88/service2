@@ -65,6 +65,9 @@ class AvitoAuditViewTests(TestCase):
         profile = patch("pool_service.avito_workspace._get", return_value={"id": 123})
         profile.start()
         self.addCleanup(profile.stop)
+        inventory = patch.object(avito_audit, "fetch_inventory", return_value={"error": "audit_report_unavailable"})
+        inventory.start()
+        self.addCleanup(inventory.stop)
 
     def saved_audit(self):
         self.connection.refresh_from_db()
@@ -83,6 +86,18 @@ class AvitoAuditViewTests(TestCase):
         self.assertEqual(self.saved_audit()["data"]["total"], 2)
         self.assertFalse(Notification.objects.exists())
         self.assertNotIn("avito_workspace_refresh_lease", self.connection.settings)
+
+    def test_full_audit_lease_allows_bounded_report_and_source_reads(self):
+        from django.utils import timezone
+        from django.utils.dateparse import parse_datetime
+        def capture(connection):
+            connection.refresh_from_db()
+            remaining = parse_datetime(connection.settings["avito_workspace_refresh_until"]) - timezone.now()
+            self.assertGreater(remaining.total_seconds(), 290)
+            self.assertLessEqual(remaining.total_seconds(), 300)
+            return avito_audit.build_report({}, 1)
+        with patch.object(avito_audit, "fetch_report", side_effect=capture):
+            self.client.post(self.refresh_url, {"section": "audit"})
 
     def test_first_incomplete_scan_does_not_save_zero_or_complete(self):
         with patch.object(avito_audit, "fetch_report", side_effect=AvitoError("monitor_scan_limit")):

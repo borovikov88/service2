@@ -464,7 +464,7 @@ def avito_refresh_data(request, connection_id):
         if until and timezone.is_aware(until) and until > now:
             messages.info(request, "Обновление этого аккаунта уже выполняется. Дождитесь результата.")
             return redirect(destination)
-        metadata["avito_workspace_refresh_until"] = (now + timedelta(minutes=3)).isoformat()
+        metadata["avito_workspace_refresh_until"] = (now + timedelta(minutes=5 if section == "audit" else 3)).isoformat()
         metadata["avito_workspace_refresh_lease"] = lease
         locked.settings = metadata
         locked.save(update_fields=["settings"])
