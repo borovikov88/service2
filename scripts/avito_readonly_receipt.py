@@ -131,7 +131,17 @@ def duplicate_report_diagnostics(value):
                 "repeated_page": repeated_page, "identical_payload": row["identical_payload"]}
     samples = sequence(value.get("samples"), sample, 5)
     require(len(samples) == min(extra, 5))
-    require(len({row["repeated_row"] for row in samples}) == len(samples))
+    positions = [row["repeated_row"] for row in samples]
+    require(positions == sorted(set(positions)))
+    require(not {row["first_row"] for row in samples}.intersection(positions))
+    sampled_pages, same_page, cross_page = {}, 0, 0
+    for row in samples:
+        seen_pages = sampled_pages.setdefault(row["first_row"], {row["first_page"]})
+        same_page += row["repeated_page"] in seen_pages
+        cross_page += row["repeated_page"] not in seen_pages
+        seen_pages.add(row["repeated_page"])
+    require(same_page <= result["same_page_duplicate_rows"])
+    require(cross_page <= result["cross_page_duplicate_rows"])
     require(sum(row["identical_payload"] for row in samples) <= result["identical_duplicate_rows"])
     require(sum(not row["identical_payload"] for row in samples) <= result["different_duplicate_rows"])
     result["samples"] = samples

@@ -401,3 +401,10 @@ class DuplicateReportDiagnosticTests(SimpleTestCase):
                 report_api.fetch_report("token", "123")
         self.assertNotIsInstance(caught.exception, report_api.ReportDuplicateRows)
         self.assertFalse(hasattr(caught.exception, "diagnostics"))
+
+    def test_repeated_identity_twice_on_new_page_has_one_cross_and_one_same_page_repeat(self):
+        rows = [item(str(index)) for index in range(50)]
+        diagnostic = self.fetch_duplicate([page(rows, total=52), page([rows[0], rows[0]], 2, 52)])
+        self.assertEqual((1, 1), (diagnostic["cross_page_duplicate_rows"],
+                               diagnostic["same_page_duplicate_rows"]))
+        self.assertEqual([51, 52], [sample["repeated_row"] for sample in diagnostic["samples"]])

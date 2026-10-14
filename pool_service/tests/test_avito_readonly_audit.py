@@ -295,7 +295,9 @@ class DuplicateReceiptProjectionTests(SimpleTestCase):
             {"complete": True}, {"upload_id": "PRIVATE"}, {"upload_status": "PRIVATE"},
             {"started_at": "2026-10-10T17:00:00"}, {"read_rows": True},
             {"read_rows": 5001}, {"unique_identity_pairs": 49}, {"duplicate_extra_rows": 0},
-            {"same_page_duplicate_rows": 1}, {"identical_duplicate_rows": 0},
+            {"same_page_duplicate_rows": 1},
+            {"same_page_duplicate_rows": 1, "cross_page_duplicate_rows": 0},
+            {"identical_duplicate_rows": 0},
             {"identical_duplicate_rows": 0, "different_duplicate_rows": 1}, {"pages": 1},
             {"samples": []}, {"samples": self.diagnostic()["samples"] * 6},
             {"samples": [{"first_row": 51, "repeated_row": 51, "first_page": 2,
@@ -309,3 +311,21 @@ class DuplicateReceiptProjectionTests(SimpleTestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 receipt.report({"error": "autoload_report_duplicate_rows",
                                 "duplicate_diagnostics": self.diagnostic() | changes})
+
+    def test_second_repeat_on_same_new_page_is_not_counted_as_another_cross_page_repeat(self):
+        diagnostic = self.diagnostic()
+        diagnostic.update(read_rows=52, duplicate_extra_rows=2, same_page_duplicate_rows=1,
+                          cross_page_duplicate_rows=1, identical_duplicate_rows=2)
+        diagnostic["samples"].append({"first_row": 1, "repeated_row": 52, "first_page": 1,
+                                      "repeated_page": 2, "identical_payload": True})
+        value = {"error": "autoload_report_duplicate_rows", "duplicate_diagnostics": diagnostic}
+        self.assertEqual(diagnostic, receipt.report(value)["duplicate_diagnostics"])
+        diagnostic["same_page_duplicate_rows"] = 0
+        diagnostic["cross_page_duplicate_rows"] = 2
+        with self.assertRaises(ValueError):
+            receipt.report(value)
+        diagnostic["same_page_duplicate_rows"] = 1
+        diagnostic["cross_page_duplicate_rows"] = 1
+        diagnostic["samples"].reverse()
+        with self.assertRaises(ValueError):
+            receipt.report(value)
