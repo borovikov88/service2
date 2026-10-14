@@ -6,6 +6,7 @@ from django.utils import timezone
 from pool_service.avito_status_monitor import SCAN_SECONDS, scan_monitor
 from pool_service.communication_models import AvitoStatusMonitor
 from pool_service import avito_autoload_auto, avito_advance
+from pool_service.avito_scheduler import scheduler_state
 
 
 class Command(BaseCommand):
@@ -27,6 +28,8 @@ class Command(BaseCommand):
                 f"running={monitors.filter(enabled=True, lease_until__gt=now).count()}",
                 f"failed={monitors.filter(enabled=True).exclude(last_error_code='').count()}",
             )))
+            scheduler = scheduler_state()
+            self.stdout.write(f"AVITO_SCHEDULER code={scheduler['code']} completed_worker={str(scheduler['worker_ready']).lower()}")
             return
         limit, budget = options["limit"], options["budget_seconds"]
         if not 1 <= limit <= 10 or not SCAN_SECONDS + 30 <= budget <= 1500:
