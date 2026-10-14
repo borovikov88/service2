@@ -159,6 +159,9 @@ def report(value):
     require(value.get("upload_status") in ("processing", "success", "success_warning", "error", ""))
     result = {"upload_id": identifier(value.get("upload_id")), "upload_status": value["upload_status"],
               "complete": True, "finished": value["finished"], "total": integer(value.get("total"), 5000)}
+    strategy = value.get("read_strategy", "provider_pages")
+    require(strategy in ("provider_pages", "shop_xml_id_queries"))
+    result["read_strategy"] = strategy
     result["counts"] = {key: integer(value.get("counts", {}).get(key, 0), 5000) for key in ("error", "warning", "alarm", "info")}
     require(all(count <= result["total"] for count in result["counts"].values()))
     result["critical_samples"] = sequence(value.get("critical_samples"), lambda row: {

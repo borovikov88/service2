@@ -420,3 +420,104 @@ class DuplicateReportDiagnosticTests(SimpleTestCase):
         self.assertEqual((1, 1), (diagnostic["cross_page_duplicate_rows"],
                                diagnostic["same_page_duplicate_rows"]))
         self.assertEqual([51, 52], [sample["repeated_row"] for sample in diagnostic["samples"]])
+
+
+class ShopXmlIdReportTests(SimpleTestCase):
+    def rows(self):
+        result = [item(f"1_{index}_3") for index in range(55)]
+        for index, row in enumerate(result):
+            row["avito_id"] = 1000 + index
+        return result
+
+    def xml(self, count=55, suffix=""):
+        return ("<Ads>" + "".join(f"<Ad><Id>1_{index}_3</Id></Ad>" for index in range(count))
+                + suffix + "</Ads>").encode()
+
+    def shop_upload(self, identifier=123):
+        value = upload(identifier)
+        value["feed_urls"] = [{"url": "https://shop.aqualine22.ru/avito/avitofeed.xml"}]
+        return value
+
+    def fetch(self, responses, payloads=None, kind="last_successful"):
+        from pool_service import avito_source_audit
+        with patch.object(avito_workspace, "_get", side_effect=responses) as get, \
+             patch.object(avito_workspace, "enforce_rate"), \
+             patch.object(avito_source_audit, "_read_xml", side_effect=payloads or [self.xml(), self.xml()]) as source:
+            result = report_api.fetch_report("token", "123", kind=kind)
+        return result, get, source
+
+    def test_complete_id_queries_cover_every_row_without_provider_page_overlap(self):
+        from urllib.parse import parse_qs, urlsplit
+        rows = self.rows()
+        result, get, source = self.fetch([
+            self.shop_upload(), page(rows[:50], total=55),
+            page(rows[:50]), page(rows[50:]), self.shop_upload()
+        ])
+        self.assertTrue(result["complete"])
+        self.assertEqual(55, result["total"])
+        self.assertEqual(55, result["counts"]["error"])
+        self.assertEqual("shop_xml_id_queries", result["read_strategy"])
+        self.assertEqual([row["ad_id"] for row in rows], [row["ad_id"] for row in result["rows"]])
+        queries = [parse_qs(urlsplit(call.args[1]).query) for call in get.call_args_list[2:-1]]
+        self.assertEqual([50, 5], [len(query["query"][0].split(",")) for query in queries])
+        self.assertTrue(all(query["page"] == ["1"] and query["perPage"] == ["50"] for query in queries))
+        self.assertEqual(2, source.call_count)
+
+    def test_ignored_filter_missing_or_foreign_ids_and_duplicate_records_block(self):
+        rows = self.rows()
+        missing = rows[:49]
+        foreign = [dict(rows[0], ad_id="1_999_3"), *rows[1:50]]
+        duplicate = [rows[0], rows[0], *rows[2:50]]
+        duplicate_distinct_listing = [dict(rows[0], avito_id=9999), rows[0], *rows[2:50]]
+        variants = [page(rows[:50], total=55), page(missing), page(foreign),
+                    page(duplicate), page(duplicate_distinct_listing)]
+        for response in variants:
+            with self.subTest(response_total=response["meta"]["total"]), self.assertRaises(AvitoError):
+                self.fetch([self.shop_upload(), page(rows[:50], total=55), response])
+
+    def test_feed_upload_or_probe_drift_cannot_become_complete(self):
+        rows = self.rows()
+        responses = [self.shop_upload(), page(rows[:50], total=55),
+                     page(rows[:50]), page(rows[50:]), self.shop_upload()]
+        with self.assertRaisesMessage(AvitoError, "autoload_report_changed"):
+            self.fetch(responses, [self.xml(), self.xml(suffix="<Ad><Id>1_99_3</Id></Ad>")])
+        with self.assertRaisesMessage(AvitoError, "autoload_report_changed"):
+            self.fetch([*responses[:-1], self.shop_upload(124)])
+        changed = [dict(rows[0], messages=[]), *rows[1:50]]
+        with self.assertRaisesMessage(AvitoError, "autoload_report_changed"):
+            self.fetch([self.shop_upload(), page(rows[:50], total=55), page(changed), page(rows[50:])])
+
+    def test_other_source_current_upload_or_feed_cardinality_mismatch_keep_guarded_pages(self):
+        from pool_service import avito_source_audit
+        rows = self.rows()
+        processing = self.shop_upload()
+        processing["status"] = "processing"
+        for header, kind, count in ((processing, "last_successful", 55),
+                                    (upload(), "last_successful", 55),
+                                    (self.shop_upload(), "current", 55),
+                                    (self.shop_upload(), "last_successful", 54)):
+            with self.subTest(kind=kind, count=count):
+                result, get, source = self.fetch([
+                    header, page(rows[:50], total=55), page(rows[50:], 2, 55), header
+                ], [self.xml(count)], kind)
+                self.assertEqual("provider_pages", result["read_strategy"])
+                self.assertEqual(4, get.call_count)
+                self.assertTrue(all("query=" not in call.args[1] for call in get.call_args_list))
+                self.assertEqual(1 if count == 54 else 0, source.call_count)
+        result, _, _ = self.fetch([
+            self.shop_upload(), page(rows[:50], total=55), page(rows[50:], 2, 55), self.shop_upload()
+        ], [AvitoError("source_unavailable")])
+        self.assertEqual("provider_pages", result["read_strategy"])
+        with self.assertRaisesMessage(AvitoError, "autoload_report_duplicate_rows"):
+            self.fetch([self.shop_upload(), page(rows[:50], total=55), page(rows[:5], 2, 55), self.shop_upload()],
+                       [self.xml(54)])
+
+    def test_limits_and_malformed_feed_never_weaken_duplicate_guard(self):
+        rows = self.rows()
+        bad_xml = b"<Ads><Ad><Id>PRIVATE</Id></Ad></Ads>"
+        result, _, _ = self.fetch([
+            self.shop_upload(), page(rows[:50], total=55), page(rows[50:], 2, 55), self.shop_upload()
+        ], [bad_xml])
+        self.assertEqual("provider_pages", result["read_strategy"])
+        with patch.object(report_api, "MAX_BYTES", 1), self.assertRaisesMessage(AvitoError, "autoload_report_limit"):
+            self.fetch([self.shop_upload(), page(rows[:50], total=55), page(rows[:50])])
