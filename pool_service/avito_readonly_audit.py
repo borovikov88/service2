@@ -19,6 +19,7 @@ MAX_CONNECTIONS = 2
 SAFE_ERRORS = {
     "provider_credentials_missing", "provider_credentials_invalid", "provider_token_missing",
     "audit_provider_root_invalid", "audit_provider_cooldown", "audit_report_code_limit",
+    "audit_profile_source_invalid", "audit_profile_source_changed",
     "monitor_scan_limit", "monitor_pagination_invalid", "monitor_status_invalid",
     "provider_account_id_missing", "provider_account_id_invalid", "provider_item_unavailable",
     "provider_account_mismatch", "provider_data_invalid", "provider_unavailable",
