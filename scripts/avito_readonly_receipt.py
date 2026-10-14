@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 FRAME = "AVITO_READONLY_AUDIT_RECEIPT "
 MAX_BYTES = 262144
 STATES = {"active", "removed", "old", "blocked", "rejected"}
-CODE_PATTERN = re.compile(r"(?:monitor_(?:scan_limit|pagination_invalid|status_invalid)|(?:provider|source)_http_[1-5][0-9]{2}|audit_[a-z_]{1,60}|autoload_report_[a-z_]{1,60}|source_[a-z_]{1,60}|provider_[a-z_]{1,60})\Z")
+CODE_PATTERN = re.compile(r"(?:monitor_(?:scan_limit|pagination_invalid|status_invalid)|(?:provider|source)_http_[1-5][0-9]{2}|audit_[a-z_]{1,60}|autoload_report_[a-z_]{1,60}|source_[a-z_]{1,60}|provider_[a-z_]{1,60}|advance_[a-z_]{1,60})\Z")
 
 def require(value):
     if not value:
@@ -271,6 +271,14 @@ def configured_feed_source(value):
             "shop_feed_source": value["shop_feed_source"],
             "shop_feed_diagnostics": sequence(value.get("shop_feed_diagnostics"), feed_source_diagnostic, 50)}
 
+def advance_access(value):
+    require(isinstance(value, dict))
+    if "error" in value:
+        return {"error": code(value["error"])}
+    require(value.get("available") is True and value.get("source") == "cpa_v3"
+            and value.get("amount_logged") is False)
+    return {"available": True, "source": "cpa_v3", "amount_logged": False}
+
 def connection(value):
     require(isinstance(value, dict))
     result = {"connection_id": integer(value.get("connection_id"))}
@@ -280,7 +288,8 @@ def connection(value):
                   items=sequence(value.get("items"), item, 10), autoload_report=report(value.get("autoload_report")),
                   listing_scan=listing_scan(value.get("listing_scan", {"error": "audit_listing_scan_not_requested"})),
                   active_source_audit=inventory(value.get("active_source_audit", {"error": "audit_inventory_not_requested"})),
-                  configured_feed_source=configured_feed_source(value.get("configured_feed_source", {"error": "audit_profile_source_not_requested"})))
+                  configured_feed_source=configured_feed_source(value.get("configured_feed_source", {"error": "audit_profile_source_not_requested"})),
+                  advance_access=advance_access(value.get("advance_access", {"error": "audit_advance_not_requested"})))
     return result
 
 def normalize(value):

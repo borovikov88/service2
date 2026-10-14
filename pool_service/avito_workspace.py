@@ -21,7 +21,7 @@ ITEM_STATUSES = {
     "active": "Активно", "removed": "Снято", "old": "Истекло",
     "blocked": "Заблокировано", "rejected": "Отклонено",
 }
-BASIC_SECTIONS = ("profile", "balance", "items", "autoload")
+BASIC_SECTIONS = ("profile", "balance", "advance", "items", "autoload")
 SECTIONS = (*BASIC_SECTIONS, "statistics", "item_detail", "prices", "calls", "audit", "source_audit", "autoload_report")
 
 

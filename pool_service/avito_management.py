@@ -36,7 +36,7 @@ from pool_service.communication_avito import (
 from pool_service.communication_models import (
     AvitoCredential, ChannelConnection, CommunicationChannel, Conversation, ConversationMessage,
 )
-from pool_service import avito_workspace, avito_status_monitor, avito_audit, avito_source_audit, avito_autoload_report, avito_autoload_auto
+from pool_service import avito_workspace, avito_status_monitor, avito_audit, avito_source_audit, avito_autoload_report, avito_autoload_auto, avito_advance
 from pool_service.communication_services import conversation_capability, organization_access
 from pool_service.communication_views import _avito_subscription_token
 
@@ -52,6 +52,10 @@ CHECKS = (
 )
 
 SAFE_ERRORS = {
+    "advance_data_invalid": "Авито не вернул корректный остаток аванса. Неизвестная сумма не считается нулём.",
+    "advance_provider_invalid": "Чтение аванса доступно только через официальный API Авито.",
+    "advance_binding_changed": "Права, подключение или ключи изменились. Требуется повторное включение уведомлений.",
+    "advance_read_failed": "Не удалось обновить аванс. Предыдущая сумма сохранена.",
     "provider_cooldown": "Действует ограничение частоты запросов Авито.",
     "provider_item_unavailable": "Объявление не найдено или принадлежит другому аккаунту.",
     "provider_messages_invalid_response": "Авито вернул неожиданный формат ответа.",
@@ -261,7 +265,7 @@ def avito_dashboard(request):
                 **report_state, "data": {}, "status": "warning", "stale": True,
                 "code": code, "detail": avito_autoload_report.ERRORS[code],
             }
-    for key, normalizer in (("item_detail", avito_workspace.item_detail_for_display), ("prices", avito_workspace.prices_for_display)):
+    for key, normalizer in (("advance", avito_advance.for_display), ("item_detail", avito_workspace.item_detail_for_display), ("prices", avito_workspace.prices_for_display)):
         if key in workspace:
             workspace[key] = {**workspace[key], "data": normalizer(workspace[key].get("data"))}
     if "statistics" in workspace:
@@ -286,6 +290,7 @@ def avito_dashboard(request):
         "active_tab": "avito",
         "status_monitor_state": avito_status_monitor.display_state(selected["connection"] if selected else None, request.user),
         "autoload_auto_state": avito_autoload_auto.display_state(selected["connection"] if selected else None, request.user),
+        "advance_monitor_state": avito_advance.display_state(selected["connection"] if selected else None, request.user),
         "selected": selected,
         "workspace": workspace,
         "expanded_item_id": expanded_item_id,
@@ -327,7 +332,7 @@ def avito_check_api(request, connection_id):
 
 class WorkspaceRefreshForm(forms.Form):
     autoload_kind = forms.ChoiceField(choices=[(x, x) for x in avito_autoload_report.KINDS], required=False)
-    section = forms.ChoiceField(choices=[(x, x) for x in ("all", *avito_workspace.SECTIONS)])
+    section = forms.ChoiceField(choices=[(x, x) for x in ("all", *avito_workspace.SECTIONS, "advance_enable", "advance_disable", "advance_retry")])
     page = forms.IntegerField(min_value=1, max_value=10000, required=False, initial=1)
     status = forms.ChoiceField(choices=[("", "Все"), *avito_workspace.ITEM_STATUSES.items()], required=False)
     stats_date_from = forms.DateField(required=False)
@@ -439,6 +444,13 @@ def avito_refresh_data(request, connection_id):
         messages.error(request, "Некорректные параметры обновления Авито.")
         return redirect(destination)
     section = form.cleaned_data["section"]
+    if section in {"advance_enable", "advance_disable", "advance_retry"}:
+        try:
+            avito_advance.configure(connection, request.user, section.removeprefix("advance_"))
+            messages.info(request, "Настройки личных уведомлений об авансе сохранены.")
+        except ValueError as error:
+            messages.error(request, str(error))
+        return redirect(destination + "#avito-advance")
     targets = avito_workspace.BASIC_SECTIONS if section == "all" else (section,)
     page = form.cleaned_data["page"] or 1
     status = form.cleaned_data["status"]
@@ -482,11 +494,14 @@ def avito_refresh_data(request, connection_id):
         locked.save(update_fields=["settings"])
 
     updates = {}
+    advance_stamp = ""
     persisted = False
     actual_id = ""
     try:
         token, profile = None, None
         if section != "source_audit":
+            if "advance" in targets:
+                advance_stamp = avito_advance._credential_stamp(connection)
             token = access_token(connection)
             profile = avito_workspace._get(token, "/core/v1/accounts/self")
             actual_id = avito_workspace.profile_data(profile)["id"]
@@ -495,7 +510,13 @@ def avito_refresh_data(request, connection_id):
         for key in targets:
             checked_at = timezone.now().isoformat()
             try:
-                if key == "autoload_report":
+                if key == "advance":
+                    data = avito_advance.fetch(token, actual_id)
+                    final_id = avito_workspace.profile_data(avito_workspace._get(token, "/core/v1/accounts/self"))["id"]
+                    if final_id != actual_id or avito_advance._credential_stamp(connection) != advance_stamp:
+                        raise AvitoError("provider_account_mismatch")
+                    checked_at = timezone.now().isoformat()
+                elif key == "autoload_report":
                     data = avito_autoload_report.fetch_report(token, actual_id, kind=form.cleaned_data["autoload_kind"] or "last_successful")
                     checked_at = timezone.now().isoformat()
                 elif key == "source_audit":
@@ -541,6 +562,12 @@ def avito_refresh_data(request, connection_id):
                     sections = saved.get("sections")
                     sections = dict(sections) if isinstance(sections, dict) else {}
                     for key, update in updates.items():
+                        if key == "advance" and update.get("status") == "ok" and (
+                                avito_advance._credential_stamp(locked) != advance_stamp
+                                or not conversation_capability(request.user, "can_manage_channels", organization)):
+                            update = {**_workspace_failure("advance", AvitoError("advance_binding_changed")),
+                                      "checked_at": update["checked_at"], "stale": True}
+                            updates[key] = update
                         if key in {"item_detail", "prices"}:
                             update = {**update, "requested_item_id": form.cleaned_data["item_id"]}
                         previous = sections.get(key)
@@ -557,6 +584,8 @@ def avito_refresh_data(request, connection_id):
                     messages.warning(request, "Подключение изменилось во время обновления; результат не сохранён.")
                 locked.settings = metadata
                 locked.save(update_fields=["settings"])
+                if persisted and updates.get("advance", {}).get("status") == "ok":
+                    avito_advance.observe_manual(locked, updates["advance"]["data"], advance_stamp)
     if not persisted:
         messages.info(request, "Результат не сохранён: подключение или запрос обновления изменились.")
         return redirect(destination)
