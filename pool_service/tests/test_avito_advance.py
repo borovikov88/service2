@@ -181,3 +181,24 @@ class AdvanceMonitorTests(TestCase):
         self.assertEqual(403, csrf.post(url, {"section": "advance_enable"}).status_code)
         self.client.force_login(self.manager)
         self.assertEqual(403, self.client.post(url, {"section": "advance_enable"}).status_code)
+
+    def test_key_rotation_during_first_identity_discards_old_token_balance_even_if_rebound(self):
+        self.enable()
+        self.client.force_login(self.owner)
+        calls = [0]
+        def initial_self(_token, _path):
+            calls[0] += 1
+            if calls[0] == 1:
+                AvitoCredential.objects.filter(connection=self.connection).update(client_secret_encrypted="rotated-private")
+                advance.configure(self.connection, self.owner, "enable")
+            return {"id": 123}
+        with patch("pool_service.avito_management.access_token", return_value="old-synthetic-token"), \
+             patch("pool_service.avito_workspace._get", side_effect=initial_self), \
+             patch.object(advance, "fetch", return_value=advance.parse_balance({"balance": 0})):
+            self.client.post(reverse("avito_refresh_data", args=[self.connection.pk]), {"section": "advance"})
+        self.assertFalse(Notification.objects.exists())
+        state = self.snapshot()
+        self.assertTrue(state["stale"])
+        self.assertNotIn("data", state)
+        self.connection.refresh_from_db()
+        self.assertNotIn("last_zone", self.connection.settings[advance.KEY])

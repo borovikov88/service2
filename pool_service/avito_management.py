@@ -500,6 +500,8 @@ def avito_refresh_data(request, connection_id):
     try:
         token, profile = None, None
         if section != "source_audit":
+            if "advance" in targets:
+                advance_stamp = avito_advance._credential_stamp(connection)
             token = access_token(connection)
             profile = avito_workspace._get(token, "/core/v1/accounts/self")
             actual_id = avito_workspace.profile_data(profile)["id"]
@@ -509,7 +511,6 @@ def avito_refresh_data(request, connection_id):
             checked_at = timezone.now().isoformat()
             try:
                 if key == "advance":
-                    advance_stamp = avito_advance._credential_stamp(connection)
                     data = avito_advance.fetch(token, actual_id)
                     final_id = avito_workspace.profile_data(avito_workspace._get(token, "/core/v1/accounts/self"))["id"]
                     if final_id != actual_id or avito_advance._credential_stamp(connection) != advance_stamp:
