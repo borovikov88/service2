@@ -77,7 +77,7 @@ jobs:
           "$lint_dir/actionlint" -shellcheck= -pyflakes= \
             .github/workflows/direct-pr-review.yml .github/workflows/ci-deploy.yml \
             .github/workflows/development-codex.yml .github/workflows/codex-plan-connection.yml \
-            .github/workflows/production-health.yml .github/workflows/call-recordings-sync.yml \
+            .github/workflows/production-health.yml .github/workflows/avito-readonly-audit.yml .github/workflows/call-recordings-sync.yml \
             .github/workflows/employee-identity-sync.yml .github/workflows/avito-status-monitor.yml
       - name: Verify Avito monitor scheduling and deployment locks
         run: python -m unittest discover -s .github/tests -p 'test_avito*py' -v
