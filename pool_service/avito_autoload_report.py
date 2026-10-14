@@ -28,6 +28,7 @@ ERRORS = {
     "autoload_report_changed": "Загрузка изменилась во время чтения. Согласованный снимок не сохранён; повторите проверку.",
     "autoload_report_limit": "Отчёт не получен целиком в пределах размера, количества или времени. Предыдущий снимок сохранён, если был.",
     "autoload_report_pagination": "Пагинация отчёта неполная или противоречивая. Полнота данных не подтверждена.",
+    "autoload_report_duplicate_rows": "В отчёте Авито повторяются строки одного объявления. Полнота данных и счётчики не подтверждены; повторите проверку.",
 }
 
 
@@ -230,6 +231,26 @@ def _page(raw, page, expected=None):
     return [_item(row) for row in rows], (total, pages)
 
 
+def require_unique_rows(rows):
+    """Repeated XML/Avito identity pairs cannot prove a complete item scan."""
+    if not isinstance(rows, list) or len(rows) > MAX_ITEMS:
+        _invalid()
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            _invalid()
+        identifier, avito_id = row.get("ad_id"), row.get("avito_id")
+        if (not isinstance(identifier, str) or not 1 <= len(identifier) <= 100
+                or identifier != identifier.strip()
+                or any(char < " " or char == "\x7f" for char in identifier)
+                or (avito_id is not None and (type(avito_id) is not int or not 0 <= avito_id < 10**32))):
+            _invalid()
+        identity = (identifier, avito_id)
+        if identity in seen:
+            raise AvitoError("autoload_report_duplicate_rows")
+        seen.add(identity)
+
+
 def fetch_report(token, account_id, *, kind="last_successful"):
     from pool_service import avito_workspace
     if kind not in KINDS:
@@ -264,6 +285,7 @@ def fetch_report(token, account_id, *, kind="last_successful"):
     after = summary_data(get(base))
     if before != after:
         raise AvitoError("autoload_report_changed")
+    require_unique_rows(rows)
     counts = Counter()
     for row in rows:
         for message_type in MESSAGE_TYPES:
@@ -286,6 +308,7 @@ def csv_text(report, snapshot_time):
             or not isinstance(report.get("rows"), list) or len(report["rows"]) > MAX_ITEMS):
         _invalid()
     rows = [_item(row) for row in report["rows"]]
+    require_unique_rows(rows)
     def cell(value):
         text = "" if value is None else str(value)
         return "'" + text if text.lstrip().startswith(("=", "+", "-", "@")) else text
