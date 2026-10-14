@@ -47,7 +47,7 @@
           <span class="avito-counter">Сигналы: <strong>{{ report.counts.alarm|default:0 }}</strong></span>
         </div>
         <p class="small mb-2">Загрузка {{ report.upload_id }} · {% if report.upload_status == 'success_warning' %}Завершена с предупреждениями{% elif report.upload_status == 'success' %}Завершена{% elif report.upload_status == 'processing' %}В процессе{% elif report.upload_status == 'error' %}Ошибка загрузки{% else %}Статус не передан{% endif %}</p>
-        {% if not report.upload_finished %}<p class="small text-warning">Загрузка ещё не подтверждена завершённой. Результаты могут измениться.</p>{% endif %}
+        {% if not report.upload_finished %}<p class="small text-warning">Загрузка ещё не подтверждена завершённой. Это предварительный снимок; её результаты могут измениться.</p>{% endif %}
         {% for event in report.events %}{% if event.type == 'error' or event.type == 'alarm' %}<p class="small text-danger" role="status">{{ event.code }}: {{ event.description }}</p>{% endif %}{% endfor %}
         {% if autoload_priority_rows %}
           <h3 class="h6">Требуют внимания</h3>
