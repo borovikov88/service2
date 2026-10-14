@@ -46,3 +46,15 @@ class ActiveInventoryTests(SimpleTestCase):
         result["counts"]["report_xml_match"] = 0
         with self.assertRaises(ValueError):
             inventory(result)
+
+    def test_shared_report_xml_id_is_ambiguous_even_if_other_ad_is_inactive(self):
+        index = {"1_1_43": [{"xml_id": "1_1_43", "availability": "В наличии"}]}
+        upload = {"complete": True, "rows": [{"avito_id": 101, "ad_id": "1_1_43"},
+                                            {"avito_id": 102, "ad_id": "1_1_43"}]}
+        for other_status in ("active", "old"):
+            with self.subTest(other_status=other_status):
+                result = build_inventory({"101": {"status": "active"}, "102": {"status": other_status}},
+                                         upload, index, {"1_1_43": 3})
+                self.assertTrue(all(row["link_state"] == "ambiguous" for row in result["rows"]))
+                self.assertTrue(all(row["shop_quantity"] is None for row in result["rows"]))
+                self.assertEqual(0, result["quantity_verified_rows"])

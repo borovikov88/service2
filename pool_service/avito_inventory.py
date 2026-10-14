@@ -13,14 +13,16 @@ def build_inventory(items, report, index, stocks=None, stock_error=None):
     if len(active) > 500:
         return {"error": "audit_inventory_limit"}
     by_item = defaultdict(list)
+    by_xml = defaultdict(list)
     for row in report["rows"]:
+        by_xml[row["ad_id"]].append(row["avito_id"])
         if row["avito_id"] is not None:
             by_item[str(row["avito_id"])].append(row["ad_id"])
     rows = []
     for item_id in active:
         bindings = by_item.get(item_id, [])
         matches = index.get(bindings[0], []) if len(bindings) == 1 else []
-        state = ("not_in_last_report" if not bindings else "ambiguous" if len(bindings) != 1
+        state = ("not_in_last_report" if not bindings else "ambiguous" if len(bindings) != 1 or len(by_xml[bindings[0]]) != 1
                  else "not_in_xml" if not matches else "ambiguous" if len(matches) != 1
                  else "invalid_xml_id" if matches[0]["xml_id"] is None else "report_xml_match")
         record = matches[0] if state == "report_xml_match" else {}
